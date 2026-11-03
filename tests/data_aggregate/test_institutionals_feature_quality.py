@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +11,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from tests.support import institutionals_feature_quality as quality
+from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_store.schema import Table, Tables
+from tests.support import institutionals_feature_quality as quality
 
 
 def _write_snapshot(path: Path, frame: pd.DataFrame, part: Table = Tables.cube_part_institutionals) -> dict[str, object]:
@@ -315,7 +317,7 @@ def _candidate_build_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, par
         def __init__(self, context: object, config: object) -> None:
             self.context = context
 
-        def build_panel(self) -> pd.DataFrame:
+        def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
             calls.append(None)
             future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
             return pd.concat([source, future], ignore_index=True)

@@ -49,6 +49,8 @@ def test_equity_universe_is_the_universe_only(sqlite_store, monkeypatch):
 
     for name in ("StepExtractZips", "StepExtractIdentity", "StepExtractEdgar", "StepExtractLlm"):
         monkeypatch.setattr(all_data, name, lambda context, config, options, _name=name: step(_name))
+    monkeypatch.setattr(all_data, "fetch_sharadar_tickers", lambda context: received.setdefault("sharadar_tickers", []))
+    monkeypatch.setattr(all_data, "sync", lambda store, config, as_of: received.setdefault("universe_sync", []))
     fake = cast(Any, object.__new__(StepExtractAllData))
     fake._context = SimpleNamespace(store=sqlite_store, universe=seed_universe(sqlite_store, ["AAPL", "MSFT", "XOM"]))
     fake._config, fake._log = None, logging.getLogger("test")
@@ -58,6 +60,7 @@ def test_equity_universe_is_the_universe_only(sqlite_store, monkeypatch):
     StepExtractAllData.run(fake)
 
     tickers = received["prices"]
+    assert list(received)[:2] == ["sharadar_tickers", "universe_sync"]  # the universe is synced before any fetcher
     assert tickers == ["AAPL", "MSFT", "XOM"]  # universe only, sorted
     for symbol in MACRO_PRICE_SERIES:
         assert symbol not in tickers, f"{symbol} leaked into the equity universe"

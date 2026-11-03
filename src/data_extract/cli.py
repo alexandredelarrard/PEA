@@ -108,13 +108,11 @@ from src.data_extract.utils.institutionals.fetch_short_interest import fetch_sho
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
-from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.string import run_date
 from src.utils.tickers_universe.sync import sync
-from src.utils.universe import load_universe_tickers, unverified_ciks
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -194,31 +192,6 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
 def universe(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     sync(context.store, context.config, run_date(as_of))
-
-
-# --- Universe seed (must run first; everything else resolves the universe from it) ---
-@cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --full).", help_priority=1)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def seed_universe(config_path: str, full: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    if full or context.store.row_count(Tables.sp500_tickers) == 0:
-        context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (full={full})")
-        get_sp500_tickers(context, as_of=run_date(as_of))
-    context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
-    # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
-    # because a genuine recent spin-off has no filing rows either.
-    suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
-    for row in suspect:
-        context.log.warning(
-            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — verify the company ID against EDGAR",
-            row["ticker"],
-            row["cik"],
-            ", ".join(row["filing_tables_checked"]),
-        )
-    if suspect:
-        context.log.warning("%d universe CIK(s) unconfirmed by any filing table.", len(suspect))
 
 
 # --- Prices / market / macro ---
@@ -789,7 +762,7 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
         click.echo(f"{quarter}\t{n_rows}")
 
 
-def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, EdgarFetch]:
+def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
     """Every EDGAR document fetch, keyed by its done table's name."""
     fetches = (
         SEC_8K_FETCH,
@@ -797,7 +770,7 @@ def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, Edga
         SEC_13G_FETCH,
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
-        fundamentals_fetch(context, cik_map),
+        fundamentals_fetch(context),
         INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
@@ -812,7 +785,7 @@ def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, Edga
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
-    fetches = _document_fetches(context, run.cik_map)
+    fetches = _document_fetches(context)
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
     for name, fetch in fetches.items():

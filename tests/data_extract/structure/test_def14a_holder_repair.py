@@ -201,7 +201,7 @@ def test_public_replay_cleans_ge_aliases_without_source_or_provider(
     config = extract_config(data_extract={"years_history": 31})
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
     identity = SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("GE", "0000040545"))
-    monkeypatch.setattr(fetch, "load_cik_mapping", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
+    monkeypatch.setattr(fetch, "universe_rows", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
     monkeypatch.setattr(fetch, "load_identity", lambda *_: identity)
     monkeypatch.setattr(fetch, "_listed_proxies", lambda *_: filings.copy())
     monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)

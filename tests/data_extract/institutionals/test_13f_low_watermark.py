@@ -69,7 +69,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple
 
 
 def _ctx(tmp_path: Any, store: Any) -> Any:
-    ctx = fake_context(tmp_path, store, _UNIVERSE, redundant_ticks=[])
+    ctx = fake_context(tmp_path, store, _UNIVERSE)
     _seed_roster(store, [ROSTER])
     return ctx
 

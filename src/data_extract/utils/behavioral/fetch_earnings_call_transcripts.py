@@ -38,7 +38,6 @@ from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Tables
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
-from src.utils.universe import load_universe_names, load_universe_tickers
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
 DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"
@@ -443,7 +442,8 @@ def _verify_calls(
     work = pd.concat([unoccupied, compare], ignore_index=True).drop_duplicates(["row_group", "row"])
     names: dict[str, str] = {}
     if not unoccupied.empty:
-        names = load_universe_names(context, sorted(unoccupied["ticker"].unique()))
+        frame = context.universe.frame.dropna(subset=["name"])
+        names = dict(zip(frame["ticker"], frame["name"], strict=True))
     comparisons = set(compare[["row_group", "row"]].itertuples(index=False, name=None))
     verified: set[tuple[int, int]] = set()
     changed: set[tuple[int, int]] = set()
@@ -522,7 +522,7 @@ def extract_earnings_calls(
     tickers that vanished entirely. `source` replaces the HuggingFace file (tests)."""
     log = context.log
     started = time.monotonic()
-    scope = set(load_universe_tickers(context) if tickers is None else tickers)
+    scope = set(context.universe.tickers if tickers is None else tickers)
     identity = load_identity(context)
     symbols = identity.universe_symbols(scope)
     src = source if source is not None else resolve_hf_source()

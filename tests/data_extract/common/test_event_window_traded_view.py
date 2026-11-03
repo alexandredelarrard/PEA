@@ -110,7 +110,7 @@ class _Context:
         self.log = logging.getLogger("test.event_window_traded_view")
         self.config_dir = str(CONFIG_DIR)
         self.paths = {"DATA_STORE": data_store}
-        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(redundant_ticks=[], years_history=15))
+        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15))
 
 
 # --------------------------------------------------------------------------- no deferral left

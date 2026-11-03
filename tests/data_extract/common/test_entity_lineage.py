@@ -633,7 +633,6 @@ def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path,
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,

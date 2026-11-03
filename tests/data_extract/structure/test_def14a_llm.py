@@ -520,7 +520,7 @@ def test_llm_extractor_real_apple():
     from src.context import get_config_context
     from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
     from src.data_extract.utils.edgar_extract.html_text import html_to_text
-    from src.data_extract.utils.edgar_extract.sec_utils import sec_get
+    from src.data_extract.utils.common.sec_io import sec_get
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
     config, ctx = get_config_context("./configs", use_cache=True, save=False)
@@ -599,7 +599,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
         monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "name": ["Z"]}))
+        monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
         mod.fetch_def14a_llm(ctx, ctx.config, [ticker], mod.section_extractors(ctx, ctx.config))
@@ -699,7 +699,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
         monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "name": ["Z"]}))
+        monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
         mod.fetch_def14a_llm(ctx, ctx.config, [ticker], mod.section_extractors(ctx, ctx.config))

@@ -60,7 +60,7 @@ class Driver:
         self.boom = FETCHES[boom] if boom else None
         self.runs: list[EdgarRun] = []
         self.tickers_universe = universe_of(["AAA", "BBB"])
-        monkeypatch.setattr(edgar_driver, "load_cik_mapping", self.cik_mapping)
+        monkeypatch.setattr(edgar_driver, "universe_rows", self.cik_mapping)
         monkeypatch.setattr(edgar_driver, "load_identity", self.identity)
         monkeypatch.setattr(step_mod, "run_edgar_fetch", self.fetch)
         monkeypatch.setattr(step_mod, "refresh_index", self.refresh)

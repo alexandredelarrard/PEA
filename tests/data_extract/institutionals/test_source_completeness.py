@@ -39,7 +39,6 @@ def sqlite_store(sqlite_store: DataStore) -> DataStore:
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -791,7 +790,6 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
     create_canonical(
         store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,

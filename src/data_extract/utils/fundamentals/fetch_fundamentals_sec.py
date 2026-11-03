@@ -598,12 +598,11 @@ def parse_fundamentals(
     return {Tables.fundamentals_facts: df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")}
 
 
-def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
-    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of `cik_map`'s tickers."""
+def fundamentals_fetch(context: Context) -> EdgarFetch:
+    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
     catalogue = load_catalogue(str(context.config_dir))
-    levels = ["sector", "industry_group", "sub_industry"]
-    df_gics = cik_map[levels].set_index(cik_map["ticker"].map(str))
-    gics = cast(dict[str, dict], df_gics[~df_gics.index.duplicated(keep="last")].to_dict("index"))
+    df_gics = context.universe.frame.set_index("ticker")[["sector", "industry_group", "sub_industry"]]
+    gics = cast(dict[str, dict], df_gics.to_dict("index"))
     return EdgarFetch(
         tables=(Tables.fundamentals_facts,),
         parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
@@ -629,6 +628,6 @@ def fetch_fundamentals_sec(
 ) -> FetchSummary:
     """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
     run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
-    fetch = fundamentals_fetch(context, run.cik_map)
+    fetch = fundamentals_fetch(context)
     refresh_index(context, run, index_years(fetch, run.years_history, run.run_date))
     return run_edgar_fetch(context, fetch, run, max_workers=int(context.config.data_extract.fundamentals_workers))

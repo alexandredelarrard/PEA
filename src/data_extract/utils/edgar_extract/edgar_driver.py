@@ -38,7 +38,6 @@ from src.data_extract.utils.edgar_extract.document_resume import DocumentWork, D
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_frame
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_store.schema import Resume, Table
 from src.utils.string import pad_cik, run_date
 
@@ -277,7 +276,7 @@ class EdgarRun:
         day = run_date(as_of)
         return cls(
             tickers=tickers,
-            cik_map=load_cik_mapping(context, tickers),
+            cik_map=universe_rows(context, tickers),
             scope=load_edgar_scope(context),
             run_date=day,
             years_history=int(years_history if years_history is not None else context.config.data_extract.years_history),
@@ -530,6 +529,12 @@ def _log_coverage(context: Context, fetch: EdgarFetch, work: DocumentWork, outco
         totals,
         work.counts,
     )
+
+
+def universe_rows(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
+    """The `context.universe` rows (ticker, 10-digit CIK, name, GICS) of `tickers`."""
+    frame = context.universe.frame
+    return frame[frame["ticker"].isin(tickers)].reset_index(drop=True)
 
 
 def load_edgar_scope(context: Context) -> EdgarScope:

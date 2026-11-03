@@ -884,7 +884,7 @@ def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None, warnings
 
 
 def patch_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
+    monkeypatch.setattr(mod, "universe_rows", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
     monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace())
 
 
@@ -1065,7 +1065,7 @@ def test_a_rerun_without_full_makes_no_llm_call_for_decided_dates(monkeypatch, s
 
 def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):
     context = SimpleNamespace(ensure_edgar_identity=lambda: None)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame(columns=["ticker", "cik"]))
+    monkeypatch.setattr(mod, "universe_rows", lambda *args: pd.DataFrame(columns=["ticker", "cik"]))
     with pytest.raises(ValueError, match="no roster CIK for AAA"):
         mod.fetch_fundamentals_employees(context, ["AAA"], 15)
     print("\nSANITY: an unresolved requested ticker cannot be reported as fully covered.")

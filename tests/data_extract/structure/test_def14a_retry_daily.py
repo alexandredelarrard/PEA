@@ -66,7 +66,7 @@ def daily(tmp_path, monkeypatch):
                 raise answer
             return schema.model_validate(answer), {"input_tokens": 1, "output_tokens": 1}
 
-    monkeypatch.setattr(fetch, "load_cik_mapping", lambda *_: pd.DataFrame([dict(ticker="ZZ", name="Example")]))
+    monkeypatch.setattr(fetch, "universe_rows", lambda *_: pd.DataFrame([dict(ticker="ZZ", name="Example")]))
     monkeypatch.setattr(fetch, "load_identity", lambda *_: SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("ZZ", "0000000001")))
     monkeypatch.setattr(fetch, "_list_scope_windows", lambda *_: filing.copy())
     monkeypatch.setattr(fetch, "_fetch_filing_html", lambda *_: PROXY)

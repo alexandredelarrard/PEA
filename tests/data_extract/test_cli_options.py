@@ -88,7 +88,6 @@ def test_cli_backfill_keeps_the_missing_subset_distinct(sqlite_store: Any, monke
 def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, context: SimpleNamespace) -> None:
     """Make `StepExtractIdentity` constructible on a stub config and context: caches, universe and resolver stubbed."""
     config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
-    config.data_extract.redundant_ticks = []
     context.config_dir = "configs"
     monkeypatch.setattr(step_identity, "cache_dir", lambda ctx, name: Path(name))
     monkeypatch.setattr(step_identity, "load_identity", lambda ctx, refresh=False: object())
@@ -101,15 +100,12 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
     context.store.row_count.return_value = 1
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["AAA"])
-    monkeypatch.setattr(cli_mod, "unverified_ciks", lambda ctx: [])
     return context
 
 
 @pytest.mark.parametrize(
     ("command", "target", "keyword"),
     [
-        ("seed-universe", "get_sp500_tickers", None),
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
         ("zips-ingest --only statements", "fetch_financial_statements", "reparse"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
@@ -119,7 +115,7 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
     ],
 )
 def test_full_reaches_the_existing_source_operation(
-    command: str, target: str, keyword: str | None, context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    command: str, target: str, keyword: str, context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[dict[str, Any]] = []
     edgar_calls: list[dict[str, Any]] = []
@@ -150,10 +146,7 @@ def test_full_reaches_the_existing_source_operation(
         date_flags = [] if command == "fundamentals-history-sec" else ["--as-of", "2026-09-29"]
         result = runner.invoke(cli_mod.cli, [*command.split(), *date_flags, *flags])
         assert result.exit_code == 0, result.output
-        if keyword is None:
-            assert len(calls) == int(bool(flags)), "An existing roster is scraped only in full mode."
-        else:
-            assert len(calls) == 1 and calls[0][keyword] is bool(flags)
+        assert len(calls) == 1 and calls[0][keyword] is bool(flags)
         assert not edgar_calls, "no command of this list walks EDGAR"
         if calls and "as_of" in calls[0]:
             assert calls[0]["as_of"] == pd.Timestamp("2026-09-29")

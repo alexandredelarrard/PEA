@@ -19,10 +19,9 @@ from pydantic import BaseModel, Field
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.sec_io import configure, filing_attachments, forget_sgml, sec_call
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, universe_rows
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
@@ -854,7 +853,7 @@ def fetch_fundamentals_employees(
     """
     context.ensure_edgar_identity()
     configure(context)
-    cik_map = load_cik_mapping(context, tickers)
+    cik_map = universe_rows(context, tickers)
     missing = set(tickers) - set(cik_map["ticker"])
     if missing:
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")

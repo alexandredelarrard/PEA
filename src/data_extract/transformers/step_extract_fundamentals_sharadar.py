@@ -67,8 +67,8 @@ class StepExtractFundamentalsSharadar(Step):
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
         fetch_sharadar_actions(self._context, years_history=years, full=full, as_of=as_of)
 
-        # 4. S&P 500 membership events. Ingested only -- `src/utils/universe.py` resolves
-        #    the universe from `sp500_tickers`; nothing consumes this table yet.
+        # 4. S&P 500 membership events. Ingested only -- the universe is `configs/universe.yml`
+        #    (`context.universe`); nothing consumes this table yet.
         fetch_sharadar_sp500(self._context, full=full)
 
         # 5. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the

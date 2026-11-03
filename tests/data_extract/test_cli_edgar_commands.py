@@ -117,9 +117,9 @@ def test_resume_plan_prints_one_line_per_document_table(monkeypatch: pytest.Monk
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config=config)))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
-    monkeypatch.setattr(edgar_driver, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
+    monkeypatch.setattr(edgar_driver, "universe_rows", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
-    monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx, cik_map: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
+    monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
     work = DocumentWork(units={"AAA": pd.DataFrame({"accession": ["x"]})}, counts={"forward": 1}, uncapped=1)
     work.timings = {"index_read": 0.1, "done_read": 0.2, "total": 0.3}
     monkeypatch.setattr(cli_mod, "plan_fetch", lambda *args, **kwargs: work)

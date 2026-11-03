@@ -26,7 +26,6 @@ from src.data_extract import cli as cli_mod
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
-from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.identity.identity_store import load_source_identity
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
@@ -230,24 +229,16 @@ def identity() -> Identity:
 
 
 def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -> Any:
-    """A fake context whose `sp500_tickers` (the analysis universe) holds `universe`, CIKs 1, 2, ..."""
+    """A fake context whose universe holds `universe`, CIKs 1, 2, ..."""
     create_canonical(
         store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
-    )
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {col: [str(i + 1).zfill(10) if col == "cik" else f"{col}-{t}" for i, t in enumerate(universe)] for col in CIK_MAPPING_COLS}
-            | {"ticker": list(universe)}
-        ),
     )
     return SimpleNamespace(
         store=store,

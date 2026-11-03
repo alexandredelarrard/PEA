@@ -239,17 +239,14 @@ def test_every_register_ticker_is_in_the_universe():
     on the nightly path and must not touch the DB, but a typo'd symbol is exactly the silent
     no-op this register cannot afford."""
     from src.context import get_config_context
-    from src.data_store.schema import Tables
 
     registrants = load_registrants(CONFIG_DIR)
     try:
         _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
-        universe = context.store.load(Tables.sp500_tickers, columns=["ticker"], optional=True)
+        universe = context.universe.tickers
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"universe unavailable ({type(exc).__name__}: {exc})")
-    if universe is None:
-        pytest.skip("sp500_tickers is empty")
-    unknown = sorted(set(registrants) - set(universe["ticker"]))
+    unknown = sorted(set(registrants) - set(universe))
     print("\n=== SANITY CHECK: register tickers against the live universe ===")
     print(f"  universe {len(universe)} tickers; register {len(registrants)} entries")
     print(f"  not in universe: {unknown or 'none'}")

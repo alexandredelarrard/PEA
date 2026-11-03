@@ -157,7 +157,7 @@ def _context(store, tmp_path: Path) -> Any:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("test.short_volume"),
-        config=extract_config(data_extract={"years_history": 15, "redundant_ticks": []}),
+        config=extract_config(data_extract={"years_history": 15}),
     )
 
 

@@ -243,7 +243,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
     monkeypatch.setattr(
-        mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
+        mod, "universe_rows", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
     )
     # PSKY's register chain makes it a multi-window scope, so its proxies' subject headers are checked.
     psky = dated_identity(
@@ -329,7 +329,7 @@ def test_every_ticker_is_listed_over_the_full_window_on_every_run(tmp_path, monk
     listed: dict[str, Any] = {}
     _stub_proxy_listing(monkeypatch, mod, listed)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], mod.section_extractors(context, context.config))
     first = dict(listed)
@@ -361,7 +361,7 @@ def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_st
     monkeypatch.setattr(mod, "list_filings", fake_list)
     monkeypatch.setattr(mod, "load_identity", lambda context: identity)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["CC"], mod.section_extractors(context, context.config))
 
@@ -388,7 +388,7 @@ def test_section_extractors_run_two_wide_whatever_config_gpt_threads(tmp_path, m
 
     _stub_proxy_listing(monkeypatch, mod, {})
     monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], mod.section_extractors(context, context.config))
 

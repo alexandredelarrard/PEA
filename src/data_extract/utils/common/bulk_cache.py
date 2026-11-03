@@ -233,13 +233,13 @@ def archive_available_at(end: date, path: Path, *, observed_from: date, download
         return None
 
 
-def stored_period_clock(context: Context, tables: Sequence[Table], period: str, *, column: str = "period") -> date | None:
+def stored_period_clock(context: Context, tables: Sequence[Table], period: str) -> date | None:
     """The single `available_at` already stored for `period` across `tables`; raises when they disagree."""
     values: set[date] = set()
     for table in tables:
-        if not {column, "available_at"} <= set(context.store.columns(table)):
+        if not {"period", "available_at"} <= set(context.store.columns(table)):
             continue
-        raw = context.store.distinct(table, "available_at", where={column: period})
+        raw = context.store.distinct(table, "available_at", where={"period": period})
         values.update(pd.to_datetime(pd.Series(raw, dtype=object), errors="coerce").dropna().dt.date)
     if len(values) > 1:
         raise ValueError(f"{'/'.join(name_of(t) for t in tables)} {period}: conflicting stored available_at values: {sorted(values)}")

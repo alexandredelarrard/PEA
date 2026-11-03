@@ -49,8 +49,8 @@ def ensure_archive(context: Context, cache: Path, source: ArchiveSource, period:
     return found, archive_available_at(period_end(period), found, observed_from=source.observed_from, downloaded=downloaded)
 
 
-def reparse_clock(context: Context, tables: Sequence[Table], period: str, path: Path, observed_from: date, *, column: str = "period") -> date | None:
+def reparse_clock(context: Context, tables: Sequence[Table], period: str, path: Path, observed_from: date) -> date | None:
     """A cached period's clock for a lineage re-parse: the one stored for `period`, else the archive's own (no download)."""
-    return stored_period_clock(context, tables, period, column=column) or archive_available_at(
+    return stored_period_clock(context, tables, period) or archive_available_at(
         period_end(period), path, observed_from=observed_from, downloaded=False
     )

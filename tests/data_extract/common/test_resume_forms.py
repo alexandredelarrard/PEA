@@ -72,7 +72,6 @@ def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pyt
 
 def test_registered_source_starts_preserve_the_source_boundaries() -> None:
     expected = (
-        (Tables.pension_facts, "2009-01-01"),
         (Tables.notes_num, "2009-01-01"),
         (Tables.notes_text, "2009-01-01"),
         (Tables.insider_transactions, "2006-01-01"),
@@ -88,7 +87,7 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
     for table, start in expected:
         assert _start(table) == pd.Timestamp(start), table.name
     assert Tables.sec13f_hr.resume is not None and Tables.sec13f_hr.resume.coverage_start == "2013-06-30"
-    for table in (Tables.pension_facts, Tables.notes_num, Tables.notes_text):
+    for table in (Tables.notes_num, Tables.notes_text):
         assert table.resume is not None and table.resume.observed_from == "2026-09-01", table.name
     indexed = [t for t in resume_tables() if t.resume is not None and t.resume.mode == RESUME_DOCUMENTS and t.resume.forms]
     assert all(t.resume is not None and t.resume.source_start is not None for t in indexed)
@@ -96,5 +95,5 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
 
     print("\n=== SANITY CHECK: source starts ===")
     print(
-        "  12 source boundaries preserved; EDGAR starts in 1993Q1; 13F broad coverage is distinct from its 1999 history; archive clocks turn observed in September 2026. Validated."
+        "  11 source boundaries preserved; EDGAR starts in 1993Q1; 13F broad coverage is distinct from its 1999 history; archive clocks turn observed in September 2026. Validated."
     )

@@ -1,6 +1,6 @@
 """Tier C: the CIK-keyed bulk data sets resolve rows through the dated `entity_lineage` only.
 
-`notes_num`/`notes_text` and `pension_facts` are CONSOLIDATING: a row belongs to a ticker when its
+`notes_num`/`notes_text` are CONSOLIDATING: a row belongs to a ticker when its
 filer CIK's seam-widened window holds the filing date (`ticker_for_cik(..., "consolidating")`).
 `insider_transactions` (Forms 3/4/5) are EVENTS: any CIK of the entity (`"event"`), no date filter.
 No register JSON is read: the fixtures' config directory holds none, so a predecessor resolves only
@@ -24,7 +24,6 @@ import pytest
 
 from src.data_extract.utils.insider.insider_common import screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_notes as fn
-from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_extract.utils.zips import zip_archive
 from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Tables
@@ -86,7 +85,7 @@ def _context(store: Any, tmp_path) -> SimpleNamespace:
     return SimpleNamespace(
         store=store,
         config_dir=str(tmp_path / "no_register"),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused", financial_statements="unused"))),
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
     )
 
 
@@ -116,39 +115,6 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     assert got == EXPECTED, f"notes_num tickers by accession: {got}"
     print("\n=== SANITY CHECK: notes rows by lineage window ===")
     print(f"  kept {sorted(got)}; Google Inc past its margin and Apache Corp's subsidiary-era filing resolve to no ticker. Validated.")
-
-
-def test_pension_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_store, monkeypatch, tmp_path):
-    """Same consolidating rule for `pension_facts`."""
-    facts = pd.DataFrame(
-        [
-            {
-                "cik": c.zfill(10),
-                "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
-                "ddate": pd.Timestamp(f),  # one fact per filing: the pension key holds no accession
-                "qtrs": 0,
-                "uom": "USD",
-                "value": 1.0,
-                "adsh": a,
-                "filed": pd.Timestamp(f),
-                "form": "10-Q",
-                "fy": "2020",
-                "fp": "Q2",
-            }
-            for a, c, f, _ in FILINGS
-        ]
-    )
-    _patch_bulk_io(fin, monkeypatch, tmp_path)
-    monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2020q3"])
-    monkeypatch.setattr(fin, "_read_pension_facts", lambda path: facts.copy())
-
-    fin.fetch_financial_statements(_context(sqlite_store, tmp_path), UNIVERSE, years_history=1)
-
-    stored = sqlite_store.load(Tables.pension_facts, columns=["adsh", "ticker"])
-    got = dict(zip(stored["adsh"], stored["ticker"], strict=True))
-    assert got == EXPECTED, f"pension_facts tickers by accession: {got}"
-    print("\n=== SANITY CHECK: pension rows by lineage window ===")
-    print(f"  kept {sorted(got)}; out-of-window predecessor filings dropped. Validated.")
 
 
 def test_insider_rows_of_any_entity_cik_resolve_without_a_date_filter():

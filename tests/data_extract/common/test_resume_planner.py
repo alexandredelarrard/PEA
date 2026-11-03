@@ -377,11 +377,6 @@ def _save_notes(store, table, ticker: str, periods: list[str]) -> None:
     store.save(table, pd.DataFrame(rows))
 
 
-def _save_pension(store, ticker: str, quarters: list[str]) -> None:
-    rows = [{"cik": ticker, "tag": "t", "ddate": pd.Timestamp("2025-12-31"), "qtrs": 0, "ticker": ticker, "quarter": q} for q in quarters]
-    store.save(Tables.pension_facts, pd.DataFrame(rows))
-
-
 def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, **kwargs):
     return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, keys, _AS_OF, **kwargs)
 
@@ -412,11 +407,11 @@ def test_m3_absent_tables_list_every_published_period_from_the_source_start(tmp_
 
 def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqlite_store, caplog):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW", "OLD"], added_on={"NEW": "2026-09-27", "OLD": "2026-09-28"})
-    _save_pension(sqlite_store, "AAA", ["2025q4", "2026q1", "2026q2"])
-    _save_pension(sqlite_store, "OLD", ["2026q2"])  # new, but already holds a row: not re-parsed
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2025q4", "2026q1", "2026q2"])
+    _save_notes(sqlite_store, Tables.notes_num, "OLD", ["2026q2"])  # new, but already holds a row: not re-parsed
 
     with caplog.at_level("WARNING"):
-        work = _archive(ctx, (Tables.pension_facts,), ["2025q4", "2026q1", "2026q2", "2026q3"], ["AAA", "NEW", "OLD"], cached={"2026q1", "2026q2"})
+        work = _archive(ctx, (Tables.notes_num,), ["2025q4", "2026q1", "2026q2", "2026q3"], ["AAA", "NEW", "OLD"], cached={"2026q1", "2026q2"})
 
     assert work.pending == ["2026q3"]  # the newest published period, parsed for every key
     assert work.rescan_keys == ["NEW"] and work.rescan == ["2026q1", "2026q2"]  # 2025q4 is stored but not on disk
@@ -430,28 +425,28 @@ def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqli
 def test_m3_new_key_window_is_seven_days_for_every_archive(tmp_path, sqlite_store):
     added = {"D6": "2026-09-24", "D8": "2026-09-22"}  # 6 and 8 days before as_of 2026-09-30
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "D6", "D8"], added_on=added)
-    _save_pension(sqlite_store, "AAA", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026q1"])
     _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026_07"])
     _save_notes(sqlite_store, Tables.notes_text, "AAA", ["2026_07"])
 
-    pension = _archive(ctx, (Tables.pension_facts,), ["2026q1"], ["AAA", "D6", "D8"])  # 95-day table overlap
-    notes = _archive(ctx, _NOTES, ["2026_07"], ["AAA", "D6", "D8"])  # 62-day table overlap
+    quarterly = _archive(ctx, (Tables.notes_num,), ["2026q1"], ["AAA", "D6", "D8"])  # 62-day table overlap, quarterly periods
+    notes = _archive(ctx, _NOTES, ["2026_07"], ["AAA", "D6", "D8"])  # 62-day table overlap, monthly periods
 
-    assert pension.rescan_keys == notes.rescan_keys == ["D6"]
+    assert quarterly.rescan_keys == notes.rescan_keys == ["D6"]
     print("\n=== SANITY CHECK: M3 new-key window ===")
-    print("  D6 (added 6 days ago, no row) is re-parsed; D8 (8 days ago) is not, although the pension overlap is 95 days")
-    print("  and the notes overlap 62: the new-key window is 7 days for every archive; -t D8 -F is the way back.")
+    print("  D6 (added 6 days ago, no row) is re-parsed; D8 (8 days ago) is not, although the table overlap is 62 days")
+    print("  for quarterly and monthly periods alike: the new-key window is 7 days for every archive; -t D8 -F is the way back.")
 
 
 def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlite_store):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
-    _save_pension(sqlite_store, "AAA", ["2026q1", "2026q2"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026q1", "2026q2"])
     published = ["2026q1", "2026q2", "2026q3"]
 
-    night1 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])  # 2026q3: no universe row, or its ZIP failed
-    night2 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
-    sqlite_store.delete(Tables.pension_facts, {"quarter": "2026q1"})
-    night3 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
+    night1 = _archive(ctx, (Tables.notes_num,), published, ["AAA"])  # 2026q3: no universe row, or its ZIP failed
+    night2 = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
+    sqlite_store.delete(Tables.notes_num, {"period": "2026q1"})
+    night3 = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
 
     assert night1.pending == night2.pending == ["2026q3"]
     assert night3.pending == ["2026q1", "2026q3"]
@@ -462,14 +457,14 @@ def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlit
 
 def test_m3_a_ticker_run_then_a_full_run_re_parses_nothing(tmp_path, sqlite_store):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "BBB"])
-    _save_pension(sqlite_store, "AAA", ["2026q1"])
-    _save_pension(sqlite_store, "BBB", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "BBB", ["2026q1"])
     published = ["2026q1", "2026q2"]
 
-    scoped = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
-    everyone = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "BBB"])
-    scoped_full = _archive(ctx, (Tables.pension_facts,), published, ["AAA"], full=True)
-    full = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "BBB"], full=True, cached=set())
+    scoped = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
+    everyone = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"])
+    scoped_full = _archive(ctx, (Tables.notes_num,), published, ["AAA"], full=True)
+    full = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"], full=True, cached=set())
 
     assert scoped.scoped and list(scoped.units()) == [] and scoped.held == ["2026q2"]
     assert not everyone.scoped and dict(everyone.units()) == {"2026q2": ["AAA", "BBB"]}

@@ -20,9 +20,9 @@ already exists unless `--refresh` is passed.
     "$PY" scripts/sweep_fundamentals_resolution.py --roster both
     "$PY" scripts/sweep_fundamentals_resolution.py --roster in_sample -t MCD --refresh
 
-Each ticker's filings are listed by CIK from its `entity_lineage` filing scope, exactly as
+Each ticker's filings are listed by CIK from its `universe_cik_symbol` filing scope, exactly as
 `build_ticker_fundamentals` lists them, so the identity tables must be reachable. GICS comes from
-`tickers_universe` when available and resolves with `regime=None` otherwise -- the regime drives
+`universe_tickers` when available and resolves with `regime=None` otherwise -- the regime drives
 `never_use` and the roll-up overrides, so it cannot be skipped silently.
 """
 

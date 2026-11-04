@@ -50,7 +50,7 @@
     "malformed entry it CAN detect. Add an entry only with three oracles agreeing; see",
     "`tests/support/detect_registrant_cutovers.py`.",
     "",
-    "A curated JSON rather than a `tickers_universe` column: a new row is built from",
+    "A curated JSON rather than a `universe_tickers` column: a new row is built from",
     "Wikipedia, so a roster refresh would silently overwrite hand-established evidence. And",
     "Wikipedia can itself be wrong in this exact way -- it had already moved XOM to the holdco."
   ],

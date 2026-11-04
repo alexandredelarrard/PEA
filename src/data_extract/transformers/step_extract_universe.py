@@ -1,4 +1,4 @@
-"""Universe step: the SEC and Sharadar ticker lists, then `tickers_universe` built or updated from `configs/universe.yml`.
+"""Universe step: the SEC and Sharadar ticker lists, then `universe_tickers` built or updated from `configs/universe.yml`.
 
 The two list refreshes are independent (the DAG runs them in parallel); the sync reads both, so it runs last.
 """

@@ -58,16 +58,16 @@ def _source_tables(part: Table) -> tuple[Table, ...]:
         Tables.sharadar_actions,
         Tables.sharadar_fundamentals,
         Tables.prices,
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         Tables.sharadar_tickers,
     )
     if part == Tables.cube_part_sec_thirteen:
         return (*common, Tables.sec13f_hr, Tables.sec13f_manager_holdings, Tables.superinvestor_roster, Tables.cusip_ticker_map)
     return (
         *common,
-        Tables.tickers_universe,
+        Tables.universe_tickers,
         Tables.symbol_tenure,
-        Tables.security_master,
+        Tables.universe_cusip,
         Tables.def14a_executive_comp,
         Tables.insider_transactions,
         Tables.short_interest,

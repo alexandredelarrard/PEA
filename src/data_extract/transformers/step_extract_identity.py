@@ -1,4 +1,4 @@
-"""Identity step: `symbol_tenure`, `entity_lineage` and `security_master` built offline from the cached zips and the DB,
+"""Identity step: `symbol_tenure`, `universe_cik_symbol` and `universe_cusip` built offline from the cached zips and the DB,
 then the lineage change carried into the stored SEC rows.
 
 Order: the Notes cover-page and FTD captures first, so the builders read this run's evidence (the FTD capture scopes
@@ -83,7 +83,7 @@ class StepExtractIdentity(Step):
     def run_security_master(self) -> pd.DataFrame:
         lineage = self._lineage if self._lineage is not None else load_stored_lineage(self._context)
         if lineage is None:
-            raise ValueError("security_master needs entity_lineage: run `identity --only lineage` first")
+            raise ValueError("universe_cusip needs universe_cik_symbol: run `identity --only lineage` first")
         return build_security_master(self._context, lineage, str(self._config_dir))
 
     def run_propagate(self) -> PropagationResult:

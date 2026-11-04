@@ -1,6 +1,6 @@
 """Identity items needing a manual decision, classified once for the lineage build and the identity validator.
 
-Pure: `entity_lineage` rows, each CIK's filing activity (`cik_activity`), optionally the stored `security_master`
+Pure: `universe_cik_symbol` rows, each CIK's filing activity (`cik_activity`), optionally the stored `universe_cusip`
 (which decides tape-mix pairs it already stamps) and, from the build only, its grey-band and rekey backlog. `log_identity_flags` writes one WARNING block (action items first) and one
 INFO line for co-registrants.
 """
@@ -40,9 +40,9 @@ _SYMBOLS = "configs/sec/symbol_tenure_manual.json"
 _ACTIVITY_SOURCES = ("dei", "form345")
 _TAPE_SOURCES = ("form345", "manual")
 _FAR = pd.Timestamp("2262-01-01")
-#: The stored open start of a window (`entity_lineage.SENTINEL_START`).
+#: The stored open start of a window (`identity.entity_lineage.SENTINEL_START`).
 _SENTINEL = pd.Timestamp("1900-01-01")
-#: The `security_master` columns the tape-mix rule reads.
+#: The `universe_cusip` columns the tape-mix rule reads.
 MASTER_COLUMNS = ("canonical_company", "source_symbol", "lineage_role", "lineage_reason", "valid_from", "valid_to")
 Span = tuple[pd.Timestamp, pd.Timestamp]
 
@@ -91,7 +91,7 @@ def _item(kind: str, action: bool, ticker: str, ciks: Iterable[str], evidence: s
     }
 
 
-_LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle", "evidence")
+_LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle", "evidence")
 #: `sources` of a `cik_window` row dated by the automatic rule (both filed evidence sources agreeing).
 _AUTOMATIC_SOURCES = "dei,form345"
 _AUTOMATIC_NOTE = "automatic window: "
@@ -129,12 +129,12 @@ def _multi_cik_items(rows: pd.DataFrame, spans: dict[str, tuple[pd.Timestamp, pd
     """Each uncurated extra CIK beside a roster-only window: sequential, concurrent, or a takeover."""
     items: list[dict[str, object]] = []
     cik_rows = rows[rows["role"].ne("symbol")]
-    for entity, group in cik_rows.groupby("entity_id", sort=True):
+    for entity, group in cik_rows.groupby("company_id", sort=True):
         home_rows = group[group["role"].eq("cik_window") & group["sources"].eq("roster")]
         if home_rows.empty:
             continue
         ticker, home = str(home_rows["canonical_ticker"].iloc[0]), str(home_rows["cik"].iloc[0])
-        symbols = rows[rows["entity_id"].eq(entity) & rows["role"].eq("symbol")]
+        symbols = rows[rows["company_id"].eq(entity) & rows["role"].eq("symbol")]
         for other in sorted(set(group.loc[group["cik"].ne(home) & ~group["oracle"].isin(("register", "manual")), "cik"])):
             items.append(_pair_item(ticker, other, home, spans, symbols))
     return items
@@ -169,9 +169,9 @@ def _register_items(
 
     Form 3/4/5 observations only lag a seam, so they never dispute it; a seam without cover-page evidence on both sides is not judged.
     """
-    windows = rows[rows["role"].eq("cik_window") & rows["oracle"].eq("register")].sort_values(["entity_id", "valid_from"], kind="mergesort")
+    windows = rows[rows["role"].eq("cik_window") & rows["oracle"].eq("register")].sort_values(["company_id", "valid_from"], kind="mergesort")
     items: list[dict[str, object]] = []
-    for _, group in windows.groupby("entity_id", sort=True):
+    for _, group in windows.groupby("company_id", sort=True):
         records = group.to_dict("records")
         for pred, succ in zip(records, records[1:], strict=False):
             if pred["valid_to"] != succ["valid_from"] or pred["cik"] not in cover or succ["cik"] not in cover:
@@ -202,7 +202,7 @@ def _automatic_window_items(rows: pd.DataFrame) -> list[dict[str, object]]:
     """One information item per entity whose CIK windows the automatic rule dated, with the chain and its switch evidence."""
     windows = rows[rows["role"].eq("cik_window") & rows["sources"].eq(_AUTOMATIC_SOURCES)]
     items: list[dict[str, object]] = []
-    for _, group in windows.sort_values(["entity_id", "valid_from"], kind="mergesort").groupby("entity_id", sort=True):
+    for _, group in windows.sort_values(["company_id", "valid_from"], kind="mergesort").groupby("company_id", sort=True):
         chain = ", ".join(
             f"{cik} from {'open' if start <= _SENTINEL else start.date()}" + ("" if pd.isna(end) else f" to {end.date()}")
             for cik, start, end in zip(group["cik"], group["valid_from"], group["valid_to"], strict=True)
@@ -262,7 +262,7 @@ def _length(spans: Iterable[Span]) -> pd.Timedelta:
 
 
 def _prepare_master(master: pd.DataFrame | None) -> pd.DataFrame | None:
-    """Decided `security_master` lines keyed by squashed symbol, dates as timestamps; None when there are none.
+    """Decided `universe_cusip` lines keyed by squashed symbol, dates as timestamps; None when there are none.
 
     An `unclassified` exclusion is the master's default, not a decision, so it covers nothing.
     """
@@ -280,7 +280,7 @@ def _prepare_master(master: pd.DataFrame | None) -> pd.DataFrame | None:
 def _master_verdict(
     ticker: str, symbol: str, by_cik: dict[str, list[Span]], windows: pd.DataFrame, master: pd.DataFrame
 ) -> tuple[str, str] | list[Span]:
-    """Why a tape-mix overlap needs no decision and its suggested action, else the overlap `security_master` leaves uncovered.
+    """Why a tape-mix overlap needs no decision and its suggested action, else the overlap `universe_cusip` leaves uncovered.
 
     In order: the overlap falls before the tape era (the first master line); master lines of `ticker` under the
     symbol cover it; the symbol's CIK holds no CIK window over what remains, so no tape row resolves through it.
@@ -288,7 +288,7 @@ def _master_verdict(
     era = master["valid_from"].min()
     clipped = {cik: [(max(start, era), end) for start, end in spans if end > max(start, era)] for cik, spans in by_cik.items()}
     if _length(span for spans in clipped.values() for span in spans) <= MARGIN:
-        return f"before the tape era (security_master starts {era.date()})", "none: no FTD or short-volume line is read before the tape era"
+        return f"before the tape era (universe_cusip starts {era.date()})", "none: no FTD or short-volume line is read before the tape era"
     lines = master[master["canonical_company"].eq(ticker) & master["key"].eq(squash(symbol))]
     uncovered = {cik: _subtract(spans, lines) for cik, spans in clipped.items()}
     rest = [span for spans in uncovered.values() for span in spans]
@@ -299,8 +299,8 @@ def _master_verdict(
             if any(start < s_end and end > s_start for spans in clipped.values() for s_start, s_end in spans)
         ]
         return (
-            f"decided by security_master ({', '.join(sorted(set(touched)))})",
-            "none: security_master already stamps these lines (edit security_master_manual.json only if a role is wrong)",
+            f"decided by universe_cusip ({', '.join(sorted(set(touched)))})",
+            "none: universe_cusip already stamps these lines (edit security_master_manual.json only if a role is wrong)",
         )
     left = {cik: spans for cik, spans in uncovered.items() if spans}
     windowed = sum((_length(spans) - _length(_subtract(spans, windows[windows["cik"].eq(cik)])) for cik, spans in left.items()), pd.Timedelta(0))
@@ -320,7 +320,7 @@ def _mix_spans(other: pd.DataFrame, own_tape: pd.DataFrame, own_cover: pd.DataFr
 def _tape_mix_items(rows: pd.DataFrame, redundant: frozenset[str], master: pd.DataFrame | None = None) -> list[dict[str, object]]:
     """A second tape symbol dated to a ticker while the ticker itself trades: two securities under one company on the tapes.
 
-    `security_master` decides per security (CUSIP, class) whether the second line is summed into the ticker (canonical
+    `universe_cusip` decides per security (CUSIP, class) whether the second line is summed into the ticker (canonical
     or secondary class) or kept apart. A redundant class counts only where the ticker trades on cover pages alone (no
     tape interval of its own); overlaps of a margin or less (single typed filings) are left out. With the stored
     `master`, an overlap it already decides (`_master_verdict`) is information, not action.
@@ -342,8 +342,8 @@ def _tape_mix_items(rows: pd.DataFrame, redundant: frozenset[str], master: pd.Da
             if _length(spans) <= MARGIN:
                 continue
             ciks = sorted(set(other["cik"]))
-            evidence = f"{why}: {_window_text(spans)}; security_master decides per security whether their FTD and short-volume lines are summed"
-            suggested = f"check the security_master role of {symbol}'s lines (security_master_manual.json) or curate {symbol} (symbol tenure)"
+            evidence = f"{why}: {_window_text(spans)}; universe_cusip decides per security whether their FTD and short-volume lines are summed"
+            suggested = f"check the universe_cusip role of {symbol}'s lines (security_master_manual.json) or curate {symbol} (symbol tenure)"
             if master is not None:
                 by_cik = {cik: _mix_spans(other[other["cik"].eq(cik)], own_tape, own_cover, is_redundant) for cik in ciks}
                 verdict = _master_verdict(str(ticker), str(symbol), by_cik, windows[windows["canonical_ticker"].eq(ticker)], master)
@@ -351,7 +351,7 @@ def _tape_mix_items(rows: pd.DataFrame, redundant: frozenset[str], master: pd.Da
                     reason, note = verdict
                     items.append(_item("manual_review", False, str(ticker), ciks, f"{why}: {_window_text(spans)}; {reason}", note, ""))
                     continue
-                evidence = f"{evidence}; not covered by security_master: {_window_text(verdict)}"
+                evidence = f"{evidence}; not covered by universe_cusip: {_window_text(verdict)}"
             items.append(_item("manual_review", True, str(ticker), ciks, evidence, suggested, _SYMBOLS))
     return items
 
@@ -395,7 +395,7 @@ def _backlog_items(backlog: pd.DataFrame | None) -> list[dict[str, object]]:
     return [
         _item(kind, True, str(ticker or entity), (str(cik),), str(detail), *actions[kind])
         for kind, ticker, entity, cik, detail in zip(
-            backlog["kind"], backlog["canonical_ticker"], backlog["entity_id"], backlog["cik"], backlog["detail"], strict=True
+            backlog["kind"], backlog["canonical_ticker"], backlog["company_id"], backlog["cik"], backlog["detail"], strict=True
         )
         if kind in actions
     ]
@@ -411,7 +411,7 @@ def identity_flags(
 ) -> pd.DataFrame:
     """Every identity item needing a manual decision (`FLAG_COLUMNS`), sorted by kind (action kinds first) and ticker.
 
-    `master`: the stored `security_master` rows (`MASTER_COLUMNS`); without them the tape-mix rule reads the lineage alone.
+    `master`: the stored `universe_cusip` rows (`MASTER_COLUMNS`); without them the tape-mix rule reads the lineage alone.
     """
     rows = _prepare(lineage)
     spans = _spans(activity)

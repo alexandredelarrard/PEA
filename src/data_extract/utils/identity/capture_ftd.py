@@ -23,13 +23,13 @@ from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
-_LINEAGE_SCOPE_COLUMNS = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
+_LINEAGE_SCOPE_COLUMNS = ["company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
 
 
 def _ingest_scope(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None, frozenset[str], frozenset[str]]:
     """`(lineage, master, squashed lineage symbols, CUSIP-6 prefixes)`; prefixes come from the stored master and the manual config."""
-    lineage = context.store.load(Tables.entity_lineage, columns=[*_LINEAGE_SCOPE_COLUMNS, "scope_changed_at"], optional=True)
-    master = context.store.load(Tables.security_master, columns=["cusip", "scope_changed_at"], optional=True)
+    lineage = context.store.load(Tables.universe_cik_symbol, columns=[*_LINEAGE_SCOPE_COLUMNS, "scope_changed_at"], optional=True)
+    master = context.store.load(Tables.universe_cusip, columns=["cusip", "scope_changed_at"], optional=True)
     if lineage is None:
         return None, master, frozenset(), frozenset()
     manual = load_security_manual(getattr(context, "config_dir", None))
@@ -46,8 +46,8 @@ def _recent_keys(rows: pd.DataFrame, key: str, as_of: pd.Timestamp) -> list[str]
 
 def _changed_scope(lineage: pd.DataFrame, master: pd.DataFrame | None, as_of: pd.Timestamp) -> tuple[frozenset[str], frozenset[str]]:
     """Changed symbols and CUSIP-6 prefixes derived from the initial identity snapshot."""
-    entities = set(_recent_keys(lineage, "entity_id", as_of))
-    symbols = lineage_scope_symbols(lineage.loc[lineage["entity_id"].astype(str).isin(entities)]) if entities else frozenset()
+    entities = set(_recent_keys(lineage, "company_id", as_of))
+    symbols = lineage_scope_symbols(lineage.loc[lineage["company_id"].astype(str).isin(entities)]) if entities else frozenset()
     prefixes = frozenset(cusip[:6] for cusip in _recent_keys(master, "cusip", as_of) if cusip) if master is not None else frozenset()
     return symbols, prefixes
 
@@ -71,11 +71,11 @@ def _read_cached(context: Context, cache: Path, periods: Sequence[str], symbols:
 def capture_ftd_cusips(context: Context, cache: Path, years_history: int, *, full: bool, as_of: pd.Timestamp) -> int:
     """Store the in-scope raw lines of the pending cached periods; `full` replaces the table from every listed period.
 
-    Returns the rows written; 0 before the first `entity_lineage` build (cold start: run it again with `full`).
+    Returns the rows written; 0 before the first `universe_cik_symbol` build (cold start: run it again with `full`).
     """
     lineage, master, symbols, prefixes = _ingest_scope(context)
     if lineage is None:
-        logger.warning("FTD capture: no entity_lineage yet; nothing captured until the lineage is built")
+        logger.warning("FTD capture: no universe_cik_symbol yet; nothing captured until the lineage is built")
         return 0
     changed_symbols, changed_prefixes = (frozenset(), frozenset()) if full else _changed_scope(lineage, master, as_of)
     pending = ftd_zip.pending_ftd_periods(context, cache, years_history, full=full, as_of=as_of)

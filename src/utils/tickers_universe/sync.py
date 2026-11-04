@@ -1,7 +1,7 @@
 """
 sync.py  (src/utils/tickers_universe/sync.py)
 ---------------------------------------------
-`sync`: the only writer of `tickers_universe`. Keeps one row per `universe.yml` ticker.
+`sync`: the only writer of `universe_tickers`. Keeps one row per `universe.yml` ticker.
 
 * A row is removed when its ticker leaves the yml and built when one enters: CIK and name from the
   `sec_company_tickers` snapshot (Sharadar's `secfilings` CIK and name for a ticker the SEC no longer
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 ESTABLISHED_ADDED_ON = pd.Timestamp("2000-01-01")
 CARRIED_COLUMNS = ["ticker", "name", "cik", "universe_added_on"]
-#: sharadar_tickers column -> tickers_universe column
+#: sharadar_tickers column -> universe_tickers column
 SHARADAR_COLUMNS = {
     "permaticker": "permaticker",
     "name": "sharadar_name",
@@ -49,10 +49,10 @@ SHARADAR_READ = ["ticker", "isdelisted", "lastupdated", "cusips", "secfilings", 
 
 
 def sync(store: DataStore, config: DictConfig, as_of: pd.Timestamp) -> int:
-    """Bring `tickers_universe` in line with `universe.yml`, `sec_company_tickers` and `sharadar_tickers`; returns the rows written."""
+    """Bring `universe_tickers` in line with `universe.yml`, `sec_company_tickers` and `sharadar_tickers`; returns the rows written."""
     tickers, aliases = universe_config(config)
     gics = universe_classification(config)
-    stored = store.load(Tables.tickers_universe, optional=True)
+    stored = store.load(Tables.universe_tickers, optional=True)
     sharadar = _sharadar_rows(store, [*tickers, *(a for symbols in aliases.values() for a in symbols)])
     unmatched = sorted(set(tickers) - set(sharadar.index))
     if unmatched:
@@ -71,13 +71,13 @@ def sync(store: DataStore, config: DictConfig, as_of: pd.Timestamp) -> int:
 
     leaving = sorted(set(stored["ticker"]) - set(tickers)) if stored is not None else []
     if leaving:
-        store.delete(Tables.tickers_universe, {"ticker": leaving})
-        logger.info("Removed %d ticker(s) from %s: %s", len(leaving), Tables.tickers_universe, leaving)
+        store.delete(Tables.universe_tickers, {"ticker": leaving})
+        logger.info("Removed %d ticker(s) from %s: %s", len(leaving), Tables.universe_tickers, leaving)
     changed = _changed_rows(table, stored)
-    written = store.save(Tables.tickers_universe, changed) if not changed.empty else 0
+    written = store.save(Tables.universe_tickers, changed) if not changed.empty else 0
     logger.info(
         "%s: %d tickers, %d entered, %d left, %d row(s) written (sharadar_tickers lastupdated %s)",
-        Tables.tickers_universe,
+        Tables.universe_tickers,
         len(table),
         len(entering),
         len(leaving),
@@ -128,7 +128,7 @@ def _new_rows(store: DataStore, entering: list[str], sharadar: pd.DataFrame, as_
     if no_cik:
         raise UniverseError(f"no CIK from {Tables.sec_company_tickers} or Sharadar for {no_cik}")
     rows["universe_added_on"] = [ESTABLISHED_ADDED_ON if t in priced else as_of for t in entering]
-    logger.info("%d ticker(s) enter %s (%d already priced)", len(entering), Tables.tickers_universe, len(priced))
+    logger.info("%d ticker(s) enter %s (%d already priced)", len(entering), Tables.universe_tickers, len(priced))
     return rows.reset_index(names="ticker")[CARRIED_COLUMNS]
 
 

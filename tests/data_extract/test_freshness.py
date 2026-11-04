@@ -21,11 +21,11 @@ from tests.support.universe import seed_universe, universe_config
 
 
 class _Context(SimpleNamespace):
-    """A stub context whose universe is the stored `tickers_universe`, read on each access."""
+    """A stub context whose universe is the stored `universe_tickers`, read on each access."""
 
     @property
     def universe(self) -> Universe:
-        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        tickers = self.store.load(Tables.universe_tickers, columns=["ticker"])["ticker"].tolist()
         return Universe(self.store, universe_config(tickers))
 
 
@@ -39,8 +39,8 @@ def _context(store) -> Any:
 
 def _prices(store: Any, last_by_ticker: dict[str, str]) -> None:
     """A universe of the given tickers, each with one `prices` row on its own last date."""
-    if store.exists(Tables.tickers_universe):
-        store.drop(Tables.tickers_universe)
+    if store.exists(Tables.universe_tickers):
+        store.drop(Tables.universe_tickers)
     seed_universe(store, list(last_by_ticker))
     store.replace(
         Tables.prices,

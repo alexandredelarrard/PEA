@@ -1,6 +1,6 @@
 """`prices` holds the universe and its companies' current secondary share classes (Q2d, D-Q2-6).
 
-The fetch list is read from `security_master` through the store: rows with role `secondary_class` and an
+The fetch list is read from `universe_cusip` through the store: rows with role `secondary_class` and an
 open end, under their Yahoo symbol. Delisted classes are not fetched; a class with no stored bar takes the
 whole window. Dividends and splits are stored for the universe only.
 """
@@ -74,7 +74,7 @@ def fetched(sqlite_store, monkeypatch) -> tuple[Any, list[tuple[list[str], pd.Ti
 
     monkeypatch.setattr(fp, "download_ohlcv", download)
     monkeypatch.setattr(fp, "last_completed_session", lambda now=None: _UNTIL)
-    sqlite_store.save(Tables.security_master, _master())
+    sqlite_store.save(Tables.universe_cusip, _master())
     return sqlite_store, calls, responses
 
 

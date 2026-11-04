@@ -1,9 +1,9 @@
-"""Which company is this row about: the `Identity` accessor over `entity_lineage` and the roster.
+"""Which company is this row about: the `Identity` accessor over `universe_cik_symbol` and the roster.
 
-`entity_lineage` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
+`universe_cik_symbol` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
 its dated symbol intervals. `filing_scope`, `ticker_for_cik` and `tape_interval` answer
 from those rows; `tickers_for_ciks` applies `ticker_for_cik` to whole frames for the bulk data sets. `security_on`
-answers the market tapes from `security_master` (security grain: CUSIP, class, role); `lineage_role` dates a CIK's
+answers the market tapes from `universe_cusip` (security grain: CUSIP, class, role); `lineage_role` dates a CIK's
 filings against its consolidating windows.
 `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant violations raise at load, never
 per row. An unknown CIK is its own singleton entity `E{cik}`.
@@ -51,7 +51,7 @@ from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_sy
 
 logger = logging.getLogger(__name__)
 
-#: The `symbol_tenure` sources the resolver reads; `dei` evidence reaches it only through `entity_lineage`.
+#: The `symbol_tenure` sources the resolver reads; `dei` evidence reaches it only through `universe_cik_symbol`.
 TENURE_SOURCES = (FORM345_SOURCE, MANUAL_SOURCE)
 #: `event`: any CIK of the entity; `consolidating`: the CIK whose margin-widened window holds the filing date.
 CikPolicy = Literal["event", "consolidating"]
@@ -65,7 +65,7 @@ class AmbiguousSymbolTenureError(IdentityError):
     """A symbol resolves to more than one entity, at `as_of` or over all of history; never a silent pick."""
 
 
-#: One axis-B tenure: (entity_id, valid_from, valid_to or None when open, n_filings).
+#: One axis-B tenure: (company_id, valid_from, valid_to or None when open, n_filings).
 TenureRow = tuple[str, pd.Timestamp, pd.Timestamp | None, int]
 
 
@@ -130,7 +130,7 @@ class SymbolInterval:
 
 @dataclass(frozen=True)
 class SecurityHit:
-    """One `security_master` row's answer: which security, whose canonical company, in which role and class, at what ratio."""
+    """One `universe_cusip` row's answer: which security, whose canonical company, in which role and class, at what ratio."""
 
     security_id: str
     canonical_company: str | None
@@ -173,31 +173,31 @@ class FilingScope:
 class Identity:
     """The lineage accessor and the tenure resolver, validated once per run at construction and then read-only."""
 
-    #: axis A: CIK -> entity_id, for the stored rows only. Absence means singleton.
+    #: axis A: CIK -> company_id, for the stored rows only. Absence means singleton.
     entity_by_cik: Mapping[str, str]
     #: universe ticker -> its roster CIK (10-digit).
     roster_cik: Mapping[str, str]
-    #: entity_id -> the one universe ticker on it.
+    #: company_id -> the one universe ticker on it.
     ticker_by_entity: Mapping[str, str]
-    #: axis B: symbol -> tuple of (entity_id, valid_from, valid_to, n_filings).
+    #: axis B: symbol -> tuple of (company_id, valid_from, valid_to, n_filings).
     tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Manual subset of axis B; an active manual row takes precedence over derived evidence.
     manual_tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Separately traded share classes deliberately absent from the modelling universe.
     redundant_symbols: frozenset[str]
-    #: entity_id -> every CIK on its `cik_window` / `cik_event` rows, plus a universe ticker's roster CIK.
+    #: company_id -> every CIK on its `cik_window` / `cik_event` rows, plus a universe ticker's roster CIK.
     event_ciks_by_entity: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    #: entity_id -> its seam-widened consolidating windows, oldest first.
+    #: company_id -> its seam-widened consolidating windows, oldest first.
     windows_by_entity: Mapping[str, tuple[CikWindow, ...]] = field(default_factory=dict)
     #: normalised symbol -> its stored `symbol` intervals.
     symbol_intervals: Mapping[str, tuple[SymbolInterval, ...]] = field(default_factory=dict)
-    #: entity_id -> the latest `scope_changed_at` on its CIK rows.
+    #: company_id -> the latest `scope_changed_at` on its CIK rows.
     scope_changed_at_by_entity: Mapping[str, pd.Timestamp] = field(default_factory=dict)
-    #: entity_id -> the latest `scope_changed_at` on its symbol rows (the symbol tapes' change stamp).
+    #: company_id -> the latest `scope_changed_at` on its symbol rows (the symbol tapes' change stamp).
     symbols_changed_at_by_entity: Mapping[str, pd.Timestamp] = field(default_factory=dict)
-    #: CUSIP-9 -> its dated `security_master` intervals.
+    #: CUSIP-9 -> its dated `universe_cusip` intervals.
     securities_by_cusip: Mapping[str, tuple[SecurityInterval, ...]] = field(default_factory=dict)
-    #: (source, squashed source symbol) -> its dated `security_master` intervals.
+    #: (source, squashed source symbol) -> its dated `universe_cusip` intervals.
     securities_by_symbol: Mapping[tuple[str, str], tuple[SecurityInterval, ...]] = field(default_factory=dict)
     #: Subsidiary CIKs filing event forms under the parent's symbol; their rows are not stored (D-Q2-1).
     co_registrant_ciks: frozenset[str] = frozenset()
@@ -205,7 +205,7 @@ class Identity:
     #: universe ticker -> the boundary days of its mergers (insider lineage).
     merger_boundaries: Mapping[str, tuple[MergerBoundary, ...]] = field(default_factory=dict)
 
-    # entity_lineage
+    # universe_cik_symbol
 
     def entity_of(self, cik) -> str:
         """The entity a CIK belongs to. A CIK with no stored row IS its own entity."""
@@ -443,9 +443,9 @@ def build_identity(
         co_registrant_ciks=frozenset(pad_cik(cik) for cik in co_registrant_ciks),
         merger_boundaries=_by_ticker(mergers),
         source_cohort={
-            Tables.entity_lineage: lineage.copy(),
+            Tables.universe_cik_symbol: lineage.copy(),
             Tables.symbol_tenure: tenure.copy(),
-            Tables.security_master: master.copy() if master is not None else pd.DataFrame(),
+            Tables.universe_cusip: master.copy() if master is not None else pd.DataFrame(),
         },
     )
     _log_identity(identity)
@@ -456,7 +456,7 @@ def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster_cik: Map
     """Raise when any of the three mandatory identity inputs is missing or empty."""
     if lineage is None or lineage.empty:
         raise IdentityError(
-            "identity: `entity_lineage` is empty. That is a LOUD failure and not an empty "
+            "identity: `universe_cik_symbol` is empty. That is a LOUD failure and not an empty "
             "map: every universe ticker would fall back to a singleton entity, `owns()` "
             "would reject every predecessor row in the panel, and nothing would raise. Run "
             "`identity` first. (`load_registrants` returning {} is a different case "
@@ -473,14 +473,14 @@ def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster_cik: Map
 
 
 def _ticker_by_entity(roster_cik: Mapping[str, str], entity_by_cik: Mapping[str, str], lineage: pd.DataFrame) -> dict[str, str]:
-    """`{entity_id: its one universe ticker}`; raises when an entity holds two universe tickers."""
+    """`{company_id: its one universe ticker}`; raises when an entity holds two universe tickers."""
     by_entity: dict[str, list[str]] = {}
     for ticker, cik in sorted(roster_cik.items()):
         by_entity.setdefault(entity_or_singleton(entity_by_cik, cik), []).append(ticker)
     collisions = {e: t for e, t in by_entity.items() if len(t) > 1}
     if not collisions:
         return {entity: tickers[0] for entity, tickers in by_entity.items()}
-    entities = lineage["entity_id"].astype(str)
+    entities = lineage["company_id"].astype(str)
     detail = []
     for entity, tickers in sorted(collisions.items()):
         joined = lineage[entities == entity]
@@ -527,7 +527,7 @@ def _tenure_maps(tenure: pd.DataFrame, entity_by_cik: Mapping[str, str]) -> tupl
 
 
 def _tenure_evidence(tenure: pd.DataFrame) -> pd.DataFrame:
-    """The tenure rows the resolver reads: every source except `dei`, which reaches identity through `entity_lineage`."""
+    """The tenure rows the resolver reads: every source except `dei`, which reaches identity through `universe_cik_symbol`."""
     if "source" not in tenure.columns:
         return tenure
     return tenure[tenure["source"].astype(str).str.strip().str.lower().ne(DEI_SOURCE)]
@@ -557,7 +557,7 @@ def _cik_scopes(
     rows = lineage[roles.isin((ROLE_WINDOW, ROLE_EVENT))]
     roles = roles[rows.index]
     ciks = pad_cik_series(rows["cik"])
-    entities = rows["entity_id"].astype(str)
+    entities = rows["company_id"].astype(str)
     event: dict[str, set[str]] = {}
     declared: dict[str, list[tuple[str, pd.Timestamp | None, pd.Timestamp | None]]] = {}
     for cik, entity in zip(ciks, entities, strict=True):
@@ -588,7 +588,7 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
     ciks = pad_cik_series(rows["cik"]) if "cik" in rows.columns else pd.Series("", index=rows.index)
     for symbol, entity, start, end, status, sources, cik in zip(
         rows["symbol"].astype(str),
-        rows["entity_id"].astype(str),
+        rows["company_id"].astype(str),
         rows["valid_from"],
         _column(rows, "valid_to"),
         _column(rows, "status").fillna("").astype(str),
@@ -603,7 +603,7 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
 
 
 def _security_maps(master: pd.DataFrame | None) -> dict[str, Any]:
-    """`securities_by_cusip` and `securities_by_symbol` from `security_master` rows (newest interval first)."""
+    """`securities_by_cusip` and `securities_by_symbol` from `universe_cusip` rows (newest interval first)."""
     if master is None or master.empty:
         return {}
     by_cusip: dict[str, list[SecurityInterval]] = {}
@@ -632,12 +632,12 @@ def _by_ticker(mergers: Collection[MergerBoundary]) -> dict[str, tuple[MergerBou
 
 
 def _scope_changed_at(lineage: pd.DataFrame, *, symbols: bool) -> dict[str, pd.Timestamp]:
-    """`{entity_id: latest scope_changed_at}` over its symbol rows (`symbols`) or its CIK rows."""
+    """`{company_id: latest scope_changed_at}` over its symbol rows (`symbols`) or its CIK rows."""
     if "scope_changed_at" not in lineage.columns:
         return {}
     rows = lineage[_roles(lineage).eq(ROLE_SYMBOL) == symbols]
     stamps = pd.to_datetime(rows["scope_changed_at"], errors="coerce")
-    latest = stamps.groupby(rows["entity_id"].astype(str)).max().dropna()
+    latest = stamps.groupby(rows["company_id"].astype(str)).max().dropna()
     return {str(entity): pd.Timestamp(value) for entity, value in latest.items()}
 
 
@@ -663,13 +663,13 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     cached = getattr(context, "_identity_resolver", None)
     if not refresh and isinstance(cached, Identity):
         return cached
-    lineage = context.store.load(Tables.entity_lineage, project=True)
+    lineage = context.store.load(Tables.universe_cik_symbol, project=True)
     tenure = context.store.load(
         Tables.symbol_tenure,
         columns=list(Tables.symbol_tenure.read_columns),
         where={"source": [*TENURE_SOURCES, DEI_SOURCE]},
     )
-    master = context.store.load(Tables.security_master, project=True, optional=True)
+    master = context.store.load(Tables.universe_cusip, project=True, optional=True)
     assert lineage is not None and tenure is not None
     evidence = tenure.loc[tenure["source"].isin((FORM345_SOURCE, DEI_SOURCE)), ["issuer_cik", "source", "valid_from", "valid_to"]]
     manual = load_security_manual(str(context.config_dir))
@@ -684,9 +684,9 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     )
     context._identity_resolver = identity
     cohort = {
-        Tables.entity_lineage: lineage,
+        Tables.universe_cik_symbol: lineage,
         Tables.symbol_tenure: tenure,
-        Tables.security_master: master if master is not None else pd.DataFrame(),
+        Tables.universe_cusip: master if master is not None else pd.DataFrame(),
     }
     identity.source_cohort.update(cohort)
     return identity

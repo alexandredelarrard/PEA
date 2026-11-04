@@ -26,7 +26,7 @@ from tests.support.universe import as_roster, seed_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 BUILT_AT = pd.Timestamp("2026-10-04 12:00:00")
-LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
+LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -34,7 +34,7 @@ LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "va
 
 def _row(ticker: str, entity_cik: str, cik: str, role: str, symbol: str = "", vf: str | None = None, vt: str | None = None, **kw: str) -> dict:
     return {
-        "entity_id": f"E{entity_cik}",
+        "company_id": f"E{entity_cik}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -1041,9 +1041,9 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
@@ -1243,9 +1243,9 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],

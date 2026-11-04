@@ -173,7 +173,7 @@ def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config
 
 @cli.command(
     name="identity",
-    help="Foreign rows per filer-CIK table, entity_lineage invariants and the identity items needing a manual decision.",
+    help="Foreign rows per filer-CIK table, universe_cik_symbol invariants and the identity items needing a manual decision.",
 )
 @click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))

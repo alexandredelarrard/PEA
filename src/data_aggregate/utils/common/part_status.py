@@ -104,7 +104,7 @@ def part_status_report(context: Context) -> dict[str, Any]:
         Tables.prices.name: {
             "max_date": reference,
             "ok": reference is not None,
-            "refresh_command": "price-history (universe if tickers_universe is absent)",
+            "refresh_command": "price-history (universe if universe_tickers is absent)",
         },
         Tables.cube_part_institutionals.name: {"insider_transactions": insider_status},
     }

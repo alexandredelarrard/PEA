@@ -1,5 +1,5 @@
 """The predecessor vendor series of a ticker set: the cited `vendor_series_overrides` of `security_master_manual.json`
-plus the `sharadar_tickers` rows whose `secfilings` CIK owns a closed register window in `entity_lineage`.
+plus the `sharadar_tickers` rows whose `secfilings` CIK owns a closed register window in `universe_cik_symbol`.
 
 Shared by the Sharadar fetch and merge, the cube's level factor and the validate price panel.
 """
@@ -53,10 +53,10 @@ def with_overrides(derived: Iterable[PredecessorSeries], declared: tuple[Predece
 
 def _register_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:
     """The register-derived predecessor series; none before the dated lineage exists."""
-    if "role" not in context.store.columns(Tables.entity_lineage):
+    if "role" not in context.store.columns(Tables.universe_cik_symbol):
         return ()
     lineage = context.store.load(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         columns=["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"],
         where={"role": "cik_window"},
         optional=True,

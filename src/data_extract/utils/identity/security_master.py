@@ -1,6 +1,6 @@
 """Security master: which security a market-tape line is, its issuer CIK, class and lineage role, dated.
 
-`derive_security_master` is pure: FTD lines, `entity_lineage`, the roster, the `sec_company_tickers` snapshot
+`derive_security_master` is pure: FTD lines, `universe_cik_symbol`, the roster, the `sec_company_tickers` snapshot
 and `configs/sec/security_master_manual.json` in; table rows and flags out. The issuer of each CUSIP-9 comes
 from lineage symbol-interval votes (inherited across a CUSIP-6 within the voters' era), the class needs
 positive evidence, and the role follows the issuer CIK's lineage window: one canonical line per company
@@ -402,7 +402,7 @@ def _lineage_view(lineage: pd.DataFrame, roster_cik: Mapping[str, str]) -> _Line
     for cik in roster_cik.values():
         windows.setdefault(cik, [(_NEAR, _FAR)])
     symbols = rows[rows["role"].eq(ROLE_SYMBOL)]
-    symbols_by_entity = symbols.groupby("entity_id")["symbol"].agg(lambda s: frozenset(map(str, s))).to_dict()
+    symbols_by_entity = symbols.groupby("company_id")["symbol"].agg(lambda s: frozenset(map(str, s))).to_dict()
     return _Lineage(
         entity_by_cik=entity_by_cik,
         ticker_by_entity=ticker_by_entity,
@@ -1326,7 +1326,7 @@ def derive_security_master(
     co_registrant_ciks: Collection[str] = (),
     existing: pd.DataFrame | None = None,
 ) -> MasterBuild:
-    """Pure derivation of `security_master`; deterministic for fixed inputs and `built_at`, no DB, no network.
+    """Pure derivation of `universe_cusip`; deterministic for fixed inputs and `built_at`, no DB, no network.
 
     `finra_presence` (`source_symbol`, `date`) are stored RegSHO days: trading evidence a line runs over.
     """
@@ -1435,15 +1435,15 @@ def _finra_presence(context: Context, spellings: list[str]) -> pd.DataFrame | No
 def build_security_master(
     context: Context, lineage: pd.DataFrame, config_dir: str | None = None, *, built_at: pd.Timestamp | None = None
 ) -> pd.DataFrame:
-    """Derive `security_master` from the stored FTD lines and the lineage just built; replace the table unless unchanged."""
+    """Derive `universe_cusip` from the stored FTD lines and the lineage just built; replace the table unless unchanged."""
     observations = context.store.load(Tables.sec_fails_to_deliver_security, columns=list(_OBSERVATION_COLUMNS), optional=True)
     if observations is None:
         context.log.warning(
-            "security_master: no stored FTD lines (run `zips-download --only ftd`, then `identity --only capture-ftd`); table left unchanged"
+            "universe_cusip: no stored FTD lines (run `zips-download --only ftd`, then `identity --only capture-ftd`); table left unchanged"
         )
         return pd.DataFrame(columns=list(TABLE_COLUMNS))
     sec_tickers = context.store.load(Tables.sec_company_tickers, project=True, optional=True)
-    existing = context.store.load(Tables.security_master, project=True, optional=True)
+    existing = context.store.load(Tables.universe_cusip, project=True, optional=True)
     evidence = context.store.load(
         Tables.symbol_tenure, columns=["issuer_cik", "source", "valid_from", "valid_to"], where={"source": ["form345", DEI_SOURCE]}, optional=True
     )
@@ -1469,12 +1469,12 @@ def build_security_master(
     )
     rows = build.rows
     context.log.info(
-        f"security_master: {len(rows)} row(s) over {rows['security_id'].nunique()} CUSIP(s) and {rows['canonical_company'].nunique()} company(ies); "
+        f"universe_cusip: {len(rows)} row(s) over {rows['security_id'].nunique()} CUSIP(s) and {rows['canonical_company'].nunique()} company(ies); "
         f"roles {rows.groupby('lineage_role')['security_id'].nunique().to_dict()}; {len(co_registrants)} co-registrant CIK(s) not stored; "
         f"flags {build.flags['kind'].value_counts().sort_index().to_dict()}"
     )
     log_identity_flags(context.log, build.items)
-    unchanged = matches_stored(existing, rows, Tables.security_master)
-    written = 0 if unchanged else save_identity(context.store, Tables.security_master, rows)
-    context.log.info("security_master: unchanged; replace skipped" if unchanged else f"security_master: wrote {written} row(s)")
+    unchanged = matches_stored(existing, rows, Tables.universe_cusip)
+    written = 0 if unchanged else save_identity(context.store, Tables.universe_cusip, rows)
+    context.log.info("universe_cusip: unchanged; replace skipped" if unchanged else f"universe_cusip: wrote {written} row(s)")
     return rows

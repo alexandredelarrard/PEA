@@ -35,7 +35,7 @@ class _Context:
 
     @property
     def universe(self) -> Universe:
-        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        tickers = self.store.load(Tables.universe_tickers, columns=["ticker"])["ticker"].tolist()
         return Universe(self.store, universe_config(tickers))
 
 
@@ -94,12 +94,12 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
 
 def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any, monkeypatch: Any) -> None:
     sqlite_store.save(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         pd.DataFrame(
             [
                 {
                     "cik": "0000000100",
-                    "entity_id": "E0000000100",
+                    "company_id": "E0000000100",
                     "role": "cik_window",
                     "symbol": "",
                     "valid_from": "1900-01-01",
@@ -108,7 +108,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                 },
                 {
                     "cik": "0000000200",
-                    "entity_id": "E0000000100",
+                    "company_id": "E0000000100",
                     "role": "cik_window",
                     "symbol": "",
                     "valid_from": "2015-01-01",
@@ -117,7 +117,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                 },
                 {
                     "cik": "0000000900",
-                    "entity_id": "E0000000900",
+                    "company_id": "E0000000900",
                     "role": "cik_window",
                     "symbol": "",
                     "valid_from": "1900-01-01",
@@ -193,9 +193,9 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     assert len(evidence_reads) == 1 and set(evidence_reads[0]["source"]) == {"form345", "dei"}
     pd.testing.assert_frame_equal(projected.source_cohort[Tables.symbol_tenure], full_tenure)
     full = build_identity(
-        lineage=sqlite_store.load(Tables.entity_lineage, project=True),
+        lineage=sqlite_store.load(Tables.universe_cik_symbol, project=True),
         tenure=full_tenure,
-        roster_cik=as_roster(sqlite_store.load(Tables.tickers_universe, columns=["ticker", "cik"])),
+        roster_cik=as_roster(sqlite_store.load(Tables.universe_tickers, columns=["ticker", "cik"])),
         redundant_symbols=frozenset(),
     )
 

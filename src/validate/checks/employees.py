@@ -2,7 +2,7 @@
 basis switches and scope jumps in `fundamentals_employees`.
 
 Owned filings are the cached EDGAR quarterly index (Parquet under `DATA_STORE`, no network) listed through
-`entity_lineage` the way the fetcher lists annual forms: a CIK window's rows inside its seam-widened dates, the
+`universe_cik_symbol` the way the fetcher lists annual forms: a CIK window's rows inside its seam-widened dates, the
 roster CIK as one open window for an entity with none. A table still in the pre-component shape
 (`ticker, as_of, employees`) is read as totals; the checks that need the new columns are reported as skipped.
 """
@@ -245,7 +245,7 @@ def check_employees(
     lineage = _lineage(context)
     empty = pd.DataFrame()
     if lineage is None:
-        return EmployeesReport(CheckResult.abstained(CHECK, table, "entity_lineage is empty"), empty, empty, empty, empty, empty)
+        return EmployeesReport(CheckResult.abstained(CHECK, table, "universe_cik_symbol is empty"), empty, empty, empty, empty, empty)
     roster = roster[roster["ticker"].isin(tickers)] if tickers else roster
     scope = sorted(roster["ticker"])
     if "role" not in lineage.columns:

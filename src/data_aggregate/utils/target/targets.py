@@ -283,7 +283,7 @@ def _neutral_label(eps: pd.DataFrame, label: str, min_names: int, exposures: lis
     members than that on a day is simply not in that day's design -- no dummy, no forced group
     mean -- and the name still gets every other regressor. Without it, a group with one present
     member (1996's `Automobiles & Components` held only `F` until `TSLA`'s first target in 2010,
-    because `tickers_universe` carries CURRENT index membership only) has its whole residual
+    because `universe_tickers` carries CURRENT index membership only) has its whole residual
     absorbed by its own indicator column and ships as an exact 0.0.
     """
     y = _apply_label(eps, label, min_names)

@@ -1,5 +1,5 @@
 # universe.yml -- THE traded universe: the only hand-edited list of tickers.
-# `python -m src data_extract universe` syncs `tickers_universe` from it; every stage reads
+# `python -m src data_extract universe` syncs `universe_tickers` from it; every stage reads
 # `context.universe`. A ticker outside `tickers` is ignored everywhere.
 # `tickers`: ticker -> its GICS `sector` and GICS sub-industry (`industry`); the industry group is derived
 # from `src/utils/tickers_universe/vocabulary.py`. Adding a ticker = one line here.

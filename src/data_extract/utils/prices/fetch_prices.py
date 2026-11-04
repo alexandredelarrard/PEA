@@ -8,7 +8,7 @@ Daily OHLCV, cash dividends and share splits per equity ticker: `fetch_prices`, 
 Windows are planned by `resume.series_windows` from the tables' own rows. `download_ohlcv` is the
 shared chunked entry point (the macro fetcher calls it on the total-return basis). Market/macro
 series are not fetched here; they live in `prices_macro` (`fetch_macro.py`).
-`prices` holds the universe AND the current secondary share classes of its companies (`security_master` rows
+`prices` holds the universe AND the current secondary share classes of its companies (`universe_cusip` rows
 with role `secondary_class` and an open end: BRK-A, GOOG, LEN-B, ...), each under its own Yahoo symbol; every
 reader of `prices` filters on the universe. Dividends and splits are stored for the universe only.
 """
@@ -284,12 +284,12 @@ class YahooSession:
 
 
 def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str, str]:
-    """`{Yahoo symbol: canonical company}` of the companies' secondary classes that `security_master` holds as current.
+    """`{Yahoo symbol: canonical company}` of the companies' secondary classes that `universe_cusip` holds as current.
 
     A class whose every row has an end is no longer listed and is not fetched (yfinance has no history for it).
     """
     rows = context.store.load(
-        Tables.security_master,
+        Tables.universe_cusip,
         columns=["canonical_company", "market_symbol", "valid_to"],
         where={"lineage_role": SECONDARY_CLASS, "canonical_company": companies},
         optional=True,

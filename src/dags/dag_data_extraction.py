@@ -19,9 +19,9 @@ Flow: [sec_company_tickers, sharadar_tickers] -> universe_sync -> (fetchers, wit
 the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
 the night: `extraction_status` and `identity_check` run on ALL_DONE, so they start once every fetcher
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
-hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `tickers_universe`
+hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `universe_tickers`
 differs from `configs/universe.yml`. Identity stage: zips_download -> identity
-(captures, symbol_tenure + entity_lineage + security_master, propagation; offline) -> every task that reads
+(captures, symbol_tenure + universe_cik_symbol + universe_cusip, propagation; offline) -> every task that reads
 the lineage, the two zip ingests included (price_history waits for identity: it reads the master's current
 secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
@@ -87,7 +87,7 @@ def fetch(
     )
 
 
-# 0) universe (StepExtractUniverse) — the SEC and Sharadar ticker lists in parallel, then `tickers_universe` is
+# 0) universe (StepExtractUniverse) — the SEC and Sharadar ticker lists in parallel, then `universe_tickers` is
 #    synced from configs/universe.yml; every fetcher reads it, so a failed sync stops the night
 sec_company_tickers = fetch("universe --only sec-tickers", task_id="sec_company_tickers")
 sharadar_tickers = fetch("universe --only sharadar-tickers", task_id="sharadar_tickers")
@@ -103,7 +103,7 @@ price_history = fetch("price-history", trigger_rule=TriggerRule.ALL_DONE)  # the
 
 # 2) identity stage: cache the Form 3/4/5, Notes and FTD zips and snapshot SEC's current
 #    tickers (StepExtractZips download phase); then StepExtractIdentity offline: capture the Notes cover-page
-#    symbols and the raw in-scope FTD lines, build symbol_tenure + entity_lineage + security_master, and carry
+#    symbols and the raw in-scope FTD lines, build symbol_tenure + universe_cik_symbol + universe_cusip, and carry
 #    lineage changes into the stored rows
 zips_download = fetch("zips-download", pool="sec_bulk")
 identity = fetch("identity", trigger_rule=TriggerRule.ALL_DONE)  # builds offline from cached evidence

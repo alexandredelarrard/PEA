@@ -1,7 +1,7 @@
 """
 universe.py  (src/utils/tickers_universe/universe.py)
 -----------------------------------------------------
-`Universe`: the read-only view of `tickers_universe` every stage uses through `context.universe`.
+`Universe`: the read-only view of `universe_tickers` every stage uses through `context.universe`.
 
 It reads the table once, checks its ticker set equals `configs/universe.yml` and never writes;
 `sync.py` is the only writer. Values are stored clean (upper-case yfinance tickers, 10-digit
@@ -25,7 +25,7 @@ SYNC_COMMAND = "python -m src data_extract universe"
 
 
 class UniverseError(RuntimeError):
-    """`universe.yml` is invalid, `tickers_universe` is out of step with it, or a ticker is outside it."""
+    """`universe.yml` is invalid, `universe_tickers` is out of step with it, or a ticker is outside it."""
 
 
 def universe_config(config: DictConfig) -> tuple[list[str], dict[str, list[str]]]:
@@ -64,16 +64,16 @@ def universe_classification(config: DictConfig) -> pd.DataFrame:
 
 
 class Universe:
-    """The universe tickers and their `tickers_universe` row (name, CIK, CUSIPs, GICS, Sharadar categories)."""
+    """The universe tickers and their `universe_tickers` row (name, CIK, CUSIPs, GICS, Sharadar categories)."""
 
     def __init__(self, store: DataStore, config: DictConfig) -> None:
         self._tickers, aliases = universe_config(config)
-        frame = store.load(Tables.tickers_universe, optional=True)
+        frame = store.load(Tables.universe_tickers, optional=True)
         if frame is None:
-            raise UniverseError(f"{Tables.tickers_universe} is missing or empty: run `{SYNC_COMMAND}`")
+            raise UniverseError(f"{Tables.universe_tickers} is missing or empty: run `{SYNC_COMMAND}`")
         stale = sorted(set(frame["ticker"]) ^ set(self._tickers))
         if stale:
-            raise UniverseError(f"{Tables.tickers_universe} differs from configs/universe.yml on {stale}: run `{SYNC_COMMAND}`")
+            raise UniverseError(f"{Tables.universe_tickers} differs from configs/universe.yml on {stale}: run `{SYNC_COMMAND}`")
         self._frame = frame.sort_values("ticker").reset_index(drop=True)
         self._alias_owner = {alias: owner for owner, symbols in aliases.items() for alias in symbols}
 

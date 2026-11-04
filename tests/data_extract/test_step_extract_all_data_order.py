@@ -31,8 +31,8 @@ IDENTITY_STAGE = (
     "ftd_capture",
     "form345_scan",
     "symbol_tenure",
-    "entity_lineage",
-    "security_master",
+    "universe_cik_symbol",
+    "universe_cusip",
     "identity_refresh",
     "propagate",
 )
@@ -78,13 +78,13 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     lineage = object()
 
-    def entity_lineage(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset()):
+    def universe_cik_symbol(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset()):
         assert given_tenure is tenure and owner_pairs is scan.owner_pairs
-        return mark("entity_lineage", lineage)()
+        return mark("universe_cik_symbol", lineage)()
 
-    def security_master(context, given_lineage, config_dir):
+    def universe_cusip(context, given_lineage, config_dir):
         assert given_lineage is lineage, "the security master is derived from the lineage just built"
-        return mark("security_master")()
+        return mark("universe_cusip")()
 
     def refresh(context, refresh=False):
         assert refresh, "the identity stage must reload the resolver it just rebuilt"
@@ -98,8 +98,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
-    monkeypatch.setattr(identity_module, "build_entity_lineage", entity_lineage)
-    monkeypatch.setattr(identity_module, "build_security_master", security_master)
+    monkeypatch.setattr(identity_module, "build_entity_lineage", universe_cik_symbol)
+    monkeypatch.setattr(identity_module, "build_security_master", universe_cusip)
     monkeypatch.setattr(identity_module, "load_identity", refresh)
     monkeypatch.setattr(identity_module, "propagate_identity", propagate)
 
@@ -148,7 +148,7 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch, sqlite_store)
     print("  OK: decision-1 order; the LLM step is built after the EDGAR step; every consumer reads the propagated lineage")
 
 
-@pytest.mark.parametrize("boom", ["entity_lineage", "security_master", "propagate"])
+@pytest.mark.parametrize("boom", ["universe_cik_symbol", "universe_cusip", "propagate"])
 def test_identity_or_propagation_failure_stops_before_any_consumer(monkeypatch, sqlite_store, boom):
     order: list[str] = []
     with pytest.raises(RuntimeError, match=boom):

@@ -4,7 +4,7 @@ fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches
 the ZIPs; the identity step (`utils/identity/capture_ftd.py`) stores their in-scope source lines raw,
 per CUSIP, in `sec_fails_to_deliver_security`. `fetch_fails_to_deliver` stamps those lines from
-`security_master` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
+`universe_cusip` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
 `sec_fails_to_deliver`, its own table so its publication lag never moves `short_interest`'s frontier:
 per (ticker, settlement date) the sum over the canonical and secondary-class lines of quantity x
 conversion ratio, and of quantity x the file's PRICE (NULL when a summed line has no price). Values
@@ -73,7 +73,7 @@ SECURITY_COLUMNS = (
     "lineage_role",
     "security_class",
 )
-#: The `security_master` columns read for stamping.
+#: The `universe_cusip` columns read for stamping.
 _MASTER_COLUMNS = [
     "security_id",
     "canonical_company",
@@ -196,7 +196,7 @@ _HIT_COLUMNS = ["canonical_company", "lineage_role", "security_class", "conversi
 
 
 def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
-    """The FTD rows of `security_master`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
+    """The FTD rows of `universe_cusip`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
     rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
     out = rows.reindex(columns=_MASTER_COLUMNS).copy()
     out["market_symbol"] = out["market_symbol"].fillna(out["source_symbol"]).map(yahoo_symbol)
@@ -375,8 +375,8 @@ def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
 
 
 def load_fails_master(context: Context) -> pd.DataFrame | None:
-    """The stored `security_master` prepared for stamping; None before the first `identity` build."""
-    master = context.store.load(Tables.security_master, columns=[*_MASTER_COLUMNS, "source"], optional=True)
+    """The stored `universe_cusip` prepared for stamping; None before the first `identity` build."""
+    master = context.store.load(Tables.universe_cusip, columns=[*_MASTER_COLUMNS, "source"], optional=True)
     return None if master is None else prepare_master(master)
 
 
@@ -609,7 +609,7 @@ def restamp_fails(
     """
 
     cohort = load_source_identity(context.store) if identity is None else identity
-    master = prepare_master(cohort[Tables.security_master])
+    master = prepare_master(cohort[Tables.universe_cusip])
     if master.empty:
         return []
     if companies is None:
@@ -679,15 +679,15 @@ def ensure_ftd_zip(context: Context, cache: Path, period: str) -> Path | None:
 def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Cache the FTD ZIPs the identity capture reads; returns the ZIPs available.
 
-    Before the first `entity_lineage` build every listed period is cached (cold start); afterwards only the
+    Before the first `universe_cik_symbol` build every listed period is cached (cold start); afterwards only the
     periods the capture will read (`pending_ftd_periods`). Writes no table.
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     start_date = run_date(as_of)
-    if context.store.load(Tables.entity_lineage, columns=["entity_id"], limit=1, optional=True) is None:
+    if context.store.load(Tables.universe_cik_symbol, columns=["company_id"], limit=1, optional=True) is None:
         periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, start_date)))
         cached = [period for period in periods if ensure_ftd_zip(context, cache, period)]
-        logger.warning("FTD download: no entity_lineage yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
+        logger.warning("FTD download: no universe_cik_symbol yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
         return len(cached)
     pending = pending_ftd_periods(context, cache, years_history, full=full, as_of=start_date)
     return sum(ensure_ftd_zip(context, cache, period) is not None for period in tqdm(pending, desc="FTD download"))
@@ -701,15 +701,15 @@ def fetch_fails_to_deliver(
     *,
     identity: Identity | None = None,
 ) -> int:
-    """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
+    """Stamp the stored raw FTD lines from `universe_cusip` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
 
     Incremental runs reread or recover the complete originals for pending units and changed issuer scopes. `full`
     rebuilds both tables from every cached ZIP; a scoped (`-t`) run replaces only its guarded issuer source pairs.
     """
     cohort = identity.source_cohort if identity is not None else load_source_identity(context.store)
-    master = prepare_master(cohort[Tables.security_master]) if not cohort[Tables.security_master].empty else None
+    master = prepare_master(cohort[Tables.universe_cusip]) if not cohort[Tables.universe_cusip].empty else None
     if master is None or master.empty:
-        logger.warning("FTD: no security_master yet (run `identity` first); nothing stamped")
+        logger.warning("FTD: no universe_cusip yet (run `identity` first); nothing stamped")
         return 0
     basis = load_fails_basis(context, master)
     if full:
@@ -740,8 +740,8 @@ def _fails_candidate_scope(
     targets = owners if isinstance(owners, list | tuple | set | frozenset | pd.Series | pd.Index | np.ndarray) else [owners]
     cusips, symbols = set(), set()
     for spec, company, symbol in (
-        (Tables.security_master, "canonical_company", "source_symbol"),
-        (Tables.entity_lineage, "canonical_ticker", "symbol"),
+        (Tables.universe_cusip, "canonical_company", "source_symbol"),
+        (Tables.universe_cik_symbol, "canonical_ticker", "symbol"),
     ):
         df_rows = identity[spec]
         if company not in df_rows:
@@ -780,8 +780,8 @@ def _uncertain_fails_rows(df_raw: pd.DataFrame, identity: dict[Table, pd.DataFra
     """Retain relevant unresolved raw keys without treating NULL-to-NULL symbols as evidence."""
     pairs = []
     for table, company, symbol in (
-        (Tables.security_master, "canonical_company", "source_symbol"),
-        (Tables.entity_lineage, "canonical_ticker", "symbol"),
+        (Tables.universe_cusip, "canonical_company", "source_symbol"),
+        (Tables.universe_cik_symbol, "canonical_ticker", "symbol"),
     ):
         df_evidence = identity[table]
         if company not in df_evidence or symbol not in df_evidence:
@@ -810,7 +810,7 @@ def _owned_fails_rows(
     values = owners if isinstance(owners, list | tuple | set | frozenset | pd.Series | pd.Index | np.ndarray) else [owners]
     targets = pd.Series(list(values), dtype=object).dropna().tolist()
     df_unowned = df_scoped.loc[df_scoped["ticker"].isna()]
-    proved = _proved_fails_rows(df_unowned, identity[Tables.security_master], targets)
+    proved = _proved_fails_rows(df_unowned, identity[Tables.universe_cusip], targets)
     df_uncertain = _uncertain_fails_rows(df_unowned.loc[~df_unowned.index.isin(proved)], identity, targets)
     if "source_checked_at" in df_grain and not df_uncertain.empty:
         df_checked = df_grain.loc[df_grain["source_checked_at"].notna(), ["ticker", "date"]].copy()

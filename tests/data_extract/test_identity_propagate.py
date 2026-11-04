@@ -39,7 +39,7 @@ LOGGER = "test.identity_propagate"
 
 def _row(ticker: str, cik: str, role: str, *, symbol: str = "", start: str = SENTINEL, end: str | None = None, stamp=BEFORE, **extra) -> dict:
     return {
-        "entity_id": f"E{ROSTER[ticker]}",
+        "company_id": f"E{ROSTER[ticker]}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -298,8 +298,8 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     whatever their date; Prologis Inc's (the window) and its insider rows (UNION by policy) stay."""
     prologis, old_prologis = "0001045609", "0000899881"
     rows = [
-        {**_row("ALB", prologis, "cik_window", stamp=AFTER), "entity_id": "E-PLD", "canonical_ticker": "PLD"},
-        {**_row("ALB", old_prologis, "cik_event", stamp=AFTER), "entity_id": "E-PLD", "canonical_ticker": "PLD"},
+        {**_row("ALB", prologis, "cik_window", stamp=AFTER), "company_id": "E-PLD", "canonical_ticker": "PLD"},
+        {**_row("ALB", old_prologis, "cik_event", stamp=AFTER), "company_id": "E-PLD", "canonical_ticker": "PLD"},
     ]
     tenure = pd.DataFrame(
         [{"symbol": "PLD", "issuer_cik": prologis, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}]
@@ -405,7 +405,7 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
 def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
     """Short volume is no purge table: companies whose master rows changed recently are re-stamped from stored rows."""
     context = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER}))
+    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER}))
     sqlite_store.save(
         Tables.sec_short_volume_security,
         pd.DataFrame({"date": pd.to_datetime(["2024-02-01"]), "source_symbol": ["ALB"], "short_volume": [1.0], "ticker": ["ALB"]}),
@@ -478,7 +478,7 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
         }
     )
     sqlite_store.save(Tables.sec_fails_to_deliver, stored)
-    sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
+    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
     monkeypatch.setattr(prop, "load_identity", lambda context: _identity({}))
     originals = {
         "201203a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20120301|000000OL1|OLD|10|X|1.0\n",
@@ -511,7 +511,7 @@ def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path,
         period="202402a", security_id="C000000AL1", ticker="ALB", lineage_role=sm.CANONICAL_CURRENT, security_class="common"
     )
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
-    sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
+    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
     identity = _identity({})
     monkeypatch.setattr(prop, "load_identity", lambda context: identity)
 
@@ -520,7 +520,7 @@ def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path,
     assert stubs["ftd"] == [["ALB", "MSFT"]]
     assert stubs["notes"] == stubs["insider"] == []
     print("\n=== SANITY CHECK: master stamp ===")
-    print("  security_master rows carry their own change stamp: FTD re-stamped for ALB and MSFT, no CIK family re-parsed")
+    print("  universe_cusip rows carry their own change stamp: FTD re-stamped for ALB and MSFT, no CIK family re-parsed")
 
 
 def _history(ticker: str, dates: list, revenue: float) -> TickerHistory:

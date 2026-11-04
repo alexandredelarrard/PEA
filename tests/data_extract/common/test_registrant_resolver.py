@@ -1,6 +1,6 @@
 """`resolve_registrant_filings` -- which CIKs a ticker's filings are listed from, and how they combine.
 
-Listing reads only the ticker's `FilingScope` (`entity_lineage`): insider forms UNION every event CIK,
+Listing reads only the ticker's `FilingScope` (`universe_cik_symbol`): insider forms UNION every event CIK,
 every other form (8-Ks and schedules too, P35) SPLITs by the CIK windows, widened 31 days at a seam. No symbol, current or
 historical, ever reaches `edgar.Company`: a reused symbol resolves to whoever holds it TODAY, which is
 how ~1,750 foreign 8-Ks reached `sec_8k`. A filing whose CIK is outside the listed CIKs is skipped and

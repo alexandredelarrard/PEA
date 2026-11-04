@@ -71,7 +71,7 @@ def _lineage() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "entity_id": f"E-{t}",
+                "company_id": f"E-{t}",
                 "canonical_ticker": t,
                 "cik": c,
                 "role": "cik_window",
@@ -120,7 +120,7 @@ def _arq(ticker: str, labels: list[str], **values: float) -> pd.DataFrame:
 def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list[tuple[str, str, float]]) -> FakeStore:
     return FakeStore(
         {
-            Tables.entity_lineage: _lineage(),
+            Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
             Tables.sharadar_fundamentals: vendor,
             Tables.sharadar_actions: pd.DataFrame(
@@ -329,7 +329,7 @@ def _jci_store() -> FakeStore:
     )
     return FakeStore(
         {
-            Tables.entity_lineage: _lineage(),
+            Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
             Tables.sharadar_fundamentals: pd.concat([canonical, _tyc()], ignore_index=True),
             Tables.sharadar_actions: pd.DataFrame(

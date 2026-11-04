@@ -1,4 +1,4 @@
-"""Dated `entity_lineage` fixtures for listing tests: a real `Identity` built from hand-written CIK rows."""
+"""Dated `universe_cik_symbol` fixtures for listing tests: a real `Identity` built from hand-written CIK rows."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def dated_identity(
     lineage = pd.DataFrame(
         [
             {
-                "entity_id": entity_of[ticker],
+                "company_id": entity_of[ticker],
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,
@@ -79,7 +79,7 @@ def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant:
     windows = [
         {
             **base,
-            "entity_id": entity_of[t],
+            "company_id": entity_of[t],
             "canonical_ticker": t,
             "cik": c,
             "role": "cik_window",
@@ -93,7 +93,7 @@ def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant:
     symbols = [
         {
             **base,
-            "entity_id": entity_of[t],
+            "company_id": entity_of[t],
             "canonical_ticker": t,
             "cik": c,
             "role": "symbol",

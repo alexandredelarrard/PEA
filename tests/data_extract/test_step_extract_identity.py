@@ -123,7 +123,7 @@ def test_options_reach_the_propagation_and_the_lineage_build(monkeypatch: pytest
 
 def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """D-15: `identity` (no lineage: the FTD capture is a no-op) -> `identity --only capture-ftd -F` -> `identity --only master`."""
-    tables = [Tables.entity_lineage, Tables.security_master, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver, Tables.symbol_tenure]
+    tables = [Tables.universe_cik_symbol, Tables.universe_cusip, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver, Tables.symbol_tenure]
     create_canonical(sqlite_store.engine, tables)
     context, config = _context(sqlite_store, tmp_path), _config()
     raw_by_period = {"201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|999999ZZZ|ZZZ|9|OTHER CO|3.0\n"}
@@ -136,7 +136,7 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(
         module,
         "build_entity_lineage",
-        lambda ctx, *args, **kwargs: (sqlite_store.replace(Tables.entity_lineage, _scope_lineage()), _scope_lineage())[1],
+        lambda ctx, *args, **kwargs: (sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage()), _scope_lineage())[1],
     )
     masters: list[tuple[pd.DataFrame, int]] = []
 
@@ -160,7 +160,7 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     result = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "master"])
     assert result.exit_code == 0, result.output
     lineage, n_lines = masters[-1]
-    assert n_lines == 1 and set(lineage["entity_id"]) == {"E0000000777"}
+    assert n_lines == 1 and set(lineage["company_id"]) == {"E0000000777"}
     assert pd.api.types.is_datetime64_any_dtype(lineage["valid_from"]), "a lone master stage reads the stored lineage with dates parsed"
 
     print("\n=== SANITY CHECK: D-15 cold start ===")

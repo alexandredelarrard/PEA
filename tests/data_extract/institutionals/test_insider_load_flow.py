@@ -199,7 +199,7 @@ def identity() -> Identity:
             [
                 {
                     "cik": AAA_CIK,
-                    "entity_id": "E0000000001",
+                    "company_id": "E0000000001",
                     "canonical_ticker": "AAA",
                     "role": "cik_window",
                     "symbol": "",
@@ -233,9 +233,9 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
     create_canonical(
         store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
@@ -461,7 +461,7 @@ def identity_two() -> Identity:
             [
                 {
                     "cik": cik,
-                    "entity_id": f"E{cik}",
+                    "company_id": f"E{cik}",
                     "canonical_ticker": symbol,
                     "role": "cik_window",
                     "symbol": "",

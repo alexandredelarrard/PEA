@@ -3,7 +3,7 @@ fetch_short_interest.py (src/data_extract/utils/institutionals/fetch_short_inter
 ---------------------------------------------------------------------------------
 FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files; not reported short interest).
 Each day-file line is stored raw in `sec_short_volume_security`, keyed on the symbol as filed and stamped
-from `security_master`: the FINRA symbol is read before upper-casing (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`,
+from `universe_cusip`: the FINRA symbol is read before upper-casing (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`,
 the FTD spelling) and resolved on its trade date with `Identity.security_on`; a symbol never seen in FTD maps
 only through a lineage window CIK inside its window (P21). The ticker-grain `short_interest` is rebuilt from
 those rows: per (ticker, date) the sum over the canonical and secondary-class lines of volume x conversion
@@ -111,7 +111,7 @@ def _parse_regsho(text: str) -> pd.DataFrame:
 
 
 def finra_key(symbol: str) -> str:
-    """The FTD spelling of a FINRA symbol, the key `security_master` rows are found by (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`)."""
+    """The FTD spelling of a FINRA symbol, the key `universe_cusip` rows are found by (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`)."""
     return squash("".join(_MARKER_SPELLING.get(char, char) for char in str(symbol)))
 
 

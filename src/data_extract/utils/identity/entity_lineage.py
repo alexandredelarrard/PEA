@@ -1,4 +1,4 @@
-"""Ticker identity: which CIKs and symbols belong to one economic company, and when (`entity_lineage`).
+"""Ticker identity: which CIKs and symbols belong to one economic company, and when (`universe_cik_symbol`).
 
 `symbol_tenure` holds the raw evidence; this table is the dated verdict. Membership oracles, highest
 priority first: `register` (`registrant_cutover.json`), `manual` (`entity_lineage_manual.json`),
@@ -78,9 +78,9 @@ SWITCH_TOLERANCE_DAYS = 31
 #: D3 automatic CIK windows (P36): on; a register entry always wins and every automatic chain is listed in `validate identity`.
 AUTO_WINDOWS_ENABLED = True
 
-#: Column order of `entity_lineage`.
+#: Column order of `universe_cik_symbol`.
 TABLE_COLUMNS = (
-    "entity_id",
+    "company_id",
     "canonical_ticker",
     "cik",
     "role",
@@ -95,7 +95,7 @@ TABLE_COLUMNS = (
     "evidence",
     "scope_changed_at",
 )
-BACKLOG_COLUMNS = ("kind", "canonical_ticker", "entity_id", "cik", "symbol", "detail")
+BACKLOG_COLUMNS = ("kind", "canonical_ticker", "company_id", "cik", "symbol", "detail")
 #: Older-CIK exclusion passes before the build gives up excluding (each pass removes at least one CIK).
 _MAX_REKEY_PASSES = 10
 
@@ -105,7 +105,7 @@ class IdentityError(ValueError):
 
 
 class CikInTwoEntitiesError(IdentityError):
-    """One CIK carries two `entity_id`s; asserted by the build, since the PK no longer guarantees it."""
+    """One CIK carries two `company_id`s; asserted by the build, since the PK no longer guarantees it."""
 
 
 class UniverseEntityDisagreementError(IdentityError):
@@ -152,7 +152,7 @@ class _Union:
         if len(self.roster_members(a) | self.roster_members(b)) > 1:
             self.blocked.append((a, b, source, confidence))
             return False
-        # The oldest CIK roots the group, so `entity_id` is stable under merge order.
+        # The oldest CIK roots the group, so `company_id` is stable under merge order.
         older, newer = sorted((root_a, root_b))
         self.parent[newer] = older
         return True
@@ -179,18 +179,18 @@ def entity_or_singleton(entity_by_cik: Mapping[str, str], cik: str) -> str:
 
 
 def entity_by_cik_map(lineage: pd.DataFrame) -> dict[str, str]:
-    """`{padded cik: entity_id}` from `entity_lineage` rows (several rows per CIK share one entity)."""
-    return dict(zip(pad_cik_series(lineage["cik"]), lineage["entity_id"].astype(str), strict=False))
+    """`{padded cik: company_id}` from `universe_cik_symbol` rows (several rows per CIK share one entity)."""
+    return dict(zip(pad_cik_series(lineage["cik"]), lineage["company_id"].astype(str), strict=False))
 
 
 def check_one_entity_per_cik(lineage: pd.DataFrame) -> None:
     """Raise `CikInTwoEntitiesError` when one CIK carries two entity_ids, which would make `entity_of` order-dependent."""
-    per_cik = pd.DataFrame({"cik": pad_cik_series(lineage["cik"]), "entity_id": lineage["entity_id"].astype(str)}).drop_duplicates()
+    per_cik = pd.DataFrame({"cik": pad_cik_series(lineage["cik"]), "company_id": lineage["company_id"].astype(str)}).drop_duplicates()
     clashes = per_cik[per_cik.duplicated("cik", keep=False)]
     if not clashes.empty:
         raise CikInTwoEntitiesError(
             f"identity: {clashes['cik'].nunique()} CIK(s) carry two entity_ids in "
-            f"entity_lineage -- {clashes.sort_values(['cik', 'entity_id']).to_dict('records')}. One CIK "
+            f"universe_cik_symbol -- {clashes.sort_values(['cik', 'company_id']).to_dict('records')}. One CIK "
             "belongs to one entity; two would make `entity_of` order-dependent."
         )
 
@@ -259,7 +259,7 @@ def derive_owner_sets(owner_pairs: pd.DataFrame, ciks: frozenset[str]) -> dict[s
     for issuer, issuer_owner_ciks in owner_ciks.groupby(df_matched["issuer_cik"], sort=False):
         owners[str(issuer)].update(issuer_owner_ciks)
     logger.info(
-        "entity_lineage: owner sets for %d CIK(s) (%d distinct issuer-owner pair(s) matched); %d CIK(s) have no Form 345 owner at all",
+        "universe_cik_symbol: owner sets for %d CIK(s) (%d distinct issuer-owner pair(s) matched); %d CIK(s) have no Form 345 owner at all",
         len(ciks),
         len(df_matched),
         sum(1 for v in owners.values() if not v),
@@ -318,15 +318,15 @@ def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame,
 
 def detect_older_cik_rekeys(existing: pd.DataFrame, candidate: pd.DataFrame) -> list[dict[str, Any]]:
     """Return stable-group ID changes caused by a newly joined numerically older CIK."""
-    old = existing[["cik", "entity_id"]].drop_duplicates().copy()
-    new = candidate[["cik", "entity_id"]].drop_duplicates().copy()
+    old = existing[["cik", "company_id"]].drop_duplicates().copy()
+    new = candidate[["cik", "company_id"]].drop_duplicates().copy()
     old["cik"] = pad_cik_series(old["cik"])
     new["cik"] = pad_cik_series(new["cik"])
-    old_map = dict(zip(old["cik"], old["entity_id"].astype(str), strict=False))
-    new_map = dict(zip(new["cik"], new["entity_id"].astype(str), strict=False))
-    new_members = {str(entity): list(members) for entity, members in new.groupby("entity_id")["cik"].agg(lambda values: sorted(set(values))).items()}
+    old_map = dict(zip(old["cik"], old["company_id"].astype(str), strict=False))
+    new_map = dict(zip(new["cik"], new["company_id"].astype(str), strict=False))
+    new_members = {str(entity): list(members) for entity, members in new.groupby("company_id")["cik"].agg(lambda values: sorted(set(values))).items()}
     impacts: list[dict[str, Any]] = []
-    for old_entity_value, group in old.groupby("entity_id", sort=True):
+    for old_entity_value, group in old.groupby("company_id", sort=True):
         old_entity = str(old_entity_value)
         members = sorted(set(group["cik"]))
         mapped = {new_map[cik] for cik in members if cik in new_map}
@@ -618,7 +618,7 @@ def _apply_owner_overlap(
 # The build
 @dataclass(frozen=True)
 class LineageBuild:
-    """`rows` for `entity_lineage`, plus what the build refused, excluded or measured."""
+    """`rows` for `universe_cik_symbol`, plus what the build refused, excluded or measured."""
 
     rows: pd.DataFrame
     blocked: pd.DataFrame
@@ -638,7 +638,7 @@ def derive_entity_lineage(
     approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
     built_at: pd.Timestamp | None = None,
 ) -> LineageBuild:
-    """The dated `entity_lineage` rows from `form345`/`manual` tenure, collapsed `dei` rows, the roster and owner pairs.
+    """The dated `universe_cik_symbol` rows from `form345`/`manual` tenure, collapsed `dei` rows, the roster and owner pairs.
 
     Pure: no DB, no network. `existing` (the stored table) drives the older-CIK rekey exclusion and
     `scope_changed_at`; `built_at` pins the change timestamp. Raises only on a D19 disagreement or a
@@ -688,14 +688,14 @@ def _unapproved_rekey_ciks(
     existing: pd.DataFrame | None, entity_of: Mapping[str, str], approved: frozenset[tuple[str, str]], backlog: list[dict[str, Any]]
 ) -> frozenset[str]:
     """The older CIKs whose join would rename a stored entity without approval; each is backlogged."""
-    if existing is None or existing.empty or not {"cik", "entity_id"} <= set(existing.columns):
+    if existing is None or existing.empty or not {"cik", "company_id"} <= set(existing.columns):
         return frozenset()
-    candidate = pd.DataFrame({"cik": list(entity_of), "entity_id": list(entity_of.values())})
+    candidate = pd.DataFrame({"cik": list(entity_of), "company_id": list(entity_of.values())})
     newly: set[str] = set()
     for impact in detect_older_cik_rekeys(existing, candidate):
         pair = (str(impact["old_entity_id"]), str(impact["new_entity_id"]))
         if pair in approved:
-            logger.warning("entity_lineage: applying explicitly approved older-CIK rekey %s -> %s", *pair)
+            logger.warning("universe_cik_symbol: applying explicitly approved older-CIK rekey %s -> %s", *pair)
             continue
         older = [str(cik) for cik in impact["new_older_ciks"]]
         newly.update(older)
@@ -704,7 +704,7 @@ def _unapproved_rekey_ciks(
                 {
                     "kind": "rekey",
                     "canonical_ticker": None,
-                    "entity_id": pair[0],
+                    "company_id": pair[0],
                     "cik": cik,
                     "symbol": "",
                     "detail": f"joining {cik} would rename {pair[0]} -> {pair[1]}; excluded (approve with --approve-rekey {pair[0]}:{pair[1]})",
@@ -721,7 +721,7 @@ def _grey_backlog(
         {
             "kind": "grey_band",
             "canonical_ticker": ticker,
-            "entity_id": entity_of.get(home, f"E{home}"),
+            "company_id": entity_of.get(home, f"E{home}"),
             "cik": cik,
             "symbol": ticker,
             "detail": f"owner overlap with {home}: shared={shared}, jaccard={jaccard:.3f}; excluded until curated",
@@ -783,8 +783,8 @@ def _symbol_holders(
         by_symbol.setdefault(str(row["symbol"]), []).append(row)
     out = [row for symbol in sorted(by_symbol) for row in _classify_symbol(by_symbol[symbol], entity_of)]
     frame = pd.DataFrame(out).drop(columns=["entity", "curated", "roster"])
-    frame["entity_id"] = [entity_of.get(cik, f"E{cik}") for cik in frame["cik"]]
-    frame["canonical_ticker"] = frame["entity_id"].map(ticker_by_entity)
+    frame["company_id"] = [entity_of.get(cik, f"E{cik}") for cik in frame["cik"]]
+    frame["canonical_ticker"] = frame["company_id"].map(ticker_by_entity)
     frame["valid_from"] = pd.to_datetime(frame["valid_from"])
     frame["valid_to"] = pd.to_datetime(frame["valid_to"])
     return frame.sort_values(["symbol", "valid_from", "cik"], kind="mergesort", ignore_index=True)
@@ -992,7 +992,7 @@ def _cik_rows(
                 window_end[cik] = end
             rows.append(
                 {
-                    "entity_id": entity,
+                    "company_id": entity,
                     "canonical_ticker": ticker,
                     "cik": cik,
                     "role": role,
@@ -1072,7 +1072,7 @@ def _entity_windows(
             {
                 "kind": "multi_cik_no_window",
                 "canonical_ticker": ticker,
-                "entity_id": entity,
+                "company_id": entity,
                 "cik": ",".join(uncurated),
                 "symbol": "",
                 "detail": ("automatic windows disabled" if chain is not None else f"abstained: {note}")
@@ -1091,13 +1091,13 @@ def _conflict_backlog(symbol_rows: pd.DataFrame) -> list[dict[str, Any]]:
         {
             "kind": "conflict",
             "canonical_ticker": ticker,
-            "entity_id": entity,
+            "company_id": entity,
             "cik": cik,
             "symbol": symbol,
             "detail": f"{symbol} held by another entity within {REUSE_GAP_DAYS} days of {start}..{end}",
         }
         for ticker, entity, cik, symbol, start, end in zip(
-            conflicts["canonical_ticker"], conflicts["entity_id"], conflicts["cik"], conflicts["symbol"], starts, ends, strict=True
+            conflicts["canonical_ticker"], conflicts["company_id"], conflicts["cik"], conflicts["symbol"], starts, ends, strict=True
         )
     ]
 
@@ -1113,12 +1113,12 @@ def _finalise(rows: pd.DataFrame, existing: pd.DataFrame | None, stamp: pd.Times
     out["n_observations"] = out["n_observations"].astype("int64")
     out["canonical_ticker"] = out["canonical_ticker"].astype(object).where(out["canonical_ticker"].notna(), None)
     out["scope_changed_at"] = _scope_changed_at(out, existing, stamp)
-    return out[list(TABLE_COLUMNS)].sort_values(["entity_id", "role", "cik", "symbol", "valid_from"], kind="mergesort", ignore_index=True)
+    return out[list(TABLE_COLUMNS)].sort_values(["company_id", "role", "cik", "symbol", "valid_from"], kind="mergesort", ignore_index=True)
 
 
 def _scope_key(frame: pd.DataFrame) -> pd.Series:
     """Per-row scope key: the canonical ticker, else the entity id."""
-    return frame["canonical_ticker"].where(frame["canonical_ticker"].notna(), frame["entity_id"]).astype(str)
+    return frame["canonical_ticker"].where(frame["canonical_ticker"].notna(), frame["company_id"]).astype(str)
 
 
 def _stamp_group(frame: pd.DataFrame) -> pd.Series:
@@ -1186,11 +1186,11 @@ def _log_build(membership: _Membership, build: LineageBuild, n_candidates: int, 
     rows = build.rows
     symbol_rows = rows[rows["role"].eq(ROLE_SYMBOL)]
     logger.info(
-        "entity_lineage: %d candidate CIK(s) -> %d row(s) over %d entity(ies); roles %s; symbol statuses %s; "
+        "universe_cik_symbol: %d candidate CIK(s) -> %d row(s) over %d entity(ies); roles %s; symbol statuses %s; "
         "owner-overlap verdicts %s; %d symbol handoff join(s); automatic windows %s; %d merge(s) BLOCKED as two-universe-tickers",
         n_candidates,
         len(rows),
-        rows["entity_id"].nunique(),
+        rows["company_id"].nunique(),
         dict(rows["role"].value_counts().sort_index()),
         dict(symbol_rows["status"].value_counts().sort_index()),
         dict(membership.verdicts),
@@ -1199,16 +1199,16 @@ def _log_build(membership: _Membership, build: LineageBuild, n_candidates: int, 
         len(build.blocked),
     )
     if excluded:
-        logger.warning("entity_lineage: %d older CIK(s) excluded to keep stored entity ids: %s", len(excluded), ", ".join(sorted(excluded)))
+        logger.warning("universe_cik_symbol: %d older CIK(s) excluded to keep stored entity ids: %s", len(excluded), ", ".join(sorted(excluded)))
     if not build.backlog.empty:
         logger.warning(
-            "entity_lineage: curation backlog %d item(s) %s (excluded or undecided, not applied):\n%s",
+            "universe_cik_symbol: curation backlog %d item(s) %s (excluded or undecided, not applied):\n%s",
             len(build.backlog),
             dict(build.backlog["kind"].value_counts().sort_index()),
             build.backlog.to_string(index=False),
         )
     else:
-        logger.info("entity_lineage: curation backlog 0 item(s)")
+        logger.info("universe_cik_symbol: curation backlog 0 item(s)")
 
 
 def build_entity_lineage(
@@ -1220,15 +1220,15 @@ def build_entity_lineage(
     approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
     built_at: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Derive `entity_lineage` from tenure, the stored `dei` evidence and owner pairs; replace the table unless unchanged.
+    """Derive `universe_cik_symbol` from tenure, the stored `dei` evidence and owner pairs; replace the table unless unchanged.
 
     An older-CIK rekey is excluded and backlogged unless its ``(old_entity_id, new_entity_id)`` pair is in
-    `approved_rekeys`. Logs the items needing a manual decision (the universe's alias share classes), reading tape-mix pairs against the stored `security_master`. Returns the derived rows.
+    `approved_rekeys`. Logs the items needing a manual decision (the universe's alias share classes), reading tape-mix pairs against the stored `universe_cusip`. Returns the derived rows.
     """
     roster_cik = context.universe.cik_by_ticker
-    existing = _stored_rows(context.store.load(Tables.entity_lineage, project=True, optional=True))
+    existing = _stored_rows(context.store.load(Tables.universe_cik_symbol, project=True, optional=True))
     dei_rows = context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
-    master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
+    master = context.store.load(Tables.universe_cusip, columns=list(MASTER_COLUMNS), optional=True)
     dei = collapse_dei_periods(dei_rows) if dei_rows is not None and not dei_rows.empty else None
     build = derive_entity_lineage(
         tenure, roster_cik, owner_pairs, config_dir, dei=dei, existing=existing, approved_rekeys=approved_rekeys, built_at=built_at
@@ -1237,7 +1237,7 @@ def build_entity_lineage(
     manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)
     validate_manual_tenure_entities(manual_tenure, out, roster_cik)
     context.log.info(
-        f"entity_lineage: {len(manual_tenure)} manual symbol interval(s) resolve to "
+        f"universe_cik_symbol: {len(manual_tenure)} manual symbol interval(s) resolve to "
         f"their {manual_tenure['canonical_ticker'].nunique()} canonical entity(ies); "
         f"dei evidence {0 if dei is None else len(dei)} (symbol, CIK) interval(s); curation backlog {len(build.backlog)} item(s)"
     )
@@ -1246,20 +1246,20 @@ def build_entity_lineage(
     log_identity_flags(context.log, flags)
     if not build.blocked.empty:
         logger.warning(
-            "entity_lineage: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",
+            "universe_cik_symbol: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",
             len(build.blocked),
             build.blocked.to_string(index=False),
         )
     if existing is None or existing.empty:
-        context.log.info(f"entity_lineage: cold build with {len(out)} row(s) over {out['entity_id'].nunique()} entity(ies)")
+        context.log.info(f"universe_cik_symbol: cold build with {len(out)} row(s) over {out['company_id'].nunique()} entity(ies)")
     else:
         _log_changed_assignments(context, existing, out, roster_cik)
-    unchanged = matches_stored(existing, out, Tables.entity_lineage)
-    written = 0 if unchanged else save_identity(context.store, Tables.entity_lineage, out)
+    unchanged = matches_stored(existing, out, Tables.universe_cik_symbol)
+    written = 0 if unchanged else save_identity(context.store, Tables.universe_cik_symbol, out)
     if unchanged:
-        logger.info("entity_lineage: unchanged (%d row(s)); replace skipped", len(out))
+        logger.info("universe_cik_symbol: unchanged (%d row(s)); replace skipped", len(out))
     else:
-        logger.info("entity_lineage: wrote %d row(s)", written)
+        logger.info("universe_cik_symbol: wrote %d row(s)", written)
     return out
 
 
@@ -1275,8 +1275,8 @@ def _stored_rows(existing: pd.DataFrame | None) -> pd.DataFrame | None:
 
 
 def load_stored_lineage(context: Context) -> pd.DataFrame | None:
-    """The stored `entity_lineage` with its dates parsed, as `build_security_master` reads a lineage just built; None when absent."""
-    return _stored_rows(context.store.load(Tables.entity_lineage, project=True, optional=True))
+    """The stored `universe_cik_symbol` with its dates parsed, as `build_security_master` reads a lineage just built; None when absent."""
+    return _stored_rows(context.store.load(Tables.universe_cik_symbol, project=True, optional=True))
 
 
 def _log_changed_assignments(context: Context, existing: pd.DataFrame, out: pd.DataFrame, roster_cik: Mapping[str, str]) -> None:
@@ -1287,7 +1287,7 @@ def _log_changed_assignments(context: Context, existing: pd.DataFrame, out: pd.D
     entity_tickers = {entity_or_singleton(new_map, cik): ticker for ticker, cik in roster_cik.items()}
     affected = sorted({entity_tickers[entity] for cik in changed for entity in (old_map.get(cik), new_map.get(cik)) if entity in entity_tickers})
     context.log.info(
-        f"entity_lineage: {len(changed)} changed CIK assignment(s): "
+        f"universe_cik_symbol: {len(changed)} changed CIK assignment(s): "
         f"{', '.join(changed) if changed else 'none'}; affected current ticker(s): "
         f"{', '.join(affected) if affected else 'none'}"
     )

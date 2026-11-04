@@ -45,7 +45,7 @@ def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:
 
 
 def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = None, **data_extract: Any) -> Any:
-    """A Context stand-in for the driver: `tickers_universe` seeded (name and GICS columns `<col>-<ticker>`) as its
+    """A Context stand-in for the driver: `universe_tickers` seeded (name and GICS columns `<col>-<ticker>`) as its
     `universe`, and a `config_dir` holding empty roster overrides (`<config_dir>/superinvestors/overrides.json`)."""
     ciks = ciks or [str(i + 1) for i in range(len(tickers))]
     labels = ("name", "sector", "industry_group", "sub_industry")
@@ -106,7 +106,7 @@ def fake_filing(accession: str, cik: int | str, filed: str, form: str = "8-K", *
 def identity_for(roster: dict[str, str]) -> Identity:
     """A real `Identity` where each roster ticker is its own single-CIK entity owning its symbol."""
     return build_identity(
-        lineage=pd.DataFrame([{"cik": pad_cik(cik), "entity_id": f"E{pad_cik(cik)}", "source": "roster"} for cik in roster.values()]),
+        lineage=pd.DataFrame([{"cik": pad_cik(cik), "company_id": f"E{pad_cik(cik)}", "source": "roster"} for cik in roster.values()]),
         tenure=pd.DataFrame(
             [
                 {

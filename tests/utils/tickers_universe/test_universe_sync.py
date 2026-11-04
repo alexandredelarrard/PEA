@@ -1,4 +1,4 @@
-"""`sync` builds `tickers_universe` from scratch on live-exported fixtures and keeps it current.
+"""`sync` builds `universe_tickers` from scratch on live-exported fixtures and keeps it current.
 
 Fixtures (read-only exports): `roster.csv` is the pre-refactor roster table (500 rows, 2026-11-02),
 `sharadar_tickers.csv` the Sharadar rows of the 491 universe tickers and their alias symbols (2026-11-02),
@@ -133,7 +133,7 @@ def test_an_invalid_gics_entry_aborts_naming_every_ticker(store, config) -> None
     entries["MSFT"] = {"sector": "Information Technology", "industry": "Fintech"}
     with pytest.raises(UniverseError, match=r"AAPL .*MSFT"):
         sync(store, universe_config(entries), AS_OF)
-    assert not store.exists(Tables.tickers_universe)
+    assert not store.exists(Tables.universe_tickers)
     print("\n=== SANITY CHECK: invalid GICS ===")
     print("  a sub-industry outside its sector (AAPL) and an unknown one (MSFT) -> one UniverseError naming both, nothing written.")
 
@@ -158,7 +158,7 @@ def test_a_ticker_without_a_sharadar_row_aborts(store) -> None:
     gics = {"sector": "Information Technology", "industry": "Application Software"}
     with pytest.raises(UniverseError, match="FOO"):
         sync(store, universe_config({"AAPL": gics, "FOO": gics}), AS_OF)
-    assert not store.exists(Tables.tickers_universe)
+    assert not store.exists(Tables.universe_tickers)
     print("\n=== SANITY CHECK: unmatched ticker ===")
     print("  FOO has no Sharadar row -> UniverseError naming it, nothing written.")
 

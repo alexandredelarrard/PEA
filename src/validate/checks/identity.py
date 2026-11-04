@@ -1,4 +1,4 @@
-"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags,
+"""Identity check: rows filed by a CIK outside the ticker's entity, `universe_cik_symbol` invariants, the manual-fix flags,
 the vendor-series continuity at register cutovers and the traded-security price match (`traded_security`).
 
 Reads only through `context.store`. The pending removals are the ones `identity --only propagate` would purge,
@@ -61,7 +61,7 @@ def _config_dir(context: Context) -> str:
 
 
 def _lineage(context: Context) -> pd.DataFrame | None:
-    rows = context.store.load(Tables.entity_lineage, project=True, optional=True)
+    rows = context.store.load(Tables.universe_cik_symbol, project=True, optional=True)
     if rows is None or rows.empty:
         return None
     out = rows.copy()
@@ -77,11 +77,11 @@ def _lineage(context: Context) -> pd.DataFrame | None:
 def _from_old_shape(lineage: pd.DataFrame, roster: pd.DataFrame) -> pd.DataFrame:
     """A pre-cutover membership table read as the accessor reads it: each CIK an event CIK of its entity,
     each roster CIK its ticker's open window."""
-    entity_by_cik = dict(zip(lineage["cik"], lineage["entity_id"].astype(str), strict=True))
-    events = pd.DataFrame({"entity_id": lineage["entity_id"].astype(str), "cik": lineage["cik"], "role": _ROLE_EVENT, "canonical_ticker": None})
+    entity_by_cik = dict(zip(lineage["cik"], lineage["company_id"].astype(str), strict=True))
+    events = pd.DataFrame({"company_id": lineage["company_id"].astype(str), "cik": lineage["cik"], "role": _ROLE_EVENT, "canonical_ticker": None})
     windows = pd.DataFrame(
         {
-            "entity_id": [entity_by_cik.get(c, f"universe:{t}") for t, c in zip(roster["ticker"], roster["cik"], strict=True)],
+            "company_id": [entity_by_cik.get(c, f"universe:{t}") for t, c in zip(roster["ticker"], roster["cik"], strict=True)],
             "cik": roster["cik"].to_numpy(),
             "role": _ROLE_WINDOW,
             "canonical_ticker": roster["ticker"].to_numpy(),
@@ -94,19 +94,19 @@ def _from_old_shape(lineage: pd.DataFrame, roster: pd.DataFrame) -> pd.DataFrame
 def _entity_ciks(lineage: pd.DataFrame) -> dict[str, frozenset[str]]:
     """`{ticker: every CIK of its entity}` from the CIK rows."""
     cik_rows = lineage[lineage["role"].ne("symbol")]
-    ciks_by_entity = cik_rows.groupby("entity_id")["cik"].agg(frozenset).to_dict()
+    ciks_by_entity = cik_rows.groupby("company_id")["cik"].agg(frozenset).to_dict()
     named = cik_rows[cik_rows["canonical_ticker"].notna()]
-    return {normalise_ticker(t): ciks_by_entity[e] for t, e in zip(named["canonical_ticker"], named["entity_id"], strict=True)}
+    return {normalise_ticker(t): ciks_by_entity[e] for t, e in zip(named["canonical_ticker"], named["company_id"], strict=True)}
 
 
 def _listed_windows(lineage: pd.DataFrame) -> dict[str, tuple[ListedWindow, ...]]:
     """`{ticker: (cik, listed_from, listed_to) per seam-widened window}` from the `cik_window` rows; a ticker with none is absent."""
     rows = lineage[lineage["role"].eq(_ROLE_WINDOW)]
     named = lineage[lineage["role"].ne("symbol") & lineage["canonical_ticker"].notna()]
-    ticker_of = dict(zip(named["entity_id"], named["canonical_ticker"].map(normalise_ticker), strict=True))
+    ticker_of = dict(zip(named["company_id"], named["canonical_ticker"].map(normalise_ticker), strict=True))
     declared: dict[str, list[tuple[str, pd.Timestamp | None, pd.Timestamp | None]]] = {}
     for entity, cik, start, end in zip(
-        rows["entity_id"], rows["cik"], pd.to_datetime(rows["valid_from"]), pd.to_datetime(rows["valid_to"]), strict=True
+        rows["company_id"], rows["cik"], pd.to_datetime(rows["valid_from"]), pd.to_datetime(rows["valid_to"]), strict=True
     ):
         if entity in ticker_of:
             declared.setdefault(ticker_of[entity], []).append(
@@ -192,7 +192,7 @@ def _invariant_findings(lineage: pd.DataFrame, roster: pd.DataFrame) -> list[Fin
             )
         )
     cik_rows = lineage[lineage["role"].ne("symbol")]
-    entities = cik_rows.groupby("cik")["entity_id"].nunique()
+    entities = cik_rows.groupby("cik")["company_id"].nunique()
     shared = sorted(entities[entities.gt(1)].index)
     if shared:
         findings.append(Finding.at(9, f"{len(shared)} CIK(s) in more than one entity", "one entity per CIK", field="one_entity_per_cik", ciks=shared))
@@ -219,10 +219,10 @@ def _overlap_days(a: Mapping[Hashable, Any], b: Mapping[Hashable, Any]) -> int:
 def _window_overlaps(windows: pd.DataFrame) -> list[dict[str, Any]]:
     """Every pair of one entity's CIK windows overlapping by more than the margin."""
     out: list[dict[str, Any]] = []
-    for entity, group in windows.groupby("entity_id", sort=True):
+    for entity, group in windows.groupby("company_id", sort=True):
         for a, b in combinations(group.sort_values("valid_from").to_dict("records"), 2):
             if (days := _overlap_days(a, b)) > MARGIN.days:
-                out.append({"entity_id": entity, "ciks": [a["cik"], b["cik"]], "overlap_days": days})
+                out.append({"company_id": entity, "ciks": [a["cik"], b["cik"]], "overlap_days": days})
     return out
 
 
@@ -232,7 +232,7 @@ def _flags(context: Context, lineage: pd.DataFrame) -> pd.DataFrame:
         Tables.symbol_tenure, columns=_EVIDENCE_COLUMNS, where={"issuer_cik": ciks, "source": ["dei", "form345"]}, optional=True
     )
     activity = cik_activity(evidence if evidence is not None else pd.DataFrame(columns=_EVIDENCE_COLUMNS))
-    master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
+    master = context.store.load(Tables.universe_cusip, columns=list(MASTER_COLUMNS), optional=True)
     return identity_flags(lineage, activity, redundant_symbols=context.universe.alias_symbols, master=master)
 
 
@@ -372,21 +372,21 @@ def _unmigrated_report(context: Context, lineage: pd.DataFrame, scope: list[str]
     findings = [
         Finding.at(
             2,
-            "entity_lineage is in the pre-cutover shape: foreign rows only, no invariants or flags",
+            "universe_cik_symbol is in the pre-cutover shape: foreign rows only, no invariants or flags",
             "the dated lineage (run the identity cutover steps)",
             field="lineage_not_migrated",
         ),
         *_removal_findings(removals),
     ]
     scope_info = {"rows": len(lineage), "tickers": len(scope), "tables": [spec.table.name for spec in PURGE_TABLES]}
-    result = CheckResult.measured(CHECK, Tables.entity_lineage.name, findings, scope=scope_info, metrics=_removal_metrics(removals))
+    result = CheckResult.measured(CHECK, Tables.universe_cik_symbol.name, findings, scope=scope_info, metrics=_removal_metrics(removals))
     return IdentityReport(result, pd.DataFrame(columns=list(FLAG_COLUMNS)), removals)
 
 
 def check_identity(context: Context, *, tickers: Sequence[str] | None = None) -> IdentityReport:
     """Foreign rows per filer-CIK table, lineage invariants and the manual-fix flags; logs the flag block."""
     empty = IdentityReport(
-        CheckResult.abstained(CHECK, Tables.entity_lineage.name, "entity_lineage is empty: run identity first"),
+        CheckResult.abstained(CHECK, Tables.universe_cik_symbol.name, "universe_cik_symbol is empty: run identity first"),
         pd.DataFrame(columns=list(FLAG_COLUMNS)),
         pd.DataFrame(columns=list(REMOVAL_COLUMNS)),
     )
@@ -422,5 +422,5 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         **traded_metrics,
     }
     scope_info = {"rows": len(lineage), "tickers": len(scope), "tables": [spec.table.name for spec in PURGE_TABLES]}
-    result = CheckResult.measured(CHECK, Tables.entity_lineage.name, findings, scope=scope_info, metrics=metrics)
+    result = CheckResult.measured(CHECK, Tables.universe_cik_symbol.name, findings, scope=scope_info, metrics=metrics)
     return IdentityReport(result, flags, removals)

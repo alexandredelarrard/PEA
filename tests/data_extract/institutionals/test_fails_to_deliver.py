@@ -38,9 +38,9 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
@@ -210,7 +210,7 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
     """FB and META are one CUSIP (one META key); IR before 2020 is the TT entity's CUSIP; the Weight Watchers
     2015 WTW line is a CUSIP the master does not hold, so it is never stored under Willis Towers Watson."""
     ctx = _context(sqlite_store, tmp_path, ("META", "TT", "IR", "WTW"))
-    sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
+    sqlite_store.replace(Tables.universe_cusip, _master(_REUSE_MASTER))
     raw_by_period = {
         "201501a": (
             "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
@@ -252,7 +252,7 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
 def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sqlite_store, monkeypatch, tmp_path):
     """`zips-ingest --only ftd -t META -F` re-reads the cache for META's CUSIPs only and upserts; TT's stored row survives."""
     ctx = _context(sqlite_store, tmp_path, ("META", "TT"))
-    sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
+    sqlite_store.replace(Tables.universe_cusip, _master(_REUSE_MASTER))
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
         pd.DataFrame(
@@ -275,7 +275,7 @@ def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sql
 
 def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.security_master, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
+    sqlite_store.replace(Tables.universe_cusip, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
     seeded = pd.DataFrame(
         {
             "ticker": ["AAPL"],
@@ -303,7 +303,7 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
 
 def test_full_rebuild_refuses_when_a_stored_period_left_the_cache(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.security_master, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
+    sqlite_store.replace(Tables.universe_cusip, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
     lines = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20231215|037833100|AAPL|5|APPLE INC|190\n")
     unstamped = lines.assign(period="202312a", security_id=None, ticker=None, lineage_role=None, security_class=None)
     sqlite_store.save(Tables.sec_fails_to_deliver_security, unstamped[list(ftd.SECURITY_COLUMNS)])
@@ -319,7 +319,7 @@ def test_full_rebuild_refuses_when_a_stored_period_left_the_cache(sqlite_store, 
 
 def test_ftd_download_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.entity_lineage, _scope_lineage())
+    sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
     requested: list[str] = []
 
     class _Response:
@@ -451,7 +451,7 @@ def _scope_lineage() -> pd.DataFrame:
         ("E0000000777", "ABC", "0000000777", "cik_window", "", "1900-01-01", None, "single_source", "roster"),
         ("E0000000777", "ABC", "0000000777", "symbol", "ABC", "2006-01-04", None, "corroborated", "form345,roster"),
     ]
-    columns = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
+    columns = ["company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
     frame = pd.DataFrame(rows, columns=columns)
     frame["valid_from"] = pd.to_datetime(frame["valid_from"])
     frame["valid_to"] = pd.to_datetime(frame["valid_to"])
@@ -460,7 +460,7 @@ def _scope_lineage() -> pd.DataFrame:
 
 def test_ftd_download_ingests_symbols_then_the_voted_cusip6_from_cache(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.entity_lineage, _scope_lineage())
+    sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
     raw_by_period = {
         "201501a": _HEADER + "20150105|000111CCC|ABCWS|7|ABC CORP WT|1.0\n20150105|999999ZZZ|ZZZ|9|OTHER CO|3.0\n",
         "201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|000111BBB|ABCPRA|5|ABC CORP PFD|25.0\n",

@@ -189,7 +189,7 @@ _UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
 
 
 @cli.command(
-    help="Refresh sec_company_tickers and sharadar_tickers, then sync tickers_universe with configs/universe.yml "
+    help="Refresh sec_company_tickers and sharadar_tickers, then sync universe_tickers with configs/universe.yml "
     f"(writes only what changed). --only runs the named part(s) ({', '.join(_UNIVERSE_PARTS)}).",
     help_priority=1,
 )
@@ -225,7 +225,7 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 
 
 @cli.command(
-    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from security_master, "
+    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from universe_cusip, "
     "summed per ticker by class into sec_short_interest. Day files: business days from the earlier of the latest stored "
     "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
     "a fetch error."
@@ -602,7 +602,7 @@ _IDENTITY_STAGES = ("capture-dei", "capture-ftd", "tenure", "lineage", "master",
 @cli.command(
     name="identity",
     help="Identity layer, OFFLINE (cached zips + DB): capture the Notes cover-page symbols and the FTD lines, then build "
-    "symbol_tenure -> entity_lineage -> security_master and propagate the lineage changes. --only runs one stage "
+    "symbol_tenure -> universe_cik_symbol -> universe_cusip and propagate the lineage changes. --only runs one stage "
     f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
     "`identity`, then `identity --only capture-ftd -F`, then `identity --only master`.",
 )

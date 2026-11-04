@@ -1,6 +1,6 @@
-"""`identity --only propagate`: carry an `entity_lineage` change into the stored SEC rows.
+"""`identity --only propagate`: carry an `universe_cik_symbol` change into the stored SEC rows.
 
-The tickers whose lineage stamp (`entity_lineage.scope_changed_at`) falls inside
+The tickers whose lineage stamp (`universe_cik_symbol.scope_changed_at`) falls inside
 `resume.recently_changed`'s window on the run date are re-checked, on every table; each step is
 idempotent, so a ticker seen on several runs inside the window costs reads only. Contraction: rows
 whose filer CIK is no longer a CIK of the ticker's entity, and 8-K / 13D / 13G rows whose CIK has no
@@ -8,7 +8,7 @@ seam-widened window admitting their date, and consolidating rows (facts, notes, 
 holds no window of the ticker, are deleted, one WARNING per table.
 Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds their
 rows but none from a scope CIK it can hold (EDGAR tables list a new CIK's filings in their own fetchers). The raw
-FTD lines and RegSHO short-volume rows of companies whose `security_master` rows changed recently (for
+FTD lines and RegSHO short-volume rows of companies whose `universe_cusip` rows changed recently (for
 short volume, also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows
 rebuilt. The stored insider rows of changed tickers (and every unstamped row) get their lineage stamp
 rewritten in place, and co-registrant insider rows are purged. A ticker whose facts were purged has its
@@ -208,7 +208,7 @@ def _refresh_fails(context: Context, tickers: Sequence[str], as_of: pd.Timestamp
     if not context.store.exists(Tables.sec_fails_to_deliver_security):
         return []
     cohort = load_source_identity(context.store)
-    master = prepare_master(cohort[Tables.security_master])
+    master = prepare_master(cohort[Tables.universe_cusip])
     if master.empty:
         return []
     changed = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of, every=every)

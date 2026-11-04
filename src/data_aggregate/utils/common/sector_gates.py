@@ -5,7 +5,7 @@ ONE definition of "which names is this sector KPI defined for", shared by the
 row-level KPI layer (`sector_features.compute_sector_kpis`) and the daily
 peer-relative layer (`fundamental_features._derived_fields`).
 
-The scope comes from GICS (`SECTOR_KPI_SCOPE` below, names from `tickers_universe.vocabulary`),
+The scope comes from GICS (`SECTOR_KPI_SCOPE` below, names from `universe_tickers.vocabulary`),
 never from "did the filer report tag X". Tag presence was wrong both ways:
 
   * NOT sector-exclusive -> the KPI leaked into the wrong sector. `InterestIncome-

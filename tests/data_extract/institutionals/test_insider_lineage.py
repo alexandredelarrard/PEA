@@ -44,7 +44,7 @@ CO_REGISTRANTS = (DLR_LP, PCG_UTILITY)
 
 def _row(ticker: str, cik: str, role: str, start: str = SENTINEL, end: str | None = None, stamp: pd.Timestamp = STAMP) -> dict[str, Any]:
     return {
-        "entity_id": f"E{ROSTER[ticker]}",
+        "company_id": f"E{ROSTER[ticker]}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -88,8 +88,8 @@ def _lineage(*, mrk_windows: bool = True, pld_windows: bool = False, stamp: pd.T
     ]
     frame = pd.DataFrame(rows)
     # MRK and PLD each form one entity whatever the oldest CIK is.
-    frame.loc[frame["canonical_ticker"].eq("MRK"), "entity_id"] = f"E{OLD_MERCK}"
-    frame.loc[frame["canonical_ticker"].eq("PLD"), "entity_id"] = f"E{OLD_PROLOGIS}"
+    frame.loc[frame["canonical_ticker"].eq("MRK"), "company_id"] = f"E{OLD_MERCK}"
+    frame.loc[frame["canonical_ticker"].eq("PLD"), "company_id"] = f"E{OLD_PROLOGIS}"
     return frame
 
 

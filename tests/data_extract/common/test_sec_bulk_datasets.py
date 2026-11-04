@@ -126,7 +126,7 @@ def test_insider_parse_and_universe_filter_synthetic():
     # is scoped to rows that CLAIMED a universe ticker, or ~50M unrelated filers' rows would
     # be stored as evidence of nothing.
     identity = build_identity(
-        lineage=pd.DataFrame([{"cik": "0000320193", "entity_id": "E0000320193", "source": "roster", "confidence": None, "evidence": "test"}]),
+        lineage=pd.DataFrame([{"cik": "0000320193", "company_id": "E0000320193", "source": "roster", "confidence": None, "evidence": "test"}]),
         tenure=pd.DataFrame(
             [
                 {

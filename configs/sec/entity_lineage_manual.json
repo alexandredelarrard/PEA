@@ -1,6 +1,6 @@
 {
   "_README": [
-    "HAND ADJUDICATIONS FOR `entity_lineage` -- the curated layer of AXIS A (which CIKs are",
+    "HAND ADJUDICATIONS FOR `universe_cik_symbol` -- the curated layer of AXIS A (which CIKs are",
     "the same economic company). Sibling of `registrant_cutover.json`, and deliberately a",
     "SEPARATE file, because the two answer different questions and are read by different",
     "code.",
@@ -40,7 +40,7 @@
 
   "_d19_allowlist": {
     "_README": [
-      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(tickers_universe.cik[T])`",
+      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(universe_tickers.cik[T])`",
       "agrees with the entity of the CIK that dominates symbol T in `symbol_tenure` today. It",
       "exists because the roster CIK comes from Wikipedia and has been wrong before (XOM, found",
       "2026-09-09), and a disagreement is that class of defect until proven otherwise.",

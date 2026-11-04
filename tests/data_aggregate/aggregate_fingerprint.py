@@ -77,7 +77,7 @@ def _select_fundamentals() -> pd.DataFrame:
     NOT the frame production feeds in:
 
       * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
-        a `tickers_universe` lookup. Without them `sector_gates.row_gate` fails closed and the whole
+        a `universe_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
       * `revenueGrowth` / `earningsGrowth` are `CUBE_TIME_COLUMNS`: only the cube can compute
@@ -470,7 +470,7 @@ def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rand
 
 
 def synthetic_share_classes(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Secondary share classes -- `security_master` `secondary_class` lines and their `prices` volume bars.
+    """Secondary share classes -- `universe_cusip` `secondary_class` lines and their `prices` volume bars.
 
     Two companies: one ratio-1 class that starts mid-window and misses a few bars, and one BRK-style class
     whose ratio steps 30 -> 1,500 (only the latest ratio applies on the restated tape). Without it the digest

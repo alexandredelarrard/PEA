@@ -1,6 +1,6 @@
 """Identity validator and the P15 manual-fix flags: foreign rows per filer-CIK table (margin and sibling
 filings count as own), lineage invariants, and one flag per kind classified once for the build and the
-validator. Offline: hand-written `entity_lineage` rows, a real `DataStore` on SQLite for the store reads.
+validator. Offline: hand-written `universe_cik_symbol` rows, a real `DataStore` on SQLite for the store reads.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ LOGGER = "test.identity_check"
 
 def _cik(ticker: str, cik: str, role: str, *, start: str = SENTINEL, end: str | None = None, oracle: str = "roster", sources: str = "roster") -> dict:
     return {
-        "entity_id": f"E-{ticker}",
+        "company_id": f"E-{ticker}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -125,7 +125,7 @@ def _flag_fixture() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             {
                 "kind": "grey_band",
                 "canonical_ticker": "CPT",
-                "entity_id": "E-CPT",
+                "company_id": "E-CPT",
                 "cik": "0000096345",
                 "symbol": "CPT",
                 "detail": "owner overlap with 0000906345",
@@ -217,7 +217,9 @@ def _context(store: Any) -> Any:
 
 def _seed_store(store: Any, lineage: pd.DataFrame) -> None:
     seed_universe(store, ["ALB", "TMUS", "REG"], rows={"ALB": {"cik": ALB}, "TMUS": {"cik": TMUS}, "REG": {"cik": SUCC}})
-    store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
+    store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
     filings = [
         ("ALB", "alb-1", ALB, "2024-02-01"),
         ("ALB", "ab-1", AB, "2019-03-01"),
@@ -340,7 +342,7 @@ def test_lineage_invariant_breaches_are_findings(sqlite_store):
             {**_cik("REG", PRED, "cik_window", end="2016-07-01", oracle="register", sources="register")},
             _cik("REG", SUCC, "cik_window", start="2015-07-01", oracle="register", sources="register"),  # overlap 366 days
             _sym("REG", SUCC, "REG", "2015-07-01"),
-            {**_cik("ALB", AB, "cik_window", oracle="owner_overlap"), "entity_id": "E-OTHER", "canonical_ticker": None},
+            {**_cik("ALB", AB, "cik_window", oracle="owner_overlap"), "company_id": "E-OTHER", "canonical_ticker": None},
             _cik("TMUS", AB, "cik_event", oracle="owner_overlap"),  # AB in two entities
             _cik("TMUS", "0000000099", "cik_event", start="1899-12-31", oracle="owner_overlap"),  # an open start off the sentinel
         ]
@@ -362,19 +364,19 @@ def test_lineage_invariant_breaches_are_findings(sqlite_store):
 
 
 def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrated(sqlite_store):
-    """F-002: the old-shape table (cik, entity_id, ...) reads as event CIKs plus the roster CIK, as the accessor does."""
+    """F-002: the old-shape table (cik, company_id, ...) reads as event CIKs plus the roster CIK, as the accessor does."""
     old = pd.DataFrame(
         {
             "cik": [ALB, TMUS, TMO_USA, PRED, SUCC],
-            "entity_id": ["E-ALB", "E-TMUS", "E-TMUS", "E-REG", "E-REG"],
+            "company_id": ["E-ALB", "E-TMUS", "E-TMUS", "E-REG", "E-REG"],
             "source": "roster",
             "confidence": None,
             "evidence": "old-shape row",
         }
     )
     _seed_store(sqlite_store, _store_lineage())
-    sqlite_store.drop(Tables.entity_lineage)
-    old.to_sql(Tables.entity_lineage.name, sqlite_store.engine, index=False)
+    sqlite_store.drop(Tables.universe_cik_symbol)
+    old.to_sql(Tables.universe_cik_symbol.name, sqlite_store.engine, index=False)
 
     report = check_identity(_context(sqlite_store))
 
@@ -383,7 +385,7 @@ def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrate
     fields = [f.field for f in report.result.findings]
     assert "lineage_not_migrated" in fields and "current_symbol_rows" not in fields, fields
     assert report.result.metrics["foreign_rows"] == 4 and report.flags.empty
-    print("\n=== SANITY CHECK: validator before the cutover (old-shape entity_lineage) ===")
+    print("\n=== SANITY CHECK: validator before the cutover (old-shape universe_cik_symbol) ===")
     print(f"  {report.result.summary()}")
     print("  OK: no KeyError; membership CIKs and roster CIKs are own (no dated windows), AllianceBernstein's 4 rows are pending, invariants skipped")
 
@@ -581,7 +583,9 @@ def _seed_traded(store: Any) -> None:
         [row for i, t in enumerate(tickers) for row in (_cik(t, f"00000009{i:02d}", "cik_window"), _sym(t, f"00000009{i:02d}", t, "2006-01-02"))]
     )
     seed_universe(store, tickers, rows={t: {"cik": f"00000009{i:02d}"} for i, t in enumerate(tickers)})
-    store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
+    store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
     master = [
         _master_row("ALN", "ALN000001", "canonical_current", "2011-01-01"),
         _master_row("ALN", "ALN000002", "secondary_class", "2011-01-01", symbol="ALN.A"),
@@ -593,7 +597,7 @@ def _seed_traded(store: Any) -> None:
         _master_row("TWO", "TWO000002", "canonical_current", "2012-02-15"),
         _master_row("TWO", "TWO000009", "excluded", "2011-01-01"),
     ]
-    store.save(Tables.security_master, pd.DataFrame(master))
+    store.save(Tables.universe_cusip, pd.DataFrame(master))
     n = len(_DAYS) - 1
     jco = [0.90] * 24 + [0.974, 1.0, 1.0] + [1.10] * 23
     ftd = [

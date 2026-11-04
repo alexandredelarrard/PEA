@@ -39,9 +39,9 @@ def sqlite_store(sqlite_store: DataStore) -> DataStore:
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
@@ -790,9 +790,9 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
     create_canonical(
         store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],

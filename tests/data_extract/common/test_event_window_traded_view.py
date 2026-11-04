@@ -49,7 +49,7 @@ def _lineage() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "entity_id": f"E{ROSTER[ticker]}",
+                "company_id": f"E{ROSTER[ticker]}",
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,

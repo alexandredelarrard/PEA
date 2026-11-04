@@ -1,4 +1,4 @@
-"""FTD per security (Q2b): raw lines stamped from `security_master`, the ticker-grain table rebuilt from them.
+"""FTD per security (Q2b): raw lines stamped from `universe_cusip`, the ticker-grain table rebuilt from them.
 
 The cached-ZIP lines below are real (copied verbatim from the SEC files of the named periods) and so are the
 master rows (the Q2a build over the whole cache; PLD and JCI from the traded-security build of 2026-10-07) and the
@@ -121,7 +121,7 @@ REAL_LINES: dict[str, list[str]] = {
     ],
 }
 
-# Real `security_master` rows (Q2a build): cusip, company, issuer CIK, symbol, class, ratio, role, valid_from, valid_to, reason.
+# Real `universe_cusip` rows (Q2a build): cusip, company, issuer CIK, symbol, class, ratio, role, valid_from, valid_to, reason.
 MASTER_ROWS = [
     ("171232101", "CB", "0000020171", "CB", "common", 1.0, "acquired_constituent", "2009-06-26", "2016-01-14", "event_only_cik"),
     ("171232101", "CB", "0000020171", "CBXXXX", "common", 1.0, "excluded", "2016-01-14", "2016-01-28", "transition_placeholder"),
@@ -214,9 +214,9 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
@@ -260,7 +260,7 @@ def _lineage() -> pd.DataFrame:
     for ticker, cik, role, symbol, start, end in LINEAGE_ROWS:
         rows.append(
             {
-                "entity_id": f"E{ENTITY.get(ticker, ROSTER[ticker])}",
+                "company_id": f"E{ENTITY.get(ticker, ROSTER[ticker])}",
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,
@@ -274,7 +274,7 @@ def _lineage() -> pd.DataFrame:
         )
     for ticker in ("XOM", "APTV", "EXE"):
         cik = ROSTER[ticker]
-        base = {"entity_id": f"E{cik}", "canonical_ticker": ticker, "cik": cik, "valid_to": pd.NaT, "scope_changed_at": BUILT}
+        base = {"company_id": f"E{cik}", "canonical_ticker": ticker, "cik": cik, "valid_to": pd.NaT, "scope_changed_at": BUILT}
         rows.append({**base, "role": "cik_window", "symbol": "", "valid_from": pd.Timestamp("1900-01-01"), "status": "curated", "sources": "roster"})
         rows.append(
             {
@@ -334,7 +334,7 @@ def _rebuild(
     store.drop(Tables.sec_fails_to_deliver_security)
     store.drop(Tables.sec_fails_to_deliver)
     create_canonical(store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
-    store.replace(Tables.security_master, _master() if master is None else master)
+    store.replace(Tables.universe_cusip, _master() if master is None else master)
     _serve(monkeypatch, lines)
     context = _context(store, tmp_path)
     ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], full=True)
@@ -630,7 +630,7 @@ def _seed_unstamped(store, lines: dict[str, list[str]]) -> None:
 
 
 def test_incremental_run_stamps_only_unstamped_rows_and_builds_their_periods(sqlite_store, tmp_path, monkeypatch):
-    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.replace(Tables.universe_cusip, _master())
     source = {p: REAL_LINES[p] for p in ("201506a", "200907b")}
     _seed_unstamped(sqlite_store, source)
     initial_raw = _security(sqlite_store)
@@ -691,7 +691,7 @@ def test_e31_a_moved_boundary_restamps_exactly_the_affected_rows(sqlite_store, t
             _master([("806605101", "MRK", "0000310158", "SGP", "common", 1.0, "canonical_current", "2009-10-30", "2009-10-31", "x")], stamp=LATER),
         ]
     )
-    sqlite_store.replace(Tables.security_master, master)
+    sqlite_store.replace(Tables.universe_cusip, master)
     saved: list[tuple[dict[Table, pd.DataFrame], dict[Table, dict[str, object] | None]]] = []
     original = ftd.replace_fails_source
 
@@ -763,7 +763,7 @@ def _with_universe(context: Any, store) -> Any:
 
 
 def test_f103_a_scoped_incremental_run_stamps_only_its_own_lines_and_saves_stamps_after_the_rebuild(sqlite_store, tmp_path, monkeypatch):
-    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.replace(Tables.universe_cusip, _master())
     _seed_unstamped(sqlite_store, {"201506a": REAL_LINES["201506a"]})
     context = _with_universe(_context(sqlite_store, tmp_path), sqlite_store)
     reads = _serve(monkeypatch, {"201506a": REAL_LINES["201506a"]})
@@ -808,7 +808,7 @@ def test_f101_a_scoped_restamp_never_touches_another_companys_lines(sqlite_store
             _master([("806605101", "MRK", "0000310158", "SGP", "common", 1.0, "canonical_current", "2009-10-30", "2009-10-31", "x")], stamp=LATER),
         ]
     )
-    sqlite_store.replace(Tables.security_master, master)
+    sqlite_store.replace(Tables.universe_cusip, master)
 
     assert ftd.restamp_fails(context, companies=None, tickers=["CB"], as_of=RUN_DATE) == []
 
@@ -832,7 +832,7 @@ def test_f113_a_company_whose_master_rows_all_vanished_is_restamped(sqlite_store
     gone = "CB"
     assert any(t == gone for t, _ in before), "the fixture builds CB ticker rows"
     master = _master()
-    sqlite_store.replace(Tables.security_master, master[master["canonical_company"].ne(gone)])  # every other stamp is old
+    sqlite_store.replace(Tables.universe_cusip, master[master["canonical_company"].ne(gone)])  # every other stamp is old
 
     records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, as_of=RUN_DATE)
 

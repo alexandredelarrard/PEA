@@ -28,7 +28,7 @@ from src.utils.string import normalise_ticker, pad_cik_series, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
-#: SUBMISSION feeds `symbol_tenure`; joined to REPORTINGOWNER on accession it feeds the `entity_lineage` owner sets.
+#: SUBMISSION feeds `symbol_tenure`; joined to REPORTINGOWNER on accession it feeds the `universe_cik_symbol` owner sets.
 SUBMISSION_MEMBER = "SUBMISSION.TSV"
 OWNER_MEMBER = "REPORTINGOWNER.TSV"
 _FORM345_READ = {

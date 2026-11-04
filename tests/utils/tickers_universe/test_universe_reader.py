@@ -32,7 +32,7 @@ def test_missing_or_stale_table_raises_and_writes_nothing(sqlite_store) -> None:
     seed_universe(sqlite_store, ["AAPL"])
     with pytest.raises(UniverseError, match=r"\['MSFT'\]"):
         Universe(sqlite_store, config)
-    assert sqlite_store.row_count(Tables.tickers_universe) == 1
+    assert sqlite_store.row_count(Tables.universe_tickers) == 1
     print("\n=== SANITY CHECK: reader guards === missing and stale tables raise with the sync command; nothing written.")
 
 

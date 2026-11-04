@@ -1,5 +1,5 @@
-"""`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, build,
-propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> fundamentals -> `StepExtractEdgar`
+"""`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, anchor,
+CIK / symbol / CUSIP history, propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> fundamentals -> `StepExtractEdgar`
 -> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ IDENTITY_STAGE = (
     "ftd_capture",
     "form345_scan",
     "symbol_tenure",
+    "company_anchor",
+    "cik_history",
     "universe_cik_symbol",
     "universe_cusip",
     "identity_refresh",
@@ -68,8 +70,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
-    monkeypatch.setattr(identity_module, "capture_pending_dei", lambda context, cache, full: mark("dei_capture")())
-    monkeypatch.setattr(identity_module, "capture_ftd_cusips", lambda context, cache, years, full, as_of: mark("ftd_capture")())
+    monkeypatch.setattr(identity_module, "pending_dei_periods", lambda context, cache, full: mark("dei_capture", [])())
+    monkeypatch.setattr(identity_module, "capture_ftd_cusips", lambda context, cache, years, full, as_of: mark("ftd_capture", 0)())
 
     def form345_scan(cache):
         assert cache == Path("cache") / "sec_insider_transactions"
@@ -80,9 +82,15 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         return mark("symbol_tenure", tenure)()
 
     lineage = object()
+    history = object()
 
-    def universe_cik_symbol(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset()):
-        assert given_tenure is tenure and owner_pairs is scan.owner_pairs
+    def cik_history(step):
+        assert step._tenure is tenure and step._scan is scan, "the CIK history reads this run's tenure and Form 3/4/5 scan"
+        step._cik_history = history
+        return mark("cik_history", history)()
+
+    def universe_cik_symbol(context, given_history, config_dir):
+        assert given_history is history
         return mark("universe_cik_symbol", lineage)()
 
     def universe_cusip(context, given_lineage, config_dir):
@@ -101,6 +109,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
     monkeypatch.setattr(identity_module, "build_entity_lineage", universe_cik_symbol)
     monkeypatch.setattr(identity_module, "build_security_master", universe_cusip)
     monkeypatch.setattr(identity_module, "load_identity", refresh)

@@ -145,6 +145,10 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml"
 _ACCESSOR = {
     "src/data_extract/utils/common/identity.py",
     "src/data_extract/utils/identity/identity_store.py",
+    "src/data_extract/transformers/step_extract_identity.py",
+    "src/data_extract/utils/identity/evidence.py",
+    "src/data_extract/utils/identity/company_anchor.py",
+    "src/data_extract/utils/identity/cik_history.py",
     "src/data_extract/utils/identity/entity_lineage.py",
     "src/data_extract/utils/identity/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",

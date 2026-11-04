@@ -55,7 +55,7 @@ import pandas as pd
 
 from src.context import get_config_context
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, load_identity
-from src.data_extract.utils.identity.entity_lineage import load_d19_allowlist
+from src.data_extract.utils.identity.cik_history import d19_allowlist, manual_lineage_blob
 from src.data_store.schema import Resume, Tables
 
 CONFIG_DIR = "./configs"
@@ -138,7 +138,7 @@ def main() -> None:
     identity = load_identity(context)
     # The D19 allow-list IS the tenure-blind list: every entry on it is a ticker whose roster
     # CIK and whose filings name different entities, with a written reading of why.
-    blind = frozenset(load_d19_allowlist(CONFIG_DIR))
+    blind = frozenset(d19_allowlist(manual_lineage_blob(CONFIG_DIR)))
     print(f"\n  {len(blind)} tenure-blind ticker(s) from the D19 allow-list: {', '.join(sorted(blind))}")
     OUT.mkdir(parents=True, exist_ok=True)
     summary = []

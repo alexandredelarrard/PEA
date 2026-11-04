@@ -23,7 +23,7 @@ from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CA
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.incremental import matches_stored
-from src.data_extract.utils.identity.entity_lineage import (
+from src.data_extract.utils.identity.cik_history import (
     ROLE_SYMBOL,
     ROLE_WINDOW,
     SENTINEL_START,

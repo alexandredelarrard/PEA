@@ -35,7 +35,7 @@ from src.data_extract.utils.common.identity import (
     load_identity,
     tickers_for_ciks,
 )
-from src.data_extract.utils.identity.entity_lineage import (
+from src.data_extract.utils.identity.cik_history import (
     CikInTwoEntitiesError,
     IdentityError,
     TwoUniverseTickersOneEntityError,

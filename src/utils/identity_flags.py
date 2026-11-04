@@ -1,7 +1,7 @@
 """Identity items needing a manual decision, classified once for the lineage build and the identity validator.
 
 Pure: `universe_cik_symbol` rows, each CIK's filing activity (`cik_activity`), optionally the stored `universe_cusip`
-(which decides tape-mix pairs it already stamps) and, from the build only, its grey-band and rekey backlog. `log_identity_flags` writes one WARNING block (action items first) and one
+(which decides tape-mix pairs it already stamps) and, from the build only, its grey-band backlog. `log_identity_flags` writes one WARNING block (action items first) and one
 INFO line for co-registrants.
 """
 
@@ -24,7 +24,6 @@ KIND_ORDER = (
     "incorrect_cik_window",
     "missing_sec_filing",
     "grey_band",
-    "rekey",
     "manual_review",
     "conflict",
     "vendor_coverage_gap",
@@ -40,7 +39,7 @@ _SYMBOLS = "configs/sec/symbol_tenure_manual.json"
 _ACTIVITY_SOURCES = ("dei", "form345")
 _TAPE_SOURCES = ("form345", "manual")
 _FAR = pd.Timestamp("2262-01-01")
-#: The stored open start of a window (`identity.entity_lineage.SENTINEL_START`).
+#: The stored open start of a window (`identity.cik_history.SENTINEL_START`).
 _SENTINEL = pd.Timestamp("1900-01-01")
 #: The `universe_cusip` columns the tape-mix rule reads.
 MASTER_COLUMNS = ("canonical_company", "source_symbol", "lineage_role", "lineage_reason", "valid_from", "valid_to")
@@ -385,12 +384,11 @@ def _symbol_status_items(rows: pd.DataFrame) -> list[dict[str, object]]:
 
 
 def _backlog_items(backlog: pd.DataFrame | None) -> list[dict[str, object]]:
-    """The build-only kinds: grey-band links and excluded older-CIK rekeys."""
+    """The build-only kind: grey-band links."""
     if backlog is None or backlog.empty:
         return []
     actions = {
         "grey_band": ("add a manual decision (own_entity or separate) citing the filing", _MANUAL),
-        "rekey": ("approve with identity --approve-rekey OLD:NEW, or leave excluded", ""),
     }
     return [
         _item(kind, True, str(ticker or entity), (str(cik),), str(detail), *actions[kind])

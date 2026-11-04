@@ -519,6 +519,10 @@ def test_the_evidence_lands_before_the_universe_sync_and_never_stops_the_night()
 #: identity build modules: every `Tables.<name>` they name is an input of the build (captures write, propagation rewrites).
 IDENTITY_BUILD_FILES = (
     "src/data_extract/utils/identity/symbol_tenure.py",
+    "src/data_extract/transformers/step_extract_identity.py",
+    "src/data_extract/utils/identity/evidence.py",
+    "src/data_extract/utils/identity/company_anchor.py",
+    "src/data_extract/utils/identity/cik_history.py",
     "src/data_extract/utils/identity/entity_lineage.py",
     "src/data_extract/utils/identity/security_master.py",
 )

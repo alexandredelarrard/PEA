@@ -22,7 +22,7 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
-from src.data_extract.utils.identity.entity_lineage import (
+from src.data_extract.utils.identity.cik_history import (
     FORM345_SOURCE,
     MANUAL_SOURCE,
     ROLE_EVENT,

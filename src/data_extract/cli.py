@@ -16,8 +16,6 @@ import pandas as pd
 from src.constants.command_line_interface import (
     ACCESSION_ARGS,
     ACCESSION_KWARGS,
-    APPROVE_REKEY_ARGS,
-    APPROVE_REKEY_KWARGS,
     ARCHIVE_ARGS,
     ARCHIVE_KWARGS,
     AS_OF_ARGS,
@@ -593,45 +591,45 @@ def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: dateti
         sources[name]()
 
 
-_IDENTITY_STAGES = ("capture-dei", "capture-ftd", "tenure", "lineage", "master", "propagate")
+_IDENTITY_STAGES = (
+    "capture-evidence",
+    "company-anchor",
+    "cik-history",
+    "symbol-history",
+    "cusip-history",
+    "lifecycle",
+    "publish",
+    "propagate",
+)
 
 
 @cli.command(
     name="identity",
-    help="Identity layer, OFFLINE (cached zips + DB): capture the Notes cover-page symbols and the FTD lines, then build "
-    "symbol_tenure -> universe_cik_symbol -> universe_cusip and propagate the lineage changes. --only runs one stage "
+    help="Identity layer, OFFLINE (cached zips + DB): capture the evidence (Notes cover-page symbols, FTD lines, Form 3/4/5 "
+    "tenure), anchor each company, build its CIK, symbol and CUSIP history, then propagate the changes. --only runs one stage "
     f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
-    "`identity`, then `identity --only capture-ftd -F`, then `identity --only master`.",
+    "`identity`, then `identity --only capture-evidence -F`, then `identity --only cusip-history`.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*APPROVE_REKEY_ARGS, **APPROVE_REKEY_KWARGS)
 @click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
-@click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all six.")
-def identity(
-    config_path: str, tickers: str | None, full: bool, as_of: datetime | None, approved_rekeys: tuple[str, ...], dry_run: bool, only: str | None
-) -> None:
+@click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all eight.")
+def identity(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, dry_run: bool, only: str | None) -> None:
     if dry_run and only != "propagate":
         raise click.UsageError("--dry-run applies to `--only propagate` only.")
-    if approved_rekeys and only not in (None, "lineage"):
-        raise click.UsageError("--approve-rekey applies to the full run or `--only lineage`.")
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    options = IdentityOptions(
-        tickers=_tickers(context, tickers) if tickers else None,
-        full=full,
-        dry_run=dry_run,
-        as_of=run_date(as_of),
-        approved_rekeys=_approved_rekeys(approved_rekeys),
-    )
+    options = IdentityOptions(tickers=_tickers(context, tickers) if tickers else None, full=full, dry_run=dry_run, as_of=run_date(as_of))
     step = StepExtractIdentity(context, config, options)
     stages = {
-        "capture-dei": step.run_capture_dei_symbols,
-        "capture-ftd": step.run_capture_ftd_cusips,
-        "tenure": step.run_symbol_tenure,
-        "lineage": step.run_entity_lineage,
-        "master": step.run_security_master,
+        "capture-evidence": step.run_capture_evidence,
+        "company-anchor": step.run_company_anchor,
+        "cik-history": step.run_cik_history,
+        "symbol-history": step.run_symbol_history,
+        "cusip-history": step.run_cusip_history,
+        "lifecycle": step.run_lifecycle,
+        "publish": step.run_publish,
         "propagate": step.run_propagate,
     }
     if only is None:
@@ -641,17 +639,6 @@ def identity(
         click.echo(removals.to_string(index=False) if not removals.empty else "identity --only propagate: no pending removals")
     else:
         stages[only]()
-
-
-def _approved_rekeys(values: tuple[str, ...]) -> frozenset[tuple[str, str]]:
-    """`--approve-rekey OLD:NEW` values as `(old, new)` entity-id pairs."""
-    parsed: set[tuple[str, str]] = set()
-    for value in values:
-        old, separator, new = value.partition(":")
-        if not separator or not old or not new:
-            raise click.BadParameter("expected OLD_ENTITY_ID:NEW_ENTITY_ID", param_hint="--approve-rekey")
-        parsed.add((old, new))
-    return frozenset(parsed)
 
 
 # --- Structure (governance) ---

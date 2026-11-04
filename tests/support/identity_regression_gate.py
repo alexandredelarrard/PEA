@@ -31,7 +31,7 @@ from src.data_extract.utils.common.identity import FilingScope, Identity, Unknow
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
-from src.data_extract.utils.identity.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist  # noqa: E402
+from src.data_extract.utils.identity.cik_history import d19_allowlist, entity_by_cik_map, entity_or_singleton, manual_lineage_blob  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
@@ -1246,7 +1246,7 @@ def run_diff(
         frames["filing"] = _filing_section(store, snap_dir, identity, _old_ciks(old_lineage, old_roster), scope)
     if "tape" in sections:
         resolver = LegacyTapeResolver(
-            old_lineage, old_tenure, old_roster, allowlist=load_d19_allowlist(config_dir), redundant=context.universe.alias_symbols
+            old_lineage, old_tenure, old_roster, allowlist=d19_allowlist(manual_lineage_blob(config_dir)), redundant=context.universe.alias_symbols
         )
         tape, stats = _tape_section(store, snap_dir, master, resolver, context.universe.tickers, scope)
         frames["tape"] = explain_listed_rows(tape, load_hypotheses(config_dir))

@@ -193,14 +193,17 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
 def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(
     sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`identity --only propagate`, and `zips-download --only notes` then `identity --only capture-dei`."""
+    """`identity --only propagate`, and `zips-download --only notes` then `identity --only capture-evidence`."""
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     calls: list[tuple[str, dict[str, Any]]] = []
     context = SimpleNamespace(name="ctx", universe=seed_universe(sqlite_store, ["AAA"]))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     stub_identity_step(monkeypatch, config, context)
-    monkeypatch.setattr(step_identity, "capture_pending_dei", lambda ctx, cache, **kwargs: calls.append(("dei", kwargs)) or 0)
+    monkeypatch.setattr(step_identity, "pending_dei_periods", lambda ctx, cache, full: calls.append(("dei", {"full": full})) or [])
+    monkeypatch.setattr(step_identity, "capture_ftd_cusips", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
+    monkeypatch.setattr(step_identity, "build_symbol_tenure", lambda *args: pd.DataFrame())
     monkeypatch.setattr(
         step_identity,
         "propagate_identity",
@@ -214,10 +217,12 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     assert dry_run.exit_code == 0 and "no pending removals" in dry_run.output
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "propagate"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["zips-download", "--only", "notes"]).exit_code == 0
-    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-dei"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-evidence"]).exit_code == 0
     assert [kwargs.get("every_ticker") for name, kwargs in calls if name == "propagate"] == [True, False]
     assert [kwargs for name, kwargs in calls if name in ("periods", "notes")] == [{"years": 32}, {"periods": ["2026q1"]}]
-    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], "identity --only capture-dei captures the cover-page symbols"
+    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], (
+        "identity --only capture-evidence captures the cover-page symbols"
+    )
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
     print("  identity --only propagate --full reaches propagate_identity(every_ticker=True) and prints the dry run;")
-    print("  zips-download --only notes lists years_history 31 + 1 Notes years; identity --only capture-dei captures")
+    print("  zips-download --only notes lists years_history 31 + 1 Notes years; identity --only capture-evidence captures")

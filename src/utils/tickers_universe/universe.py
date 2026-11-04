@@ -3,9 +3,9 @@ universe.py  (src/utils/tickers_universe/universe.py)
 -----------------------------------------------------
 `Universe`: the read-only view of `universe_tickers` every stage uses through `context.universe`.
 
-It reads the table once, checks its ticker set equals `configs/universe.yml` and never writes;
-`sync.py` is the only writer. Values are stored clean (upper-case yfinance tickers, 10-digit
-CIKs), so consumers do not re-normalise them.
+It reads the table once, keeps the `in_universe` rows, checks their ticker set equals
+`configs/universe.yml` and never writes; `sync.py` and the identity step are the writers. Values
+are stored clean (upper-case yfinance tickers, 10-digit CIKs), so consumers do not re-normalise them.
 """
 
 from __future__ import annotations
@@ -64,13 +64,17 @@ def universe_classification(config: DictConfig) -> pd.DataFrame:
 
 
 class Universe:
-    """The universe tickers and their `universe_tickers` row (name, CIK, CUSIPs, GICS, Sharadar categories)."""
+    """The universe tickers and their `universe_tickers` row (name, CIK, CUSIPs, GICS, Sharadar categories, identity)."""
 
     def __init__(self, store: DataStore, config: DictConfig) -> None:
+        # load the yml and the table
         self._tickers, aliases = universe_config(config)
         frame = store.load(Tables.universe_tickers, optional=True)
         if frame is None:
             raise UniverseError(f"{Tables.universe_tickers} is missing or empty: run `{SYNC_COMMAND}`")
+
+        # keep the in-universe rows and check they are the yml tickers
+        frame = frame[frame["in_universe"].eq(True)]
         stale = sorted(set(frame["ticker"]) ^ set(self._tickers))
         if stale:
             raise UniverseError(f"{Tables.universe_tickers} differs from configs/universe.yml on {stale}: run `{SYNC_COMMAND}`")
@@ -97,6 +101,14 @@ class Universe:
     @property
     def cik_by_ticker(self) -> dict[str, str]:
         return dict(zip(self._frame["ticker"], self._frame["cik"], strict=True))
+
+    @property
+    def bounds(self) -> dict[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]:
+        """`(first_price_date, ended_on)` of every universe ticker; None where identity has no bound (open)."""
+        first = pd.to_datetime(self._frame["first_price_date"])
+        ended = pd.to_datetime(self._frame["ended_on"])
+        pairs = [(None if pd.isna(f) else f, None if pd.isna(e) else e) for f, e in zip(first, ended, strict=True)]
+        return dict(zip(self._frame["ticker"], pairs, strict=True))
 
     @property
     def sector_map(self) -> dict[str, str]:

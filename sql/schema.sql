@@ -6,8 +6,10 @@
 -- between the cube sub-steps and are created by their owning step.
 
 -- [reference] universe_tickers  (pk: ticker)
--- The traded universe, one row per `configs/universe.yml` ticker. Written only by
--- `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
+-- One row per company ever in `configs/universe.yml`; `in_universe` is false once it leaves the yml.
+-- Two writers own different columns: `src/utils/tickers_universe/sync.py` (ticker, name, GICS, Sharadar
+-- categories, `in_universe`, seed `cik`) and the identity step (`company_id`, `cik`, `trading_symbol`,
+-- `first_price_date`, `ended_on`, `status`). Read only through `context.universe`.
 
 CREATE TABLE IF NOT EXISTS "universe_tickers" (
     "ticker" TEXT NOT NULL,
@@ -31,6 +33,12 @@ CREATE TABLE IF NOT EXISTS "universe_tickers" (
     "location" TEXT,
     "isdelisted" TEXT,
     "cusips" TEXT,
+    "in_universe" BOOLEAN,
+    "company_id" TEXT,
+    "trading_symbol" TEXT,
+    "first_price_date" DATE,
+    "ended_on" DATE,
+    "status" TEXT,
     PRIMARY KEY ("ticker")
 );
 

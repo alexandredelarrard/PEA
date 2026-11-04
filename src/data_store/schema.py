@@ -142,9 +142,11 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Reference / dimension                                             #
     # ----------------------------------------------------------------- #
-    # The traded universe, one row per `configs/universe.yml` ticker. Written only by
-    # `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
-    universe_tickers = Table("universe_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on",))
+    # One row per company ever in `configs/universe.yml`; `in_universe` is false once it leaves the yml.
+    # Two writers own different columns: `src/utils/tickers_universe/sync.py` (ticker, name, GICS, Sharadar
+    # categories, `in_universe`, seed `cik`) and the identity step (`company_id`, `cik`, `trading_symbol`,
+    # `first_price_date`, `ended_on`, `status`). Read only through `context.universe`.
+    universe_tickers = Table("universe_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on", "first_price_date", "ended_on"))
 
     superinvestor_roster = Table(
         "superinvestor_roster",

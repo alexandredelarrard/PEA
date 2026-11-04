@@ -40,6 +40,9 @@ def seed_universe(
                 "sub_industry": None,
                 "universe_added_on": pd.Timestamp("2000-01-01"),
                 "cusips": None,
+                "in_universe": True,
+                "first_price_date": None,
+                "ended_on": None,
                 **(rows or {}).get(t, {}),
             }
             for i, t in enumerate(tickers)
@@ -71,5 +74,5 @@ def as_roster(roster: pd.DataFrame | Mapping[str, str] | Iterable[tuple[str, str
 
 def universe_in(store: DataStore) -> Universe:
     """The `Universe` over the `universe_tickers` rows a test already seeded into `store`."""
-    seeded = store.load(Tables.universe_tickers, columns=["ticker"])
-    return Universe(store, universe_config(list(seeded["ticker"])))
+    seeded = store.load(Tables.universe_tickers, columns=["ticker", "in_universe"])
+    return Universe(store, universe_config(list(seeded.loc[seeded["in_universe"].eq(True), "ticker"])))

@@ -1,6 +1,7 @@
 """Super step orchestrating the data-extraction sub-steps over the universe (`context.universe`).
 
-Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, universe sync) -> zip downloads (Form 3/4/5,
+Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, Sharadar actions, SEC submissions metadata, universe sync)
+-> zip downloads (Form 3/4/5,
 Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
 symbol_tenure + universe_cik_symbol + universe_cusip -> propagation) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->

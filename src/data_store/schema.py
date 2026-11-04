@@ -229,6 +229,37 @@ class Tables:
         read_columns=("cik", "ticker", "name", "exchange", "fetched_at"),
     )
 
+    # SEC submissions metadata, one row per CIK of the bulk `submissions.zip`, replaced by each `universe --only
+    # sec-submissions` run; read only by the identity step. `former_names` and the four form columns are JSON lists
+    # (name/from/to; form/filed/accession). `tickers` and `exchanges` are the CURRENT listing, empty once a CIK stops listing.
+    sec_cik_profile = Table(
+        "sec_cik_profile",
+        ("cik",),
+        KIND_REFERENCE,
+        ticker_col=None,
+        date_type_cols=("first_filed", "last_filed"),
+        resume=Resume(RESUME_SNAPSHOT, None, None),
+        read_columns=(
+            "cik",
+            "name",
+            "entity_type",
+            "sic",
+            "ein",
+            "state_of_incorporation",
+            "tickers",
+            "exchanges",
+            "former_names",
+            "first_filed",
+            "last_filed",
+            "n_filings",
+            "form_25",
+            "form_15",
+            "form_8k12b",
+            "form_8k12g3",
+            "fetched_at",
+        ),
+    )
+
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
@@ -807,7 +838,8 @@ class Tables:
         date_type_cols=("date",),
         freshness="daily",
         read_columns=("date", "action", "ticker", "name", "value", "contraticker", "contraname"),
-        resume=Resume(RESUME_SERIES, None, "date", 7),
+        # replaced whole by each `universe --only sharadar-actions` run: `ticker` is in the PK, so a re-pull cannot upsert
+        resume=Resume(RESUME_SNAPSHOT, None, "date"),
     )
     # S&P 500 index membership events (added / removed / historical), back to 1992. Ingested
     # for the survivorship-bias fix, which is a SEPARATE task: the traded universe is the flat

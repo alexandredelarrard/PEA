@@ -2,16 +2,16 @@
 step_extract_fundamentals_sharadar.py
   (src/data_extract/transformers/step_extract_fundamentals_sharadar.py)
 -----------------------------------------------------------------------
-Sharadar fundamentals extraction -> the four vendor-shaped tables.
+Sharadar fundamentals extraction -> SF1, S&P 500 membership and the merged history.
 
 A SIBLING of `StepExtractFundamentals` (the SEC layer) rather than a part of it, and it runs
 BEFORE it: the two producers are independent, and the merged `fundamentals_history` that
 consumes both is field-block precedence -- Sharadar owns a declared set of columns for all
 history, SEC owns the rest, and no column ever switches source mid-series (D11/D14).
 
-The four fetchers run in DEPENDENCY order, which is not negotiable: the fundamentals fetch
+The stages run in DEPENDENCY order, which is not negotiable: the fundamentals fetch
 reads `currency` out of `sharadar_tickers` to enforce the USD assertion (D20) and raises if
-that table is empty.
+that table is empty. `sharadar_tickers` and `sharadar_actions` are refreshed by the universe step.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
-    fetch_sharadar_actions,
     fetch_sharadar_fundamentals,
     fetch_sharadar_sp500,
     predecessor_vendor_tickers,
@@ -35,7 +34,7 @@ class StepExtractFundamentalsSharadar(Step):
         super().__init__(context=context, config=config)
 
     def run(self, tickers: list[str], *, full: bool = False, config_dir: str | None = None, as_of: pd.Timestamp | None = None) -> None:
-        """The four stages, in dependency order. `full` re-pulls the whole configured window
+        """The three stages, in dependency order. `full` re-pulls the whole configured window
         instead of resuming, and makes the merge DELETE before it rebuilds.
 
         The CLI's `fundamentals-sharadar` command calls this rather than restating the order.
@@ -45,8 +44,8 @@ class StepExtractFundamentalsSharadar(Step):
         config_dir = str(config_dir or self._config_dir)
         years = int(self._config.data_extract.sharadar_years_history)
 
-        # `sharadar_tickers` (the entity dimension the USD check reads) is refreshed before the
-        # universe sync by its own `sharadar-tickers` command, not here.
+        # `sharadar_tickers` (the entity dimension the USD check reads) and `sharadar_actions` are refreshed
+        # before the universe sync by the universe step, not here.
 
         # 1. SF1, every column as delivered, on the three AS-REPORTED dimensions. Its own
         #    history knob (`sharadar_years_history`), separate from `years_history`, because
@@ -62,14 +61,11 @@ class StepExtractFundamentalsSharadar(Step):
             self._log.info("Sharadar SF1: + %d predecessor vendor ticker(s): %s", len(predecessors), ", ".join(predecessors))
             fetch_sharadar_fundamentals(self._context, tickers=predecessors, years_history=years, full=True, as_of=as_of)
 
-        # 2. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
-        fetch_sharadar_actions(self._context, years_history=years, full=full, as_of=as_of)
-
-        # 3. S&P 500 membership events. Ingested only -- the universe is `configs/universe.yml`
+        # 2. S&P 500 membership events. Ingested only -- the universe is `configs/universe.yml`
         #    (`context.universe`); nothing consumes this table yet.
         fetch_sharadar_sp500(self._context, full=full)
 
-        # 4. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the
+        # 3. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the
         #    SEC-owned ones, joined backward as of each publication date.
         #
         #    LAST, and never on its own schedule, for the same reason the SEC step already

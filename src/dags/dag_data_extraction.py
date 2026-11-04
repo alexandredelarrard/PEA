@@ -6,7 +6,7 @@ Nightly DATA-EXTRACTION DAG. One task PER SOURCE (fetcher, or one step sub-run),
 LOAD, not by big group: the light sources fan out freely, while the heavy / long / rate-limited ones are
 capped by Airflow POOLS (created in airflow-init):
 
-  * sec_bulk (2 slots)  — the SEC bulk zips: zips_download (Form 3/4/5, Notes and FTD
+  * sec_bulk (2 slots)  — the SEC bulk zips: sec_submissions (submissions.zip), zips_download (Form 3/4/5, Notes and FTD
                           zips), zips_ingest_insider (the Form 3/4/5 zip
                           parse) and zips_ingest_datasets (notes, FTD; disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
@@ -15,8 +15,10 @@ capped by Airflow POOLS (created in airflow-init):
                           superinvestors, earnings calls  (+ the one heavy yfinance pull:
                           price_history)
 
-Flow: [sec_company_tickers, sharadar_tickers] -> universe_sync -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger
-the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
+Flow: [sec_company_tickers, sharadar_tickers, sharadar_actions, sec_submissions] -> universe_sync -> zips_download -> identity
+-> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger the data_aggregation DAG. The four
+evidence tasks land before identity reads them; `universe_sync` runs on ALL_DONE, so a failed evidence refresh leaves the
+identity build on the stored inputs. Every task has `retries: 3`, so four attempts in all. No source blocks
 the night: `extraction_status` and `identity_check` run on ALL_DONE, so they start once every fetcher
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
 hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `universe_tickers`
@@ -87,11 +89,15 @@ def fetch(
     )
 
 
-# 0) universe (StepExtractUniverse) — the SEC and Sharadar ticker lists in parallel, then `universe_tickers` is
-#    synced from configs/universe.yml; every fetcher reads it, so a failed sync stops the night
+# 0) universe (StepExtractUniverse) — the SEC and Sharadar ticker lists and the identity evidence (Sharadar actions, full
+#    replace; SEC submissions.zip -> sec_cik_profile) in parallel, then `universe_tickers` is synced from configs/universe.yml
+#    (ALL_DONE: a failed evidence refresh leaves the stored table); every fetcher reads it, so a failed sync stops the night
 sec_company_tickers = fetch("universe --only sec-tickers", task_id="sec_company_tickers")
 sharadar_tickers = fetch("universe --only sharadar-tickers", task_id="sharadar_tickers")
-universe_sync = fetch("universe --only sync", task_id="universe_sync")
+sharadar_actions = fetch("universe --only sharadar-actions", task_id="sharadar_actions")
+sec_submissions = fetch("universe --only sec-submissions", pool="sec_bulk", task_id="sec_submissions")
+universe_sync = fetch("universe --only sync", task_id="universe_sync", trigger_rule=TriggerRule.ALL_DONE)
+universe_evidence = [sec_company_tickers, sharadar_tickers, sharadar_actions, sec_submissions]
 
 # 1) LIGHT / fast — fan out in the default pool
 macro = fetch("macro")
@@ -125,7 +131,6 @@ fundamentals = fetch("fundamentals", pool="sec_api")
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
 fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
-sharadar_actions = fetch("sharadar-actions")  # market-wide Sharadar actions, independent of the SEC walk
 def14a = fetch("def14a", pool="sec_api")  # + LLM
 def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
@@ -177,7 +182,6 @@ all_fetchers = [
     fundamentals,
     fundamentals_employees,
     fundamentals_sharadar,
-    sharadar_actions,
     def14a,
     def14a_edgar,
     sec_8k_items,
@@ -206,7 +210,7 @@ identity_consumers = [
 ]
 edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar]
 
-[sec_company_tickers, sharadar_tickers] >> universe_sync >> all_fetchers
+universe_evidence >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes
 zips_download >> identity >> identity_consumers
 identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and skip their own refresh

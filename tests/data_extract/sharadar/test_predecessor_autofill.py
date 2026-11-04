@@ -109,7 +109,7 @@ def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:
 
 def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], bool]] = []
-    for name in ("fetch_sharadar_actions", "fetch_sharadar_sp500", "build_merged_history"):
+    for name in ("fetch_sharadar_sp500", "build_merged_history"):
         monkeypatch.setattr(step_module, name, lambda *a, **k: None)
     monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers, **k: calls.append((list(tickers), k["full"])))
     monkeypatch.setattr(step_module, "predecessor_vendor_tickers", lambda context, tickers: ["STE1"])

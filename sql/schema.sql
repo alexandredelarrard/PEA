@@ -191,6 +191,33 @@ CREATE TABLE IF NOT EXISTS "sec_company_tickers" (
     PRIMARY KEY ("cik", "ticker")
 );
 
+-- [reference] sec_cik_profile  (pk: cik)
+-- SEC submissions metadata, one row per CIK of the bulk submissions.zip, replaced by each
+-- `universe --only sec-submissions` run; read only by the identity step. `former_names` and the four
+-- form columns are JSON lists (name/from/to; form/filed/accession); `tickers` and `exchanges` are the
+-- CURRENT listing, empty once a CIK stops listing. Form 25 and 15 are filed per security.
+
+CREATE TABLE IF NOT EXISTS "sec_cik_profile" (
+    "cik" TEXT NOT NULL,
+    "name" TEXT,
+    "entity_type" TEXT,
+    "sic" TEXT,
+    "ein" TEXT,
+    "state_of_incorporation" TEXT,
+    "tickers" TEXT,
+    "exchanges" TEXT,
+    "former_names" TEXT,
+    "first_filed" DATE,
+    "last_filed" DATE,
+    "n_filings" BIGINT,
+    "form_25" TEXT,
+    "form_15" TEXT,
+    "form_8k12b" TEXT,
+    "form_8k12g3" TEXT,
+    "fetched_at" TIMESTAMP,
+    PRIMARY KEY ("cik")
+);
+
 -- [extract] prices  (pk: ticker, date)
 -- Equities only: the universe and its companies' current secondary share classes (universe_cusip
 -- role secondary_class, open end) under their Yahoo symbols. Every reader filters on the universe.

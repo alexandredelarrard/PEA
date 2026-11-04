@@ -91,7 +91,6 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
-    fetch_sharadar_actions,
     fetch_sharadar_sp500,
 )
 from src.data_extract.utils.fundamentals_sharadar.gap_check import (
@@ -185,11 +184,12 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
 
 
 # --- Universe (runs before every other command) ---
-_UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
+_UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sharadar-actions", "sec-submissions", "sync")
 
 
 @cli.command(
-    help="Refresh sec_company_tickers and sharadar_tickers, then sync universe_tickers with configs/universe.yml "
+    help="Refresh sec_company_tickers, sharadar_tickers, sharadar_actions (full replace) and sec_cik_profile (SEC submissions.zip), "
+    "then sync universe_tickers with configs/universe.yml "
     f"(writes only what changed). --only runs the named part(s) ({', '.join(_UNIVERSE_PARTS)}).",
     help_priority=1,
 )
@@ -199,7 +199,13 @@ _UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
 def universe(config_path: str, as_of: datetime | None, only: tuple[str, ...]) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractUniverse(context, config, run_date(as_of))
-    parts = {"sec-tickers": step.run_sec_tickers, "sharadar-tickers": step.run_sharadar_tickers, "sync": step.run_sync}
+    parts = {
+        "sec-tickers": step.run_sec_tickers,
+        "sharadar-tickers": step.run_sharadar_tickers,
+        "sharadar-actions": step.run_sharadar_actions,
+        "sec-submissions": step.run_sec_submissions,
+        "sync": step.run_sync,
+    }
     for name in only or _UNIVERSE_PARTS:
         parts[name]()
 
@@ -448,7 +454,7 @@ def fundamentals(
 # History depth is `data_extract.sharadar_years_history`, not `years_history`.
 @cli.command(
     name="fundamentals-sharadar",
-    help="The whole Sharadar producer in dependency order: tickers -> SF1 fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
+    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> the MERGED fundamentals_history (tickers and actions: `universe`).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -459,15 +465,6 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractFundamentalsSharadar(context=context, config=config)
     step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
-
-
-@cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history), as_of=run_date(as_of))
 
 
 @cli.command(

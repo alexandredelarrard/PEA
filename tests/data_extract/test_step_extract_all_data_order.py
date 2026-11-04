@@ -22,7 +22,7 @@ from tests.support.universe import seed_universe
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
 EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
-UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "universe_sync")
+UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions", "universe_sync")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
@@ -55,6 +55,9 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(universe_module, "download_sec_company_tickers", mark("sec_tickers", 0))
     monkeypatch.setattr(universe_module, "fetch_sharadar_tickers", mark("sharadar_tickers"))
+    monkeypatch.setattr(universe_module, "fetch_sharadar_actions", mark("sharadar_actions", 0))
+    monkeypatch.setattr(universe_module, "refresh_sec_cik_profile", mark("sec_submissions", 0))
+    monkeypatch.setattr(universe_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(universe_module, "sync", mark("universe_sync", 0))
     monkeypatch.setattr(zips_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(zips_module, "notes_periods", lambda context, years_history, today: ["2026q1"])
@@ -104,12 +107,13 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module, "propagate_identity", propagate)
 
     config = SimpleNamespace(
-        data_extract=SimpleNamespace(years_history=15),
+        data_extract=SimpleNamespace(years_history=15, sharadar_years_history=31),
         local=SimpleNamespace(
             paths=SimpleNamespace(
                 insider_transactions="sec_insider_transactions",
                 financial_notes="notes",
                 fails_deliver="sec_fails_to_deliver",
+                sec_submissions="sec_submissions",
             )
         ),
     )

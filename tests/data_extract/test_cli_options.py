@@ -44,9 +44,10 @@ def test_cli_refuses_names_outside_the_universe_before_any_fetch(
 @pytest.mark.parametrize(
     "only,expected",
     [
-        ((), ["sec-tickers", "sharadar-tickers", "sync"]),
+        ((), ["sec-tickers", "sharadar-tickers", "sharadar-actions", "sec-submissions", "sync"]),
         (("--only", "sync"), ["sync"]),
         (("--only", "sharadar-tickers", "--only", "sec-tickers"), ["sharadar-tickers", "sec-tickers"]),
+        (("--only", "sec-submissions", "--only", "sharadar-actions"), ["sec-submissions", "sharadar-actions"]),
     ],
 )
 def test_cli_universe_runs_the_named_parts_in_order(only: tuple[str, ...], expected: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,6 +55,8 @@ def test_cli_universe_runs_the_named_parts_in_order(only: tuple[str, ...], expec
     step = SimpleNamespace(
         run_sec_tickers=lambda: ran.append("sec-tickers"),
         run_sharadar_tickers=lambda: ran.append("sharadar-tickers"),
+        run_sharadar_actions=lambda: ran.append("sharadar-actions"),
+        run_sec_submissions=lambda: ran.append("sec-submissions"),
         run_sync=lambda: ran.append("sync"),
     )
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, None))

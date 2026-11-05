@@ -178,6 +178,22 @@ CREATE TABLE IF NOT EXISTS "security_master" (
     PRIMARY KEY ("security_id", "source", "source_symbol", "valid_from")
 );
 
+-- [reference] price_owner_windows  (pk: ticker, valid_from)
+-- Which traded symbol's vendor series a universe ticker's price history follows over
+-- [valid_from, valid_to); an open start is stored as 1900-01-01, an open end is NULL. A ticker
+-- with no row is its own owner. Read only by the price build; to be replaced by the identity
+-- master's tape-symbol intervals.
+
+CREATE TABLE IF NOT EXISTS "price_owner_windows" (
+    "ticker" TEXT NOT NULL,
+    "traded_symbol" TEXT,
+    "issuer_cik" TEXT,
+    "valid_from" DATE NOT NULL,
+    "valid_to" DATE,
+    "evidence" TEXT,
+    PRIMARY KEY ("ticker", "valid_from")
+);
+
 -- [reference] sec_company_tickers  (pk: cik, ticker)
 -- SEC's current ticker list with exchanges, one snapshot per `zips-download --only sec-tickers` run. No dates: read
 -- only for sibling share-class discovery and `exchange`, never for dating or CIK resolution.

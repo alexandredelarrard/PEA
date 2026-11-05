@@ -17,7 +17,7 @@ from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
 from src.utils.macro import load_macro_series
 from src.utils.price.adjustments import ShareBasis, unsupported_units
-from src.utils.price.basis import load_price_identity, load_quantity_basis
+from src.utils.price.basis import load_quantity_basis
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -76,10 +76,27 @@ class PriceInputs:
     unsupported_units: frozenset[str]
 
 
+def _owner_series(df_owners: pd.DataFrame | None) -> tuple[PredecessorSeries, ...]:
+    """The owner-table windows whose traded symbol is another security; a ticker with no such row owns itself."""
+    if df_owners is None:
+        return ()
+    df_owners = df_owners.loc[df_owners["traded_symbol"].ne(df_owners["ticker"])]
+    starts, ends = pd.to_datetime(df_owners["valid_from"]), pd.to_datetime(df_owners["valid_to"])
+    rows = zip(df_owners["ticker"], df_owners["traded_symbol"], df_owners["issuer_cik"], starts, ends, strict=True)
+    return tuple(PredecessorSeries(ticker, symbol, cik, start, None if pd.isna(end) else end) for ticker, symbol, cik, start, end in rows)
+
+
 def load_price_inputs(context: Context, tickers: list[str], bugfix: dict) -> PriceInputs:
     """Read projected sources once, retaining full actions, anchors and public share seeds."""
     store = context.store
-    predecessors, df_security = load_price_identity(context, tickers)
+    df_owners = store.load(
+        Tables.price_owner_windows,
+        columns=["ticker", "traded_symbol", "issuer_cik", "valid_from", "valid_to"],
+        where={"ticker": tickers},
+        optional=True,
+    )
+    df_security = store.load(Tables.sharadar_tickers, columns=["ticker", "category"], where={"ticker": tickers}, optional=True)
+    predecessors = _owner_series(df_owners)
     action_tickers = sorted(set(tickers) | {item.vendor_ticker for item in predecessors})
     actions_present, splits_present = store.exists(Tables.sharadar_actions), store.exists(Tables.prices_splits)
     df_bars = store.load(Tables.prices, columns=PRICE_COLS, where={"ticker": tickers})

@@ -201,7 +201,7 @@ class FakeStore:
         **kw: Any,
     ) -> pd.DataFrame | None:
         name = name_of(table)
-        df = self._filter(self.t.get(name, pd.DataFrame()), where)
+        df = self._filter(self.t[name], where) if name in self.t else pd.DataFrame()
         marker = None if markers or name not in BY_NAME else BY_NAME[name].empty_marker
         if marker is not None and marker[0] in df.columns:
             values = cast(pd.Series, df[marker[0]])

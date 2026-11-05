@@ -89,3 +89,15 @@ def test_q2c_short_volume_security_table_is_registered_and_spliced() -> None:
     assert "sec_short_interest" in blocks and "ix_sec_short_volume_security_ticker" in schema_sql
     print("\n=== SANITY CHECK: Q2c DDL ===")
     print("  sec_short_volume_security registered with PK (source_symbol, date) and hand-spliced; sec_short_interest's block kept")
+
+
+def test_price_owner_windows_is_registered_and_spliced() -> None:
+    schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_sql)
+    table = Tables.price_owner_windows
+    assert table.pk == ("ticker", "valid_from") and table.date_type_cols == ("valid_from", "valid_to")
+    persisted = blocks[table.name]
+    assert persisted == ddl.table_ddl(table, [(c, "DATE" if c in table.date_type_cols else "TEXT") for c in table.read_columns])
+    assert "security_master" in blocks and "ix_entity_lineage_entity_id" in schema_sql
+    print("\n=== SANITY CHECK: owner table DDL ===")
+    print("  price_owner_windows registered with PK (ticker, valid_from), DATE windows, and its spliced block equals the generator's output")

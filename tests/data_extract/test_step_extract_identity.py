@@ -24,6 +24,9 @@ from tests.data_extract.institutionals.test_fails_to_deliver import _HEADER, _sc
 from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe, universe_of
 
+#: an empty published lineage, as the stubbed resolver inputs carry
+_NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
+
 FLOW = (
     "run_capture_evidence",
     "run_company_anchor",
@@ -90,7 +93,7 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
     monkeypatch.setattr(StepExtractIdentity, "run_cusip_history", lambda self: mark("cusips", pd.DataFrame())())
     stub_propagation(monkeypatch, module)
-    inputs = SimpleNamespace(lineage=None, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+    inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     monkeypatch.setattr(module, "identity_inputs", mark("refresh", inputs))
     monkeypatch.setattr(module, "recheck_tickers", mark("propagate", []))
     monkeypatch.setattr(module, "load_stored_lineage", lambda context: pd.DataFrame())
@@ -199,7 +202,7 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(module, "pending_dei_periods", lambda *args: [])
     monkeypatch.setattr(module, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
-    anchor = CompanyAnchor(company_id={}, sharadar_cik={})
+    anchor = CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik={"ABC": "0000000777"})
     monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: setattr(self, "_anchor", anchor) or anchor)
     activity = SimpleNamespace(activity=pd.DataFrame(columns=["cik", "source", "first", "last"]))
     monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", activity) or activity)

@@ -34,7 +34,7 @@ STEP = ROOT / "src" / "data_extract" / "transformers" / "step_extract_identity.p
 STAGES = ROOT / "src" / "data_extract" / "utils" / "identity"
 PUBLISHED = {"universe_cik_symbol", "universe_cusip", "universe_tickers"}
 WRITERS = {"save", "replace", "update", "delete", "insert", "bulk_seed", "append_tail", "save_identity", "save_unless_unchanged"}
-SYNC_COLUMNS = ["ticker", "name", "cik", "sector", "universe_added_on", "permaticker", "in_universe", "cusips"]
+SYNC_COLUMNS = ["ticker", "name", "sector", "universe_added_on", "permaticker", "in_universe", "cusips"]
 
 
 def _published_writes(path: Path) -> set[tuple[str, str]]:
@@ -108,7 +108,7 @@ def _step(store: DataStore) -> Any:
     """A publish step over `store` with this run's builds preset (AAA only in the universe)."""
     log = logging.getLogger("test.identity.publish")
     context = SimpleNamespace(store=store, log=log, config_dir=str(ROOT / "configs"), universe=Universe(store, universe_config(["AAA"])))
-    life = pd.DataFrame([("AAA", "E0000000100", "AAA", pd.Timestamp("2000-01-03"), pd.NaT, "active")], columns=list(LIFE_COLUMNS))
+    life = pd.DataFrame([("AAA", "E0000000100", "0000000100", "AAA", pd.Timestamp("2000-01-03"), pd.NaT, "active")], columns=list(LIFE_COLUMNS))
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, context.config_dir, log
     step._symbols = SimpleNamespace(
@@ -122,22 +122,23 @@ def _step(store: DataStore) -> Any:
 
 @pytest.fixture
 def published_store(sqlite_store: DataStore) -> DataStore:
-    """`universe_tickers` from `sql/schema.sql` holding AAA (in the universe, no identity yet) and GEHC (removed)."""
+    """`universe_tickers` from `sql/schema.sql` holding AAA (in the universe, no identity and no CIK yet, U-49) and GEHC (removed)."""
     tables = [Tables.universe_tickers, Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure, Tables.insider_transactions]
     create_canonical(sqlite_store.engine, tables)
     rows = pd.DataFrame(
         [
-            ("AAA", "AAA Corp", "0000000100", "Tech", pd.Timestamp("2000-01-01"), 1, True, "123456101", None, None, None, None, None),
-            ("GEHC", "GE HealthCare", "0001932393", "Health", pd.Timestamp("2023-01-04"), 2, False, None, "E0001932393", "GEHC", pd.Timestamp("2023-01-04"), None, "active"),
+            ("AAA", "AAA Corp", "Tech", pd.Timestamp("2000-01-01"), 1, True, "123456101", None, None, None, None, None, None),
+            ("GEHC", "GE HealthCare", "Health", pd.Timestamp("2023-01-04"), 2, False, None, "E0001932393", "0001932393", "GEHC", pd.Timestamp("2023-01-04"), None, "active"),
         ],
-        columns=[*SYNC_COLUMNS, "company_id", "trading_symbol", "first_price_date", "ended_on", "status"],
+        columns=[*SYNC_COLUMNS, "company_id", "cik", "trading_symbol", "first_price_date", "ended_on", "status"],
     )  # fmt: skip
     sqlite_store.save(Tables.universe_tickers, rows)
     return sqlite_store
 
 
 def test_publish_writes_identity_columns_in_place_and_a_second_run_writes_nothing(published_store: DataStore) -> None:
-    """X19 / AC-014: a NOT NULL `cik` table rejects an identity-only upsert; publish updates AAA's identity columns only,
+    """X19 / AC-014: a NOT NULL `universe_added_on` table rejects an identity-only upsert; publish updates AAA's identity columns
+    (its current CIK included, U-49) only,
     leaves GEHC's row and every sync column as stored, adds `company_id` to the CUSIP lines; the second run writes 0."""
     store = published_store
     before = store.load(Tables.universe_tickers).sort_values("ticker", ignore_index=True)
@@ -152,12 +153,14 @@ def test_publish_writes_identity_columns_in_place_and_a_second_run_writes_nothin
     aaa = after[after["ticker"].eq("AAA")].iloc[0]
     assert after[SYNC_COLUMNS].astype(str).equals(before[SYNC_COLUMNS].astype(str)), (before, after)
     assert after[after["ticker"].eq("GEHC")].astype(str).equals(before[before["ticker"].eq("GEHC")].astype(str))
-    assert (aaa["company_id"], aaa["trading_symbol"], aaa["status"]) == ("E0000000100", "AAA", "active") and pd.isna(aaa["ended_on"]), aaa
+    assert (aaa["company_id"], aaa["cik"], aaa["trading_symbol"], aaa["status"]) == ("E0000000100", "0000000100", "AAA", "active"), aaa
+    assert pd.isna(aaa["ended_on"]), aaa
     assert pd.Timestamp(aaa["first_price_date"]) == pd.Timestamp("2000-01-03"), aaa
     assert lines["company_id"].tolist() == ["E0000000100"] and len(store.load(Tables.universe_cik_symbol)) == 2
     assert first == 2 + 1 + 1 and second == 0, (first, second)
     print("\n=== SANITY CHECK: publish on a schema.sql universe_tickers (X19, AC-014) ===")
-    print("  an identity-only upsert fails NOT NULL on cik: the publish uses store.update")
+    print("  an identity-only upsert fails NOT NULL on universe_added_on: the publish uses store.update")
+    print(f"  AAA cik NULL after the sync -> {aaa['cik']} published by identity (U-49)")
     print(f"  run 1 wrote {first} row(s): universe_cik_symbol 2, universe_cusip 1 (company_id E0000000100), AAA identity columns 1")
     print(f"  run 2 wrote {second} row(s); sync columns {SYNC_COLUMNS} unchanged; removed GEHC row unchanged")
 

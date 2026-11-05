@@ -58,18 +58,19 @@ def test_first_build_takes_sec_identity_and_the_yml_gics(store, roster, sec, con
     universe = Universe(store, config)
     built = universe.frame.set_index("ticker")
     expected = roster.set_index("ticker").loc[universe.tickers]
-    gics = ["cik", "sector", "industry_group", "sub_industry"]
+    gics = ["sector", "industry_group", "sub_industry"]
     diff = (built[gics] != expected[gics]).any(axis=1)
 
     assert written == len(universe.tickers) == 491
     assert not diff.any(), built[gics][diff]
+    assert built["cik"].isna().all(), "U-49: the CIK is an identity column, the sync never writes it"
     assert built["name"].tolist() == sec.set_index("ticker").loc[universe.tickers, "name"].tolist()
     assert set(built["universe_added_on"].astype(str)) == {"2000-01-01"}
     assert built.loc["GOOGL", "cusips"] == "02079K305 38259P508"
     assert built.loc["BRK-B", "cusips"] == "084670207 084670702"
     assert built["cusips"].notna().all()
     print("\n=== SANITY CHECK: first build ===")
-    print(f"  {written} rows; CIK (SEC) and the 3 GICS columns (yml) equal the pre-refactor roster for all 491; names are SEC's;")
+    print(f"  {written} rows; the 3 GICS columns (yml) equal the pre-refactor roster for all 491; names are SEC's; CIK left NULL (U-49);")
     print(f"  every row has CUSIPs; {built['sector'].nunique()} sectors / {built['industry_group'].nunique()} groups.")
 
 
@@ -236,11 +237,11 @@ def test_alias_cusips_join_the_union_and_a_listed_row_beats_a_delisted_one(store
     print("  GOOG's own CUSIP joins GOOGL's union; AAPL keeps its listed row over a newer delisted one.")
 
 
-def test_a_ticker_the_sec_no_longer_lists_takes_sharadars_cik_and_name(store, config) -> None:
+def test_a_ticker_the_sec_no_longer_lists_takes_sharadars_name(store, config) -> None:
     store.delete(Tables.sec_company_tickers, {"ticker": ["AAPL"]})
     sync(store, config, AS_OF)
     built = Universe(store, config).frame.set_index("ticker")
 
-    assert built.loc["AAPL", "cik"] == "0000320193" and built.loc["AAPL", "name"] == "APPLE INC"
+    assert built.loc["AAPL", "name"] == "APPLE INC" and pd.isna(built.loc["AAPL", "cik"])
     print("\n=== SANITY CHECK: SEC-unlisted ticker ===")
-    print("  AAPL missing from the SEC snapshot takes Sharadar's secfilings CIK 0000320193 and Sharadar's name.")
+    print("  AAPL missing from the SEC snapshot takes Sharadar's name; its CIK is left to identity (U-49).")

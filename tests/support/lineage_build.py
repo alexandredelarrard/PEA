@@ -59,7 +59,9 @@ def cik_history_of(
     step._context, step._config_dir, step._log = context, config_dir, logging.getLogger("tests.lineage_build")
     step._tenure = tenure
     step._scan = SimpleNamespace(owner_pairs=owner_pairs)
-    step._anchor = CompanyAnchor(company_id=anchor_company_ids(None, existing, list(roster_cik)), sharadar_cik=dict(sharadar_cik or {}))
+    step._anchor = CompanyAnchor(
+        company_id=anchor_company_ids(None, existing, list(roster_cik)), sharadar_cik=dict(sharadar_cik or {}), roster_cik=dict(roster_cik)
+    )
     return step.run_cik_history()
 
 

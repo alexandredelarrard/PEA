@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
-from src.data_extract.utils.identity.company_anchor import anchor_company_ids, sharadar_ciks
+from src.data_extract.utils.identity.company_anchor import anchor_company_ids, roster_ciks, sharadar_ciks
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.support.lineage_build import cik_history_of
@@ -127,3 +127,43 @@ def test_every_stored_company_keeps_its_id_on_the_fixture_store() -> None:
     print("\n=== SANITY CHECK: anchors on the fixture store ===")
     print(f"  {len(anchors)} of {len(universe)} universe tickers anchored; {expected}")
     print("  OK: every stored company keeps today's E + CIK id (PD-3); none is minted again")
+
+
+def test_the_roster_cik_reads_the_stored_lineage_then_the_sec_list_then_sharadar() -> None:
+    """U-49: AAA's newest stored CIK window wins over the SEC list (XOM-style holdco move); BBB is new and takes the SEC
+    list; CCC is listed nowhere but on Sharadar (an ended company on a cold start); `universe_tickers.cik` is never read."""
+    lineage = pd.DataFrame(
+        {
+            "canonical_ticker": ["AAA", "AAA", "AAA"],
+            "cik": ["0000000100", "0000000200", "0000000200"],
+            "role": ["cik_window", "cik_window", "symbol"],
+            "valid_from": pd.to_datetime(["1900-01-01", "2025-01-02", "2025-01-02"]),
+        }
+    )
+    sec = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": [100, 300]})
+
+    roster = roster_ciks(["AAA", "BBB", "CCC"], lineage, sec, {"CCC": "0000000400", "BBB": "0000000999"})
+
+    assert roster == {"AAA": "0000000200", "BBB": "0000000300", "CCC": "0000000400"}, roster
+    assert roster_ciks(["AAA"], None, None, {}) == {}
+    print("\n=== SANITY CHECK: roster CIK seed (U-49) ===")
+    print(f"  {roster}: AAA newest stored window (SEC lists the older 100), BBB from the SEC list, CCC from Sharadar")
+
+
+def test_a_cold_start_roster_equals_the_synced_cik_on_the_fixture_store() -> None:
+    """Real data, cold start: with no stored lineage, the SEC list and the Sharadar seed give every universe ticker the CIK
+    the old sync stored; with the stored lineage, the same (fixture: the newest window is that CIK for all 491)."""
+    store = _fixture_store()
+    universe = store.load(Tables.universe_tickers, columns=["ticker", "cik", "permaticker"])
+    sec = store.load(Tables.sec_company_tickers, columns=["ticker", "cik"])
+    lineage = store.load(Tables.universe_cik_symbol, columns=["canonical_ticker", "cik", "role", "valid_from"])
+    seeds = sharadar_ciks(universe, store.load(Tables.sharadar_tickers, columns=["permaticker", "secfilings", "lastupdated"]))
+    tickers = list(universe["ticker"])
+    synced = dict(zip(universe["ticker"], universe["cik"], strict=True))
+
+    cold = roster_ciks(tickers, None, sec, seeds)
+    warm = roster_ciks(tickers, lineage, sec, seeds)
+
+    assert cold == synced and warm == synced, sorted(set(cold.items()) ^ set(synced.items()))[:10]
+    print("\n=== SANITY CHECK: roster seed on the fixture store (U-49) ===")
+    print(f"  cold start: {len(cold)} of {len(tickers)} tickers seeded, all equal to the stored sync CIK; warm: the same")

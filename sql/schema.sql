@@ -14,7 +14,7 @@
 CREATE TABLE IF NOT EXISTS "universe_tickers" (
     "ticker" TEXT NOT NULL,
     "name" TEXT,
-    "cik" TEXT NOT NULL,
+    "cik" TEXT,
     "sector" TEXT,
     "industry_group" TEXT,
     "sub_industry" TEXT,

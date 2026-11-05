@@ -20,6 +20,9 @@ from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, PropagationResult
 from tests.support.universe import universe_of
 
+#: an empty published lineage, as the stubbed resolver inputs carry
+_NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
+
 
 def _config() -> SimpleNamespace:
     paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="sec_fails_to_deliver")
@@ -30,7 +33,7 @@ def stub_propagation(monkeypatch: pytest.MonkeyPatch, module: Any = step_module)
     """Every stage `run_propagate` calls recorded instead of run, over a resolver whose tickers carry no scope stamp:
     `reload` (the rebuild from the published tables), `recheck` (tickers, as_of, every), `retag` (dry run)."""
     calls: dict[str, list[Any]] = {"reload": [], "recheck": [], "retag": []}
-    inputs = SimpleNamespace(lineage=None, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+    inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     resolver = SimpleNamespace(filing_scope=lambda ticker: SimpleNamespace(scope_changed_at=None), bounds={})
     monkeypatch.setattr(module, "identity_inputs", lambda context: calls["reload"].append(context) or inputs)
     monkeypatch.setattr(module, "build_identity", lambda *args: resolver)
@@ -65,7 +68,7 @@ def run_propagation(
     as_of: pd.Timestamp | None = None,
 ) -> PropagationResult:
     """`identity --only propagate [-t tickers] [--full] [--dry-run] [--as-of]` with `identity` as the rebuilt resolver."""
-    inputs = SimpleNamespace(lineage=None, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+    inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     monkeypatch.setattr(step_module, "identity_inputs", lambda context: inputs)
     monkeypatch.setattr(step_module, "build_identity", lambda *args: identity)
     monkeypatch.setattr(step_module, "bind_identity", lambda context, built: built)

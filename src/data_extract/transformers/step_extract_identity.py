@@ -45,7 +45,7 @@ from src.data_extract.utils.identity.cik_history import (
     sharadar_outside,
     succession_pairs,
 )
-from src.data_extract.utils.identity.company_anchor import CompanyAnchor, anchor_company_ids, sharadar_ciks
+from src.data_extract.utils.identity.company_anchor import CompanyAnchor, anchor_company_ids, newest_window_ciks, roster_ciks, sharadar_ciks
 from src.data_extract.utils.identity.cusip_history import (
     EVIDENCE_COLUMNS,
     FTD_LINEAGE_COLUMNS,
@@ -164,6 +164,7 @@ from src.utils.string import pad_cik_series, run_date
 #: The `sec_cik_profile` columns the CIK history reads, and the rows that carry one of its event forms.
 _PROFILE_COLUMNS = ("cik", "form_25", "form_15", "form_8k12b")
 _SHARADAR_COLUMNS = ("secfilings", *LIFE_COLUMNS)
+_ANCHOR_LINEAGE_COLUMNS = ("canonical_ticker", "company_id", "cik", "role", "valid_from")
 
 
 @dataclass(frozen=True)
@@ -221,17 +222,24 @@ class StepExtractIdentity(Step):
         return written
 
     def run_company_anchor(self) -> CompanyAnchor:
-        """The frozen `company_id` of each identified universe ticker, its Sharadar CIK seed and the end date of each ended
-        company (D-4: every later stage closes its open rows there, inside its stamp pass)."""
-        # load the published company rows, the stored lineage and the Sharadar tickers
+        """The frozen `company_id` of each identified universe ticker, its roster CIK (U-49) and Sharadar CIK seeds, and the end
+        date of each ended company (D-4: every later stage closes its open rows there, inside its stamp pass)."""
+        # load the published company rows, the stored lineage, the SEC ticker list and the Sharadar tickers
+        tickers = self._universe.tickers
         universe = self._context.store.load(Tables.universe_tickers, project=True, optional=True)
-        lineage = self._context.store.load(Tables.universe_cik_symbol, columns=["canonical_ticker", "company_id"], optional=True)
+        lineage = self._context.store.load(Tables.universe_cik_symbol, columns=list(_ANCHOR_LINEAGE_COLUMNS), optional=True)
+        sec_tickers = self._context.store.load(Tables.sec_company_tickers, columns=["ticker", "cik"], where={"ticker": tickers}, optional=True)
         sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(_SHARADAR_COLUMNS), optional=True)
 
-        # anchor the stored ids, read the Sharadar seeds and end dates
-        tickers = self._universe.tickers
+        # anchor the stored ids, read the seeds and end dates
         ids, seeds = anchor_company_ids(universe, lineage, tickers), sharadar_ciks(universe, sharadar)
-        self._anchor = CompanyAnchor(company_id=ids, sharadar_cik=seeds, ended_on=ended_dates(self._universe.frame, sharadar))
+        roster = roster_ciks(tickers, lineage, sec_tickers, seeds)
+        self._anchor = CompanyAnchor(company_id=ids, sharadar_cik=seeds, roster_cik=roster, ended_on=ended_dates(self._universe.frame, sharadar))
+
+        # check every universe ticker has a roster CIK, then log
+        unseeded = sorted(set(tickers) - set(roster))
+        if unseeded:
+            raise ValueError(f"no roster CIK for {unseeded}: not in the stored lineage, {Tables.sec_company_tickers} or Sharadar")
         self._log.info(
             f"company anchor: {len(ids)} of {len(tickers)} universe ticker(s) carry a frozen company_id ({len(tickers) - len(ids)} to mint); "
             f"{len(seeds)} Sharadar CIK seed(s); {len(self._anchor.ended_on)} ended company(ies)"
@@ -249,7 +257,7 @@ class StepExtractIdentity(Step):
         profile = self._context.store.load(Tables.sec_cik_profile, columns=list(_PROFILE_COLUMNS), where=events, optional=True)
         registrants = load_registrants(str(self._config_dir))
         blob = manual_lineage_blob(str(self._config_dir))
-        roster_cik = self._universe.cik_by_ticker
+        roster_cik = anchor.roster_cik
 
         # clean: one evidence frame and its index, the candidate CIKs and their owner sets
         dei = collapse_dei_periods(dei_rows) if dei_rows is not None else None
@@ -300,7 +308,7 @@ class StepExtractIdentity(Step):
             Tables.sharadar_actions, columns=list(TAPE_ACTION_COLUMNS), where={"action": list(TICKER_CHANGE_ACTIONS)}, optional=True
         )
         manual = load_manual_symbol_tenure(str(self._config_dir))
-        roster_cik = self._universe.cik_by_ticker
+        roster_cik = (self._anchor if self._anchor is not None else self.run_company_anchor()).roster_cik
 
         # compute: the tape over the CIK windows, every holder interval classified, the rows and the trading symbols
         evidence = symbol_evidence(history, tape_chains(self._universe.frame, sharadar, actions))
@@ -343,7 +351,7 @@ class StepExtractIdentity(Step):
             else None
         )
         manual = load_security_manual(str(self._config_dir))
-        ended_on = (self._anchor if self._anchor is not None else self.run_company_anchor()).ended_on
+        anchor = self._anchor if self._anchor is not None else self.run_company_anchor()
 
         # nothing to build without captured FTD lines (a cold start): the table is left as it is
         if observations is None:
@@ -354,7 +362,7 @@ class StepExtractIdentity(Step):
 
         # clean: the FTD lines, the lineage view, the SEC listing and the FINRA class symbols and days
         obs = prepare_observations(observations)
-        view = lineage_view(lineage, self._universe.cik_by_ticker, tape_intervals(lineage))
+        view = lineage_view(lineage, anchor.roster_cik, tape_intervals(lineage))
         listing, finra, flags = sec_listing(sec_tickers), finra_evidence(presence), CusipFlags()
 
         # compute: the lines and their issuers, their life over FINRA days and back to the first confirmed 13F period (X3, X4)
@@ -376,7 +384,7 @@ class StepExtractIdentity(Step):
 
         # post-process: the table rows closed at their company's end, each company's stamp kept while unchanged
         built = cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing))
-        rows = finalise_rows(built, existing, pd.Timestamp.now().floor("s"), ended_on)
+        rows = finalise_rows(built, existing, pd.Timestamp.now().floor("s"), anchor.ended_on)
 
         # check: the flags of the build (its WARNING items are logged by `run_publish`) and the INFO summary
         detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
@@ -447,9 +455,11 @@ class StepExtractIdentity(Step):
         """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
         scope, re-parse, re-stamp the insider, FTD, short-volume and 13F rows, rebuild purged histories. A first build or
         `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
-        # load: the resolver rebuilt from the published tables (cached for this run's later readers)
+        # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49)
         inputs = identity_inputs(self._context)
-        built = build_identity(inputs.lineage, inputs.tenure, self._universe.cik_by_ticker, inputs.master, inputs.co_registrants, inputs.mergers)
+        current = newest_window_ciks(inputs.lineage)
+        roster_cik = {ticker: current[ticker] for ticker in self._universe.tickers if ticker in current}
+        built = build_identity(inputs.lineage, inputs.tenure, roster_cik, inputs.master, inputs.co_registrants, inputs.mergers)
         identity = bind_identity(self._context, built)
         tickers, dry_run, every = self._options.tickers or self._universe.tickers, self._options.dry_run, self._options.full or self._first_build
 

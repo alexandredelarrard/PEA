@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from src.data_extract.utils.identity.company_anchor import newest_window_ciks
 from src.data_extract.utils.identity.symbol_history import trading_symbols
 from src.utils.identity_flags import FLAG_COLUMNS
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 LIFE_COLUMNS = ("permaticker", "ticker", "firstpricedate", "lastpricedate", "isdelisted", "lastupdated")
 PRICE_SPAN = {"price_first": ("min", "date"), "price_last": ("max", "date")}
 #: One row per universe ticker: the identity columns of `universe_tickers`.
-TABLE_COLUMNS = ("ticker", "company_id", "trading_symbol", "first_price_date", "ended_on", "status")
+TABLE_COLUMNS = ("ticker", "company_id", "cik", "trading_symbol", "first_price_date", "ended_on", "status")
 STATUS_ACTIVE, STATUS_RENAMED, STATUS_ENDED = "active", "renamed", "ended"
 #: A-3: Sharadar's end and the last stored price further apart than this many sessions is an action item.
 MAX_SESSIONS_APART = 5
@@ -62,12 +63,13 @@ def company_lifecycle(universe: pd.DataFrame, sharadar: pd.DataFrame | None, pri
     # clean: each permaticker's Sharadar dates, each ticker's stored price span, company id and trading symbol
     life, spans = _sharadar_life(sharadar), _price_spans(prices)
     ids, trading = _company_ids(lineage), trading_symbols(lineage)[["ticker", "trading_symbol"]]
+    current = pd.Series(newest_window_ciks(lineage), name="cik", dtype=object).rename_axis("ticker").reset_index()
 
     # merge: the universe tickers with them
     frame = universe.reindex(columns=["ticker", "permaticker"]).assign(
         permaticker=lambda f: pd.to_numeric(f["permaticker"], errors="coerce").astype("Int64")
     )
-    frame = frame.merge(ids, on="ticker", how="left").merge(trading, on="ticker", how="left")
+    frame = frame.merge(ids, on="ticker", how="left").merge(current, on="ticker", how="left").merge(trading, on="ticker", how="left")
     frame = frame.merge(life, on="permaticker", how="left").merge(spans, on="ticker", how="left")
 
     # compute the identity columns, then check Sharadar's end against the last stored price
@@ -135,7 +137,8 @@ def _lifecycle_rows(frame: pd.DataFrame) -> pd.DataFrame:
     trading = frame["trading_symbol"].fillna(frame["ticker"]).astype(str)
     status = np.select([ended.notna().to_numpy(), trading.ne(frame["ticker"]).to_numpy()], [STATUS_ENDED, STATUS_RENAMED], STATUS_ACTIVE)
     company = frame["company_id"].astype(object).where(frame["company_id"].notna(), None)
-    values = (frame["ticker"].astype(str), company, trading, first, ended, pd.Series(status, index=frame.index))
+    cik = frame["cik"].astype(object).where(frame["cik"].notna(), None)
+    values = (frame["ticker"].astype(str), company, cik, trading, first, ended, pd.Series(status, index=frame.index))
     return pd.DataFrame(dict(zip(TABLE_COLUMNS, values, strict=True))).reset_index(drop=True)
 
 

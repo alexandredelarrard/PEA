@@ -108,5 +108,5 @@ def run_cusip_stage(context: Any, lineage: pd.DataFrame, as_of: pd.Timestamp | N
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, str(context.config_dir), logging.getLogger("tests.cusip_build")
     step._symbols, step._run_date = SimpleNamespace(rows=lineage), run_date(as_of)
-    step._anchor = CompanyAnchor(company_id={}, sharadar_cik={})
+    step._anchor = CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik=dict(context.universe.cik_by_ticker))
     return step.run_cusip_history()

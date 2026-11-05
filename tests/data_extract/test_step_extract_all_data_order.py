@@ -20,6 +20,9 @@ from src.data_extract.transformers import step_extract_zips as zips_module
 from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe
 
+#: an empty published lineage, as the stubbed resolver inputs carry
+_NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
+
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
 EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
@@ -100,7 +103,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     def refresh(context):
         # the identity stage reloads the resolver from the tables it just published
-        inputs = SimpleNamespace(lineage=None, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+        inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
         return mark("identity_refresh", inputs)()
 
     def propagate(scopes, as_of, every):

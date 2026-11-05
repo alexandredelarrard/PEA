@@ -4,11 +4,11 @@ sync.py  (src/utils/tickers_universe/sync.py)
 `sync`: the universe writer of `universe_tickers`, one row per company ever in `universe.yml`.
 
 * The yml decides `in_universe`: a ticker that leaves it keeps its row with `in_universe = false`; one that
-  enters gets a row with CIK and name from the `sec_company_tickers` snapshot (Sharadar's `secfilings` CIK
-  and name for a ticker the SEC no longer lists).
+  enters gets a row with its name from the `sec_company_tickers` snapshot (Sharadar's name for a ticker the SEC
+  no longer lists). The CIK is an identity column (U-49): the identity step publishes the company's current CIK.
 * `universe_added_on` = 2000-01-01 when the ticker already has prices (an established name), else `as_of`;
   it is stamped when a ticker enters or re-enters the yml.
-* name, CIK and `universe_added_on` of a row in the yml are never rewritten.
+* name and `universe_added_on` of a row in the yml are never rewritten.
 * GICS follows the yml (`universe_classification`), `cusips` and the Sharadar category columns follow
   `sharadar_tickers`, every run; only rows that differ are written, so an unchanged night writes nothing.
 * The identity columns belong to the identity step: the sync never writes them, except to create them
@@ -25,15 +25,15 @@ from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.string import pad_cik, yahoo_symbol
+from src.utils.string import yahoo_symbol
 from src.utils.tickers_universe.universe import UniverseError, universe_classification, universe_config
 
 logger = logging.getLogger(__name__)
 
 ESTABLISHED_ADDED_ON = pd.Timestamp("2000-01-01")
-CARRIED_COLUMNS = ["ticker", "name", "cik", "universe_added_on"]
+CARRIED_COLUMNS = ["ticker", "name", "universe_added_on"]
 #: written by the identity step; created empty by the sync's first build
-IDENTITY_COLUMNS = ["company_id", "trading_symbol", "first_price_date", "ended_on", "status"]
+IDENTITY_COLUMNS = ["company_id", "cik", "trading_symbol", "first_price_date", "ended_on", "status"]
 #: sharadar_tickers column -> universe_tickers column
 SHARADAR_COLUMNS = {
     "permaticker": "permaticker",
@@ -50,7 +50,7 @@ SHARADAR_COLUMNS = {
     "location": "location",
     "isdelisted": "isdelisted",
 }
-SHARADAR_READ = ["ticker", "isdelisted", "lastupdated", "cusips", "secfilings", *[c for c in SHARADAR_COLUMNS if c != "isdelisted"]]
+SHARADAR_READ = ["ticker", "isdelisted", "lastupdated", "cusips", *[c for c in SHARADAR_COLUMNS if c != "isdelisted"]]
 
 
 def sync(store: DataStore, config: DictConfig, as_of: pd.Timestamp) -> int:
@@ -142,23 +142,16 @@ def _added_on(store: DataStore, tickers: list[str], as_of: pd.Timestamp) -> dict
 
 
 def _new_rows(store: DataStore, entering: list[str], sharadar: pd.DataFrame, added_on: dict[str, pd.Timestamp]) -> pd.DataFrame:
-    """Carried columns for tickers with no stored row: the SEC snapshot first, Sharadar's name and CIK otherwise."""
+    """Carried columns for tickers with no stored row: the SEC snapshot's name first, Sharadar's otherwise."""
     # load the SEC snapshot rows of the entering tickers
-    sec = store.load(Tables.sec_company_tickers, columns=["ticker", "cik", "name"], where={"ticker": entering}, optional=True)
-    rows = (sec if sec is not None else pd.DataFrame(columns=["ticker", "cik", "name"])).set_index("ticker").reindex(entering)
+    sec = store.load(Tables.sec_company_tickers, columns=["ticker", "name"], where={"ticker": entering}, optional=True)
+    rows = (sec if sec is not None else pd.DataFrame(columns=["ticker", "name"])).drop_duplicates("ticker").set_index("ticker").reindex(entering)
 
-    # fall back on Sharadar's secfilings CIK and name for a ticker the SEC no longer lists
-    unlisted = rows.index[rows["cik"].isna()].tolist()
+    # fall back on Sharadar's name for a ticker the SEC no longer lists, then stamp
+    unlisted = rows.index[rows["name"].isna()].tolist()
     if unlisted:
-        logger.warning("%s not in %s: Sharadar name and CIK", unlisted, Tables.sec_company_tickers)
-        cik = sharadar.loc[unlisted, "secfilings"].str.extract(r"CIK=(\d+)", expand=False)
-        rows.loc[unlisted, "cik"] = [pad_cik(c) if isinstance(c, str) else None for c in cik]
+        logger.warning("%s not in %s: Sharadar name", unlisted, Tables.sec_company_tickers)
         rows.loc[unlisted, "name"] = sharadar.loc[unlisted, "name"]
-
-    # check every entering ticker has a CIK, then stamp it
-    no_cik = sorted(rows.index[rows["cik"].isna()])
-    if no_cik:
-        raise UniverseError(f"no CIK from {Tables.sec_company_tickers} or Sharadar for {no_cik}")
     rows["universe_added_on"] = [added_on[t] for t in entering]
     logger.info("%d ticker(s) enter %s", len(entering), Tables.universe_tickers)
     return rows.reset_index(names="ticker")[CARRIED_COLUMNS]

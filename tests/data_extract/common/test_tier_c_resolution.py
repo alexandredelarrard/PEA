@@ -152,7 +152,7 @@ _ACCESSOR = {
     "src/data_extract/utils/identity/symbol_history.py",
     "src/data_extract/utils/identity/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",
-    "src/data_extract/utils/identity/security_master.py",
+    "src/data_extract/utils/identity/cusip_history.py",
 }
 #: 13F managers are listed by their own CIK, not an issuer (00-run N1).
 _MANAGER_LISTING = "src/data_extract/utils/institutionals/fetch_13f_managers.py"

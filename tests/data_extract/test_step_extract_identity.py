@@ -19,7 +19,7 @@ from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.institutionals.test_fails_to_deliver import _HEADER, _scope_lineage
-from tests.support.universe import universe_of
+from tests.support.universe import seed_universe, universe_of
 
 FLOW = (
     "run_capture_evidence",
@@ -40,7 +40,7 @@ def _config() -> SimpleNamespace:
 
 def _context(store: Any = None, tmp_path: Path | None = None) -> SimpleNamespace:
     return SimpleNamespace(
-        store=store,
+        store=store if store is not None else SimpleNamespace(load=lambda table, **kwargs: None),
         log=logging.getLogger("test.identity_step"),
         paths={"DATA_STORE": tmp_path},
         config_dir="configs",
@@ -64,7 +64,8 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
     monkeypatch.setattr(module, "cache_dir", lambda context, name: Path(name))
     monkeypatch.setattr(module, "pending_dei_periods", mark("dei_periods", ["2026q1"]))
     monkeypatch.setattr(module, "capture_dei_period", mark("dei", 0))
-    monkeypatch.setattr(module, "capture_ftd_cusips", mark("ftd", 0))
+    monkeypatch.setattr(module, "capture_ftd_lines", mark("ftd", (pd.DataFrame(), [])))
+    monkeypatch.setattr(module, "save_ftd_lines", lambda context, rows, periods: 0)
     monkeypatch.setattr(module, "scan_form345_cache", mark("scan", scan))
     monkeypatch.setattr(module, "build_symbol_tenure", mark("tenure", pd.DataFrame()))
     monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: order.append("anchor"))
@@ -83,7 +84,7 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
 
     monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbols)
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
-    monkeypatch.setattr(module, "build_security_master", mark("cusips", pd.DataFrame()))
+    monkeypatch.setattr(StepExtractIdentity, "run_cusip_history", lambda self: mark("cusips", pd.DataFrame())())
     monkeypatch.setattr(module, "load_identity", mark("refresh", object()))
     monkeypatch.setattr(module, "propagate_identity", mark("propagate"))
     monkeypatch.setattr(module, "load_stored_lineage", lambda context: pd.DataFrame())
@@ -170,6 +171,7 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     ]
     create_canonical(sqlite_store.engine, tables)
     context, config = _context(sqlite_store, tmp_path), _config()
+    context.universe = seed_universe(sqlite_store, ["ABC"], rows={"ABC": {"cik": "0000000777"}})
     raw_by_period = {"201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|999999ZZZ|ZZZ|9|OTHER CO|3.0\n"}
     read: list[str] = []
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args, **kwargs: sorted(raw_by_period))
@@ -189,20 +191,17 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
         ),
     )
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: None)
-    masters: list[tuple[pd.DataFrame, int]] = []
-
-    def master(ctx: Any, lineage: pd.DataFrame, config_dir: str) -> pd.DataFrame:
-        lines = ctx.store.load(Tables.sec_fails_to_deliver_security, optional=True)
-        masters.append((lineage, 0 if lines is None else len(lines)))
-        return pd.DataFrame()
-
-    monkeypatch.setattr(module, "build_security_master", master)
+    lines_seen: list[int] = []
+    lineages: list[pd.DataFrame] = []
+    prepare, view = module.prepare_observations, module.lineage_view
+    monkeypatch.setattr(module, "prepare_observations", lambda observations: lines_seen.append(len(observations)) or prepare(observations))
+    monkeypatch.setattr(module, "lineage_view", lambda lineage, roster, tape: lineages.append(lineage) or view(lineage, roster, tape))
     monkeypatch.setattr(module, "load_identity", lambda ctx, refresh=False: object())
     monkeypatch.setattr(module, "propagate_identity", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
 
     StepExtractIdentity(context, config).run()  # type: ignore[arg-type]
-    assert read == [] and masters[0][1] == 0, "without a lineage the FTD capture reads nothing and the master sees no line"
+    assert read == [] and lines_seen == [], "without a lineage the FTD capture reads nothing and the CUSIP stage sees no line"
 
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-evidence", "-F"]).exit_code == 0
     stored = sqlite_store.load(Tables.sec_fails_to_deliver_security)
@@ -210,12 +209,15 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
 
     result = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "cusip-history"])
     assert result.exit_code == 0, result.output
-    lineage, n_lines = masters[-1]
-    assert n_lines == 1 and set(lineage["company_id"]) == {"E0000000777"}
+    lineage, master = lineages[-1], sqlite_store.load(Tables.universe_cusip)
+    assert lines_seen == [1] and set(lineage["company_id"]) == {"E0000000777"}
     assert pd.api.types.is_datetime64_any_dtype(lineage["valid_from"]), "a lone CUSIP stage reads the stored lineage with dates parsed"
+    assert master[["cusip", "canonical_company", "lineage_role"]].values.tolist() == [["000111AAA", "ABC", "canonical_current"]], master
 
     print("\n=== SANITY CHECK: D-15 cold start ===")
-    print(f"  identity: lineage built, FTD capture read {0} zip(s), master saw 0 line(s)")
+    print("  identity: lineage built, FTD capture read 0 zip(s), the CUSIP stage saw no line (table left unchanged)")
     print(f"  identity --only capture-evidence -F: read {read}, stored {stored['cusip'].tolist()} (ZZZ out of scope)")
-    print(f"  identity --only cusip-history: built from the stored lineage ({len(lineage)} row(s)) and {n_lines} FTD line(s)")
-    print("  OK: the documented three-command sequence fills the master on a cold store")
+    print(
+        f"  identity --only cusip-history: built from the stored lineage ({len(lineage)} row(s)) and 1 FTD line -> {master['cusip'].tolist()} canonical for ABC"
+    )
+    print("  OK: the documented three-command sequence fills universe_cusip on a cold store")

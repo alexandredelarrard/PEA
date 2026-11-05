@@ -18,9 +18,10 @@ from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_extract.utils.identity.capture_ftd import capture_ftd_cusips
+from src.data_extract.utils.common.security_lines import co_registrant_ciks, load_security_manual, tape_intervals
 from src.data_extract.utils.identity.cik_history import (
     BACKLOG_COLUMNS,
+    FORM345_SOURCE,
     CikHistory,
     automatic_chains,
     blocked_frame,
@@ -47,9 +48,50 @@ from src.data_extract.utils.identity.cik_history import (
     succession_pairs,
 )
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor, anchor_company_ids, sharadar_ciks
+from src.data_extract.utils.identity.cusip_history import (
+    EVIDENCE_COLUMNS,
+    FTD_LINEAGE_COLUMNS,
+    HOLDING_GROUPS,
+    OBSERVATION_COLUMNS,
+    PROFILE_NAME_COLUMNS,
+    SHARADAR_CUSIP_COLUMNS,
+    VOTE_COLUMNS,
+    CusipFlags,
+    CusipHistory,
+    CusipRoles,
+    FtdCapture,
+    FtdScope,
+    back_extend,
+    canonical_segments,
+    capture_ftd_lines,
+    changed_ftd_scope,
+    company_names,
+    cusip_facts,
+    cusip_flags,
+    cusip_issuers,
+    cusip_rows,
+    extend_lines,
+    finalise_rows,
+    finra_evidence,
+    flag_items,
+    ftd_lines,
+    ftd_scope,
+    line_ends,
+    line_owners,
+    lineage_view,
+    log_cusip_history,
+    prepare_observations,
+    ratio_step_flags,
+    role_segments,
+    row_context,
+    save_ftd_lines,
+    sec_listing,
+    sharadar_cusips,
+    thirteenf_starts,
+)
+from src.data_extract.utils.identity.cusip_history import TABLE_COLUMNS as CUSIP_COLUMNS
 from src.data_extract.utils.identity.evidence import capture_dei_period, pending_dei_periods
 from src.data_extract.utils.identity.identity_propagate import PropagationResult, propagate_identity
-from src.data_extract.utils.identity.security_master import build_security_master
 from src.data_extract.utils.identity.symbol_history import (
     TAPE_ACTION_COLUMNS,
     TAPE_TICKER_COLUMNS,
@@ -76,9 +118,9 @@ from src.data_extract.utils.identity.symbol_tenure import (
     scan_form345_cache,
 )
 from src.data_store.schema import Tables
-from src.utils.identity_flags import MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
+from src.utils.identity_flags import MASTER_COLUMNS, cik_activity, identity_flag_block, identity_flags, log_identity_flags
 from src.utils.step import Step
-from src.utils.string import run_date
+from src.utils.string import pad_cik_series, run_date
 
 #: The `sec_cik_profile` columns the CIK history reads, and the rows that carry one of its event forms.
 _PROFILE_COLUMNS = ("cik", "form_25", "form_15", "form_8k12b")
@@ -103,23 +145,33 @@ class StepExtractIdentity(Step):
         paths = config.local.paths
         self._insider_cache = cache_dir(context, paths.insider_transactions)
         self._notes_cache = cache_dir(context, paths.financial_notes)
-        self._ftd_cache = cache_dir(context, paths.fails_deliver)
-        self._years_history = int(config.data_extract.years_history)
         self._run_date = run_date(self._options.as_of)
+        self._ftd = FtdCapture(cache_dir(context, paths.fails_deliver), int(config.data_extract.years_history), self._options.full, self._run_date)
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
         self._anchor: CompanyAnchor | None = None
         self._cik_history: CikHistory | None = None
         self._symbols: SymbolHistory | None = None
+        self._cusips: CusipHistory | None = None
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols and FTD lines of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured."""
+        # load the stored lineage (the FTD scope), the Sharadar CUSIPs, the captured FTD lines (their votes) and the CUSIP curation
+        lineage = self._context.store.load(Tables.universe_cik_symbol, columns=list(FTD_LINEAGE_COLUMNS), optional=True)
+        sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(SHARADAR_CUSIP_COLUMNS), optional=True)
+        stored = self._context.store.load(Tables.sec_fails_to_deliver_security, columns=list(VOTE_COLUMNS), optional=True)
+        curation = load_security_manual(str(self._config_dir))
+
         # the Notes cover-page symbols of every filer, one cached period at a time (`full`: every period)
         periods = pending_dei_periods(self._context, self._notes_cache, self._options.full)
         written = sum(capture_dei_period(self._context, self._notes_cache, period) for period in tqdm(periods, desc="SEC notes cover-page symbols"))
 
-        # the in-scope FTD lines (a no-op before the first lineage build)
-        written += capture_ftd_cusips(self._context, self._ftd_cache, self._years_history, full=self._options.full, as_of=self._run_date)
+        # the FTD lines of the universe companies' symbols and CUSIP-6 prefixes (X14; none before the first lineage build)
+        cusips = sharadar_cusips(self._universe.frame, sharadar)
+        scope = ftd_scope(lineage, cusips, stored, curation)
+        changed = FtdScope() if self._options.full or lineage is None else changed_ftd_scope(lineage, cusips, self._run_date)
+        rows, reconciled = capture_ftd_lines(self._context, self._ftd, scope, changed)
+        written += save_ftd_lines(self._context, rows, reconciled)
 
         # one Form 3/4/5 scan: the `form345` / `manual` tenure (minus the cited rejections) here, the owner sets in the CIK history
         self._scan = scan_form345_cache(self._insider_cache)
@@ -232,11 +284,76 @@ class StepExtractIdentity(Step):
         return build
 
     def run_cusip_history(self) -> pd.DataFrame:
-        """CUSIP lines of each company (`universe_cusip`), built from this run's lineage or the stored one."""
+        """CUSIP lines of each company (`universe_cusip`) from the captured FTD lines and this run's lineage (else the stored
+        one), back to each CUSIP's first confirmed 13F period; writes the table unless unchanged (until `run_publish`, 4d)."""
+        # load the lineage, the FTD lines, the SEC listing, the stored table, the filed evidence, FINRA days, names and 13F holders
         lineage = self._symbols.rows if self._symbols is not None else load_stored_lineage(self._context)
         if lineage is None:
             raise ValueError("universe_cusip needs universe_cik_symbol: run `identity --only symbol-history` first")
-        return build_security_master(self._context, lineage, str(self._config_dir))
+        observations = self._context.store.load(Tables.sec_fails_to_deliver_security, columns=list(OBSERVATION_COLUMNS), optional=True)
+        sec_tickers = self._context.store.load(Tables.sec_company_tickers, project=True, optional=True)
+        existing = self._context.store.load(Tables.universe_cusip, project=True, optional=True)
+        evidence = self._context.store.load(
+            Tables.symbol_tenure, columns=list(EVIDENCE_COLUMNS), where={"source": [FORM345_SOURCE, DEI_SOURCE]}, optional=True
+        )
+        presence = self._context.store.load(Tables.sec_short_volume_security, columns=["source_symbol", "date"], optional=True)
+        sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(SHARADAR_CUSIP_COLUMNS), optional=True)
+        profile = self._context.store.load(
+            Tables.sec_cik_profile, columns=list(PROFILE_NAME_COLUMNS), where={"cik": sorted(set(pad_cik_series(lineage["cik"])))}, optional=True
+        )
+        cusips = [] if observations is None else sorted(set(observations["cusip"].astype(str).str.strip().str.upper()))
+        holdings = (
+            self._context.store.summarize(Tables.sec13f_hr, list(HOLDING_GROUPS), {"n_rows": ("count", None)}, where={"cusip": cusips})
+            if cusips
+            else None
+        )
+        manual = load_security_manual(str(self._config_dir))
+
+        # nothing to build without captured FTD lines: the table is left as it is
+        if observations is None:
+            self._log.warning(
+                "universe_cusip: no stored FTD lines (run `zips-download --only ftd`, then `identity --only capture-evidence`); table left unchanged"
+            )
+            return pd.DataFrame(columns=list(CUSIP_COLUMNS))
+
+        # clean: the FTD lines, the lineage view, the SEC listing and the FINRA class symbols and days
+        obs = prepare_observations(observations)
+        view = lineage_view(lineage, self._universe.cik_by_ticker, tape_intervals(lineage))
+        listing, finra, flags = sec_listing(sec_tickers), finra_evidence(presence), CusipFlags()
+
+        # compute: the lines and their issuers, their life over FINRA days and back to the first confirmed 13F period (X3, X4)
+        lines, spans = ftd_lines(obs)
+        issuers = cusip_issuers(spans, obs, view, manual, flags)
+        lines = extend_lines(line_ends(lines, obs, listing, issuers), finra, manual, issuers, view)
+        names = company_names(view, self._universe.frame, sharadar, profile)
+        thirteenf = thirteenf_starts(holdings, line_owners(issuers, view), names, sharadar_cusips(self._universe.frame, sharadar), self._run_date)
+        lines = back_extend(lines, thirteenf.starts)
+
+        # compute: each CUSIP's facts and role segments, one canonical line per company and date (co-registrant CIKs left out)
+        facts = cusip_facts(lines, issuers, view, manual, listing, finra)
+        co_registrants = co_registrant_ciks(lineage, evidence, manual.co_registrants)
+        segments, candidates = role_segments(facts, view, co_registrants)
+        roles = CusipRoles(facts={fact.cusip: fact for fact in facts}, segments=segments)
+        canonical_segments(
+            candidates, roles.facts, view, segments, obs["trade_date"].max() + pd.Timedelta(days=1) if not obs.empty else pd.Timestamp.max
+        )
+
+        # post-process: the table rows, each company's stamp kept while unchanged
+        rows = finalise_rows(cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing)), existing, pd.Timestamp.now().floor("s"))
+
+        # check: the flags of the build, one WARNING block for the action items
+        detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
+        block = identity_flag_block(items)
+        if block is not None:
+            self._log.warning(block)
+        log_cusip_history(rows, detail, thirteenf, co_registrants)
+
+        # save unless unchanged
+        unchanged = matches_stored(existing, rows, Tables.universe_cusip)
+        written = 0 if unchanged else save_identity(self._context.store, Tables.universe_cusip, rows)
+        self._log.info("universe_cusip: unchanged; replace skipped" if unchanged else f"universe_cusip: wrote {written} row(s)")
+        self._cusips = CusipHistory(rows=rows, flags=detail, items=items, thirteenf=thirteenf)
+        return rows
 
     def run_lifecycle(self) -> None:
         """First price date, end date and status per company: built in phase 4d; nothing to do yet."""

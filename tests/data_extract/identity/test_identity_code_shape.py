@@ -35,9 +35,6 @@ FLOW = (
 SCOPE = (STEP_MODULE, "src.data_extract.utils.identity.", "src.utils.identity_flags", "src.data_extract.utils.common.identity")
 #: Not yet rewritten (prefix of a qualified name -> the sub-phase that rewrites it). Shrinks each sub-phase; empty after 4d.
 ALLOWLIST = {
-    f"{STEP_MODULE}.{STEP_CLASS}.run_cusip_history": "4c",
-    "src.data_extract.utils.identity.capture_ftd.": "4c",
-    "src.data_extract.utils.identity.security_master.": "4c",
     f"{STEP_MODULE}.{STEP_CLASS}.run_lifecycle": "4d",
     f"{STEP_MODULE}.{STEP_CLASS}.run_publish": "4d",
     f"{STEP_MODULE}.{STEP_CLASS}.run_propagate": "4d",

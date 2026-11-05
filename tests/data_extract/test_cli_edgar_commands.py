@@ -196,12 +196,12 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     """`identity --only propagate`, and `zips-download --only notes` then `identity --only capture-evidence`."""
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     calls: list[tuple[str, dict[str, Any]]] = []
-    context = SimpleNamespace(name="ctx", universe=seed_universe(sqlite_store, ["AAA"]))
+    context = SimpleNamespace(name="ctx", store=sqlite_store, config_dir="configs", universe=seed_universe(sqlite_store, ["AAA"]))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     stub_identity_step(monkeypatch, config, context)
     monkeypatch.setattr(step_identity, "pending_dei_periods", lambda ctx, cache, full: calls.append(("dei", {"full": full})) or [])
-    monkeypatch.setattr(step_identity, "capture_ftd_cusips", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(step_identity, "capture_ftd_lines", lambda *args, **kwargs: (pd.DataFrame(), []))
     monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(step_identity, "build_symbol_tenure", lambda *args: pd.DataFrame())
     monkeypatch.setattr(

@@ -29,7 +29,7 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
-from src.data_extract.utils.identity.security_master import EXCLUDED, SOURCE_FTD
+from src.data_extract.utils.common.security_lines import EXCLUDED, SOURCE_FTD
 from src.data_extract.utils.institutionals.security_tape import (
     SUMMED_ROLES,
     commit_tape_source,

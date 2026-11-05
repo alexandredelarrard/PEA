@@ -19,7 +19,7 @@ from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.identity import capture_ftd, identity_propagate
+from src.data_extract.utils.identity import cusip_history, identity_propagate
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
@@ -92,7 +92,16 @@ def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, m
     assert before_raw is not None
     before = sqlite_store.load(Tables.short_interest)
     assert before is not None
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: payload)
 
@@ -157,7 +166,16 @@ def test_malformed_ftd_lines_cannot_be_a_complete_source(row: str) -> None:
 
 def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     day = pd.Timestamp("2026-07-01")
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: _file().splitlines()[0] + "\n0\n")
     identity = _identity(store=sqlite_store)
@@ -173,7 +191,16 @@ def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, 
 
 
 def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -332,7 +359,16 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
 
 @pytest.mark.parametrize("bad", ["malformed", "wrong-period"])
 def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -369,7 +405,7 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(capture_ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
+    monkeypatch.setattr(cusip_history, "changed_ftd_scope", lambda *args: cusip_history.FtdScope())
     assert download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 0
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert stored_frame is not None
@@ -401,10 +437,27 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
     concurrent: bool,
     proof_column: bool,
 ) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     for table, frame in _identity(store=sqlite_store).source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
+    # X14: the capture scope is the lineage's symbols and the universe companies' CUSIP-6 (no stored `universe_cusip` read): LEN's symbol row
+    lineage = sqlite_store.load(Tables.universe_cik_symbol)
+    assert lineage is not None
+    home = lineage[lineage["canonical_ticker"].eq("LEN")].iloc[[0]]
+    sqlite_store.save(
+        Tables.universe_cik_symbol,
+        home.assign(role="symbol", symbol="LEN", valid_from=pd.Timestamp("2006-01-03"), status="corroborated", sources="form345,roster"),
+    )
     text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
     raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), ftd.prepare_master(_master()))[list(ftd.SECURITY_COLUMNS)]
     grain = pd.DataFrame(
@@ -448,7 +501,7 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
 
     monkeypatch.setattr(sqlite_store, "load", interleaved)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(capture_ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
+    monkeypatch.setattr(cusip_history, "changed_ftd_scope", lambda *args: cusip_history.FtdScope())
     if concurrent:
         with pytest.raises(ValueError, match="source cohort changed"):
             download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30"))
@@ -588,7 +641,16 @@ def test_real_2026q1_insider_zip_validates_on_a_copy(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("fail", [False, True], ids=["unchanged", "rollback"])
 def test_finra_restamp_preserves_or_atomically_rolls_back_source_pair(sqlite_store: DataStore, tmp_path: Path, fail: bool) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -672,7 +734,16 @@ def test_ftd_b_zip_retains_documented_day15_overlap(tmp_path: Path) -> None:
 
 
 def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite_store: DataStore, tmp_path: Path) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -749,7 +820,16 @@ def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_st
 def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -774,9 +854,7 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     monkeypatch.setattr(identity_propagate, "_reparse_bulk", lambda *args: {})
     for name in ("_refresh_insider", "_refresh_fails", "_refresh_short_volume"):
         monkeypatch.setattr(identity_propagate, name, lambda *args, **kwargs: [])
-    identity_propagate.propagate_identity(
-        context, ["LEN"], every_ticker=True, identity=identity, as_of=pd.Timestamp("2026-10-08")
-    )
+    identity_propagate.propagate_identity(context, ["LEN"], every_ticker=True, identity=identity, as_of=pd.Timestamp("2026-10-08"))
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None
     assert set(zip(kept["accession_number"], kept["ticker"], strict=True)) == {("a", "AAA"), ("b", "LEN")}
@@ -797,7 +875,9 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
             Tables.insider_footnotes,
         ],
     )
-    context = SimpleNamespace(store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(store))
+    context = SimpleNamespace(
+        store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(store)
+    )
     identity = _identity()
     for table, frame in identity.source_cohort.items():
         if not frame.empty:

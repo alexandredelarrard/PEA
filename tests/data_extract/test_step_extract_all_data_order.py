@@ -71,7 +71,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(identity_module, "pending_dei_periods", lambda context, cache, full: mark("dei_capture", [])())
-    monkeypatch.setattr(identity_module, "capture_ftd_cusips", lambda context, cache, years, full, as_of: mark("ftd_capture", 0)())
+    monkeypatch.setattr(identity_module, "capture_ftd_lines", lambda context, plan, scope, changed: mark("ftd_capture", (pd.DataFrame(), []))())
 
     def form345_scan(cache):
         assert cache == Path("cache") / "sec_insider_transactions"
@@ -94,8 +94,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         step._symbols = SimpleNamespace(rows=lineage)
         return mark("universe_cik_symbol", step._symbols)()
 
-    def universe_cusip(context, given_lineage, config_dir):
-        assert given_lineage is lineage, "the security master is derived from the lineage just built"
+    def universe_cusip(step):
+        assert step._symbols.rows is lineage, "the CUSIP history is derived from the lineage just built"
         return mark("universe_cusip")()
 
     def refresh(context, refresh=False):
@@ -114,7 +114,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_publish", lambda step: None)
-    monkeypatch.setattr(identity_module, "build_security_master", universe_cusip)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cusip_history", universe_cusip)
     monkeypatch.setattr(identity_module, "load_identity", refresh)
     monkeypatch.setattr(identity_module, "propagate_identity", propagate)
 

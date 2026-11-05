@@ -1,4 +1,4 @@
-"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the FTD capture (`identity --only capture-ftd`) and
+"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the FTD capture (`identity --only capture-evidence`) and
 the FTD feature (fails/volume, publication-lagged so it's leak-free)."""
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.bulk_cache import read_zip_text
-from src.data_extract.utils.identity import capture_ftd
-from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
@@ -23,14 +22,15 @@ from src.utils.string import run_date
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
+from tests.support.cusip_build import capture_ftd
 from tests.support.universe import seed_universe
 
 
 def download_and_capture(context: Any, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
-    """`zips-download --only ftd` then `identity --only capture-ftd`: cache the ZIPs, then the identity step's raw capture; returns the rows captured."""
+    """`zips-download --only ftd` then the identity step's FTD capture: cache the ZIPs, then the raw capture; returns the rows captured."""
     ftd.download_fails_to_deliver(context, years_history=years_history, full=full, as_of=as_of)
     cache = ftd.cache_dir(context, context.config.local.paths.fails_deliver)
-    return capture_ftd.capture_ftd_cusips(context, cache, years_history, full=full, as_of=run_date(as_of))
+    return capture_ftd(context, cache, years_history, full=full, as_of=run_date(as_of))
 
 
 @pytest.fixture
@@ -405,7 +405,7 @@ def test_pending_source_replacement_withdraws_only_certified_quiet_zeros(sqlite_
         period="202401a", security_id=None, ticker=None, lineage_role=None, security_class=None
     )
 
-    assert capture_ftd._save_pending_fails(context, raw, ["202401a"]) == 1
+    assert sm.save_ftd_lines(context, raw, ["202401a"]) == 1
 
     stored = sqlite_store.load(Tables.sec_fails_to_deliver).set_index("ticker")
     assert stored.loc["CHECKED", ["fails_quantity", "fails_value"]].isna().all()

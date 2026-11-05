@@ -18,8 +18,9 @@ import pandas as pd
 import pytest
 from sqlalchemy import event
 
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity, load_source_identity
-from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
@@ -243,7 +244,7 @@ def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.
         ],
     )
     frame["security_id"] = "C" + frame["cusip"]
-    frame["source"] = sm.SOURCE_FTD
+    frame["source"] = sl.SOURCE_FTD
     frame["market_symbol"] = frame["source_symbol"]
     frame["exchange"] = None
     frame["source_accession"] = None

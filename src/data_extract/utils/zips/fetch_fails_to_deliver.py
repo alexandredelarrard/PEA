@@ -2,7 +2,7 @@
 fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches
-the ZIPs; the identity step (`utils/identity/capture_ftd.py`) stores their in-scope source lines raw,
+the ZIPs; the identity step (`utils/identity/cusip_history.py`) stores their in-scope source lines raw,
 per CUSIP, in `sec_fails_to_deliver_security`. `fetch_fails_to_deliver` stamps those lines from
 `universe_cusip` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
 `sec_fails_to_deliver`, its own table so its publication lag never moves `short_interest`'s frontier:
@@ -29,11 +29,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.resume import archive_periods
-from src.data_extract.utils.identity.security_master import (
-    SOURCE_FTD,
-    squash,
-    trade_dates,
-)
+from src.data_extract.utils.common.security_lines import SOURCE_FTD, trade_dates
 from src.data_extract.utils.institutionals.security_tape import (
     assert_tape_owners,
     assert_tape_source,
@@ -51,7 +47,7 @@ from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore, Where
 from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price_basis import prepare_quote_anchors
-from src.utils.string import normalise_ticker, run_date, yahoo_symbol
+from src.utils.string import normalise_ticker, run_date, squash, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 

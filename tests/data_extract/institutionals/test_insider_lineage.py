@@ -19,10 +19,10 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.edgar_extract import insider_common as ic
 from src.data_extract.utils.identity import identity_propagate as prop
-from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
@@ -94,10 +94,10 @@ def _lineage(*, mrk_windows: bool = True, pld_windows: bool = False, stamp: pd.T
 
 
 #: The former accounting view's PLD boundary day (removed from the shipped config by the traded-security realignment).
-ACCOUNTING_PLD = sm.MergerBoundary("PLD", pd.Timestamp("2011-06-03"), None, AMB, OLD_PROLOGIS, "AMB")
+ACCOUNTING_PLD = sl.MergerBoundary("PLD", pd.Timestamp("2011-06-03"), None, AMB, OLD_PROLOGIS, "AMB")
 
 
-def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> Any:
+def _identity(*, mergers: tuple[sl.MergerBoundary, ...] = (), **kwargs: Any) -> Any:
     tenure = pd.DataFrame(
         [
             {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
@@ -105,7 +105,7 @@ def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> 
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    shipped = sm.merger_boundaries(sm.load_security_manual(None))
+    shipped = sl.merger_boundaries(sl.load_security_manual(None))
     return build_identity(_lineage(**kwargs), tenure, as_roster(roster), co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
 
 
@@ -340,10 +340,10 @@ def test_insider_ddl_block_carries_the_lineage_columns() -> None:
 def test_co_registrant_ciks_union_the_declared_list() -> None:
     """The flags rule finds co-registrants beside a roster window; curated subsidiaries (ACN SCA, T-Mobile USA,
     Iron Mountain Global, WFC Holdings) are declared, each with a source."""
-    manual = sm.load_security_manual(None)
+    manual = sl.load_security_manual(None)
     declared = {entry for entry in manual.co_registrants}
     assert {"0001143908", "0001097609", "0001132694", "0000105598"} <= declared
-    got = sm.co_registrant_ciks(_lineage(), None, declared=declared)
+    got = sl.co_registrant_ciks(_lineage(), None, declared=declared)
     assert declared <= got
     print("\nSANITY: the shipped config declares the four curated co-registrants and co_registrant_ciks returns them")
 

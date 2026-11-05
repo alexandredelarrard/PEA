@@ -524,7 +524,7 @@ IDENTITY_BUILD_FILES = (
     "src/data_extract/utils/identity/company_anchor.py",
     "src/data_extract/utils/identity/cik_history.py",
     "src/data_extract/utils/identity/symbol_history.py",
-    "src/data_extract/utils/identity/security_master.py",
+    "src/data_extract/utils/identity/cusip_history.py",
 )
 #: the DAG task(s) that add rows to each identity input (keys are `Tables` attributes); `identity` writes its own outputs
 #: and the captured evidence.
@@ -538,15 +538,17 @@ INPUT_PRODUCERS = {
     "universe_cik_symbol": {"identity"},
     "universe_cusip": {"identity"},
     "sec_fails_to_deliver_security": {"identity"},  # the capture adds the lines; `zips_ingest_datasets` only stamps them
+    "sec_fails_to_deliver": {"identity", "zips_ingest_datasets"},  # the capture keeps (unverified) the derived rows of a re-read period
     "sec_short_volume_security": {"short_interest"},
     "prices": {"price_history"},
     "sec13f_hr": {"thirteen_f", "thirteen_f_backfill"},
     "sec_13d": {"sec_13d"},
     "sec_13g": {"sec_13g"},
 }
-#: inputs read one night old, as history only. U-3: prices, 13F and 13D/G CUSIPs. `sec_short_volume_security`: the
-#: security master's FINRA presence check (found in phase 2, outside U-3; decision pending, see the run's deviation log).
-ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security"}
+#: inputs read one night old, as history only. U-3: prices, 13F and 13D/G CUSIPs. X15 (2026-11-04): the CUSIP history's
+#: FINRA presence check (`sec_short_volume_security`). `sec_fails_to_deliver`: the FTD capture keeps the derived rows the
+#: ingest wrote last night for a period it re-reads (the ingest rebuilds them after identity).
+ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security", "sec_fails_to_deliver"}
 
 
 def test_identity_reads_no_input_written_later_in_the_night():

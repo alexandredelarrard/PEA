@@ -13,12 +13,13 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.fundamentals import build_history
 from src.data_extract.utils.fundamentals.build_history import TickerHistory
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
+from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.identity import identity_propagate as prop
-from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -431,7 +432,7 @@ def _master(owner_of_old: str, stamps: dict[str, pd.Timestamp]) -> pd.DataFrame:
     frame = frame.assign(
         security_id="C" + frame["cusip"],
         issuer_cik="0000000001",
-        source=sm.SOURCE_FTD,
+        source=sl.SOURCE_FTD,
         market_symbol=frame["source_symbol"],
         exchange=None,
         security_class="common",

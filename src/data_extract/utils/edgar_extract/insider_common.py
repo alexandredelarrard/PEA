@@ -18,7 +18,7 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract.utils.common.identity import Identity
-from src.data_extract.utils.identity.security_master import ACQUIRED_CONSTITUENT, MergerBoundary
+from src.data_extract.utils.common.security_lines import ACQUIRED_CONSTITUENT, MergerBoundary
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 

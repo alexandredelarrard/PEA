@@ -23,6 +23,13 @@ import pandas as pd
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
+from src.data_extract.utils.common.security_lines import (
+    ACQUIRED_CONSTITUENT,
+    MergerBoundary,
+    co_registrant_ciks,
+    load_security_manual,
+    merger_boundaries,
+)
 from src.data_extract.utils.identity.cik_history import (
     FORM345_SOURCE,
     MANUAL_SOURCE,
@@ -36,18 +43,10 @@ from src.data_extract.utils.identity.cik_history import (
     entity_by_cik_map,
     entity_or_singleton,
 )
-from src.data_extract.utils.identity.security_master import (
-    ACQUIRED_CONSTITUENT,
-    MergerBoundary,
-    co_registrant_ciks,
-    load_security_manual,
-    merger_boundaries,
-    squash,
-)
 from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
-from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 

@@ -11,14 +11,11 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common.peers_io import load_peers
-from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.price.observations import fundamental_share_observations
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
 from src.utils.macro import load_macro_series
 from src.utils.price.adjustments import ShareBasis, unsupported_units
-from src.utils.price.basis import load_quantity_basis
-from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
@@ -44,21 +41,6 @@ def load_fundamental_share_observations(
             optional=True,
         )
     return fundamental_share_observations(history, raw, basis, predecessors)
-
-
-def load_quantity_inputs(
-    context: Context, frames: PriceFrames, bugfix: dict, class_lines: pd.DataFrame | None = None
-) -> tuple[ShareBasis, pd.DataFrame]:
-    """Load complete sparse unit evidence and projected raw secondary-class tape once."""
-    names = list(frames.universe)
-    class_names = sorted(set(class_lines["market_symbol"].map(yahoo_symbol))) if class_lines is not None else []
-    df_bars = (
-        context.store.load(Tables.prices, columns=["ticker", "date", "volume"], where={"ticker": class_names}, optional=True) if class_names else None
-    )
-    basis = load_quantity_basis(context, names, bugfix)
-    if df_bars is None:
-        df_bars = pd.DataFrame(columns=["ticker", "date", "volume"])
-    return basis, df_bars
 
 
 @dataclass(frozen=True)

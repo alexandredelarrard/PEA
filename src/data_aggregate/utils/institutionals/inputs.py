@@ -20,47 +20,16 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import rebase_security_frame, rebase_security_quantities
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class QuantityBasis:
-    """Genuine event/unit evidence and the vendor tape's terminal security-unit date."""
-
-    events: ShareBasis
-    target_date: pd.Timestamp
-
-    @classmethod
-    def from_context(cls, events: ShareBasis, calendar: pd.DatetimeIndex) -> QuantityBasis:
-        """Anchor to the full vendor tape calendar; later event metadata cannot advance its restatement basis."""
-        if calendar.empty:
-            raise ValueError("Quantity basis requires a nonempty full calculation calendar")
-        return cls(events, pd.Timestamp(calendar.max()))
-
-
-def short_quantity_history(df_history: pd.DataFrame | None, basis: QuantityBasis) -> pd.DataFrame | None:
-    """Put already class-converted FINRA aggregates in terminal canonical-security units."""
-    if df_history is None or df_history.empty:
-        return df_history
-    df_rows = df_history.copy()
-    target = pd.Series(basis.target_date, index=df_rows.index)
-    units = basis.events.factor(df_rows["ticker"], df_rows["date"], "units")
-    for column in ("short_volume", "total_volume"):
-        if column in df_rows:
-            df_rows[column] = rebase_security_quantities(basis.events, df_rows[column], df_rows["ticker"], df_rows["date"], target, units)
-    return df_rows
-
-
-def daily_share_quantities(df_daily: pd.DataFrame | None, idx: pd.DatetimeIndex, basis: QuantityBasis) -> pd.DataFrame | None:
-    """Convert supported saved daily counts to the tape's common terminal security unit."""
-    if df_daily is None or df_daily.empty:
-        return None
-    df_result = rebase_security_frame(basis.events, df_daily.reindex(idx), basis.target_date)
-    return df_result if df_result.notna().any().any() else None
+def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.DataFrame:
+    """Projected raw secondary-class volume bars, read once."""
+    symbols = sorted(set(class_lines["market_symbol"].map(yahoo_symbol))) if class_lines is not None else []
+    df_bars = store.load(Tables.prices, columns=["ticker", "date", "volume"], where={"ticker": symbols}, optional=True) if symbols else None
+    return df_bars if df_bars is not None else pd.DataFrame(columns=["ticker", "date", "volume"])
 
 
 def load_finra_tenure(store: DataStore, universe: Sequence[str]) -> pd.DataFrame | None:

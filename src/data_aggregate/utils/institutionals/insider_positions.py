@@ -7,8 +7,9 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
-from src.utils.price.levels import convert_quantities, lookup_asof
+from src.utils.price.levels import lookup_asof
 
 
 def position_units(trades: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:
@@ -22,11 +23,7 @@ def position_units(trades: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.Da
     df_rows["units_known"] = False
     if df_basis is None or df_basis.empty:
         return df_rows
-
-    # F on each transaction day and on each ticker's last saved day, carried over the ticker's missing price rows.
-    df_forward = df_basis.sort_index().ffill()
-    basis_from = lookup_asof(df_forward, df_rows["ticker"], df_rows["transaction_day"])
-    factor = convert_quantities(1.0, basis_from, df_rows["ticker"].map(df_forward.iloc[-1]))
+    factor = lookup_asof(terminal_basis_factor(df_basis), df_rows["ticker"], df_rows["transaction_day"])
 
     # Convert only unclassed common rows with a known basis.
     df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna() & df_rows["klass"].eq("COMMON")

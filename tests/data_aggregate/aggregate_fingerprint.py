@@ -801,6 +801,7 @@ def compute() -> dict:
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+    from src.data_aggregate.utils.common.quotes import terminal_basis_factor
     from src.data_aggregate.utils.common.xs import (
         winsorize_xs,
         xs_standardize,
@@ -811,7 +812,6 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history
     from src.data_aggregate.utils.institutionals.ownership_features import (
         build_ownership_feature_panel,
     )
@@ -854,6 +854,7 @@ def compute() -> dict:
     from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
     from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features, build_institutional_feature_panel
+    from tests.data_aggregate.test_short_flow_features import terminal_rows
 
     fund = fundamentals()
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
@@ -980,19 +981,21 @@ def compute() -> dict:
     )
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
     # Exercise the same visible dated-quantity preparation as the owning step.
-    quantity_basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
+    share_events = resolve_share_events(None, splits, {})
+    df_basis = security_basis_frame(share_events, idx, close.columns)
     observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0, capitalization_available=fund["as_of"])
-    saved_shares, _ = project_security_shares(observations, quantity_basis.events, security_basis_frame(quantity_basis.events, idx, close.columns))
+    saved_shares, _ = project_security_shares(observations, share_events, df_basis)
+    df_terminal = terminal_basis_factor(df_basis)
     price_frames = make_frames(
         idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
     )
-    short_capital = ShortFlowCapital(daily_share_quantities(saved_shares, idx, quantity_basis), with_class_volume(px["volume"], class_volume))
+    short_capital = ShortFlowCapital(saved_shares * df_terminal, with_class_volume(px["volume"], class_volume))
     ftd_coverage = ftd[["date", "period"]]
-    ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
+    ftd_settlement = prepare_fails_quantities(terminal_rows(ftd, ("fails_quantity",), df_terminal), ftd_coverage, idx, None, None)
     ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
     df_short_flow = build_short_flow_feature_panel(
         make_frames(idx, peers, volume=px["volume"], close_total=close),
-        short_quantity_history(short_hist, quantity_basis),
+        terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal),
         ftd_settlement,
         short_capital,
         ftd_publication,
@@ -1011,7 +1014,7 @@ def compute() -> dict:
         price_frames,
         priced_holdings,
         splits=splits,
-        share_basis=quantity_basis.events,
+        share_basis=share_events,
         min_prior_holders=0,
         valuation_close=valuation_close,
     )
@@ -1049,9 +1052,7 @@ def compute() -> dict:
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    df_insider = build_insider_feature_panel(
-        make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events
-    )
+    df_insider = build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=share_events)
     for column in ("f_ic_insider_purchase_pct_prior", "f_ic_insider_management_position_change_60d"):
         assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
     out["panel.insider"] = frame_digest(df_insider)

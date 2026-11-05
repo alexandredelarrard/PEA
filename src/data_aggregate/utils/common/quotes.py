@@ -1,4 +1,4 @@
-"""As-of quote lookups shared by the insider and 13F value checks."""
+"""As-of quote lookups shared by the insider and 13F value checks, and the terminal-unit factor of the saved basis."""
 
 from __future__ import annotations
 
@@ -21,3 +21,12 @@ def period_close(close: pd.DataFrame, periods: pd.Series, max_age_days: int) -> 
     result = cast(pd.Series, df_asof.stack(future_stack=True))
     result.index = result.index.set_names(["period", "ticker"])
     return result
+
+
+def terminal_basis_factor(df_basis: pd.DataFrame) -> pd.DataFrame:
+    """`F_T / F_d` on the saved grid: carries a quantity dated d into each ticker's last saved security units.
+
+    `df_basis` is the saved forward basis F (`security_basis`), carried forward over a ticker's missing price rows.
+    """
+    df_forward = df_basis.sort_index().ffill()
+    return df_forward.rtruediv(df_forward.iloc[-1], axis="columns")

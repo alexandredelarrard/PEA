@@ -242,18 +242,6 @@ def security_quantity_basis(basis: ShareBasis, index: pd.DatetimeIndex, columns:
     return df_basis.where(np.isfinite(df_basis) & df_basis.gt(0))
 
 
-def rebase_security_frame(basis: ShareBasis, df_quantities: pd.DataFrame, target_date: pd.Timestamp) -> pd.DataFrame:
-    """Express each dated canonical-security quantity in one target-date security unit."""
-    df_result = df_quantities.copy()
-    source = pd.Series(df_result.index, index=df_result.index)
-    target = pd.Series(target_date, index=df_result.index)
-    for ticker in df_result:
-        names = pd.Series(str(ticker), index=df_result.index)
-        units = basis.factor(names, source, "units")
-        df_result[ticker] = rebase_security_quantities(basis, df_result[ticker], names, source, target, units)
-    return df_result
-
-
 def rebase_vendor_quantities(
     basis: ShareBasis, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series
 ) -> pd.Series:

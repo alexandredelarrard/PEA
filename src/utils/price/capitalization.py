@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.utils.cutover_continuity import PredecessorSeries
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import rebase_security_quantities, security_quantity_basis, vendor_identity_support, vendor_observation_factor
+from src.utils.price.levels import convert_quantities, security_basis, vendor_identity_support, vendor_observation_factor
 
 logger = logging.getLogger(__name__)
 
@@ -115,39 +115,36 @@ def capitalization_observations(
     return _restore_observation_counts(df_observations, basis)
 
 
-def project_security_shares(
-    df_observations: pd.DataFrame, basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Carry the latest public ordinary count in date-specific quoted-security units.
+def project_security_shares(df_observations: pd.DataFrame, basis: ShareBasis, df_basis: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Carry the latest public ordinary count onto each date's quoted-security units by `F_d / F_s`.
 
-    The coefficient follows that same observation; an unsupported successor ends
-    its predecessor's support instead of being dropped and forward-filled through.
+    `df_basis` is the forward basis F on the output grid. The coefficient follows that same observation;
+    an unsupported successor ends its predecessor's support instead of being forward-filled through.
     """
-    df_shares = pd.DataFrame(np.nan, index=index, columns=columns, dtype="float64")
+    index = pd.DatetimeIndex(df_basis.index)
+    df_shares = pd.DataFrame(np.nan, index=index, columns=df_basis.columns, dtype="float64")
     df_scale = df_shares.copy()
     if df_observations.empty or index.empty:
         return df_shares, df_scale
+
+    # Each observation in its own date's quoted units, with that date's forward basis.
     df_source = df_observations.sort_values(["ticker", "as_of"]).copy()
     original = pd.to_numeric(df_source["sharesOutstandingPit"], errors="coerce")
-    df_source["terminal_count"] = rebase_security_quantities(
-        basis,
-        original.where(original.gt(0)),
-        df_source["ticker"],
-        df_source["as_of"],
-        pd.Series(index[-1], index=df_source.index),
-        pd.Series(1.0, index=df_source.index),
-    )
-    df_basis = security_quantity_basis(basis, index, columns)
+    df_source["quoted_count"] = original.where(original.gt(0)) / basis.factor(df_source["ticker"], df_source["as_of"], "units")
+    df_source["source_basis"] = security_basis(basis, df_source["ticker"], df_source["as_of"])
+
+    # Latest observation at or before each date, converted onto that date's basis.
     stamps = index.to_numpy(dtype="datetime64[ns]")
     for ticker, df_group in df_source.groupby("ticker", sort=False):
-        if ticker not in columns:
+        if ticker not in df_basis.columns:
             continue
         source_positions = np.searchsorted(df_group["as_of"].to_numpy(dtype="datetime64[ns]"), stamps, side="right") - 1
         have_source = source_positions >= 0
         selected = np.maximum(source_positions, 0)
-        quantities = df_group["terminal_count"].to_numpy(dtype="float64")[selected]
+        quantities = np.where(have_source, df_group["quoted_count"].to_numpy(dtype="float64")[selected], np.nan)
+        source = df_group["source_basis"].to_numpy(dtype="float64")[selected]
         coefficient = df_group["capitalization_factor"].to_numpy(dtype="float64")[selected]
         ready = df_group["capitalization_available"].to_numpy(dtype="datetime64[ns]")[selected]
-        df_shares[ticker] = np.where(have_source, quantities, np.nan) * df_basis[ticker].iloc[-1] / df_basis[ticker]
+        df_shares[ticker] = convert_quantities(quantities, source, df_basis[ticker].to_numpy(dtype="float64"))
         df_scale[ticker] = np.where(have_source & (stamps >= ready), coefficient, np.nan)
     return df_shares, df_scale

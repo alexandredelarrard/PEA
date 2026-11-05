@@ -12,12 +12,11 @@ import pandas as pd
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date, filing_public_dates, public_books
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.split_basis import split_cum_product
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import rebase_security_quantities
+from src.utils.price.levels import rebase_security_quantities, split_cum_product
 
 logger = logging.getLogger(__name__)
 

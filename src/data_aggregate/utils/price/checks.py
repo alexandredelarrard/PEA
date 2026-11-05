@@ -201,11 +201,12 @@ def check_candidate(df_rows: pd.DataFrame) -> None:
         if np.isinf(values.to_numpy(dtype="float64")).any():
             raise ValueError(f"Invalid infinite price field: {field}")
         positive = field.startswith("close_") or field in {"open", "high", "low", "level_factor", "shares_outstanding_pit", "mcap_pit"}
-        if (positive and values.le(0).any()) or (field == "volume" and values.lt(0).any()):
+        positive |= field == "security_basis"
+        if (positive and values.le(0).any()) or (field in {"volume", "volume_pit"} and values.lt(0).any()):
             raise ValueError(f"Price field must be positive: {field}")
     if (df_rows["mcap_pit"].notna() & df_rows[["close_pit", "shares_outstanding_pit"]].isna().any(axis=1)).any():
         raise ValueError("Invalid market cap without a supported quote/count pair")
-    for field in ("close_pit", "shares_outstanding_pit", "mcap_pit"):
+    for field in ("close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis", "volume_pit"):
         logger.info("Price candidate %s coverage: %d / %d observed security sessions", field, int(df_rows[field].notna().sum()), len(df_rows))
 
 

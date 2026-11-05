@@ -22,7 +22,7 @@ from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price.basis import load_share_basis
 from src.utils.price.capitalization import project_security_shares
-from src.utils.price.levels import apply_level_bugfix, as_traded_close, level_factor
+from src.utils.price.levels import apply_level_bugfix, as_traded_close, level_factor, security_basis_frame
 from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
 from tests.support.universe import universe_of
 
@@ -187,7 +187,7 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     filing = book[["ticker", "as_of"]].assign(sharesOutstandingPit=100.0)
     owned = _daily_owned_shares(book, index, basis)
     observations = filing.assign(capitalization_factor=1.0, capitalization_available=filing["as_of"])
-    outstanding, _ = project_security_shares(observations, basis, index, pd.Index(["TEST"]))
+    outstanding, _ = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["TEST"])))
     assert pd.isna(owned.iloc[0, 0])
     assert owned["TEST"].iloc[1:].tolist() == [10.0, 5.0, 5.0]
     assert (owned / outstanding)["TEST"].iloc[1:].tolist() == [0.1, 0.1, 0.1]

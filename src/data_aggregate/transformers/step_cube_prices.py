@@ -10,7 +10,7 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_RE
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.price.checks import check_candidate, describe, earliest_price_change
 from src.data_aggregate.utils.price.clean import apply_null_ret, clean_prices
-from src.data_aggregate.utils.price.features import pit_fields, resolve_price_basis
+from src.data_aggregate.utils.price.features import as_traded_volume, pit_fields, resolve_price_basis
 from src.data_aggregate.utils.price.frames import ALL_FIELDS, frames_to_long, universe_columns
 from src.data_aggregate.utils.price.inputs import load_price_inputs
 from src.data_aggregate.utils.price.returns import compute_sector_returns
@@ -47,6 +47,7 @@ class StepCubePrices(Step):
         df_factor = level_factor(index, names, basis.price, basis)
         df_factor = apply_level_bugfix(df_factor, self._bugfix, df_vendor, df_close).where(df_close.notna())
         quoted = pit_fields(df_close, df_factor, basis, inputs, self._bugfix, df_vendor)
+        quoted["volume_pit"] = as_traded_volume(wide["volume"], quoted["security_basis"], basis)
         df_returns = daily_returns(wide["close_total"])
 
         # Null only registered returns, then calculate peer returns from the final frame.

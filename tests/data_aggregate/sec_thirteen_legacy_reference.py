@@ -12,7 +12,6 @@ import pandas as pd
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.split_basis import future_split_factor
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings, clean_public_holdings
@@ -30,6 +29,7 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
 from src.utils.price.adjustments import ShareBasis
+from src.utils.price.levels import split_cum_product
 
 logger = logging.getLogger(__name__)
 F13_REVISION_MIN_MOVE = 0.001
@@ -104,6 +104,17 @@ def _coverage_states(h: pd.DataFrame, break_pct: float) -> pd.DataFrame:
     return table
 
 
+def _future_split_factor(splits: pd.DataFrame | None, tickers: pd.Series, dates: pd.Series) -> np.ndarray:
+    """Legacy terminal factor: PROD(ratio) over splits effective after each date = total / prefix."""
+    at = split_cum_product(splits, tickers, dates)
+    if splits is None or splits.empty or not {"date", "ticker", "ratio"}.issubset(splits.columns):
+        return np.ones(len(tickers), dtype="float64")
+    s = splits.dropna(subset=["date", "ticker", "ratio"])
+    s = s[pd.to_numeric(s["ratio"], errors="coerce") > 0]
+    total_by_ticker = s.groupby(s["ticker"].astype(str))["ratio"].prod()
+    return pd.Series(np.asarray(tickers, dtype=object)).astype(str).map(total_by_ticker).fillna(1.0).to_numpy() / at
+
+
 def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     """Restate prior ticker-quarter shares by splits effective between its observed reports."""
     pairs = cast(pd.DataFrame, h[["ticker", "period"]]).drop_duplicates().sort_values(["ticker", "period"])
@@ -114,8 +125,8 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     pairs = pairs.dropna(subset=["prev_period"])
     if pairs.empty:
         return {}
-    f_now = future_split_factor(splits, frame_column(pairs, "ticker"), frame_column(pairs, "period"))
-    f_prev = future_split_factor(splits, frame_column(pairs, "ticker"), frame_column(pairs, "prev_period"))
+    f_now = _future_split_factor(splits, frame_column(pairs, "ticker"), frame_column(pairs, "period"))
+    f_prev = _future_split_factor(splits, frame_column(pairs, "ticker"), frame_column(pairs, "prev_period"))
     factor = np.divide(f_prev, f_now, out=np.ones_like(f_prev), where=f_now > 0)
     n = int((np.abs(factor - 1.0) > 1e-9).sum())
     if n:

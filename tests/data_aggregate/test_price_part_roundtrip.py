@@ -99,6 +99,11 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
     uni["close_pit"] = uni["close_split"] * uni["level_factor"]
     uni["shares_outstanding_pit"] = pd.DataFrame(1e6, index=idx, columns=uni["close_split"].columns).where(uni["close_split"].notna())
     uni["mcap_pit"] = uni["close_pit"] * uni["shares_outstanding_pit"]
+    # forward basis F steps x2 on AAA's split date; as-traded volume undoes the vendor's terminal restatement
+    df_basis = pd.DataFrame(1.0, index=idx, columns=pd.Index(universe, name="ticker"))
+    df_basis.loc[idx[40] :, "AAA"] = 2.0
+    uni["security_basis"] = df_basis
+    uni["volume_pit"] = uni["volume"] * df_basis / df_basis.iloc[-1]
     # a deterministic stand-in for compute_sector_returns (equal-weight mean of the others)
     uni["sector_ret"] = pd.DataFrame(
         {t: uni["ret"].drop(columns=[t]).mean(axis=1) for t in universe}, index=idx, columns=pd.Index(universe, name="ticker")
@@ -122,6 +127,7 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
         pd.testing.assert_frame_equal(got, expected, check_exact=True, check_dtype=True, check_names=True)
 
     assert back.trading_index.equals(idx)
+    assert {"security_basis", "volume_pit"}.issubset(ALL_PRICE_FIELDS)
     # the calendar now comes from cube_part_prices' OWN dates, not a second market part
     assert load_trading_calendar(parts).equals(idx)
     # nothing non-equity can reach a cross-sectional rank through PriceFrames any more

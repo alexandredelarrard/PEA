@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # close_pit is the historical security quote. Counts preserve source class coverage;
 # mcap_pit is issuer equity and requires its separately supported class coefficient.
 # level_factor is dimensionless and must never enter return calculations.
+# security_basis is the forward quantity basis F (q_t = q_s * F_t / F_s); volume_pit is as-traded volume.
 ALL_FIELDS = (
     "close_split",
     "close_total",
@@ -69,6 +70,8 @@ ALL_FIELDS = (
     "close_pit",
     "shares_outstanding_pit",
     "mcap_pit",
+    "security_basis",
+    "volume_pit",
 )
 
 
@@ -104,6 +107,8 @@ class PriceFrames:
     close_pit: pd.DataFrame | None = None
     shares_outstanding_pit: pd.DataFrame | None = None
     mcap_pit: pd.DataFrame | None = None
+    security_basis: pd.DataFrame | None = None
+    volume_pit: pd.DataFrame | None = None
 
     def require(self, *fields: str) -> None:
         """Fail at the top of a builder rather than with a None-arithmetic TypeError two
@@ -246,6 +251,8 @@ def load_price_frames(
         close_pit=wide.get("close_pit"),
         shares_outstanding_pit=wide.get("shares_outstanding_pit"),
         mcap_pit=wide.get("mcap_pit"),
+        security_basis=wide.get("security_basis"),
+        volume_pit=wide.get("volume_pit"),
     )
 
 

@@ -294,6 +294,74 @@ def rebase_vendor_quantities(
     return result if basis.actual_available else result.where(quantities.eq(0))
 
 
+def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series, dates: pd.Series) -> np.ndarray:
+    """`PROD(ratio)` over each ticker's events dated at or before each date, aligned to the inputs.
+
+    1.0 before a ticker's first event and for a ticker with none; a NaT date resolves to 1.0.
+    An event dated d is already in effect on d (effective-date convention).
+    """
+    out = np.ones(len(tickers), dtype="float64")
+    if splits is None or splits.empty or not len(tickers) or not {"date", "ticker", "ratio"}.issubset(splits.columns):
+        return out
+
+    # Positive events only, both sides on ns midnight (mixed resolutions mis-place searchsorted).
+    df_events = splits.dropna(subset=["date", "ticker", "ratio"]).copy()
+    df_events["ratio"] = pd.to_numeric(df_events["ratio"], errors="coerce")
+    df_events = df_events[df_events["ratio"] > 0]
+    df_events["date"] = pd.to_datetime(df_events["date"], errors="coerce").dt.normalize().astype("datetime64[ns]")
+    df_events = df_events.sort_values(["ticker", "date"])
+    df_events["cum"] = df_events.groupby("ticker")["ratio"].cumprod()
+    want = pd.Series(np.asarray(tickers, dtype=object)).astype(str).reset_index(drop=True)
+    when = pd.to_datetime(pd.Series(np.asarray(dates)), errors="coerce").astype("datetime64[ns]").fillna(pd.Timestamp("1900-01-01")).to_numpy()
+    positions = want.groupby(want).indices
+
+    # One groupby over events; prefix products looked up with `side="right"` (date <= d).
+    for ticker, df_group in df_events.groupby("ticker", sort=False):
+        rows = positions.get(str(ticker))
+        if rows is None:
+            continue
+        cum = np.concatenate(([1.0], df_group["cum"].to_numpy()))
+        out[rows] = cum[df_group["date"].to_numpy().searchsorted(when[rows], side="right")]
+    return out
+
+
+def security_basis(basis: ShareBasis, tickers: pd.Series, dates: pd.Series) -> pd.Series:
+    """Forward quantity basis F(d): genuine events dated at or before d times the quote-unit change at or before d.
+
+    A quoted-security quantity converts between dates by `q_t = q_s * F_t / F_s`; null where events are unavailable
+    or units unknown. Later events never change F before their date.
+    """
+    products = split_cum_product(basis.actual.rename(columns={"value": "ratio"}), tickers, dates)
+    start = pd.Series(pd.Timestamp("1900-01-01"), index=dates.index)
+    units = basis.factor(tickers, start, "units") / basis.factor(tickers, dates, "units")
+    result = pd.Series(products, index=dates.index) * units
+    return result.where(np.isfinite(result) & result.gt(0) & basis.actual_available)
+
+
+def security_basis_frame(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
+    """`security_basis` on a date x ticker grid."""
+    keys = pd.MultiIndex.from_product([index, columns])
+    values = security_basis(basis, pd.Series(keys.get_level_values(1).astype(str)), pd.Series(keys.get_level_values(0)))
+    return pd.DataFrame(values.to_numpy().reshape(len(index), len(columns)), index=index, columns=columns)
+
+
+def convert_quantities(
+    quantities: pd.DataFrame | pd.Series | np.ndarray, basis_from: pd.Series | np.ndarray, basis_to: pd.DataFrame | pd.Series | np.ndarray
+) -> pd.DataFrame | pd.Series | np.ndarray:
+    """Carry quoted-security quantities between two forward bases: `q * F_to / F_from` (null where either is null)."""
+    return quantities * basis_to / basis_from
+
+
+def lookup_asof(df_values: pd.DataFrame, tickers: pd.Series, dates: pd.Series) -> pd.Series:
+    """Per (ticker, date), the value saved on the last grid date at or before the date; a null there stays null."""
+    index = pd.DatetimeIndex(df_values.index)
+    rows = index.searchsorted(pd.to_datetime(dates).to_numpy(dtype="datetime64[ns]"), side="right") - 1
+    cols = df_values.columns.get_indexer(tickers.astype(str))
+    found = (rows >= 0) & (cols >= 0)
+    values = df_values.to_numpy(dtype="float64")[np.maximum(rows, 0), np.maximum(cols, 0)]
+    return pd.Series(np.where(found, values, np.nan), index=dates.index)
+
+
 def compatible_tape_support(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index, terminal_date: pd.Timestamp) -> pd.DataFrame:
     """Prove compatibility of the retained adjusted-price/terminal-quoted-tape pair."""
     df_supported = pd.DataFrame(False, index=index, columns=columns)

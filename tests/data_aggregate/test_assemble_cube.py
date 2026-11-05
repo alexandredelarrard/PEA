@@ -138,6 +138,19 @@ def test_price_grid_values_precision_and_chunks(monkeypatch: pytest.MonkeyPatch)
     print("SANITY: exact price grid, sparse cells and null latest labels survive; precision preserved.")
 
 
+def test_quantity_basis_columns_stay_out_of_the_cube(monkeypatch: pytest.MonkeyPatch) -> None:
+    tables = _parts()
+    baseline = _SpyStore(tables)
+    _step(baseline, monkeypatch).run()
+    tables[Tables.cube_part_prices.name] = tables[Tables.cube_part_prices.name].assign(security_basis=[1.0, 20.0], volume_pit=[5.0, 6.0])
+    store = _SpyStore(tables)
+    _step(store, monkeypatch).run()
+    cube = store.tables[Tables.cube.name]
+    assert list(cube.columns) == list(baseline.tables[Tables.cube.name].columns)
+    assert not {"security_basis", "volume_pit"} & set(cube.columns)
+    print(f"SANITY: assembled cube keeps its {len(cube.columns)} columns; security_basis and volume_pit stay in cube_part_prices.")
+
+
 @pytest.mark.parametrize("selection", [None, [], ["v_3"], ["date", "ticker", "v_3"]])
 def test_projected_reads(monkeypatch: pytest.MonkeyPatch, selection: Any) -> None:
     tables = _parts()

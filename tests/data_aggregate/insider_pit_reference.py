@@ -28,6 +28,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import clean_transa
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.capitalization import project_security_shares
+from src.utils.price.levels import security_basis_frame
 from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
@@ -50,7 +51,9 @@ def build_prepared_insider_panel(
     df_shares = frames.shares_outstanding_pit
     if df_shares is None and shares_out_history is not None and share_basis is not None:
         df_observations = shares_out_history.assign(capitalization_factor=1.0, capitalization_available=shares_out_history["as_of"])
-        df_shares, _ = project_security_shares(df_observations, share_basis, frames.trading_index, pd.Index(frames.universe))
+        df_shares, _ = project_security_shares(
+            df_observations, share_basis, security_basis_frame(share_basis, frames.trading_index, pd.Index(frames.universe))
+        )
     frames = replace(
         frames, close_pit=frames.close_pit if frames.close_pit is not None else frames.close_split, mcap_pit=df_cap, shares_outstanding_pit=df_shares
     )

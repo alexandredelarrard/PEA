@@ -847,7 +847,7 @@ def compute() -> dict:
     from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
     from src.utils.price.capitalization import project_security_shares
-    from src.utils.price.levels import as_traded_close
+    from src.utils.price.levels import as_traded_close, security_basis_frame
     from src.utils.string import pad_cik
     from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
     from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
@@ -981,7 +981,7 @@ def compute() -> dict:
     # Exercise the same visible dated-quantity preparation as the owning step.
     quantity_basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
     observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0, capitalization_available=fund["as_of"])
-    saved_shares, _ = project_security_shares(observations, quantity_basis.events, idx, close.columns)
+    saved_shares, _ = project_security_shares(observations, quantity_basis.events, security_basis_frame(quantity_basis.events, idx, close.columns))
     price_frames = make_frames(
         idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
     )

@@ -87,7 +87,9 @@ class StepAssembleCube(Step):
 
     def _load_root(self, since: pd.Timestamp | None) -> pd.DataFrame:
         """The price grid (float64: raw prices stay exact) with the peer basket and GICS codes attached."""
-        root = self._store.load(Tables.cube_part_prices, since=since)
+        # The quantity-conversion inputs stay in the price part; the cube keeps the price fields it always carried.
+        columns = [column for column in self._store.columns(Tables.cube_part_prices) if column not in {"security_basis", "volume_pit"}]
+        root = self._store.load(Tables.cube_part_prices, columns=columns, since=since)
         assert root is not None
         root = normalize_date_col(root)
         assert root is not None

@@ -8,10 +8,19 @@ import pytest
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import get_config_context
+from src.data_aggregate.utils.price.features import as_traded_volume
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.capitalization import capitalization_observations, project_security_shares
-from src.utils.price.levels import rebase_security_prices, rebase_security_quantities, security_quantity_basis, vendor_observation_factor
+from src.utils.price.levels import (
+    convert_quantities,
+    lookup_asof,
+    rebase_security_prices,
+    rebase_security_quantities,
+    security_basis_frame,
+    security_quantity_basis,
+    vendor_observation_factor,
+)
 
 
 def _basis(ratio: float, before: float, after: float) -> ShareBasis:
@@ -117,7 +126,7 @@ def test_capitalization_uses_dated_exact_lineage_and_unknown_successor_ends_supp
     )
     original = df_history.copy(deep=True)
     observations = capitalization_observations(df_history, df_vendor, index, basis)
-    shares, scale = project_security_shares(observations, basis, index, pd.Index(["AAA"]))
+    shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["AAA"])))
     assert scale.loc[:"2024-01-03", "AAA"].isna().all()
     assert scale.loc["2024-01-04":"2024-01-05", "AAA"].eq(1.5).all()
     assert scale.loc["2024-01-08":, "AAA"].isna().all()
@@ -153,7 +162,7 @@ def test_real_sharadar_class_scope_and_public_support() -> None:
     df_empty = pd.DataFrame({"ticker": pd.Series(dtype="str"), "date": pd.Series(dtype="datetime64[ns]"), "value": pd.Series(dtype="float64")})
     basis = ShareBasis(df_empty, df_empty, df_empty, {})
     observations = capitalization_observations(df_history, df_vendor, calendar, basis)
-    shares, scale = project_security_shares(observations, basis, calendar, pd.Index(names))
+    shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(names)))
     df_latest = observations.sort_values("as_of").groupby("ticker").tail(1)
     for ticker in names:
         row = df_latest.loc[df_latest["ticker"].eq(ticker)].iloc[0]
@@ -339,10 +348,88 @@ def test_missing_fiscal_keys_cannot_establish_or_extend_capitalization_support(p
         }
     )
     observations = capitalization_observations(df_history, df_raw, calendar, basis)
-    shares, scale = project_security_shares(observations, basis, calendar, pd.Index(["AAA"]))
+    shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(["AAA"])))
     assert scale.loc["2024-01-03":"2024-01-05", "AAA"].eq(1.5).all()
     assert scale.loc["2024-01-08":, "AAA"].isna().all()
     assert shares.loc["2024-01-08":, "AAA"].eq(120.0).all()
     print(
         "SANITY: invalid fiscal keys never match through NaT; the malformed successor ends oldK while its independently known count remains usable."
+    )
+
+
+def _events(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
+    return pd.DataFrame({"ticker": [r[0] for r in rows], "date": pd.to_datetime([r[1] for r in rows]), "value": [r[2] for r in rows]})
+
+
+# Filed split events (effective first session on the new basis) and the IVZ ADS-to-common conversion.
+_FILED = [
+    ("GOOGL", "2014-04-03", 2.002),
+    ("GOOGL", "2022-07-18", 20.0),
+    ("AMZN", "1998-06-02", 2.0),
+    ("AMZN", "1999-01-05", 3.0),
+    ("AMZN", "1999-09-02", 2.0),
+    ("AMZN", "2022-06-06", 20.0),
+    ("IVZ", "2007-12-04", 0.5),
+]
+_IVZ_UNITS = {"IVZ": {"quote_units": {"date": "2007-12-04", "before": 2.0, "after": 1.0, "quoted_titles": ["American Depositary Shares"]}}}
+
+
+def test_forward_basis_steps_on_effective_dates_and_folds_quote_units() -> None:
+    df_events = _events(_FILED)
+    basis = ShareBasis(df_events, df_events, df_events, _IVZ_UNITS)
+    index = pd.DatetimeIndex(
+        ["1998-01-02", "1999-01-04", "1999-01-05", "2007-12-03", "2007-12-04", "2014-04-02", "2014-04-03", "2022-07-15", "2022-07-18"]
+    )
+    df_basis = security_basis_frame(basis, index, pd.Index(["AMZN", "GOOGL", "IVZ", "AAA"]))
+    assert df_basis.iloc[0].tolist() == [1.0, 1.0, 1.0, 1.0]
+    assert df_basis.at[pd.Timestamp("2022-07-15"), "GOOGL"] == 2.002 and df_basis.at[pd.Timestamp("2022-07-18"), "GOOGL"] == 2.002 * 20.0
+    assert df_basis.loc[["1999-01-04", "1999-01-05", "2022-07-18"], "AMZN"].tolist() == [2.0, 6.0, 12.0 * 20.0]
+    assert df_basis["IVZ"].eq(1.0).all() and df_basis["AAA"].eq(1.0).all()
+    quantity = convert_quantities(100.0, df_basis.at[pd.Timestamp("2022-07-15"), "GOOGL"], df_basis.at[pd.Timestamp("2022-07-18"), "GOOGL"])
+    assert quantity == pytest.approx(2000.0, rel=1e-12)
+    unknown = ShareBasis(df_events, df_events, df_events, {}, unknown_units=frozenset({"IVZ"}))
+    assert security_basis_frame(unknown, index, pd.Index(["IVZ"]))["IVZ"].isna().all()
+    print(
+        "SANITY: F jumps x20 on GOOGL 2022-07-18 and x3 on AMZN 1999-01-05 (F=240 after 2022), IVZ 0.5 consolidation x ADS 2->1 is continuous, "
+        "no-event names stay 1, unknown units are null; 100 pre-split GOOGL shares are 2,000 after."
+    )
+
+
+def test_forward_basis_history_is_unchanged_by_a_later_event() -> None:
+    index = pd.bdate_range("2022-06-01", "2022-08-31")
+    df_events = _events(_FILED)
+    before = security_basis_frame(ShareBasis(df_events, df_events, df_events, {}), index, pd.Index(["GOOGL", "AMZN"]))
+    df_later = _events([*_FILED, ("GOOGL", "2022-08-01", 3.0)])
+    after = security_basis_frame(ShareBasis(df_later, df_later, df_later, {}), index, pd.Index(["GOOGL", "AMZN"]))
+    prefix = index < pd.Timestamp("2022-08-01")
+    pd.testing.assert_frame_equal(before.loc[prefix], after.loc[prefix], check_exact=True)
+    assert after.loc[~prefix, "GOOGL"].div(before.loc[~prefix, "GOOGL"]).eq(3.0).all()
+    print(f"SANITY: adding a later event leaves all {int(prefix.sum())} earlier F rows bit-identical and multiplies only rows from its date.")
+
+
+def test_asof_lookup_uses_last_grid_date_and_never_fills_a_null() -> None:
+    index = pd.DatetimeIndex(["2022-07-14", "2022-07-15", "2022-07-18"])
+    df_values = pd.DataFrame({"GOOGL": [1.0, 1.0, 20.0], "AAA": [3.0, np.nan, 4.0]}, index=index)
+    tickers = pd.Series(["GOOGL", "GOOGL", "GOOGL", "AAA", "AAA", "ZZZ"])
+    dates = pd.Series(pd.to_datetime(["2022-07-16", "2022-07-17", "2022-07-13", "2022-07-16", "2022-07-18", "2022-07-18"]))
+    result = lookup_asof(df_values, tickers, dates)
+    assert result.iloc[:2].tolist() == [1.0, 1.0] and result.iloc[2:4].isna().all() and result.iloc[4] == 4.0 and np.isnan(result.iloc[5])
+    print(
+        "SANITY: a weekend reads Friday's F (not Monday's x20); a null Friday stays null (no fill from Thursday); before-grid and unknown names are null."
+    )
+
+
+def test_volume_pit_is_as_traded_and_null_where_the_tape_is_restated_differently() -> None:
+    index = pd.bdate_range("2022-07-13", "2022-07-20")
+    df_volume = pd.DataFrame({"AAA": 1_000.0, "BBB": 1_000.0}, index=index)
+    df_actual = _events([("AAA", "2022-07-18", 20.0), ("BBB", "2022-07-18", 20.0)])
+    df_vendor = _events([("AAA", "2022-07-18", 20.0), ("BBB", "2022-07-18", 10.0)])
+    basis = ShareBasis(df_actual, df_vendor, df_actual, {})
+    df_basis = security_basis_frame(basis, index, pd.Index(["AAA", "BBB"]))
+    result = as_traded_volume(df_volume, df_basis, basis)
+    split = index >= pd.Timestamp("2022-07-18")
+    assert result.loc[~split, "AAA"].eq(50.0).all() and result.loc[split, "AAA"].eq(1_000.0).all()
+    assert result.loc[~split, "BBB"].isna().all() and result.loc[split, "BBB"].eq(1_000.0).all()
+    print(
+        "SANITY: a x20-restated tape returns to 50 as-traded shares before the split; a tape restated by a different vendor event is null before it."
     )

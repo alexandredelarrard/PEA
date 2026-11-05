@@ -95,6 +95,7 @@ from src.data_extract.utils.identity.identity_propagate import (
     owned_scopes,
     purge_rows,
     rebuild_history,
+    rebuilt_since,
     recheck_tickers,
     refresh_fails,
     refresh_insider,
@@ -195,6 +196,8 @@ class StepExtractIdentity(Step):
         self._cusips: CusipHistory | None = None
         self._lifecycle: Lifecycle | None = None
         self._first_build = False
+        #: this run's start (UTC, the lineage stamps' clock): the scopes stamped since then changed in this run (X90)
+        self._started = pd.Timestamp.now(tz="UTC").tz_localize(None).floor("s")
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols and FTD lines of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured."""
@@ -471,9 +474,11 @@ class StepExtractIdentity(Step):
         # contraction: rows filed by a CIK outside the ticker's company or windows (the event-only CIKs on consolidating tables)
         records = [record for spec in PURGE_TABLES for record in purge_rows(self._context, spec, changed, owned, identity.bounds, dry_run)]
 
-        # expansion and re-stamps: the bulk re-parse (not on a dry run), then the insider, FTD, short-volume and 13F rows
-        notes = {} if dry_run else reparse_notes(self._context, changed, scopes, identity)
-        insider = {} if dry_run else reparse_insider(self._context, changed, scopes, identity, self._run_date)
+        # expansion and re-stamps: the bulk re-parse of the scopes this run changed (X90: every cached zip, so once per change;
+        # not on a dry run), then the insider, FTD, short-volume and 13F rows
+        reparsed = changed if every else rebuilt_since(scopes, self._started)
+        notes = {} if dry_run else reparse_notes(self._context, reparsed, scopes, identity)
+        insider = {} if dry_run else reparse_insider(self._context, reparsed, scopes, identity, self._run_date)
         records += refresh_insider(self._context, identity, changed, dry_run)
         records += refresh_fails(self._context, tickers, self._run_date, dry_run, every)
         records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)

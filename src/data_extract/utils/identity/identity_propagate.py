@@ -63,6 +63,12 @@ def recheck_tickers(scopes: Mapping[str, FilingScope], as_of: pd.Timestamp, ever
     return sorted(stamps) if every else recently_changed(stamps, as_of)
 
 
+def rebuilt_since(scopes: Mapping[str, FilingScope], since: pd.Timestamp) -> list[str]:
+    """The tickers whose lineage scope stamp is on or after `since` (this run's start): the scopes this run changed (X90)."""
+    stamps = {ticker: scope.scope_changed_at for ticker, scope in scopes.items()}
+    return sorted(ticker for ticker, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
+
+
 def owned_scopes(identity: Identity) -> OwnedScopes:
     """(`{ticker: CIKs its company owns}`, `{ticker: its seam-widened windows}`) of every universe company."""
     # compute: the event CIKs that map back to each company, and its windows

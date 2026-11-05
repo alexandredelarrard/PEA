@@ -18,8 +18,9 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
-from src.data_extract.utils.identity.identity_propagate import purge_rows, retag_13f, thirteenf_moves
+from src.data_extract.utils.identity.identity_propagate import purge_rows, rebuilt_since, retag_13f, thirteenf_moves
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
@@ -114,6 +115,28 @@ def test_a_first_build_rechecks_every_ticker_and_the_next_publish_does_not(publi
     assert calls["recheck"][0]["tickers"] == ["AAA"] and calls["retag"] == [False, False]
     print("\n=== SANITY CHECK: first-build propagation (PD-13) ===")
     print(f"  publish 1 (no stored lineage): every={everies[0]}; publish 2: every={everies[1]}")
+
+
+def test_the_bulk_reparse_follows_only_the_scopes_this_run_changed(published_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811 (fixture)
+    """X90: the Notes and Form 3/4/5 re-parses read every cached zip, so after the first build they take only the tickers
+    whose scope stamp is from this run; a ticker still inside the 7-day re-check window from an earlier night is re-checked
+    (purge, re-stamps) but never re-parsed again."""
+    since = pd.Timestamp("2026-11-05 10:00:00")
+    scopes = {"AAA": SimpleNamespace(scope_changed_at=pd.Timestamp("2026-11-04 22:00:00")), "BBB": SimpleNamespace(scope_changed_at=since)}
+    calls = stub_propagation(monkeypatch)
+    monkeypatch.setattr(step_module, "recheck_tickers", lambda scopes, as_of, every: sorted(scopes))
+    parsed: list[list[str]] = []
+    monkeypatch.setattr(step_module, "reparse_notes", lambda context, tickers, *args: parsed.append(list(tickers)) or {})
+    step: Any = _step(published_store)
+    step._options, step._run_date, step._first_build = IdentityOptions(), RUN_DATE, False
+
+    step.run_propagate()
+
+    assert rebuilt_since(scopes, since) == ["BBB"] and rebuilt_since({"CCC": SimpleNamespace(scope_changed_at=None)}, since) == []
+    assert parsed == [[]] and calls["reload"], parsed
+    print("\n=== SANITY CHECK: bulk re-parse after the first build (X90) ===")
+    print(f"  stamps AAA 2026-11-04 22:00, BBB 2026-11-05 10:00, run started 10:00 -> re-parsed {rebuilt_since(scopes, since)}")
+    print(f"  a later run whose scopes are all older re-checks AAA but re-parses {parsed[0]} (no 2 h Notes pass)")
 
 
 def test_the_purge_leaves_rows_dated_after_the_company_end(sqlite_store: DataStore) -> None:

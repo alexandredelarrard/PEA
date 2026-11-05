@@ -13,6 +13,7 @@ from scipy.optimize import brentq
 from src.portfolio.transformers.construction import construct, risk_panels
 from src.portfolio.utils.calendar import cash_returns, due_flags
 from src.portfolio.utils.contracts import IncompleteScenario, MarketInputs, Settings, Simulation
+from src.utils.price.levels import convert_quantities
 
 BENCHMARK = "S&P500_TR"
 
@@ -202,8 +203,10 @@ def _daily_row(date: pd.Timestamp, nav: float, ls_value: float, sp_value: float,
 def _build_grid(data: MarketInputs, settings: Settings, frequency: str) -> _Grid:
     """Align panels on observed sessions and precompute schedules, interest, benchmark and risk panels."""
     # Macro prices can be carried over holidays; require a stock/feature session witness.
-    sessions = data.quotes.index.union(data.returns.index).union(data.share_basis.index).union(data.scores.index).sort_values().unique()
-    data = replace(data, quotes=data.quotes.reindex(sessions), returns=data.returns.reindex(sessions), share_basis=data.share_basis.reindex(sessions))
+    sessions = data.quotes.index.union(data.returns.index).union(data.security_basis.index).union(data.scores.index).sort_values().unique()
+    data = replace(
+        data, quotes=data.quotes.reindex(sessions), returns=data.returns.reindex(sessions), security_basis=data.security_basis.reindex(sessions)
+    )
     dates = sessions[(sessions >= settings.start) & (sessions <= settings.end if settings.end is not None else True)]
     if len(dates) < 2:
         raise ValueError("Backtest needs at least two observed sessions")
@@ -216,7 +219,7 @@ def _build_grid(data: MarketInputs, settings: Settings, frequency: str) -> _Grid
     variance, momentum = risk_panels(data, settings) if settings.allocation[0] > 0 else (pd.DataFrame(), pd.DataFrame())
     return _Grid(
         data, dates, tickers, data.sectors.reindex(tickers).to_numpy(),
-        data.quotes.reindex(dates).to_numpy(float), data.share_basis.reindex(dates).to_numpy(float), data.returns.reindex(dates).to_numpy(float),
+        data.quotes.reindex(dates).to_numpy(float), data.security_basis.reindex(dates).to_numpy(float), data.returns.reindex(dates).to_numpy(float),
         data.market.reindex(dates).to_numpy(float), outer, inner, cash_returns(dates, settings.cash_rate), variance, momentum,
     )  # fmt: skip
 
@@ -228,8 +231,8 @@ def _mark(book: _Book, grid: _Grid, settings: Settings, i: int) -> _Mark:
     names = grid.tickers[held]
     before = _positive(grid.quotes[i - 1, held], names, previous, "held quote")
     quote = _positive(grid.quotes[i, held], names, date, "held quote")
-    basis_before = _positive(grid.basis[i - 1, held], names, previous, "share basis")
-    basis_now = _positive(grid.basis[i, held], names, date, "share basis")
+    basis_before = _positive(grid.basis[i - 1, held], names, previous, "security basis")
+    basis_now = _positive(grid.basis[i, held], names, date, "security basis")
     returns = grid.returns[i, held]
     if not np.isfinite(returns).all() or (returns <= -1).any():
         raise IncompleteScenario(f"{date.date()}: missing held total return: {list(names[~np.isfinite(returns)])}")
@@ -237,7 +240,7 @@ def _mark(book: _Book, grid: _Grid, settings: Settings, i: int) -> _Mark:
     # Total-return distributions enter reserved cash once; splits change quantities, never orders.
     old_values = book.q[held] * before
     ls_pnl = float((old_values * returns).sum())
-    book.q[held] *= basis_before / basis_now
+    book.q[held] = convert_quantities(book.q[held], basis_before, basis_now)
     held_value = float((book.q[held] * quote).sum())
     book.ls_cash += ls_pnl - (held_value - old_values.sum())
     ls_value = book.ls_cash + held_value

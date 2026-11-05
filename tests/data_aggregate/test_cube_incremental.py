@@ -84,7 +84,6 @@ def test_windowed_build_reproduces_full_tail():
     dates, close, open_, sector, high, low, volume = _synthetic_prices()
     sh = [5, 20, 60]
 
-    df_factor = pd.DataFrame(1.0, index=close.index, columns=close.columns)
     full = build_feature_panel(
         PriceFrames(
             trading_index=(close).index,
@@ -96,12 +95,11 @@ def test_windowed_build_reproduces_full_tail():
             high=high,
             low=low,
             volume=volume,
-            level_factor=df_factor,
+            volume_pit=volume,
             close_pit=close,
         ),
         method="rank",
         seasonal_horizons=sh,
-        tape_support=close.gt(0),
     )
 
     # simulate an incremental run with the ACTUAL configured price-group warm-up: recompute only
@@ -124,12 +122,11 @@ def test_windowed_build_reproduces_full_tail():
             high=high.loc[start:],
             low=low.loc[start:],
             volume=volume.loc[start:],
-            level_factor=df_factor.loc[start:],
+            volume_pit=volume.loc[start:],
             close_pit=close.loc[start:],
         ),
         method="rank",
         seasonal_horizons=sh,
-        tape_support=close.loc[start:].gt(0),
     )
 
     # the tail the incremental run WRITES (date >= refresh_from) must match the full build

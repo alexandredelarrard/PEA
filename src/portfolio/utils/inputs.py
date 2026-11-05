@@ -1,4 +1,4 @@
-"""Bounded, read-only loading of existing market observations and quote bases."""
+"""Bounded, read-only loading of the saved market observations and quantity basis."""
 
 from __future__ import annotations
 
@@ -11,9 +11,6 @@ from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_store.schema import Tables
 from src.portfolio.utils.contracts import MarketInputs, Settings
-from src.utils.price.adjustments import load_bugfix
-from src.utils.price.basis import load_quantity_basis
-from src.utils.price.levels import security_quantity_basis
 
 
 def _wide(frame: pd.DataFrame, field: str) -> pd.DataFrame:
@@ -21,18 +18,21 @@ def _wide(frame: pd.DataFrame, field: str) -> pd.DataFrame:
 
 
 def load_market(context: Context, config: DictConfig, settings: Settings, metadata: dict[str, Any]) -> MarketInputs:
-    """Read published quotes and returns with the independent holding-quantity basis."""
+    """Read the saved quotes, total returns and forward quantity basis `security_basis` F."""
     names = context.universe.tickers
     end = settings.end if settings.end is not None else pd.Timestamp.today().normalize()
 
     # Calendar-day buffer covers the configured full trading-session windows without downloading history.
     since = settings.start - pd.Timedelta(days=3 * max(settings.momentum_window, settings.risk_window) + 30)
 
-    # Load published prices and complete sparse quantity events once each.
+    # Load published prices with their saved quantity basis once.
     df_prices = context.store.load(
-        Tables.cube_part_prices, columns=["date", "ticker", "close_pit", "close_total"], where={"ticker": names}, since=since, until=end
+        Tables.cube_part_prices,
+        columns=["date", "ticker", "close_pit", "close_total", "security_basis"],
+        where={"ticker": names},
+        since=since,
+        until=end,
     )
-    basis = load_quantity_basis(context, names, load_bugfix(context.config_dir))
     df_macro = context.store.load(
         Tables.prices_macro, columns=["date", "ticker", "close"], where={"ticker": MACRO_MARKET_SERIES}, since=since, until=end
     )
@@ -52,10 +52,10 @@ def load_market(context: Context, config: DictConfig, settings: Settings, metada
     context.log.info("Backtest data frontier %s (prices %s, benchmark %s)", last.date(), df_prices.date.max().date(), df_macro.date.max().date())
     df_macro, df_prices = (frame[frame.date <= last] for frame in (df_macro, df_prices))
 
-    # Saved quote holes remain unknown; quantity events only change holding units.
+    # Saved quote and basis holes remain unknown; F only changes holding units.
     df_quotes = _wide(df_prices, "close_pit")
     df_returns = _wide(df_prices, "close_total").pct_change(fill_method=None)
-    df_basis = security_quantity_basis(basis, pd.DatetimeIndex(df_quotes.index), df_quotes.columns)
+    df_basis = _wide(df_prices, "security_basis")
 
     # Align the independent market and current sector inputs to the selected securities.
     market = df_macro.set_index("date")["close"].sort_index().astype(float)

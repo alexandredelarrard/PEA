@@ -923,11 +923,10 @@ def compute() -> dict:
                             high=px["high"],
                             low=px["low"],
                             volume=px["volume"],
-                            level_factor=close * 0 + 1,
+                            volume_pit=px["volume"],
                             close_pit=close,
                         ),
                         seasonal_horizons=[30, 60, 90],
-                        tape_support=close.notna(),
                     ).items()
                 )
                 if isinstance(v, pd.DataFrame)
@@ -947,12 +946,11 @@ def compute() -> dict:
                 high=px["high"],
                 low=px["low"],
                 volume=px["volume"],
-                level_factor=close * 0 + 1,
+                volume_pit=px["volume"],
                 close_pit=close,
             ),
             method="rank",
             seasonal_horizons=[30, 60, 90],
-            tape_support=close.notna(),
         )
     )
     # `notes_num` is deliberately NOT passed: it is a separate bulk SEC table, and

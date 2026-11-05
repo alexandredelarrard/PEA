@@ -60,7 +60,8 @@ class MarketInputs:
     scores: pd.DataFrame
     quotes: pd.DataFrame
     returns: pd.DataFrame
-    share_basis: pd.DataFrame
+    #: forward quantity basis F: a held quantity converts by `q * F_now / F_prev`
+    security_basis: pd.DataFrame
     market: pd.Series
     sectors: pd.Series
     metadata: dict[str, Any]

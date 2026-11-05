@@ -33,18 +33,16 @@ from src.data_aggregate.utils.price.frames import (
 )
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
-from src.utils.price.basis import load_quantity_basis
-from src.utils.price.levels import compatible_tape_support
 from src.utils.step import Step
 
 
 class StepCubeMomentum(Step):
     # `ret` is read from the part rather than recomputed: build_feature_panel used to derive
     # it internally from close, duplicating what the price step already persisted
-    # BOTH price bases: `close_total` for every return-shaped feature, `close_split` for the
-    # four that subtract or multiply an `open`/`high`/`low`/`volume` (all split-adjusted
-    # only). See the basis table at the top of momentum/features.py.
-    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "level_factor", "close_pit")
+    # THREE price bases: `close_total` for every return-shaped feature, `close_split` for the
+    # three that subtract an `open`/`high`/`low` (all split-adjusted only), and the as-traded
+    # `close_pit x volume_pit` for dollar volume. See the basis table at the top of momentum/features.py.
+    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "close_pit", "volume_pit")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -85,9 +83,6 @@ class StepCubeMomentum(Step):
         return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
-        # Load only sparse quantity evidence; price creation owns reconciliation and repairs.
-        basis = load_quantity_basis(self._context, list(frames.universe), self._bugfix)
-        df_tape_support = compatible_tape_support(basis, frames.trading_index, pd.Index(frames.universe), pd.Timestamp(frames.trading_index.max()))
         frames.require("close_split", "close_total", "open", "sector_ret", "ret")
         assert frames.close_total is not None
         assert frames.open is not None
@@ -109,7 +104,6 @@ class StepCubeMomentum(Step):
             frames,
             method=self._cfg.features.standardize_method,
             seasonal_horizons=[int(h) for h in self._cfg.targets.horizons],
-            tape_support=df_tape_support,
             seams=seams,
             split_seams=split_seams,
         )

@@ -26,8 +26,6 @@ from src.data_aggregate.utils.price.frames import (
 )
 from src.data_store.schema import Tables
 from src.utils.filer_tables import def14a_evidence_mask
-from src.utils.price.adjustments import load_bugfix
-from src.utils.price.basis import load_quantity_basis
 from src.utils.step import Step
 
 _PRICE_FIELDS = ("close_split", "close_total", "shares_outstanding_pit")
@@ -191,8 +189,7 @@ class StepCubeGovernance(Step):
             ownership=self._load_ownership(),
         )
         fundamentals = self._load_fundamentals()
-        basis = load_quantity_basis(self._context, frames.universe, load_bugfix(self._context.config_dir))
-        inputs, stats = clean_governance_inputs(raw, fundamentals, frames, basis)
+        inputs, stats = clean_governance_inputs(raw, frames)
         lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
         for key, value in stats.items():
             if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):

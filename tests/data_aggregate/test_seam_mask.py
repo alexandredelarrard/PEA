@@ -100,10 +100,9 @@ def _raw(frames: dict, seams: dict | None) -> dict:
             high=frames["high"],
             low=frames["low"],
             volume=frames["volume"],
-            level_factor=pd.DataFrame(1.0, index=frames["close_split"].index, columns=frames["close_split"].columns),
+            volume_pit=frames["volume"],
             close_pit=frames["close_split"],
         ),
-        tape_support=frames["close_split"].gt(0),
         seams=seams,
     )
 
@@ -464,12 +463,11 @@ def test_the_stored_panel_carries_the_mask_through_build_feature_panel():
             high=frames["high"],
             low=frames["low"],
             volume=frames["volume"],
-            level_factor=pd.DataFrame(1.0, index=frames["close_split"].index, columns=frames["close_split"].columns),
+            volume_pit=frames["volume"],
             close_pit=frames["close_split"],
             close_split=frames["close_split"],
         ),
         method="rank",
-        tape_support=frames["close_split"].gt(0),
         seams={"SEAM": [when]},
     )
 

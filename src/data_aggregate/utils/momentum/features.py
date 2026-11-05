@@ -9,10 +9,7 @@ introduced while fixing market cap. Which block uses which:
   close_split  -- `atr_14`     : (high - prev_close), (low - prev_close)
                   `gap_21`     : open / prev_close - 1
                   `range_21`   : |close - open| / open
-                  `dollar_volume_63` / `amihud_63` : price x volume x `level_factor`
-                                 (the SPLIT factor cancels between price and volume; the
-                                 SPINOFF one does NOT -- see below -- and the dividend
-                                 factor would not cancel either)
+  close_pit    -- `dollar_volume_63` / `amihud_63` : as-traded `close_pit x volume_pit`
   close_total  -- every RETURN: mom_12_1, rev_5/21, ma_ratio_50/200, high_prox_252,
                   peer_mom_63, the seasonal block, macd, rsi_14, and the `ret` the
                   vol / skew / idio family is built from
@@ -62,10 +59,8 @@ over its own lookback. Which families are masked, and why the rest are not:
                  rather than a mixed basis.
                -- `seasonal_h*`: also `ret`-derived, through `forward_compound`, and its
                  deliberately partial `min_periods` tolerates the hole.
-               -- the whole VOLUME family: `close_split x volume x level_factor` was measured
-                 smooth through all six seams (`DHR` `dollar_volume_63` 0.837 -> 0.841 ->
-                 0.848, `LDOS` 0.433 flat, `DD` 0.985 flat). The split factor cancels between
-                 price and volume and `level_factor` carries the spinoff one.
+               -- the whole VOLUME family: dollars are as-traded `close_pit x volume_pit`, on
+                 one basis either side of a seam.
 The `close_split` family (`atr_14`, `gap_21`, `range_21`) is masked on the SAME dates even
 though the seams are measured on `close_total`. Measured justification, and its cost: the seam
 is present in both legs at `DD` / `LDOS` / `VTR` (the full step, identically) and partly at
@@ -90,7 +85,6 @@ from src.data_aggregate.utils.common.xs import xs_standardize
 from src.data_aggregate.utils.price.checks import mask_seam_windows
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.price.returns import forward_compound, momentum_characteristic, trailing_vol
-from src.utils.price.levels import dollar_volume
 
 logger = logging.getLogger(__name__)
 
@@ -234,18 +228,22 @@ def _risk_features(df_ret: pd.DataFrame) -> dict[str, pd.DataFrame]:
     }
 
 
-def _liquidity_features(
-    prices: PriceFrames,
-    df_ret: pd.DataFrame,
-    df_split: pd.DataFrame,
-    df_tape_support: pd.DataFrame | None,
-) -> dict[str, pd.DataFrame]:
-    """Value compatible tape in dollars and compute trailing volume signals."""
+def dollar_volume(df_quote: pd.DataFrame | None, df_tape: pd.DataFrame | None, like: pd.DataFrame) -> pd.DataFrame:
+    """As-traded dollars `close_pit x volume_pit` on `like`'s grid; null where either is missing, the quote is not positive or the tape negative."""
+    if df_quote is None or df_tape is None:
+        return pd.DataFrame(np.nan, index=like.index, columns=like.columns, dtype="float64")
+    df_quote, df_tape = df_quote.reindex_like(like), df_tape.reindex_like(like)
+    df_value = df_quote * df_tape
+    return df_value.where(df_quote.gt(0) & df_tape.ge(0) & np.isfinite(df_value))
+
+
+def _liquidity_features(prices: PriceFrames, df_ret: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Value the as-traded tape in dollars and compute trailing volume signals."""
     if prices.volume is None:
         return {}
     assert prices.close_total is not None
     df_volume = prices.volume.reindex_like(prices.close_total)
-    df_dollars = dollar_volume(df_split, df_volume, prices.level_factor, prices.close_pit, df_tape_support)
+    df_dollars = dollar_volume(prices.close_pit, prices.volume_pit, prices.close_total)
     df_dollar_log = cast(pd.DataFrame, np.log1p(df_dollars.rolling(63, min_periods=20).mean()))
     df_amihud = sanitize(df_ret.abs() / df_dollars.where(df_dollars > 0))
     df_amihud_mean = df_amihud.rolling(63, min_periods=20).mean()
@@ -307,7 +305,6 @@ def compute_raw_features(
     seasonal_horizons: list[int] | None = None,
     seasonal_years: int = 5,
     *,
-    tape_support: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
     split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict[str, pd.DataFrame]:
@@ -320,7 +317,7 @@ def compute_raw_features(
     # Preserve family order and optional-field behavior.
     feats = _variation_features(df_close, prices.open, prices.sector_ret, df_ret, df_split, seams)
     feats.update(_risk_features(df_ret))
-    feats.update(_liquidity_features(prices, df_ret, df_split, tape_support))
+    feats.update(_liquidity_features(prices, df_ret))
     feats.update(_seasonal_features(df_ret, df_close, seasonal_horizons, seasonal_years))
     feats.update(_technical_features(prices, df_split))
     # Price-ratio windows must be masked before the cross-sectional rank.
@@ -385,12 +382,11 @@ def build_feature_panel(
     method: Literal["rank", "zscore"] = "rank",
     seasonal_horizons: list[int] | None = None,
     *,
-    tape_support: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
     split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> pd.DataFrame:
     """Standardize observed raw signals after seam and thin-population masks."""
-    raw = compute_raw_features(prices, seasonal_horizons, tape_support=tape_support, seams=seams, split_seams=split_seams)
+    raw = compute_raw_features(prices, seasonal_horizons, seams=seams, split_seams=split_seams)
     assert prices.close_total is not None
     availability = (prices.close_split if prices.close_split is not None else prices.close_total).notna()
     raw = {name: mask_to_availability(frame, availability) for name, frame in raw.items()}

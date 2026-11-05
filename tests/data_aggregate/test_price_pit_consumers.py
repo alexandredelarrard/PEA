@@ -52,47 +52,6 @@ def test_saved_daily_counts_and_finra_quantities_share_one_terminal_basis() -> N
     print("SANITY: a no-trade4:1 split in the saved F changes both quantity legs together; daily short turnover stays10%.")
 
 
-@pytest.mark.parametrize("later_publication", [False, True])
-def test_weekend_count_uses_only_the_already_public_observation(later_publication: bool) -> None:
-    days = pd.DatetimeIndex(["2020-01-03", "2020-01-06", "2020-01-07"])
-    query = pd.DataFrame({"ticker": ["TEST"], "as_of": pd.to_datetime(["2020-01-05"])})
-    df_public = pd.DataFrame({"ticker": "TEST", "as_of": pd.to_datetime(["2020-01-02", "2020-01-05"])})
-    if later_publication:
-        df_public = pd.concat([df_public, query.assign(as_of=pd.Timestamp("2020-01-06"))], ignore_index=True)
-    df_events = pd.DataFrame({"ticker": ["TEST"], "date": [days[1]], "value": [4.0]})
-    basis = ShareBasis(df_events, df_events, df_events, {})
-    df_saved = pd.DataFrame({"TEST": [100.0, 600.0, 600.0]}, index=days)
-    actual = price_frames.public_security_counts(query, df_saved, df_public, basis)
-    assert pd.isna(actual.iloc[0]) if later_publication else actual.iloc[0] == pytest.approx(150.0)
-    assert df_saved["TEST"].tolist() == [100.0, 600.0, 600.0]
-    print(
-        "SANITY: weekend-public count uses the same public observation and reverses only the evidenced Monday split; a later publication cannot leak backward."
-    )
-
-
-def test_exact_session_count_hole_and_missing_public_evidence_stay_unknown() -> None:
-    days = pd.DatetimeIndex(["2020-01-03", "2020-01-06", "2020-01-07"])
-    df_query = pd.DataFrame({"ticker": ["TEST"], "as_of": [days[1]]})
-    df_public = df_query.assign(as_of=pd.Timestamp("2020-01-02"))
-    empty = pd.DataFrame(columns=["ticker", "date", "value"])
-    basis = ShareBasis(empty, empty, empty, {})
-    df_saved = pd.DataFrame({"TEST": [100.0, np.nan, 100.0]}, index=days)
-    assert price_frames.public_security_counts(df_query, df_saved, df_public, basis).isna().all()
-    assert price_frames.public_security_counts(df_query, df_saved.fillna(100.0), df_public.iloc[:0], basis).isna().all()
-    print("SANITY: an exact-session unsupported count is never filled; a valid saved number cannot establish its own public-observation lineage.")
-
-
-def test_first_public_weekend_observation_does_not_require_an_older_supported_count() -> None:
-    days = pd.DatetimeIndex(["2020-01-03", "2020-01-06"])
-    df_query = pd.DataFrame({"ticker": ["TEST"], "as_of": pd.to_datetime(["2020-01-05"])})
-    df_saved = pd.DataFrame({"TEST": [np.nan, 100.0]}, index=days)
-    df_empty = pd.DataFrame(columns=["ticker", "date", "value"])
-    basis = ShareBasis(df_empty, df_empty, df_empty, {})
-    actual = price_frames.public_security_counts(df_query, df_saved, df_query, basis)
-    assert actual.iloc[0] == 100.0
-    print("SANITY: the first Sunday-public observation uses its Monday count in known units; no older observation is needed or fabricated.")
-
-
 @pytest.mark.parametrize("invalid_factor", [-2.0, 0.0, np.nan, np.inf])
 def test_tape_support_rejects_malformed_genuine_or_vendor_evidence(invalid_factor: float) -> None:
     days = pd.bdate_range("2020-01-02", periods=3)
@@ -117,19 +76,17 @@ def test_unestablished_adr_units_never_become_a_trusted_identity() -> None:
     print("SANITY: an observed ADR-ratio change without an initial unit convention stays unsupported across all quantity adapters.")
 
 
-@pytest.mark.parametrize("units", [1.0, 2.0, None])
-def test_proxy_count_uses_saved_support_and_declared_unit_only(units: float | None) -> None:
-    days = pd.bdate_range("2020-01-02", periods=3)
-    df_proxy = pd.DataFrame({"ticker": "TEST", "as_of": days, "insider_shares": 10.0})
-    df_public = pd.DataFrame({"ticker": ["TEST"], "as_of": [days[0]], "sharesOutstandingPit": [999999.0]})
-    df_saved = pd.DataFrame({"TEST": [100.0, np.nan, 200.0]}, index=days)
-    df_empty = pd.DataFrame(columns=["ticker", "date", "value"])
-    policies = {} if units is None else {"TEST": {"quote_units": {"before": units, "after": units, "date": "2020-01-01"}}}
-    basis = ShareBasis(df_empty, df_empty, df_empty, policies, unknown_units=frozenset({"TEST"}) if units is None else frozenset())
+def test_proxy_count_is_the_saved_count_as_of_the_proxy_date() -> None:
+    days = pd.DatetimeIndex(["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07"])
+    dates = pd.to_datetime(["2020-01-01", "2020-01-03", "2020-01-05", "2020-01-06", "2020-01-07", None])
+    df_proxy = pd.DataFrame({"ticker": ["TEST"] * 5 + ["TEST"], "as_of": dates, "insider_shares": 10.0})
+    # A 4:1 split on Monday 2020-01-06 is already in the saved count; Tuesday's count is unsupported.
+    df_saved = pd.DataFrame({"TEST": [100.0, 100.0, 400.0, np.nan]}, index=days)
     frames = price_frames.PriceFrames(days, ("TEST",), {}, shares_outstanding_pit=df_saved)
-    actual = pit_shares_outstanding(df_proxy, frames, df_public, basis)
+    tally: dict[str, int] = {}
+    actual = pit_shares_outstanding(df_proxy, frames, tally)
     assert actual is not None
-    expected = pd.Series([100.0, np.nan, 200.0] if units == 1.0 else np.nan, index=df_proxy.index)
+    expected = pd.Series([np.nan, 100.0, 100.0, 400.0, np.nan, np.nan], index=df_proxy.index)
     pd.testing.assert_series_equal(actual, expected, check_names=False)
-    assert df_public["sharesOutstandingPit"].iloc[0] == 999999.0
-    print("SANITY: proxy denominators use saved counts, preserve holes and refuse ambiguous ADS totals; poisoned cached counts are ignored.")
+    assert pit_shares_outstanding(df_proxy, None, tally) is None and len(tally) == 1
+    print("SANITY: a Sunday proxy reads Friday's saved count (not Monday's post-split x4), a saved null and a pre-history or missing date stay null.")

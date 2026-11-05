@@ -44,10 +44,9 @@ def test_liquidity_skipped_without_volume_present_with():
             open=open_,
             sector_ret=sector,
             volume=volume,
-            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            volume_pit=volume,
             close_pit=close,
         ),
-        tape_support=close.gt(0),
     )
     for k in _LIQ:
         assert k in with_vol, f"{k} missing when volume supplied"
@@ -71,10 +70,9 @@ def test_no_lookahead():
             open=open_,
             sector_ret=sector,
             volume=volume,
-            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            volume_pit=volume,
             close_pit=close,
         ),
-        tape_support=close.gt(0),
     )
 
     close2, volume2 = close.copy(), volume.copy()
@@ -89,10 +87,9 @@ def test_no_lookahead():
             open=open_,
             sector_ret=sector,
             volume=volume2,
-            level_factor=pd.DataFrame(1.0, index=close2.index, columns=close2.columns),
+            volume_pit=volume2,
             close_pit=close2,
         ),
-        tape_support=close2.gt(0),
     )
 
     for k in _LIQ:
@@ -114,10 +111,9 @@ def test_dollar_volume_ranks_liquidity():
             open=open_,
             sector_ret=sector,
             volume=volume,
-            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            volume_pit=volume,
             close_pit=close,
         ),
-        tape_support=close.gt(0),
     )
     dv = raw["dollar_volume_63"].iloc[-1]  # last date
     # S24 has ~100x the base volume of S00 -> must rank far higher on $ volume
@@ -132,11 +128,10 @@ def test_dollar_volume_ranks_liquidity():
             open=open_,
             sector_ret=sector,
             volume=volume,
-            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            volume_pit=volume,
             close_pit=close,
         ),
         method="rank",
-        tape_support=close.gt(0),
     )
     for k in _LIQ:
         assert k in panel.columns, f"{k} not in built panel"
@@ -167,10 +162,9 @@ def test_amihud_is_monotone_in_illiquidity_and_rank_invariant_under_the_log():
             open=open_,
             sector_ret=sector,
             volume=volume,
-            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            volume_pit=volume,
             close_pit=close,
         ),
-        tape_support=close.gt(0),
     )
     logged = raw["amihud_63"]
 
@@ -231,10 +225,9 @@ def test_an_all_flat_window_yields_nan_not_minus_inf():
                 open=close.shift(1).bfill(),
                 sector_ret=sector,
                 volume=volume,
-                level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+                volume_pit=volume,
                 close_pit=close,
             ),
-            tape_support=close.gt(0),
         )
 
     flat = raw["amihud_63"]["FLAT"]

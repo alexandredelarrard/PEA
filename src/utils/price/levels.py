@@ -228,20 +228,6 @@ def vendor_observation_factor(basis: ShareBasis, tickers: pd.Series, source_date
     return factor.where(supported & basis.actual_available & np.isfinite(factor) & factor.gt(0))
 
 
-def security_quantity_basis(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
-    """Return GÃ—U on a canonical quote grid, keeping quantity and price wedges separate."""
-    df_basis = pd.DataFrame(1.0 if basis.actual_available else np.nan, index=index, columns=columns, dtype="float64")
-    if not basis.actual_available:
-        return df_basis
-    df_events = basis.actual
-    _validate_quantity_events(df_events)
-    factors = suffix_factor(df_events, list(columns), index.to_numpy(dtype="datetime64[ns]"))
-    for ticker in columns:
-        units = basis.factor(pd.Series(ticker, index=index), pd.Series(index, index=index), "units")
-        df_basis[ticker] = factors.get(str(ticker), np.ones(len(index))) * units
-    return df_basis.where(np.isfinite(df_basis) & df_basis.gt(0))
-
-
 def rebase_vendor_quantities(
     basis: ShareBasis, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series
 ) -> pd.Series:
@@ -311,11 +297,12 @@ def convert_quantities(
 
 
 def lookup_asof(df_values: pd.DataFrame, tickers: pd.Series, dates: pd.Series) -> pd.Series:
-    """Per (ticker, date), the value saved on the last grid date at or before the date; a null there stays null."""
+    """Per (ticker, date), the value saved on the last grid date at or before the date; a null there, or a missing date, stays null."""
     index = pd.DatetimeIndex(df_values.index)
-    rows = index.searchsorted(pd.to_datetime(dates).to_numpy(dtype="datetime64[ns]"), side="right") - 1
+    stamps = pd.to_datetime(dates).to_numpy(dtype="datetime64[ns]")
+    rows = index.searchsorted(stamps, side="right") - 1
     cols = df_values.columns.get_indexer(tickers.astype(str))
-    found = (rows >= 0) & (cols >= 0)
+    found = (rows >= 0) & (cols >= 0) & ~np.isnat(stamps)
     values = df_values.to_numpy(dtype="float64")[np.maximum(rows, 0), np.maximum(cols, 0)]
     return pd.Series(np.where(found, values, np.nan), index=dates.index)
 
@@ -341,23 +328,3 @@ def compatible_tape_support(basis: ShareBasis, index: pd.DatetimeIndex, columns:
         supported &= np.isfinite(genuine) & (genuine > 0) & np.isfinite(restatement) & (restatement > 0)
         df_supported[ticker] = supported & np.isclose(restatement * target.iloc[position], genuine, rtol=1e-12, atol=0)
     return df_supported
-
-
-def dollar_volume(
-    df_close: pd.DataFrame,
-    df_volume: pd.DataFrame,
-    df_factor: pd.DataFrame | None,
-    df_quote: pd.DataFrame | None,
-    df_tape_support: pd.DataFrame | None,
-) -> pd.DataFrame:
-    """Value the compatible adjusted quote/tape pair with the published level factor."""
-    if df_factor is None or df_quote is None or df_tape_support is None:
-        return pd.DataFrame(np.nan, index=df_close.index, columns=df_close.columns, dtype="float64")
-    df_tape = df_volume.reindex_like(df_close)
-    df_level = df_factor.reindex_like(df_close)
-    df_value = df_close * df_tape * df_level
-    supported = df_close.gt(0) & df_tape.ge(0) & df_level.gt(0)
-    supported &= np.isfinite(df_close) & np.isfinite(df_tape) & np.isfinite(df_level) & np.isfinite(df_value)
-    df_quoted = df_quote.reindex_like(df_close)
-    supported &= np.isfinite(df_quoted) & df_quoted.gt(0) & df_tape_support.reindex_like(df_close).eq(True)
-    return df_value.where(supported)

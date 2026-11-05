@@ -17,7 +17,6 @@ from src.utils.price.levels import (
     lookup_asof,
     rebase_security_quantities,
     security_basis_frame,
-    security_quantity_basis,
     vendor_observation_factor,
 )
 
@@ -66,14 +65,6 @@ def test_unknown_units_and_unavailable_cross_date_evidence_remain_unknown() -> N
     result = rebase_security_quantities(absent, pd.Series([10.0]), ticker.iloc[:1], source.iloc[:1], target.iloc[:1], pd.Series([1.0]))
     assert result.isna().all()
     print("SANITY: unknown/invalid units and unavailable nonzero cross-date evidence fail closed.")
-
-
-def test_quantity_basis_uses_strict_future_genuine_events_and_quote_units() -> None:
-    basis = _basis(0.5, 2, 1)
-    index = pd.DatetimeIndex(["2024-01-04", "2024-01-05"])
-    result = security_quantity_basis(basis, index, pd.Index(["AAA"]))
-    assert result["AAA"].tolist() == [1.0, 1.0]
-    print("SANITY: .5 ordinary consolidation and ADS 2→1 leave the security holding basis unchanged on the effective day.")
 
 
 def test_successive_and_future_splits_preserve_historical_ownership() -> None:

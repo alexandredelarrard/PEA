@@ -29,11 +29,32 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import split_cum_product
+from src.utils.price.levels import security_basis_frame, split_cum_product
 
 logger = logging.getLogger(__name__)
 F13_REVISION_MIN_MOVE = 0.001
 COVERAGE_BREAK_DEFAULT = 0.50
+
+
+def _basis_grid(trading_index: pd.DatetimeIndex, holdings: pd.DataFrame) -> tuple[pd.DatetimeIndex, pd.Index]:
+    """The saved-basis grid the production part would hold: every session plus each report period, per held ticker."""
+    periods = pd.DatetimeIndex(pd.to_datetime(holdings["period"]).dropna().unique())
+    return pd.DatetimeIndex(trading_index).union(periods), pd.Index(sorted(holdings["ticker"].dropna().astype(str).unique()))
+
+
+def legacy_basis_frame(share_basis: ShareBasis | None, trading_index: pd.DatetimeIndex, holdings: pd.DataFrame) -> pd.DataFrame | None:
+    """`security_basis` F of the legacy `ShareBasis` input, for the production 13F projections."""
+    return None if share_basis is None else security_basis_frame(share_basis, *_basis_grid(trading_index, holdings))
+
+
+def split_basis_frame(splits: pd.DataFrame | None, trading_index: pd.DatetimeIndex, holdings: pd.DataFrame) -> pd.DataFrame | None:
+    """F from a legacy `splits` table (`ratio` column), for the production matched-quarter arithmetic."""
+    if splits is None:
+        return None
+    index, tickers = _basis_grid(trading_index, holdings)
+    keys = pd.MultiIndex.from_product([index, tickers])
+    values = split_cum_product(splits, pd.Series(keys.get_level_values(1)), pd.Series(keys.get_level_values(0)))
+    return pd.DataFrame(values.reshape(len(index), len(tickers)), index=index, columns=tickers)
 
 
 def stamp_legacy_publication(
@@ -589,7 +610,7 @@ def build_prepared_institutional_feature_panel(
     fields = project_institutional_features(
         df_features,
         frames,
-        share_basis,
+        legacy_basis_frame(share_basis, frames.trading_index, holdings),
         settle_trading_days,
         versioned=filings is not None,
         trading_calendar=frames.trading_index,
@@ -614,4 +635,5 @@ def _versioned_quarter_features(
         (day, compact_institutional_books(books), states)
         for day, books, states in iter_public_books(manifests, holdings, trading_index, settle_days=settle_days)
     )
-    return compute_institutional_feature_history(snapshots, splits=splits, min_prior_holders=min_prior_holders)
+    df_basis = split_basis_frame(splits, trading_index, holdings)
+    return compute_institutional_feature_history(snapshots, df_basis=df_basis, min_prior_holders=min_prior_holders)

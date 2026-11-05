@@ -13,11 +13,11 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.class_lines import cusip_windows, load_class_lines
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.price import inputs as price_inputs
 from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
@@ -34,7 +34,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
-from src.utils.price.adjustments import ShareBasis, load_bugfix
+from src.utils.price.levels import lookup_asof
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
 
@@ -44,8 +44,7 @@ class SecThirteenResources:
     """One loaded capital/security snapshot shared by both13F families."""
 
     frames: PriceFrames
-    basis: ShareBasis
-    cusip_map: pd.DataFrame | None
+    cusip_windows: pd.DataFrame
     cohorts: Mapping[str, frozenset[str]] | None
 
 
@@ -56,14 +55,13 @@ class PreparedSecThirteen:
 
 
 class StepCubeSecThirteen(Step):
-    _FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
+    _FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis")
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_sec_thirteen)
-        self._bugfix = load_bugfix(context.config_dir)
         cfg = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
@@ -107,7 +105,7 @@ class StepCubeSecThirteen(Step):
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
         cusip_map = self._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-        basis, _ = price_inputs.load_quantity_inputs(self._context, frames, self._bugfix)
+        df_lines = load_class_lines(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -115,7 +113,7 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, basis, cusip_map, cohorts)
+        return SecThirteenResources(frames, cusip_windows(df_lines, cusip_map), cohorts)
 
     def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
 
@@ -157,7 +155,7 @@ class StepCubeSecThirteen(Step):
         history = prepare_institutional_book_history(
             packets,
             resources.frames.trading_index,
-            resources.cusip_map,
+            resources.cusip_windows,
             resources.frames.universe,
             resources.frames.close_pit,
             cfg.get("value_basis"),
@@ -167,14 +165,13 @@ class StepCubeSecThirteen(Step):
             return None
         compact, states = history
 
-        # Aggregated quantities cannot establish an untitled nonunit ADS source basis.
+        # Quantities count only where the saved basis F supports the ticker on the report date.
         compact = compact.copy()
         keys = compact.index.to_frame(index=False)
+        df_basis = resources.frames.security_basis
         if not compact.empty:
-            supported = resources.basis.factor(keys["ticker"], keys["period"], "units").eq(1.0) & resources.basis.actual_available
-            compact["shares"] = compact["shares"].where(supported.to_numpy())
-        splits = resources.basis.actual.rename(columns={"value": "ratio"})
-        return compute_institutional_feature_history(iter_institutional_books(compact, states), splits=splits)
+            compact["shares"] = compact["shares"].where(lookup_asof(df_basis, keys["ticker"], keys["period"]).notna().to_numpy())
+        return compute_institutional_feature_history(iter_institutional_books(compact, states), df_basis=df_basis)
 
     def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
 
@@ -190,12 +187,12 @@ class StepCubeSecThirteen(Step):
         # Clean whole books once, retaining mapped off-universe positions and provenance.
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, resources.cusip_map, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, resources.cusip_windows, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
             books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
         if books is None:
             return None
-        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.basis)
+        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
     @staticmethod
@@ -238,7 +235,7 @@ class StepCubeSecThirteen(Step):
         fields = project_institutional_features(
             features,
             frames,
-            resources.basis,
+            resources.frames.security_basis,
             settle_days,
             versioned=True,
             trading_calendar=resources.frames.trading_index,

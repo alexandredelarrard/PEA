@@ -15,7 +15,13 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 )
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket, _attach_reference_prices
 from src.utils.price.adjustments import ShareBasis
+from src.utils.price.levels import security_basis_frame
 from tests.conftest import make_frames
+
+
+def _basis_frame(basis: ShareBasis, end: str = "2024-06-28") -> pd.DataFrame:
+    """The saved forward basis F of `basis` on a grid that starts before the 2024-03-31 report period."""
+    return security_basis_frame(basis, pd.bdate_range("2024-03-28", end), pd.Index(["TEST"]))
 
 
 def test_unconfigured_split_carries_public_book_and_preserves_unknown_successor() -> None:
@@ -30,7 +36,7 @@ def test_unconfigured_split_carries_public_book_and_preserves_unknown_successor(
             "inst_shares": [10.0, np.nan],
         }
     )
-    owned = _daily_owned_shares(books, index, basis)
+    owned = _daily_owned_shares(books, index, _basis_frame(basis))
     assert pd.isna(owned.at[index[0], "TEST"])
     assert owned.at[pd.Timestamp("2024-05-30"), "TEST"] == 10
     assert owned.at[pd.Timestamp("2024-06-03"), "TEST"] == 40
@@ -75,7 +81,7 @@ def test_saved_ownership_count_and_cap_have_independent_support() -> None:
     shares = pd.DataFrame({"TEST": [100.0, 100.0, 100.0, 400.0, np.nan, 400.0]}, index=index)
     cap = pd.DataFrame({"TEST": [20000.0, 20000.0, 20000.0, np.nan, 20000.0, 20000.0]}, index=index)
     frames = make_frames(index, shares_outstanding_pit=shares, mcap_pit=cap)
-    fields = project_institutional_features(books, frames, basis, 0, versioned=True, trading_calendar=index)
+    fields = project_institutional_features(books, frames, _basis_frame(basis), 0, versioned=True, trading_calendar=index)
     ownership = fields["ic_inst_ownership_pct"].TEST
     assert ownership.loc["2024-05-30"] == pytest.approx(0.1)
     assert ownership.loc["2024-06-03"] == pytest.approx(0.1)
@@ -86,28 +92,26 @@ def test_saved_ownership_count_and_cap_have_independent_support() -> None:
     print("SANITY: a no-trade split keeps10% ownership from saved counts; count and issuer-cap holes remain independent of stale source caches.")
 
 
-def test_missing_events_and_ambiguous_ads_books_stay_unsupported() -> None:
+def test_missing_events_stay_unsupported_and_declared_ads_units_convert() -> None:
     index = pd.bdate_range("2024-05-29", periods=3)
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
     books = pd.DataFrame({"ticker": ["TEST"], "period": [pd.Timestamp("2024-03-31")], "as_of": [index[0]], "inst_shares": [10.0]})
     missing = ShareBasis(empty, empty, empty, {}, actual_available=False)
     policy = {"TEST": {"quote_units": {"date": "2024-06-01", "before": 2.0, "after": 1.0}}}
     ads = ShareBasis(empty, empty, empty, policy)
-    for basis in (missing, ads):
-        owned = _daily_owned_shares(books, index, basis)
-        assert owned.TEST.isna().all()
-    print("SANITY: missing genuine-event evidence and an untitled nonunit ADS aggregate cannot establish cross-date ownership quantities.")
+    assert _daily_owned_shares(books, index, _basis_frame(missing)).TEST.isna().all()
+    assert _daily_owned_shares(books, index, _basis_frame(ads)).TEST.tolist() == [10.0, 10.0, 10.0]
+    print("SANITY: missing genuine-event evidence leaves ownership unknown; declared ADS units are folded into F, so the book carries 10.")
 
 
-def test_broad_source_unit_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_broad_basis_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch) -> None:
     index = pd.bdate_range("2024-05-29", periods=3)
     keys = pd.MultiIndex.from_tuples([(pd.Timestamp("2024-03-31"), "1", "TEST")], names=["period", "cik", "ticker"])
     compact = pd.DataFrame({"shares": [10.0], "value_usd": [500.0], "call_value": [0.0], "put_value": [0.0]}, index=keys)
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
-    policy = {"TEST": {"quote_units": {"date": "2024-06-01", "before": 2.0, "after": 1.0}}}
-    basis = ShareBasis(empty, empty, empty, policy)
-    frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]))
-    resources = SecThirteenResources(frames, basis, None, None)
+    basis = ShareBasis(empty, empty, empty, {}, actual_available=False)
+    frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]), security_basis=_basis_frame(basis))
+    resources = SecThirteenResources(frames, pd.DataFrame(), None)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._cfg = None, {"institutionals": {}}
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))
@@ -117,13 +121,13 @@ def test_broad_source_unit_gate_preserves_reported_usd(monkeypatch: pytest.Monke
     result = step._institutional_features(resources)
     assert result is not None and result.shares.isna().all()
     assert result.value_usd.iloc[0] == 500 and compact.shares.iloc[0] == 10
-    print("SANITY: unsupported untitled ADS quantities cannot enter broad split-flow math; original500USD and source shares remain intact.")
+    print("SANITY: quantities without a saved basis F cannot enter broad split-flow math; original500USD and source shares remain intact.")
 
 
 def test_quote_unknown_keeps_observed_disclosure_keys() -> None:
     index = pd.bdate_range("2024-05-29", periods=3)
     saved = {"close_split": pd.DataFrame(10.0, index=index, columns=["TEST"])}
-    saved.update({field: saved["close_split"] * np.nan for field in ("close_pit", "shares_outstanding_pit", "mcap_pit")})
+    saved.update({field: saved["close_split"] * np.nan for field in ("close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis")})
     frames = make_frames(index, **{field: saved[field] for field in StepCubeSecThirteen._FIELDS})
     disclosure = pd.DataFrame({"date": index, "ticker": "TEST", "f_ic_inst_concentration": 0.5})
     result = StepCubeSecThirteen._merge_panels(frames, (disclosure, None))
@@ -133,16 +137,15 @@ def test_quote_unknown_keeps_observed_disclosure_keys() -> None:
 
 
 @pytest.mark.parametrize("units_before,units_after", [(2.0, 1.0), (1.0, 2.0)])
-def test_elite_inverse_units_preserve_reference_money_without_certifying_ads(units_before: float, units_after: float) -> None:
+def test_elite_inverse_units_preserve_reference_money(units_before: float, units_after: float) -> None:
     index = pd.DatetimeIndex(["2024-03-28", "2024-06-28"])
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
     policy = {"TEST": {"quote_units": {"date": "2024-06-01", "before": units_before, "after": units_after}}}
     basis = ShareBasis(empty, empty, empty, policy)
-    market = BehaviorMarket(index, pd.DataFrame(50.0, index=index, columns=["TEST"]), basis)
+    market = BehaviorMarket(index, pd.DataFrame(50.0, index=index, columns=["TEST"]), _basis_frame(basis))
     pairs = pd.DataFrame({"ticker": ["TEST"], "current": [10.0], "prior": [10.0], "known": [True]})
     result = _attach_reference_prices(pairs, market, pd.Timestamp("2024-03-31"), pd.Timestamp("2024-06-30"))
     assert result.prior.iloc[0] * result.price.iloc[0] == pytest.approx(500)
-    assert not result.known.iloc[0]
-    print(
-        "SANITY: inverse source/target unit conversion preserves500 reference USD; an untitled nonunit ADS leg remains ineligible for elite comparisons."
-    )
+    assert result.prior.iloc[0] == pytest.approx(10.0 * units_before / units_after)
+    assert result.known.iloc[0]
+    print("SANITY: F folds the declared quote units, so prior shares and the reference quote convert inversely and keep 500 reference USD.")

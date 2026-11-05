@@ -15,8 +15,7 @@ from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
-from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import rebase_security_quantities, split_cum_product
+from src.utils.price.levels import convert_quantities, lookup_asof, split_cum_product
 
 logger = logging.getLogger(__name__)
 
@@ -102,31 +101,17 @@ def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
     return ratio.mask(over)
 
 
-def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, share_basis: ShareBasis | None) -> pd.DataFrame:
-    """Carry supported quoted quantities from report date without changing publication clocks."""
-    if share_basis is None or trading_index.empty:
+def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, df_basis: pd.DataFrame | None) -> pd.DataFrame:
+    """Carry report-date quantities to each day's basis (`q * F_d / F_period`) without changing publication clocks."""
+    if df_basis is None or trading_index.empty:
         df_daily = nullable_value_to_daily(qf, "inst_shares", trading_index)
         return df_daily.where(df_daily.eq(0))
 
-    # Normalize every supported ticker before projecting public replacement observations.
+    # Project first-bar-basis quantities (F = 1), then restate each day on its own basis.
     df_owned = qf.copy()
-    periods = pd.to_datetime(df_owned["period"])
-    terminal = pd.Timestamp(trading_index.max())
-    targets = pd.Series(terminal, index=df_owned.index)
-    units = share_basis.factor(df_owned["ticker"], periods, "units")
-    quantities = rebase_security_quantities(share_basis, df_owned["inst_shares"], df_owned["ticker"], periods, targets, units)
-    df_owned["inst_shares"] = quantities.where(units.eq(1.0))
+    df_owned["inst_shares"] = convert_quantities(df_owned["inst_shares"], lookup_asof(df_basis, df_owned["ticker"], df_owned["period"]), 1.0)
     df_daily = nullable_value_to_daily(df_owned, "inst_shares", trading_index).reindex(columns=sorted(df_owned["ticker"].dropna().unique()))
-
-    # Aggregated books lack the declared title required to establish nonunit ADS quantities.
-    for ticker in df_daily.columns:
-        names = pd.Series(ticker, index=trading_index)
-        dates = pd.Series(trading_index, index=trading_index)
-        source = pd.Series(terminal, index=trading_index)
-        declared = share_basis.factor(names, source, "units")
-        df_daily[ticker] = rebase_security_quantities(share_basis, df_daily[ticker], names, source, dates, declared)
-        df_daily[ticker] = df_daily[ticker].where(share_basis.factor(names, dates, "units").eq(1.0))
-    return df_daily
+    return convert_quantities(df_daily, 1.0, df_basis.reindex(index=trading_index, columns=df_daily.columns))
 
 
 def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFrames) -> pd.DataFrame | None:
@@ -165,7 +150,7 @@ def _mask_daily_institutional_fields(
 def project_institutional_features(
     df_features: pd.DataFrame,
     frames: PriceFrames,
-    share_basis: ShareBasis | None,
+    df_basis: pd.DataFrame | None,
     settle_trading_days: int,
     *,
     versioned: bool,
@@ -181,7 +166,7 @@ def project_institutional_features(
         for feature in features
     }
     if frames.shares_outstanding_pit is not None and not frames.shares_outstanding_pit.empty and "inst_shares" in df_features:
-        df_owned = _daily_owned_shares(df_features, frames.trading_index, share_basis)
+        df_owned = _daily_owned_shares(df_features, frames.trading_index, df_basis)
         df_shares = frames.shares_outstanding_pit.reindex(frames.trading_index)
         if not df_shares.empty and df_shares.notna().any().any():
             df_supported_shares = df_shares.where(np.isfinite(df_shares) & df_shares.gt(0))
@@ -451,10 +436,19 @@ def _institutional_votes(df_matched: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _quarter_basis_ratio(df_basis: pd.DataFrame | None, tickers: pd.Index, period: pd.Timestamp, prior_period: pd.Timestamp) -> pd.Series:
+    """`F_period / F_prior` per ticker: the factor carrying prior-quarter shares onto the current quarter's basis."""
+    if df_basis is None:
+        return pd.Series(1.0, index=tickers)
+    names = pd.Series(tickers, index=tickers)
+    prior = lookup_asof(df_basis, names, pd.Series(prior_period, index=tickers))
+    return convert_quantities(1.0, prior, lookup_asof(df_basis, names, pd.Series(period, index=tickers)))
+
+
 def compute_institutional_feature_history(
     snapshots: Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]],
     *,
-    splits: pd.DataFrame | None,
+    df_basis: pd.DataFrame | None,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
 ) -> pd.DataFrame:
     """Aggregate observed levels and identical eligible book cohorts at each public event."""
@@ -495,11 +489,7 @@ def compute_institutional_feature_history(
         tickers = joined.index.get_level_values("ticker")
         missing = tickers.unique().difference(split_factors.index, sort=False)
         if len(missing):
-            new_tickers = pd.Series(missing)
-            factors = split_cum_product(splits, new_tickers, pd.Series(period, index=new_tickers.index)) / split_cum_product(
-                splits, new_tickers, pd.Series(prior_period, index=new_tickers.index)
-            )
-            split_factors = pd.concat([split_factors, pd.Series(np.asarray(factors), index=missing)])
+            split_factors = pd.concat([split_factors, _quarter_basis_ratio(df_basis, missing, period, prior_period)])
         joined["shares_prior"] *= split_factors.reindex(tickers).to_numpy()
         if period in securities.index.get_level_values("period") and prior_period in securities.index.get_level_values("period"):
             now_ids = securities.xs(period).reindex(joined.index)

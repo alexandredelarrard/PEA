@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
+from src.data_aggregate.utils.common.class_lines import normalised_lines
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -31,7 +32,6 @@ from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.levels import rebase_security_frame
-from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -200,13 +200,7 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
     idx = pd.DatetimeIndex(idx).normalize()
     if lines.empty:
         return pd.DataFrame(index=idx, dtype="float64"), pd.DataFrame(index=idx, dtype="bool")
-    work = lines.assign(
-        company=lines["canonical_company"].astype(str),
-        symbol=lines["market_symbol"].map(yahoo_symbol),
-        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce"),
-        start=pd.to_datetime(lines["valid_from"]).dt.normalize(),
-        end=pd.to_datetime(lines["valid_to"]).dt.normalize(),
-    ).sort_values("start", kind="stable")
+    work = normalised_lines(lines)
     tape = bars.assign(date=to_day(bars["date"])).drop_duplicates(["ticker", "date"], keep="last")
     tape = tape.pivot(index="date", columns="ticker", values="volume").reindex(idx) if not tape.empty else pd.DataFrame(index=idx)
     companies = sorted(work["company"].unique())

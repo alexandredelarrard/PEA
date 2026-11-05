@@ -9,6 +9,7 @@ from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.class_lines import load_class_lines
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
@@ -113,12 +114,7 @@ class StepCubeInstitutionals(Step):
 
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
-        df_lines = self._store.load(
-            Tables.security_master,
-            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role"),
-            where={"source": "ftd"},
-            optional=True,
-        )
+        df_lines = load_class_lines(self._store)
         df_classes = (
             df_lines.loc[df_lines["lineage_role"].eq(SECONDARY_CLASS) & df_lines["canonical_company"].isin(frames.universe)]
             if df_lines is not None

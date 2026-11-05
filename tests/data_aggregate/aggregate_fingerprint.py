@@ -797,6 +797,7 @@ def governance_panel(
 
 
 def compute() -> dict:
+    from src.data_aggregate.utils.common.class_lines import cusip_windows
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
@@ -1034,12 +1035,13 @@ def compute() -> dict:
             accepted_at=pd.NaT,
         )
     )
-    df_books = clean_public_holdings(attach_tickers(df_books, cusip_map), valuation_close, None)
+    df_books = clean_public_holdings(attach_tickers(df_books, cusip_windows(None, cusip_map)), valuation_close, None)
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
     book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
-    market = BehaviorMarket(idx, valuation_close, ShareBasis(actual, actual, actual, {}))
+    basis_grid = idx.union(pd.DatetimeIndex(df_books["period"].unique()))
+    market = BehaviorMarket(idx, valuation_close, security_basis_frame(ShareBasis(actual, actual, actual, {}), basis_grid, valuation_close.columns))
     cohort = frozenset(pad_cik(cik) for cik in roster)
     super_history = compute_superinvestor_feature_history(book_history, {"": cohort, "topk": cohort}, tuple(tickers), market)
     superinvestor = project_superinvestor_features(

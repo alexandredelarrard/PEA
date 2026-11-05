@@ -9,17 +9,16 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBook, PublicBookSnapshot
-from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import rebase_security_prices, rebase_security_quantities
+from src.utils.price.levels import convert_quantities, lookup_asof
 
 
 @dataclass(frozen=True)
 class BehaviorMarket:
-    """Existing as-traded quotes, authoritative sessions and genuine share actions."""
+    """Saved as-traded quotes (`close_pit`), authoritative sessions and the forward quantity basis F (`security_basis`)."""
 
     trading_index: pd.DatetimeIndex
     as_traded_close: pd.DataFrame | None
-    basis: ShareBasis
+    basis: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -228,11 +227,10 @@ def _join_positions(current: BookSummary, prior: BookSummary) -> pd.DataFrame:
 
 
 def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prior_period: pd.Timestamp, period: pd.Timestamp) -> pd.DataFrame:
-    """Rebase prior shares and the single pre-comparison quote vector inversely."""
-    source = pd.Series(prior_period, index=df_pair.index)
-    target = pd.Series(period, index=df_pair.index)
-    declared = market.basis.factor(df_pair.ticker, source, "units")
-    df_pair["prior"] = rebase_security_quantities(market.basis, df_pair.prior, df_pair.ticker, source, target, declared)
+    """Carry prior shares onto the current basis (`F_period / F_prior`) and the pre-comparison quote inversely."""
+    prior_basis = lookup_asof(market.basis, df_pair.ticker, pd.Series(prior_period, index=df_pair.index))
+    basis_now = lookup_asof(market.basis, df_pair.ticker, pd.Series(period, index=df_pair.index))
+    df_pair["prior"] = convert_quantities(df_pair.prior, prior_basis, basis_now)
 
     # Exact reference-session quotes only; missing securities are never dropped or filled.
     position = int(market.trading_index.searchsorted(prior_period, side="right")) - 1
@@ -240,9 +238,8 @@ def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prio
     if position >= 0 and market.as_traded_close is not None:
         reference = market.trading_index[position]
         prices = market.as_traded_close.reindex(index=[reference]).iloc[0]
-    df_pair["price"] = rebase_security_prices(market.basis, df_pair.ticker.map(prices), df_pair.ticker, source, target, declared)
-    units = market.basis.factor(df_pair.ticker, target, "units")
-    df_pair["known"] &= declared.eq(1.0) & units.eq(1.0) & np.isfinite(df_pair.prior) & df_pair.prior.ge(0)
+    df_pair["price"] = convert_quantities(df_pair.ticker.map(prices), basis_now, prior_basis)
+    df_pair["known"] &= np.isfinite(df_pair.prior) & df_pair.prior.ge(0)
     return df_pair
 
 

@@ -20,6 +20,7 @@ import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import availability_date
+from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings as _clean_holdings
@@ -1098,12 +1099,11 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
-    frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10, close_pit=quotes)
+    basis = pd.DataFrame(1.0, index=pd.bdate_range("2024-06-28", "2024-12-06"), columns=["AAA"])
+    frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10, close_pit=quotes, security_basis=basis)
     cusip_map = pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
     sqlite_store.save(Tables.cusip_ticker_map, cusip_map)
-    splits = pd.DataFrame(columns=["date", "ticker", "value"])
-    basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
-    resources = SecThirteenResources(frames, basis, cusip_map, None)
+    resources = SecThirteenResources(frames, cusip_windows(None, cusip_map), None)
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)
@@ -1188,9 +1188,10 @@ def test_active_reductions_preserve_unknowns_and_reuse_ticker_split_pairs(monkey
         ]
     )
     snapshots = [(pd.Timestamp(day), df_compact, df_states) for day in ("2024-08-15", "2024-08-16")]
-    lookup = Mock(wraps=_features.split_cum_product)
-    monkeypatch.setattr(_features, "split_cum_product", lookup)
-    result = _features.compute_institutional_feature_history(iter(snapshots), splits=None, min_prior_holders=1)
+    lookup = Mock(wraps=_features.lookup_asof)
+    monkeypatch.setattr(_features, "lookup_asof", lookup)
+    df_basis = pd.DataFrame(1.0, index=pd.bdate_range("2024-03-29", "2024-08-16"), columns=["AAA", "UNK"])
+    result = _features.compute_institutional_feature_history(iter(snapshots), df_basis=df_basis, min_prior_holders=1)
     assert (lookup.call_count, [len(call.args[1]) for call in lookup.call_args_list]) == (2, [2, 2])
     assert result.loc[result.ticker.eq("UNK"), ["inst_value", "ic_inst_concentration", "ic_inst_net_options_ratio"]].isna().all().all()
     assert result.loc[result.ticker.eq("AAA"), "inst_value"].eq(2000.0).all()

@@ -85,6 +85,7 @@ def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
                 "close_pit": 100.0,
                 "shares_outstanding_pit": float("nan"),
                 "mcap_pit": float("nan"),
+                "security_basis": 1.0,
             }
         ),
     )
@@ -109,6 +110,7 @@ def market_lines(tickers: Sequence[str], start: pd.Timestamp) -> pd.DataFrame:
                 "conversion_ratio": 1.0,
                 "valid_from": start,
                 "valid_to": None,
+                "cusip": f"{number:09d}",
             }
             for number, ticker in enumerate(tickers, start=1)
         ]

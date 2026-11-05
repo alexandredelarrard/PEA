@@ -18,6 +18,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 )
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.utils.price.adjustments import ShareBasis
+from src.utils.price.levels import security_basis_frame
 from tests.data_aggregate.test_superinvestor_books import _history, _on, _packet
 
 
@@ -91,7 +92,7 @@ def _market(split: bool = False) -> BehaviorMarket:
         else pd.DataFrame(columns=["ticker", "date", "value"])
     )
     basis = ShareBasis(actual=actions, vendor=actions, price=actions, policies={})
-    return BehaviorMarket(index, quotes, basis)
+    return BehaviorMarket(index, quotes, security_basis_frame(basis, index, quotes.columns))
 
 
 def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> SuperinvestorFeatureHistory:

@@ -76,7 +76,7 @@ def _compact_batch_events(
 def prepare_institutional_book_history(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
     trading_index: pd.DatetimeIndex,
-    cusip_map: pd.DataFrame | None,
+    windows: pd.DataFrame | None,
     universe: Sequence[str],
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
@@ -91,7 +91,7 @@ def prepare_institutional_book_history(
     filings_count = 0
     raw_rows = 0
 
-    with closing(clean_public_batches(packets, cusip_map, universe, valuation_close, value_basis)) as batches:
+    with closing(clean_public_batches(packets, windows, universe, valuation_close, value_basis)) as batches:
         for df_filings, df_holdings in batches:
             filings_count += len(df_filings)
             raw_rows += len(df_holdings)

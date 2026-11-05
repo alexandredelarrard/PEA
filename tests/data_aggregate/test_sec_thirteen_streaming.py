@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
@@ -188,11 +189,11 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
         expected_packets = list(packets)
     manifests = pd.concat([packet[0] for packet in expected_packets], ignore_index=True)
     raw = pd.concat([packet[1] for packet in expected_packets], ignore_index=True)
-    prepared = clean_public_holdings(attach_tickers(raw, mapping, universe), close, None)
+    prepared = clean_public_holdings(attach_tickers(raw, cusip_windows(None, mapping), universe), close, None)
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    history = books.prepare_institutional_book_history(stream, grid, mapping, universe, close, None, settle_days=3)
+    history = books.prepare_institutional_book_history(stream, grid, cusip_windows(None, mapping), universe, close, None, settle_days=3)
     assert history is not None
     actual = list(books.iter_institutional_books(*history))
 
@@ -298,7 +299,7 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
         history = books.prepare_institutional_book_history(
-            packets, grid, mapping, ("ABC",), pd.DataFrame(10.0, index=grid, columns=["ABC"]), None, settle_days=0
+            packets, grid, cusip_windows(None, mapping), ("ABC",), pd.DataFrame(10.0, index=grid, columns=["ABC"]), None, settle_days=0
         )
     assert history is not None
     assert (repair.call_count, max(len(call.args[0][["cik", "period"]].drop_duplicates()) for call in repair.call_args_list)) == (2, 2)
@@ -361,9 +362,9 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     source = inputs.iter_filing_vintages(sqlite_store, grid.max(), chunksize=chunksize)
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
-        expected = clean_public_holdings(attach_tickers(raw, mapping), close, None)
+        expected = clean_public_holdings(attach_tickers(raw, cusip_windows(None, mapping)), close, None)
         expected_register = registers.pop()
-        with closing(holdings_clean.clean_public_batches(source, mapping, None, close, None)) as batches:
+        with closing(holdings_clean.clean_public_batches(source, cusip_windows(None, mapping), None, close, None)) as batches:
             result = list(batches)
     # Empty books retain their manifests and contribute no position rows to the union.
     actual = pd.concat([packet[1] for packet in result if not packet[1].empty], ignore_index=True)
@@ -392,9 +393,9 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
 def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
     mapping = pd.DataFrame({"cusip": ["000000001"], "ticker": ["OUT"]})
     raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].drop(columns="ticker").reset_index(drop=True))
-    expected = clean_public_holdings(attach_tickers(raw, mapping, ("ABC",)), None, None)
+    expected = clean_public_holdings(attach_tickers(raw, cusip_windows(None, mapping), ("ABC",)), None, None)
     packets = ((pd.DataFrame(), raw) for _ in range(1))
-    with closing(holdings_clean.clean_public_batches(packets, mapping, ("ABC",), None, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(packets, cusip_windows(None, mapping), ("ABC",), None, None)) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
     print("SANITY: a universe-filtered mapping retains every raw row with the existing unknown ticker dtype and null mask.")

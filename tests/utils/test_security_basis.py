@@ -15,7 +15,6 @@ from src.utils.price.capitalization import capitalization_observations, project_
 from src.utils.price.levels import (
     convert_quantities,
     lookup_asof,
-    rebase_security_prices,
     rebase_security_quantities,
     security_basis_frame,
     security_quantity_basis,
@@ -50,12 +49,10 @@ def test_declared_units_preserve_money_and_do_not_use_vendor_price_factors(
     target = pd.Series(pd.to_datetime(["2024-01-05"]))
     units = pd.Series([source_units])
     rebased = rebase_security_quantities(basis, quantity, ticker, source, target, units)
-    price = rebase_security_prices(basis, pd.Series([50.0]), ticker, source, target, units)
     assert rebased.iloc[0] == pytest.approx(expected)
-    assert (rebased * price).iloc[0] == pytest.approx(500.0)
     roundtrip = rebase_security_quantities(basis, rebased, ticker, target, source, pd.Series([after]))
     assert roundtrip.iloc[0] == pytest.approx(10.0 * source_units / before)
-    print("SANITY: genuine event and declared quote units preserve $500; vendor F=7 and price Y=3 never become quantities.")
+    print("SANITY: genuine event and declared quote units convert the quantity; vendor F=7 and price Y=3 never become quantities.")
 
 
 def test_unknown_units_and_unavailable_cross_date_evidence_remain_unknown() -> None:

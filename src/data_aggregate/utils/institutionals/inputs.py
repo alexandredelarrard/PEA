@@ -25,7 +25,6 @@ from src.utils.price.levels import rebase_security_frame, rebase_security_quanti
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
-CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
 
 
 @dataclass(frozen=True)

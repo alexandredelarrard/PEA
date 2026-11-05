@@ -1,4 +1,4 @@
-"""Shared 13F normalization, CUSIP mapping, publication preparation and value repair."""
+"""Shared 13F normalization, dated CUSIP attribution, publication preparation and value repair."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
+from src.data_aggregate.utils.common.class_lines import dated_tickers
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, prepare_public_value_quotes, repair_value_basis
 
@@ -32,16 +33,12 @@ def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> t
     return df_filings, df_holdings
 
 
-def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
-    """Map universe tickers while retaining unmapped whole-book positions."""
-    df_holdings = holdings.copy()
-    if cusip_map is None or cusip_map.empty:
-        df_holdings["ticker"] = pd.NA
-        return df_holdings
-    df_map = cusip_map.dropna(subset=["cusip", "ticker"]).drop_duplicates("cusip")
-    if universe is not None:
-        df_map = df_map[df_map["ticker"].isin(set(universe))]
-    return df_holdings.merge(df_map[["cusip", "ticker"]], on="cusip", how="left")
+def attach_tickers(holdings: pd.DataFrame, windows: pd.DataFrame | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
+    """Attach the dated canonical ticker of each CUSIP (`cusip_windows`), retaining unmapped whole-book positions."""
+    if windows is None or windows.empty:
+        return holdings.assign(ticker=pd.NA)
+    tickers = dated_tickers(holdings["cusip"], holdings["period"], windows)
+    return holdings.assign(ticker=tickers if universe is None else tickers.where(tickers.isin(set(universe))))
 
 
 def clean_public_holdings(
@@ -63,20 +60,16 @@ def clean_public_holdings(
 
 def clean_public_batches(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
-    cusip_map: pd.DataFrame,
+    windows: pd.DataFrame | None,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
-    """Prepare shared mapping/quotes once and repair all completed books per batch."""
-    df_map = cusip_map.dropna(subset=["cusip", "ticker"]).drop_duplicates("cusip")
-    if universe is not None:
-        df_map = df_map.loc[df_map.ticker.isin(universe)]
+    """Prepare shared quotes once and attach tickers and repair all completed books per batch."""
     period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
     with closing(packets):
         for df_filings, df_raw in packets:
-            df_holdings = df_raw.merge(df_map[["cusip", "ticker"]], on="cusip", how="left")
-            df_holdings = clean_public_holdings(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
+            df_holdings = clean_public_holdings(attach_tickers(df_raw, windows, universe), valuation_close, value_basis, period_quotes=period_quotes)
             del df_raw
             yield df_filings, df_holdings
             del df_filings, df_holdings

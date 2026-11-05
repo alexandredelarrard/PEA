@@ -202,20 +202,6 @@ def rebase_security_quantities(
     return result.where(np.isfinite(result) & (ordinary.eq(0) | result.ne(0)))
 
 
-def rebase_security_prices(
-    basis: ShareBasis,
-    prices: pd.Series,
-    tickers: pd.Series,
-    source_dates: pd.Series,
-    target_dates: pd.Series,
-    ordinary_per_source: pd.Series,
-) -> pd.Series:
-    """Apply the inverse quantity conversion to preserve a matched price/count value."""
-    multiplier = rebase_security_quantities(basis, pd.Series(1.0, index=prices.index), tickers, source_dates, target_dates, ordinary_per_source)
-    converted = pd.to_numeric(prices, errors="coerce") / multiplier
-    return converted.where(np.isfinite(converted) & converted.gt(0))
-
-
 def _validate_quantity_events(df_events: pd.DataFrame) -> None:
     """Refuse malformed quantity evidence before suffix products can discard it."""
     if df_events.empty:

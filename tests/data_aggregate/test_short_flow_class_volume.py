@@ -23,7 +23,8 @@ from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common import inputs as capital_inputs
-from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS, QuantityBasis, short_quantity_history
+from src.data_aggregate.utils.common.class_lines import CLASS_LINE_COLUMNS
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, short_quantity_history
 from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
 from src.data_aggregate.utils.price import inputs as price_inputs
 from src.data_aggregate.utils.price.clean import apply_volume_scale
@@ -174,8 +175,9 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
                     security_class="class_B",
                     lineage_role="secondary_class",
                     n_observations=1,
+                    cusip="526057302",
                 ),
-                primary,
+                primary.assign(cusip=["526057104", "589331107"]),
             ],
             ignore_index=True,
         ),

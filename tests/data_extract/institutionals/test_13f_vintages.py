@@ -22,6 +22,7 @@ import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
+from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     compute_institutional_feature_history,
@@ -38,7 +39,6 @@ from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.institutional_vintages import reconcile_13f_source
-from src.utils.price.adjustments import ShareBasis
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
 
@@ -1230,10 +1230,9 @@ def ordinary_step(
 
 def normal_resources(step: StepCubeSecThirteen, frames: PriceFrames) -> SecThirteenResources:
     cusip_map = step._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"])
-    splits = pd.DataFrame(columns=["date", "ticker", "value"])
-    basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
+    basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(frames, basis, cusip_map, {"": cohort, "topk": cohort})
+    return SecThirteenResources(replace(frames, security_basis=basis), cusip_windows(None, cusip_map), {"": cohort, "topk": cohort})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:

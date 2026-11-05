@@ -26,7 +26,7 @@ def prepare_public_value_quotes(close: pd.DataFrame | None, value_basis: Mapping
     """Prepare the existing age-bounded quote lookup once for streamed DATE periods."""
     if close is None or close.empty:
         return None
-    max_age_days = int((value_basis or {}).get("max_price_age_days", _MAX_PRICE_AGE_DAYS))
+    max_age_days = _repair_policy(value_basis)[3]
     first = pd.Timestamp(close.index.min()).normalize()
     last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=max_age_days)
     periods = pd.Series(pd.date_range(first, last))
@@ -34,88 +34,108 @@ def prepare_public_value_quotes(close: pd.DataFrame | None, value_basis: Mapping
 
 
 def repair_value_basis(
-    holdings: pd.DataFrame,
-    close: pd.DataFrame | None,
-    *,
-    min_securities: int = 15,
-    min_agreement: float = 0.8,
-    price_tolerance: float = 0.1,
-    max_price_age_days: int = _MAX_PRICE_AGE_DAYS,
-    period_quotes: pd.Series | None = None,
+    holdings: pd.DataFrame, close: pd.DataFrame | None, policy: Mapping[str, Any] | None = None, *, period_quotes: pd.Series | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Normalize filing values, reconstruct missing equity inputs and mark exclusions.
 
-    'close' must be report-period as-traded prices. Only raw reported common
-    quantities vote for units. Inverse common quantities are marked estimates;
-    an unresolved factor leaves their dollar-unit assumption explicit.
-    Options use their own underlying quantities; debt needs an instrument quote.
-    Source frames remain unchanged and repeat repair is idempotent.
+    'close' must be report-period as-traded prices ('period_quotes' is the same lookup prepared once).
+    Only raw reported common quantities vote for units. Inverse common quantities are marked estimates;
+    an unresolved factor leaves their dollar-unit assumption explicit. Options use their own underlying
+    quantities; debt needs an instrument quote. Source frames remain unchanged and repeat repair is idempotent.
     """
-
-    if min_securities < 1 or not 0.5 < min_agreement <= 1 or not 0 < price_tolerance < 0.5 or max_price_age_days < 0:
-        raise ValueError("Invalid 13F value-basis support or price-age policy")
+    min_securities, min_agreement, price_tolerance, max_age_days = _repair_policy(policy)
     df_out = holdings.copy()
-    if "value_basis_repaired" in df_out:
+    if "value_basis_repaired" in df_out or df_out.empty:
         return df_out, _empty_register()
-    if df_out.empty:
-        return df_out, _empty_register()
+
+    # Raw row evidence: filed values, quantities and the report-period as-traded quote.
     if "value_usd" not in df_out:
         df_out["value_usd"] = np.nan
-    keys = ["cik", "period"]
-    keys += [column for column in ("filing_date", "accession", "accession_number") if column in df_out]
-    value_columns = [column for column in _VALUE_COLUMNS if column in df_out]
+    keys = ["cik", "period", *(column for column in ("filing_date", "accession", "accession_number") if column in df_out)]
     value = pd.to_numeric(df_out["value_usd"], errors="coerce").astype("float64")
     shares = pd.to_numeric(df_out["shares"], errors="coerce").astype("float64")
-    quote = pd.Series(np.nan, index=df_out.index, dtype=float)
-    if period_quotes is None and close is not None and not close.empty and "ticker" in df_out:
-        period_quotes = period_close(close, df_out["period"], max_price_age_days)
-    if period_quotes is not None and "ticker" in df_out:
-        quote[:] = period_quotes.reindex(pd.MultiIndex.from_frame(df_out[["period", "ticker"]])).to_numpy()
+    quote = _row_quotes(df_out, close, period_quotes, max_age_days)
     common = df_out["position_type"].astype(str).str.lower().eq("common") if "position_type" in df_out else pd.Series(True, index=df_out.index)
     swapped = common & value.eq(shares) & shares.gt(0)
-    ratio = (value / shares.where(shares.gt(0)) / quote).where(value.gt(0) & ~swapped)
-    if "position_type" in df_out:
-        ratio = ratio.where(df_out["position_type"].astype(str).str.lower().eq("common"))
+    ratio = (value / shares.where(shares.gt(0)) / quote).where(value.gt(0) & ~swapped & common)
     ratio = ratio.where(np.isfinite(ratio) & ratio.gt(0))
-    security = "cusip" if "cusip" in df_out else "ticker"
-    df_evidence = df_out[keys + [security]].assign(_ratio=ratio)
 
-    # One vote per security, irrespective of repeated source rows.
-    evidence = df_evidence.groupby(keys + [security], dropna=False)["_ratio"].median()
+    # One unit factor per filing, voted by raw common holdings only, scales every monetary leg.
+    df_register = _book_factors(df_out, keys, ratio, min_securities, min_agreement, price_tolerance)
+    scale = _apply_book_factors(df_out, df_register, keys)
+
+    # Individual common valuations are checked only after the raw book unit is frozen.
+    position_ratio = df_out["value_usd"] / shares.where(shares.gt(0)) / quote
+    mismatch = common & np.isfinite(position_ratio) & position_ratio.gt(0)
+    df_out["value_basis_price_mismatch"] = mismatch & ~position_ratio.between(1 - price_tolerance, 1 + price_tolerance)
+    _repair_common_quantities(df_out, value, shares, quote, scale, common)
+
+    # Market estimates per leg, then whole-row exclusions once unsupported sibling dollars are nulled.
+    estimates = _estimate_legs(df_out, holdings, value, quote, common, swapped)
+    _keep_sibling_exposures(df_out)
+    unresolved = common & df_out["shares"].gt(0).fillna(False) & quote.isna() & df_out["value_usd"].isna()
+    return df_out, _repair_register(df_register, keys, df_out, value, estimates, unresolved)
+
+
+def _repair_policy(policy: Mapping[str, Any] | None) -> tuple[int, float, float, int]:
+    """Validated support, agreement, tolerance and price-age settings of the value-basis config."""
+    settings = {"min_securities": 15, "min_agreement": 0.8, "price_tolerance": 0.1, "max_price_age_days": _MAX_PRICE_AGE_DAYS}
+    unknown = set(dict(policy or {})) - set(settings)
+    if unknown:
+        raise TypeError(f"Unknown 13F value-basis settings: {sorted(unknown)}")
+    settings.update(dict(policy or {}))
+    min_securities, min_agreement = int(settings["min_securities"]), float(settings["min_agreement"])
+    price_tolerance, max_age_days = float(settings["price_tolerance"]), int(settings["max_price_age_days"])
+    if min_securities < 1 or not 0.5 < min_agreement <= 1 or not 0 < price_tolerance < 0.5 or max_age_days < 0:
+        raise ValueError("Invalid 13F value-basis support or price-age policy")
+    return min_securities, min_agreement, price_tolerance, max_age_days
+
+
+def _row_quotes(df_out: pd.DataFrame, close: pd.DataFrame | None, period_quotes: pd.Series | None, max_age_days: int) -> pd.Series:
+    """The age-bounded report-period close of each row's ticker; NaN without a ticker or quote."""
+    quote = pd.Series(np.nan, index=df_out.index, dtype=float)
+    if "ticker" not in df_out:
+        return quote
+    if period_quotes is None and close is not None and not close.empty:
+        period_quotes = period_close(close, df_out["period"], max_age_days)
+    if period_quotes is not None:
+        quote[:] = period_quotes.reindex(pd.MultiIndex.from_frame(df_out[["period", "ticker"]])).to_numpy()
+    return quote
+
+
+def _book_factors(
+    df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, min_securities: int, min_agreement: float, price_tolerance: float
+) -> pd.DataFrame:
+    """Per filing: median security ratio, the supported factor, priced count, agreement and status."""
+    security = "cusip" if "cusip" in df_out else "ticker"
+    evidence = df_out[keys + [security]].assign(_ratio=ratio).groupby(keys + [security], dropna=False)["_ratio"].median()
     grouped = evidence.groupby(level=list(range(len(keys))), dropna=False)
     measured, count = grouped.median(), grouped.count()
     factor = pd.Series(np.nan, index=measured.index, dtype=float)
     agreement = pd.Series(0.0, index=measured.index)
+
+    # One vote per security; a unit-changing factor also needs enough distinct securities.
     for candidate in (1.0, 0.001, 1000.0):
         support = (evidence * candidate).between(1 - price_tolerance, 1 + price_tolerance)
         fraction = support.groupby(level=list(range(len(keys))), dropna=False).sum() / count.where(count.gt(0))
-        match = (measured * candidate).between(1 - price_tolerance, 1 + price_tolerance)
-        match &= fraction.ge(min_agreement)
+        match = (measured * candidate).between(1 - price_tolerance, 1 + price_tolerance) & fraction.ge(min_agreement)
         if candidate != 1.0:
             match &= count.ge(min_securities)
         factor.loc[match] = candidate
         agreement = agreement.where(~match, fraction)
+
+    # Thin or unpriced books keep their filed unit under an explicit status.
     status = pd.Series("abstained", index=factor.index)
     status.loc[factor.notna()] = "market_checked"
-    thin = factor.eq(1.0) & count.lt(min_securities)
-    status.loc[thin] = "source_only_thin"
-    no_price = count.eq(0)
-    factor.loc[no_price] = 1.0
-    status.loc[no_price] = "source_only_no_price"
-    df_register = (
-        pd.concat(
-            [
-                measured.rename("median_ratio"),
-                factor.rename("factor"),
-                count.rename("priced_securities"),
-                agreement.rename("agreement"),
-                status.rename("status"),
-            ],
-            axis=1,
-        )
-        .reset_index()
-        .assign(price_tolerance=price_tolerance)
-    )
+    status.loc[factor.eq(1.0) & count.lt(min_securities)] = "source_only_thin"
+    factor.loc[count.eq(0)] = 1.0
+    status.loc[count.eq(0)] = "source_only_no_price"
+    columns = {"median_ratio": measured, "factor": factor, "priced_securities": count, "agreement": agreement, "status": status}
+    return pd.concat([series.rename(name) for name, series in columns.items()], axis=1).reset_index().assign(price_tolerance=price_tolerance)
+
+
+def _apply_book_factors(df_out: pd.DataFrame, df_register: pd.DataFrame, keys: list[str]) -> pd.Series:
+    """Write each row's unit flag and status, scale its monetary legs and return the row scale."""
     df_rows = df_out[keys].merge(df_register[keys + ["factor", "status"]], on=keys, how="left", validate="many_to_one")
     scale = pd.Series(df_rows["factor"].to_numpy(), index=df_out.index)
     flag = pd.Series(ABSTAINED, index=df_out.index)
@@ -123,62 +143,63 @@ def repair_value_basis(
         flag.loc[scale.eq(applied)] = label
     df_out["value_basis_repaired"] = flag
     df_out["value_basis_status"] = df_rows["status"].to_numpy()
-    for column in value_columns:
+    for column in (column for column in _VALUE_COLUMNS if column in df_out):
         original = pd.to_numeric(df_out[column], errors="coerce").astype("float64")
         df_out[column] = (original * scale).mask(original.eq(0), 0.0)
+    return scale
 
-    # Check individual common valuations only after the raw book unit is frozen.
-    position_ratio = df_out["value_usd"] / shares.where(shares.gt(0)) / quote
-    mismatch = common & np.isfinite(position_ratio) & position_ratio.gt(0)
-    mismatch &= ~position_ratio.between(1 - price_tolerance, 1 + price_tolerance)
-    df_out["value_basis_price_mismatch"] = mismatch
-    _repair_common_quantities(df_out, value, shares, quote, scale, common)
 
-    # 13F options report underlying-share exposure, so each leg uses its own quantity.
-    # Debt principal is not an equity quantity and cannot use this stock quote.
+def _estimate_legs(
+    df_out: pd.DataFrame, holdings: pd.DataFrame, value: pd.Series, quote: pd.Series, common: pd.Series, swapped: pd.Series
+) -> dict[str, pd.Series]:
+    """Replace uncertain common/call/put dollars with tagged quantity x quote estimates.
+
+    13F options report underlying-share exposure, so each leg uses its own quantity; estimates follow
+    the raw common-holding unit decision and never vote for it. Debt principal never uses a stock quote.
+    """
+    unpriced = df_out["value_basis_status"].eq("source_only_no_price")
     estimates: dict[str, pd.Series] = {}
-    for column, quantity_column, label in (
-        ("value_usd", "shares", ""),
-        ("call_value", "call_shares", "call_"),
-        ("put_value", "put_shares", "put_"),
-    ):
+    for column, quantity_column, label in (("value_usd", "shares", ""), ("call_value", "call_shares", "call_"), ("put_value", "put_shares", "put_")):
         estimates[column] = pd.Series(False, index=df_out.index)
         if column not in df_out:
             continue
-        raw = value if column == "value_usd" else pd.to_numeric(holdings[column], errors="coerce").astype("float64")
-        unverified = df_out["value_basis_status"].eq("source_only_no_price") & (column != "value_usd")
-        if quantity_column not in df_out:
+        is_common = column == "value_usd"
+        raw = value if is_common else pd.to_numeric(holdings[column], errors="coerce").astype("float64")
+        unverified = unpriced & (not is_common)
+        if quantity_column in df_out:
+            quantity = pd.to_numeric(df_out[quantity_column], errors="coerce").astype("float64")
+            eligible = common if is_common else pd.Series(True, index=df_out.index)
+            uncertain = unverified & (raw.ne(0) | quantity.gt(0))
+            uncertain |= swapped | df_out["value_basis_price_mismatch"] if is_common else raw.eq(quantity) & quantity.gt(0)
+            estimates[column] = _market_estimate(df_out, column, quantity, quote, eligible, uncertain)
+        else:
             df_out[column] = df_out[column].mask(unverified & raw.ne(0))
-            df_out[f"value_basis_{label}reconstructed"] = estimates[column]
-            df_out[f"value_basis_{label}value_source"] = np.where(df_out[column].notna(), "filed", "unknown")
-            continue
-        quantity = pd.to_numeric(df_out[quantity_column], errors="coerce").astype("float64")
-        eligible = common if column == "value_usd" else pd.Series(True, index=df_out.index)
-        uncertain = unverified & (raw.ne(0) | quantity.gt(0))
-        uncertain |= swapped if column == "value_usd" else raw.eq(quantity) & quantity.gt(0)
-        if column == "value_usd":
-            uncertain |= mismatch
-        uncertain |= ~np.isfinite(df_out[column]) | df_out[column].lt(0)
-        uncertain |= df_out[column].eq(0) & quantity.gt(0)
-        market_value = quantity * quote
-        market_value = market_value.where(eligible & quantity.gt(0) & np.isfinite(quantity) & np.isfinite(market_value))
-        estimates[column] = eligible & uncertain & market_value.notna()
-
-        # Estimates follow the raw common-holding unit decision and never vote for it.
-        df_out[column] = df_out[column].mask(eligible & uncertain, market_value)
         df_out[f"value_basis_{label}reconstructed"] = estimates[column]
         df_out[f"value_basis_{label}value_source"] = np.where(
             estimates[column], "market_estimated", np.where(df_out[column].notna(), "filed", "unknown")
         )
+    return estimates
 
-    # Decide whole-row exclusions after unsupported sibling dollars have been nulled.
+
+def _market_estimate(
+    df_out: pd.DataFrame, column: str, quantity: pd.Series, quote: pd.Series, eligible: pd.Series, uncertain: pd.Series
+) -> pd.Series:
+    """Replace an eligible uncertain leg (also invalid or zero-with-quantity) by quantity x quote; return the estimated mask."""
+    uncertain = uncertain | ~np.isfinite(df_out[column]) | df_out[column].lt(0) | (df_out[column].eq(0) & quantity.gt(0))
+    market_value = quantity * quote
+    market_value = market_value.where(eligible & quantity.gt(0) & np.isfinite(quantity) & np.isfinite(market_value))
+    df_out[column] = df_out[column].mask(eligible & uncertain, market_value)
+    return eligible & uncertain & market_value.notna()
+
+
+def _keep_sibling_exposures(df_out: pd.DataFrame) -> None:
+    """A row with a supported option/debt/other exposure is retained even when its common leg is excluded."""
     sibling = pd.Series(False, index=df_out.index)
     for column in ("call_shares", "put_shares", "debt_prn", "call_value", "put_value", "debt_value", "other_value"):
         if column in df_out:
             exposure = pd.to_numeric(df_out[column], errors="coerce").astype("float64")
             sibling |= np.isfinite(exposure) & exposure.gt(0)
     df_out["value_basis_excluded"] &= ~sibling
-    return df_out, _repair_register(df_register, keys, df_out, value, estimates, quote, common)
 
 
 def _repair_common_quantities(
@@ -211,8 +232,7 @@ def _repair_register(
     df_out: pd.DataFrame,
     value: pd.Series,
     estimates: dict[str, pd.Series],
-    quote: pd.Series,
-    common: pd.Series,
+    unresolved: pd.Series,
 ) -> pd.DataFrame:
     """Count repairs and explicit exclusions before consumer-side filtering."""
     estimated = estimates["value_usd"]
@@ -228,7 +248,7 @@ def _repair_register(
         _inverse_unverified=df_out["value_basis_inverse_unit_unverified"].astype(int),
         _common_excluded=df_out["value_basis_common_excluded"].astype(int),
         _excluded=df_out["value_basis_excluded"].astype(int),
-        _unresolved_price=(common & df_out["shares"].gt(0).fillna(False) & quote.isna() & df_out["value_usd"].isna()).astype(int),
+        _unresolved_price=unresolved.astype(int),
     )
     for leg in ("call", "put"):
         mask = estimates[f"{leg}_value"]

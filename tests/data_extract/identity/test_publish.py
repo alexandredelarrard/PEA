@@ -160,3 +160,19 @@ def test_publish_writes_identity_columns_in_place_and_a_second_run_writes_nothin
     print("  an identity-only upsert fails NOT NULL on cik: the publish uses store.update")
     print(f"  run 1 wrote {first} row(s): universe_cik_symbol 2, universe_cusip 1 (company_id E0000000100), AAA identity columns 1")
     print(f"  run 2 wrote {second} row(s); sync columns {SYNC_COLUMNS} unchanged; removed GEHC row unchanged")
+
+
+def test_a_publish_recreates_dropped_identity_tables(published_store: DataStore) -> None:
+    """X87 / U-87: with `universe_cik_symbol` and `universe_cusip` dropped, one publish recreates them inside its transaction."""
+    store = published_store
+    store.drop(Tables.universe_cik_symbol)
+    store.drop(Tables.universe_cusip)
+    assert not store.exists(Tables.universe_cik_symbol) and not store.exists(Tables.universe_cusip)
+
+    written = _step(store).run_publish()
+
+    assert written == 2 + 1 + 1, written
+    assert len(store.load(Tables.universe_cik_symbol)) == 2 and store.load(Tables.universe_cusip)["company_id"].tolist() == ["E0000000100"]
+    print("\n=== SANITY CHECK: a publish recreates the dropped identity tables (U-87) ===")
+    print(f"  both tables dropped; one publish wrote {written} row(s): universe_cik_symbol 2, universe_cusip 1, AAA identity columns 1")
+    print("  OK: no schema.sql step is needed before the first DAG run")

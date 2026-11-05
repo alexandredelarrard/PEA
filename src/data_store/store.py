@@ -705,7 +705,9 @@ class DataStore:
             if not isinstance(self._database, Connection):
                 logger.warning(f"save() skipped: table '{name}' is empty")
             return 0
-        if not isinstance(self._database, Connection):
+        if isinstance(self._database, Connection):
+            ensure_table(self._database, name, df)
+        else:
             self._prepare_write(name, df)
         tbl = self._table(table)
         if set(df.columns) - set(tbl.c.keys()):
@@ -777,7 +779,7 @@ class DataStore:
         if isinstance(self._database, Connection):
             if resolve(table).is_unmanaged:
                 self.drop(table)
-                ensure_table(self._database, name_of(table), df)
+            ensure_table(self._database, name_of(table), df)
             tbl = self._table(table)
             self._database.execute(tbl.delete())
             for offset in range(0, len(df), chunksize):

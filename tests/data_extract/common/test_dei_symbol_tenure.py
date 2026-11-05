@@ -26,8 +26,10 @@ from src.data_extract.utils.identity.symbol_tenure import (
     TABLE_COLUMNS,
     aggregate_dei_symbols,
     collapse_dei_periods,
+    parse_symbol_field,
 )
 from src.data_store.schema import Tables
+from src.utils.string import pad_cik_series
 from tests.canonical_schema import create_canonical
 
 _SUB_COLS = ["adsh", "cik", "name", "sic", "form", "period", "fy", "fp", "filed"]
@@ -135,8 +137,15 @@ def _stored(store: Any) -> pd.DataFrame:
 
 
 def _facts(path: Path) -> pd.DataFrame | None:
-    """One Notes zip's primary-filer cover-page symbol facts, read as the capture reads them."""
-    return dei._primary_facts(read_zip_tables(path, dei._DEI_READ, on_corrupt="skip", log=logging.getLogger("test.dei")))
+    """One Notes zip's primary-filer cover-page symbol facts, read as the capture reads them (CIKs padded)."""
+    facts = dei._primary_facts(read_zip_tables(path, dei._DEI_READ, on_corrupt="skip", log=logging.getLogger("test.dei")))
+    return None if facts is None else facts.assign(cik=pad_cik_series(facts["cik"]))
+
+
+def _aggregate(facts: pd.DataFrame, period: str) -> pd.DataFrame:
+    """`aggregate_dei_symbols` with each distinct symbol field parsed once, as `capture_dei_period` calls it."""
+    fields = {field: parse_symbol_field(field) for field in facts["value"].astype("string").dropna().unique()}
+    return aggregate_dei_symbols(facts, fields, period)
 
 
 def test_one_zip_aggregates_normalised_symbols_over_distinct_accessions(tmp_path: Path) -> None:
@@ -144,7 +153,7 @@ def test_one_zip_aggregates_normalised_symbols_over_distinct_accessions(tmp_path
     path = _write_notes_zip(tmp_path, "2025q3", ["A1", "A2", "A3", "B1", "D1"])
     facts = _facts(path)
     assert facts is not None
-    rows = aggregate_dei_symbols(facts, "2025q3")
+    rows = _aggregate(facts, "2025q3")
 
     assert list(rows.columns) == list(TABLE_COLUMNS)
     got = {(r.symbol, r.issuer_cik): (r.n_filings, _day(r.valid_from), _day(r.valid_to)) for r in rows.itertuples(index=False)}
@@ -168,14 +177,14 @@ def test_a_combined_cover_keeps_the_filers_own_securities_only(tmp_path: Path) -
     path = _write_notes_zip(tmp_path, "2025q3", ["E1", "B1"], dims=_DIMS)
     facts = _facts(path)
     assert facts is not None
-    rows = aggregate_dei_symbols(facts, "2025q3")
+    rows = _aggregate(facts, "2025q3")
 
     got = set(zip(rows["symbol"], rows["issuer_cik"], strict=True))
     assert got == {("ETR", "0000065984"), ("ETR-26A", "0000065984"), ("BFA", "0000000002"), ("BFB", "0000000002")}, got
 
     (tmp_path / "old").mkdir()
     no_dim = _facts(_write_notes_zip(tmp_path / "old", "2025q3", ["B1"]))
-    assert no_dim is not None and set(aggregate_dei_symbols(no_dim, "2025q3")["symbol"]) == {"BFA", "BFB"}
+    assert no_dim is not None and set(_aggregate(no_dim, "2025q3")["symbol"]) == {"BFA", "BFB"}
 
     print("\n=== SANITY CHECK: combined cover page ===")
     print(f"  E1 tags ETR, EAI (LegalEntity=EntergyArkansas), ETR/26A; B1 tags 'BFA, BFB' -> {sorted(got)}")

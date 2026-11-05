@@ -523,7 +523,7 @@ IDENTITY_BUILD_FILES = (
     "src/data_extract/utils/identity/evidence.py",
     "src/data_extract/utils/identity/company_anchor.py",
     "src/data_extract/utils/identity/cik_history.py",
-    "src/data_extract/utils/identity/entity_lineage.py",
+    "src/data_extract/utils/identity/symbol_history.py",
     "src/data_extract/utils/identity/security_master.py",
 )
 #: the DAG task(s) that add rows to each identity input (keys are `Tables` attributes); `identity` writes its own outputs

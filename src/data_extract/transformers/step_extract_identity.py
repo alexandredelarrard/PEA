@@ -15,6 +15,8 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.identity_store import save_identity
+from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.identity.capture_ftd import capture_ftd_cusips
 from src.data_extract.utils.identity.cik_history import (
@@ -24,12 +26,14 @@ from src.data_extract.utils.identity.cik_history import (
     blocked_frame,
     candidate_ciks,
     check_d19,
+    check_one_entity_per_cik,
     cik_evidence,
     cik_rows,
     cik_windows,
     company_ids,
     curated_membership,
     d19_allowlist,
+    entity_by_cik_map,
     evidence_index,
     grey_backlog,
     join_owner_overlaps,
@@ -43,20 +47,36 @@ from src.data_extract.utils.identity.cik_history import (
     succession_pairs,
 )
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor, anchor_company_ids, sharadar_ciks
-from src.data_extract.utils.identity.entity_lineage import build_entity_lineage, load_stored_lineage
 from src.data_extract.utils.identity.evidence import capture_dei_period, pending_dei_periods
 from src.data_extract.utils.identity.identity_propagate import PropagationResult, propagate_identity
 from src.data_extract.utils.identity.security_master import build_security_master
+from src.data_extract.utils.identity.symbol_history import (
+    TAPE_ACTION_COLUMNS,
+    TAPE_TICKER_COLUMNS,
+    TICKER_CHANGE_ACTIONS,
+    SymbolHistory,
+    load_stored_lineage,
+    log_changed_assignments,
+    log_symbol_history,
+    parse_stored_rows,
+    symbol_evidence,
+    symbol_holders,
+    symbol_rows,
+    tape_chains,
+    validate_manual_tenure_entities,
+)
 from src.data_extract.utils.identity.symbol_tenure import (
     DEI_SOURCE,
     Form345Scan,
     build_symbol_tenure,
     collapse_dei_periods,
     load_built_tenure,
+    load_manual_symbol_tenure,
+    load_rejected_symbol_tenure,
     scan_form345_cache,
 )
 from src.data_store.schema import Tables
-from src.utils.identity_flags import cik_activity
+from src.utils.identity_flags import MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.step import Step
 from src.utils.string import run_date
 
@@ -90,7 +110,7 @@ class StepExtractIdentity(Step):
         self._tenure: pd.DataFrame | None = None
         self._anchor: CompanyAnchor | None = None
         self._cik_history: CikHistory | None = None
-        self._lineage: pd.DataFrame | None = None
+        self._symbols: SymbolHistory | None = None
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols and FTD lines of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured."""
@@ -101,9 +121,10 @@ class StepExtractIdentity(Step):
         # the in-scope FTD lines (a no-op before the first lineage build)
         written += capture_ftd_cusips(self._context, self._ftd_cache, self._years_history, full=self._options.full, as_of=self._run_date)
 
-        # one Form 3/4/5 scan: the `form345` / `manual` tenure here, the owner sets in the CIK history
+        # one Form 3/4/5 scan: the `form345` / `manual` tenure (minus the cited rejections) here, the owner sets in the CIK history
         self._scan = scan_form345_cache(self._insider_cache)
-        self._tenure = build_symbol_tenure(self._context, self._scan, str(self._config_dir))
+        manual, rejected = load_manual_symbol_tenure(str(self._config_dir)), load_rejected_symbol_tenure(str(self._config_dir))
+        self._tenure = build_symbol_tenure(self._context, self._scan, manual, rejected)
         return written
 
     def run_company_anchor(self) -> CompanyAnchor:
@@ -172,15 +193,47 @@ class StepExtractIdentity(Step):
         self._cik_history = history
         return history
 
-    def run_symbol_history(self) -> pd.DataFrame:
-        """Symbol intervals attached through the CIK history; writes `universe_cik_symbol` until `run_publish` does (4d)."""
+    def run_symbol_history(self) -> SymbolHistory:
+        """Symbol intervals attached through the CIK history, with the Sharadar ticker-change tape; writes `universe_cik_symbol`
+        unless unchanged (until `run_publish` does, 4d)."""
+        # load the CIK history of this run (else from stored inputs), the stored table, the Sharadar tape and the manual tenure
         history = self._cik_history if self._cik_history is not None else self.run_cik_history()
-        self._lineage = build_entity_lineage(self._context, history, str(self._config_dir))
-        return self._lineage
+        existing = parse_stored_rows(self._context.store.load(Tables.universe_cik_symbol, project=True, optional=True))
+        sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(TAPE_TICKER_COLUMNS), optional=True)
+        actions = self._context.store.load(
+            Tables.sharadar_actions, columns=list(TAPE_ACTION_COLUMNS), where={"action": list(TICKER_CHANGE_ACTIONS)}, optional=True
+        )
+        manual = load_manual_symbol_tenure(str(self._config_dir))
+        roster_cik = self._universe.cik_by_ticker
+
+        # compute: the tape over the CIK windows, every holder interval classified, the rows and the trading symbols
+        evidence = symbol_evidence(history, tape_chains(self._universe.frame, sharadar, actions))
+        holders = symbol_holders(evidence, history, roster_cik)
+        build = symbol_rows(history, holders, existing, None)
+
+        # check: one company per CIK and every manual CIK in its ticker's company; log the build and what moved
+        check_one_entity_per_cik(build.rows)
+        new_map = entity_by_cik_map(build.rows)
+        validate_manual_tenure_entities(manual, new_map, roster_cik)
+        cold = existing is None or existing.empty
+        log_symbol_history(self._context, build, manual, int(history.evidence["source"].eq(DEI_SOURCE).sum()), cold)
+        if existing is not None and not cold:
+            log_changed_assignments(self._context, entity_by_cik_map(existing), new_map, roster_cik)
+
+        # save unless unchanged
+        unchanged = matches_stored(existing, build.rows, Tables.universe_cik_symbol)
+        written = 0 if unchanged else save_identity(self._context.store, Tables.universe_cik_symbol, build.rows)
+        self._log.info(
+            f"universe_cik_symbol: unchanged ({len(build.rows)} row(s)); replace skipped"
+            if unchanged
+            else f"universe_cik_symbol: wrote {written} row(s)"
+        )
+        self._symbols = build
+        return build
 
     def run_cusip_history(self) -> pd.DataFrame:
         """CUSIP lines of each company (`universe_cusip`), built from this run's lineage or the stored one."""
-        lineage = self._lineage if self._lineage is not None else load_stored_lineage(self._context)
+        lineage = self._symbols.rows if self._symbols is not None else load_stored_lineage(self._context)
         if lineage is None:
             raise ValueError("universe_cusip needs universe_cik_symbol: run `identity --only symbol-history` first")
         return build_security_master(self._context, lineage, str(self._config_dir))
@@ -190,7 +243,14 @@ class StepExtractIdentity(Step):
         return None
 
     def run_publish(self) -> None:
-        """Completeness gate and one save of the published tables: phase 4d; the builders still save their own tables."""
+        """The identity flags over this run's symbol history and CUSIP lines; the gate and one save of the published tables
+        land in phase 4d (the builders still save their own tables)."""
+        if self._symbols is None or self._cik_history is None:
+            return None
+        master = self._context.store.load(Tables.universe_cusip, columns=list(MASTER_COLUMNS), optional=True)
+        backlog, activity = self._symbols.backlog, self._cik_history.activity
+        flags = identity_flags(self._symbols.rows, activity, redundant_symbols=self._universe.alias_symbols, backlog=backlog, master=master)
+        log_identity_flags(self._context.log, flags)
         return None
 
     def run_propagate(self) -> PropagationResult:

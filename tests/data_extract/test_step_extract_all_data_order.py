@@ -77,7 +77,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         assert cache == Path("cache") / "sec_insider_transactions"
         return mark("form345_scan", scan)()
 
-    def symbol_tenure(context, given_scan, config_dir):
+    def symbol_tenure(context, given_scan, manual, rejected):
         assert given_scan is scan
         return mark("symbol_tenure", tenure)()
 
@@ -89,9 +89,10 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         step._cik_history = history
         return mark("cik_history", history)()
 
-    def universe_cik_symbol(context, given_history, config_dir):
-        assert given_history is history
-        return mark("universe_cik_symbol", lineage)()
+    def universe_cik_symbol(step):
+        assert step._cik_history is history
+        step._symbols = SimpleNamespace(rows=lineage)
+        return mark("universe_cik_symbol", step._symbols)()
 
     def universe_cusip(context, given_lineage, config_dir):
         assert given_lineage is lineage, "the security master is derived from the lineage just built"
@@ -111,7 +112,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
-    monkeypatch.setattr(identity_module, "build_entity_lineage", universe_cik_symbol)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_publish", lambda step: None)
     monkeypatch.setattr(identity_module, "build_security_master", universe_cusip)
     monkeypatch.setattr(identity_module, "load_identity", refresh)
     monkeypatch.setattr(identity_module, "propagate_identity", propagate)

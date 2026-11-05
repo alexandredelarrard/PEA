@@ -18,14 +18,16 @@ import logging
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
+from src.data_extract.transformers import step_extract_identity as identity_module
+from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.identity import cik_history as cik_module
-from src.data_extract.utils.identity import entity_lineage as lineage_module
+from src.data_extract.utils.identity import symbol_history as lineage_module
 from src.data_extract.utils.identity.cik_history import (
     OVERLAP_JACCARD_SAME,
     OVERLAP_SHARED_SAME,
@@ -37,7 +39,7 @@ from src.data_extract.utils.identity.cik_history import (
     parse_manual_lineage,
     score_overlap,
 )
-from src.data_extract.utils.identity.entity_lineage import ManualTenureEntityError, validate_manual_tenure_entities
+from src.data_extract.utils.identity.symbol_history import ManualTenureEntityError, validate_manual_tenure_entities
 from src.data_extract.utils.identity.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
 from src.utils.identity_flags import KIND_ORDER, cik_activity, identity_flags
@@ -86,6 +88,14 @@ def _config(tmp_path: Path, register: dict | None = None, manual: dict | None = 
     if manual is not None:
         (sec / "entity_lineage_manual.json").write_text(json.dumps(manual), encoding="utf-8")
     return str(tmp_path / "configs")
+
+
+def _symbol_step(context: Any, history: Any, symbols: Any = None) -> Any:
+    """`StepExtractIdentity` over a stub context with this run's CIK history (and symbol history) preset."""
+    step = cast(Any, object.__new__(StepExtractIdentity))
+    step._context, step._config_dir, step._log = context, getattr(context, "config_dir", CONFIG_DIR), logging.getLogger("test.symbol_history")
+    step._cik_history, step._symbols = history, symbols
+    return step
 
 
 def _rows(build: Any, **match: object) -> pd.DataFrame:
@@ -203,9 +213,9 @@ def test_manual_tenure_cik_must_resolve_to_its_canonical_entity():
     roster = _roster([("AAA", "0000000001")])
     manual = pd.DataFrame([{"canonical_ticker": "AAA", "symbol": "OLD", "issuer_cik": "0000000002"}])
     with pytest.raises(ManualTenureEntityError, match="AAA/OLD/0000000002"):
-        validate_manual_tenure_entities(manual, lineage, as_roster(roster))
+        validate_manual_tenure_entities(manual, cik_module.entity_by_cik_map(lineage), as_roster(roster))
     manual.loc[0, "issuer_cik"] = "0000000001"
-    validate_manual_tenure_entities(manual, lineage, as_roster(roster))
+    validate_manual_tenure_entities(manual, cik_module.entity_by_cik_map(lineage), as_roster(roster))
     print("\n=== SANITY CHECK: manual CIK/entity cross-check ===")
     print("  unrelated OLD CIK raises; the roster entity CIK passes")
 
@@ -515,7 +525,7 @@ def test_scope_changed_at_moves_only_for_tickers_whose_scope_changed(tmp_path):
 
 
 def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path, monkeypatch, sqlite_store, caplog):
-    """End to end on SQLite: the CIK history plus the symbol rows written, a second build is a no-op."""
+    """End to end on SQLite: `run_symbol_history` writes the CIK history plus the symbol rows; a second run is a no-op."""
     create_canonical(
         sqlite_store.engine,
         [
@@ -529,7 +539,7 @@ def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path,
     tenure, dei = _handoff_evidence()
     sqlite_store.save(Tables.symbol_tenure, dei.assign(evidence_period="2025q1"))
     monkeypatch.setattr(
-        lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame(columns=["canonical_ticker", "symbol", "issuer_cik"])
+        identity_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame(columns=["canonical_ticker", "symbol", "issuer_cik"])
     )
     context: Any = SimpleNamespace(
         store=sqlite_store,
@@ -540,61 +550,61 @@ def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path,
     caplog.set_level(logging.INFO)
 
     history = cik_history_of(tenure, {"ABC": "0000000200"}, _owner_pairs({}), context.config_dir, dei=dei)
-    written = lineage_module.build_entity_lineage(context, history, context.config_dir, built_at=pd.Timestamp("2026-10-03 12:00:00"))
+    written = _symbol_step(context, history).run_symbol_history().rows
     stored = sqlite_store.load(Tables.universe_cik_symbol, project=True)
     assert len(stored) == len(written) and set(stored["oracle"]) >= {"symbol_handoff"}
-    lineage_module.build_entity_lineage(context, history, context.config_dir, built_at=pd.Timestamp("2026-10-04 12:00:00"))
+    _symbol_step(context, history).run_symbol_history()
     assert f"universe_cik_symbol: unchanged ({len(written)} row(s)); replace skipped" in caplog.text
     print("\n=== SANITY CHECK: store round trip ===")
-    print(f"  {len(written)} rows written to SQLite; the rebuild one day later skipped the replace")
+    print(f"  {len(written)} rows written to SQLite; the second run skipped the replace")
 
 
 # --------------------------------------------------------------------------- #
 # build: logging and replace skip                                               #
 # --------------------------------------------------------------------------- #
-def _empty_build(rows: pd.DataFrame) -> Any:
-    return L.LineageBuild(rows=rows, blocked=pd.DataFrame(), backlog=pd.DataFrame(columns=list(L.BACKLOG_COLUMNS)), holders=pd.DataFrame())
+def _empty_build(rows: pd.DataFrame, backlog: pd.DataFrame | None = None) -> Any:
+    trading = pd.DataFrame(columns=["ticker", "trading_symbol", "trading_symbol_from"])
+    backlog = backlog if backlog is not None else pd.DataFrame(columns=list(cik_module.BACKLOG_COLUMNS))
+    return L.SymbolHistory(rows=rows, blocked=pd.DataFrame(), backlog=backlog, holders=pd.DataFrame(), trading=trading)
 
 
 def _history_of(tenure: pd.DataFrame) -> Any:
-    """The parts of a CIK history `build_entity_lineage` reads when `derive_lineage_rows` is stubbed."""
+    """The parts of a CIK history `run_symbol_history` and `run_publish` read when the symbol compute is stubbed."""
     return SimpleNamespace(evidence=cik_module.cik_evidence(tenure, None), activity=cik_activity(tenure))
 
 
 def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch, caplog):
-    columns = ["cik", "company_id", "role", "symbol", "valid_from", "valid_to"]
-    old = pd.DataFrame([("0000000001", "E0000000001", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT)], columns=columns)
-    new = pd.DataFrame([("0000000001", "E0000000002", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT)], columns=columns)
+    columns = ["cik", "company_id", "role", "symbol", "valid_from", "valid_to", "status"]
+    old = pd.DataFrame([("0000000001", "E0000000001", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT, "")], columns=columns)
+    new = pd.DataFrame([("0000000001", "E0000000002", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT, "")], columns=columns)
     tenure = _tenure([("AAA", "0000000001", "2020-01-01", None, 1)])
 
     class Store:
         def load(self, table, **kwargs):
-            if table in (Tables.symbol_tenure, Tables.universe_cusip):  # optional tables not stored yet
-                return None
-            return {Tables.universe_cik_symbol: old}[table]
+            return {Tables.universe_cik_symbol: old}.get(table)
 
-        def replace(self, table, frame):
-            assert table is Tables.universe_cik_symbol and frame.equals(new)
-            return len(frame)
-
-    monkeypatch.setattr(lineage_module, "derive_lineage_rows", lambda *args, **kwargs: _empty_build(new))
-    monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
-    monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
-    monkeypatch.setattr(lineage_module, "save_identity", lambda store, table, rows: store.replace(table, rows))
+    replaced: list[pd.DataFrame] = []
+    monkeypatch.setattr(identity_module, "symbol_evidence", lambda *args, **kwargs: None)
+    monkeypatch.setattr(identity_module, "symbol_holders", lambda *args, **kwargs: None)
+    monkeypatch.setattr(identity_module, "symbol_rows", lambda *args, **kwargs: _empty_build(new))
+    monkeypatch.setattr(identity_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
+    monkeypatch.setattr(identity_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
+    monkeypatch.setattr(identity_module, "save_identity", lambda store, table, rows: replaced.append(rows) or len(rows))
     context: Any = SimpleNamespace(
         store=Store(), log=logging.getLogger("test.universe_cik_symbol"), universe=universe_of(["AAA"], rows={"AAA": {"cik": "0000000001"}})
     )
     caplog.set_level(logging.INFO, logger="test.universe_cik_symbol")
 
-    lineage_module.build_entity_lineage(context, _history_of(tenure), CONFIG_DIR)
+    _symbol_step(context, _history_of(tenure)).run_symbol_history()
     assert "1 changed CIK assignment(s): 0000000001" in caplog.text
     assert "affected current ticker(s): AAA" in caplog.text
+    assert len(replaced) == 1 and replaced[0].equals(new)
     print("\n=== SANITY CHECK: entity-lineage refresh visibility ===")
     print("  changed CIK 0000000001 and affected current ticker AAA are named")
 
 
-def test_the_build_logs_the_manual_decision_block(monkeypatch, caplog):
-    """P15: a sequential uncurated pair and a grey-band backlog item reach one WARNING block from the build."""
+def test_the_build_logs_the_manual_decision_block(caplog):
+    """P15: a sequential uncurated pair and a grey-band backlog item reach one WARNING block (from `run_publish` until 4d)."""
     columns = ["company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle"]
     rows = pd.DataFrame(
         [
@@ -603,27 +613,21 @@ def test_the_build_logs_the_manual_decision_block(monkeypatch, caplog):
         ],
         columns=columns,
     )
-    backlog = pd.DataFrame([("grey_band", "AAA", "E1", "0000000009", "AAA", "owner overlap with 0000000002")], columns=list(L.BACKLOG_COLUMNS))
-    build = L.LineageBuild(rows=rows, blocked=pd.DataFrame(), backlog=backlog, holders=pd.DataFrame())
+    backlog = pd.DataFrame(
+        [("grey_band", "AAA", "E1", "0000000009", "AAA", "owner overlap with 0000000002")], columns=list(cik_module.BACKLOG_COLUMNS)
+    )
     tenure = _tenure([("AAA", "0000000001", "2006-01-03", "2012-06-30", 9), ("AAA", "0000000002", "2014-01-02", None, 9)])
 
     class Store:
         def load(self, table, **kwargs):
             return None
 
-        def replace(self, table, frame):
-            return len(frame)
-
-    monkeypatch.setattr(lineage_module, "derive_lineage_rows", lambda *args, **kwargs: build)
-    monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
-    monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
-    monkeypatch.setattr(lineage_module, "save_identity", lambda store, table, rows: store.replace(table, rows))
     context: Any = SimpleNamespace(
         store=Store(), log=logging.getLogger("test.universe_cik_symbol.flags"), universe=universe_of(["AAA"], rows={"AAA": {"cik": "0000000002"}})
     )
     caplog.set_level(logging.INFO, logger="test.universe_cik_symbol.flags")
 
-    lineage_module.build_entity_lineage(context, _history_of(tenure), CONFIG_DIR)
+    _symbol_step(context, _history_of(tenure), _empty_build(rows, backlog)).run_publish()
     blocks = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "IDENTITY ITEMS NEEDING A MANUAL DECISION" in r.getMessage()]
     assert len(blocks) == 1 and "missing_cutover AAA" in blocks[0] and "grey_band AAA" in blocks[0], blocks
     print("\n=== SANITY CHECK: build flag block ===")

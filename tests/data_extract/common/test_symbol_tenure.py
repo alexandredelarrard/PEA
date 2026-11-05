@@ -605,6 +605,11 @@ def _seed_tenure_row(symbol: str, cik: str, source: str, evidence_period: str) -
     }
 
 
+def _manual_config(config_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The manual intervals and the cited rejections of a config directory, as `run_capture_evidence` loads them."""
+    return tenure_module.load_manual_symbol_tenure(config_dir), tenure_module.load_rejected_symbol_tenure(config_dir)
+
+
 def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, monkeypatch, tmp_path):
     """The form345/manual build must leave rows of other sources (`dei`) in place and drop its own stale rows."""
     create_canonical(sqlite_store.engine, [Tables.symbol_tenure])
@@ -637,7 +642,7 @@ def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, mon
         )
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.partition"))
 
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
     stored = sqlite_store.load(Tables.symbol_tenure, project=True)
     assert stored is not None
     rows = {(row.symbol, row.source, row.evidence_period) for row in stored.itertuples(index=False)}
@@ -645,7 +650,7 @@ def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, mon
     assert "replace" not in writes
 
     first_writes = list(writes)
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
     assert writes == first_writes, "an unchanged form345/manual partition must not be rewritten"
 
     print("\n=== SANITY CHECK: partition-scoped symbol_tenure build ===")
@@ -688,7 +693,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
     caplog.set_level(logging.INFO, logger="test.symbol_tenure")
 
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
     assert "cold build with 1 row(s) over 1 symbol(s)" in caplog.text
     current["frame"] = pd.concat(
         [
@@ -697,7 +702,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
         ],
         ignore_index=True,
     )
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
     assert "1 changed symbol(s): OLD" in caplog.text
 
     print("\n=== SANITY CHECK: identity refresh visibility ===")
@@ -735,13 +740,13 @@ def test_symbol_tenure_write_is_skipped_when_unchanged(sqlite_store, monkeypatch
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.skip"))
     caplog.set_level(logging.INFO)
 
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
     assert saved == [2]
     assert "symbol_tenure: unchanged (2 row(s)); write skipped" in caplog.text
 
     current["frame"] = frame.assign(n_filings=[5, 1])
-    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
     assert saved == [2, 2]
 
     print("\n=== SANITY CHECK: unchanged symbol_tenure is not rewritten ===")
@@ -894,7 +899,7 @@ def test_build_writes_the_partition_without_the_rejected_rows(sqlite_store, monk
     monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: _ford_and_fcf())
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.rejected"))
 
-    out = tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    out = tenure_module.build_symbol_tenure(context, cast(Any, None), *_manual_config(tmp_path))
 
     stored = sqlite_store.load(Tables.symbol_tenure, project=True)
     assert stored is not None and _FCF not in set(stored["issuer_cik"]) and _FCF not in set(out["issuer_cik"])

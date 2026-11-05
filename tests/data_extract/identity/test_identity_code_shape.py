@@ -2,7 +2,8 @@
 
 The walk resolves calls statically: a bare name defined in or imported from a `src` module, `self.<method>`, and
 `<src module alias>.<name>`; a repository function passed as an argument counts as a call. Levels count from the step:
-0 `run`, 1 a `run_*` sub-run, 2 a domain function, 3 a flat helper. A function outside the identity build (`SCOPE`) is
+0 `run`, 1 a `run_*` sub-run (wherever it is called from: a sub-run run alone computes its sibling's result), 2 a domain
+function, 3 a flat helper. A function outside the identity build (`SCOPE`) is
 infrastructure: a level-1 or level-2 function may call it, a level-3 helper may call no repository function at all.
 `ALLOWLIST` names the stages phases 4b-4d still rewrite; their subtrees are not walked, and the list is empty after 4d.
 
@@ -34,9 +35,6 @@ FLOW = (
 SCOPE = (STEP_MODULE, "src.data_extract.utils.identity.", "src.utils.identity_flags", "src.data_extract.utils.common.identity")
 #: Not yet rewritten (prefix of a qualified name -> the sub-phase that rewrites it). Shrinks each sub-phase; empty after 4d.
 ALLOWLIST = {
-    f"{STEP_MODULE}.{STEP_CLASS}.run_symbol_history": "4b",
-    "src.data_extract.utils.identity.symbol_tenure.": "4b",
-    "src.data_extract.utils.identity.entity_lineage.": "4b",
     f"{STEP_MODULE}.{STEP_CLASS}.run_cusip_history": "4c",
     "src.data_extract.utils.identity.capture_ftd.": "4c",
     "src.data_extract.utils.identity.security_master.": "4c",
@@ -147,10 +145,16 @@ def _nesting(nodes: list[ast.stmt], depth: int = 0) -> int:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             continue
         if isinstance(node, _BRANCHES):
-            elif_chain = isinstance(node, ast.If) and len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If)
-            bodies = [node.body, [] if elif_chain else node.orelse, *(h.body for h in getattr(node, "handlers", [])), getattr(node, "finalbody", [])]
+            orelse = getattr(node, "orelse", [])
+            elif_chain = isinstance(node, ast.If) and len(orelse) == 1 and isinstance(orelse[0], ast.If)
+            bodies = [
+                getattr(node, "body", []),
+                [] if elif_chain else orelse,
+                *(h.body for h in getattr(node, "handlers", [])),
+                getattr(node, "finalbody", []),
+            ]
             bodies += [case.body for case in getattr(node, "cases", [])]
-            deepest = max(deepest, *(_nesting(body, depth + 1) for body in bodies), _nesting(node.orelse, depth) if elif_chain else depth)
+            deepest = max(deepest, *(_nesting(body, depth + 1) for body in bodies), _nesting(orelse, depth) if elif_chain else depth)
     return deepest
 
 
@@ -266,7 +270,12 @@ def _visit(walk: _Walk, module: _Module, qualname: str, level: int, path: tuple[
         elif not _in_scope(target):
             walk.infrastructure.add(callee)
         else:
-            _visit(walk, target, name, level + 1, (*path, qualified))
+            _visit(walk, target, name, 1 if _is_sub_run(target, name) else level + 1, (*path, qualified))
+
+
+def _is_sub_run(module: _Module, name: str) -> bool:
+    """A `run_*` sub-run is level 1 wherever it is called from (a sub-run computing a sibling's result when run alone)."""
+    return module.name == STEP_MODULE and name.startswith(f"{STEP_CLASS}.run_")
 
 
 def _walk() -> _Walk:

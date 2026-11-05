@@ -22,6 +22,7 @@ import pandas as pd
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.identity.cik_history import (
     ROLE_SYMBOL,
@@ -30,7 +31,6 @@ from src.data_extract.utils.identity.cik_history import (
     entity_by_cik_map,
     entity_or_singleton,
 )
-from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import ShareExchange

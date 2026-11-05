@@ -75,7 +75,14 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
         return history
 
     monkeypatch.setattr(StepExtractIdentity, "run_cik_history", cik_history)
-    monkeypatch.setattr(module, "build_entity_lineage", mark("symbols", pd.DataFrame()))
+
+    def symbols(self: StepExtractIdentity) -> object:
+        mark("symbols")()
+        self._symbols = SimpleNamespace(rows=pd.DataFrame())  # type: ignore[assignment]
+        return self._symbols
+
+    monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbols)
+    monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
     monkeypatch.setattr(module, "build_security_master", mark("cusips", pd.DataFrame()))
     monkeypatch.setattr(module, "load_identity", mark("refresh", object()))
     monkeypatch.setattr(module, "propagate_identity", mark("propagate"))
@@ -103,7 +110,7 @@ def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch
 
     StepExtractIdentity(_context(), _config()).run()  # type: ignore[arg-type]
 
-    expected = ["dei_periods", "dei", "ftd", "scan", "tenure", "anchor", "cik_history", "symbols", "cusips", "refresh", "propagate"]
+    expected = ["dei_periods", "dei", "ftd", "scan", "tenure", "anchor", "cik_history", "symbols", "cusips", "publish", "refresh", "propagate"]
     assert order == expected, order
     assert order.count("scan") == 1, "the tenure and the CIK history share one Form 3/4/5 scan"
     print("\n=== SANITY CHECK: StepExtractIdentity.run operations ===")
@@ -174,10 +181,14 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: None)
     monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", object()))
     monkeypatch.setattr(
-        module,
-        "build_entity_lineage",
-        lambda ctx, *args, **kwargs: (sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage()), _scope_lineage())[1],
+        StepExtractIdentity,
+        "run_symbol_history",
+        lambda self: (
+            sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage()),
+            setattr(self, "_symbols", SimpleNamespace(rows=_scope_lineage())),
+        ),
     )
+    monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: None)
     masters: list[tuple[pd.DataFrame, int]] = []
 
     def master(ctx: Any, lineage: pd.DataFrame, config_dir: str) -> pd.DataFrame:

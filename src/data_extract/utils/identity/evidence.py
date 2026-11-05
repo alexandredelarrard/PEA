@@ -11,8 +11,12 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
-from src.data_extract.utils.identity.symbol_tenure import aggregate_dei_symbols, captured_dei_periods, save_dei_period
+from src.data_extract.utils.common.identity_store import save_identity
+from src.data_extract.utils.common.incremental import matches_stored
+from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, captured_dei_periods, parse_symbol_field
 from src.data_extract.utils.zips.fetch_financial_notes import CHUNK_ROWS, cached_notes_periods
+from src.data_store.schema import Tables
+from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +56,23 @@ def pending_dei_periods(context: Context, cache: Path, full: bool) -> list[str]:
 
 
 def capture_dei_period(context: Context, cache: Path, period: str) -> int:
-    """Replace one period's `dei` rows with its zip's cover-page symbols; returns the rows written."""
-    # read the period's cover-page symbol facts of every filer
+    """Replace one period's `dei` rows with its zip's cover-page symbols unless unchanged; returns the rows written."""
+    # load the period's cover-page symbol facts of every filer and its stored rows
     tables = read_zip_tables(cache / f"{period}_notes.zip", _DEI_READ, on_corrupt="delete", log=logger)
+    where: dict[str, object] = {"source": DEI_SOURCE, "evidence_period": period}
+    existing = context.store.load(Tables.symbol_tenure, project=True, where=where, optional=True)
+
+    # clean: the primary filer's facts, CIKs padded, each distinct symbol field parsed once
     facts = _primary_facts(tables)
     if facts is None or facts.empty:
         logger.info("notes dei %s: no cover-page symbol facts", period)
         return 0
+    facts = facts.assign(cik=pad_cik_series(facts["cik"]))
+    fields = {field: parse_symbol_field(field) for field in facts["value"].astype("string").dropna().unique()}
 
-    # one row per (symbol, CIK), saved over the period's stored rows
-    rows = aggregate_dei_symbols(facts, period)
-    written = save_dei_period(context, period, rows)
+    # one row per (symbol, CIK), saved over the period's stored rows unless unchanged
+    rows = aggregate_dei_symbols(facts, fields, period)
+    written = 0 if matches_stored(existing, rows, Tables.symbol_tenure) else save_identity(context.store, Tables.symbol_tenure, rows, where)
     logger.info("notes dei %s: %d accession(s) -> %d (symbol, CIK) row(s), %d written", period, facts["adsh"].nunique(), len(rows), written)
     return written
 

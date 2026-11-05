@@ -22,6 +22,7 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
+from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
 from src.data_extract.utils.identity.cik_history import (
     FORM345_SOURCE,
     MANUAL_SOURCE,
@@ -35,7 +36,6 @@ from src.data_extract.utils.identity.cik_history import (
     entity_by_cik_map,
     entity_or_singleton,
 )
-from src.data_extract.utils.identity.identity_store import load_source_identity as load_source_identity
 from src.data_extract.utils.identity.security_master import (
     ACQUIRED_CONSTITUENT,
     MergerBoundary,

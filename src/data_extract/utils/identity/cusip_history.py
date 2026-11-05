@@ -793,8 +793,8 @@ def _forward_stop(line: Any, others: pd.DataFrame, manual_ends: Mapping[str, lis
 def _back_floor(
     line: Any, earlier: pd.DataFrame, manual_starts: Mapping[str, list[pd.Timestamp]], classed: bool, symbol_from: pd.Timestamp | None
 ) -> pd.Timestamp:
-    """Where a line's run back stops: an earlier CUSIP of its symbol (its last fail, or the end of its own run on), a
-    manual start, and for a non-class line the start of its issuer's tape interval of the symbol."""
+    """Where a line's run back stops: an earlier CUSIP of its symbol or an earlier symbol of its CUSIP (its last fail, or the
+    end of its own run on), a manual start, and for a non-class line the start of its issuer's tape interval of the symbol."""
     ran_on = earlier["end"].where(earlier["finra_to"].notna(), earlier["last"] + _DAY)
     floors = [min(end, line.first) for end in ran_on]
     floors += [start for start in manual_starts.get(line.cusip, []) if start <= line.first]
@@ -827,7 +827,14 @@ def extend_lines(lines: pd.DataFrame, finra: Finra, manual: SecurityManual, issu
         if last > line.last and last + _DAY > line.end:
             out.at[i, "end"], out.at[i, "finra_to"] = last + _DAY, last
         earlier = others[others["first"] < line.first]
-        first = _chain(days, line.first, _back_floor(line, earlier, manual_starts, is_class, symbol_from), forward=False)
+        # X91: nor back over the days its own CUSIP still traded under an earlier symbol (FB before META, to its last FINRA day)
+        renamed = out.loc[out["cusip"].eq(line.cusip) & out["key"].ne(line.key) & out["first"].lt(line.first)]
+        reach = [
+            _chain(finra.days[k], last, _FAR, forward=True) if k in finra.days else last
+            for k, last in zip(renamed["key"], renamed["last"], strict=True)
+        ]
+        renamed = renamed.assign(end=[day + _DAY for day in reach], finra_to=reach)[earlier.columns]
+        first = _chain(days, line.first, _back_floor(line, pd.concat([earlier, renamed]), manual_starts, is_class, symbol_from), forward=False)
         if first < line.first:
             out.at[i, "start"], out.at[i, "finra_from"] = first, first
             out.loc[earlier.index[(earlier["end"] > first) & (earlier["end"] < _FAR) & earlier["finra_to"].isna()], "end"] = first

@@ -1322,3 +1322,30 @@ def test_reverse_acquisitions_declare_pld_and_jci_only():
     print("\n=== SANITY CHECK: reverse_acquisitions ===")
     print("  PLD 2011-06-03 (accounting acquirer old ProLogis 0000899881, survivor AMB 0001045609)")
     print("  JCI 2016-09-02 (accounting acquirer old JCI 0000053669, survivor Tyco 0000833444); DD undeclared; an unsourced entry is refused")
+
+
+def test_a_class_line_never_runs_back_into_another_issuers_use_of_its_symbol():
+    """X91: META's class A line (30303M102, 'CL A') ran back over the FINRA days of the symbol META from 2021-06-30, which
+    another issuer traded before Meta Platforms took it on 2022-06-09, and overlapped the FB row by a year. A line's run
+    back now also stops where its own CUSIP last traded under an earlier symbol (FB's last FINRA day 2022-06-08 here)."""
+    meta = _lineage(
+        _row("META", "0001326801", "0001326801", "cik_window", sources="roster"),
+        _row("META", "0001326801", "0001326801", "symbol", "FB", "2012-05-18", "2022-06-09", sources="dei,form345,roster"),
+        _row("META", "0001326801", "0001326801", "symbol", "META", "2022-06-09", sources="dei,form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("30303M102", "FB", "FACEBOOK INC CL A", "2019-01-03", "2022-06-07", freq="B"),
+            _obs("30303M102", "META", "META PLATFORMS INC CL A", "2022-06-13", "2024-06-26", freq="B"),  # first trade 2022-06-09 (T+2)
+        ],
+        ignore_index=True,
+    )
+    presence = pd.concat([_finra("FB", "2019-01-02", "2022-06-08", freq="B"), _finra("META", "2021-06-30", "2024-06-28", freq="B")])
+    build = _derive(obs, meta, _roster(("META", "0001326801")), finra_presence=presence)
+    current = _rows(build, "30303M102", "META")
+    assert current["valid_from"].min() == pd.Timestamp("2022-06-09"), current
+    assert _canonical_overlaps(build, "META") == []
+    print("\n=== SANITY CHECK: run back bounded by the CUSIP's earlier symbol (X91) ===")
+    print(
+        f"  META CL A starts {current['valid_from'].min().date()}, the day after its last FB trading day (FINRA META days from 2021-06-30 unused); no overlap"
+    )

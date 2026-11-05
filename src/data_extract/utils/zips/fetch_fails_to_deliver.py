@@ -315,12 +315,8 @@ def _checked_ftd_grain(
     invalid_ratio = ~np.isfinite(candidates["conversion_ratio"]) | candidates["conversion_ratio"].le(0)
     invalid = set(zip(candidates.loc[invalid_ratio, "canonical_company"], candidates.loc[invalid_ratio, "date"], strict=True))
     candidates = candidates.rename(columns={"canonical_company": "ticker"})[["ticker", "date", "period"]].drop_duplicates()
-    unresolved = stamped.loc[stamped["lineage_role"].isna() | stamped["ticker"].isna()]
-    blocked = unresolved[["cusip", "date"]].merge(master[["cusip", "canonical_company"]].drop_duplicates(), on="cusip")
-    symbols = unresolved[["source_symbol", "date"]].merge(master[["source_symbol", "canonical_company"]].drop_duplicates(), on="source_symbol")
-    blocked = pd.concat([blocked, symbols], ignore_index=True)
-    blocked = set(zip(blocked["canonical_company"], pd.to_datetime(blocked["date"]), strict=True))
-    blocked |= invalid
+    uncertain = uncertain_dates(stamped, master)
+    blocked = set(zip(uncertain["ticker"], uncertain["date"], strict=True)) | invalid
     if held is not None and not held.empty:
         retained = stamped.merge(held[["cusip", "date"]], on=["cusip", "date"])
         blocked.update(zip(retained["ticker"], pd.to_datetime(retained["date"]), strict=True))
@@ -333,6 +329,29 @@ def _checked_ftd_grain(
     result[["fails_quantity", "fails_value"]] = result[["fails_quantity", "fails_value"]].astype("float64")
     result["source_checked_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
     return result
+
+
+def uncertain_dates(stamped: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
+    """`[ticker, date]` an unresolved stamped line could belong to: a master row of the company carrying the line's CUSIP
+    or its symbol. The one FTD ownership rule (X93): the checked grain blocks these dates and the retained-raw guard
+    refuses to certify them; a line linked to a company only by a lineage symbol is not the company's in either."""
+    # the unresolved lines, keyed as the master is
+    unresolved = stamped.loc[stamped["lineage_role"].isna() | stamped["ticker"].isna()]
+    keys = pd.DataFrame(
+        {
+            "cusip": unresolved["cusip"].astype(str).str.strip().str.upper(),
+            "source_symbol": unresolved["source_symbol"].fillna("").map(normalise_ticker),
+            "date": pd.to_datetime(unresolved["date"]).dt.normalize(),
+        }
+    )
+
+    # the companies whose master rows carry the CUSIP or the symbol
+    owners = master.dropna(subset=["canonical_company"])
+    by_cusip = keys.merge(owners[["cusip", "canonical_company"]].drop_duplicates(), on="cusip")
+    named = owners.loc[owners["source_symbol"].ne(""), ["source_symbol", "canonical_company"]].drop_duplicates()
+    by_symbol = keys.loc[keys["source_symbol"].ne("")].merge(named, on="source_symbol")
+    touched = pd.concat([by_cusip, by_symbol], ignore_index=True).rename(columns={"canonical_company": "ticker"})
+    return touched[["ticker", "date"]].drop_duplicates().reset_index(drop=True)
 
 
 def empty_fails_grain() -> pd.DataFrame:
@@ -710,7 +729,8 @@ def fetch_fails_to_deliver(
     if master is None or master.empty:
         logger.warning("FTD: no universe_cusip yet (run `identity` first); nothing stamped")
         return 0
-    basis = load_fails_basis(context, master)
+    # the share basis of the run's companies only: another company's share policy never blocks this run (X96, as X77)
+    basis = load_fails_basis(context, master[master["canonical_company"].isin(tickers)])
     if full:
         _, saved = _rebuild_from_cache(context, master, tickers, cohort, basis)
     else:
@@ -754,52 +774,15 @@ def _fails_candidate_scope(
     return [scope, {**base, "ticker": None, "cusip": sorted(cusips)}, {**base, "ticker": None, "source_symbol": sorted(symbols)}, keys]
 
 
-def _proved_fails_rows(df_raw: pd.DataFrame, df_master: pd.DataFrame, targets: Sequence[object]) -> set[int]:
-    """Raw NULL owners require one dated company and no matching NULL company, with exact-symbol precedence."""
-    columns = ["cusip", "source_symbol", "trade_date"]
-    df_keys = df_raw.reindex(columns=columns).assign(_row=df_raw.index)
-    df_master = df_master.reindex(columns=["cusip", "source_symbol", "valid_from", "valid_to", "canonical_company"])
-    df_matches = df_keys.dropna(subset=["cusip"]).merge(df_master.dropna(subset=["cusip"]), on="cusip", suffixes=("", "_master"))
-    if df_matches.empty:
-        return set()
-    day = pd.to_datetime(df_matches["trade_date"], errors="coerce")
-    start = pd.to_datetime(df_matches["valid_from"], errors="coerce")
-    end = pd.to_datetime(df_matches["valid_to"], errors="coerce")
-    df_matches = df_matches.loc[day.ge(start) & (end.isna() | day.lt(end))].copy()
-    exact = df_matches["source_symbol"].notna() & df_matches["source_symbol_master"].notna()
-    exact &= df_matches["source_symbol"].eq(df_matches["source_symbol_master"])
-    exact_rows = set(df_matches.loc[exact, "_row"])
-    df_matches = df_matches.loc[exact | ~df_matches["_row"].isin(exact_rows)]
-    counts = df_matches.groupby("_row")["canonical_company"].agg(["nunique", "count", "size"])
-    target_rows = set(df_matches.loc[df_matches["canonical_company"].isin(targets), "_row"])
-    return set(counts.index[counts["nunique"].eq(1) & counts["count"].eq(counts["size"])]) & target_rows
-
-
-def _uncertain_fails_rows(df_raw: pd.DataFrame, identity: dict[Table, pd.DataFrame], targets: Sequence[object]) -> pd.DataFrame:
-    """Retain relevant unresolved raw keys without treating NULL-to-NULL symbols as evidence."""
-    pairs = []
-    for table, company, symbol in (
-        (Tables.universe_cusip, "canonical_company", "source_symbol"),
-        (Tables.universe_cik_symbol, "canonical_ticker", "symbol"),
-    ):
-        df_evidence = identity[table]
-        if company not in df_evidence or symbol not in df_evidence:
-            continue
-        df_evidence = df_evidence.loc[df_evidence[company].isin(targets)]
-        for raw_key, identity_key in [("source_symbol", symbol), *(([("cusip", "cusip")]) if "cusip" in df_evidence else [])]:
-            df_match = df_raw.dropna(subset=[raw_key]).merge(df_evidence.dropna(subset=[identity_key]), left_on=raw_key, right_on=identity_key)
-            if not df_match.empty:
-                pairs.append(df_match[[company, "date"]].rename(columns={company: "ticker"}))
-    return pd.concat(pairs, ignore_index=True).drop_duplicates() if pairs else pd.DataFrame(columns=["ticker", "date"])
-
-
 def _owned_fails_rows(
     df_raw: pd.DataFrame,
     scope: dict[str, object] | None,
     identity: dict[Table, pd.DataFrame] | None,
     df_grain: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Select the exact current FTD replacement cohort and refuse ambiguous checked absence."""
+    """Select the exact current FTD replacement cohort and refuse ambiguous checked absence: a stored unowned line the
+    master places in a target is replaced; one it could place in a target (`uncertain_dates`) refuses that target's
+    checked date, as it blocks the date in `_checked_ftd_grain`."""
     table = Tables.sec_fails_to_deliver_security
     if scope is None or identity is None or "ticker" not in scope:
         return scope_tape_rows(table, df_raw, scope)
@@ -809,8 +792,11 @@ def _owned_fails_rows(
     values = owners if isinstance(owners, list | tuple | set | frozenset | pd.Series | pd.Index | np.ndarray) else [owners]
     targets = pd.Series(list(values), dtype=object).dropna().tolist()
     df_unowned = df_scoped.loc[df_scoped["ticker"].isna()]
-    proved = _proved_fails_rows(df_unowned, identity[Tables.universe_cusip], targets)
-    df_uncertain = _uncertain_fails_rows(df_unowned.loc[~df_unowned.index.isin(proved)], identity, targets)
+    master = prepare_master(identity[Tables.universe_cusip])
+    stamped = stamp_lines(df_unowned, master)
+    owned = stamped["ticker"].isin(targets).to_numpy()
+    proved = set(df_unowned.index[owned])
+    df_uncertain = uncertain_dates(stamped.loc[~owned], master)
     if "source_checked_at" in df_grain and not df_uncertain.empty:
         df_checked = df_grain.loc[df_grain["source_checked_at"].notna(), ["ticker", "date"]].copy()
         df_checked["date"] = pd.to_datetime(df_checked["date"]).dt.normalize()

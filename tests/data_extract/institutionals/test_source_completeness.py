@@ -932,3 +932,41 @@ def test_actual_bulk_parser_run_writes_the_quarter(sqlite_store: DataStore, monk
     insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-06"))
     assert sqlite_store.row_count(Tables.insider_transactions) > 0 and sqlite_store.row_count(Tables.insider_footnotes) == 1
     print("SANITY: actual bulk parsing writes the quarter's rows and its one footnote.")
+
+
+def _guard_case(lines: list[tuple[str, str, str]]) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """Stored NULL-owner raw FTD lines `(cusip, symbol, settlement date)`, LEN's identity (with a 2025 one-day lineage symbol
+    LENPR the master does not carry) and a replacement grain that marks LEN checked on 2026-07-01."""
+    raw = pd.DataFrame(
+        [{"date": pd.Timestamp(day), "trade_date": pd.Timestamp(day) - pd.offsets.BDay(1), "cusip": cusip, "source_symbol": symbol,
+          "period": "202607a", "ticker": None} for cusip, symbol, day in lines]
+    )  # fmt: skip
+    lineage = pd.DataFrame(
+        [{"canonical_ticker": "LEN", "symbol": "LENPR", "valid_from": pd.Timestamp("2025-01-02"), "valid_to": pd.Timestamp("2025-01-03")}]
+    )
+    identity = {Tables.universe_cusip: _master(), Tables.universe_cik_symbol: lineage, Tables.symbol_tenure: pd.DataFrame()}
+    grain = pd.DataFrame({"ticker": ["LEN"], "date": [pd.Timestamp("2026-07-01")], "source_checked_at": [pd.Timestamp("2026-11-05")]})
+    return raw, identity, grain
+
+
+def test_the_ftd_guard_and_the_checked_grain_share_one_ownership_rule() -> None:
+    """X93: a stored unowned line whose only link to LEN is a lineage symbol held on other dates (JPMPRJ / VIA on the fixture)
+    is not LEN's: the checked grain never counts it, so the guard keeps it and certifies LEN's date. A line the master
+    places in LEN is replaced. A retained line that LEN's master could claim (its symbol LENB, an unknown CUSIP) still
+    refuses the checked date, and the grain built from the same line blocks that date: one rule for both."""
+    raw, identity, grain = _guard_case([("999999999", "LENPR", "2026-07-01"), ("526057104", "LEN", "2026-07-01"), ("000000001", "ZZZ", "2026-07-01")])
+    scope = {"ticker": ["LEN"], "period": ["202607a"]}
+
+    kept = ftd._owned_fails_rows(raw, scope, identity, grain)
+
+    assert kept["cusip"].tolist() == ["526057104"], kept
+    stale, identity, grain = _guard_case([("888888888", "LENB", "2026-07-01")])
+    with pytest.raises(ValueError, match="Ambiguous retained FTD raw ownership"):
+        ftd._owned_fails_rows(stale, scope, identity, grain)
+    source = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|888888888|LENB|5|LEN B|10\n").assign(
+        period="202607a"
+    )
+    checked = ftd._checked_ftd_grain(source, ftd.prepare_master(_master()), frozenset(["LEN"]), None)
+    assert checked.empty, checked
+    print("\nSANITY: X93 - the lineage-only line is retained without refusing LEN's checked date; the master line is replaced;")
+    print("  an unresolved line touching LEN's master refuses the date in the guard and blocks it in the grain (one rule).")

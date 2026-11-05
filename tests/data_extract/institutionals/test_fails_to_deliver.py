@@ -273,6 +273,27 @@ def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sql
     print("  META's CUSIP re-read and upserted (200); TT's stored row kept, the IR/TT line not read; no table replaced. Validated.")
 
 
+def test_a_scoped_ingest_resolves_the_share_basis_of_its_companies_only(sqlite_store, monkeypatch, tmp_path):
+    """X96 (X77's class on the ingest path): `zips-ingest --only ftd -t META -F` resolves the share basis over META's
+    master rows only, so another company's share policy (HBAN on the fixture) never blocks it."""
+    ctx = _context(sqlite_store, tmp_path, ("META", "TT"))
+    sqlite_store.replace(Tables.universe_cusip, _master(_REUSE_MASTER))
+    raw = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20220720|30303M102|META|200|META PLATFORMS INC|10\n"
+    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: {"202207b"})
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw)
+    seen: list[set[str]] = []
+    real = ftd.load_fails_basis
+    monkeypatch.setattr(
+        ftd, "load_fails_basis", lambda context, master: seen.append(set(master["canonical_company"].dropna())) or real(context, master)
+    )
+
+    ftd.fetch_fails_to_deliver(ctx, ["META"], full=True)
+
+    assert seen == [{"META"}], seen
+    print("\n=== SANITY CHECK: FTD -t META -F share basis (X96) ===")
+    print(f"  the basis was resolved over the master rows of {sorted(seen[0])} only; TT's policy is never read. Validated.")
+
+
 def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
     sqlite_store.replace(Tables.universe_cusip, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))

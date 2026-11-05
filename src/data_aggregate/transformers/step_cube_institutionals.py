@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -10,7 +9,7 @@ from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, PartWindow, drop_empty_feature_rows, plan_window
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
@@ -95,81 +94,15 @@ class StepCubeInstitutionals(Step):
         return index
 
     def _write_panel(self, rows: pd.DataFrame, window: PartWindow) -> None:
+        """Write the ordinary refresh tail in one transaction; a schema change rebuilds the part."""
+        self._output_keys(rows)
         part = Tables.cube_part_institutionals
-        keys = list(part.pk)
-        existing = self._store.columns(part)
-        if existing and not set(keys).issubset(existing):
-            raise ValueError("Stored institutional output is missing date/ticker keys")
-        stream = self._store.iter_load(part, columns=existing or list(rows.columns), order_by=keys)
-        try:
-            self._output_keys(rows)
-            if rows.empty:
-                raise ValueError("An empty institutional calculation cannot authorize historical replacement")
-            fields = [column for column in rows if column not in keys]
-            rows = rows.astype(dict.fromkeys(fields, "float64"))
-            canonical = drop_empty_feature_rows(rows, keys, part)
-            index = self._output_keys(canonical)
-            values = canonical[fields].to_numpy(dtype="float64")
-            seen = np.zeros(len(canonical), dtype=bool)
-            same_schema = set(existing) == set(rows.columns)
-            earliest: pd.Timestamp | None = None
-            last_date: pd.Timestamp | None = None
-            last_tickers: set[str] = set()
-            compared = 0
-            for chunk in stream:
-                if set(chunk.columns) != set(existing):
-                    raise ValueError("Stored institutional output changed schema inside its stream")
-                stored_index = self._output_keys(chunk)
-                if chunk.empty:
-                    continue
-                dates = pd.DatetimeIndex(stored_index.get_level_values("date"))
-                if not dates.is_monotonic_increasing or (last_date is not None and dates[0] < last_date):
-                    raise ValueError("Stored institutional output is not ordered by date")
-                first_tickers = set(chunk.loc[dates == last_date, "ticker"]) if last_date is not None else set()
-                if first_tickers & last_tickers:
-                    raise ValueError("Stored institutional output repeats keys across chunks")
-                last_tickers = set(chunk.loc[dates == dates[-1], "ticker"]) | (last_tickers if dates[-1] == last_date else set())
-                last_date = dates[-1]
-                positions = index.get_indexer(stored_index)
-                matched = positions >= 0
-                if seen[positions[matched]].any():
-                    raise ValueError("Stored institutional output repeats candidate keys")
-                seen[positions[matched]] = True
-                changed = ~matched
-                if same_schema:
-                    old = chunk.loc[matched, fields].to_numpy(dtype="float64")
-                    new = values[positions[matched]]
-                    changed[matched] = ~((old == new) | (np.isnan(old) & np.isnan(new))).all(axis=1)
-                    compared += len(old)
-                if changed.any():
-                    first = dates[changed].min()
-                    earliest = first if earliest is None else min(earliest, first)
-            if (~seen).any():
-                first = pd.Timestamp(canonical.loc[~seen, "date"].min())
-                earliest = first if earliest is None else min(earliest, first)
-        finally:
-            stream.close()
-        cutoff = None if window.is_full or not same_schema else window.refresh_from
-        if cutoff is not None and earliest is not None:
-            cutoff = min(cutoff, earliest)
-        tail = canonical if cutoff is None else canonical.loc[canonical["date"] >= cutoff]
-        if cutoff is not None and (pd.to_datetime(tail["date"]) < cutoff).any():
-            raise ValueError("Institutional replacement rows precede their corrected range")
+        rows = rows.astype(dict.fromkeys([column for column in rows if column not in part.pk], "float64"))
         with self._store.transaction() as store:
-            if cutoff is None:
-                count = store.replace(part, tail)
-            else:
-                if set(store.columns(part)) != set(tail.columns):
-                    raise ValueError("Institutional corrected range must retain the stored schema")
-                count = store.append_tail(part, tail, cutoff, inclusive=True)
-        self._log.info(
-            "Institutional output compared %s rows; earliest change %s; refresh %s -> %s; wrote %s rows",
-            compared,
-            earliest,
-            window.refresh_from,
-            cutoff,
-            count,
-        )
+            count = write_part(store, part, rows, window, drop_empty=True)
+            if count == COLUMNS_CHANGED:
+                count = write_part(store, part, rows, PartWindow(None, None), drop_empty=True)
+        self._log.info("Institutional output: refresh from %s; wrote %s rows", window.refresh_from, count)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")

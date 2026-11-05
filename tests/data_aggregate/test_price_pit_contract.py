@@ -237,20 +237,20 @@ def test_interrupted_nonatomic_tail_write_recovers_on_retry(sqlite_store: Any, t
     step = StepCubePrices(context, context.config)
     step.run(full=True)
     df_before = sqlite_store.load(Tables.cube_part_prices)
-    original = sqlite_store.append_tail
+    original = type(sqlite_store).append_tail
 
-    def interrupted(table: Any, frame: pd.DataFrame, cutoff: Any, **kwargs: Any) -> int:
-        original(table, frame.iloc[:0], cutoff, **kwargs)
+    def interrupted(store: Any, table: Any, frame: pd.DataFrame, cutoff: Any, **kwargs: Any) -> int:
+        original(store, table, frame.iloc[:0], cutoff, **kwargs)
         raise RuntimeError("interrupted after tail delete")
 
     with monkeypatch.context() as patch:
-        patch.setattr(sqlite_store, "append_tail", interrupted)
+        patch.setattr(type(sqlite_store), "append_tail", interrupted)
         with pytest.raises(RuntimeError, match="interrupted after tail delete"):
             step.run(full=False)
-    assert sqlite_store.row_count(Tables.cube_part_prices) < len(df_before)
+    pd.testing.assert_frame_equal(df_before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
     step.run(full=False)
     pd.testing.assert_frame_equal(df_before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
-    print("SANITY: the existing writer is non-atomic; an actual delete/insert interruption is fully repaired by a retry from unchanged sources.")
+    print("SANITY: an interruption after the tail delete rolls the incremental publication back; a retry from unchanged sources is exact.")
 
 
 @pytest.mark.parametrize("ratio", [0.0, -1.0, float("nan")])
@@ -296,7 +296,8 @@ def test_new_public_share_observation_preserves_the_earlier_prefix(sqlite_store:
         ),
     )
     step.run(full=False)
-    df_after = sqlite_store.load(Tables.cube_part_prices)
+    df_after = sqlite_store.load(Tables.cube_part_prices).sort_values(["date", "ticker"]).reset_index(drop=True)
+    df_before = df_before.sort_values(["date", "ticker"]).reset_index(drop=True)
     prior = pd.to_datetime(df_before["date"]).lt(public)
     pd.testing.assert_frame_equal(df_before.loc[prior].reset_index(drop=True), df_after.loc[prior].reset_index(drop=True), check_exact=True)
     later = df_after["ticker"].eq("AAA") & pd.to_datetime(df_after["date"]).ge(public)

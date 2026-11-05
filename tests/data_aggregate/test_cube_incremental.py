@@ -24,11 +24,14 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
+from src.data_aggregate import cli as aggregate_cli
 from src.data_aggregate.transformers import step_cube_institutionals
 from src.data_aggregate.transformers.step_cube_governance import REFRESH_TRADING_DAYS as GOVERNANCE_REFRESH
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
+from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import (
     PART_REFRESH_TRADING_DAYS,
@@ -39,7 +42,7 @@ from src.data_aggregate.utils.common.incremental import (
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.momentum.features import build_feature_panel
-from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_aggregate.utils.price.frames import ALL_FIELDS, PriceFrames
 from src.data_store.schema import (
     ALL,
     Resume,
@@ -813,3 +816,106 @@ def test_institutionals_cap_unknown_correction_clears_saved_tail(
     assert tail.isna().all() if original_known else np.isclose(tail, 0.001).all()
     assert feature in store.columns(Tables.cube_part_institutionals)
     print("SANITY: corrected known/unknown cap windows replace saved cells, preserve historical schema and match a full build.")
+
+
+# --------------------------------------------------------------------------- #
+# price part: per-ticker delete-and-rebuild (D-13)                            #
+# --------------------------------------------------------------------------- #
+PRICE_CAL = pd.bdate_range("2024-01-02", periods=40)
+
+
+def _price_rows(seed: int = 0) -> pd.DataFrame:
+    """A complete price candidate (every saved field) for three tickers."""
+    keys = pd.MultiIndex.from_product([PRICE_CAL, ["AAA", "BBB", "CCC"]], names=["date", "ticker"]).to_frame(index=False)
+    rng = np.random.default_rng(seed)
+    return keys.assign(**{field: rng.uniform(1.0, 2.0, len(keys)) for field in ALL_FIELDS})
+
+
+def _publish(
+    monkeypatch: pytest.MonkeyPatch, store: DataStore, rows: pd.DataFrame, *, full: bool = False, tickers: tuple[str, ...] = ()
+) -> set[tuple[str, bool]]:
+    """Run the price step's publication on `rows`; return the (ticker, before-window) pairs it wrote."""
+    written: set[tuple[str, bool]] = set()
+    refresh_from = PRICE_CAL[-1 - PART_REFRESH_TRADING_DAYS]
+    for name in ("insert", "append_tail", "replace"):
+        method = getattr(DataStore, name)
+
+        def spy(self: DataStore, table: Any, df: pd.DataFrame, *args: Any, _method: Any = method, **kwargs: Any) -> int:
+            if name_of(table) == Tables.cube_part_prices.name and df is not None:
+                written.update(zip(df["ticker"], pd.to_datetime(df["date"]) < refresh_from, strict=True))
+            return _method(self, table, df, *args, **kwargs)
+
+        monkeypatch.setattr(DataStore, name, spy)
+    step = cast(Any, object.__new__(StepCubePrices))
+    step._store, step._log, step._part = store, logging.getLogger("test"), PART_BY_NAME["cube_part_prices"]
+    step._write_candidate(rows, step._plan_window(full and not tickers), list(tickers))
+    monkeypatch.undo()
+    return written
+
+
+def _saved_prices(store: DataStore) -> pd.DataFrame:
+    df = cast(pd.DataFrame, store.load(Tables.cube_part_prices))
+    return df.assign(date=pd.to_datetime(df["date"])).sort_values(["date", "ticker"]).reset_index(drop=True)[list(_price_rows().columns)]
+
+
+def test_old_history_change_rebuilds_only_that_ticker(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
+    """A split edit on BBB and a peer sector_ret change on CCC dated before the refresh window rewrite BBB and CCC only."""
+    saved = _price_rows()
+    sqlite_store.replace(Tables.cube_part_prices, saved)
+    candidate = saved.copy()
+    old = candidate["date"] < PRICE_CAL[10]
+    candidate.loc[old & candidate["ticker"].eq("BBB"), ["close_pit", "security_basis"]] *= 2.0
+    candidate.loc[old & candidate["ticker"].eq("CCC"), "sector_ret"] += 1e-12
+    candidate.loc[candidate["date"] >= PRICE_CAL[-3], "close_split"] += 1.0
+    written = _publish(monkeypatch, sqlite_store, candidate)
+    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), candidate, check_exact=True)
+    assert {ticker for ticker, before in written if before} == {"BBB", "CCC"}
+    assert {ticker for ticker, _ in written} == {"AAA", "BBB", "CCC"}
+    print("\n=== SANITY CHECK: automatic per-ticker rebuild (D-13) ===")
+    print("  BBB split edit + CCC peer sector_ret change before the window -> only BBB and CCC old rows rewritten; AAA gets the tail refresh")
+    print("  CONCLUSION: the part equals the candidate (= a full build) and AAA's old rows were never deleted. Validated.")
+
+
+def test_change_inside_the_window_keeps_the_tail_refresh(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
+    saved = _price_rows()
+    sqlite_store.replace(Tables.cube_part_prices, saved)
+    candidate = saved.copy()
+    candidate.loc[candidate["date"] >= PRICE_CAL[-1 - PART_REFRESH_TRADING_DAYS], "close_pit"] *= 3.0
+    written = _publish(monkeypatch, sqlite_store, candidate)
+    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), candidate, check_exact=True)
+    assert not {ticker for ticker, before in written if before}
+    print("\n=== SANITY CHECK: in-window change ===")
+    print(f"  every ticker changed only from the refresh start -> no old row rewritten, {len(written)} tail ticker writes")
+    print("  CONCLUSION: the normal tail refresh is unchanged. Validated.")
+
+
+def test_manual_ticker_rebuild_and_full_rebuild(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
+    """`-t AAA -F` deletes and rewrites AAA only (BBB's old change waits); `-F` alone equals a full build."""
+    saved = _price_rows()
+    sqlite_store.replace(Tables.cube_part_prices, saved)
+    candidate = _price_rows(seed=1)
+    written = _publish(monkeypatch, sqlite_store, candidate, full=True, tickers=("AAA",))
+    expected = pd.concat([candidate[candidate["ticker"].eq("AAA")], saved[~saved["ticker"].eq("AAA")]]).sort_values(["date", "ticker"])
+    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), expected.reset_index(drop=True), check_exact=True)
+    assert {ticker for ticker, _ in written} == {"AAA"}
+    _publish(monkeypatch, sqlite_store, candidate, full=True)
+    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), candidate, check_exact=True)
+    print("\n=== SANITY CHECK: manual -t AAA -F, then -F ===")
+    print("  -t AAA -F: AAA equals its new full history, BBB/CCC rows are the saved ones untouched")
+    print("  -F alone: the part equals the full candidate")
+    print("  CONCLUSION: manual per-ticker and full rebuilds publish exactly what they should. Validated.")
+
+
+def test_build_prices_cli_ticker_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    fake = type("FakeStep", (), {"run": lambda self, **kwargs: calls.append(kwargs)})
+    monkeypatch.setattr(aggregate_cli, "_step", lambda cls, config_path: fake())
+    runner = CliRunner()
+    refused = runner.invoke(aggregate_cli.cli, ["build-prices", "-t", "AAA"])
+    assert refused.exit_code == 2 and not calls
+    assert runner.invoke(aggregate_cli.cli, ["build-prices", "-t", "AAA,BBB", "-F"]).exit_code == 0
+    assert runner.invoke(aggregate_cli.cli, ["build-prices", "-F"]).exit_code == 0
+    assert calls == [{"full": True, "tickers": ["AAA", "BBB"]}, {"full": True, "tickers": []}]
+    print("\n=== SANITY CHECK: build-prices -t ===")
+    print(f"  -t without -F refused (exit {refused.exit_code}); -t AAA,BBB -F and -F reach run as {calls}")
+    print("  CONCLUSION: the CLI exposes exactly the three D-13 forms. Validated.")

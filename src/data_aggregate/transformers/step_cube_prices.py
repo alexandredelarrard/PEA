@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, PartWindow, changed_tickers, plan_window
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.price.checks import check_candidate, describe, earliest_price_change
+from src.data_aggregate.utils.price.checks import check_candidate, describe
 from src.data_aggregate.utils.price.clean import apply_null_ret, clean_prices
 from src.data_aggregate.utils.price.features import as_traded_volume, pit_fields, resolve_price_basis
 from src.data_aggregate.utils.price.frames import ALL_FIELDS, frames_to_long, universe_columns
@@ -28,9 +30,10 @@ class StepCubePrices(Step):
         self._store = context.store
         self._bugfix = load_bugfix(context.config_dir)
 
-    def run(self, full: bool = False) -> None:
-        # Load the publication plan before payloads, then read full required evidence once.
-        window, existing = self._plan_window(full)
+    def run(self, full: bool = False, tickers: Sequence[str] = ()) -> None:
+        # A ticker list rebuilds those tickers from scratch; `full` alone rebuilds the whole part.
+        rebuild = self._universe.subset(tickers) if tickers else []
+        window = self._plan_window(full and not rebuild)
         inputs = load_price_inputs(self._context, self._universe.tickers, self._bugfix)
 
         # Clean quote/total repairs and volume units on the authoritative calendar.
@@ -59,10 +62,10 @@ class StepCubePrices(Step):
         check_candidate(df_rows)
         self._log.info("%s; %d null-return repairs; %d candidate rows", describe(df_factor), applied, len(df_rows))
 
-        # Publish one coherent part, including every changed historical prefix.
-        self._write_candidate(df_rows, window, existing)
+        # Publish: whole part, or whole selected/changed tickers plus the others' tail.
+        self._write_candidate(df_rows, window, rebuild)
 
-    def _plan_window(self, full: bool) -> tuple[PartWindow, list[str]]:
+    def _plan_window(self, full: bool) -> PartWindow:
         """Promote schema changes before payload reads; retain the ordinary refresh cutoff."""
         existing = self._store.columns(Tables.cube_part_prices)
         expected = {*Tables.cube_part_prices.pk, *ALL_FIELDS}
@@ -81,16 +84,19 @@ class StepCubePrices(Step):
             "Price publication: %s; full historical evidence is required for basis invalidation",
             "full/schema promotion" if window.is_full else f"refresh from {window.refresh_from}",
         )
-        return window, existing
+        return window
 
-    def _write_candidate(self, df_rows: pd.DataFrame, window: PartWindow, existing: list[str]) -> None:
-        """Compare saved history once, then use the existing non-atomic part writer."""
-        earliest = None if window.is_full else earliest_price_change(self._store, df_rows, existing)
-        cutoff = window.refresh_from
-        if earliest is not None:
-            cutoff = earliest if cutoff is None else min(cutoff, earliest)
-        replacement = PartWindow(window.last, None, cutoff)
-        self._log.info("Price history: earliest change %s; refresh %s -> %s", earliest, window.refresh_from, cutoff)
-        count = write_part(self._store, Tables.cube_part_prices, df_rows, replacement, existing_columns=existing)
-        if count == COLUMNS_CHANGED:
-            raise ValueError("Price schema changed during publication; rebuild without concurrent writers")
+    def _write_candidate(self, df_rows: pd.DataFrame, window: PartWindow, tickers: list[str]) -> None:
+        """Replace a full build; else delete and rewrite whole tickers (given, or with changed old history) and refresh the others' tail."""
+        part = Tables.cube_part_prices
+        if window.is_full:
+            self._log.info("Price part replaced: %d rows", self._store.replace(part, df_rows))
+            return
+        cutoff = None if tickers else window.refresh_from
+        rebuild = tickers or changed_tickers(self._store, part, df_rows, window.refresh_from)
+        rebuilt = df_rows["ticker"].isin(rebuild)
+        with self._store.transaction() as store:
+            store.delete(part, where={"ticker": rebuild})
+            tail = store.append_tail(part, df_rows.loc[~rebuilt & (df_rows["date"] >= cutoff)], cutoff, inclusive=True) if cutoff is not None else 0
+            count = store.insert(part, df_rows.loc[rebuilt])
+        self._log.info("Price part: rebuilt %d tickers %s (%d rows); tail from %s: %d rows", len(rebuild), rebuild[:20], count, cutoff, tail)

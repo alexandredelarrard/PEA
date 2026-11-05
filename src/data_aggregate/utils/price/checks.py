@@ -11,7 +11,6 @@ import pandas as pd
 from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL
 from src.data_aggregate.utils.price.frames import ALL_FIELDS
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
 from src.utils.price.adjustments import SPLIT_MATCH_DAYS, ShareBasis
 from src.utils.price.repairs import BUGFIX_WEDGE_TOL, LEVEL_SNAP_TOL, _total_seam_step, observed_wedge
 
@@ -208,44 +207,3 @@ def check_candidate(df_rows: pd.DataFrame) -> None:
         raise ValueError("Invalid market cap without a supported quote/count pair")
     for field in ("close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis", "volume_pit"):
         logger.info("Price candidate %s coverage: %d / %d observed security sessions", field, int(df_rows[field].notna().sum()), len(df_rows))
-
-
-def earliest_price_change(store: DataStore, df_rows: pd.DataFrame, existing_columns: list[str]) -> pd.Timestamp | None:
-    """Stream the saved part once and find the first key, null or exact value difference."""
-    keys = list(Tables.cube_part_prices.pk)
-    stream = store.iter_load(Tables.cube_part_prices, columns=existing_columns, order_by=keys)
-    try:
-        if set(existing_columns) != set(df_rows):
-            raise ValueError("Historical price comparison requires identical schemas")
-        index = _price_keys(df_rows)
-        fields = [field for field in df_rows if field not in keys]
-        values = df_rows[fields].to_numpy(dtype="float64")
-        seen = np.zeros(len(df_rows), dtype=bool)
-        earliest: pd.Timestamp | None = None
-        last_key: tuple | None = None
-        for df_chunk in stream:
-            stored_index = _price_keys(df_chunk)
-            if df_chunk.empty:
-                continue
-            if last_key is not None and stored_index[0] <= last_key:
-                raise ValueError("Invalid repeated or unordered saved price keys across chunks")
-            last_key = stored_index[-1]
-            dates = pd.DatetimeIndex(stored_index.get_level_values("date"))
-            positions = index.get_indexer(stored_index)
-            matched = positions >= 0
-            if seen[positions[matched]].any():
-                raise ValueError("Invalid repeated saved price keys")
-            seen[positions[matched]] = True
-            changed = ~matched
-            old = df_chunk.loc[matched, fields].to_numpy(dtype="float64")
-            new = values[positions[matched]]
-            changed[matched] = ~((old == new) | (np.isnan(old) & np.isnan(new))).all(axis=1)
-            if changed.any():
-                first = dates[changed].min()
-                earliest = first if earliest is None else min(earliest, first)
-        if (~seen).any():
-            first = pd.Timestamp(df_rows.loc[~seen, "date"].min())
-            earliest = first if earliest is None else min(earliest, first)
-        return earliest
-    finally:
-        stream.close()

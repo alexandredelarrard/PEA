@@ -331,7 +331,7 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     else:
         monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
     expected_saved = expected.copy()
-    if not full and cls is StepCubeSecThirteen:
+    if not full:
         expected_saved.loc[0, "f_test"] = -2.0
     method = "replace" if full else "append_tail"
     save = Mock(side_effect=getattr(type(sqlite_store), method))
@@ -346,13 +346,7 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     assert len(initial.loc[initial["date"] >= cutoff]) == 8
     other = Tables.cube_part_sec_thirteen if table == Tables.cube_part_institutionals else Tables.cube_part_institutionals
     assert not sqlite_store.exists(other)
-    mode = (
-        "repairs older differences atomically"
-        if cls is StepCubeInstitutionals
-        else "replaces full history"
-        if full
-        else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
-    )
+    mode = "replaces full history" if full else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
     print(f"SANITY: {table.name} {mode} with one save per run and an idempotent repeat.")
 
 

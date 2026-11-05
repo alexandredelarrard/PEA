@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import before_end
+from src.data_extract.utils.common.resume import before_end, planner_bounds
 from src.data_store.schema import Resume, Tables
 from src.utils.string import run_date
 
@@ -124,7 +124,7 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     """
     resume = cast(Resume, Tables.earnings_surprises.resume)
     refetch_window_days = resume.overlap_days
-    bounds, symbols = context.universe.bounds, context.universe.trading_symbols
+    bounds, symbols = planner_bounds(context), context.universe.trading_symbols
     last_reported, next_expected = _resume_dates(context)
     ended = sorted(t for t in tickers if bounds.get(t, (None, None))[1] is not None and t in next_expected)
     if ended:

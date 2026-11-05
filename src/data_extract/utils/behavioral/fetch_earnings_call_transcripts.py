@@ -35,7 +35,7 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
 )
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, Identity, load_identity
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import before_end
+from src.data_extract.utils.common.resume import before_end, planner_bounds
 from src.data_store.schema import Tables
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
@@ -519,13 +519,14 @@ def extract_earnings_calls(
 
     `cfg` is the `earnings_calls` config block (`read_workers`). `tickers` narrows the scope
     (default: the analysis universe). Every run checks complete scoped metadata and fetches
-    missing/reissued payloads dated on or before the ticker's `ended_on` (`Universe.bounds`); stored calls are never
+    missing/reissued payloads dated on or before the ticker's `ended_on` plus the U-65 grace (`planner_bounds`); stored calls are never
     removed for falling after it. `full` additionally reconciles source-absent calls, retaining
     tickers that vanished entirely. `source` replaces the HuggingFace file (tests)."""
     log = context.log
     started = time.monotonic()
     scope = set(context.universe.tickers if tickers is None else tickers)
     identity = load_identity(context)
+    bounds = planner_bounds(context)
     symbols = identity.universe_symbols(scope)
     src = source if source is not None else resolve_hf_source()
 
@@ -560,7 +561,7 @@ def extract_earnings_calls(
             )
             raise
         df_new, df_reissued = diff_calls(df_calls, df_stored)
-        df_new, df_reissued = (df[before_end(df["ticker"], df["as_of"], context.universe.bounds)] for df in (df_new, df_reissued))
+        df_new, df_reissued = (df[before_end(df["ticker"], df["as_of"], bounds)] for df in (df_new, df_reissued))
         df_gone, vanished = stale_calls(df_calls, df_stored if full else None)
         if vanished:
             log.warning("Earnings calls: %d stored ticker(s) have no call left in the source, kept as stored: %s", len(vanished), vanished[:20])

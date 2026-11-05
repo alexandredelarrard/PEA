@@ -18,7 +18,16 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
-from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, before_end, document_floor, stored_accessions
+from src.data_extract.utils.common.resume import (
+    DONE_TABLE,
+    KEY_ESTABLISHED,
+    KEY_NEW,
+    KEY_ROWLESS,
+    before_end,
+    document_floor,
+    planner_bounds,
+    stored_accessions,
+)
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
 
@@ -128,7 +137,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = context.universe.new_since(overlap, as_of) if overlap else set()
-    bounds = context.universe.bounds
+    bounds = planner_bounds(context)
     units: dict[str, pd.DataFrame] = {}
     counts: dict[str, int] = {}
     for ticker in roster:

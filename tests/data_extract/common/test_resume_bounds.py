@@ -2,7 +2,8 @@
 
 `Universe.bounds` = `(first_price_date, ended_on)`. On the phase-0 fixture store (read-only) with the identity columns
 the phase-5 publish wrote: WBD ended on 2026-10-05 (prices stored to 2026-10-06, its completion 8-K filed 2026-10-06),
-AAPL open from 1995-10-09. Each planner yields nothing after WBD's end and the same plan for AAPL as with no bounds:
+AAPL open from 1995-10-09. Each planner yields nothing after WBD's end plus the U-65 grace of 10 trading sessions
+(2026-10-19 on the fixture's price calendar) and the same plan for AAPL as with no bounds:
 the series planner (`prices`, `fundamentals_sharadar`), the EDGAR document planner, the DEF 14A (LLM) listing, the
 earnings-call planner and the earnings-surprise plan.
 """
@@ -20,7 +21,7 @@ from sqlalchemy import create_engine
 
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.common.resume import series_windows
+from src.data_extract.utils.common.resume import END_GRACE_SESSIONS, planner_bounds, series_windows
 from src.data_extract.utils.edgar_extract import document_resume
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
@@ -34,6 +35,8 @@ ROOT = Path(__file__).resolve().parents[3]
 RUN = Path("reports") / "validate" / "2026-11-03-identity-security-master" / "_cache"
 AS_OF = pd.Timestamp("2026-11-03")
 WBD_END = pd.Timestamp("2026-10-05")
+#: U-65: the 10th session after WBD's end on the fixture's price calendar (Columbus Day 2026-10-12 is a session).
+WBD_GRACE_END = pd.Timestamp("2026-10-19")
 AAPL_FIRST = pd.Timestamp("1995-10-09")
 SAMPLE = ["WBD", "AAPL"]
 #: CHTR lists 8-Ks of its pre-2009 registrant before its current listing's first price (2010-01-05): kept.
@@ -89,11 +92,11 @@ def test_series_planner_stops_at_the_end_and_starts_at_the_first_price(fixture: 
     full = series_windows(bounded, table, SAMPLE, AS_OF, until=until, years_history=40, full=True, calendar=None)
 
     wbd_last = work.last["WBD"]
-    assert all(end <= WBD_END for _, end in work.windows["WBD"]), work.windows["WBD"]
+    assert all(end <= WBD_GRACE_END for _, end in work.windows["WBD"]), work.windows["WBD"]
     if pd.Timestamp(wbd_last) >= WBD_END:
         assert work.windows["WBD"] == []
     else:
-        assert work.windows["WBD"][-1][1] == WBD_END and open_work.windows["WBD"][-1][1] == until
+        assert work.windows["WBD"][-1][1] == WBD_GRACE_END and open_work.windows["WBD"][-1][1] == until
     assert work.windows["AAPL"] == open_work.windows["AAPL"]
     assert full.windows["AAPL"][0][0] == AAPL_FIRST and open_work.windows["AAPL"] != []
 
@@ -102,7 +105,7 @@ def test_series_planner_stops_at_the_end_and_starts_at_the_first_price(fixture: 
         f"  WBD last stored {pd.Timestamp(wbd_last).date()}, ended 2026-10-05: windows {work.windows['WBD']} (no bounds: {open_work.windows['WBD']})"
     )
     print(f"  AAPL windows unchanged {work.windows['AAPL']}; a full pull starts at its first price {full.windows['AAPL'][0][0].date()} (floor 1986)")
-    print("  Validated: nothing after WBD's end, nothing before AAPL's first price, AAPL's resume plan unchanged.")
+    print("  Validated: nothing after WBD's end + grace, none once its history reaches the end, nothing before AAPL's first price.")
 
 
 def test_edgar_document_planner_drops_filings_after_the_end(fixture: tuple[DataStore, pd.DataFrame], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,17 +125,19 @@ def test_edgar_document_planner_drops_filings_after_the_end(fixture: tuple[DataS
     work = document_worklist(bounded, Tables.sec_8k, request)
     open_work = document_worklist(control, Tables.sec_8k, request)
 
-    assert work.units["WBD"]["filed"].max() <= WBD_END < open_work.units["WBD"]["filed"].max()
+    assert WBD_END < work.units["WBD"]["filed"].max() <= WBD_GRACE_END, work.units["WBD"]["filed"].max()
+    assert work.units["WBD"]["filed"].eq(pd.Timestamp("2026-10-06")).any(), "U-65: the completion 8-K (filed the day after the end) is listed"
     assert work.units["AAPL"].equals(open_work.units["AAPL"]) and work.units[PREDECESSOR].equals(open_work.units[PREDECESSOR])
     first_chtr = bounded.universe.bounds[PREDECESSOR][0]
     early = int((work.units[PREDECESSOR]["filed"] < first_chtr).sum())
     assert early > 0
     dropped = sorted(set(open_work.units["WBD"]["accession"]) - set(work.units["WBD"]["accession"]))
     print("\n=== SANITY CHECK: EDGAR document planner bounds (sec_8k index rows of the fixture) ===")
-    print(f"  WBD: {len(open_work.units['WBD'])} listed without bounds, {len(work.units['WBD'])} with; dropped {dropped} (filed after 2026-10-05)")
+    print(f"  WBD: {len(open_work.units['WBD'])} listed without bounds, {len(work.units['WBD'])} with; dropped {dropped} (filed after 2026-10-19)")
+    print("  WBD's completion 8-K filed 2026-10-06 (the day after its end) is listed (U-65 grace)")
     print(f"  AAPL: {len(work.units['AAPL'])} units, identical with and without bounds")
     print(f"  CHTR: {early} filings before its listing's first price {first_chtr.date()} kept (predecessor registrant)")
-    print("  Validated: no WBD filing after its end; AAPL and CHTR's predecessor history unchanged.")
+    print("  Validated: no WBD filing after its end + grace; AAPL and CHTR's predecessor history unchanged.")
 
 
 def test_def14a_listing_keeps_only_proxies_inside_the_bounds(fixture: tuple[DataStore, pd.DataFrame], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,10 +164,12 @@ def test_def14a_listing_keeps_only_proxies_inside_the_bounds(fixture: tuple[Data
     }
     open_aapl = def14a_fetch._listed_proxies(control, "AAPL", FilingScope.roster_only("AAPL", ""), "", 40, pd.Timestamp("1990-01-01"))
 
-    assert "late-wbd" not in set(kept["WBD"]["accession_number"]) and pd.to_datetime(kept["WBD"]["filing_date"]).max() <= WBD_END
+    assert "late-wbd" not in set(kept["WBD"]["accession_number"]) and pd.to_datetime(kept["WBD"]["filing_date"]).max() <= WBD_GRACE_END
     assert kept["AAPL"].equals(open_aapl) and "late-aapl" in set(kept["AAPL"]["accession_number"])
     print("\n=== SANITY CHECK: DEF 14A (LLM) listing bounds ===")
-    print(f"  WBD: {len(kept['WBD'])} of {int((listing['ticker'] == 'WBD').sum())} listed proxies kept; the 2026-10-20 proxy is past its end")
+    print(
+        f"  WBD: {len(kept['WBD'])} of {int((listing['ticker'] == 'WBD').sum())} listed proxies kept; the 2026-10-20 proxy is past its end + grace (2026-10-19)"
+    )
     print(f"  AAPL: {len(kept['AAPL'])} kept, identical with and without bounds")
     print("  Validated.")
 
@@ -186,7 +193,7 @@ def test_earnings_surprises_skip_an_ended_ticker_and_drop_rows_after_its_end(
     saved = sqlite_store.load(Tables.earnings_surprises)
     wbd = pd.to_datetime(saved.loc[saved["ticker"] == "WBD", "earnings_date"])
     wbd_source = pd.to_datetime(stored.loc[stored["ticker"] == "WBD", "earnings_date"])
-    assert wbd.max() <= WBD_END < wbd_source.max()
+    assert wbd.max() <= WBD_GRACE_END < wbd_source.max()
 
     # second run: WBD has stored rows and has ended -> never pulled again
     pulls.clear()
@@ -210,3 +217,18 @@ def test_earnings_call_planner_drops_calls_after_the_end(tmp_path: Path, sqlite_
         f"  {summary.calls_new} new call(s) written: {sorted(map(tuple, calls.to_numpy()))}; AAA's 2026Q1 call (2026-04-21) is after its end 2026-01-01"
     )
     print("  Validated.")
+
+
+def test_the_planner_end_is_the_tenth_session_after_the_end(fixture: tuple[DataStore, pd.DataFrame]) -> None:
+    """U-65: `planner_bounds` moves each `ended_on` 10 sessions later on the `prices` calendar (fixture: 2026-10-05 ->
+    2026-10-19); an open key and the first price date are unchanged; with no stored calendar, 10 weekdays."""
+    bounded, _ = _contexts(fixture)
+    empty = types.SimpleNamespace(store=types.SimpleNamespace(distinct=lambda *args, **kwargs: []), universe=bounded.universe)
+
+    bounds, fallback = planner_bounds(bounded), planner_bounds(empty)
+
+    assert END_GRACE_SESSIONS == 10
+    assert bounds["WBD"][1] == WBD_GRACE_END and bounds["WBD"][0] == bounded.universe.bounds["WBD"][0], bounds["WBD"]
+    assert bounds["AAPL"] == (AAPL_FIRST, None) and fallback["WBD"][1] == pd.Timestamp("2026-10-19"), fallback["WBD"]
+    print("\n=== SANITY CHECK: planner end with grace (U-65) ===")
+    print(f"  WBD ended {WBD_END.date()} -> planners stop at {bounds['WBD'][1].date()} (10th session); AAPL open; no calendar -> 10 weekdays")

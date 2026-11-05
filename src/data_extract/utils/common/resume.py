@@ -6,8 +6,8 @@
 yet reach the floor, or its own first date in an optional `listing` table when later (a new key
 whose full pull is stored resumes like any other); the table-wide frontier minus
 the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
-key's stored span. Every window is clamped to the key's identity bounds (`Universe.bounds`:
-`[first_price_date, ended_on]`; a ticker-keyed series has no row before its listing's first price); an ended key whose
+key's stored span. Every window is clamped to the key's planner bounds (`planner_bounds`: `[first_price_date, ended_on]`
+with the U-65 grace after the end; a ticker-keyed series has no row before its listing's first price); an ended key whose
 stored last date reaches `ended_on` gets none.
 
 `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
@@ -57,6 +57,30 @@ def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timest
 
 #: `{key: (first_price_date, ended_on)}`, None where open (`Universe.bounds`).
 Bounds = Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]
+#: U-65: every planner keeps fetching for this many trading sessions after a company's `ended_on` (its completion 8-K,
+#: its last calls and surprises are dated just after the last trade).
+END_GRACE_SESSIONS = 10
+
+
+def planner_bounds(context: Context) -> Bounds:
+    """`Universe.bounds` with each `ended_on` moved `END_GRACE_SESSIONS` sessions later on the `prices` calendar (U-65);
+    weekdays where the calendar does not reach that far yet. Open keys and first price dates are unchanged. Built once per
+    context and universe (a per-ticker planner calls it for every ticker)."""
+    cached = getattr(context, "_planner_bounds", None)
+    if cached is not None and cached[0] is context.universe:
+        return cached[1]
+    bounds = context.universe.bounds
+    if any(end is not None for _, end in bounds.values()):
+        calendar = trading_calendar(context)
+        bounds = {key: (first, None if end is None else _grace_end(calendar, end)) for key, (first, end) in bounds.items()}
+    context._planner_bounds = (context.universe, bounds)
+    return bounds
+
+
+def _grace_end(calendar: pd.DatetimeIndex, end: pd.Timestamp) -> pd.Timestamp:
+    """The `END_GRACE_SESSIONS`-th session after `end` in `calendar`, else that many weekdays after it."""
+    position = int(calendar.searchsorted(end, side="right")) + END_GRACE_SESSIONS - 1
+    return calendar[position] if position < len(calendar) else end + pd.offsets.BDay(END_GRACE_SESSIONS)
 
 
 def bounded_span(bounds: Bounds, key: str, since: pd.Timestamp, until: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp] | None:
@@ -244,9 +268,9 @@ def series_windows(
             windows[str(key)] = _union_spans(windows[str(key)] + _hole_spans(cast(pd.DatetimeIndex, calendar), group[date_col], *holed[str(key)]))
     last = {key: edges[1] for key, edges in stats.items()}
 
-    # clamp every window to the key's identity bounds; an ended key whose history reaches its end gets none
-    bounds = context.universe.bounds
-    done = set(ended_keys(bounds, {key: day for key, day in last.items() if key in windows}))
+    # clamp every window to the key's planner bounds (end + grace); an ended key whose history reaches its end gets none
+    bounds = planner_bounds(context)
+    done = set(ended_keys(context.universe.bounds, {key: day for key, day in last.items() if key in windows}))
     windows = {key: [] if key in done else [b for span in spans if (b := bounded_span(bounds, key, *span))] for key, spans in windows.items()}
     if done:
         logger.info("%s: %d ended key(s) already stored up to their end date, no window: %s", table.name, len(done), ", ".join(sorted(done)))

@@ -14,7 +14,7 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.registrant import header_subject_ciks
-from src.data_extract.utils.common.resume import before_end, document_floor
+from src.data_extract.utils.common.resume import before_end, document_floor, planner_bounds
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
@@ -207,7 +207,7 @@ def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExt
 
 def _listed_proxies(context: Context, ticker: str, scope: FilingScope, company: str, years: int, floor: pd.Timestamp) -> pd.DataFrame | None:
     """Preserve source-failure handling and registrant guards over the full rolling window, inside the ticker's
-    end date (`Universe.bounds`: filed on or before `ended_on`)."""
+    end date (`planner_bounds`: filed on or before `ended_on` plus the U-65 grace)."""
     try:
         filings = _list_scope_windows(context, scope, company, years, floor)
     except (NameError, TypeError, KeyError, AttributeError, AssertionError):
@@ -216,7 +216,7 @@ def _listed_proxies(context: Context, ticker: str, scope: FilingScope, company: 
         context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, exc)
         return None
     if not filings.empty:
-        filings = filings[before_end(pd.Series(ticker, index=filings.index), filings["filing_date"], context.universe.bounds)]
+        filings = filings[before_end(pd.Series(ticker, index=filings.index), filings["filing_date"], planner_bounds(context))]
     return _accepted_filings(context, ticker, filings, accepted_subjects(scope))
 
 

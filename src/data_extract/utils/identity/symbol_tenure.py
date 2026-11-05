@@ -542,7 +542,7 @@ def changed_tenure_symbols(existing: pd.DataFrame, derived: pd.DataFrame) -> lis
     for frame in (existing, derived):
         normal = frame[columns].assign(symbol=frame["symbol"].astype(str).str.strip().str.upper())
         normal = normal.assign(**{column: pd.to_datetime(normal[column], errors="coerce").astype("string") for column in ("valid_from", "valid_to")})
-        rows = normal[columns[1:]].astype(str).apply(tuple, axis=1) if not normal.empty else pd.Series(dtype=object)
+        rows = normal[columns[1:]].astype("string").fillna("").apply(tuple, axis=1) if not normal.empty else pd.Series(dtype=object)
         signatures.append({str(symbol): tuple(sorted(group)) for symbol, group in rows.groupby(normal["symbol"], sort=False)})
 
     # the symbols whose signature differs

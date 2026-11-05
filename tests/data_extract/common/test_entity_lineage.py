@@ -42,7 +42,7 @@ from src.data_extract.utils.identity.cik_history import (
 from src.data_extract.utils.identity.symbol_history import ManualTenureEntityError, validate_manual_tenure_entities
 from src.data_extract.utils.identity.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
-from src.utils.identity_flags import KIND_ORDER, cik_activity, identity_flags
+from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, cik_activity, identity_flags
 from tests.canonical_schema import create_canonical
 from tests.support.lineage_build import cik_history_of, derive_lineage
 from tests.support.universe import as_roster, seed_universe, universe_of
@@ -94,7 +94,7 @@ def _symbol_step(context: Any, history: Any, symbols: Any = None) -> Any:
     """`StepExtractIdentity` over a stub context with this run's CIK history (and symbol history) preset."""
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, getattr(context, "config_dir", CONFIG_DIR), logging.getLogger("test.symbol_history")
-    step._cik_history, step._symbols = history, symbols
+    step._cik_history, step._symbols, step._cusips, step._lifecycle = history, symbols, None, None
     return step
 
 
@@ -525,7 +525,8 @@ def test_scope_changed_at_moves_only_for_tickers_whose_scope_changed(tmp_path):
 
 
 def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path, monkeypatch, sqlite_store, caplog):
-    """End to end on SQLite: `run_symbol_history` writes the CIK history plus the symbol rows; a second run is a no-op."""
+    """End to end on SQLite: `run_symbol_history` computes, `run_publish` writes the CIK history plus the symbol rows; a
+    second run is a no-op."""
     create_canonical(
         sqlite_store.engine,
         [
@@ -550,13 +551,18 @@ def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path,
     caplog.set_level(logging.INFO)
 
     history = cik_history_of(tenure, {"ABC": "0000000200"}, _owner_pairs({}), context.config_dir, dei=dei)
-    written = _symbol_step(context, history).run_symbol_history().rows
+    step = _symbol_step(context, history)
+    written = step.run_symbol_history().rows
+    assert sqlite_store.load(Tables.universe_cik_symbol, optional=True) is None, "the symbol stage computes only"
+    step.run_publish()
     stored = sqlite_store.load(Tables.universe_cik_symbol, project=True)
     assert len(stored) == len(written) and set(stored["oracle"]) >= {"symbol_handoff"}
-    _symbol_step(context, history).run_symbol_history()
+    again = _symbol_step(context, history)
+    again.run_symbol_history()
+    assert again.run_publish() == 0
     assert f"universe_cik_symbol: unchanged ({len(written)} row(s)); replace skipped" in caplog.text
     print("\n=== SANITY CHECK: store round trip ===")
-    print(f"  {len(written)} rows written to SQLite; the second run skipped the replace")
+    print(f"  the symbol stage wrote nothing; run_publish wrote {len(written)} rows to SQLite; the second publish wrote 0 (replace skipped)")
 
 
 # --------------------------------------------------------------------------- #
@@ -583,28 +589,26 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
         def load(self, table, **kwargs):
             return {Tables.universe_cik_symbol: old}.get(table)
 
-    replaced: list[pd.DataFrame] = []
     monkeypatch.setattr(identity_module, "symbol_evidence", lambda *args, **kwargs: None)
     monkeypatch.setattr(identity_module, "symbol_holders", lambda *args, **kwargs: None)
     monkeypatch.setattr(identity_module, "symbol_rows", lambda *args, **kwargs: _empty_build(new))
     monkeypatch.setattr(identity_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
     monkeypatch.setattr(identity_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
-    monkeypatch.setattr(identity_module, "save_identity", lambda store, table, rows: replaced.append(rows) or len(rows))
     context: Any = SimpleNamespace(
         store=Store(), log=logging.getLogger("test.universe_cik_symbol"), universe=universe_of(["AAA"], rows={"AAA": {"cik": "0000000001"}})
     )
     caplog.set_level(logging.INFO, logger="test.universe_cik_symbol")
 
-    _symbol_step(context, _history_of(tenure)).run_symbol_history()
+    build = _symbol_step(context, _history_of(tenure)).run_symbol_history()
     assert "1 changed CIK assignment(s): 0000000001" in caplog.text
     assert "affected current ticker(s): AAA" in caplog.text
-    assert len(replaced) == 1 and replaced[0].equals(new)
+    assert build.rows.equals(new)
     print("\n=== SANITY CHECK: entity-lineage refresh visibility ===")
     print("  changed CIK 0000000001 and affected current ticker AAA are named")
 
 
-def test_the_build_logs_the_manual_decision_block(caplog):
-    """P15: a sequential uncurated pair and a grey-band backlog item reach one WARNING block (from `run_publish` until 4d)."""
+def test_the_build_logs_the_manual_decision_block(caplog, monkeypatch):
+    """P15: a sequential uncurated pair and a grey-band backlog item reach one WARNING block (`run_publish`)."""
     columns = ["company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle"]
     rows = pd.DataFrame(
         [
@@ -626,8 +630,13 @@ def test_the_build_logs_the_manual_decision_block(caplog):
         store=Store(), log=logging.getLogger("test.universe_cik_symbol.flags"), universe=universe_of(["AAA"], rows={"AAA": {"cik": "0000000002"}})
     )
     caplog.set_level(logging.INFO, logger="test.universe_cik_symbol.flags")
+    monkeypatch.setattr(identity_module, "save_unless_unchanged", lambda *args: 0)
+    monkeypatch.setattr(identity_module, "update_identity_columns", lambda *args: 0)
+    step = _symbol_step(context, _history_of(tenure), _empty_build(rows, backlog))
+    step._cusips = SimpleNamespace(rows=pd.DataFrame(columns=["canonical_company"]), items=pd.DataFrame(columns=list(FLAG_COLUMNS)))
+    step._lifecycle = SimpleNamespace(rows=pd.DataFrame(columns=["ticker"]), items=pd.DataFrame(columns=list(FLAG_COLUMNS)))
 
-    _symbol_step(context, _history_of(tenure), _empty_build(rows, backlog)).run_publish()
+    step.run_publish()
     blocks = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "IDENTITY ITEMS NEEDING A MANUAL DECISION" in r.getMessage()]
     assert len(blocks) == 1 and "missing_cutover AAA" in blocks[0] and "grey_band AAA" in blocks[0], blocks
     print("\n=== SANITY CHECK: build flag block ===")

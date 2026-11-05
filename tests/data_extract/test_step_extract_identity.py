@@ -15,6 +15,7 @@ from click.testing import CliRunner
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_identity as module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
@@ -83,6 +84,7 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
         return self._symbols
 
     monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbols)
+    monkeypatch.setattr(StepExtractIdentity, "run_lifecycle", lambda self: order.append("lifecycle"))
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
     monkeypatch.setattr(StepExtractIdentity, "run_cusip_history", lambda self: mark("cusips", pd.DataFrame())())
     monkeypatch.setattr(module, "load_identity", mark("refresh", object()))
@@ -111,7 +113,21 @@ def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch
 
     StepExtractIdentity(_context(), _config()).run()  # type: ignore[arg-type]
 
-    expected = ["dei_periods", "dei", "ftd", "scan", "tenure", "anchor", "cik_history", "symbols", "cusips", "publish", "refresh", "propagate"]
+    expected = [
+        "dei_periods",
+        "dei",
+        "ftd",
+        "scan",
+        "tenure",
+        "anchor",
+        "cik_history",
+        "symbols",
+        "cusips",
+        "lifecycle",
+        "publish",
+        "refresh",
+        "propagate",
+    ]
     assert order == expected, order
     assert order.count("scan") == 1, "the tenure and the CIK history share one Form 3/4/5 scan"
     print("\n=== SANITY CHECK: StepExtractIdentity.run operations ===")
@@ -161,7 +177,8 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
 
 
 def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """D-15: `identity` (no lineage: the FTD capture is a no-op) -> `identity --only capture-evidence -F` -> `--only cusip-history`."""
+    """D-15: `identity` (no lineage: the FTD capture is a no-op) -> `identity --only capture-evidence -F` -> `--only publish`
+    (`--only cusip-history` alone computes from the stored lineage and saves nothing)."""
     tables = [
         Tables.universe_cik_symbol,
         Tables.universe_cusip,
@@ -181,15 +198,16 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(module, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
     monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: None)
-    monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", object()))
-    monkeypatch.setattr(
-        StepExtractIdentity,
-        "run_symbol_history",
-        lambda self: (
-            sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage()),
-            setattr(self, "_symbols", SimpleNamespace(rows=_scope_lineage())),
-        ),
-    )
+    activity = SimpleNamespace(activity=pd.DataFrame(columns=["cik", "source", "first", "last"]))
+    monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", activity) or activity)
+
+    def symbol_history(self: StepExtractIdentity) -> SimpleNamespace:
+        sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
+        self._symbols = SimpleNamespace(rows=_scope_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)))  # type: ignore[assignment]
+        return self._symbols  # type: ignore[return-value]
+
+    monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbol_history)
+    publish = StepExtractIdentity.run_publish
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: None)
     lines_seen: list[int] = []
     lineages: list[pd.DataFrame] = []
@@ -209,15 +227,20 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
 
     result = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "cusip-history"])
     assert result.exit_code == 0, result.output
-    lineage, master = lineages[-1], sqlite_store.load(Tables.universe_cusip)
+    lineage = lineages[-1]
     assert lines_seen == [1] and set(lineage["company_id"]) == {"E0000000777"}
     assert pd.api.types.is_datetime64_any_dtype(lineage["valid_from"]), "a lone CUSIP stage reads the stored lineage with dates parsed"
+    assert sqlite_store.load(Tables.universe_cusip, optional=True) is None, "the CUSIP stage computes only; run_publish saves"
+
+    monkeypatch.setattr(StepExtractIdentity, "run_publish", publish)
+    result = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "publish"])
+    assert result.exit_code == 0, result.output
+    master = sqlite_store.load(Tables.universe_cusip)
     assert master[["cusip", "canonical_company", "lineage_role"]].values.tolist() == [["000111AAA", "ABC", "canonical_current"]], master
 
     print("\n=== SANITY CHECK: D-15 cold start ===")
     print("  identity: lineage built, FTD capture read 0 zip(s), the CUSIP stage saw no line (table left unchanged)")
     print(f"  identity --only capture-evidence -F: read {read}, stored {stored['cusip'].tolist()} (ZZZ out of scope)")
-    print(
-        f"  identity --only cusip-history: built from the stored lineage ({len(lineage)} row(s)) and 1 FTD line -> {master['cusip'].tolist()} canonical for ABC"
-    )
+    print(f"  identity --only cusip-history: built from the stored lineage ({len(lineage)} row(s)) and 1 FTD line, saved nothing")
+    print(f"  identity --only publish: saved {master['cusip'].tolist()} canonical for ABC (company_id {master['company_id'].tolist()})")
     print("  OK: the documented three-command sequence fills universe_cusip on a cold store")

@@ -323,7 +323,7 @@ def symbol_rows(history: CikHistory, holders: pd.DataFrame, existing: pd.DataFra
 
     # the build
     backlog = pd.concat([history.backlog, conflicts], ignore_index=True) if not conflicts.empty else history.backlog
-    return SymbolHistory(rows=rows, backlog=backlog, blocked=history.blocked, holders=holders, trading=_trading_symbols(rows))
+    return SymbolHistory(rows=rows, backlog=backlog, blocked=history.blocked, holders=holders, trading=trading_symbols(rows))
 
 
 def _close_on_window(symbol_rows: pd.DataFrame, windows: Mapping[str, pd.Timestamp | None]) -> pd.DataFrame:
@@ -405,7 +405,7 @@ def _stored_stamps(stored: pd.DataFrame, keys: list[tuple[str, str]]) -> dict[tu
     return {key: value for key, value in latest.items() if pd.notna(value)}
 
 
-def _trading_symbols(rows: pd.DataFrame) -> pd.DataFrame:
+def trading_symbols(rows: pd.DataFrame) -> pd.DataFrame:
     """`[ticker, trading_symbol, trading_symbol_from]`: each universe ticker's latest open tape symbol, else its own key."""
     # the open, readable tape rows of each universe ticker's company
     symbols = rows[rows["role"].eq(ROLE_SYMBOL) & rows["canonical_ticker"].notna()]
@@ -414,7 +414,7 @@ def _trading_symbols(rows: pd.DataFrame) -> pd.DataFrame:
     latest = current.sort_values(["canonical_ticker", "valid_from", "symbol"], kind="mergesort").groupby("canonical_ticker").tail(1)
 
     # every universe ticker: its tape symbol, else its key
-    tickers = pd.DataFrame({"ticker": sorted(set(symbols["canonical_ticker"]))})
+    tickers = pd.DataFrame({"ticker": pd.Series(sorted(set(symbols["canonical_ticker"])), dtype=object)})
     found = latest.rename(columns={"canonical_ticker": "ticker", "symbol": "trading_symbol", "valid_from": "trading_symbol_from"})
     out = tickers.merge(found[["ticker", "trading_symbol", "trading_symbol_from"]], on="ticker", how="left")
     return out.assign(trading_symbol=out["trading_symbol"].fillna(out["ticker"]))

@@ -113,6 +113,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_lifecycle", lambda step: None)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_publish", lambda step: None)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cusip_history", universe_cusip)
     monkeypatch.setattr(identity_module, "load_identity", refresh)

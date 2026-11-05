@@ -163,9 +163,11 @@ CREATE INDEX IF NOT EXISTS ix_universe_cik_symbol_company_id ON "universe_cik_sy
 -- Classes need POSITIVE evidence: a line with none is `unclassified` and excluded.
 -- `valid_from`/`valid_to` are half-open TRADE dates. `conversion_ratio` is the dated number of
 -- canonical-class shares one share of the line is worth (BRK-A 30, then 1,500; 1 elsewhere).
+-- `company_id` is the frozen id of `canonical_company` (as in universe_cik_symbol), written by the identity publish.
 
 CREATE TABLE IF NOT EXISTS "universe_cusip" (
     "security_id" TEXT NOT NULL,
+    "company_id" TEXT,
     "canonical_company" TEXT,
     "issuer_cik" TEXT,
     "source" TEXT NOT NULL,

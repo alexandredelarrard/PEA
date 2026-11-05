@@ -15,8 +15,6 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.identity_store import save_identity
-from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.security_lines import co_registrant_ciks, load_security_manual, tape_intervals
 from src.data_extract.utils.identity.cik_history import (
@@ -92,6 +90,15 @@ from src.data_extract.utils.identity.cusip_history import (
 from src.data_extract.utils.identity.cusip_history import TABLE_COLUMNS as CUSIP_COLUMNS
 from src.data_extract.utils.identity.evidence import capture_dei_period, pending_dei_periods
 from src.data_extract.utils.identity.identity_propagate import PropagationResult, propagate_identity
+from src.data_extract.utils.identity.lifecycle import (
+    LIFE_COLUMNS,
+    PRICE_SPAN,
+    Lifecycle,
+    company_lifecycle,
+    log_lifecycle,
+    universe_permatickers,
+)
+from src.data_extract.utils.identity.publish import changed_identity, cusip_company_ids, save_unless_unchanged, update_identity_columns
 from src.data_extract.utils.identity.symbol_history import (
     TAPE_ACTION_COLUMNS,
     TAPE_TICKER_COLUMNS,
@@ -118,7 +125,19 @@ from src.data_extract.utils.identity.symbol_tenure import (
     scan_form345_cache,
 )
 from src.data_store.schema import Tables
-from src.utils.identity_flags import MASTER_COLUMNS, cik_activity, identity_flag_block, identity_flags, log_identity_flags
+from src.utils.identity_flags import (
+    FLAG_COLUMNS,
+    cik_activity,
+    cik_items,
+    co_registrant_note,
+    flag_rows,
+    identity_flag_block,
+    master_lines,
+    sorted_flags,
+    symbol_status_items,
+    tape_mix_items,
+    tape_mix_pairs,
+)
 from src.utils.step import Step
 from src.utils.string import pad_cik_series, run_date
 
@@ -153,6 +172,7 @@ class StepExtractIdentity(Step):
         self._cik_history: CikHistory | None = None
         self._symbols: SymbolHistory | None = None
         self._cusips: CusipHistory | None = None
+        self._lifecycle: Lifecycle | None = None
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols and FTD lines of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured."""
@@ -246,8 +266,8 @@ class StepExtractIdentity(Step):
         return history
 
     def run_symbol_history(self) -> SymbolHistory:
-        """Symbol intervals attached through the CIK history, with the Sharadar ticker-change tape; writes `universe_cik_symbol`
-        unless unchanged (until `run_publish` does, 4d)."""
+        """Symbol intervals attached through the CIK history, with the Sharadar ticker-change tape (`run_publish` saves
+        `universe_cik_symbol`)."""
         # load the CIK history of this run (else from stored inputs), the stored table, the Sharadar tape and the manual tenure
         history = self._cik_history if self._cik_history is not None else self.run_cik_history()
         existing = parse_stored_rows(self._context.store.load(Tables.universe_cik_symbol, project=True, optional=True))
@@ -271,21 +291,12 @@ class StepExtractIdentity(Step):
         log_symbol_history(self._context, build, manual, int(history.evidence["source"].eq(DEI_SOURCE).sum()), cold)
         if existing is not None and not cold:
             log_changed_assignments(self._context, entity_by_cik_map(existing), new_map, roster_cik)
-
-        # save unless unchanged
-        unchanged = matches_stored(existing, build.rows, Tables.universe_cik_symbol)
-        written = 0 if unchanged else save_identity(self._context.store, Tables.universe_cik_symbol, build.rows)
-        self._log.info(
-            f"universe_cik_symbol: unchanged ({len(build.rows)} row(s)); replace skipped"
-            if unchanged
-            else f"universe_cik_symbol: wrote {written} row(s)"
-        )
         self._symbols = build
         return build
 
     def run_cusip_history(self) -> pd.DataFrame:
         """CUSIP lines of each company (`universe_cusip`) from the captured FTD lines and this run's lineage (else the stored
-        one), back to each CUSIP's first confirmed 13F period; writes the table unless unchanged (until `run_publish`, 4d)."""
+        one), back to each CUSIP's first confirmed 13F period (`run_publish` logs its items and saves the table)."""
         # load the lineage, the FTD lines, the SEC listing, the stored table, the filed evidence, FINRA days, names and 13F holders
         lineage = self._symbols.rows if self._symbols is not None else load_stored_lineage(self._context)
         if lineage is None:
@@ -341,34 +352,64 @@ class StepExtractIdentity(Step):
         # post-process: the table rows, each company's stamp kept while unchanged
         rows = finalise_rows(cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing)), existing, pd.Timestamp.now().floor("s"))
 
-        # check: the flags of the build, one WARNING block for the action items
+        # check: the flags of the build (its WARNING items are logged by `run_publish`) and the INFO summary
         detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
-        block = identity_flag_block(items)
-        if block is not None:
-            self._log.warning(block)
         log_cusip_history(rows, detail, thirteenf, co_registrants)
-
-        # save unless unchanged
-        unchanged = matches_stored(existing, rows, Tables.universe_cusip)
-        written = 0 if unchanged else save_identity(self._context.store, Tables.universe_cusip, rows)
-        self._log.info("universe_cusip: unchanged; replace skipped" if unchanged else f"universe_cusip: wrote {written} row(s)")
         self._cusips = CusipHistory(rows=rows, flags=detail, items=items, thirteenf=thirteenf)
         return rows
 
-    def run_lifecycle(self) -> None:
-        """First price date, end date and status per company: built in phase 4d; nothing to do yet."""
-        return None
+    def run_lifecycle(self) -> Lifecycle:
+        """First price date, end date (D-4), status and trading symbol of each universe ticker, from this run's lineage
+        (else the stored one), the Sharadar price dates and the stored prices."""
+        # load the lineage, the Sharadar rows of the universe permatickers and each universe ticker's stored price span
+        lineage = self._symbols.rows if self._symbols is not None else load_stored_lineage(self._context)
+        where = {"permaticker": universe_permatickers(self._universe.frame)}
+        sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(LIFE_COLUMNS), where=where, optional=True)
+        prices = self._context.store.summarize(Tables.prices, "ticker", dict(PRICE_SPAN), where={"ticker": self._universe.tickers})
 
-    def run_publish(self) -> None:
-        """The identity flags over this run's symbol history and CUSIP lines; the gate and one save of the published tables
-        land in phase 4d (the builders still save their own tables)."""
-        if self._symbols is None or self._cik_history is None:
-            return None
-        master = self._context.store.load(Tables.universe_cusip, columns=list(MASTER_COLUMNS), optional=True)
-        backlog, activity = self._symbols.backlog, self._cik_history.activity
-        flags = identity_flags(self._symbols.rows, activity, redundant_symbols=self._universe.alias_symbols, backlog=backlog, master=master)
-        log_identity_flags(self._context.log, flags)
-        return None
+        # check there is a lineage to read company ids and trading symbols from
+        if lineage is None:
+            raise ValueError("lifecycle needs universe_cik_symbol: run `identity --only symbol-history` first")
+
+        # compute and log
+        self._lifecycle = company_lifecycle(self._universe.frame, sharadar, prices, lineage)
+        log_lifecycle(self._lifecycle)
+        return self._lifecycle
+
+    def run_publish(self) -> int:
+        """The one save (REQ-008): one WARNING block of identity items, then `universe_cik_symbol` and `universe_cusip` (with
+        `company_id`) unless unchanged and the changed identity columns of `universe_tickers`; returns the rows written."""
+        # load this run's builds (each stage runs from stored inputs when publish runs alone) and the stored tables
+        symbols = self._symbols if self._symbols is not None else self.run_symbol_history()
+        history = self._cik_history if self._cik_history is not None else self.run_cik_history()
+        lines = self._cusips.rows if self._cusips is not None else self.run_cusip_history()
+        cusip_items = self._cusips.items if self._cusips is not None else pd.DataFrame(columns=list(FLAG_COLUMNS))
+        lifecycle = self._lifecycle if self._lifecycle is not None else self.run_lifecycle()
+        stored_lineage = self._context.store.load(Tables.universe_cik_symbol, project=True, optional=True)
+        stored_lines = self._context.store.load(Tables.universe_cusip, project=True, optional=True)
+        stored_tickers = self._context.store.load(Tables.universe_tickers, project=True, optional=True)
+
+        # check: the lineage items with the CUSIP and end-date items in one WARNING block, the co-registrants at INFO
+        rows = flag_rows(symbols.rows)
+        mixes = tape_mix_items(tape_mix_pairs(rows, self._universe.alias_symbols), rows, master_lines(stored_lines if lines.empty else lines))
+        found = [*cik_items(rows, history.activity, symbols.backlog), *mixes, *symbol_status_items(rows)]
+        flags = sorted_flags([*found, *cusip_items.to_dict("records"), *lifecycle.items.to_dict("records")])
+        block, note = identity_flag_block(flags), co_registrant_note(flags)
+        if block is not None:
+            self._log.warning(block)
+        if note is not None:
+            self._log.info(note)
+
+        # post-process: the CUSIP lines carry their company's id; the identity columns that changed
+        published = cusip_company_ids(lines, symbols.rows)
+        changed = changed_identity(lifecycle.rows, stored_tickers)
+
+        # save each table unless unchanged
+        written = save_unless_unchanged(self._context.store, Tables.universe_cik_symbol, stored_lineage, symbols.rows)
+        written += save_unless_unchanged(self._context.store, Tables.universe_cusip, stored_lines, published)
+        written += update_identity_columns(self._context.store, changed)
+        self._log.info(f"identity publish: {written} row(s) written ({len(changed)} universe ticker(s) with changed identity columns)")
+        return written
 
     def run_propagate(self) -> PropagationResult:
         """Carry the lineage changes into the stored rows, under the resolver reloaded once from the rebuilt tables."""

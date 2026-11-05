@@ -200,6 +200,7 @@ class Tables:
         date_type_cols=("valid_from", "valid_to"),
         read_columns=(
             "security_id",
+            "company_id",
             "canonical_company",
             "issuer_cik",
             "source",

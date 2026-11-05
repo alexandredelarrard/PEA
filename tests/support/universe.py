@@ -28,7 +28,8 @@ def seed_universe(
     aliases: Mapping[str, Sequence[str]] | None = None,
     rows: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Universe:
-    """Write one `universe_tickers` row per ticker (CIK from its position unless `rows` gives one) and return its reader."""
+    """Write one `universe_tickers` row per ticker (CIK from its position unless `rows` gives one; the identity columns
+    empty, as the sync's first build creates them) and return its reader."""
     frame = pd.DataFrame(
         [
             {
@@ -41,8 +42,11 @@ def seed_universe(
                 "universe_added_on": pd.Timestamp("2000-01-01"),
                 "cusips": None,
                 "in_universe": True,
+                "company_id": None,
+                "trading_symbol": None,
                 "first_price_date": None,
                 "ended_on": None,
+                "status": None,
                 **(rows or {}).get(t, {}),
             }
             for i, t in enumerate(tickers)

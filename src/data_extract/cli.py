@@ -608,7 +608,7 @@ _IDENTITY_STAGES = (
     help="Identity layer, OFFLINE (cached zips + DB): capture the evidence (Notes cover-page symbols, FTD lines, Form 3/4/5 "
     "tenure), anchor each company, build its CIK, symbol and CUSIP history, then propagate the changes. --only runs one stage "
     f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
-    "`identity`, then `identity --only capture-evidence -F`, then `identity --only cusip-history`.",
+    "`identity`, then `identity --only capture-evidence -F`, then `identity --only publish` (the only stage that saves).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

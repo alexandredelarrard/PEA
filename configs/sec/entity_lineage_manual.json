@@ -222,5 +222,19 @@
     "decided": "2026-10-08"
   },
 
-  "resolutions": []
+  "resolutions": [
+    {
+      "kind": "refused_merge",
+      "ticker": "TT",
+      "ciks": "0001466258,0001699150",
+      "decision": "ACKNOWLEDGED (own entities): Ingersoll-Rand plc (CIK 0001466258) was renamed Trane Technologies plc and moved to TT on 2020-03-02, when Gardner Denver Holdings (CIK 0001699150) took the name Ingersoll Rand Inc. and the reused IR symbol. Two universe companies; the refusal is right.",
+      "evidence": [
+        "0001140361-20-004470 (Trane Technologies 8-K 2020-03-02)",
+        "0001140361-20-004816 (Ingersoll Rand Inc. 8-K 2020-03-04, Items 2.01/5.03)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001466258",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001699150"
+      ],
+      "decided_on": "2026-11-05"
+    }
+  ]
 }

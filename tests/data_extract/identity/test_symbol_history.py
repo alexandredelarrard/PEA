@@ -277,10 +277,10 @@ def test_the_named_companies_carry_their_dated_symbol_history(fixture_build) -> 
     print("  OK: every named change is a dated symbol row; the reused IR stays with Ingersoll Rand Inc")
 
 
-def test_psky_keeps_its_key_and_trades_as_skyd_and_wbd_models_disca_without_curation(fixture_build) -> None:
-    """AC-002 / D-6: PSKY trades as SKYD from 2026-10-06 under its frozen key; VMRK trades as VMRK. WBD: Sharadar prices DISCA
-    from 2005-07-08, but the manual DISCA interval (from 2008-09-18 on 1437107) governs and the one-day DISCA of Discovery
-    Holding (1320482, 2008-09-18) is another company's noise: the 2005-2008 gap is curation (phase 8), not modelled away."""
+def test_psky_keeps_its_key_and_trades_as_skyd_and_wbd_carries_discovery_holding(fixture_build) -> None:
+    """AC-002 / D-6: PSKY trades as SKYD from 2026-10-06 under its frozen key; VMRK trades as VMRK. WBD (AC-019, phase 8):
+    Sharadar prices DISCA from 2005-07-08; the register window of Discovery Holding (1320482, to 2008-09-18) makes its DISCA
+    rows WBD's, and the manual DISCA interval of 1437107 governs from 2008-09-18."""
     build, chains, _ = fixture_build
     trading = build.trading.set_index("ticker")
     assert (trading.loc["PSKY", "trading_symbol"], trading.loc["PSKY", "trading_symbol_from"]) == ("SKYD", pd.Timestamp("2026-10-06"))
@@ -292,15 +292,15 @@ def test_psky_keeps_its_key_and_trades_as_skyd_and_wbd_models_disca_without_cura
     assert [(r.symbol, str(r.first.date())) for r in wbd_tape.itertuples(index=False)] == [("DISCA", "2005-07-08"), ("WBD", "2022-04-11")]
     holders = build.holders
     discovery = holders[holders["symbol"].eq("DISCA") & holders["cik"].eq("0001320482")]
-    assert discovery["status"].tolist() == ["noise"] and discovery["canonical_ticker"].isna().all()
+    assert not discovery.empty and discovery["status"].ne("noise").all() and discovery["canonical_ticker"].eq("WBD").all()
     disca = build.rows[build.rows["symbol"].eq("DISCA") & build.rows["canonical_ticker"].eq("WBD")]
-    assert disca["valid_from"].min() == pd.Timestamp("2008-09-18") and set(disca["cik"]) == {"0001437107"}
+    assert disca["valid_from"].min() < pd.Timestamp("2008-09-18") and set(disca["cik"]) == {"0001320482", "0001437107"}
     print("\n=== SANITY CHECK: PSKY, VMRK, WBD ===")
     print(f"  trading symbols differing from the key: {renamed['trading_symbol'].to_dict()} from {renamed['trading_symbol_from'].dt.date.to_dict()}")
     print(
         f"  WBD tape {[(r.symbol, str(r.first.date())) for r in wbd_tape.itertuples(index=False)]}; DISCA rows start {disca['valid_from'].min().date()}"
     )
-    print("  OK: one renamed key (PSKY->SKYD); WBD's 2005-07-08..2008-09-18 DISCA span stays a phase-8 curation item")
+    print("  OK: one renamed key (PSKY->SKYD); WBD's DISCA runs back through Discovery Holding (1320482) before 2008-09-18")
 
 
 def test_every_ticker_change_of_a_universe_company_is_a_symbol_interval(fixture_build) -> None:

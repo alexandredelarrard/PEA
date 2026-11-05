@@ -511,6 +511,21 @@
       }
     ]
   },
+  "WBD": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001320482",
+        "valid_to": "2008-09-18",
+        "evidence": "PHASE 8 2026-11-05 (REQ-035, AC-019). Discovery Holding Company (CIK 0001320482), spun off from Liberty Media in July 2005 (Form 10 0001047469-05-019465, 10-12G/A 2005-07-15; first Form 4 0001179110-05-014568 2005-07-21), the DISCA/DISCB registrant until the Discovery Communications transaction: its 10-Ks 0000950134-06-005787, 0000950134-07-004374, 0001035704-08-000071, then its 15-12G 0000950133-08-003483 (2008-10-30). Sharadar dates the WBD price series (permaticker 193488) from 2005-07-08, i.e. from Discovery Holding's DISCA. Read from the SEC bulk submissions.zip metadata, not the document text. boundary = the first day the successor traded (8-K 0001299933-08-004378 filed 2008-09-18)."
+      },
+      {
+        "cik": "0001437107",
+        "valid_from": "2008-09-18",
+        "evidence": "PHASE 8 2026-11-05. Discovery Communications, Inc. (now Warner Bros. Discovery, Inc., CIK 0001437107): 8-A12B 0000950134-08-016525 / 0000950134-08-016527 (2008-09-12) register its Series A, B and C common; 8-K 0001299933-08-004378 (2008-09-18) reports it became the public registrant on completion of the Discovery Holding transaction. Its pre-boundary filings are the shell's 425s, Form 3s and 8-A12Bs, excluded by the dated split."
+      }
+    ]
+  },
   "XOM": {
     "kind": "reorganisation",
     "segments": [

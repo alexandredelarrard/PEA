@@ -96,5 +96,18 @@
     {"cusip": "G96629103", "ticker": "WTW", "source": "13F INFOTABLE NAMEOFISSUER 'WILLIS TOWERS WATSON PLC' (Ireland) paired with this CUSIP in the cached SEC Form 13F data sets, ranked by filer count"},
     {"cusip": "30231G102", "ticker": "XOM", "source": "13F INFOTABLE NAMEOFISSUER 'EXXON MOBIL CORP' (US - absent from the map) paired with this CUSIP in the cached SEC Form 13F data sets, ranked by filer count"}
   ],
-  "resolutions": []
+  "resolutions": [
+    {
+      "kind": "security_ratio_step",
+      "ticker": "WBD",
+      "ciks": "",
+      "decision": "ACKNOWLEDGED: 25470F203 (DISCB, Series B, ten votes per share) traded at a voting-class price premium to DISCA (ratio ~1.0 in 2009-14, ~1.6-1.7 later); no split or conversion change. All three Discovery series were reclassified one-for-one into WBD common at the 2022-04-08 WarnerMedia closing.",
+      "evidence": [
+        "0001193125-22-103051 (8-K 2022-04-12, Items 2.01/3.03/5.03: Discovery Series A, B and C reclassified into WBD common, one-for-one)",
+        "0001354457-22-000229 (25-NSE 2022-04-08)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001437107"
+      ],
+      "decided_on": "2026-11-05"
+    }
+  ]
 }

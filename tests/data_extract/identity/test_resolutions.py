@@ -3,8 +3,8 @@
 Known-truth configs in a temporary `configs/sec/`: an entry without a cited URL or accession, a missing field or a second
 entry for one item is refused at load; the review splits items into unreviewed action items, information and resolved
 items and lists the stale resolutions; `run_publish` logs a WARNING block of the unreviewed action items only (a refused
-merge is one) and one INFO summary. The shipped configs carry an empty `resolutions` list each, which the curated
-loaders ignore.
+merge is one) and one INFO summary. The shipped configs carry the reviewed `resolutions` lists, which load with their
+citations and which the curated loaders ignore.
 """
 
 from __future__ import annotations
@@ -178,8 +178,9 @@ def test_publish_warns_only_for_unreviewed_action_items(tmp_path: Path, monkeypa
     print("  OK: a reviewed item never warns; a refused merge is an action item of the block until reviewed")
 
 
-def test_the_shipped_configs_carry_an_empty_resolutions_list_the_loaders_ignore() -> None:
-    """Each owning JSON holds `resolutions` (empty until phase 8); the lineage, symbol and security loaders read as before."""
+def test_the_shipped_resolutions_load_and_the_loaders_ignore_them() -> None:
+    """Each owning JSON holds its reviewed `resolutions` (phase 8), every one cited; the lineage, symbol and security
+    loaders read as before."""
     config = str(ROOT / "configs")
     lists = {name: json.loads((ROOT / "configs" / "sec" / name).read_text(encoding="utf-8"))[RESOLUTIONS_KEY] for name in RESOLUTION_FILES}
 

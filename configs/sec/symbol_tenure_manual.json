@@ -1003,6 +1003,46 @@
           "0001299933-08-004378 (8-K 2008-09-18: Discovery Communications became the public registrant on completion of the Discovery Holding transaction); 0001193125-22-103051 (8-K Item 8.01: DISCA ceased trading after the 2022-04-08 close, WBD from 2022-04-11)"
         ],
         "reason": "Discovery Communications Series A traded as DISCA from 2008-09-18 through the 2022-04-08 session; DISCA before 2008-09-18 was Discovery Holding Company's."
+      },
+      {
+        "symbol": "DISCA",
+        "issuer_cik": "0001320482",
+        "valid_from": "2005-07-08",
+        "valid_to": "2008-09-18",
+        "evidence": [
+          "0001047469-05-019465 (Discovery Holding Company Form 10, 10-12G/A 2005-07-15: Series A and Series B common); Sharadar WBD permaticker 193488 firstpricedate 2005-07-08; 0001299933-08-004378 (8-K 2008-09-18: Discovery Communications succeeds Discovery Holding)"
+        ],
+        "reason": "Discovery Holding Company Series A traded as DISCA from Sharadar's first price 2005-07-08 until the 2008-09-18 succession (registrant_cutover.json WBD)."
+      },
+      {
+        "symbol": "DISCB",
+        "issuer_cik": "0001320482",
+        "valid_from": "2005-07-08",
+        "valid_to": "2008-09-18",
+        "evidence": [
+          "0001047469-05-019465 (Discovery Holding Company Form 10, 10-12G/A 2005-07-15: Series A and Series B common); 0001299933-08-004378 (8-K 2008-09-18: Discovery Communications succeeds Discovery Holding)"
+        ],
+        "reason": "Discovery Holding Company Series B (ten votes) traded as DISCB from the 2005 spin-off until the 2008-09-18 succession; start dated as DISCA's (Sharadar)."
+      },
+      {
+        "symbol": "DISCB",
+        "issuer_cik": "0001437107",
+        "valid_from": "2008-09-18",
+        "valid_to": "2022-04-11",
+        "evidence": [
+          "0000950134-08-016525 and 0000950134-08-016527 (8-A12B 2008-09-12: Discovery Communications Series A, B and C common); 0001299933-08-004378 (8-K 2008-09-18); 0001193125-22-103051 (8-K 2022-04-12: Series A, B and C reclassified into WBD common)"
+        ],
+        "reason": "Discovery Communications Series B traded as DISCB from the 2008-09-18 succession through the 2022-04-08 session, as DISCA."
+      },
+      {
+        "symbol": "DISCK",
+        "issuer_cik": "0001437107",
+        "valid_from": "2008-09-18",
+        "valid_to": "2022-04-11",
+        "evidence": [
+          "0000950134-08-016525 and 0000950134-08-016527 (8-A12B 2008-09-12: Discovery Communications Series A, B and C common); 0001299933-08-004378 (8-K 2008-09-18); 0001193125-22-103051 (8-K 2022-04-12: Series A, B and C reclassified into WBD common)"
+        ],
+        "reason": "Discovery Communications Series C, first issued in the 2008 transaction, traded as DISCK from 2008-09-18 through the 2022-04-08 session."
       }
     ],
     "APTV": [
@@ -1424,5 +1464,138 @@
       "reason": "A spelling of HUBA (Hubbell Class A, typed 'HUB A') on four filings; the Class A line is HUBA."
     }
   ],
-  "resolutions": []
+  "resolutions": [
+    {
+      "kind": "manual_review",
+      "ticker": "CB",
+      "ciks": "0000896159",
+      "decision": "ACKNOWLEDGED: ACE and CB are the same company (CIK 0000896159); Sharadar dates ACE->CB 2016-01-19. CB before 2016-01-15 is the acquired Chubb Corporation (entity_lineage_manual CB/old-chubb-acquired), so ACE and CB overlap by design; the uncovered 2006-01-06..2008-06-30 precedes ACE's Swiss CUSIP H0023R105 (2008 redomestication). No attribution changes: the CIK scope is one company and the uncovered span has no ACE CUSIP line of another company.",
+      "evidence": [
+        "0001193125-16-430900 (8-K 2016-01-15, Items 2.01 + 5.03: ACE Limited completes the Chubb Corporation acquisition and is renamed Chubb Limited)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000896159"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "CDNS",
+      "ciks": "0000813672",
+      "decision": "ACKNOWLEDGED: CDN and CDNS are the same company (CIK 0000813672); Sharadar dates CDN->CDNS 2005-08-31. The overlap is Form 3/4/5 filers still typing CDN (NYSE) while CDNS (Nasdaq) traded; same CUSIP 127387108. No attribution changes: the CIK scope is one company and the uncovered span has no CDN CUSIP line of another company.",
+      "evidence": [
+        "0000950134-06-000464 (8-A12G 2006-01-12: Cadence registers its common stock under 12(g) for the Nasdaq listing)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000813672"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "DAL",
+      "ciks": "0000027904",
+      "decision": "ACKNOWLEDGED: DALRQ and DAL are the same company (CIK 0000027904); Sharadar dates DALRQ->DAL 2007-05-03. DALRQ is Delta's chapter-11 OTC symbol; the DAL tape row of 2006-02..2007-02 is Form 3/4/5 filers typing DAL during the case. No attribution changes: the CIK scope is one company and the uncovered span has no DALRQ CUSIP line of another company.",
+      "evidence": [
+        "0001188112-07-001210 (8-A12B 2007-04-26: new common for the NYSE listing)",
+        "0001188112-07-001266 (8-K 2007-04-30, Items 1.01/3.02/5.03: emergence from chapter 11)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000027904"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "DD",
+      "ciks": "0001666700",
+      "decision": "ACKNOWLEDGED: DWDP and DD are the same company (CIK 0001666700); Sharadar dates DWDP->DD 2019-06-03. The uncovered 2019-06-05..2019-08-06 is Form 3/4/5 filers still typing DWDP after the change. No attribution changes: the CIK scope is one company and the uncovered span has no DWDP CUSIP line of another company.",
+      "evidence": [
+        "0001193125-19-163322 (8-K 2019-06-03, Items 2.01/5.03/8.01: Corteva distribution; DowDuPont renamed DuPont de Nemours, trading as DD)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001666700"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "FITB",
+      "ciks": "0000035527",
+      "decision": "ACKNOWLEDGED: FITBP is a Fifth Third preferred depositary symbol on its combined cover page (dei) and insider forms, not the common. Its CUSIP lines are excluded (316773209 superseded 2008-2013, 316773886 preferred 2019-2026); the uncovered spans 2013-06-08..2019-08-26 and 2026-06-09..open have no FITBP FTD line, so nothing is summed into FITB.",
+      "evidence": [
+        "0001193125-08-103980 (8-A12B 2008-05-06: Series G preferred)",
+        "0001354457-13-000126 (25-NSE 2013-07-01)",
+        "0001193125-19-229493 (8-A12B 2019-08-26: Class B preferred)",
+        "0001193125-26-267509 (Form 25 2026-06-11)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000035527"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "HST",
+      "ciks": "0001070750",
+      "decision": "ACKNOWLEDGED: HMT and HST are the same company (CIK 0001070750); Sharadar dates HMT->HST 2006-02-27. The overlap 2006-02-27..2006-04-05 is Form 3/4/5 filers typing HMT and HST around the rename; same CUSIP 44107P104. No attribution changes: the CIK scope is one company and the uncovered span has no HMT CUSIP line of another company.",
+      "evidence": [
+        "0001193125-06-083211 (8-K 2006-04-19, Item 5.03: Host Marriott renamed Host Hotels & Resorts)",
+        "0001193125-06-080265 (8-K 2006-04-14, Item 2.01: Starwood assets acquired)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001070750"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "HUBB",
+      "ciks": "0000048898",
+      "decision": "ACKNOWLEDGED: HUBA and HUBB are the same company (CIK 0000048898); Sharadar dates HUBA->HUBB 2015-12-24. HUBA is Hubbell's Class A (secondary_class line 443510102 to 2015-12-24); the uncovered 2015-12-24..2016-08-18 is Form 3/4/5 filers typing HUBA after the reclassification, when no Class A traded. No attribution changes: the CIK scope is one company and the uncovered span has no HUBA CUSIP line of another company.",
+      "evidence": [
+        "0001193125-15-412174 (8-K 2015-12-23, Items 3.03/5.03: Class A and Class B reclassified into one class)",
+        "0000876661-15-000665 (25-NSE 2015-12-24)",
+        "0000876661-15-000664 (25-NSE 2015-12-24)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000048898"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "L",
+      "ciks": "0000060086",
+      "decision": "ACKNOWLEDGED: LTR and L are the same company (CIK 0000060086); Sharadar dates LTR->L 2008-09-09. Loews common (CUSIP 540424108) moved from LTR to L; the overlap 2008-07-01..2010-02-13 is Form 3/4/5 filers still typing LTR. No attribution changes: the CIK scope is one company and the uncovered span has no LTR CUSIP line of another company.",
+      "evidence": [
+        "0001193125-08-131150 (8-K 2008-06-10, Items 2.01/3.01: Lorillard separation; Carolina Group tracking stock delisted)",
+        "0001193125-08-131145 (Form 25 2008-06-10)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000060086"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "ON",
+      "ciks": "0001097864",
+      "decision": "ACKNOWLEDGED: ONNN and ON are the same company (CIK 0001097864); Sharadar dates ONNN->ON 2015-05-04. The overlap 2015-05-04..2015-06-18 is Form 3/4/5 filers still typing ONNN; same CUSIP 682189105. No attribution changes: the CIK scope is one company and the uncovered span has no ONNN CUSIP line of another company.",
+      "evidence": [
+        "0001193125-15-200098 (8-K 2015-05-26, Item 5.07, first filing after the symbol change)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001097864"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "manual_review",
+      "ticker": "TT",
+      "ciks": "0001160497,0001466258",
+      "decision": "ACKNOWLEDGED: TT in 2007-11-30..2008-06-10 is Trane Inc. (CIK 0000836102), acquired by Ingersoll-Rand Company Limited (CIK 0001160497) on 2008-06-05 (entity_lineage_manual TT/trane-inc); this company traded as IR then. The overlap is the acquired constituent's symbol, and the uncovered span is before the IR CUSIP line G47791101 (2009).",
+      "evidence": [
+        "0001193125-08-128895 (8-K 2008-06-05, Item 2.01: Ingersoll-Rand completes the Trane acquisition)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001160497",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000836102"
+      ],
+      "decided_on": "2026-11-05"
+    },
+    {
+      "kind": "conflict",
+      "ticker": "CMS,SRE",
+      "ciks": "0000811156,0001032208",
+      "decision": "ACKNOWLEDGED: neither symbol is a common stock. CMS-PB is Consumers Energy's (CIK 0000201533) $4.50 preferred, listed on the combined CMS/Consumers cover page; SREA is Sempra's 5.75% junior subordinated notes due 2079 (universe_cusip 816851604 excluded as debt). Leaving them unattributed (conflict) is the correct outcome.",
+      "evidence": [
+        "0001104659-19-041715 (8-K 2019-07-25, joint CMS Energy / Consumers Energy filing)",
+        "0001193125-19-182705 (8-A12B 2019-06-26: Sempra junior subordinated notes)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000201533",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001032208"
+      ],
+      "decided_on": "2026-11-05"
+    }
+  ]
 }

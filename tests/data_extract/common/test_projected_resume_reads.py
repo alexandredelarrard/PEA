@@ -199,7 +199,6 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
         lineage=sqlite_store.load(Tables.universe_cik_symbol, project=True),
         tenure=full_tenure,
         roster_cik=as_roster(sqlite_store.load(Tables.universe_tickers, columns=["ticker", "cik"])),
-        redundant_symbols=frozenset(),
     )
 
     assert projected.roster_cik == full.roster_cik == {"AAA": "0000000100", "BBB": "0000000900"}

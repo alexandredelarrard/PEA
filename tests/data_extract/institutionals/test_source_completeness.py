@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import event
 
+from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
@@ -31,6 +32,7 @@ from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_fails_to_deliver import download_and_capture
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
+from tests.support.propagation import run_propagation
 from tests.support.universe import seed_universe
 
 
@@ -765,7 +767,7 @@ def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite
             }
         ),
     )
-    assert identity_propagate._refresh_fails(context, ["LEN"], pd.Timestamp("2026-10-06"), dry_run=False, every=True) == []
+    assert identity_propagate.refresh_fails(context, ["LEN"], pd.Timestamp("2026-10-06"), False, True) == []
     rows = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert rows is not None
     assert rows["fails_quantity"].tolist() == [12.0] and rows["source_checked_at"].notna().all()
@@ -849,12 +851,13 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["shared actual note"]})
     sqlite_store.save(Tables.insider_transactions, rows)
     sqlite_store.save(Tables.insider_footnotes, notes)
-    spec = next(spec for spec in identity_propagate.PURGE_TABLES if spec.table == Tables.insider_transactions)
-    monkeypatch.setattr(identity_propagate, "PURGE_TABLES", (spec,))
-    monkeypatch.setattr(identity_propagate, "_reparse_bulk", lambda *args: {})
-    for name in ("_refresh_insider", "_refresh_fails", "_refresh_short_volume"):
-        monkeypatch.setattr(identity_propagate, name, lambda *args, **kwargs: [])
-    identity_propagate.propagate_identity(context, ["LEN"], every_ticker=True, identity=identity, as_of=pd.Timestamp("2026-10-08"))
+    spec = next(spec for spec in step_module.PURGE_TABLES if spec.table == Tables.insider_transactions)
+    monkeypatch.setattr(step_module, "PURGE_TABLES", (spec,))
+    for name in ("reparse_notes", "reparse_insider"):
+        monkeypatch.setattr(step_module, name, lambda *args: {})
+    for name in ("refresh_insider", "refresh_fails", "refresh_short_volume"):
+        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
+    run_propagation(context, identity, monkeypatch, ["LEN"], full=True, as_of=pd.Timestamp("2026-10-08"))
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None
     assert set(zip(kept["accession_number"], kept["ticker"], strict=True)) == {("a", "AAA"), ("b", "LEN")}

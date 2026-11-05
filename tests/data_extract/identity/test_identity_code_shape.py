@@ -5,7 +5,7 @@ The walk resolves calls statically: a bare name defined in or imported from a `s
 0 `run`, 1 a `run_*` sub-run (wherever it is called from: a sub-run run alone computes its sibling's result), 2 a domain
 function, 3 a flat helper. A function outside the identity build (`SCOPE`) is
 infrastructure: a level-1 or level-2 function may call it, a level-3 helper may call no repository function at all.
-`ALLOWLIST` names what phase 7 still rewrites (the propagation); its subtree is not walked.
+`ALLOWLIST` (a prefix -> the phase that rewrites it, its subtree not walked) is empty since phase 7.
 
 Each reached function: at most 6 inputs, 90 lines and control-flow nesting 2; no pass-through; full annotations; no
 logger parameter; no `print`; a docstring of at most 4 lines; every blank-line-separated block of a multi-block body
@@ -33,12 +33,9 @@ FLOW = (
 )
 #: The identity build: the step, the identity package, the flags and the `Identity` reader (plan 3c).
 SCOPE = (STEP_MODULE, "src.data_extract.utils.identity.", "src.utils.identity_flags", "src.data_extract.utils.common.identity")
-#: Not yet rewritten (prefix of a qualified name -> the phase that rewrites it): only the propagation, rewritten in
-#: phase 7 (orchestrator ruling on 4a); its subtree (`load_identity` included) is not walked until then.
-ALLOWLIST = {
-    f"{STEP_MODULE}.{STEP_CLASS}.run_propagate": "7",
-    "src.data_extract.utils.identity.identity_propagate.": "7",
-}
+#: Not yet rewritten (prefix of a qualified name -> the phase that rewrites it): empty since phase 7 rewrote the
+#: propagation and the `Identity` build it reaches.
+ALLOWLIST: dict[str, str] = {}
 MAX_INPUTS, MAX_LINES, MAX_NESTING, MAX_LEVEL, MAX_DOC_LINES = 6, 90, 2, 3, 4
 _BRANCHES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.Match)
 _STORE_READS = {"load", "iter_load", "distinct", "summarize", "load_cohort"}
@@ -298,21 +295,19 @@ def test_run_is_the_flow() -> None:
 
 
 def test_every_function_run_reaches_keeps_the_code_shape_contract() -> None:
-    """Plan 3c on the AST: depth, flat helpers, limits, blocks, reads, annotations; the allowlist is the propagation only."""
+    """Plan 3c on the AST: depth, flat helpers, limits, blocks, reads, annotations; nothing is allowlisted."""
     walk = _walk()
 
     assert not walk.problems, "\n".join(walk.problems)
-    assert set(ALLOWLIST.values()) == {"7"} and all("propagat" in prefix for prefix in ALLOWLIST), ALLOWLIST
+    assert not ALLOWLIST and not walk.allowlisted, ALLOWLIST
+    assert f"{STEP_MODULE}.{STEP_CLASS}.run_propagate" in walk.reached
     levels: dict[int, int] = {}
     for level in walk.reached.values():
         levels[level] = levels.get(level, 0) + 1
-    allowed_prefixes = sorted(set(ALLOWLIST.values()))
     print("\n=== SANITY CHECK: identity code shape (plan 3c) ===")
     print(f"  {len(walk.reached)} identity function(s) reached from run(); per level {dict(sorted(levels.items()))}; 0 violations")
     print(f"  infrastructure leaves called from levels 1-2: {len(walk.infrastructure)}; level-3 helpers call no repository function")
-    for phase in allowed_prefixes:
-        names = sorted(name for name, p in walk.allowlisted.items() if p == phase)
-        print(f"  allowlisted for {phase} ({len(names)} reached): {', '.join(n.rsplit('.', 2)[-2] + '.' + n.rsplit('.', 1)[-1] for n in names)}")
     reached_reader = sorted(name for name in walk.reached if name.startswith("src.data_extract.utils.common.identity."))
-    print(f"  common.identity functions reached outside the propagation: {len(reached_reader)}")
-    print("  OK: every stage but the propagation keeps the contract; the allowlist is phase 7's propagation only")
+    reached_propagate = sorted(name for name in walk.reached if ".identity_propagate." in name)
+    print(f"  propagation functions reached: {len(reached_propagate)}; Identity build functions reached: {len(reached_reader)}")
+    print("  OK: every stage, the propagation included, keeps the contract; the allowlist is empty")

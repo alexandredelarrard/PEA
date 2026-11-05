@@ -16,6 +16,7 @@ from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import stub_edgar_step
+from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe
 
 
@@ -130,7 +131,7 @@ def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace,
     config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
     context.config_dir = "configs"
     monkeypatch.setattr(step_identity, "cache_dir", lambda ctx, name: Path(name))
-    monkeypatch.setattr(step_identity, "load_identity", lambda ctx, refresh=False: object())
+    stub_propagation(monkeypatch, step_identity)
 
 
 @pytest.fixture
@@ -149,7 +150,7 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
         ("fundamentals-history-sec", "build_fundamentals_history", "rebuild_history"),
-        ("identity --only propagate", "propagate_identity", "every_ticker"),
+        ("identity --only propagate", "recheck_tickers", "every"),
         ("edgar-index", "refresh", "rebuild"),
     ],
 )

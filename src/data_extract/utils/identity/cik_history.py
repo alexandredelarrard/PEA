@@ -177,13 +177,13 @@ def entity_or_singleton(entity_by_cik: Mapping[str, str], cik: str) -> str:
 
 
 def entity_by_cik_map(lineage: pd.DataFrame) -> dict[str, str]:
-    """`{padded cik: company_id}` from `universe_cik_symbol` rows (several rows per CIK share one entity)."""
-    return dict(zip(pad_cik_series(lineage["cik"]), lineage["company_id"].astype(str), strict=False))
+    """`{cik: company_id}` from `universe_cik_symbol` rows with padded CIKs (several rows per CIK share one entity)."""
+    return dict(zip(lineage["cik"].astype(str), lineage["company_id"].astype(str), strict=False))
 
 
 def check_one_entity_per_cik(lineage: pd.DataFrame) -> None:
-    """Raise `CikInTwoEntitiesError` when one CIK carries two company ids, which would make `entity_of` order-dependent."""
-    per_cik = pd.DataFrame({"cik": pad_cik_series(lineage["cik"]), "company_id": lineage["company_id"].astype(str)}).drop_duplicates()
+    """Raise `CikInTwoEntitiesError` when one (padded) CIK carries two company ids, which would make `entity_of` order-dependent."""
+    per_cik = pd.DataFrame({"cik": lineage["cik"].astype(str), "company_id": lineage["company_id"].astype(str)}).drop_duplicates()
     clashes = per_cik[per_cik.duplicated("cik", keep=False)]
     if not clashes.empty:
         raise CikInTwoEntitiesError(

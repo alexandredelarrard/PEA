@@ -626,7 +626,9 @@ def restamp_fails(
     rebuilt = [name for name in names if name in tickers]
     records = []
     if rebuilt:
-        _, records = _recover_fails_companies(context, master, rebuilt, cohort, load_fails_basis(context, master), dry_run)
+        # the share basis of the rebuilt companies' lines only: another company's share policy never blocks this restamp
+        basis = load_fails_basis(context, master[master["canonical_company"].isin(rebuilt)])
+        _, records = _recover_fails_companies(context, master, rebuilt, cohort, basis, dry_run)
     logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
     return records
 

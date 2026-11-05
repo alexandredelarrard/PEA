@@ -306,7 +306,7 @@ def test_an_uncurated_extra_cik_warns_lists_the_roster_cik_and_is_backlogged(tmp
     )
     roster = pd.DataFrame([{"ticker": "ABC", "cik": "0000000200"}])
     monkeypatch.setattr(cik_module, "AUTO_WINDOWS_ENABLED", False)
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG):  # the backlog detail is DEBUG since the phase-5 logging policy (X58)
         build = derive_lineage(tenure, as_roster(roster), pd.DataFrame(columns=["issuer_cik", "owner_cik_raw"]), str(tmp_path / "configs"), dei=dei)
     backlog = build.backlog[build.backlog["kind"].eq("multi_cik_no_window")]
     assert len(backlog) == 1 and backlog["cik"].iloc[0] == "0000000100"

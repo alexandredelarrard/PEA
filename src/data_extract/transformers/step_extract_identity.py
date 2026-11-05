@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.identity import bind_identity, build_identity, identity_inputs
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.security_lines import co_registrant_ciks, load_security_manual, tape_intervals
 from src.data_extract.utils.identity.cik_history import (
@@ -89,7 +89,21 @@ from src.data_extract.utils.identity.cusip_history import (
 )
 from src.data_extract.utils.identity.cusip_history import TABLE_COLUMNS as CUSIP_COLUMNS
 from src.data_extract.utils.identity.evidence import capture_dei_period, pending_dei_periods
-from src.data_extract.utils.identity.identity_propagate import PropagationResult, propagate_identity
+from src.data_extract.utils.identity.identity_propagate import (
+    PropagationResult,
+    log_propagation,
+    owned_scopes,
+    purge_rows,
+    rebuild_history,
+    recheck_tickers,
+    refresh_fails,
+    refresh_insider,
+    refresh_short_volume,
+    reparse_insider,
+    reparse_notes,
+    retag_13f,
+    thirteenf_moves,
+)
 from src.data_extract.utils.identity.lifecycle import (
     LIFE_COLUMNS,
     PRICE_SPAN,
@@ -126,6 +140,7 @@ from src.data_extract.utils.identity.symbol_tenure import (
     scan_form345_cache,
 )
 from src.data_store.schema import Tables
+from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS
 from src.utils.identity_flags import (
     FLAG_COLUMNS,
     cik_activity,
@@ -178,6 +193,7 @@ class StepExtractIdentity(Step):
         self._symbols: SymbolHistory | None = None
         self._cusips: CusipHistory | None = None
         self._lifecycle: Lifecycle | None = None
+        self._first_build = False
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols and FTD lines of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured."""
@@ -415,8 +431,9 @@ class StepExtractIdentity(Step):
         if details is not None:
             self._log.debug(details)
 
-        # post-process: the CUSIP lines carry their company's id; the identity columns that changed
+        # post-process: the CUSIP lines carry their company's id; the identity columns that changed; a first build (PD-13)
         published = cusip_company_ids(lines, symbols.rows)
+        self._first_build = stored_lineage is None or stored_lineage.empty
         changed = changed_identity(lifecycle.rows, stored_tickers)
 
         # save each table unless unchanged
@@ -427,15 +444,36 @@ class StepExtractIdentity(Step):
         return written
 
     def run_propagate(self) -> PropagationResult:
-        """Carry the lineage changes into the stored rows, under the resolver reloaded once from the rebuilt tables."""
-        return propagate_identity(
-            self._context,
-            self._options.tickers or self._universe.tickers,
-            dry_run=self._options.dry_run,
-            every_ticker=self._options.full,
-            identity=load_identity(self._context, refresh=True),
-            as_of=self._run_date,
-        )
+        """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
+        scope, re-parse, re-stamp the insider, FTD, short-volume and 13F rows, rebuild purged histories. A first build or
+        `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
+        # load: the resolver rebuilt from the published tables (cached for this run's later readers)
+        inputs = identity_inputs(self._context)
+        built = build_identity(inputs.lineage, inputs.tenure, self._universe.cik_by_ticker, inputs.master, inputs.co_registrants, inputs.mergers)
+        identity = bind_identity(self._context, built)
+        tickers, dry_run, every = self._options.tickers or self._universe.tickers, self._options.dry_run, self._options.full or self._first_build
+
+        # compute: the tickers whose scope changed, and what each company owns
+        scopes = {ticker: identity.filing_scope(ticker) for ticker in tickers}
+        changed = recheck_tickers(scopes, as_of=self._run_date, every=every)
+        owned = owned_scopes(identity)
+
+        # contraction: rows filed by a CIK outside the ticker's company or windows (the event-only CIKs on consolidating tables)
+        records = [record for spec in PURGE_TABLES for record in purge_rows(self._context, spec, changed, owned, identity.bounds, dry_run)]
+
+        # expansion and re-stamps: the bulk re-parse (not on a dry run), then the insider, FTD, short-volume and 13F rows
+        notes = {} if dry_run else reparse_notes(self._context, changed, scopes, identity)
+        insider = {} if dry_run else reparse_insider(self._context, changed, scopes, identity, self._run_date)
+        records += refresh_insider(self._context, identity, changed, dry_run)
+        records += refresh_fails(self._context, tickers, self._run_date, dry_run, every)
+        records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)
+        restamped = retag_13f(self._context, thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
+
+        # post-process: the history of every ticker whose facts were purged; one summary
+        removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
+        result = PropagationResult(removals, restamped, {**notes, **insider}, rebuild_history(self._context, removals, dry_run))
+        log_propagation(self._context, changed, result, dry_run)
+        return result
 
     def run(self) -> None:
         """The identity flow (REQ-009): each stage by name, in order."""

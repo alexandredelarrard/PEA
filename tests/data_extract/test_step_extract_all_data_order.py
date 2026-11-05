@@ -17,6 +17,7 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
 from src.data_extract.transformers import step_extract_universe as universe_module
 from src.data_extract.transformers import step_extract_zips as zips_module
+from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe
 
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
@@ -42,7 +43,6 @@ ZIP_INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 
 
 def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> Any:
-    identity = object()
     scan = SimpleNamespace(owner_pairs=object())
     tenure = object()
 
@@ -98,15 +98,15 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         assert step._symbols.rows is lineage, "the CUSIP history is derived from the lineage just built"
         return mark("universe_cusip")()
 
-    def refresh(context, refresh=False):
-        assert refresh, "the identity stage must reload the resolver it just rebuilt"
-        return mark("identity_refresh", identity)()
+    def refresh(context):
+        # the identity stage reloads the resolver from the tables it just published
+        inputs = SimpleNamespace(lineage=None, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+        return mark("identity_refresh", inputs)()
 
-    def propagate(context, tickers, **kwargs):
+    def propagate(scopes, as_of, every):
         today = pd.Timestamp.today().normalize()
-        assert list(tickers) == ["AAA", "BBB"] and kwargs["identity"] is identity
-        assert not kwargs["dry_run"] and not kwargs["every_ticker"] and kwargs["as_of"] == today
-        return mark("propagate")()
+        assert sorted(scopes) == ["AAA", "BBB"] and not every and as_of == today
+        return mark("propagate", [])()
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
@@ -116,8 +116,9 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_lifecycle", lambda step: None)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_publish", lambda step: None)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cusip_history", universe_cusip)
-    monkeypatch.setattr(identity_module, "load_identity", refresh)
-    monkeypatch.setattr(identity_module, "propagate_identity", propagate)
+    stub_propagation(monkeypatch, identity_module)
+    monkeypatch.setattr(identity_module, "identity_inputs", refresh)
+    monkeypatch.setattr(identity_module, "recheck_tickers", propagate)
 
     config = SimpleNamespace(
         data_extract=SimpleNamespace(years_history=15, sharadar_years_history=31),

@@ -21,6 +21,7 @@ from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.institutionals.test_fails_to_deliver import _HEADER, _scope_lineage
+from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe, universe_of
 
 FLOW = (
@@ -88,8 +89,10 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
     monkeypatch.setattr(StepExtractIdentity, "run_lifecycle", lambda self: order.append("lifecycle"))
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
     monkeypatch.setattr(StepExtractIdentity, "run_cusip_history", lambda self: mark("cusips", pd.DataFrame())())
-    monkeypatch.setattr(module, "load_identity", mark("refresh", object()))
-    monkeypatch.setattr(module, "propagate_identity", mark("propagate"))
+    stub_propagation(monkeypatch, module)
+    inputs = SimpleNamespace(lineage=None, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+    monkeypatch.setattr(module, "identity_inputs", mark("refresh", inputs))
+    monkeypatch.setattr(module, "recheck_tickers", mark("propagate", []))
     monkeypatch.setattr(module, "load_stored_lineage", lambda context: pd.DataFrame())
 
 
@@ -160,9 +163,7 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
     calls: dict[str, dict[str, Any]] = {}
     _stub_operations(monkeypatch, [])
     monkeypatch.setattr(module, "pending_dei_periods", lambda context, cache, full: calls.setdefault("dei", {"full": full}) and [])
-    monkeypatch.setattr(
-        module, "propagate_identity", lambda context, tickers, **kwargs: calls.setdefault("propagate", {"tickers": tickers, **kwargs})
-    )
+    stages = stub_propagation(monkeypatch, module)
     options = IdentityOptions(tickers=["AAA"], full=True, dry_run=True, as_of=pd.Timestamp("2026-10-30"))
     step = StepExtractIdentity(_context(), _config(), options)  # type: ignore[arg-type]
 
@@ -170,9 +171,9 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
     step.run_propagate()
 
     assert calls["dei"] == {"full": True}
-    propagate = calls["propagate"]
-    assert propagate["tickers"] == ["AAA"] and "all_tickers" not in propagate
-    assert propagate["dry_run"] and propagate["every_ticker"] and propagate["as_of"] == pd.Timestamp("2026-10-30")
+    recheck = stages["recheck"][0]
+    assert recheck["tickers"] == ["AAA"] and stages["retag"] == [True]
+    assert recheck["every"] and recheck["as_of"] == pd.Timestamp("2026-10-30")
     print("\n=== SANITY CHECK: identity options ===")
     print("  --full reaches the capture; -t, --full, --dry-run and --as-of reach the propagation")
 
@@ -216,8 +217,7 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     prepare, view = module.prepare_observations, module.lineage_view
     monkeypatch.setattr(module, "prepare_observations", lambda observations: lines_seen.append(len(observations)) or prepare(observations))
     monkeypatch.setattr(module, "lineage_view", lambda lineage, roster, tape: lineages.append(lineage) or view(lineage, roster, tape))
-    monkeypatch.setattr(module, "load_identity", lambda ctx, refresh=False: object())
-    monkeypatch.setattr(module, "propagate_identity", lambda *args, **kwargs: None)
+    stub_propagation(monkeypatch, module)
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
 
     StepExtractIdentity(context, config).run()  # type: ignore[arg-type]

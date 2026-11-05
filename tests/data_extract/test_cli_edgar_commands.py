@@ -204,11 +204,7 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     monkeypatch.setattr(step_identity, "capture_ftd_lines", lambda *args, **kwargs: (pd.DataFrame(), []))
     monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(step_identity, "build_symbol_tenure", lambda *args: pd.DataFrame())
-    monkeypatch.setattr(
-        step_identity,
-        "propagate_identity",
-        lambda context, tickers, **kwargs: calls.append(("propagate", kwargs)) or SimpleNamespace(removals=pd.DataFrame()),
-    )
+    monkeypatch.setattr(step_identity, "recheck_tickers", lambda scopes, as_of, every: calls.append(("propagate", {"every": every})) or [])
     stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: calls.append(("periods", {"years": years})) or ["2026q1"])
     monkeypatch.setattr(step_zips, "download_notes_periods", lambda ctx, cache, periods: calls.append(("notes", {"periods": periods})) or 0)
@@ -218,11 +214,11 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "propagate"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["zips-download", "--only", "notes"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-evidence"]).exit_code == 0
-    assert [kwargs.get("every_ticker") for name, kwargs in calls if name == "propagate"] == [True, False]
+    assert [kwargs.get("every") for name, kwargs in calls if name == "propagate"] == [True, False]
     assert [kwargs for name, kwargs in calls if name in ("periods", "notes")] == [{"years": 32}, {"periods": ["2026q1"]}]
     assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], (
         "identity --only capture-evidence captures the cover-page symbols"
     )
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
-    print("  identity --only propagate --full reaches propagate_identity(every_ticker=True) and prints the dry run;")
+    print("  identity --only propagate --full re-checks every ticker (recheck_tickers every=True) and prints the dry run;")
     print("  zips-download --only notes lists years_history 31 + 1 Notes years; identity --only capture-evidence captures")

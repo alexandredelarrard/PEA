@@ -17,15 +17,16 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_entries
 from src.data_extract.utils.edgar_extract import schedule_rows
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
-from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
 from tests.support import identity_regression_gate as gate
+from tests.support.propagation import run_propagation
 from tests.support.universe import as_roster
 
 SENTINEL = "1900-01-01"
@@ -202,11 +203,12 @@ MRK_8K = [("sgp-2009", MRK, "2009-06-01"), ("merck-2008", OLD_MERCK, "2008-05-01
 def test_the_purge_and_the_validator_drop_old_jcis_event_rows(sqlite_store, tmp_path, monkeypatch) -> None:
     context = _Context(sqlite_store, tmp_path)
     sqlite_store.save(Tables.sec_8k, pd.concat([_8k("JCI", JCI_8K), _8k("MRK", MRK_8K)], ignore_index=True))
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scopes, resolver, run_date: {})
-    monkeypatch.setattr(prop, "_refresh_insider", lambda context, identity, changed, dry_run: [])
+    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
+    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
+    monkeypatch.setattr(step_module, "refresh_insider", lambda *args: [])
     pending = pending_removals(context, _lineage(), list(ROSTER))
 
-    result = prop.propagate_identity(context, list(ROSTER), identity=_identity(), as_of=RUN_DATE)
+    result = run_propagation(context, _identity(), monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
     kept = set(sqlite_store.load(Tables.sec_8k, columns=["accession_number"])["accession_number"])
     removed = {(r.table, r.ticker, r.cik, r.rows) for r in result.removals.itertuples(index=False)}

@@ -85,7 +85,9 @@ class _Context(types.SimpleNamespace):
 def _ctx(tmp_path: Path, store: Any) -> Any:
     if not store.exists(Tables.universe_tickers):
         seed_universe(store, UNIVERSE)
-    return _Context(store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity())
+    return _Context(
+        store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity()
+    )
 
 
 def _identity() -> Identity:
@@ -126,10 +128,8 @@ def _identity() -> Identity:
             if row.ticker not in {"ECHO", "BNY"}
         ]
     )
-    return build_identity(
-        lineage=pd.DataFrame(rows),
-        tenure=tenure,
-        roster_cik=as_roster(roster),
+    return replace(
+        build_identity(lineage=pd.DataFrame(rows), tenure=tenure, roster_cik=as_roster(roster)),
         redundant_symbols=frozenset({"GOOG", "BFA"}),
     )
 

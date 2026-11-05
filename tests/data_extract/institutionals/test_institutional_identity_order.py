@@ -18,7 +18,7 @@ IDENTITY_STAGE_NAMES = (
     "scan_form345_cache",
     "build_symbol_tenure",
     "symbol_rows",
-    "propagate_identity",
+    "identity_propagate",
     "download_insider_transactions",
     "download_notes_periods",
     "refresh=True",

@@ -564,7 +564,7 @@ def latest_rows(edgar_ready) -> dict:
     `filing.xbrl()` costs 1.4-5.8 s and this file needs seven of them."""
     from edgar import Company, set_identity
 
-    from src.data_extract.utils.common.edgar_driver import FilingStamp
+    from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     identity = os.getenv("SEC_USER_AGENT")

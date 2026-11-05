@@ -22,8 +22,8 @@ from omegaconf import DictConfig
 
 from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.context import Context
-from src.data_aggregate.utils.assemble.cube import _betas_to_long, labels_to_wide
-from src.data_aggregate.utils.common.gics import load_gics_maps
+from src.data_aggregate.utils.assemble.cube import labels_to_wide
+from src.data_aggregate.utils.target.betas import _betas_to_long
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     PART_REFRESH_TRADING_DAYS,
@@ -96,7 +96,7 @@ class StepCubeTarget(Step):
 
         # aggregate and compute needed netral variables
         panel, macro_cols = self._factor_panel(price_frames, fundamentals, seams)
-        sector_groups = load_gics_maps(self._context)
+        sector_groups = {"sector": self._universe.sector_map, "industry_group": self._universe.industry_group_map}
         # avg sector without market -- fed the panel's OWN market column, not a second read
         sector_excess = self._sector_factor(price_frames, sector_groups, panel["market"])
 

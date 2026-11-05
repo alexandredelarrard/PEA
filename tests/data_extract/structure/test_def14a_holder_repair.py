@@ -13,8 +13,8 @@ import pytest
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a import fetch
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.holders import reconcile_holders
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, reservation_frame
@@ -36,6 +36,7 @@ def _stamp(df_holders: pd.DataFrame) -> dict[str, Any]:
     return df_holders.iloc[0][["ticker", "accession_number", "as_of", "cik"]].to_dict()
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_recorded_ge_repair_reconciles_four_aliases_before_persisting(sqlite_store: DataStore, ge_holders: pd.DataFrame) -> None:
     section = next(item for item in SECTIONS if item.key == "ownership")
     stamp = _stamp(ge_holders)
@@ -73,11 +74,13 @@ def test_recorded_ge_repair_reconciles_four_aliases_before_persisting(sqlite_sto
     print("SANITY: recorded GE repair stays at 11 holders, including four institutions; repeat replay cannot recreate four address aliases.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_complete_exhausted_holders_are_normalized_free_without_archive(sqlite_store: DataStore, ge_holders: pd.DataFrame) -> None:
     stamp = _stamp(ge_holders)
     df_complete = ge_holders.fillna({"percent_of_class": 0.01, "percent_of_voting_power": 0.01})
     sqlite_store.save(Tables.def14a_ownership, df_complete)
     parent = {**stamp, "insider_shares": 1, "insider_ownership_pct": 0.01, "insider_voting_pct": 0.01, "retry": 2}
+    sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([parent]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([parent]))
     context = cast(Context, SimpleNamespace(store=sqlite_store))
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
@@ -131,6 +134,7 @@ def test_holder_repair_retains_partial_old_facts_and_distinct_entities() -> None
     print("SANITY: alias repair fills only the missing percentage, preserves saved shares, and keeps affiliates and Jr/Sr separate.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_survivor_save_failure_does_not_delete_saved_holder_aliases(
     sqlite_store: DataStore, ge_holders: pd.DataFrame, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -180,7 +184,8 @@ def test_holder_identity_preserves_word_boundaries_and_legal_suffixes() -> None:
     print("SANITY: separate name tokens and legal suffixes remain distinct; no fuzzy or prefix matching.")
 
 
-def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
+@pytest.mark.usefixtures("filing_store")
+def test_public_replay_cleans_ge_aliases_without_source_or_provider(
     sqlite_store: DataStore, ge_holders: pd.DataFrame, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stamp = _stamp(ge_holders)
@@ -190,21 +195,21 @@ def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
     raw = Def14AExtract.model_validate(
         {"ownership_holders": ge_holders.to_dict("records"), "governance": {"n_five_percent_holders": 99}}
     ).model_dump_json()
+    sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
     context = cast(Context, SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.def14a.holders")))
     config = extract_config(data_extract={"years_history": 31})
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
-    identity = SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("GE", "40545"))
-    monkeypatch.setattr(fetch, "load_cik_mapping", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
+    identity = SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("GE", "0000040545"))
+    monkeypatch.setattr(fetch, "universe_rows", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
     monkeypatch.setattr(fetch, "load_identity", lambda *_: identity)
     monkeypatch.setattr(fetch, "_listed_proxies", lambda *_: filings.copy())
-    monkeypatch.setattr(fetch, "_section_extractors", lambda *_: {})
     monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)
     monkeypatch.setattr(fetch, "_read_proxy", lambda *_: pytest.fail("exhausted cleanup must not fetch SEC source"))
 
-    # Exercise the unchanged daily entry point twice; an empty extractor map forbids calls.
-    for full in (False, True):
-        fetch.fetch_def14a_llm(context, config, ["GE"], full=full)
+    # Exercise the public replay entry point twice (it must be idempotent); an empty extractor map forbids calls.
+    for _ in range(2):
+        fetch.fetch_def14a_llm(context, config, ["GE"], {}, replay_stored_json=True)
         df_stored = sqlite_store.load(Tables.def14a_ownership, where={"ticker": "GE"})
         parent = sqlite_store.load(Tables.def14a_llm, where={"ticker": "GE"}).iloc[0]
         assert df_stored is not None and len(df_stored) == 11 and set(df_stored.retry) == {2}
@@ -213,4 +218,4 @@ def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
         assert facade["governance"]["n_five_percent_holders"] == 4
         assert json.loads(raw)["governance"]["n_five_percent_holders"] == 99
         assert parent.n_ownership_rows == 11 and parent.n_five_percent_holders == 4 and parent.retry == 2
-    print("SANITY: public daily/full extraction cleans recorded GE aliases with no source/provider access and keeps original paid JSON and retry=2.")
+    print("SANITY: public replay cleans recorded GE aliases with no source/provider access and keeps original paid JSON and retry=2.")

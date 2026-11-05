@@ -15,6 +15,7 @@ import pandas as pd
 from src.data_store.schema import Tables
 from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags, log_identity_flags
 from src.validate.checks.identity import check_identity
+from tests.support.universe import seed_universe, universe_in
 
 SENTINEL = "1900-01-01"
 LOGGER = "test.identity_check"
@@ -211,11 +212,11 @@ def _store_lineage() -> pd.DataFrame:
 
 
 def _context(store: Any) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))
+    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), universe=universe_in(store))
 
 
 def _seed_store(store: Any, lineage: pd.DataFrame) -> None:
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["ALB", "TMUS", "REG"], "cik": [ALB, TMUS, SUCC]}))
+    seed_universe(store, ["ALB", "TMUS", "REG"], rows={"ALB": {"cik": ALB}, "TMUS": {"cik": TMUS}, "REG": {"cik": SUCC}})
     store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
     filings = [
         ("ALB", "alb-1", ALB, "2024-02-01"),
@@ -579,7 +580,7 @@ def _seed_traded(store: Any) -> None:
     lineage = pd.DataFrame(
         [row for i, t in enumerate(tickers) for row in (_cik(t, f"00000009{i:02d}", "cik_window"), _sym(t, f"00000009{i:02d}", t, "2006-01-02"))]
     )
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": tickers, "cik": [f"00000009{i:02d}" for i in range(len(tickers))]}))
+    seed_universe(store, tickers, rows={t: {"cik": f"00000009{i:02d}"} for i, t in enumerate(tickers)})
     store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
     master = [
         _master_row("ALN", "ALN000001", "canonical_current", "2011-01-01"),

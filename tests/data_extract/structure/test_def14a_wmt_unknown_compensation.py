@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.store import DataStore
@@ -22,6 +22,7 @@ def wmt_packet() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("saved_state", ["legacy_saved_conde", "repair_saved_conde"])
+@pytest.mark.usefixtures("filing_store")
 def test_actual_wmt_paid_unknown_clears_only_the_source_unsupported_legacy_zero(
     wmt_packet: dict[str, Any], saved_state: str, sqlite_store: DataStore
 ) -> None:

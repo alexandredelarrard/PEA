@@ -1,6 +1,6 @@
 """The stored tables that keep a filer CIK per row, and the removal record a foreign filer leaves.
 
-Shared by `identity-propagate` (which purges) and the identity validator (which recomputes the same
+Shared by `identity --only propagate` (which purges) and the identity validator (which recomputes the same
 pending removals through the store); a row is foreign when its filer CIK is not a CIK of its ticker's entity
 (`own_filer_mask`), for a dated table (8-K, 13D/13G) also when no seam-widened window of that CIK
 admits its date (`windowed_filer_mask`), and for a consolidating table also when that CIK holds no window
@@ -58,7 +58,6 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.fundamentals_employees, "cik", "as_of", "accession_number", windowed=True),
     FilerTable(Tables.notes_num, "cik", "filed", "adsh", windowed=True),
     FilerTable(Tables.notes_text, "cik", "filed", "adsh", windowed=True),
-    FilerTable(Tables.pension_facts, "cik", "filed", "adsh", windowed=True),
 )
 PURGE_TABLES_BY_NAME: Mapping[str, FilerTable] = {spec.table.name: spec for spec in PURGE_TABLES}
 

@@ -9,7 +9,11 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.sec_thirteen import institutional_vintages
-from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBookSnapshot, prepare_superinvestor_book_history
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import (
+    PublicBookSnapshot,
+    prepare_superinvestor_batches,
+    prepare_superinvestor_book_history,
+)
 from src.utils.institutional_vintages import prepare_book_vintages
 
 
@@ -43,11 +47,43 @@ def _history(packets: list[tuple[pd.DataFrame, pd.DataFrame]], grid: pd.Datetime
     df_filings = pd.concat([packet[0] for packet in packets], ignore_index=True)
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
     df_manifest = prepare_book_vintages(df_filings, df_holdings, grid, settle_days=0)
-    return prepare_superinvestor_book_history(df_manifest, df_holdings, grid, 90)
+    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90)
+    assert history is not None
+    return history
 
 
 def _on(history: tuple[PublicBookSnapshot, ...], day: str) -> PublicBookSnapshot:
     return max((snapshot for snapshot in history if snapshot.day <= pd.Timestamp(day)), key=lambda snapshot: snapshot.day)
+
+
+def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None:
+    packets = [
+        _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 100}),
+        _packet("0000000002", "2024-03-31", "2024-05-15", {"111111111": 200}),
+        _packet("0000000002", "2024-06-30", "2024-08-14", {"111111111": 220}),
+        _packet("0000000002", "2024-06-30", "2024-09-03", {"111111111": 250}, "restatement"),
+        _packet("0000000003", "2024-06-30", "2024-08-14", {}),
+    ]
+    # A projected empty source retains the nonempty table's dtypes, rather than the fixture constructor's object fallback.
+    packets[-1] = packets[-1][0], packets[-1][1].astype(packets[0][1].dtypes.to_dict())
+    grid = pd.bdate_range("2024-01-02", "2024-12-31")
+    expected = _history(packets, grid)
+    batches = [
+        tuple(pd.concat([packet[index] for packet in selected], ignore_index=True) for index in (0, 1)) for selected in (packets[:2], packets[2:])
+    ]
+    prepared = prepare_superinvestor_batches(((batch[0], batch[1]) for batch in batches), grid)
+    actual = prepare_superinvestor_book_history(prepared, grid, 90)
+    assert actual is not None and [state.day for state in actual] == [state.day for state in expected]
+    for old, new in zip(expected, actual, strict=True):
+        assert old.common_period == new.common_period and dict(old.latest_period_by_manager) == dict(new.latest_period_by_manager)
+        assert set(old.level_books) == set(new.level_books) and set(old.archive) == set(new.archive)
+        for key in old.archive:
+            before, after = old.archive[key], new.archive[key]
+            assert before.support == after.support and before.first_public_at == after.first_public_at
+            pd.testing.assert_frame_equal(before.df_positions, after.df_positions)
+    print(
+        "SANITY: guarded many-book batches preserve exact positions, public/expiry dates, amendment history, complete-empty support and all archive states."
+    )
 
 
 def test_first_public_day90_is_included_and_day91_expires_without_a_filing() -> None:

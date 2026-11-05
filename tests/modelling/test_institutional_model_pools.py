@@ -13,10 +13,11 @@ import pytest
 
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort, union_all_columns
+from src.modelling.transformers import LightGBMModel, LinearRegression, RandomForestModel
 from src.utils.config import read_config
 
 
-def test_institutional_29_names_selected_without_fitting(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_institutional_29_candidates_declared_and_selected_without_fitting(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     names = [
         "f_ic_insider_buy_value_mcap_60d",
         "f_ic_insider_buy_value_mcap_180d",
@@ -50,10 +51,13 @@ def test_institutional_29_names_selected_without_fitting(tmp_path: Path, sqlite_
     ]
     config_dir = Path(__file__).resolve().parents[2] / "configs"
     config = read_config(str(config_dir))
+    # `columns` is each family's candidate pool (the forest borrows LightGBM's when it declares none)
     for key in ("linear", "lgbm", "random_forest"):
+        if "columns" not in config[key]:
+            continue
         columns = list(config[key].columns)
         assert len(columns) == len(set(columns))
-        assert [column for column in columns if column.startswith("f_ic_")] == names
+        assert sorted(column for column in columns if column.startswith("f_ic_")) == sorted(names)
 
     dates = pd.bdate_range("2021-12-28", periods=4)
     cube = pd.DataFrame(1.0, index=range(len(dates)), columns=union_all_columns(config))
@@ -92,13 +96,18 @@ def test_institutional_29_names_selected_without_fitting(tmp_path: Path, sqlite_
     schema = step._resolve_schema()
     prepared, prior = step._prepare_training()
     assert prepared == schema and prior is None and schema.horizons == [30, 60, 90]
-    for family, key in (("linear", "linear"), ("lgbm", "lgbm"), ("rf", "random_forest")):
-        assert schema.family_cols[family] == list(config[key].columns)
+    for family, model in (("linear", LinearRegression), ("lgbm", LightGBMModel), ("rf", RandomForestModel)):
+        assert schema.family_cols[family] == model.configured_columns(config, None)
         for horizon in schema.horizons:
-            assert schema.family_cols_by_h[family][horizon] == list(config[key].columns)
-    assert set(names) <= set(schema.load_cols) and not any(column.startswith("target_") for column in schema.load_cols)
+            assert schema.family_cols_by_h[family][horizon] == model.configured_columns(config, horizon)
+    selected = {c for by_h in schema.family_cols_by_h.values() for cols in by_h.values() for c in cols if c.startswith("f_ic_")}
+    assert selected and selected <= set(names) and selected <= set(schema.load_cols)
+    assert not any(column.startswith("target_") for column in schema.load_cols)
     assert cube[names].isna().all().all() and not trips
     assert step._training_as_of == pd.Timestamp("2021-12-31")
     assert not list(tmp_path.iterdir())
     counts = {family: len(columns) for family, columns in schema.family_cols.items()}
-    print(f"SANITY: all29 institutional inputs selected once at h30/h60/h90; pools={counts}; all29 stay null; zero fit/write/network trips.")
+    print(
+        f"SANITY: all29 institutional inputs are declared candidates; the {len(selected)} selected at h30/h60/h90 load although all-null; "
+        f"pools={counts}; zero fit/write/network trips."
+    )

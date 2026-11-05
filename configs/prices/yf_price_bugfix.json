@@ -335,19 +335,7 @@
       ]
     }
   },
-  "split_vintage": {
-    "MNST": [
-      {
-        "before": "2026-08-11",
-        "ratio": 2.0,
-        "expect_wedge": 0.5,
-        "expect_flips": 5,
-        "evidence": "Yahoo back-adjusted FIVE bars for the 2026-08-11 two-for-one and left the other 7,793 alone. The five (2026-07-20, 07-21, 07-22, 07-31, 08-06) sit as islands inside the unadjusted run, so close_split reads 97.65 -> 48.19 -> 93.55 -> 47.08 -> 90.36 -> 45.53 with nothing in the market to explain it. The ten island edges are steps of 0.4895, 1.9559, 0.4935, 1.9413, 0.4984 and 1.9193 -- every one within 5% of 2.0 or 0.5, and the largest genuine MNST move in thirty years is +45.5%, so nothing real is near the flip band.",
-        "corroboration": "sharadar.price / close_split is 0.50000 on all 122 filing rows from 1996-05-10 to 2026-08-07, flat to five decimals -- Sharadar carries the whole series on the post-split basis. Sharadar's 45.18 on 2026-08-07 equals 90.36 / 2 exactly. sharadar_actions has no MNST row after 2016-11-10, so the vendor's ACTION feed is stale even though its PRICE is right; the split is in prices_splits (2026-08-11, ratio 2.0), which is what `ratio` here refers to.",
-        "note": "⚠ The only entry that is direction-aware per bar, and the only one that is NOT a stale-extract artifact -- re-fetched live from Yahoo on 2026-09-01 and reproduced exactly. Volume is deliberately left alone: 10.8M on the last stale bar against 10.1M on the next adjusted one is no evidence of a re-basing, and inventing a factor for a leg with no measured defect is how a register starts lying."
-      }
-    ]
-  },
+  "split_vintage": {},
   "return_seams": {
     "JCI": [
       {

@@ -40,7 +40,7 @@ LIVE_MARKER = "live"
 #: Every blocked attempt, in order: "<kind>: <detail>".
 TRIPS: list[str] = []
 
-_STORE_WRITES = ("save", "bulk_seed", "append_tail", "delete", "replace", "ensure_columns", "drop")
+_STORE_WRITES = ("insert", "update", "save", "bulk_seed", "append_tail", "delete", "replace", "ensure_columns", "drop")
 _READ_SQL = re.compile(r"^\s*(select|show|set|explain|begin|commit|rollback|savepoint|release)\b", re.IGNORECASE)
 _WITH_WRITE = re.compile(r"\b(insert|update|delete|merge|truncate|create|alter|drop|copy)\b", re.IGNORECASE)
 _installed = False

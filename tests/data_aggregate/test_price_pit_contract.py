@@ -21,12 +21,13 @@ from src.data_aggregate.utils.price.inputs import PriceInputs
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries
 from src.utils.price.adjustments import ShareBasis
+from tests.support.universe import seed_universe
 
 
 def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
     """A known four-for-one split with unchanged economic capitalization."""
     index = pd.bdate_range("2020-01-02", periods=760)
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+    universe = seed_universe(store, ["AAA", "BBB"])
     df_bars = pd.DataFrame(
         [
             {
@@ -79,7 +80,9 @@ def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
     peer_path = directory / "peers.json"
     peer_path.write_text(json.dumps({"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}), encoding="utf-8")
     config = OmegaConf.create({"build_cube": {}, "data_extract": {"redundant_ticks": []}})
-    return SimpleNamespace(store=store, config=config, config_dir=directory, log=logging.getLogger(__name__), paths={"SECTOR_PEERS_PATH": peer_path})
+    return SimpleNamespace(
+        store=store, config=config, config_dir=directory, log=logging.getLogger(__name__), paths={"SECTOR_PEERS_PATH": peer_path}, universe=universe
+    )
 
 
 def test_actual_builder_publishes_quoted_prices_and_split_carried_counts(sqlite_store: Any, tmp_path: Path) -> None:

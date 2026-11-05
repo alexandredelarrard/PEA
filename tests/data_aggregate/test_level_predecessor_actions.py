@@ -27,6 +27,7 @@ from src.utils.price.levels import level_factor
 from src.validate.utils import prices as vprices
 from tests.conftest import FakeStore
 from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
+from tests.support.universe import universe_of
 
 LOGGER = "test.level_predecessor_actions"
 #: Real Sharadar TYC ARQ rows (`_cache/tyc_sf1.csv`): (date, sharesbas, marketcap, JCI close_split on `date`).
@@ -73,7 +74,7 @@ def _context(tmp_path: Path, overrides: list[dict]) -> SimpleNamespace:
 
 def _cube_s(context: SimpleNamespace, tickers: list[str]) -> pd.DataFrame:
     """Exercise actual price creation with known predecessor action and quote inputs."""
-    context.store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": tickers}))
+    context.universe = universe_of(tickers)
     context.store.replace(
         Tables.sharadar_fundamentals,
         pd.DataFrame(columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]),

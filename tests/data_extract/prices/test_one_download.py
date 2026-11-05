@@ -1,4 +1,4 @@
-"""Prices, dividends and splits from ONE yfinance `actions=True` download per window group (AC-009).
+"""Prices, dividends and splits through ONE shared `YahooSession`: a window pulled by one fetcher is not pulled again (AC-009).
 
 The yfinance response is a recorded one (AAPL, MO, NVDA, 2024-05-01..2024-06-28: an AAPL and an MO
 dividend, the NVDA 10:1 split and its first post-split dividend), served by a fake `yf.download` that
@@ -25,6 +25,7 @@ from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_extract.utils.prices import fetch_splits as fs
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.universe import seed_universe
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "yfinance" / "aapl_mo_nvda_2024-05_06_actions.csv"
 _TICKERS = ["AAPL", "MO", "NVDA"]
@@ -64,7 +65,9 @@ class FakeYahoo:
 
 def _context(store: DataStore) -> Any:
     config = OmegaConf.create({"data_extract": {"years_history": 3, "macro_years_history": 1}})
-    return SimpleNamespace(store=store, log=logging.getLogger("test.one_download"), config=config, config_dir=".")
+    return SimpleNamespace(
+        store=store, log=logging.getLogger("test.one_download"), config=config, config_dir=".", universe=seed_universe(store, _TICKERS)
+    )
 
 
 def _second_store() -> DataStore:
@@ -85,6 +88,7 @@ def yahoo(monkeypatch: pytest.MonkeyPatch) -> FakeYahoo:
 
 def test_one_call_per_window(sqlite_store: DataStore, yahoo: FakeYahoo, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step_module, "fetch_macro", lambda *a, **k: None)
+    monkeypatch.setattr(step_module, "fetch_earnings_surprises", lambda *a, **k: None)  # the step's own sub-run, tested apart
     ctx = _context(sqlite_store)
 
     StepExtractPrices(context=ctx, config=ctx.config).run(tickers=_TICKERS)
@@ -93,11 +97,15 @@ def test_one_call_per_window(sqlite_store: DataStore, yahoo: FakeYahoo, monkeypa
     assert yahoo.calls[0]["actions"] is True and yahoo.calls[0]["auto_adjust"] is False
     assert all(sqlite_store.exists(t) for t in (Tables.prices, Tables.dividends, Tables.prices_splits))
     print("\n=== SANITY CHECK: one download ===")
-    print(f"  StepExtractPrices on a cold table -> {len(yahoo.calls)} yfinance call (actions=True, auto_adjust=False) wrote all three tables.")
+    print(
+        f"  StepExtractPrices on a cold table -> {len(yahoo.calls)} yfinance call (actions=True, auto_adjust=False) through the three fetchers wrote all three tables."
+    )
 
 
 def test_the_three_tables_equal_the_three_call_path(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
-    fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=_AS_OF, pause=0.0)
+    ctx, session = _context(sqlite_store), fp.YahooSession(pause=0.0)
+    for fetch in (fp.fetch_price_actions, fp.fetch_dividends, fp.fetch_prices):
+        fetch(ctx, session, _TICKERS, years_history=1, as_of=_AS_OF)
     (call,) = yahoo.calls
     since, until = pd.Timestamp(call["start"]), pd.Timestamp(call["end"]) - pd.Timedelta(days=1)
 
@@ -126,7 +134,7 @@ def test_a_split_after_the_last_bar_re_pulls_that_ticker_only(sqlite_store: Data
     sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
     yahoo.calls.clear()
 
-    fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-13"), pause=0.0)
+    fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-13"))
 
     assert [c["tickers"] for c in yahoo.pulls] == [_TICKERS, ["NVDA"]]
     assert pd.Timestamp(yahoo.pulls[1]["start"]) == pd.Timestamp("2023-06-13")
@@ -146,7 +154,7 @@ def test_a_dividend_after_the_last_bar_re_pulls_that_ticker_and_restates_close_t
     sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
     yahoo.calls.clear()
 
-    fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"), pause=0.0)
+    fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"))
 
     assert [c["tickers"] for c in yahoo.pulls] == [_TICKERS, ["MO", "NVDA"]]
     stored = cast(pd.DataFrame, sqlite_store.load(Tables.prices, where={"date": [pd.Timestamp("2024-05-01")]})).set_index("ticker")["close_total"]
@@ -168,7 +176,7 @@ def test_a_re_pull_starts_at_the_earliest_stored_bar_when_history_predates_the_f
     monkeypatch.setattr(fp, "document_floor", lambda *a, **k: pd.Timestamp("2024-05-15"))
     yahoo.calls.clear()
 
-    fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"), pause=0.0)
+    fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"))
 
     assert [c["tickers"] for c in yahoo.pulls][1] == ["MO", "NVDA"]
     assert pd.Timestamp(yahoo.pulls[1]["start"]) == pd.Timestamp("2024-05-01")
@@ -180,7 +188,7 @@ def test_a_re_pull_starts_at_the_earliest_stored_bar_when_history_predates_the_f
 def test_a_failed_download_saves_nothing_and_logs_the_tickers(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: pd.DataFrame())
     with caplog.at_level("WARNING"):
-        fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=_AS_OF, pause=0.0)
+        fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=_AS_OF)
     assert not sqlite_store.exists(Tables.prices)
     assert "No bars returned for 3 ticker(s)" in caplog.text
     print("\n=== SANITY CHECK: failed download ===")

@@ -24,6 +24,10 @@ from omegaconf import OmegaConf
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
 from src.data_store.schema import Resume, Tables
+from tests.support.universe import as_roster, seed_universe, universe_in
+
+#: The universe the stored rows of these tests belong to (GOOG is an alias class, never a universe ticker).
+UNIVERSE = ["AAA", "BF-B", "BRK-B", "CCC"]
 
 _PARAGRAPH = pa.struct([("paragraph_number", pa.int32()), ("speaker", pa.string()), ("content", pa.string())])
 _SCHEMA = pa.schema(
@@ -70,14 +74,18 @@ def _source(path: Path, tag: str) -> tuple[ect.TranscriptSource, _Opener]:
     return ect.TranscriptSource(revision=f"rev-{tag}", opener=opener), opener
 
 
+class _Context(types.SimpleNamespace):
+    """A stub context whose universe is the stored `tickers_universe`, read on each access."""
+
+    @property
+    def universe(self) -> Any:
+        return universe_in(self.store)
+
+
 def _ctx(tmp_path: Path, store: Any) -> Any:
-    return types.SimpleNamespace(
-        store=store,
-        log=logging.getLogger("test_earnings_call_transcripts"),
-        paths={"DATA_STORE": tmp_path},
-        config=types.SimpleNamespace(data_extract=types.SimpleNamespace(redundant_ticks=["GOOG"])),
-        _identity_resolver=_identity(),
-    )
+    if not store.exists(Tables.tickers_universe):
+        seed_universe(store, UNIVERSE)
+    return _Context(store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity())
 
 
 def _identity() -> Identity:
@@ -121,7 +129,7 @@ def _identity() -> Identity:
     return build_identity(
         lineage=pd.DataFrame(rows),
         tenure=tenure,
-        roster=roster,
+        roster_cik=as_roster(roster),
         redundant_symbols=frozenset({"GOOG", "BFA"}),
     )
 
@@ -155,8 +163,8 @@ def _recovery_context(tmp_path: Path, store: Any) -> Any:
         ]
     )
     tenure = pd.DataFrame([dict(symbol="AVGO", issuer_cik="1730168", valid_from="2016-01-01", valid_to=None, n_filings=1, source="manual")])
-    ctx._identity_resolver = build_identity(lineage, tenure, roster)
-    store.save(Tables.sp500_tickers, roster)
+    ctx._identity_resolver = build_identity(lineage, tenure, as_roster(roster))
+    seed_universe(store, [*UNIVERSE, "AVGO"], rows={"AVGO": {"name": "Broadcom", "cik": "0001730168"}})
     return ctx
 
 
@@ -395,7 +403,7 @@ def test_rebased_support_requires_unambiguous_dated_alias_and_its_own_cik_window
             "source": "manual",
         }
     )
-    identity = build_identity(lineage, tenure, roster)
+    identity = build_identity(lineage, tenure, as_roster(roster))
     assert ect.ticker_for_call(identity, "OLD", pd.Timestamp("2010-05-01")).ticker is None
     assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2010-05-01")).ticker is None
     assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2015-01-01")).ticker == "NEW"
@@ -448,7 +456,7 @@ def test_row_group_pruning_keeps_history_and_share_class_spellings(tmp_path: Pat
 
 
 def test_first_run_writes_raw_paragraphs_with_repo_ticker_and_call_date(tmp_path: Path, sqlite_store: Any) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BF-B", "BRK-B", "CCC", "GOOG"]}))
+    seed_universe(sqlite_store, UNIVERSE)
     source, _ = _source(_write(tmp_path / "t.parquet", _BASE), "f1")
     ctx = _ctx(tmp_path, sqlite_store)
 
@@ -824,12 +832,7 @@ def test_metadata_scan_recovers_rowless_tickers_regardless_of_added_on(tmp_path:
     ctx = _ctx(tmp_path, sqlite_store)
     path = _write(tmp_path / "a.parquet", _BASE)
     ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B"], source=_source(path, "f1")[0])
-    sqlite_store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {"ticker": ["AAA", "BF-B", "CCC"], "added_on": [pd.Timestamp("2000-01-01"), pd.Timestamp("2000-01-01"), pd.Timestamp(added_on)]}
-        ),
-    )
+    seed_universe(sqlite_store, UNIVERSE, rows={"CCC": {"universe_added_on": pd.Timestamp(added_on)}})
 
     summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0])
     ccc = _sections(sqlite_store).query("ticker == 'CCC'")

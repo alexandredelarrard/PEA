@@ -9,106 +9,33 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import edgar.thirteenf.parsers.infotable_xml as xml_parser
 import pandas as pd
 import pyarrow as pa
 import pytest
 
 from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
-from src.data_extract.utils.common.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_extract.utils.institutionals.fetch_13f import _book_frame
-from src.data_extract.utils.institutionals.fetch_13f_backfill import data_set_book
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame, save_13f_filing
 from src.data_extract.utils.institutionals.legacy_13f_fallback import parse_legacy_information_table
 from src.data_extract.utils.institutionals.value_units import (
     FEW_ROWS_PRICE,
     MILLIONS_PRICE,
     NO_EVIDENCE,
     caption_factor,
-    normalize_information_values,
-    resolve_value_units,
 )
-
-
-@pytest.mark.parametrize(
-    ("filed", "schema", "caption", "factor"),
-    [
-        ("2022-11-14", "X0102", None, 1000),
-        ("2023-01-03", "X0202", None, 1),
-        ("2025-05-14", None, None, 1),
-        ("1995-05-15", None, "<TABLE>NAME CUSIP VALUE (x$1000) SHARES\n</TABLE>", 1000),
-        (None, None, "<TABLE>NAME CUSIP VALUE (x$10000) SHARES\n</TABLE>", 10000),
-    ],
-)
-def test_source_declarations_select_units(filed: str | None, schema: str | None, caption: str | None, factor: float) -> None:
-    units = resolve_value_units(filed, schema_version=schema, information_table_text=caption)
-    assert units.factor == factor
-    raw = pd.DataFrame({"VALUE": [145462], "SSHPRNAMT": [3362515]})
-    normalized = normalize_information_values(raw, units)
-    assert normalized.VALUE.iloc[0] == 145462 * factor
-    assert normalized.raw_value.iloc[0] == 145462
-    assert normalized.SSHPRNAMT.iloc[0] == 3362515
-    assert raw.VALUE.iloc[0] == 145462
-    print(f"\nSANITY: source factor {factor:g} applied once; raw value and shares retained.")
-
-
-@pytest.mark.parametrize(
-    ("filed", "schema", "text"),
-    [
-        ("2025-05-14", "X0202", "<TABLE>VALUE (x$1000) CUSIP SHARES\n</TABLE>"),
-        ("2022-05-15", "X0102", "<TABLE>VALUE (in dollars) CUSIP SHARES\n</TABLE>"),
-        (None, None, None),
-        ("2025-05-14", "X9999", None),
-    ],
-)
-def test_conflicting_or_unknown_units_withhold_dollars_and_keep_shares(filed: str | None, schema: str | None, text: str | None) -> None:
-    units = resolve_value_units(filed, schema_version=schema, information_table_text=text)
-    assert units.factor is None
-    frame = normalize_information_values(pd.DataFrame({"Value": [123], "SharesPrnAmount": [456]}), units)
-    assert pd.isna(frame.Value.iloc[0]) and frame.raw_value.iloc[0] == 123
-    assert frame.SharesPrnAmount.iloc[0] == 456
-    print("\nSANITY: unknown/conflicting units preserve raw values and shares while withholding USD.")
 
 
 def test_cover_billion_does_not_set_information_table_units() -> None:
     text = "<TABLE>Form 13F Information Table Value Total: $45.9 Billion</TABLE>\n<TABLE>NAME CUSIP VALUE (x$1000) SHARES\n</TABLE>"
-    units = resolve_value_units("2012-02-14", information_table_text=text)
-    assert units.factor == 1000 and units.stated_factor == 1000
+    assert caption_factor(text) == 1000
     print("\nSANITY: Billion cover total cannot turn the holding VALUE column into billions.")
 
 
 def test_information_table_captions_are_checked_on_every_page() -> None:
     text = "<TABLE>VALUE (x$1000) CUSIP SHARES\n</TABLE><TABLE>VALUE (in dollars) CUSIP SHARES\n</TABLE>"
-    assert resolve_value_units("2022-02-14", information_table_text=text).factor is None
-    print("\nSANITY: conflicting table captions withhold dollars instead of silently selecting one.")
-
-
-def test_normalized_values_cannot_be_scaled_a_second_time() -> None:
-    units = resolve_value_units("2012-02-14")
-    once = normalize_information_values(pd.DataFrame({"VALUE": [123]}), units)
-    with pytest.raises(ValueError, match="already normalized"):
-        normalize_information_values(once, units)
-    print("\nSANITY: attempting a second normalization fails before multiplying values again.")
-
-
-def test_post_cutover_amendment_uses_filing_date_in_zip_preview() -> None:
-    sub = pd.DataFrame(
-        [
-            dict(
-                accession="0000000001-25-000001",
-                cik="0000000001",
-                period=pd.Timestamp("2020-12-31"),
-                report_period=pd.Timestamp("2020-12-31"),
-                filing_date=pd.Timestamp("2025-05-14"),
-                is_amendment=True,
-            )
-        ]
-    )
-    raw = pd.DataFrame([dict(ACCESSION_NUMBER=sub.accession.iloc[0], CUSIP="037833100", VALUE=2100, SSHPRNAMT=10, SSHPRNAMTTYPE="SH", PUTCALL="")])
-    book = data_set_book(sub, raw, source_values=True)
-    assert book.value_usd.iloc[0] == 2100 and book.shares.iloc[0] == 10
-    assert book.accession.iloc[0] == sub.accession.iloc[0]
-    print("\nSANITY: old-quarter amendment filed in 2025 retains $2,100 and 10 shares in the accession-preserving preview.")
+    assert math.isnan(caption_factor(text))
+    print("\nSANITY: conflicting table captions read as NaN (several units) instead of silently selecting one.")
 
 
 def test_legacy_source_parser_accepts_explicit_dollar_factor() -> None:
@@ -122,59 +49,16 @@ def test_legacy_source_parser_accepts_explicit_dollar_factor() -> None:
 
 
 def test_every_typed_leg_preserves_unknown_dollars() -> None:
-    units = resolve_value_units(None)
     raw = pd.DataFrame(
         [
             dict(CUSIP="037833100", VALUE=123, SSHPRNAMT=456, SSHPRNAMTTYPE=kind, PUTCALL=option)
             for kind, option in [("SH", ""), ("SH", "CALL"), ("SH", "PUT"), ("PRN", ""), ("OTHER", "")]
         ]
     )
-    book = _book_frame("1", "2025-05-14", "2025-03-31", normalize_information_values(raw, units))
+    book = _book_frame("1", "2025-05-14", "2025-03-31", raw.assign(raw_value=raw["VALUE"], VALUE=float("nan")))
     assert book.shares.iloc[0] == book.call_shares.iloc[0] == book.put_shares.iloc[0] == book.debt_prn.iloc[0] == 456
     assert book[["value_usd", "call_value", "put_value", "debt_value", "other_value"]].isna().all().all()
     print("\nSANITY: all five unknown value legs remain missing after mixed-CUSIP grouping; valid amounts survive.")
-
-
-@pytest.mark.parametrize(("schema", "factor"), [("X0102", 1000), ("X0202", 1)])
-def test_xml_preview_uses_raw_parser_and_never_heuristic_values(monkeypatch: pytest.MonkeyPatch, schema: str, factor: float) -> None:
-    monkeypatch.setattr(xml_parser, "cusip_ticker_mapping", lambda **_: SimpleNamespace(Ticker=pd.Series({"037833100": "AAPL"})))
-    xml = "<informationTable><infoTable><nameOfIssuer>APPLE INC</nameOfIssuer><titleOfClass>COM</titleOfClass>"
-    xml += "<cusip>037833100</cusip><value>2100</value><shrsOrPrnAmt><sshPrnamt>10</sshPrnamt><sshPrnamtType>SH</sshPrnamtType>"
-    xml += "</shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion></infoTable></informationTable>"
-
-    class Report:
-        _schema_version = schema
-        infotable_xml = xml
-        infotable_txt = None
-
-        @property
-        def infotable(self) -> pd.DataFrame:
-            raise AssertionError("heuristic-normalized infotable must never be read")
-
-    report = Report()
-    filing = SimpleNamespace(
-        cik="1",
-        filing_date="2022-05-14" if schema == "X0102" else "2025-05-14",
-        period_of_report="2020-12-31",
-        form="13F-HR/A",
-        accession_number="0000000001-25-000001",
-        obj=lambda: report,
-    )
-    book = f13._read_filing(FilingStamp.of(filing, "1"), source_values=True)
-    assert isinstance(book, pd.DataFrame), book
-    assert book.value_usd.iloc[0] == 2100 * factor and book.shares.iloc[0] == 10
-    assert book.attrs["value_units"].factor == factor
-    print(f"\nSANITY: raw XML oracle $2100 x {factor:g}, 10 shares; heuristic output bypassed.")
-
-
-def test_bad_xml_is_not_accepted_as_a_partial_book(monkeypatch: pytest.MonkeyPatch) -> None:
-    report = SimpleNamespace(_schema_version="X0202", infotable_xml="<informationTable><infoTable>", infotable_txt=None)
-    filing = SimpleNamespace(
-        cik="1", filing_date="2025-05-14", period_of_report="2025-03-31", form="13F-HR", accession_number="0000000001-25-000001", obj=lambda: report
-    )
-    result = f13._read_filing(FilingStamp.of(filing, "1"), source_values=True)
-    assert isinstance(result, f13.ReadFailure) and not result.transient
-    print("\nSANITY: malformed XML cannot recover into a complete empty/partial source book.")
 
 
 @pytest.mark.parametrize(("flag", "restricted"), [(None, False), ("", False), ("false", False), ("0", False), ("true", True), ("1", True)])
@@ -206,7 +90,7 @@ def test_optional_xml_confidentiality_requires_affirmative_evidence(flag: str | 
 
 def test_thousands_of_dollars_is_one_caption() -> None:
     raw = "<TABLE>NAME CUSIP VALUE (in thousands of dollars) SHARES\n</TABLE>"
-    assert resolve_value_units("2012-02-14", information_table_text=raw).factor == 1000
+    assert caption_factor(raw) == 1000
     print("\nSANITY: thousands-of-dollars is one unit; the dollars noun is not a contradiction.")
 
 
@@ -472,7 +356,7 @@ def test_xml_unit_comes_from_evidence(
     print(f"SANITY: SYNTHETIC XML {schema} {rows} rows at {cells_per_share:g} cell/share -> x{factor:g} ({evidence}): {shape}.")
 
 
-def test_value_total_mismatch_is_saved_with_a_warning(sqlite_store: Any, caplog: pytest.LogCaptureFixture) -> None:
+def test_value_total_mismatch_is_saved_with_a_warning(filing_store: Any, caplog: pytest.LogCaptureFixture) -> None:
     cells = [(cusip, 50_000 * (index + 1), 1000 * (index + 1)) for index, cusip in enumerate(_CUSIPS)]
     primary, info = _xml("X0202", cells, 777.0)
     with caplog.at_level(logging.WARNING, logger=_EVIDENCE_LOGGER):
@@ -481,7 +365,7 @@ def test_value_total_mismatch_is_saved_with_a_warning(sqlite_store: Any, caplog:
         )
     assert "the cover is a reference only, filing kept" in _messages(caplog)
     assert manifest.iloc[0].declared_value_total == 777.0 and manifest.iloc[0].source_value_total == 1_050_000
-    assert sqlite_store.save_13f_filing(manifest, book) == len(cells)
+    assert save_13f_filing(filing_store, manifest, book) == len(cells)
     print("SANITY: XML cover total 777 against a 1,050,000 VALUE column -> WARNING, filing kept and saved, cover stored as filed.")
 
 

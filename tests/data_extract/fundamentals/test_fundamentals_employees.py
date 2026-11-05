@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +13,11 @@ from click.testing import CliRunner
 from omegaconf import OmegaConf
 
 import src.data_extract.cli as cli_mod
+import src.data_extract.transformers.step_extract_llm as llm_step_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
-from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
+from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult
 
@@ -117,9 +119,8 @@ def build(
         context,
         "AAA",
         "0000000001",
-        since=None,
         done_dates=done_dates,
-        scope=scope or mod.EdgarScope(identity),
+        run=mod.EmployeeRun(since=None, scope=scope or mod.EdgarScope(identity), extractors=queue.SimpleQueue()),
     )
 
 
@@ -863,7 +864,9 @@ def test_missing_report_period_keeps_filing_date_and_a_foreign_cik_is_skipped_an
     foreign = Filing("foreign", "2025-03-01", "We had 9 employees.")
     foreign.cik = "0000000002"
     foreign.html = lambda: pytest.fail("a foreign filing was read or sent to the LLM")
-    identity = SimpleNamespace(owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "1"))
+    identity = SimpleNamespace(
+        owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "0000000001")
+    )
     scope = mod.EdgarScope(identity)
     result = build(monkeypatch, [filing, foreign], {"no-period": answer(40000, "We had 40,000 employees.")}, scope=scope)
     assert result.frame["as_of"].tolist() == [pd.Timestamp("2024-03-01")]
@@ -883,7 +886,7 @@ def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None, warnings
 
 
 def patch_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
+    monkeypatch.setattr(mod, "universe_rows", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
     monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace())
 
 
@@ -902,7 +905,7 @@ def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
     monkeypatch.setattr(mod, "build_ticker_employees", fake_build)
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15)
     assert seen[0]["done_dates"] == frozenset({pd.Timestamp("2024-02-26")})
-    assert seen[0]["since"] == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    assert seen[0]["run"].since == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
     assert pd.isna(saved[0]["employees_total"].iloc[0])
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15, full=True)
     assert seen[1]["done_dates"] == frozenset()
@@ -1062,22 +1065,18 @@ def test_a_rerun_without_full_makes_no_llm_call_for_decided_dates(monkeypatch, s
     )
 
 
-def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):
-    context = SimpleNamespace(ensure_edgar_identity=lambda: None)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame(columns=["ticker", "cik"]))
-    with pytest.raises(ValueError, match="no roster CIK for AAA"):
-        mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    print("\nSANITY: an unresolved requested ticker cannot be reported as fully covered.")
-
-
 def test_cli_still_dispatches_explicit_full_replay(monkeypatch):
     calls = []
-    context = SimpleNamespace()
+    context = SimpleNamespace(config_dir="configs")
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
+    monkeypatch.setattr(llm_step_mod, "section_extractors", lambda ctx, cfg: {})
     monkeypatch.setattr(
-        cli_mod,
+        llm_step_mod, "LLMExtractor", lambda ctx, cfg, action: SimpleNamespace(default_api="open_ai", _require_key=lambda provider: None)
+    )
+    monkeypatch.setattr(
+        llm_step_mod,
         "fetch_fundamentals_employees",
         lambda ctx, tickers, years_history, full=False: calls.append((tickers, years_history, full)),
     )
@@ -1107,3 +1106,24 @@ def test_a_read_filing_drops_its_cached_submission(monkeypatch):
         "\nSANITY: after the employee text is read the filing holds no cached submission; the task and the 41,000 row are unchanged, "
         "and the document is scanned for workforce numbers once."
     )
+
+
+def test_one_employee_extractor_serves_sequential_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F-004: the extractor is built on first need and lent back, so one worker reuses it for every ticker."""
+    built: list[dict] = []
+
+    class OneRunLLM:
+        def __init__(self, *args, **kwargs):
+            built.append(kwargs)
+
+        def run(self, tasks=()):
+            return list(tasks)
+
+    monkeypatch.setattr(mod, "LLMExtractor", OneRunLLM)
+    monkeypatch.setattr(mod, "_employee_task", lambda sequence, ticker, stamp, max_chars: (ticker, sequence, max_chars))
+    config = OmegaConf.create({"gpt": {"max_chars": {"employees": 100}}})
+    extractors: queue.SimpleQueue = queue.SimpleQueue()
+    for ticker in ("AAA", "BBB", "CCC"):
+        assert mod._extract_answers(SimpleNamespace(), config, ticker, ["s1", "s2"], extractors) == [(ticker, 0, 100), (ticker, 1, 100)]
+    assert built == [{"action": "employees", "threads": 1}], built
+    print(f"\nSANITY: 3 tickers x 2 filings answered in order through {len(built)} employee extractor (threads=1), not one per ticker.")

@@ -24,7 +24,6 @@ class FundamentalSupplement:
     """Facts needed only during the fundamental calculation."""
 
     earnings_history: pd.DataFrame | None = None
-    pension_facts: pd.DataFrame | None = None
     notes_num: pd.DataFrame | None = None
 
 

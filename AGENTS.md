@@ -46,11 +46,11 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 
 Every major `src/` package owns a `step_*.py` orchestrator that inherits `Step`, calls
 `super().__init__(context=context, config=config)`, and exposes `run()` as its public method.
-`StepLongShort` adds `run_train`/`run_predict`; portfolio orchestration lives in `steps/`.
+`run_*` methods are public sub-runs (`StepLongShort.run_train`, `StepExtractZips.run_ingest`); portfolio is in `steps/`.
 
 ```text
 data_store/    only SQL; registry, facade, DDL
-data_extract/  ordered source fetchers and six domain sub-steps
+data_extract/  ordered source fetchers and nine functional sub-steps
 data_peers/    business/return peer baskets
 data_aggregate/ nine cube parts plus streamed assembly
 modelling/     steps/ (train, assess), transformers/ (models, diagnostics), utils/

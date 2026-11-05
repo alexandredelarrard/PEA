@@ -35,6 +35,7 @@ from src.data_aggregate.utils.common.parts import (
     PART_COMMANDS,
 )
 from src.data_aggregate.utils.price.frames import ALL_FIELDS
+from src.data_store.schema import Tables
 
 # the sub-step that owns each CLI command
 OWNER = {
@@ -74,18 +75,12 @@ def test_every_part_has_an_owning_substep_and_cli_command():
 
 
 def test_every_substep_constructs_and_binds_its_part(sqlite_store):
-    """CONSTRUCT every part-owning sub-step, which nothing else in the suite did.
+    """Construct every owner and check its registered output.
 
-    Their `__init__` resolves `part_for(Tables.cube_part_*)` and reads the universe, so a
-    registry lookup that no longer matches its key -- e.g. indexing the name-keyed
-    `PART_BY_NAME` with a `Table` object -- is a KeyError at construction that every
-    build-time test missed because they exercise `run()` helpers on pre-built objects."""
-    import pandas as pd
+    Text uses an explicit table; its public-run test verifies the persistence target.
+    """
     from omegaconf import OmegaConf
 
-    from src.data_aggregate.utils.common.parts import CUBE_PARTS as REG
-
-    sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAA", "BBB"]}))
     config = OmegaConf.create(
         {
             # no market_ticker / other_tickers: the market and commodity/FX series are named
@@ -95,12 +90,9 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
                 "earnings_calls": {"availability_lag_days": 2, "sentiment_model": "fixture/tone", "refresh_calendar_days": 30},
             },
             "gpt": {"embedding": {"model": "fixture/embedding", "batch_size": 128, "max_chars": 28000}},
-            "data_extract": {"redundant_ticks": []},
         }
     )
-    # `config` on the context too: sub-steps resolve their universe through
-    # `load_universe_tickers`, which reads `data_extract.redundant_ticks` off `context.config`.
-    # `config_dir` too: `StepCubePrices.__init__` reads the Yahoo bug register from it, and
+    # `config_dir` on the context: `StepCubePrices.__init__` reads the Yahoo bug register from it, and
     # doing that at construction is deliberate -- an unapproved register must fail the step
     # before it loads 1.9M price rows, which means this test exercises that path.
     ctx = SimpleNamespace(
@@ -110,16 +102,17 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
         config_dir=Path(DEFAULT_CONFIG_DIR),
         paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")},
     )
-    owned = {cmd: [p.name for p in REG if p.command == cmd] for cmd in OWNER}
+    owned = {cmd: [p.name for p in CUBE_PARTS if p.command == cmd] for cmd in OWNER}
+    bindings: dict[str, str] = {}
     for cmd, cls in OWNER.items():
         step = cls(context=ctx, config=config)
-        assert step._part.name in owned[cmd], f"{cls.__name__} bound the wrong part"
-        assert isinstance(step._part.name, str), "CubePart.name must stay a plain str"
+        name = Tables.cube_part_text.name if cls is StepCubeText else step._part.name
+        assert name in owned[cmd], f"{cls.__name__} bound the wrong part"
+        assert isinstance(name, str), "CubePart.name must stay a plain str"
+        bindings[cmd] = name
     print("\n=== SANITY CHECK: sub-step construction ===")
-    print(
-        f"  all {len(OWNER)} sub-steps construct and bind a registered part: { {c: OWNER[c](context=ctx, config=config)._part.name for c in OWNER} }"
-    )
-    print("  CONCLUSION: the registry lookup in every __init__ resolves. Validated.")
+    print(f"  all {len(OWNER)} sub-steps construct; registered outputs: {bindings}")
+    print("  CONCLUSION: registry bindings and the explicit text output resolve. Validated.")
 
 
 def test_substep_price_fields_are_declared_and_valid():
@@ -208,17 +201,16 @@ def test_feature_parts_cover_every_group_exactly_once():
     )
 
 
-def test_assemble_reads_only_registered_feature_parts():
-    """Every part participates through the shared registry, including price/beta/targets."""
+def test_assemble_parts_come_from_config_not_code():
+    """The assembler merges what `build_cube.assembly` lists; no part name is hard-coded in it."""
     import inspect
 
     src = inspect.getsource(StepAssembleCube)
-    assert "CUBE_PARTS" in src, "assemble must enumerate the registry, not a literal list"
     for part in FEATURE_PARTS:
-        assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the registry"
-    print("\n=== SANITY CHECK: assemble is registry-driven ===")
-    print(f"  iterates CUBE_PARTS ({len(CUBE_PARTS)} parts), no feature part name hard-coded")
-    print("  CONCLUSION: adding a feature part needs a registry entry only. Validated.")
+        assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the config"
+    assert "PART_BY_NAME" not in src
+    print("\n=== SANITY CHECK: assemble is config-driven ===")
+    print("  CONCLUSION: the part list is `build_cube.assembly`; test_assemble_cube::test_committed_config covers registry coverage. Validated.")
 
 
 def test_monolithic_build_runs_each_registered_command_once_in_order():
@@ -234,7 +226,8 @@ def test_monolithic_build_runs_each_registered_command_once_in_order():
             calls.append(self.command)
 
     class _Assembler:
-        def run(self) -> None:
+        def run(self, full: bool = False) -> None:
+            assert full
             calls.append("assemble-cube")
 
     step = StepBuildCube.__new__(StepBuildCube)

@@ -75,15 +75,11 @@ class _SourceStore:
 def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypatch):
     store = _SourceStore()
     step = StepCubeFundamentals.__new__(StepCubeFundamentals)
-    step._context = SimpleNamespace(store=store)
+    step._context = SimpleNamespace(store=store, universe=SimpleNamespace(attach_gics=lambda frame: frame))
     step._log = logging.getLogger("test")
     monkeypatch.setattr(
         "src.data_aggregate.transformers.step_cube_fundamentals.add_cube_time_growth",
         lambda frame: frame,
-    )
-    monkeypatch.setattr(
-        "src.data_aggregate.transformers.step_cube_fundamentals.attach_gics_columns",
-        lambda frame, context, log: frame,
     )
 
     source_since = pd.Timestamp("2020-09-04")
@@ -97,7 +93,7 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
     step._load_optional(
         Tables.dividends,
         "dividend history",
-        "fetch_prices_and_actions",
+        "fetch_dividends",
         ("AAA", "BBB"),
     )
 
@@ -111,36 +107,33 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
 
 
 def test_sec_fact_reads_are_ticker_and_date_bounded():
+    from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
     from src.data_aggregate.utils.fundamentals.fundamental_features import (
+        _FN_PBO_TAG,
+        _FN_PLAN_ASSETS_TAG,
         load_notes_num_scoped,
-        load_pension_facts_scoped,
     )
 
     store = _SourceStore()
     context = SimpleNamespace(store=store)
     source_since = pd.Timestamp("2020-09-04")
 
-    load_pension_facts_scoped(
-        context,
-        tickers=("AAA", "BBB"),
-        since=source_since,
-    )
     load_notes_num_scoped(
         context,
         tickers=("AAA", "BBB"),
         since=source_since,
     )
 
-    assert [table for table, _ in store.calls] == ["pension_facts", "notes_num"]
+    assert [table for table, _ in store.calls] == ["notes_num"]  # one read serves every pension leg
     for table, kwargs in store.calls:
         assert kwargs["where"]["ticker"] == ["AAA", "BBB"], (table, kwargs)
         assert kwargs["where"]["tag"], (table, kwargs)
         assert kwargs["since"] == source_since, (table, kwargs)
     assert "available_at" in store.calls[0][1]["columns"]
-    assert "quarter" in store.calls[0][1]["columns"]
-    assert "available_at" in store.calls[1][1]["columns"]
+    assert "adsh" in store.calls[0][1]["columns"]
+    assert set(store.calls[0][1]["where"]["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS}
     print("\n=== SANITY CHECK: SEC fact source bounds ===")
-    print("  both pension/notes reads push ticker universe, tag projection, and six-year date bound into the store. Validated.")
+    print("  the single notes_num read pushes ticker universe, tag projection, and six-year date bound into the store. Validated.")
 
 
 def test_final_fundamentals_panel_is_contained_by_the_price_skeleton():

@@ -20,9 +20,9 @@ requiring a per-ticker event would call the correct zero a leak. A multi-source 
 leg starts only after every declared source has begun publishing.
 
 ⚠ THE PUBLICATION CLOCK IS NOT THE PERIOD CLOCK. A 13F describes a quarter that ended 45 days
-before it was filed, and a Form 4 describes a trade that happened before it was reported. Four
+before it was filed, and a Form 4 describes a trade that happened before it was reported. Three
 tables in this registry publish on a different clock than the period they describe --
-`pension_facts`, `notes_num` and `notes_text` (`filed`) and `insider_transactions`
+`notes_num` and `notes_text` (`filed`) and `insider_transactions`
 (`filing_date`) -- so the comparison reads `resolve(src).freshness_col`, which is the
 registry's own answer to that question, never `date_col` and never a name written here.
 
@@ -60,7 +60,6 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.universe import load_universe_tickers
 from src.validate.frame import as_ts, column_groups, feature_columns
 from src.validate.io import CHUNK_ROWS, cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
@@ -69,13 +68,6 @@ from src.validate.spec import load_spec
 log = logging.getLogger(__name__)
 
 CHECK = "leakage"
-
-#: A label's horizon in days, read out of its own name. `_h30` -> 30. NOT a default: a table
-#: must DECLARE `label_pattern` before the horizon half runs on it, because an `_h<n>` suffix
-#: does not mean "forward label". `cube_part_momentum` carries `seasonal_h30/h60/h90`, which are
-#: BACKWARD-looking seasonality features computed from past same-calendar-window returns -- they
-#: correctly run to the last session, and matched blind they produced 5 findings at score 10.
-HORIZON_PATTERN = r"_h(\d+)$"
 
 #: Columns read at once by the PIT half -- one group is one pass over the table.
 GROUP = 8
@@ -149,8 +141,8 @@ def _longest_prefix_sources(
 
 def _last_universe_session(context: Context, reference: Table | str) -> pd.Timestamp | None:
     """The reference table's latest date over universe tickers (`prices` also holds secondary share classes)."""
-    universe = set(load_universe_tickers(context))
-    by_ticker = context.store.max_date_by(reference, "ticker") if universe else {}
+    universe = set(context.universe.tickers)
+    by_ticker = context.store.max_date_by(reference, "ticker")
     if not by_ticker:
         return context.store.max_date(reference)
     dates = [day for ticker, day in by_ticker.items() if ticker in universe]

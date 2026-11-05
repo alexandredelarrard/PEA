@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 
 from src.modelling.steps.step_long_short import StepLongShort
-from src.modelling.transformers import LightGBMModel
 from src.modelling.utils.metrics import daily_ic
 from tests.modelling.model_fixtures import make_config
 
@@ -26,10 +25,9 @@ def test_final_rounds_use_last_two_folds(counts: list[int], expected: int) -> No
     print("SANITY: final rounds use the last two chronological folds, rounding halves upward, for three or five folds.")
 
 
-def test_fold_uses_all_training_rows_and_external_test(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fold_uses_all_training_rows_and_external_test() -> None:
     step: Any = object.__new__(StepLongShort)
     step._config = make_config(model={"cv": {"n_splits": 3, "embargo": 1}})
-    step._classes = {"lgbm": LightGBMModel}
     step.families = ["lgbm"]
     step.label_column = "y"
     step._run_path = None
@@ -61,7 +59,7 @@ def test_fold_uses_all_training_rows_and_external_test(monkeypatch: pytest.Monke
             scored_rows.append(len(frame))
             return frame.x.to_numpy()
 
-    monkeypatch.setattr(LightGBMModel, "__new__", lambda cls, *args: Member())
+    step._classes = {"lgbm": Member}
     result = step._cross_validate(1, panel)
     assert len(fits) == 3
     for (train, valid), audit, rows in zip(fits, result.folds, scored_rows, strict=True):

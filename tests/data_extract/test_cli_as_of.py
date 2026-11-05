@@ -13,7 +13,7 @@ from src.utils.string import run_date
 
 
 def test_as_of_is_a_hidden_option_resolved_to_midnight() -> None:
-    for name in ("seed-universe", "extraction-status"):
+    for name in ("universe", "extraction-status"):
         command = extraction_cli.cli.commands[name]
         options = {p.name: p for p in command.params if isinstance(p, click.Option)}
         assert "as_of" in options and options["as_of"].hidden, name
@@ -23,4 +23,4 @@ def test_as_of_is_a_hidden_option_resolved_to_midnight() -> None:
     assert run_date(None) == pd.Timestamp.today().normalize()
 
     print("\n=== SANITY CHECK: --as-of ===")
-    print("  hidden on seed-universe and extraction-status; an injected date resolves to midnight, the default to today. Validated.")
+    print("  hidden on universe and extraction-status; an injected date resolves to midnight, the default to today. Validated.")

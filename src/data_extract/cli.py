@@ -3,7 +3,7 @@
     python -m src data_extract <command> [-c ./configs] [-t AAPL,MSFT]
 
 Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs its
-fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `seed-universe` must run first.
+fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `sharadar-tickers` then `universe` must run first.
 """
 
 import json
@@ -52,8 +52,6 @@ from src.constants.command_line_interface import (
     REBUILD_KWARGS,
     REPAIR_AVAILABILITY_ARGS,
     REPAIR_AVAILABILITY_KWARGS,
-    REPAIR_GAPS_ARGS,
-    REPAIR_GAPS_KWARGS,
     REPORT_PATH_ARGS,
     REPORT_PATH_KWARGS,
     TABLE_ARGS,
@@ -70,31 +68,31 @@ from src.constants.command_line_interface import (
     YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
-from src.data_extract.identity_propagate import propagate_identity
+from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar, widest_index_years
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
+from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
+from src.data_extract.transformers.step_extract_prices import StepExtractPrices
+from src.data_extract.transformers.step_extract_universe import StepExtractUniverse
+from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
-from src.data_extract.utils.common import edgar_index
-from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
-from src.data_extract.utils.common.entity_lineage import build_entity_lineage
-from src.data_extract.utils.common.sec_tickers import download_sec_company_tickers
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_extract.utils.common.security_master import build_security_master
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
+from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, plan_fetch
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes, fetch_financial_notes
-from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
-from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions,
     fetch_sharadar_sp500,
-    fetch_sharadar_tickers,
 )
 from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     DEFAULT_REPORT_PATH as GAP_REPORT_PATH,
@@ -103,29 +101,17 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     run_gap_check,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
-from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
-from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
-from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
+from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
-from src.utils.string import normalise_ticker, run_date
-from src.utils.universe import load_universe_tickers, unverified_ciks
+from src.utils.string import run_date
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -134,16 +120,8 @@ def cli() -> None:
 
 
 def _tickers(context: Context, tickers: str | None) -> list[str]:
-    """The --tickers subset if given, else the full sp500_tickers universe."""
-    if tickers:
-        return list(dict.fromkeys(ticker for raw in tickers.split(",") if (ticker := normalise_ticker(raw))))
-    return load_universe_tickers(context)
-
-
-def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], list[str]]:
-    """CLI selection and the full analysis universe, read once for scoped-write guards."""
-    universe = load_universe_tickers(context)
-    return (_tickers(context, tickers) if tickers else universe), universe
+    """The --tickers subset, checked against the universe, else the whole universe."""
+    return context.universe.subset(tickers.split(",")) if tickers else context.universe.tickers
 
 
 def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
@@ -178,8 +156,8 @@ def _table_status(context: Context, table: Table, universe: list[str], as_of: pd
 
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
     """Freshness report over exactly the tables and cadences declared by the schema registry."""
-    as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    universe = load_universe_tickers(context)
+    as_of = run_date(as_of)
+    universe = context.universe.tickers
     min_share = float(context.config.data_extract.prediction_fresh_share)
     statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables()}
     behind = [name for name, status in statuses.items() if not status["ok"]]
@@ -206,34 +184,29 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
     click.echo(json.dumps(report, sort_keys=True))
 
 
-# --- Universe seed (must run first; everything else resolves the universe from it) ---
-@cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --full).", help_priority=1)
+# --- Universe (runs before every other command) ---
+_UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
+
+
+@cli.command(
+    help="Refresh sec_company_tickers and sharadar_tickers, then sync tickers_universe with configs/universe.yml "
+    f"(writes only what changed). --only runs the named part(s) ({', '.join(_UNIVERSE_PARTS)}).",
+    help_priority=1,
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def seed_universe(config_path: str, full: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    if full or context.store.row_count(Tables.sp500_tickers) == 0:
-        context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (full={full})")
-        get_sp500_tickers(context, as_of=run_date(as_of))
-    context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
-    # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
-    # because a genuine recent spin-off has no filing rows either.
-    suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
-    for row in suspect:
-        context.log.warning(
-            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — verify the company ID against EDGAR",
-            row["ticker"],
-            row["cik"],
-            ", ".join(row["filing_tables_checked"]),
-        )
-    if suspect:
-        context.log.warning("%d universe CIK(s) unconfirmed by any filing table.", len(suspect))
+@click.option("--only", "only", type=click.Choice(_UNIVERSE_PARTS), multiple=True, help="Run only this part; repeatable.")
+def universe(config_path: str, as_of: datetime | None, only: tuple[str, ...]) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    step = StepExtractUniverse(context, config, run_date(as_of))
+    parts = {"sec-tickers": step.run_sec_tickers, "sharadar-tickers": step.run_sharadar_tickers, "sync": step.run_sync}
+    for name in only or _UNIVERSE_PARTS:
+        parts[name]()
 
 
 # --- Prices / market / macro ---
 @cli.command(
-    help="Daily OHLCV, dividend and split ex-dates from one yfinance download (prices, prices_dividends, prices_splits). HEAVY.", help_priority=2
+    help="Daily OHLCV, dividend and split ex-dates through one yfinance session (prices_splits, prices_dividends, prices). HEAVY.", help_priority=2
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -243,42 +216,27 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
+    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession()
+
+    # Splits first: their windows are planned from the stored `prices`, which `fetch_prices` then advances.
+    fetch_price_actions(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    fetch_dividends(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    fetch_prices(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
 
 
 @cli.command(
     help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from security_master, "
-    "summed per ticker by class into sec_short_interest. Day files: each ticker's own window (forward overlap, a new "
-    "ticker's full history) plus the never-stored days. --full re-fetches every served date (2018-08-01 on, plus "
-    "2017-12-29), keeps no legacy row, and aborts before writing if a stored date is not served; with -t it upserts "
-    "only those tickers."
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*REPAIR_GAPS_ARGS, **REPAIR_GAPS_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def short_interest(config_path: str, tickers: str | None, full: bool, repair: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    years_history = int(context.config.data_extract.years_history)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_short_interest(
-        context, tickers=names, years_history=years_history, full=full, as_of=_market_as_of(as_of), repair=repair, all_tickers=universe
-    )
-
-
-@cli.command(
-    help="SEC fails-to-deliver: stamp the raw per-CUSIP lines from security_master and rebuild the ticker table "
-    "(--full: both tables from every cached zip). SEC-bulk."
+    "summed per ticker by class into sec_short_interest. Day files: business days from the earlier of the latest stored "
+    "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
+    "a fetch error."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def fails_to_deliver(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_fails_to_deliver(context, tickers=names, full=full, as_of=run_date(as_of), all_tickers=universe)
+    fetch_short_interest(context, tickers=_tickers(context, tickers), full=full, as_of=_market_as_of(as_of))
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
@@ -304,14 +262,12 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         if len(parts) != 2 or not all(parts):
             raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
         window = (parts[0], parts[1])
-    names, universe = _ticker_scope(context, tickers)
     fetch_13f(
         context,
-        tickers=names,
+        tickers=_tickers(context, tickers),
         years_history=int(config.data_extract.years_history),
         filing_window=window,
         as_of=run_date(as_of),
-        all_tickers=universe,
     )
 
 
@@ -327,8 +283,7 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
     """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_13f_backfill(context, tickers=names if tickers else None, as_of=run_date(as_of), full=full, all_tickers=universe)
+    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=run_date(as_of), full=full)
 
 
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
@@ -429,13 +384,7 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fundamentals_employees(
-        context,
-        tickers=_tickers(context, tickers),
-        full=full,
-        years_history=int(config.data_extract.years_history),
-    )
+    _llm_step(config_path, tickers, full).run_employees()
 
 
 @cli.command(
@@ -512,16 +461,6 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
     step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
 
 
-@cli.command(
-    name="sharadar-tickers",
-    help="Sharadar entity dimension (permaticker, currency, category) -> sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def sharadar_tickers(config_path: str) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_tickers(context)
-
-
 @cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -533,7 +472,7 @@ def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> No
 
 @cli.command(
     name="sharadar-sp500",
-    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
+    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; the universe is configs/universe.yml.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -581,70 +520,19 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str |
     run_gap_check(context, tickers=names, report_path=report_path or GAP_REPORT_PATH, propose_overrides=propose, config_dir=config_path)
 
 
-@cli.command(help="Earnings surprises -> historical forward P/E.")
+@cli.command(help="Earnings surprises -> historical forward P/E (the prices step's `run_earnings_surprises`).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def earnings_surprises(config_path: str, tickers: str | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_earnings_surprises(context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history))
-
-
-@cli.command(help="SEC Financial Statement Data Sets -> pension_facts (num/sub XBRL). SEC-bulk. --full re-parses every cached period.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def financial_statements(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_financial_statements(
-        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=full, as_of=run_date(as_of), all_tickers=universe
-    )
-
-
-@cli.command(
-    help="SEC insider transactions (Forms 3/4/5) into one table: the quarterly zips no stored row carries add the filings "
-    "EDGAR lacks (a new ticker also re-parses the cached zips), then EDGAR reads every indexed filing after the last stored "
-    "zip quarter that the ticker has not stored from EDGAR. Stored rows are re-screened and rejects deleted only on a "
-    "full-universe run (no -t). -F re-parses every cached zip (only the -t tickers' rows under -t), then re-reads every "
-    "EDGAR filing after the last zip quarter, including those already stored. The DAG runs the halves as `insider-zip` and `insider-edgar`."
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def insider_transactions(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    years_history = int(config.data_extract.years_history)
-    start_date = run_date(as_of)
-    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=full, as_of=start_date, all_tickers=universe)
-    run_edgar_fetch(context, tickers=names, years_history=years_history, fetch=INSIDER_EDGAR_FETCH, full=full, as_of=start_date, no_cap=no_cap)
-
-
-@cli.command(
-    name="insider-zip",
-    help="The zip half of `insider-transactions` alone: the pending quarterly Forms 3/4/5 zips (a new ticker also re-parses "
-    "the cached zips). --full re-parses every cached quarter without an EDGAR walk. "
-    "The DAG runs it in the sec_bulk pool, after `identity-propagate` and before `insider-edgar`.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_insider_transactions(
-        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=full, as_of=run_date(as_of), all_tickers=universe
-    )
+    StepExtractPrices(context=context, config=config).run_earnings_surprises(_tickers(context, tickers))
 
 
 @cli.command(
     name="insider-edgar",
-    help="The EDGAR half of `insider-transactions` alone: every indexed Forms 3/4/5 filing of the ticker's filing scope after "
-    "the last stored zip quarter not yet stored from EDGAR. An EDGAR walk, so the DAG runs it in the sec_api pool, after `insider-zip`.",
+    help="The EDGAR half of the insider table: every indexed Forms 3/4/5 filing of the ticker's filing scope after the last "
+    "stored zip quarter not yet stored from EDGAR. An EDGAR walk, so the DAG runs it in the sec_api pool, after "
+    "`zips-ingest --only insider` (the zip half). Both halves by hand: `zips-ingest --only insider [-F]`, then `insider-edgar [-F]`.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -652,142 +540,131 @@ def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: dateti
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, None, INSIDER_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, None, full, as_of, no_cap).run_insider()
+
+
+_ZIP_DOWNLOADS = ("insider", "notes", "ftd")
+_ZIP_INGESTS = ("insider", "notes", "ftd")
 
 
 @cli.command(
-    name="insider-download",
-    help="Cache the SEC Form 3/4/5 quarterly zips (every quarter since 2006) that identity-tables and insider-transactions read. SEC-bulk.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def insider_download(config_path: str) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    download_insider_transactions(context)
-
-
-@cli.command(
-    name="ftd-download",
-    help="Cache the SEC fails-to-deliver zips and store their in-scope lines raw, per CUSIP "
-    "(sec_fails_to_deliver_security), for the security master. SEC-bulk.",
+    name="zips-download",
+    help=f"Cache the SEC bulk zips (Form 3/4/5, Notes, FTD); writes no table. --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def ftd_download(config_path: str, full: bool, as_of: datetime | None) -> None:
-    """`--full` re-reads every listed period and replaces the raw table; the default reads the periods no stored line
-    carries, plus every cached period for the symbols and CUSIP-6 prefixes whose lineage or master rows changed recently."""
+@click.option("--only", "only", type=click.Choice(_ZIP_DOWNLOADS), multiple=True, help="Run only this source; repeatable.")
+def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tuple[str, ...]) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    download_fails_to_deliver(context, years_history=int(config.data_extract.years_history), full=full, as_of=run_date(as_of))
-
-
-@cli.command(name="sec-tickers", help="Snapshot SEC's current tickers with exchanges (one GET) into sec_company_tickers. SEC-bulk.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def sec_tickers(config_path: str) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    download_sec_company_tickers(context)
+    step = StepExtractZips(context, config, ZipsOptions(full=full, as_of=run_date(as_of)))
+    sources = {
+        "insider": step.run_download_insider,
+        "notes": step.run_download_financial_notes,
+        "ftd": step.run_download_fails_to_deliver,
+    }
+    for name in only or _ZIP_DOWNLOADS:
+        sources[name]()
 
 
 @cli.command(
-    name="identity-tables",
-    help="symbol_tenure + entity_lineage + security_master: WHICH COMPANY a ticker was, and when, and "
-    "which security each FTD line is. OFFLINE reference build -- derived from the cached Form 345 zips "
-    "and the DB, no network. Run after `insider-download`, `notes-download`, `ftd-download` and `sec-tickers`.",
+    name="zips-ingest",
+    help="Parse the cached SEC bulk zips into insider_transactions (zip quarters), notes_num/notes_text and the "
+    f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGESTS)}); "
+    "-F re-parses every cached period; --repair-availability only repairs the stored Notes clocks. SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
+@click.option("--only", "only", type=click.Choice(_ZIP_INGESTS), multiple=True, help="Run only this source; repeatable.")
+def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, repair_availability: bool, only: tuple[str, ...]) -> None:
+    if repair_availability and set(only) != {"notes"}:
+        raise click.UsageError("--repair-availability needs `--only notes` and no other source.")
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    options = ZipsOptions(
+        tickers=_tickers(context, tickers) if tickers else None, full=full, as_of=run_date(as_of), repair_availability=repair_availability
+    )
+    step = StepExtractZips(context, config, options)
+    sources = {
+        "insider": step.run_ingest_insider,
+        "notes": step.run_ingest_financial_notes,
+        "ftd": step.run_ingest_fails_to_deliver,
+    }
+    for name in only or _ZIP_INGESTS:
+        sources[name]()
+
+
+_IDENTITY_STAGES = ("capture-dei", "capture-ftd", "tenure", "lineage", "master", "propagate")
+
+
+@cli.command(
+    name="identity",
+    help="Identity layer, OFFLINE (cached zips + DB): capture the Notes cover-page symbols and the FTD lines, then build "
+    "symbol_tenure -> entity_lineage -> security_master and propagate the lineage changes. --only runs one stage "
+    f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
+    "`identity`, then `identity --only capture-ftd -F`, then `identity --only master`.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*APPROVE_REKEY_ARGS, **APPROVE_REKEY_KWARGS)
-def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
-    """Builds `symbol_tenure`, `entity_lineage` then `security_master` together: lineage candidates are read off
-    tenure and the master's issuers off the lineage, so a stale input silently narrows the next. Market-wide:
-    the three tables are rebuilt from the cache and the DB.
-    """
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    parsed_rekeys: set[tuple[str, str]] = set()
-    for value in approved_rekeys:
+@click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
+@click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all six.")
+def identity(
+    config_path: str, tickers: str | None, full: bool, as_of: datetime | None, approved_rekeys: tuple[str, ...], dry_run: bool, only: str | None
+) -> None:
+    if dry_run and only != "propagate":
+        raise click.UsageError("--dry-run applies to `--only propagate` only.")
+    if approved_rekeys and only not in (None, "lineage"):
+        raise click.UsageError("--approve-rekey applies to the full run or `--only lineage`.")
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    options = IdentityOptions(
+        tickers=_tickers(context, tickers) if tickers else None,
+        full=full,
+        dry_run=dry_run,
+        as_of=run_date(as_of),
+        approved_rekeys=_approved_rekeys(approved_rekeys),
+    )
+    step = StepExtractIdentity(context, config, options)
+    stages = {
+        "capture-dei": step.run_capture_dei_symbols,
+        "capture-ftd": step.run_capture_ftd_cusips,
+        "tenure": step.run_symbol_tenure,
+        "lineage": step.run_entity_lineage,
+        "master": step.run_security_master,
+        "propagate": step.run_propagate,
+    }
+    if only is None:
+        step.run()
+    elif dry_run:
+        removals = step.run_propagate().removals
+        click.echo(removals.to_string(index=False) if not removals.empty else "identity --only propagate: no pending removals")
+    else:
+        stages[only]()
+
+
+def _approved_rekeys(values: tuple[str, ...]) -> frozenset[tuple[str, str]]:
+    """`--approve-rekey OLD:NEW` values as `(old, new)` entity-id pairs."""
+    parsed: set[tuple[str, str]] = set()
+    for value in values:
         old, separator, new = value.partition(":")
         if not separator or not old or not new:
-            raise click.BadParameter(
-                "expected OLD_ENTITY_ID:NEW_ENTITY_ID",
-                param_hint="--approve-rekey",
-            )
-        parsed_rekeys.add((old, new))
-    scan = scan_form345_cache(cache)
-    tenure = build_symbol_tenure(context, scan, config_path)
-    lineage = build_entity_lineage(
-        context,
-        tenure,
-        scan.owner_pairs,
-        config_path,
-        approved_rekeys=frozenset(parsed_rekeys),
-        redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
-    )
-    build_security_master(context, lineage, config_path)
-
-
-@cli.command(
-    name="identity-propagate",
-    help="Carry an entity_lineage change into the stored SEC rows: purge rows whose filer CIK left the "
-    "ticker's entity (one WARNING per table), re-parse notes, pension and insider bulk from cache, "
-    "re-stamp the FTD and short-volume rows of companies whose security_master rows changed, rebuild purged "
-    "tickers' history -- for the tickers whose lineage changed in the last 7 days (the re-check window). OFFLINE. "
-    "--full re-checks every requested ticker regardless of its lineage stamp and re-stamps every company's tape rows. "
-    "Run after `identity-tables`; EDGAR tables list a new CIK's filings in their own fetchers.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, full: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    result = propagate_identity(context, names, dry_run=dry_run, every_ticker=full, as_of=run_date(as_of), all_tickers=universe)
-    if dry_run:
-        click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
-
-
-@cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY. --full re-parses every cached period.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def financial_notes(config_path: str, tickers: str | None, full: bool, repair_availability: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_financial_notes(
-        context,
-        tickers=names,
-        years_history=int(config.data_extract.years_history),
-        reparse=full,
-        repair_availability=repair_availability,
-        all_tickers=universe,
-        as_of=run_date(as_of),
-    )
-
-
-@cli.command(
-    name="notes-download",
-    help="Cache the SEC Notes zips and capture every filer's cover-page symbols (dei:TradingSymbol) into symbol_tenure. SEC-bulk.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def notes_download(config_path: str, full: bool) -> None:
-    """`--full` re-captures every cached zip (one-off backfill); the default captures only periods not yet stored."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    download_financial_notes(context, years_history=int(config.data_extract.years_history), full=full)
+            raise click.BadParameter("expected OLD_ENTITY_ID:NEW_ENTITY_ID", param_hint="--approve-rekey")
+        parsed.add((old, new))
+    return frozenset(parsed)
 
 
 # --- Structure (governance) ---
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def def14a(config_path: str, tickers: str | None, full: bool) -> None:
+def def14a(config_path: str, tickers: str | None) -> None:
     """Every run lists each ticker's whole `years_history`; `--full` also re-sends the saved proxies without
     evidence, markers included (a proxy with stored evidence is never re-sent)."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers), full=full)
+    _llm_step(config_path, tickers).run_def14a()
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
@@ -798,15 +675,14 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, SEC_8K_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_8k()
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_8k_votes_llm(context, config, tickers=_tickers(context, tickers))
+    _llm_step(config_path, tickers).run_8k_votes()
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
@@ -817,7 +693,7 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, SEC_13D_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13d()
 
 
 @cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
@@ -829,7 +705,7 @@ def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     """Passive counterpart of `sec-13d`. A schedule a universe company only FILED is stored as an empty-filing marker under it."""
-    _run_document_command(config_path, tickers, years, SEC_13G_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13g()
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
@@ -840,7 +716,7 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def filing_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, FILING_TEXT_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_filing_text()
 
 
 @cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
@@ -851,30 +727,28 @@ def filing_text(config_path: str, tickers: str | None, years: int | None, full: 
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def def14a_edgar(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, DEF14A_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_ecd()
 
 
-def _run_document_command(
-    config_path: str, tickers: str | None, years: int | None, fetch: EdgarFetch, *, full: bool, as_of: datetime | None, no_cap: bool
-) -> None:
-    """One declared EDGAR document fetch over the --tickers subset (or the universe)."""
+def _edgar_step(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> StepExtractEdgar:
+    """The EDGAR step over the --tickers subset (or the universe), the -y window (or the configured one) and the run options."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(
-        context,
-        tickers=_tickers(context, tickers),
-        years_history=years or config.data_extract.years_history,
-        fetch=fetch,
-        full=full,
-        as_of=run_date(as_of),
-        no_cap=no_cap,
+    return StepExtractEdgar(
+        context, config, EdgarOptions(tickers=_tickers(context, tickers), years=years, full=full, as_of=run_date(as_of), no_cap=no_cap)
     )
+
+
+def _llm_step(config_path: str, tickers: str | None, full: bool = False) -> StepExtractLlm:
+    """The LLM step over the --tickers subset (or the universe); `full` re-decides every employee filing date."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    return StepExtractLlm(context, config, LlmOptions(tickers=_tickers(context, tickers), full=full))
 
 
 # --- EDGAR index, work-list dry run and empty-filing markers ---
 @cli.command(
     name="edgar-index",
-    help="Download the local EDGAR filing index (closed quarters once, the current quarter again) and print rows per quarter. "
-    "--full downloads every quarter again.",
+    help="Download the local EDGAR filing index over every EDGAR walk's window (closed quarters once, the current quarter "
+    "again) and print rows per quarter. --full downloads every quarter again.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -883,12 +757,13 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
     """One EDGAR walk: run it alone. The first build fetches about 128 quarters."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     context.ensure_edgar_identity()
-    edgar_index.refresh(context, run_date(as_of), int(config.data_extract.years_history), rebuild=full)
+    day = run_date(as_of)
+    edgar_index.refresh(context, day, widest_index_years(int(config.data_extract.years_history), day), rebuild=full)
     for quarter, n_rows in edgar_index.quarter_counts(context).items():
         click.echo(f"{quarter}\t{n_rows}")
 
 
-def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFetch]:
+def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
     """Every EDGAR document fetch, keyed by its done table's name."""
     fetches = (
         SEC_8K_FETCH,
@@ -896,7 +771,7 @@ def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFe
         SEC_13G_FETCH,
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
-        fundamentals_fetch(context, load_cik_mapping(context, tickers)),
+        fundamentals_fetch(context),
         INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
@@ -909,17 +784,15 @@ def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFe
 @click.option(*TIMINGS_ARGS, **TIMINGS_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers)
-    cik_map = load_cik_mapping(context, names)
-    fetches = _document_fetches(context, names)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
+    fetches = _document_fetches(context)
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
     for name, fetch in fetches.items():
         if table_name is not None and name != table_name:
             continue
-        scope = load_edgar_scope(context, identity_aware=fetch.identity_aware)
-        work = plan_fetch(context, fetch, cik_map, scope, run_date(as_of), int(config.data_extract.years_history))
+        work = plan_fetch(context, fetch, run)
         report: dict[str, object] = {
             "table": name,
             "documents": work.size,

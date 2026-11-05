@@ -15,8 +15,8 @@ def _normalized_timestamp(value: Any) -> pd.Timestamp:
 
 
 def schedule_complete_through(store: DataStore, table: Table, last_session: pd.Timestamp | None) -> pd.Timestamp | None:
-    """The "absence means zero through date D" frontier of an EDGAR event table (13D, 13G and
-    insider), read from `table` alone.
+    """The "absence means zero through date D" frontier of an EDGAR event table (13D and 13G),
+    read from `table` alone.
 
     D is `last_session` when the table's latest `filing_date` (markers included) lies within its
     resume overlap of that session, else the latest `filing_date`. None for an absent or empty table.

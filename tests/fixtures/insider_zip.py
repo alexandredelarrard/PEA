@@ -15,9 +15,9 @@ from pathlib import Path
 import pandas as pd
 
 from src.data_extract.utils.common.bulk_cache import read_zip_tables
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, XML_DATE_FORMATS, build_insider_frame
-from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.edgar_extract.insider_common import BULK_DATE_FORMATS, XML_DATE_FORMATS, build_insider_frame
+from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "insider"
 ZIP_MEMBER = Path("data") / "sec_insider_transactions" / "2026q2.zip"
@@ -36,12 +36,12 @@ def zip_path() -> Path | None:
 
 @cache
 def zip_members(path: Path) -> tuple[pd.DataFrame, ...]:
-    """(SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS, DERIV_TRANS) of `path`, cut to the fixture accessions."""
+    """(SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS, DERIV_TRANS, NONDERIV_HOLDING, DERIV_HOLDING) of `path`, cut to the fixture accessions."""
     tables = read_zip_tables(path, ins._ZIP_SPECS, on_corrupt="skip", log=logging.getLogger(__name__))
     assert tables, f"{path} has no SUBMISSION member"
     accessions = set(fixture_accessions())
-    sub, own, nonderiv, deriv, _ = (ins._accession_rows(df, accessions) for df in tables.values())
-    return sub, own, nonderiv, deriv
+    names = ("SUBMISSION.TSV", "REPORTINGOWNER.TSV", "NONDERIV_TRANS.TSV", "DERIV_TRANS.TSV", "NONDERIV_HOLDING.TSV", "DERIV_HOLDING.TSV")
+    return tuple(ins._accession_rows(tables[name], accessions) for name in names)
 
 
 def zip_frame(path: Path) -> pd.DataFrame:

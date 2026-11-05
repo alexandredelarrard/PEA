@@ -1,4 +1,4 @@
-"""`scripts/def14a_legacy_purge.py` never selects an empty-filing marker: a marker owns no director
+"""`tests/support/def14a_legacy_purge.py` never selects an empty-filing marker: a marker owns no director
 row and carries no new-schema column, so without the store's marker filter it would fall in the
 delete set and its proxy would be sent to the LLM again."""
 
@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.def14a_legacy_purge import NEW_SCHEMA_COLUMNS, legacy_accessions
-from src.data_extract.utils.common.empty_markers import marker_frame
+from tests.support.def14a_legacy_purge import NEW_SCHEMA_COLUMNS, legacy_accessions
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_store.schema import Tables
 
 

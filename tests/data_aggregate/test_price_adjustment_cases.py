@@ -24,6 +24,7 @@ from src.utils.price.basis import load_share_basis
 from src.utils.price.capitalization import project_security_shares
 from src.utils.price.levels import apply_level_bugfix, as_traded_close, level_factor
 from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
+from tests.support.universe import universe_of
 
 
 @pytest.fixture(scope="module")
@@ -153,7 +154,6 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
     vendor = shares.copy()
     if changed == "anchor":
         vendor.loc[vendor["ticker"].eq("IVZ"), "sharesbas"] *= 2
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["IVZ"]}))
     sqlite_store.save(Tables.prices, raw)
     sqlite_store.save(Tables.prices_splits, yahoo)
     sqlite_store.save(Tables.sharadar_actions, actions.assign(contraticker=""))
@@ -162,7 +162,12 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
     peer_path = tmp_path / "peers.json"
     peer_path.write_text(json.dumps({"IVZ": {"IVZ": 1.0}}), encoding="utf-8")
     isolated = SimpleNamespace(
-        store=sqlite_store, config=context.config, config_dir=context.config_dir, log=context.log, paths={"SECTOR_PEERS_PATH": peer_path}
+        store=sqlite_store,
+        config=context.config,
+        config_dir=context.config_dir,
+        log=context.log,
+        paths={"SECTOR_PEERS_PATH": peer_path},
+        universe=universe_of(["IVZ"]),
     )
     writes: list[object] = []
     monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))

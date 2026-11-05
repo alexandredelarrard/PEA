@@ -13,13 +13,13 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
-from src.data_store.schema import Tables
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
+from tests.support.universe import as_roster, seed_universe
 
 MASTER_HEADER = """Description:           Master Index of EDGAR Dissemination Feed
 Last Data Received:    September 30, 2026
@@ -45,13 +45,12 @@ def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:
 
 
 def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = None, **data_extract: Any) -> Any:
-    """A Context stand-in for the driver: `sp500_tickers` seeded with every column `load_cik_mapping` projects,
-    and a `config_dir` holding empty roster overrides (`<config_dir>/superinvestors/overrides.json`)."""
+    """A Context stand-in for the driver: `tickers_universe` seeded (name and GICS columns `<col>-<ticker>`) as its
+    `universe`, and a `config_dir` holding empty roster overrides (`<config_dir>/superinvestors/overrides.json`)."""
     ciks = ciks or [str(i + 1) for i in range(len(tickers))]
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame({col: [f"{col}-{t}" for t in tickers] for col in CIK_MAPPING_COLS} | {"ticker": tickers, "cik": ciks}),
-    )
+    labels = ("name", "sector", "industry_group", "sub_industry")
+    rows = {t: {"cik": pad_cik(c)} | {col: f"{col}-{t}" for col in labels} for t, c in zip(tickers, ciks, strict=True)}
+    universe = seed_universe(store, tickers, rows=rows) if tickers else None
     warnings: list[str] = []
     errors: list[str] = []
     infos: list[str] = []
@@ -66,13 +65,15 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
         config=extract_config(data_extract={"years_history": 15, **data_extract}),
         ensure_edgar_identity=lambda: None,
         config_dir=write_roster_config(tmp_path),
+        universe=universe,
     )
     ctx.warnings, ctx.errors, ctx.infos = warnings, errors, infos
     return ctx
 
 
 def seed_index(ctx: Any, rows: Iterable[tuple[int | str, str, str, str, str]]) -> pd.DataFrame:
-    """Write `rows` into the local index cache, one Parquet file per quarter, through the production parser."""
+    """Write `rows` into the local index cache, one Parquet file per quarter, through the production parser and
+    writer."""
     directory = edgar_index.index_dir(ctx)
     for path in directory.glob("*.parquet"):
         path.unlink()
@@ -81,10 +82,10 @@ def seed_index(ctx: Any, rows: Iterable[tuple[int | str, str, str, str, str]]) -
         quarters.setdefault(edgar_index.Quarter.of(pd.Timestamp(row[3])).name, []).append(row)
     frames = []
     for name, part in quarters.items():
-        frame = edgar_index.parse_master(master_text(part).encode("latin-1"))
+        frame = edgar_index._parse_master_unit(master_text(part).encode("latin-1"))[0]
         edgar_index._write_atomic(frame, directory / f"{name}.parquet")
         frames.append(frame)
-    return pd.concat(frames, ignore_index=True) if frames else edgar_index.parse_master(master_text([]).encode("latin-1"))
+    return pd.concat(frames, ignore_index=True) if frames else edgar_index._parse_master_unit(master_text([]).encode("latin-1"))[0]
 
 
 def patch_index_filings(monkeypatch: pytest.MonkeyPatch, filings: dict[str, Any]) -> None:
@@ -119,5 +120,37 @@ def identity_for(roster: dict[str, str]) -> Identity:
                 for t, c in roster.items()
             ]
         ),
-        roster=pd.DataFrame([{"ticker": t, "cik": pad_cik(c)} for t, c in roster.items()]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": pad_cik(c)} for t, c in roster.items()])),
     )
+
+
+def roster_run(ctx: Any, tickers: list[str], years_history: int = 15, *, as_of: pd.Timestamp, full: bool = False, no_cap: bool = False) -> EdgarRun:
+    """`EdgarRun.load` with no identity layer: each key's filing scope is its roster CIK alone."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(edgar_driver, "load_identity", lambda context: None)
+        return EdgarRun.load(ctx, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
+
+
+def walk_call(fetch: EdgarFetch, run: EdgarRun) -> dict[str, Any]:
+    """One driver call as the flat options it carries: the fetch, tickers, CIK mapping, window, run date, `full`, `no_cap`."""
+    return {
+        "fetch": fetch,
+        "tickers": run.tickers,
+        "cik_map": run.cik_map,
+        "years_history": run.years_history,
+        "as_of": run.run_date,
+        "full": run.full,
+        "no_cap": run.cap is None,
+    }
+
+
+def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
+    """Make `StepExtractEdgar` constructible offline: the CIK mapping, the identity and the index refresh stubbed, each
+    driver call handed to `driver(context, **walk_call(fetch, run))`."""
+    from src.data_extract.transformers import step_extract_edgar
+
+    monkeypatch.setattr(edgar_driver, "universe_rows", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
+    monkeypatch.setattr(step_extract_edgar, "refresh_index", lambda ctx, run, years_history: None)
+    monkeypatch.setattr(edgar_index, "refreshed_today", lambda ctx, years_history: False)
+    monkeypatch.setattr(step_extract_edgar, "run_edgar_fetch", lambda ctx, fetch, run: driver(ctx, **walk_call(fetch, run)))

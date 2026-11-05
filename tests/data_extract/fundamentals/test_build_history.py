@@ -141,7 +141,7 @@ def test_the_column_contract_is_exactly_69_and_every_column_is_traceable():
         print(f"  {family:11s} {len(members):2d}")
     print(
         "  dropped on purpose: employees (own table), revenueGrowth/earningsGrowth "
-        "(pit.py, 365-day offset), sector/industry_group (join sp500_tickers), "
+        "(pit.py, 365-day offset), sector/industry_group (join the universe), "
         "ebitda_q/freeCashflow_q/capexGlobal (declared casualties). Validated."
     )
 

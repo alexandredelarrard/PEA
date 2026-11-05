@@ -2,7 +2,7 @@
 fetch_splits.py  (src/data_extract/utils/prices/fetch_splits.py)
 ------------------------------------------------------------------------
 Row shaping for `prices_splits`: the non-zero share-split EX-dates of a yfinance `actions=True`
-response. The download is `fetch_prices.fetch_prices_and_actions`.
+response. The fetch is `fetch_prices.fetch_price_actions`.
 
 A second split source next to `sharadar_actions`, which misses events yfinance carries;
 `field_map.split_events` takes their union. Not a market-cap input: `close_split` and

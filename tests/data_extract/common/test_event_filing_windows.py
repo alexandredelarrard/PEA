@@ -17,17 +17,18 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from scripts import identity_regression_gate as gate
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
-from src.data_extract import identity_propagate as prop
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import Combine, combine_for, resolve_registrant_entries
-from src.data_extract.utils.common.security_master import ACQUIRED_CONSTITUENT
-from src.data_extract.utils.institutionals import schedule_rows
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G
+from src.data_extract.utils.edgar_extract import schedule_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
+from src.data_extract.utils.identity import identity_propagate as prop
+from src.data_extract.utils.identity.security_master import ACQUIRED_CONSTITUENT
 from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
+from tests.support import identity_regression_gate as gate
+from tests.support.universe import as_roster
 
 SENTINEL = "1900-01-01"
 ACE, OLD_CHUBB = "0000896159", "0000020171"  # CB: Chubb Ltd (ACE) bought The Chubb Corporation on 2016-01-14
@@ -87,7 +88,7 @@ def _identity() -> Identity:
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    return build_identity(lineage=_lineage(), tenure=tenure, roster=roster, co_registrant_ciks=(TMO_USA,))
+    return build_identity(lineage=_lineage(), tenure=tenure, roster_cik=as_roster(roster), co_registrant_ciks=(TMO_USA,))
 
 
 def _index(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
@@ -231,7 +232,7 @@ def test_the_purge_removes_event_rows_outside_their_ciks_windows_and_keeps_insid
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
     identity = _identity()
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scopes, co_registrants: {})
+    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scopes, resolver, run_date: {})
     monkeypatch.setattr(prop, "_refresh_insider", lambda context, identity, changed, dry_run: [])
     lineage = _lineage()
     pending = pending_removals(context, lineage, list(ROSTER))

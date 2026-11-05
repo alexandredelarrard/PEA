@@ -51,6 +51,7 @@ def test_bulk_seed_reads_columns_once(sqlite_store: DataStore, monkeypatch: pyte
 def test_projected_read_reuses_reflected_schema(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, stream: bool) -> None:
     table = replace(Tables.prices, read_columns=("ticker", "date", "close"))
     sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": ["A"], "date": ["2024-01-01"], "close": [1.0]}))
+    reader = DataStore(sqlite_store.engine)
     counts = {"exists": 0, "reflect": 0}
     real_exists, real_reflect = store_module.table_exists, store_module._reflect
 
@@ -65,9 +66,11 @@ def test_projected_read_reuses_reflected_schema(sqlite_store: DataStore, monkeyp
     monkeypatch.setattr(store_module, "table_exists", exists)
     monkeypatch.setattr(store_module, "_reflect", reflect)
     if stream:
-        result = pd.concat(sqlite_store.iter_load(table, project=True, chunksize=1))
+        result = pd.concat(reader.iter_load(table, project=True, chunksize=1))
     else:
-        result = sqlite_store.load(table, project=True)
+        result = reader.load(table, project=True)
     assert result is not None and result.ticker.tolist() == ["A"]
     assert counts == {"exists": 1, "reflect": 1}
-    print("SANITY: projection and selection share one reflected table and one existence check.")
+    reader.load(table, project=True)
+    assert counts == {"exists": 1, "reflect": 1}
+    print("SANITY: cold projection shares one reflection/existence check; warm reads reuse the verified schema.")

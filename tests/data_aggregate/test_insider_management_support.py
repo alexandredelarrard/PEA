@@ -8,11 +8,11 @@ from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_features import _daily_positions
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, row
+from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, row, source_frame
 
 
 def _management(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Series:
-    df_clean, diagnostics = clean_transactions(pd.DataFrame(rows))
+    df_clean, diagnostics = clean_transactions(source_frame(rows))
     # Exercise the position contract with every already-prepared uncertainty record.
     df_trades = pd.concat(
         [df_clean, diagnostics.get("unpriced_events", pd.DataFrame()), diagnostics.get("unsupported_events", pd.DataFrame())],

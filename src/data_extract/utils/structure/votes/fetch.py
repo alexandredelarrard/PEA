@@ -20,26 +20,27 @@ import logging
 from typing import cast
 
 import pandas as pd
-from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_extract.utils.structure.votes.flatten import _marker_frame, _prepare_frame, _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map, _role_source
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract
 from src.data_store.schema import Table, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
 logger = logging.getLogger(__name__)
 
 #: The 8-K item code this module reads.
 _ITEM = "5.07"
+
+#: The extraction action: its prompts, `max_chars` budget and schema (`config.gpt` model, `threads` concurrent calls).
+VOTES_ACTION = "sec8k_votes"
 
 #: Columns read out of `sec_8k` (a narrow projection: `item_text` is its widest column).
 _SOURCE_COLS = ("ticker", "cik", "accession_number", "form", "filing_date", "period_of_report", "is_amendment", "item_text")
@@ -72,10 +73,7 @@ def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
 
 def _load_narratives(context: Context, tickers: list[str]) -> pd.DataFrame | None:
     """The stored Item 5.07 narratives of `tickers` (a projection of `sec_8k`), or None when there are none."""
-    if not context.store.exists(Tables.sec_8k):
-        context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; Item 5.07 votes skipped")
-        return None
-    df_source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)})
+    df_source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)}, optional=True)
     if df_source is None or df_source.empty:
         context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
         return None
@@ -168,35 +166,17 @@ def _log_totals(context: Context, total_rows: int, total_rejected: int, skips: d
         context.log.info("Item 5.07: %d filing(s) skipped — %s", n, reason)
 
 
-def fetch_8k_votes_llm(
-    context: Context,
-    config: DictConfig,
-    tickers: list[str],
-    model: str | None = None,
-    max_chars: int | None = None,
-    cache: bool | None = None,
-    workers: int | None = None,
-) -> None:
+def fetch_8k_votes_llm(context: Context, tickers: list[str], extractor: LLMExtractor) -> None:
     """Build/refresh `sec_8k_votes` from the stored Item 5.07 narratives, ticker by ticker.
 
     Reads a projection of `sec_8k`, skips accessions already stored (markers included), and upserts
-    each ticker's rows and markers before starting the next. Skips gracefully when OPENAI_API_KEY is absent.
-
-    `model` / `max_chars` / `cache` default to `config.gpt` (`max_chars.sec8k_votes`), and `workers`
-    (concurrent LLM calls) to `config.gpt.threads`; an explicit keyword pins one without touching config.
+    each ticker's rows and markers before starting the next. `extractor` is an `LLMExtractor` for `VOTES_ACTION`.
     """
-    config = with_gpt_overrides(config, "sec8k_votes", model=model, max_chars=max_chars, cache=cache)
     df_source = _load_narratives(context, tickers)
     if df_source is None:
         return
     df_todo = _plan_todo(context, df_source)
     if df_todo.empty:
-        return
-
-    try:
-        extractor = LLMExtractor(context, config, action="sec8k_votes", threads=workers)
-    except OSError as e:
-        context.log.warning("Item 5.07 vote extraction skipped: %s", e)
         return
 
     total_rows, total_rejected = 0, 0

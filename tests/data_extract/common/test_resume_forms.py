@@ -9,8 +9,8 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.registrant import FORM_POLICY
-from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.institutionals import fetch_superinvestors as roster
+from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables, resume_tables
 
 
@@ -25,18 +25,35 @@ def test_document_forms_are_in_the_form_policy() -> None:
         t.name: sorted(set(t.resume.forms) - set(FORM_POLICY)) for t in documents if t.resume is not None and set(t.resume.forms) - set(FORM_POLICY)
     }
     assert not unknown, f"document forms missing from registrant.FORM_POLICY: {unknown}"
-    index_diffed = sorted(t.name for t in documents if t.resume is not None and t.resume.forms)
-    assert len(index_diffed) == 9, index_diffed
+    index_diffed = {t.name: set(t.resume.forms) for t in documents if t.resume is not None and t.resume.forms}
+    proxy_forms = {"DEF 14A", "DEF 14C", "DEFC14A"}
+    assert index_diffed == {
+        Tables.fundamentals_employees.name: {"10-K", "10-K/A", "10-K405"},
+        Tables.fundamentals_facts.name: {"10-K", "10-K/A", "10-Q", "10-Q/A"},
+        Tables.insider_transactions.name: {"3", "4", "5", "3/A", "4/A", "5/A"},
+        Tables.sec_13d.name: {"SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"},
+        Tables.sec_13g.name: {"SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"},
+        Tables.def14a_llm.name: proxy_forms,
+        Tables.def14a_directors.name: proxy_forms,
+        Tables.def14a_executive_comp.name: proxy_forms,
+        Tables.def14a_director_comp.name: proxy_forms,
+        Tables.def14a_ownership.name: proxy_forms,
+        Tables.def14a_edgar.name: proxy_forms,
+        Tables.sec_8k.name: {"8-K", "8-K/A"},
+        Tables.filing_risk_text.name: {"10-K", "10-Q"},
+    }
 
     print("\n=== SANITY CHECK: document forms ===")
-    print(f"  {len(index_diffed)} index-diffed tables, every declared form is a FORM_POLICY form: {index_diffed}. Validated.")
+    print(
+        f"  {len(index_diffed)} index-diffed tables retain their exact forms, including all four proxy children: {sorted(index_diffed)}. Validated."
+    )
 
 
 def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pytest.MonkeyPatch) -> None:
     table = Tables.sec_fails_to_deliver_security
     resume = replace(cast(Resume, table.resume), source_start="2011-06-16")
     monkeypatch.setattr(Tables, "sec_fails_to_deliver_security", replace(table, resume=resume))
-    periods = ftd._periods(50, pd.Timestamp("2011-07-01"))
+    periods = ftd.ftd_periods(50, pd.Timestamp("2011-07-01"))
     assert periods == ["201106b", "201107a", "201107b"]
     table = Tables.superinvestor_roster
     resume = replace(cast(Resume, table.resume), source_start="2013-01-01")
@@ -55,7 +72,6 @@ def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pyt
 
 def test_registered_source_starts_preserve_the_source_boundaries() -> None:
     expected = (
-        (Tables.pension_facts, "2009-01-01"),
         (Tables.notes_num, "2009-01-01"),
         (Tables.notes_text, "2009-01-01"),
         (Tables.insider_transactions, "2006-01-01"),
@@ -71,7 +87,7 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
     for table, start in expected:
         assert _start(table) == pd.Timestamp(start), table.name
     assert Tables.sec13f_hr.resume is not None and Tables.sec13f_hr.resume.coverage_start == "2013-06-30"
-    for table in (Tables.pension_facts, Tables.notes_num, Tables.notes_text):
+    for table in (Tables.notes_num, Tables.notes_text):
         assert table.resume is not None and table.resume.observed_from == "2026-09-01", table.name
     indexed = [t for t in resume_tables() if t.resume is not None and t.resume.mode == RESUME_DOCUMENTS and t.resume.forms]
     assert all(t.resume is not None and t.resume.source_start is not None for t in indexed)
@@ -79,5 +95,5 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
 
     print("\n=== SANITY CHECK: source starts ===")
     print(
-        "  12 source boundaries preserved; EDGAR starts in 1993Q1; 13F broad coverage is distinct from its 1999 history; archive clocks turn observed in September 2026. Validated."
+        "  11 source boundaries preserved; EDGAR starts in 1993Q1; 13F broad coverage is distinct from its 1999 history; archive clocks turn observed in September 2026. Validated."
     )

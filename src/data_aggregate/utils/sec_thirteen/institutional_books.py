@@ -5,15 +5,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing
-from itertools import groupby
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _history_floor
-from src.data_aggregate.utils.sec_thirteen.value_basis import prepare_public_value_quotes
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 
 logger = logging.getLogger(__name__)
@@ -51,41 +49,17 @@ def _compact_vintage_events(
     return (pd.concat(frames), pd.concat(states, ignore_index=True)) if states else (pd.DataFrame(), pd.DataFrame())
 
 
-def _packet_cik(packet: tuple[pd.DataFrame, pd.DataFrame]) -> str:
-    """Identify a filer's ordered quarter, including positions without completion evidence."""
-    df_filings, df_holdings = packet
-    if not df_filings.empty:
-        return str(df_filings.cik.iat[0])
-    return str(df_holdings.cik.iat[0]) if not df_holdings.empty else ""
-
-
-def _prepare_manager_book_history(
-    packets: Iterator[tuple[pd.DataFrame, pd.DataFrame]],
-    trading_index: pd.DatetimeIndex,
-    cusip_map: pd.DataFrame | None,
-    universe: Sequence[str],
-    valuation_close: pd.DataFrame | None,
-    value_basis: Mapping[str, Any] | None,
-    *,
-    period_quotes: pd.Series | None,
-    identities: dict[frozenset, frozenset],
-    settle_days: int,
-) -> tuple[pd.DataFrame, pd.DataFrame, int, int]:
-    """Clean raw quarters separately and join only one filer's compact event fragments."""
+def _compact_batch_events(
+    df_manifest: pd.DataFrame, df_holdings: pd.DataFrame, identities: dict[frozenset, frozenset]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Resolve complete manager-quarters after the shared vector batch cleaning."""
     frames: list[pd.DataFrame] = []
     states: list[pd.DataFrame] = []
     offset = 0
-    filings_count = 0
-    raw_rows = 0
-
-    for df_filings, df_raw in packets:
-        filings_count += len(df_filings)
-        raw_rows += len(df_raw)
-        df_holdings = attach_tickers(df_raw, cusip_map, universe)
-        df_holdings = clean_public_holdings(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
-        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days)
-        df_compact, df_states = _compact_vintage_events(df_manifest, df_holdings, identities)
-        del df_filings, df_raw, df_holdings, df_manifest
+    positions = df_holdings.groupby(["cik", "period"], sort=False).indices
+    for key, df_versions in df_manifest.groupby(["cik", "period"], sort=False):
+        indices = positions.get(key, np.array([], dtype=np.intp))
+        df_compact, df_states = _compact_vintage_events(df_versions, df_holdings.iloc[indices], identities)
         if df_states.empty:
             continue
         frames.append(df_compact)
@@ -96,7 +70,7 @@ def _prepare_manager_book_history(
     df_states = (
         pd.concat(states, ignore_index=True) if states else pd.DataFrame({"_start": pd.Series(dtype="int64"), "_stop": pd.Series(dtype="int64")})
     )
-    return df_compact, df_states, filings_count, raw_rows
+    return df_compact, df_states
 
 
 def prepare_institutional_book_history(
@@ -109,8 +83,7 @@ def prepare_institutional_book_history(
     *,
     settle_days: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Read raw quarters once, retaining one compact event pair per filer."""
-    period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
+    """Clean many complete books together and retain only compact public events."""
     frames: list[pd.DataFrame] = []
     states: list[pd.DataFrame] = []
     identities: dict[frozenset, frozenset] = {}
@@ -118,24 +91,16 @@ def prepare_institutional_book_history(
     filings_count = 0
     raw_rows = 0
 
-    with closing(packets):
-        for _, manager_packets in groupby(packets, key=_packet_cik):
-            df_compact, df_states, filings, rows = _prepare_manager_book_history(
-                manager_packets,
-                trading_index,
-                cusip_map,
-                universe,
-                valuation_close,
-                value_basis,
-                period_quotes=period_quotes,
-                identities=identities,
-                settle_days=settle_days,
-            )
+    with closing(clean_public_batches(packets, cusip_map, universe, valuation_close, value_basis)) as batches:
+        for df_filings, df_holdings in batches:
+            filings_count += len(df_filings)
+            raw_rows += len(df_holdings)
+            df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days)
+            df_compact, df_states = _compact_batch_events(df_manifest, df_holdings, identities)
+            del df_filings, df_holdings, df_manifest
             frames.append(df_compact)
             states.append(df_states.assign(_start=df_states["_start"] + offset, _stop=df_states["_stop"] + offset))
             offset += len(df_compact)
-            filings_count += filings
-            raw_rows += rows
 
     if not filings_count:
         logger.warning("No complete immutable 13F filings in scope; recover originals/amendments. Latest-only rows cannot supply PIT books.")

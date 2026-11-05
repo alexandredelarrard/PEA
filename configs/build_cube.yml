@@ -8,6 +8,12 @@ build_cube:
       - cube_part_text
       - cube_part_institutionals
       - cube_part_sec_thirteen
+    compulsory_parts:
+      - cube_part_prices
+      - cube_part_targets
+      - cube_part_fundamentals
+      - cube_part_momentum
+      - cube_part_governance
     columns:
       cube_part_fundamentals: null  # null, empty or omitted: all columns
       cube_part_governance: null
@@ -38,29 +44,8 @@ build_cube:
     primary_horizon: 60
     labels: [rank, zscore, epsilon]
     min_names: 20
-    # Every label is finally PROJECTED cross-sectionally orthogonal to EVERY fitted loading +
-    # momentum + log market cap + GICS industry_group indicators, jointly and AFTER the
-    # rank/zscore transform. Subtracting beta*factor is not enough on its own: a signal built
-    # from nothing but a name's market beta earned rank-IC +0.073 (t +10.3) against the
-    # un-projected label. The loading list is DERIVED from the fitted betas (see
-    # `targets.fitted_beta_columns`) rather than listed here: a hand-kept list let a newly
-    # added factor's loading leak into the label until somebody remembered to edit it, and the
-    # loadings that had been left out were measured to leak no more than the ones left in.
     neutralize_momentum: true  # ALSO project out the 12-1 momentum CHARACTERISTIC. This zeroes
-                               # the mom_12_1 feature's own IC by construction -- deliberate for
-                               # a cheap price-based risk premium, and exactly why the value and
-                               # vol characteristics are NOT treated the same way.
     neutralize_log_mcap: true  # ALSO project out log market cap. `beta_size` is a LOADING on the
-                               # size factor's RETURN and does not span the size CHARACTERISTIC
-                               # (R^2 0.26 across names, 59% of the size ordering unspanned by
-                               # the whole design), so `-log_mcap` earned free rank-IC
-                               # +0.0254/+0.0380/+0.0443 at h=30/60/90 (t up to +7.4); this takes
-                               # h=60 to +0.0051. Un-shrinking beta_size is NOT a substitute -- a
-                               # deliberate 5x over-hedge still leaves t +4.4 while injecting
-                               # beta noise. vol_63 stays OUT: it would zero the vol_63 feature.
-                               # Unlike the beta/sector tilts, a size tilt is neutralized nowhere
-                               # downstream portfolio construction, so it
-                               # would flow straight into the live book.
     vol_standardize: true     # divide epsilon by its own trailing risk
 
   features:

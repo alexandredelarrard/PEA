@@ -5,7 +5,7 @@ ONE definition of "which names is this sector KPI defined for", shared by the
 row-level KPI layer (`sector_features.compute_sector_kpis`) and the daily
 peer-relative layer (`fundamental_features._derived_fields`).
 
-The scope comes from GICS (`SECTOR_KPI_SCOPE` in src/constants/constants.py),
+The scope comes from GICS (`SECTOR_KPI_SCOPE` below, names from `tickers_universe.vocabulary`),
 never from "did the filer report tag X". Tag presence was wrong both ways:
 
   * NOT sector-exclusive -> the KPI leaked into the wrong sector. `InterestIncome-
@@ -33,9 +33,28 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import SECTOR_KPI_SCOPE
+from src.utils.tickers_universe.vocabulary import (
+    BANKS,
+    ENERGY,
+    EQUITY_REITS,
+    FINANCIALS,
+    INSURANCE,
+    PHARMA_BIOTECH_LIFE_SCIENCES,
+    UTILITIES,
+)
 
 __all__ = ["UnknownKpiFamilyError", "row_gate", "family_tickers", "mask_columns"]
+
+# The GICS scope each sector-KPI family is defined for, as (level, accepted values).
+SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
+    "bank": ("industry_group", (BANKS,)),
+    "insurance": ("industry_group", (INSURANCE,)),
+    "financials": ("sector", (FINANCIALS,)),
+    "reit": ("industry_group", (EQUITY_REITS,)),
+    "energy": ("sector", (ENERGY,)),
+    "utilities": ("sector", (UTILITIES,)),
+    "pharma": ("industry_group", (PHARMA_BIOTECH_LIFE_SCIENCES,)),
+}
 
 
 class UnknownKpiFamilyError(KeyError):

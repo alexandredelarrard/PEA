@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.portfolio.utils.inputs import load_market
 from tests.portfolio.test_simulation import settings
+from tests.support.universe import seed_universe
 
 
 @pytest.mark.parametrize("missing_quote", [False, True])
@@ -26,7 +28,7 @@ def test_market_uses_saved_pit_quote_and_repaired_total_return(
     df_raw = pd.DataFrame({"ticker": "AAA", "date": index, "close_split": 999.0, "close_total": 9999.0})
     quotes = [100.0, np.nan if missing_quote else 101.0, 25.5, 26.0]
     df_saved = pd.DataFrame({"ticker": "AAA", "date": index, "close_pit": quotes, "close_total": [25.0, 25.25, 25.5, 26.0], "level_factor": 1.0})
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA"], "sector": ["Tech"]}))
+    universe = seed_universe(sqlite_store, ["AAA"], rows={"AAA": {"sector": "Tech"}})
     sqlite_store.save(Tables.prices, df_raw)
     sqlite_store.save(Tables.cube_part_prices, df_saved)
     sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": index, "close": 100.0}))
@@ -36,7 +38,7 @@ def test_market_uses_saved_pit_quote_and_repaired_total_return(
         pd.DataFrame({"ticker": ["AAA"], "date": [index[2]], "action": ["split"], "value": [4.0], "contraticker": [""]}),
     )
     config = OmegaConf.create({"data_extract": {"redundant_ticks": []}})
-    context = SimpleNamespace(store=sqlite_store, config=config, config_dir=tmp_path)
+    context = SimpleNamespace(store=sqlite_store, config=config, config_dir=tmp_path, universe=universe, log=logging.getLogger(__name__))
     original = sqlite_store.load(Tables.prices)
     load = sqlite_store.load
     reads: list[object] = []
@@ -66,7 +68,7 @@ def test_market_uses_saved_pit_quote_and_repaired_total_return(
 @pytest.mark.parametrize("evidence", ["category", "adr_event"])
 def test_unknown_adr_quantity_units_cannot_become_an_identity(sqlite_store: DataStore, tmp_path: Path, evidence: str) -> None:
     index = pd.bdate_range("2024-01-02", periods=3)
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA"], "sector": ["Tech"]}))
+    universe = seed_universe(sqlite_store, ["AAA"], rows={"AAA": {"sector": "Tech"}})
     sqlite_store.save(Tables.cube_part_prices, pd.DataFrame({"ticker": "AAA", "date": index, "close_pit": 50.0, "close_total": 50.0}))
     sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": index, "close": 100.0}))
     sqlite_store.save(Tables.prices_splits, pd.DataFrame({"ticker": ["_fixture_"], "date": [index[0]], "ratio": [1.0]}))
@@ -82,7 +84,7 @@ def test_unknown_adr_quantity_units_cannot_become_an_identity(sqlite_store: Data
             pd.DataFrame({"ticker": ["AAA"], "date": [index[1]], "action": ["adrratiosplit"], "value": [2.0], "contraticker": [""]}),
         )
     config = OmegaConf.create({"data_extract": {"redundant_ticks": []}})
-    context = SimpleNamespace(store=sqlite_store, config=config, config_dir=tmp_path)
+    context = SimpleNamespace(store=sqlite_store, config=config, config_dir=tmp_path, universe=universe, log=logging.getLogger(__name__))
 
     result = load_market(context, config, settings(end=index[-1]), {})
 

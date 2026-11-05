@@ -72,7 +72,6 @@ IMPACTED: dict[str, tuple[str | None, str | None, str | None]] = {
     "insider_footnotes": (None, None, None),
     "notes_num": ("ticker", "filed", "cik"),
     "notes_text": ("ticker", "filed", "cik"),
-    "pension_facts": ("ticker", "filed", "cik"),
     # the merged fundamentals table every cube consumer actually reads
     "fundamentals_history": ("ticker", "as_of", None),
 }
@@ -94,7 +93,7 @@ CUBE_TABLES = [
 
 #: Reference tables whose own row counts frame every number above (the universe, and the price
 #: history the "filings start N years after the price" screen is measured against).
-CONTEXT_TABLES = ["sp500_tickers", "prices", "sharadar_tickers", "sharadar_actions"]
+CONTEXT_TABLES = ["tickers_universe", "prices", "sharadar_tickers", "sharadar_actions"]
 
 #: Non-null counts are taken in column batches so the query plan stays small on a 250-column
 #: part. One `count(col)` per column in a single pass would otherwise build a very wide node.
@@ -185,7 +184,7 @@ def snapshot(context, label: str) -> Path:
         for table in CONTEXT_TABLES:
             if table in present:
                 dt = "date" if table == "prices" else None
-                tkr = "ticker" if table in ("sp500_tickers", "prices", "sharadar_tickers", "sharadar_actions") else None
+                tkr = "ticker" if table in ("tickers_universe", "prices", "sharadar_tickers", "sharadar_actions") else None
                 tables[table] = _table_summary(conn, table, tkr, dt, None)
 
         cube: dict[str, dict] = {}

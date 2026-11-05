@@ -25,9 +25,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnote_strings
-from src.data_extract.utils.institutionals.insider_common import (
+from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     build_insider_frame,
@@ -39,8 +37,11 @@ from src.data_extract.utils.institutionals.insider_common import (
     screen_insider_rows,
     screened_accessions,
 )
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
+from src.data_extract.utils.zips.fetch_insider_transactions import _footnote_strings
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.universe import as_roster
 
 # --------------------------------------------------------------------------- #
 # fixtures                                                                      #
@@ -48,7 +49,6 @@ from src.data_store.store import DataStore
 
 BROADCOM = "0001441634"  # Broadcom Inc, AVGO's roster CIK
 BROADCOM_LTD = "0001649338"  # Broadcom Ltd, the Singapore segment
-AVAGO = "0001441634"  # (same CIK family; the register chains them)
 AVICENA = "0001317092"  # Avicena Group -- typed AVGO, unrelated company
 TRANE = "0001466258"  # Ingersoll-Rand plc, TT's registrant today
 TRANE_NEW = "0001699150"  # Trane Technologies plc, TT's roster CIK
@@ -100,7 +100,7 @@ def identity():
     roster = pd.DataFrame(
         [{"ticker": t, "cik": c} for t, c in [("AVGO", BROADCOM), ("TT", TRANE_NEW), ("IR", INGERSOLL_OLD), ("DD", DUPONT_EI), ("COR", ABC)]]
     )
-    return build_identity(lineage=lineage, tenure=tenure, roster=roster)
+    return build_identity(lineage=lineage, tenure=tenure, roster_cik=as_roster(roster))
 
 
 def _rows(pairs) -> pd.DataFrame:

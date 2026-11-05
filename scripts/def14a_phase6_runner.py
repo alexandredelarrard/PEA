@@ -48,16 +48,16 @@ if str(ROOT) not in sys.path:
 # ruff: noqa: E402
 
 from src.context import get_config_context
-from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.schemas.vote_schema import Item507Extract
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
 from src.data_extract.utils.structure.votes.fetch import _SOURCE_COLS
 from src.data_extract.utils.structure.votes.flatten import _prepare_frame as _prepare_vote_frame
 from src.data_extract.utils.structure.votes.flatten import _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
@@ -193,9 +193,8 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     """Reuses the production builder verbatim rather than re-implementing it, so what the gate
     measures is what the pipeline will write. 2023+ only: an earlier proxy carries no `ecd:`
     facts (Item 402(v), FY ending >= 2022-12-16) and correctly gets no row."""
-    from src.data_extract.utils.common.edgar_driver import FilingStamp, load_edgar_scope
-    from src.data_extract.utils.common.sec_utils import load_cik_mapping
-    from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+    from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, load_edgar_scope, universe_rows
+    from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 
     # edgartools' identity is PROCESS-GLOBAL and the production fetcher sets it via the
     # Context; a script calling `DEF14A_EDGAR_FETCH.build` directly bypasses that and every
@@ -212,7 +211,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
 
     # The Phase-0 filing index only covers the 22 tickers that HAD a cached proxy, so XOM is
     # absent from it; resolve CIKs the way the pipeline does instead of from that artifact.
-    cik_df = load_cik_mapping(context, tickers)
+    cik_df = universe_rows(context, tickers)
     cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str), strict=False))
     scope = load_edgar_scope(context)
 

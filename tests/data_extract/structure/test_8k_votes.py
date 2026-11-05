@@ -32,18 +32,6 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.schemas.vote_schema import (
-    PROPOSAL_TYPES,
-)
-from src.data_extract.utils.schemas.vote_schema import (
-    Item507Extract as _Item507Extract,
-)
-from src.data_extract.utils.schemas.vote_schema import (
-    NomineeVote as _NomineeVote,
-)
-from src.data_extract.utils.schemas.vote_schema import (
-    ProposalVote as _ProposalVote,
-)
 from src.data_extract.utils.structure.votes.flatten import (
     _DIRECTOR_COLS,
     _LOW_SUPPORT_THRESHOLD,
@@ -61,6 +49,18 @@ from src.data_extract.utils.structure.votes.guard import (
     rejection_reason,
 )
 from src.data_extract.utils.structure.votes.roles import _role_map
+from src.data_extract.utils.structure.votes.vote_schema import (
+    PROPOSAL_TYPES,
+)
+from src.data_extract.utils.structure.votes.vote_schema import (
+    Item507Extract as _Item507Extract,
+)
+from src.data_extract.utils.structure.votes.vote_schema import (
+    NomineeVote as _NomineeVote,
+)
+from src.data_extract.utils.structure.votes.vote_schema import (
+    ProposalVote as _ProposalVote,
+)
 from src.data_store.schema import Tables
 
 Item507Extract: Any = _Item507Extract

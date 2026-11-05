@@ -22,7 +22,7 @@ already exists unless `--refresh` is passed.
 
 Each ticker's filings are listed by CIK from its `entity_lineage` filing scope, exactly as
 `build_ticker_fundamentals` lists them, so the identity tables must be reachable. GICS comes from
-`sp500_tickers` when available and resolves with `regime=None` otherwise -- the regime drives
+`tickers_universe` when available and resolves with `regime=None` otherwise -- the regime drives
 `never_use` and the roll-up overrides, so it cannot be skipped silently.
 """
 
@@ -40,11 +40,11 @@ from typing import Any, cast
 import pandas as pd  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
-from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
+from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR  # noqa: E402
 from src.context import get_config_context  # noqa: E402
-from src.data_extract.utils.common.edgar_driver import FilingStamp  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import resolve_registrant_filings  # noqa: E402
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp  # noqa: E402
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import rows_from_xbrl  # noqa: E402
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue  # noqa: E402
 from src.data_store.schema import Resume, Tables
@@ -57,6 +57,7 @@ load_dotenv(ROOT / ".env")
 #: Where the ledgers land. Under `data/` because it is a cache of a paid-for network walk,
 #: not a source: deleting it costs wall-clock and nothing else.
 DEFAULT_OUT = ROOT / "data" / "fundamentals_sweep"
+FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
 #: The rosters, and WHY each ticker is on its list -- the property that made both of them
 #: useful. Owned by `configs/fundamentals/fundamentals_rosters.json`; keys prefixed with `_`
@@ -74,7 +75,7 @@ def rosters(config_dir: Path) -> dict[str, list[str]]:
 
 
 def gics_lookup(tickers: list[str]) -> dict[str, dict[str, str | None]]:
-    """GICS for the swept tickers, off `sp500_tickers` when a DB is reachable.
+    """GICS for the swept tickers, off `context.universe` when a DB is reachable.
 
     Returns {} when it is not, and the caller then resolves with `regime=None`. That is a
     real degradation and is printed rather than swallowed: the regime selects `never_use`
@@ -84,15 +85,10 @@ def gics_lookup(tickers: list[str]) -> dict[str, dict[str, str | None]]:
     """
     levels = ["sector", "industry_group", "sub_industry"]
     try:
-        from src.data_store.schema import Tables
-
         _, context = get_config_context("./configs", use_cache=False, save=False)
-        universe = context.store.load(Tables.sp500_tickers, columns=["ticker", *levels], optional=True)
+        universe = context.universe.frame[["ticker", *levels]]
     except Exception as exc:  # noqa: BLE001
         print(f"  ! no GICS ({type(exc).__name__}: {exc}) -- resolving with regime=None")
-        return {}
-    if universe is None:
-        print("  ! sp500_tickers is empty -- resolving with regime=None")
         return {}
     return {
         cast(str, row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cast(Any, universe).itertuples() if row.ticker in set(tickers)

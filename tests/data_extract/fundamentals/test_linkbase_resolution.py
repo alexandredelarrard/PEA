@@ -788,7 +788,7 @@ def axp_revenue(edgar_ready) -> dict:
     """
     from edgar import Company, set_identity
 
-    from src.data_extract.utils.common.edgar_driver import FilingStamp
+    from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     identity = os.getenv("SEC_USER_AGENT")

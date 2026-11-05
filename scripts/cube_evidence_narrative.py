@@ -48,7 +48,7 @@ MISSING: list[tuple] = [
         "`NoninterestExpense`, `ProvisionForLoanAndLeaseLosses`, "
         "`FinancingReceivableRecordedInvestmentNonaccrualStatus`",
         "High — bank tags are dimensioned by portfolio segment, so `companyfacts` drops many "
-        "of them and the Financial Statement Data Sets are the real source",
+        "of them and the SEC bulk notes data sets are the real source",
     ),
     (
         "2",
@@ -56,7 +56,7 @@ MISSING: list[tuple] = [
         "Held-to-maturity securities at fair value vs amortised cost",
         "The other half of the SVB signal. `aoci_to_equity` catches only the AFS mark; the HTM hole is where the capital actually went.",
         "SEC **NOTES** sets (`notes_num`) — footnote fair-value tags, the same table the pension features already read",
-        "Medium — the plumbing exists (`load_tagged_facts`), only the tag list is new",
+        "Medium — the plumbing exists (`load_notes_num_scoped`), only the tag list is new",
     ),
     (
         "3",
@@ -151,12 +151,12 @@ MISSING: list[tuple] = [
 
 # --------------------------------------------------------------------------------------- #
 # NULL-RATE FORENSICS (section 4). Same exception as SEC_COVERAGE above: these describe
-# `fundamentals_history`, `pension_facts`, `notes_num` and per-SECTOR cuts of the cube, none of
+# `fundamentals_history`, `notes_num` and per-SECTOR cuts of the cube, none of
 # which the cube profile can answer, so they cannot come through `meta`. Measured 2026-09-05;
 # each query is named beside its table so every figure is re-derivable.
 #
 #   gate arithmetic   fill within scope = count(f_<kpi>_xs) / count(*) over the rows whose
-#                     ticker is in SECTOR_KPI_SCOPE[family], joined cube -> sp500_tickers
+#                     ticker is in SECTOR_KPI_SCOPE[family], joined cube -> tickers_universe
 #   floor             count("f_debtToEquity_xs") over cube_part_fundamentals (the best-covered
 #                     FUNDAMENTALS column; the dividend columns are a PRICE-path anchor and
 #                     give a misleading 0.61%)
@@ -250,7 +250,6 @@ MERGED_VS_MASKED: list[tuple[str, str, str]] = [
 ]
 
 PENSION_SOURCES: list[tuple[str, str, str, str]] = [
-    ("`pension_facts` (bulk FSDS)", "6,244", "125 tickers", "4 tags, 94 on the recognised noncurrent liability; median 17 years each"),
     ("`notes_num` `…FairValueOfPlanAssets`", "4,209", "214 CIKs", "widest single source"),
     ("`notes_num` `…BenefitObligation`", "2,428", "122 CIKs", "the PBO leg; caps `funded_ratio` at 98 tickers"),
     ("companyfacts `pensionDeficit`", "—", "**0**", "**the dead leg — DELETED, see D2**"),
@@ -488,7 +487,7 @@ def closing(m: dict) -> list[tuple]:
         ("h2", "3.4 Two things worth saying plainly"),
         (
             "p",
-            "**The GICS snapshot is a known look-ahead.** `sp500_tickers` holds today's "
+            "**The GICS snapshot is a known look-ahead.** `tickers_universe` holds today's "
             "classification with no date axis, so a name that changed sector carries its 2026 "
             "label back to 1995. It is accepted rather than unnoticed: it is the same look-ahead "
             "the peer basket already carries (one static 2026-vintage embedding basket over the "
@@ -601,11 +600,11 @@ def closing(m: dict) -> list[tuple]:
         ),
         (
             "p",
-            "**Pension (83.3%–93.5% null)** is *not* a gate. Only 199 of 489 tickers ever receive "
-            "a value and mean per-ticker fill is 20.9% of the live span. Two causes compound: much "
-            "of the index is DC-only and correctly has no projected benefit obligation to "
-            "disclose, *and* one of the pool's three documented sources contributes literally "
-            "nothing. That is D2.",
+            "**Pension (83.3%–93.5% null)** is *not* a gate. Only a minority of tickers ever "
+            "receive a value. Two causes compound: much of the index is DC-only and correctly has "
+            "no projected benefit obligation to disclose, *and* the pool once documented a "
+            "companyfacts source that contributed literally nothing (the pool now has two "
+            "`notes_num` sources). That is D2.",
         ),
         ("h2", "4.3 D1 — `cash` is destroyed wherever `investmentsc` is absent"),
         (
@@ -670,7 +669,7 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             "**The guard only worked once its fixture was made faithful.** It had never been "
-            "passed `pension_facts` / `notes_num`, so every pension feature was silently absent "
+            "passed the pension tables, so every pension feature was silently absent "
             "from its matrix and the pair read as *exactly* 1.000000 — a fixture artefact rather "
             "than a measurement. That is an unfaithful-fixture defect of the same shape as the one "
             "Phase 4 fixed; this one was missed. Passing them took the comparable-feature "
@@ -784,9 +783,9 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             "Thirteen tickers carry no fundamentals, but **eleven of them are supposed to**. Eight "
-            "(GEHC, GEV, HONA, KVUE, Q, SNDK, SOLV, VLTO) are in `INSUFFICIENT_HISTORY_TICKERS` — "
-            "under four years of price history, excluded by `load_universe_tickers`. `EA` was "
-            "acquired and sits in `redundant_ticks`. Those must not be “fixed”.",
+            "(GEHC, GEV, HONA, KVUE, Q, SNDK, SOLV, VLTO) have under four years of price history "
+            "and are left out of `configs/universe.yml`. `EA` was acquired and is left out too. "
+            "Those must not be “fixed”.",
         ),
         (
             "p",

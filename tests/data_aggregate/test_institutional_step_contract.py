@@ -26,6 +26,7 @@ from src.data_aggregate.utils.price import inputs as price_inputs
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import resolve_share_events
+from tests.canonical_schema import create_canonical
 from tests.data_aggregate.insider_pit_reference import row
 
 INSTITUTIONAL_COLUMNS = (
@@ -242,15 +243,15 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         reads.append((table, kwargs))
         yield from stream(table, **kwargs)
 
-    def clean(source: pd.DataFrame, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def clean(df_insider: pd.DataFrame, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
         stages.append("clean")
         columns = ["ticker", "owner_cik", "accession_number", "filing_date"]
-        actual = source[columns].sort_values(columns[:3]).reset_index(drop=True)
+        actual = df_insider[columns].sort_values(columns[:3]).reset_index(drop=True)
         expected = history[columns].sort_values(columns[:3]).reset_index(drop=True)
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
         expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]")
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-        return source.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
+        return df_insider.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
 
     def rebase(source: pd.DataFrame, basis: QuantityBasis) -> pd.DataFrame:
         stages.append("rebase")
@@ -332,9 +333,9 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     expected_saved = expected.copy()
     if not full and cls is StepCubeSecThirteen:
         expected_saved.loc[0, "f_test"] = -2.0
-    method = "replace_institutional_output" if cls is StepCubeInstitutionals else "replace" if full else "append_tail"
-    save = Mock(wraps=getattr(sqlite_store, method))
-    monkeypatch.setattr(sqlite_store, method, save)
+    method = "replace" if full else "append_tail"
+    save = Mock(side_effect=getattr(type(sqlite_store), method))
+    monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: save(store, *args, **kwargs))
     step.run(full=full)
     first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, expected_saved, check_dtype=False)
@@ -375,7 +376,11 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
             return _original(table, *args, **kwargs)
 
         monkeypatch.setattr(sqlite_store, method, capture)
-    result = step.build_panel()
+    result = (
+        step.build_panel()
+        if cls is StepCubeInstitutionals
+        else step.build_panel(PartWindow(None, None), existing_columns=sqlite_store.columns(Tables.cube_part_sec_thirteen))
+    )
     if cls is StepCubeInstitutionals:
         assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
         assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
@@ -387,6 +392,8 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
 
 @pytest.mark.parametrize("checked", [False, True], ids=["legacy-unknown", "checked-zero"])
 def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool) -> None:
+    if checked:
+        create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver])
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -493,10 +500,9 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
         shares=None,
         price_per_share=None,
         transaction_date=None,
-        filing_date="2024-01-02",
+        filing_date=str(days[-1].date()),
         lineage_role=None,
     )
-    marker.update(fetched_at=pd.Timestamp("2025-01-02"), inventory_checked_through=days.max())
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([marker]))
     sqlite_store.save(
         Tables.fundamentals_history,
@@ -519,7 +525,57 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     assert list(panel.columns) == list(INSTITUTIONAL_COLUMNS)
     assert panel[ratios].isna().all().all()
     print(
-        "SANITY: actual loader/public step accepts a checked real empty accession; supported quiet gross/counts are0 and all four undefined ratios remain NULL."
+        "SANITY: actual loader/public step accepts a real empty accession without fetched_at; supported quiet gross/counts are 0 and all four undefined ratios remain NULL."
+    )
+
+
+def _quiet_marker(ticker: str, accession: str, filed: pd.Timestamp) -> dict:
+    return row(
+        ticker=ticker,
+        accession_number=accession,
+        row_sequence=0,
+        security_type="_empty",
+        transaction_code=None,
+        shares=None,
+        price_per_share=None,
+        transaction_date=None,
+        filing_date=str(filed.date()),
+        lineage_role=None,
+    )
+
+
+def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it_advances(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    days = seed_prices(sqlite_store, periods=60)
+    sqlite_store.save(
+        Tables.fundamentals_history,
+        pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2023-01-01")], "sharesOutstanding": [1000.0], "sharesOutstandingPit": [1000.0]}),
+    )
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[20])]))
+    ctx = context(sqlite_store, tmp_path)
+    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    gross = "f_ic_insider_distinct_buyers_120d"
+
+    # Outage: D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-4])]))
+    panel = StepCubeInstitutionals(ctx, ctx.config).build_panel().set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    assert panel.loc[: days[19]].isna().all() and panel.loc[days[20] : days[-4]].eq(0).all()
+    assert panel.loc[days[-3] :].isna().all() and len(panel.loc[days[-3] :]) == 3
+
+    # A 12-session lag is stored, then D advances (another ticker's marker): the next build rewrites every quiet NaN.
+    sqlite_store.delete(Tables.insider_transactions, {"accession_number": ["zzz-empty"]})
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-13])]))
+    StepCubeInstitutionals(ctx, ctx.config).run(full=True)
+    before = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-late", days[-1])]))
+    StepCubeInstitutionals(ctx, ctx.config).run(full=False)
+    after = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    assert before.reindex(days[-12:]).isna().all() and after.reindex(days[-12:]).eq(0).all()
+    assert after.loc[days[20] :].eq(0).all()
+    print(
+        "SANITY: a quiet ticker is 0 from its first filing through D and NaN after D (3 sessions when D is 3 behind); "
+        f"after D advances, the incremental build rewrote all 12 lagging sessions ({days[-12].date()}..{days[-1].date()}) to 0."
     )
 
 
@@ -627,9 +683,9 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         return expected.copy()
 
     monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
-    method = "replace_institutional_output" if cls is StepCubeInstitutionals else "replace"
-    replace = Mock(wraps=getattr(sqlite_store, method))
-    monkeypatch.setattr(sqlite_store, method, replace)
+    method = "replace"
+    replace = Mock(side_effect=getattr(type(sqlite_store), method))
+    monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: replace(store, *args, **kwargs))
     step.run()
     assert len(builds) == 1
     if cls is StepCubeSecThirteen:

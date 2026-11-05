@@ -19,14 +19,14 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
-from src.data_extract.utils.common.edgar_driver import FilingStamp
-from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
-from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
+from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp
             _log_read_failure(context, cik, stamp, period, rows)
         else:
             manifest, book = rows
-            context.store.save_13f_filing(manifest, book)
+            save_13f_filing(context.store, manifest, book)
             if not book.empty:
                 frames.append(book)
         if isinstance(rows, ReadFailure) and rows.transient:
@@ -127,7 +127,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         )
     names = roster_map_as_of(context)  # latest snapshot; only used for log lines
     with_book = set(context.store.distinct(Tables.sec13f_manager_holdings, "cik"))
-    since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
+    since = run_date(None) - pd.DateOffset(years=years_history)
     logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book & set(ciks)), since.date())
 
     worker = partial(_catch_up_cik, context=context, since=since)
@@ -261,12 +261,12 @@ def recover_13f_vintages(
         if isinstance(packet, ReadFailure):
             raise RuntimeError(f"13F recovery stopped at {accession}: {packet.reason}")
         manifest, holdings = packet
-        saved += context.store.save_13f_filing(manifest, holdings)
+        saved += save_13f_filing(context.store, manifest, holdings)
         cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
         broad = holdings.assign(ticker=Tables.sec13f_hr.empty_marker[1])
         if cmap is not None:
             mapping = cmap.drop_duplicates("cusip").set_index("cusip").ticker
             broad["ticker"] = broad.cusip.map(mapping).fillna(Tables.sec13f_hr.empty_marker[1])
-        context.store.save_13f_filing(manifest, broad, table=Tables.sec13f_hr)
+        save_13f_filing(context.store, manifest, broad, table=Tables.sec13f_hr)
     preview["saved_rows"] = saved
     return preview

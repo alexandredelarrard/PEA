@@ -16,19 +16,32 @@ from src.data_extract import cli as extraction_cli
 from src.data_extract.utils.prices import fetch_prices as prices_fetcher
 from src.data_store.schema import Resume, Tables
 from src.utils.freshness import fresh_share, table_freshness
+from src.utils.tickers_universe.universe import Universe
+from tests.support.universe import seed_universe, universe_config
+
+
+class _Context(SimpleNamespace):
+    """A stub context whose universe is the stored `tickers_universe`, read on each access."""
+
+    @property
+    def universe(self) -> Universe:
+        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        return Universe(self.store, universe_config(tickers))
 
 
 def _context(store) -> Any:
-    return SimpleNamespace(
+    return _Context(
         store=store,
         log=logging.getLogger("test.extraction_freshness"),
-        config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[], prediction_fresh_share=0.95)),
+        config=SimpleNamespace(data_extract=SimpleNamespace(prediction_fresh_share=0.95)),
     )
 
 
 def _prices(store: Any, last_by_ticker: dict[str, str]) -> None:
     """A universe of the given tickers, each with one `prices` row on its own last date."""
-    store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": list(last_by_ticker)}))
+    if store.exists(Tables.tickers_universe):
+        store.drop(Tables.tickers_universe)
+    seed_universe(store, list(last_by_ticker))
     store.replace(
         Tables.prices,
         pd.DataFrame({"ticker": list(last_by_ticker), "date": pd.to_datetime(list(last_by_ticker.values())), "close_split": 10.0}),
@@ -61,7 +74,7 @@ def test_notes_tables_declare_monthly_archive_availability():
         assert table.freshness_col == "available_at"
         assert "available_at" in table.date_type_cols
 
-    print("\n=== SANITY CHECK: financial-notes registry contract ===")
+    print("\n=== SANITY CHECK: notes registry contract ===")
     print("  notes_num and notes_text retain ddate as data time and use date-typed available_at for monthly freshness. Validated.")
 
 
@@ -102,6 +115,7 @@ def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypat
     last = pd.Timestamp("2026-09-28")
     sqlite_store.replace(Tables.prices, pd.DataFrame({"ticker": ["AAA"], "date": [last], "close_split": [1.0]}))
     sqlite_store.replace(Tables.dividends, pd.DataFrame({"ticker": ["AAA"], "date": [last], "dividends": [0.0]}))
+    seed_universe(sqlite_store, ["AAA"])
     captured: list[pd.Timestamp] = []
 
     def _download(tickers, since, until, *args, **kwargs):
@@ -113,7 +127,7 @@ def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypat
     monkeypatch.setattr(prices_fetcher, "download_ohlcv", _download)
     # Price anchor checks have dedicated controls in test_price_restatement_anchor.py.
     monkeypatch.setattr(prices_fetcher, "anchor_restated_keys", lambda *args, **kwargs: [])
-    prices_fetcher.fetch_prices_and_actions(_context(sqlite_store), ["AAA"], years_history=15, as_of=as_of, pause=0.0)
+    prices_fetcher.fetch_prices(_context(sqlite_store), prices_fetcher.YahooSession(pause=0.0), ["AAA"], years_history=15, as_of=as_of)
 
     overlap = pd.Timedelta(days=cast(Resume, Tables.dividends.resume).overlap_days)
     assert captured == [last - overlap]

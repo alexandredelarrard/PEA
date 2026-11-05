@@ -115,7 +115,7 @@ def _run(check: Callable[..., CheckResult], table: str, out: str, use_cache: boo
     config, context = get_config_context(config_path, use_cache=False, save=False)
     spec = resolve(table)
     started = time.perf_counter()
-    names = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    names = context.universe.subset(tickers.split(",")) if tickers else None
     try:
         # `out` as well as `cache`: they are not the same thing. `--no-cache` says "do not
         # read the parquet snapshot", while `out` is where this run's other checks wrote
@@ -181,7 +181,7 @@ def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config
 def identity(out: str, config_path: str, tickers: str | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     started = time.perf_counter()
-    names = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    names = context.universe.subset(tickers.split(",")) if tickers else None
     report = check_identity(context, tickers=names)
     report.result.scope.setdefault("elapsed_s", round(time.perf_counter() - started, 1))
     path = write_result(out, report.result)
@@ -202,7 +202,7 @@ def identity(out: str, config_path: str, tickers: str | None) -> None:
 def employees(out: str, config_path: str, tickers: str | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     started = time.perf_counter()
-    names = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    names = context.universe.subset(tickers.split(",")) if tickers else None
     report = check_employees(context, tickers=names)
     report.result.scope.setdefault("elapsed_s", round(time.perf_counter() - started, 1))
     path = write_result(out, report.result)

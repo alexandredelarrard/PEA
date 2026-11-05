@@ -29,7 +29,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
     clean_transactions,
     common_stock_mask,
-    consensus_price,
+    normalize_insider_dates,
     officer_role,
     security_class,
 )
@@ -71,6 +71,7 @@ def _txn(**kw) -> dict:
         accession_number="0000000000-00-000000",
         ticker="AAA",
         owner_cik="0001",
+        issuer_cik="0000000100",
         owner_ciks=None,
         n_reporting_owners=1,
         owner_name="Doe Jane",
@@ -89,6 +90,8 @@ def _txn(**kw) -> dict:
         is_officer=0.0,
         is_ten_pct_owner=0.0,
         is_10b5_1=np.nan,
+        document_type="4",
+        original_submission_date=None,
     )
     row.update(kw)
     if row["owner_ciks"] is None:
@@ -99,7 +102,7 @@ def _txn(**kw) -> dict:
 
 
 def _frame(rows: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame(rows)
+    return normalize_insider_dates(pd.DataFrame(rows))
 
 
 def _prices(tickers=("AAA",), price=100.0) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -117,7 +120,7 @@ def _peers(tickers=("AAA",)) -> dict:
 def test_canonical_cleaner_uses_independent_transaction_quote() -> None:
     quotes = pd.DataFrame({"AAA": [100.0]}, index=pd.to_datetime(["2015-05-29"]))
     rows = [_txn(price_per_share=105, value_usd=105_000), _txn(accession_number="bad", price_per_share=100_000, value_usd=100_000_000)]
-    out, diag = clean_transactions(_frame(rows), as_traded_quotes=quotes)
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=quotes)
     assert out.loc[0, "value"] == 105_000
     assert out.loc[1, "value"] == 100_000
     assert out.loc[1, "price_estimated"]
@@ -305,8 +308,8 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
                 ]
             )
 
-    evidence = load_insider_role_evidence(Store(), _frame(rows))
-    cleaned, _ = clean_transactions(_frame(rows), role_evidence=evidence)
+    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
+    cleaned, _ = clean_transactions(_frame(rows), df_roles=evidence)
     actual = cleaned.set_index("accession_number").loc["current-role"]
     assert actual["role"] == ("CEO" if recovered else "other_named_officer")
     assert bool(actual["is_management"]) == recovered
@@ -384,7 +387,7 @@ def test_position_arithmetic_keeps_known_shares_without_prices(buy_price: float,
             shares=10,
             price_per_share=np.nan,
             shares_owned_after=90 if sale_only else 100,
-            officer_title="CEO" if sale_only else "",
+            officer_title="CEO",
             is_officer=1,
         )
     ]
@@ -579,8 +582,8 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
             assert table is Tables.def14a_executive_comp
             return pd.DataFrame(proxies)
 
-    evidence = load_insider_role_evidence(Store(), _frame(rows))
-    clean, _ = clean_transactions(_frame(rows), role_evidence=evidence)
+    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
+    clean, _ = clean_transactions(_frame(rows), df_roles=evidence)
     assert clean["role"].eq("other_named_officer").all() and not clean["is_management"].any()
     print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward into a later blank title.")
 
@@ -632,7 +635,7 @@ def test_an_overpriced_row_is_repaired_to_shares_times_the_consensus():
         _txn(accession_number="bad", owner_cik="9999", transaction_date="2015-05-25", shares=10.0, price_per_share=10_000.0, value_usd=100_000.0)
     )
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
-    out, diag = clean_transactions(_frame(rows), as_traded_quotes=quote)
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=quote)
     bad = out[out["accession_number"].eq("bad")].iloc[0]
     assert diag["repaired_rows"] == 1
     assert bad["price_repaired"] and bad["value"] == pytest.approx(1_000.0)
@@ -684,8 +687,8 @@ def test_consensus_never_uses_a_later_transaction():
     ]
 
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
-    prefix, _ = clean_transactions(_frame(earlier), as_traded_quotes=quote)
-    full, _ = clean_transactions(_frame(earlier + later), as_traded_quotes=quote)
+    prefix, _ = clean_transactions(_frame(earlier), df_valuation_close=quote)
+    full, _ = clean_transactions(_frame(earlier + later), df_valuation_close=quote)
     prefix_row = prefix.set_index("accession_number").loc["suspect"]
     full_row = full[full["accession_number"].eq("suspect") & full["visible_from"].eq(full["anchor"])].iloc[0]
 
@@ -730,7 +733,7 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
         make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series(TRADING_INDEX.max(), index=["AAA", "BBB"])),
+        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
     )
     panel = panel[panel["ticker"].eq("AAA")].set_index("date")
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
@@ -762,7 +765,7 @@ def test_an_underpriced_row_is_counted_but_never_inflated():
     ]
     rows.append(_txn(accession_number="low", owner_cik="9999", transaction_date="2015-05-25", shares=10.0, price_per_share=1.0, value_usd=10.0))
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
-    out, diag = clean_transactions(_frame(rows), as_traded_quotes=quote)
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=quote)
     low = out[out["accession_number"].eq("low")].iloc[0]
     assert diag["underpriced_rows"] == 1 and diag["repaired_rows"] == 0
     assert not low["price_repaired"] and low["value"] == pytest.approx(10.0)
@@ -771,43 +774,6 @@ def test_an_underpriced_row_is_counted_but_never_inflated():
         f"row) and left at its filed ${low['value']:,.0f}. A too-low price understates a "
         f"flow; a too-high one invented $182,982,720tn, and only that direction is "
         f"repaired."
-    )
-
-
-def test_the_consensus_is_built_within_a_share_class():
-    """ERIE: Class A near $35, Class B near $32,740, both titled '... Common Stock'. A
-    ticker-wide median prices a Class A purchase off the Class B tape."""
-    rows = []
-    for i in range(6):
-        rows.append(
-            _txn(
-                accession_number=f"a{i}",
-                owner_cik=f"a{i}",
-                transaction_date=f"2015-05-{20 + i:02d}",
-                security_title="Class A Common Stock",
-                price_per_share=35.0,
-            )
-        )
-        rows.append(
-            _txn(
-                accession_number=f"b{i}",
-                owner_cik=f"b{i}",
-                transaction_date=f"2015-05-{20 + i:02d}",
-                security_title="Class B Common Stock",
-                price_per_share=32_740.0,
-            )
-        )
-    df = _frame(rows)
-    ref = consensus_price(df)
-    a = ref[df["security_title"].eq("Class A Common Stock")]
-    b = ref[df["security_title"].eq("Class B Common Stock")]
-    assert a.max() == pytest.approx(35.0) and b.min() == pytest.approx(32_740.0)
-    out, diag = clean_transactions(df)
-    assert diag["repaired_rows"] == 0
-    print(
-        f"SANITY: per-class consensus = ${a.iloc[0]:,.0f} / ${b.iloc[0]:,.0f}; pooled it "
-        f"would be ${np.median([35.0, 32_740.0]):,.0f} and every Class A row would be "
-        f"'repaired' to 468x its value. 0 rows repaired, which is correct here."
     )
 
 
@@ -1000,7 +966,7 @@ def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail()
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": complete_through})),
+        coverage=InsiderCoverage.from_availability(None, complete_through),
     ).set_index("date")
 
     covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
@@ -1067,7 +1033,7 @@ def test_distinct_buyers_counts_people_not_filings():
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": TRADING_INDEX.max()})),
+        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
     )
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
@@ -1152,7 +1118,7 @@ def test_net_buy_ratio_keeps_quiet_zero_over_zero_undefined() -> None:
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": pd.Timestamp("2016-06-30")})),
+        coverage=InsiderCoverage.from_availability(None, pd.Timestamp("2016-06-30")),
     )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
     assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0
@@ -1175,7 +1141,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
             filing_date=f"2024-0{i + 1}-15",
-            transaction_date=f"2024-0{i + 1}-14",
+            transaction_date=(pd.Timestamp(f"2024-0{i + 1}-15") - pd.offsets.BDay(1)).strftime("%Y-%m-%d"),
             shares=1_000.0 + 100 * i,
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,
@@ -1194,6 +1160,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
         ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
+    assert pd.to_datetime(_frame(rows)["transaction_date"]).isin(idx).all()
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
@@ -1395,7 +1362,7 @@ def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str,
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=history,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx[-1]})),
+        coverage=InsiderCoverage.from_availability(None, idx[-1]),
     ).set_index("date")
     feature = f"f_ic_insider_{metric}"
 
@@ -1413,7 +1380,7 @@ def _build_action_cap(rows: list[dict], close: pd.DataFrame, history: pd.DataFra
         shares_out_history=history,
         coverage=InsiderCoverage.from_availability(
             None,
-            pd.Series({"AAA": idx[-1]}),
+            idx[-1],
             identity_intervals=pd.DataFrame(
                 [
                     {
@@ -1623,7 +1590,7 @@ def test_action_cap_double_negative_components_cannot_certify_capital(invalid_le
     panel = build_insider_feature_panel(
         make_frames(idx, _peers(), close_split=close, close_pit=saved_quote, mcap_pit=saved_cap),
         _frame([row]),
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx[-1]})),
+        coverage=InsiderCoverage.from_availability(None, idx[-1]),
     ).set_index("date")
 
     assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
@@ -1656,11 +1623,35 @@ def test_action_cap_future_transaction_recovers_only_on_new_public_version() -> 
         value_usd=2e6,
     )
     panel = _build_action_cap([original, amended], close, history)
+    prefix = _build_action_cap([original], close, history)
 
     assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
     assert pd.isna(panel.loc["2024-03-11", "f_ic_insider_buy_value_mcap_60d"])
     assert panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
     assert panel.loc["2024-05-07", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    pd.testing.assert_series_equal(
+        panel.loc[:"2024-03-11", "f_ic_insider_buy_value_mcap_60d"], prefix.loc[:"2024-03-11", "f_ic_insider_buy_value_mcap_60d"]
+    )
     print(
         "SANITY: a later real correction can establish valid action/publication order prospectively, without resetting the first disclosure expiry."
     )
+
+
+def test_action_cap_future_declaration_recovers_on_an_explicit_row_date_correction() -> None:
+    _, close, history = _action_cap_inputs()
+    original = _txn(accession_number="future-original", filing_date="2024-03-08", transaction_date="2024-03-11", value_usd=1e6, row_sequence=1)
+    amended = original | {
+        "accession_number": "future-amended",
+        "filing_date": "2024-03-12",
+        "transaction_date": "2024-03-04",
+        "document_type": "4/A",
+        "original_submission_date": "2024-03-08",
+    }
+    panel = _build_action_cap([original, amended], close, history)
+    prefix = _build_action_cap([original], close, history)
+    feature = "f_ic_insider_buy_value_mcap_60d"
+    assert pd.isna(panel.loc["2024-03-11", feature])
+    assert panel.loc["2024-03-12", feature] == pytest.approx(0.01)
+    assert panel.loc["2024-05-07", feature] == 0.0
+    pd.testing.assert_series_equal(panel.loc[:"2024-03-11", feature], prefix.loc[:"2024-03-11", feature])
+    print("SANITY: independent full-row proof corrects the action to March 4 only on March 12, giving 1m/100m until the original May 7 expiry.")

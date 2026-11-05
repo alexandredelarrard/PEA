@@ -149,7 +149,7 @@ class FieldSpec:
 
 #: `fundamentals_history_sec`'s key columns. `fiscal_quarter` labels which quarter of the issuer's own
 #: fiscal year `fiscal_end` closes, on every row including TTM and instant values. Sector / industry
-#: are not carried: they join from `sp500_tickers`.
+#: are not carried: they join from the universe (`context.universe`).
 HISTORY_KEYS: tuple[str, ...] = ("ticker", "as_of", "fiscal_end", "fiscal_quarter")
 
 #: The value columns in STATEMENT order (income statement, cash flow, balance sheet, share counts), each

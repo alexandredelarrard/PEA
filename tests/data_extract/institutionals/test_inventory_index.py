@@ -1,4 +1,4 @@
-"""Exact public index parsing must account for every source line before inventory proof."""
+"""Exact public index parsing accounts for every source line; each refresh owns the bytes it validates."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from threading import Event
 from typing import Any
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from src.data_extract.utils.common import edgar_index
+from src.data_extract.utils.edgar_extract import edgar_index
 from tests.data_extract.edgar_fixtures import MASTER_HEADER, fake_context
 
 
@@ -24,10 +26,15 @@ from tests.data_extract.edgar_fixtures import MASTER_HEADER, fake_context
         MASTER_HEADER + "1|Known issuer|4|2026-10-01|edgar/data/1/0000000001-26-000001.txt\n",
     ],
 )
-def test_incomplete_master_index_cannot_prove_inventory(raw: str) -> None:
+def test_incomplete_master_index_is_rejected(raw: str) -> None:
     with pytest.raises(ValueError):
-        edgar_index.parse_master(raw.encode("latin-1"))
-    print("SANITY: absent public boundary, unaccounted line, malformed nonselected form or post-boundary filing refuses inventory proof.")
+        edgar_index._parse_master_unit(raw.encode("latin-1"))
+    print("SANITY: absent public boundary, unaccounted line, malformed nonselected form or post-boundary filing is rejected.")
+
+
+def _legacy_write(df: pd.DataFrame, path: Path) -> None:
+    """A quarter file written directly, with no cached original next to it."""
+    pq.write_table(pa.Table.from_pandas(df, schema=edgar_index._SCHEMA, preserve_index=False), path)
 
 
 def test_missing_original_is_retried_and_failed_rebuild_preserves_good_cache(
@@ -38,7 +45,7 @@ def test_missing_original_is_retried_and_failed_rebuild_preserves_good_cache(
     quarter = edgar_index.Quarter(2026, 3)
     raw = gzip.compress((MASTER_HEADER + "1|Issuer|4|2026-09-30|edgar/data/1/0000000001-26-000001.txt\n").encode("latin-1"))
     cache = directory / "2026Q3.parquet"
-    edgar_index._write_atomic(edgar_index.parse_master(raw), cache)
+    _legacy_write(edgar_index._parse_master_unit(raw)[0], cache)
     requested: list[str] = []
 
     def download(context: Any, url: str, path: Path) -> int:
@@ -52,59 +59,16 @@ def test_missing_original_is_retried_and_failed_rebuild_preserves_good_cache(
     original = directory / "2026Q3.master.gz"
     assert len(requested) == 1 and original.read_bytes() == raw
     before = cache.read_bytes()
-    edgar_index.refresh(context, pd.Timestamp("2026-10-21"), 1, rebuild=True)
+    edgar_index.refresh(context, pd.Timestamp("2026-10-22"), 1, rebuild=True)
     assert len(requested) == 2 and original.read_bytes() == raw and cache.read_bytes() == before
-    assert edgar_index.inventory_complete_through(context, pd.Timestamp("2026-10-01"), "2026-07-01") is None
-    print("SANITY: legacy cached-only quarter retries its actual original; malformed refresh retains good bytes and cannot advance inventory proof.")
-
-
-def test_changed_cached_index_cannot_reuse_original_inventory_boundary(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    context = fake_context(tmp_path, sqlite_store, ["AAA"])
-    quarter = edgar_index.Quarter(2026, 3)
-    raw = gzip.compress(MASTER_HEADER.encode("latin-1"))
-    monkeypatch.setattr(edgar_index, "quarters_between", lambda first, last: [quarter])
-
-    def download(context: Any, url: str, path: Path) -> int:
-        path.write_bytes(raw)
-        return 200
-
-    monkeypatch.setattr(edgar_index.sec_io, "download", download)
-    edgar_index.refresh(context, pd.Timestamp("2026-10-01"), 1)
-    assert edgar_index.inventory_complete_through(context, pd.Timestamp("2026-10-01"), "2026-07-01") == pd.Timestamp("2026-09-30")
-    cache = edgar_index.index_dir(context) / "2026Q3.parquet"
-    cache.write_bytes(cache.read_bytes() + b"changed")
-    assert edgar_index.inventory_complete_through(context, pd.Timestamp("2026-10-01"), "2026-07-01") is None
-    print("SANITY: inventory boundary is bound to the validated selected cache version; concurrent replacement refuses certification.")
-
-
-def test_cache_replacement_before_record_cannot_bind_wrong_inventory(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    context = fake_context(tmp_path, sqlite_store, ["AAA"])
-    quarter = edgar_index.Quarter(2026, 3)
-    raw = gzip.compress(MASTER_HEADER.encode("latin-1"))
-    monkeypatch.setattr(edgar_index, "quarters_between", lambda first, last: [quarter])
-    real_record = edgar_index._record_inventory
-
-    def download(context: Any, url: str, path: Path) -> int:
-        path.write_bytes(raw)
-        return 200
-
-    def replace_before_record(context: Any, quarter: Any, through: Any, version: Any) -> None:
-        cache = edgar_index.index_dir(context) / "2026Q3.parquet"
-        cache.write_bytes(b"different older inventory")
-        real_record(context, quarter, through, version)
-
-    monkeypatch.setattr(edgar_index.sec_io, "download", download)
-    monkeypatch.setattr(edgar_index, "_record_inventory", replace_before_record)
-    edgar_index.refresh(context, pd.Timestamp("2026-10-01"), 1)
-    assert edgar_index.inventory_complete_through(context, pd.Timestamp("2026-10-01"), "2026-07-01") is None
-    print("SANITY: replacing cache A between publish and record cannot bind A's public boundary to different cache B.")
+    print("SANITY: a cached-only quarter retries its actual original; a malformed refresh retains the good original and selected cache bytes.")
 
 
 def test_each_index_writer_owns_its_temporary_source_bytes(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     context = fake_context(tmp_path, sqlite_store, ["AAA"])
     path = edgar_index.index_dir(context) / "2026Q3.parquet"
     raw = MASTER_HEADER + "1|Issuer|4|2026-09-30|edgar/data/1/0000000001-26-000001.txt\n"
-    actual = edgar_index.parse_master(raw.encode("latin-1"))
+    actual = edgar_index._parse_master_unit(raw.encode("latin-1"))[0]
     other = actual.iloc[:0]
     write = edgar_index.pq.write_table
     replace = edgar_index.os.replace
@@ -132,9 +96,7 @@ def test_each_index_writer_owns_its_temporary_source_bytes(tmp_path: Path, sqlit
     edgar_index._write_atomic(actual, path)
     assert edgar_index.entries(context, {"1"}, ["4"])["accession"].tolist() == ["0000000001-26-000001"]
     assert not list(path.parent.glob("*.part"))
-    print(
-        "SANITY: an interrupted concurrent index writer cannot replace another writer's staged payload or bind its public boundary to different source bytes."
-    )
+    print("SANITY: an interrupted concurrent index writer cannot replace another writer's staged payload.")
 
 
 @pytest.mark.parametrize("compete", [False, True], ids=["coherent", "paused-bad-download"])
@@ -159,13 +121,12 @@ def test_each_index_download_owns_validated_original_bytes(tmp_path: Path, sqlit
 
     with ThreadPoolExecutor(max_workers=1) as executor:
 
-        def publish_then_compete(frame: pd.DataFrame, path: Path) -> tuple[int, int]:
+        def publish_then_compete(frame: pd.DataFrame, path: Path) -> None:
             nonlocal future
-            version = writer(frame, path)
+            writer(frame, path)
             if compete:
                 future = executor.submit(edgar_index.refresh, second, pd.Timestamp("2026-10-01"), 1, rebuild=True)
                 assert wrote_bad.wait(5)
-            return version
 
         monkeypatch.setattr(edgar_index, "quarters_between", lambda first, last: [quarter])
         monkeypatch.setattr(edgar_index.sec_io, "download", download)
@@ -178,9 +139,6 @@ def test_each_index_download_owns_validated_original_bytes(tmp_path: Path, sqlit
             assert future.result(timeout=5) == {}
     assert original.read_bytes() == raw, "A's validated original cannot be replaced by B's unparsed download bytes"
     assert edgar_index.entries(first, {"1"}, ["4"])["accession"].tolist() == ["0000000001-26-000001"]
-    assert edgar_index.inventory_complete_through(first, pd.Timestamp("2026-10-01"), "2026-07-01") == pd.Timestamp("2026-09-30")
-    assert edgar_index.inventory_complete_through(second, pd.Timestamp("2026-10-01"), "2026-07-01") is None
+    assert edgar_index.entries(second, {"1"}, ["4"])["accession"].tolist() == ["0000000001-26-000001"], "B's failed download leaves A's file"
     assert not list(directory.glob("*.part"))
-    print(
-        "SANITY: each actual download owns its temporary bytes; a competing failed download preserves the good original, selected cache and proven A inventory."
-    )
+    print("SANITY: each actual download owns its temporary bytes; a competing failed download preserves the good original and selected cache.")

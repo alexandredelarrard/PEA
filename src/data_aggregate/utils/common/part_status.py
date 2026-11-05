@@ -7,10 +7,9 @@ from typing import Any
 import pandas as pd
 
 from src.context import Context
-from src.data_aggregate.utils.common.assembly import AssemblyPolicy, part_has_rows
+from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 
 _LAG_TOLERANCE_DAYS = 4
 
@@ -28,16 +27,16 @@ def _edge_detail(part_max: pd.Timestamp | None, reference: pd.Timestamp | None) 
 
 def cube_part_edge_report(context: Context) -> dict[str, Any]:
     store = context.store
-    policy = AssemblyPolicy.from_config(context.config.get("build_cube", {}))
-    universe = set(load_universe_tickers(context))
+    optional = set(context.config.build_cube.assembly.optional_parts)
+    universe = set(context.universe.tickers)
     maxima = store.max_date_by(Tables.prices, "ticker")
     reference = max((day for ticker, day in maxima.items() if ticker in universe), default=None)
     details: dict[str, dict[str, Any]] = {}
     for part in CUBE_PARTS:
-        present = part_has_rows(store, part)
+        present = part_has_rows(store, part.table)
         detail = _edge_detail(store.max_date(part.table) if present else None, reference)
-        detail.update(required=part.name not in policy.optional, skipped=False, expected_date=_fmt(reference), refresh_command=part.command)
-        if not present and part.name in policy.optional:
+        detail.update(required=part.name not in optional, skipped=False, expected_date=_fmt(reference), refresh_command=part.command)
+        if not present and part.name in optional:
             detail.update(status="skipped", skipped=True, reason="absent or empty")
         details[part.name] = detail
     return {
@@ -48,19 +47,24 @@ def cube_part_edge_report(context: Context) -> dict[str, Any]:
     }
 
 
-def _insider_source_status(context: Context, part_max_date: str | None, tolerance_days: int) -> dict[str, Any]:
-    store = context.store
-    universe = load_universe_tickers(context)
-    boundaries = store.insider_inventory_boundaries(universe)
-    complete_through = boundaries.min() if not boundaries.empty and boundaries.notna().all() else None
-    lag_days = int((pd.Timestamp(part_max_date) - complete_through).days) if part_max_date is not None and complete_through is not None else None
-    return {
+def _insider_source_status(context: Context, reference: str | None, part_max_date: str | None, tolerance_days: int) -> dict[str, Any]:
+    """The insider source is on time when its newest stored filing date D (whole table, markers included) is at
+    most `tolerance_days` behind the reference price date."""
+    complete_through = context.store.max_date(Tables.insider_transactions, "filing_date")
+    lag_days = int((pd.Timestamp(reference) - complete_through).days) if reference is not None and complete_through is not None else None
+    status: dict[str, Any] = {
         "complete_through": _fmt(complete_through),
+        "reference_price_date": reference,
         "part_max_date": part_max_date,
         "lag_days": lag_days,
         "tolerance_days": tolerance_days,
         "ok": bool(lag_days is not None and lag_days <= tolerance_days),
     }
+    if complete_through is None:
+        status["reason"] = f"{Tables.insider_transactions.name} is absent or empty"
+    elif reference is None:
+        status["reason"] = "no reference price date"
+    return status
 
 
 def part_status_report(context: Context) -> dict[str, Any]:
@@ -93,14 +97,14 @@ def part_status_report(context: Context) -> dict[str, Any]:
     if institutional["skipped"]:
         insider_status = {"status": "skipped", "reason": "optional institutional part absent or empty", "ok": None}
     else:
-        insider_status = _insider_source_status(context, institutional["max_date"], tolerance)
+        insider_status = _insider_source_status(context, reference, institutional["max_date"], tolerance)
         if not insider_status["ok"]:
             behind.append(f"{Tables.cube_part_institutionals.name}:insider_transactions")
     sources = {
         Tables.prices.name: {
             "max_date": reference,
             "ok": reference is not None,
-            "refresh_command": "price-history (seed-universe if universe is absent)",
+            "refresh_command": "price-history (universe if tickers_universe is absent)",
         },
         Tables.cube_part_institutionals.name: {"insider_transactions": insider_status},
     }
@@ -125,5 +129,5 @@ def part_status_report(context: Context) -> dict[str, Any]:
     if reference is None:
         log.warning("No source-price reference for the analysis universe; run %s", sources[Tables.prices.name]["refresh_command"])
     if not institutional["skipped"] and not insider_status["ok"]:
-        log.warning("Institutional insider source incomplete: %s", insider_status)
+        log.warning("Institutional insider source late: %s", insider_status)
     return report

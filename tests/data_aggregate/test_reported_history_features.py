@@ -15,6 +15,8 @@ from src.data_aggregate.utils.fundamentals.history_features import reported_hist
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_store.schema import Tables
+from src.utils.config import read_config
+from src.utils.tickers_universe.universe import Universe
 from tests.conftest import _store
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
@@ -115,7 +117,7 @@ def test_ocf_yield_preserves_cash_burn_and_uses_current_market_cap() -> None:
 
 def test_reported_histories_real_coverage_and_tails() -> None:
     context = SimpleNamespace(store=_store())
-    metadata = context.store.load(Tables.sp500_tickers, columns=["ticker", "sector"])
+    metadata = Universe(context.store, read_config(path="configs")).frame[["ticker", "sector"]]
     names = metadata.ticker.astype(str).to_list()
     columns = [
         "ticker",

@@ -19,14 +19,15 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
-from src.data_extract import identity_propagate as prop
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_extract.utils.institutionals import insider_common as ic
+from src.data_extract.utils.edgar_extract import insider_common as ic
+from src.data_extract.utils.identity import identity_propagate as prop
+from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster
 
 OLD_MERCK, SGP = "0000064978", "0000310158"
 OLD_PROLOGIS, AMB = "0000899881", "0001045609"
@@ -105,7 +106,7 @@ def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> 
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
     shipped = sm.merger_boundaries(sm.load_security_manual(None))
-    return build_identity(_lineage(**kwargs), tenure, roster, co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
+    return build_identity(_lineage(**kwargs), tenure, as_roster(roster), co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
 
 
 def _tx(
@@ -443,7 +444,7 @@ def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_p
 
 
 def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The re-stamp is wired into `identity-propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
+    """The re-stamp is wired into `identity --only propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
     sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=True, mergers=(ACCOUNTING_PLD,))))
     context = _context(sqlite_store, tmp_path)
     monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
@@ -452,7 +453,7 @@ def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_stor
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     assert roles["amb"] == "canonical_current" and roles["opld"] == "acquired_constituent"
-    print("\nSANITY: identity-propagate re-stamps the stored insider rows of the company whose lineage changed")
+    print("\nSANITY: identity --only propagate re-stamps the stored insider rows of the company whose lineage changed")
 
 
 def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lineage_change(
@@ -468,7 +469,7 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    before = build_identity(_lineage(), tenure, roster, co_registrant_ciks=(DLR_LP,), mergers=())
+    before = build_identity(_lineage(), tenure, as_roster(roster), co_registrant_ciks=(DLR_LP,), mergers=())
     rows = [
         _tx("sgp_day", SGP, "SGP", code="A", txn="2009-11-03", filed="2009-11-05"),
         _tx("util", PCG_UTILITY, "PCG", txn="2022-06-01", filed="2022-06-03"),

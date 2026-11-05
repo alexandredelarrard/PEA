@@ -19,7 +19,6 @@ from src.utils.price.adjustments import load_bugfix
 from src.utils.price.frames import daily_returns
 from src.utils.price.levels import apply_level_bugfix, level_factor
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 
 class StepCubePrices(Step):
@@ -27,19 +26,18 @@ class StepCubePrices(Step):
         super().__init__(context=context, config=config)
         self._part = part_for(Tables.cube_part_prices)
         self._store = context.store
-        self._tickers = load_universe_tickers(context)
         self._bugfix = load_bugfix(context.config_dir)
 
     def run(self, full: bool = False) -> None:
         # Load the publication plan before payloads, then read full required evidence once.
         window, existing = self._plan_window(full)
-        inputs = load_price_inputs(self._context, self._tickers, self._bugfix)
+        inputs = load_price_inputs(self._context, self._universe.tickers, self._bugfix)
 
         # Clean quote/total repairs and volume units on the authoritative calendar.
         wide, df_vendor = clean_prices(inputs, self._bugfix)
 
         # Merge canonical/predecessor events and validate repaired anchors once.
-        names = universe_columns(self._tickers, wide["close_split"])
+        names = universe_columns(self._universe.tickers, wide["close_split"])
         wide = {field: df_frame.reindex(columns=names) for field, df_frame in wide.items()}
         df_close = wide["close_split"]
         index = pd.DatetimeIndex(df_close.index)

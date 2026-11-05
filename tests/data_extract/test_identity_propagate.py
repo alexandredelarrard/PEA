@@ -1,4 +1,4 @@
-"""`identity-propagate`: a lineage contraction purges rows whose filer CIK (or tape symbol) left the
+"""`identity --only propagate`: a lineage contraction purges rows whose filer CIK (or tape symbol) left the
 ticker's entity, an expansion re-parses the bulk families for that ticker only, and the derived
 history of a purged ticker is rebuilt. Offline: a real `DataStore` on SQLite, a real `Identity` over
 hand-written lineage rows, the bulk re-parsers and the merged-history build stubbed where noted.
@@ -13,17 +13,19 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract import identity_propagate as prop
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.fundamentals import build_history
 from src.data_extract.utils.fundamentals.build_history import TickerHistory
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
-from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
+from src.data_extract.utils.identity import identity_propagate as prop
+from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils import filer_tables
+from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster, seed_universe
 
 SENTINEL = "1900-01-01"
 #: The run date: AFTER falls inside the 7-day re-check window before it, BEFORE does not.
@@ -77,7 +79,7 @@ def _identity(stamps: dict[str, pd.Timestamp], symbol_rows: list[dict] = ()) -> 
             for t, c in ROSTER.items()
         ]
     )
-    return build_identity(pd.DataFrame(rows), tenure, pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()]))
+    return build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])))
 
 
 def _stored_identity(store: DataStore, stamps: dict[str, pd.Timestamp]) -> Identity:
@@ -93,8 +95,9 @@ def _context(store, tmp_path) -> SimpleNamespace:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger(LOGGER),
-        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30, "redundant_ticks": []}),
+        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
         config_dir="./configs",
+        universe=seed_universe(store, list(ROSTER), rows={t: {"cik": c} for t, c in ROSTER.items()}),
     )
 
 
@@ -168,10 +171,9 @@ def _seed(store) -> None:
 @pytest.fixture
 def stubs(monkeypatch) -> dict[str, list]:
     """Bulk re-parsers, the FTD re-stamp and the derived rebuilds recorded instead of run."""
-    calls: dict[str, list] = {"notes": [], "pension": [], "insider": [], "ftd": [], "short": [], "history": [], "merged": []}
-    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: calls["notes"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: calls["pension"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: calls["insider"].append(sorted(tickers)) or 0)
+    calls: dict[str, list] = {"notes": [], "insider": [], "ftd": [], "short": [], "history": [], "merged": []}
+    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: calls["notes"].append(sorted(tickers)) or 0)
+    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: calls["insider"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(
         prop,
         "restamp_fails",
@@ -180,7 +182,7 @@ def stubs(monkeypatch) -> dict[str, list]:
     monkeypatch.setattr(
         prop,
         "restamp_short_volume",
-        lambda context, companies, tickers, identity=None, stamps=None, dry_run=False, others=None: calls["short"].append(sorted(companies)) or [],
+        lambda context, companies, tickers, identity=None, dry_run=False: calls["short"].append(sorted(companies)) or [],
     )
     monkeypatch.setattr(
         prop,
@@ -213,7 +215,7 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per
         keys = _keys(sqlite_store, table)
         assert ("ALB", "ab-1") not in keys and ("ALB", "ab-2") not in keys, table.name
         assert {("ALB", "alb-1"), ("ALB", "alb-2"), ("MSFT", "msft-1"), ("MSFT", "msft-x")} <= keys, table.name
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "identity-propagate: purged" in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "identity propagate: purged" in r.getMessage()]
     assert len(warnings) == len(PURGED_FAMILIES), warnings
     for table in PURGED_FAMILIES:
         line = next(w for w in warnings if f"'{table.name}'" in w)
@@ -302,7 +304,7 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     tenure = pd.DataFrame(
         [{"symbol": "PLD", "issuer_cik": prologis, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}]
     )
-    identity = build_identity(pd.DataFrame(rows), tenure, pd.DataFrame([{"ticker": "PLD", "cik": prologis}]))
+    identity = build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": "PLD", "cik": prologis}])))
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
     for table in (Tables.fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
@@ -360,7 +362,7 @@ def test_the_dry_run_returns_the_same_removals_and_deletes_nothing(sqlite_store,
     dry = prop.propagate_identity(context, list(ROSTER), dry_run=True, as_of=RUN_DATE)
 
     assert {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES} == before
-    assert stubs["notes"] == stubs["pension"] == stubs["insider"] == stubs["history"] == stubs["merged"] == []
+    assert stubs["notes"] == stubs["insider"] == stubs["history"] == stubs["merged"] == []
     wet = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
     columns = list(filer_tables.REMOVAL_COLUMNS)
     assert dry.removals[columns].reset_index(drop=True).equals(wet.removals[columns].reset_index(drop=True))
@@ -394,10 +396,10 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
 
     prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
-    assert stubs["notes"] == stubs["pension"] == stubs["insider"] == [["MSFT"]]
+    assert stubs["notes"] == stubs["insider"] == [["MSFT"]]
     assert stubs["ftd"] == []  # no stored FTD lines, no master
     print("\n=== SANITY CHECK: expansion (AC-030) ===")
-    print("  notes, pension and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
+    print("  notes and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
 
 
 def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
@@ -452,9 +454,10 @@ def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
     return ftd._parse_ftd_lines("\n".join(lines) + "\n")
 
 
-def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch, caplog):
+def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch):
     """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
-    ticker row goes (WARNING), MSFT gains it after reconciling the controlled original source units."""
+    ticker row retains verified zero completion, MSFT gains it after reconciling the controlled original source units."""
+    create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
     context = _context(sqlite_store, tmp_path)
     raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
     raw = raw.assign(
@@ -481,15 +484,13 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
         "201203a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20120301|000000OL1|OLD|10|X|1.0\n",
         "202402a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240201|000000AL1|ALB|5|X|1.0\n20240201|000000MS1|MSFT|7|X|1.0\n",
     }
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(originals))
+    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(originals))
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, **kwargs: originals[path.stem.removeprefix("cnsfails")])
-    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: 0)
-    monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: 0)
-    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: 0)
+    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: 0)
+    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: 0)
 
-    with caplog.at_level(logging.WARNING, logger=LOGGER):
-        prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
+    result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
     after = sqlite_store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "fails_quantity"])
     got = sorted((t, str(pd.Timestamp(d).date()), q) for t, d, q in after.itertuples(index=False))
@@ -498,12 +499,9 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
     assert checked is not None and checked["source_checked_at"].notna().all()
     restamped = sqlite_store.load(Tables.sec_fails_to_deliver_security, where={"cusip": "000000OL1"})
     assert restamped["ticker"].tolist() == ["MSFT"]
-    assert any(
-        "'sec_fails_to_deliver'" in r.getMessage() and "ALB" in r.getMessage() and "2012-03-01..2012-03-01 1 row(s)" in r.getMessage()
-        for r in caplog.records
-    )
+    assert result.removals.empty, result.removals
     print("\n=== SANITY CHECK: FTD re-stamp ===")
-    print("  OLD moved from ALB to MSFT in the master: ALB's 2012 row purged (WARNING), MSFT gains it; ALB's own 2024 row kept")
+    print("  OLD moved from ALB to MSFT: ALB's 2012 row retains verified zero completion, MSFT gains its fails; 2024 rows kept; no removals")
 
 
 def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path, monkeypatch, stubs):
@@ -549,8 +547,8 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     assert sqlite_store.row_count(Tables.fundamentals_history_sec) == 2
     monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
-    for name in ("reparse_financial_notes", "reparse_financial_statements", "reparse_insider_transactions"):
-        monkeypatch.setattr(prop, name, lambda context, tickers: 0)
+    for name in ("reparse_financial_notes", "reparse_insider_transactions"):
+        monkeypatch.setattr(prop, name, lambda context, tickers, **kwargs: 0)
     merged: list = []
     monkeypatch.setattr(prop, "build_merged_history", lambda context, tickers, full=False, config_dir=None: merged.append((list(tickers), full)))
 
@@ -606,13 +604,30 @@ def test_f105_the_bulk_reparse_compares_each_table_only_with_the_ciks_it_can_hol
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    identity = build_identity(rows, tenure, roster, co_registrant_ciks=[TMO_USA])
+    identity = build_identity(rows, tenure, as_roster(roster), co_registrant_ciks=[TMO_USA])
     monkeypatch.setattr(prop, "load_identity", lambda context: identity)
 
     result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
     assert stubs["notes"] == [] and stubs["insider"] == [], "no table lacks a CIK it can hold: nothing re-parsed"
-    assert stubs["pension"] == [["ALB", "MSFT", "TMUS"]], "pension_facts not created yet: every changed ticker"
     assert "notes_num" not in result.reparsed and "insider_transactions" not in result.reparsed
     print("\n=== SANITY CHECK: F-105 bulk re-parse trigger ===")
     print("  every scope changed: ALB holds its window CIK's notes, MSFT holds none, TMUS's co-registrant is never stored -> no re-parse")
+
+
+def test_the_bulk_reparse_uses_the_propagation_resolver_and_run_date(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S6: the two family re-parses get the resolver and run date from `_reparse_bulk`; none reloads the identity."""
+    from src.data_extract.utils.zips import fetch_financial_notes as notes
+    from src.data_extract.utils.zips import fetch_insider_transactions as insider
+
+    loads: list[str] = []
+    for module in (notes, insider):
+        monkeypatch.setattr(module, "load_identity", lambda context, *a, **k: loads.append("load") or None)
+        monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
+    resolver = SimpleNamespace(co_registrant_ciks=frozenset())
+    store = SimpleNamespace(exists=lambda table: False)
+    context = SimpleNamespace(store=store, log=logging.getLogger("test.reparse"), config=extract_config())
+    done = prop._reparse_bulk(context, ["AAA"], {"AAA": SimpleNamespace(event_ciks=(), windows=())}, resolver, pd.Timestamp("2026-10-31"))
+    assert done == {Tables.notes_num.name: ("AAA",), Tables.insider_transactions.name: ("AAA",)}
+    assert loads == [], loads
+    print(f"\nSANITY: 2 family re-parses ran on an empty cache through the passed resolver; load_identity calls = {len(loads)}.")

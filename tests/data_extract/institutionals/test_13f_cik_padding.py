@@ -24,35 +24,42 @@ def _book(cik: str) -> pd.DataFrame:
     return book.assign(cik=cik)
 
 
-def test_the_walk_batch_save_pads_the_cik_in_both_tables(sqlite_store, monkeypatch):
+def _packet():
+    return f13.filing_vintage(
+        pd.DataFrame([_line("037833100", "APPLE INC", 1_000.0, 10)]),
+        cik=_UNPADDED,
+        accession_number="padding-source",
+        period="2026-03-31",
+        filing_date="2026-05-15",
+        amendment_type="original",
+        source="known_truth",
+        declared_rows=1,
+        declared_value=1000.0,
+    )
+
+
+def test_the_walk_save_pads_the_cik_in_both_tables(filing_store, monkeypatch):
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
-    ctx: Any = SimpleNamespace(store=sqlite_store)
-
-    f13._save_batch(ctx, _book(_UNPADDED), {"AAPL"}, {ROSTER}, f13._WalkState())
-
-    hr = sqlite_store.load(Tables.sec13f_hr, columns=["cik"])
-    book = sqlite_store.load(Tables.sec13f_manager_holdings, columns=["cik"])
-    assert list(hr["cik"]) == [ROSTER] and list(book["cik"]) == [ROSTER]
-    print("\n=== SANITY: 13F walk CIK padding ===")
-    print(f"  a book carrying cik {_UNPADDED!r} is stored as {ROSTER!r} in sec13f_hr and sec13f_manager_holdings. Validated.")
+    ctx: Any = SimpleNamespace(store=filing_store)
+    saver = f13._Saver(ctx, {"AAPL"}, {ROSTER}, save_every=1)
+    saver.save_packet(*_packet())
+    for table in [Tables.sec13f_hr, Tables.sec13f_manager_holdings]:
+        assert filing_store.load(table, columns=["cik"])["cik"].tolist() == [ROSTER]
+    print("SANITY: the actual saver stores padded source CIKs in both initialized destinations.")
 
 
-def test_the_manager_book_save_pads_the_cik(sqlite_store):
-    ctx: Any = SimpleNamespace(store=sqlite_store)
-
-    f13._save_book(ctx, _book(_UNPADDED))
-
-    assert list(sqlite_store.load(Tables.sec13f_manager_holdings, columns=["cik"])["cik"]) == [ROSTER]
-    print("\n=== SANITY: 13F manager book CIK padding ===")
-    print(f"  the catch-up's book save stores {ROSTER!r} for an input cik {_UNPADDED!r}. Validated.")
+def test_the_manager_filing_save_preserves_the_padded_cik(filing_store):
+    f13.save_13f_filing(filing_store, *_packet())
+    assert filing_store.load(Tables.sec13f_manager_holdings, columns=["cik"])["cik"].tolist() == [ROSTER]
+    print("SANITY: manager persistence uses the same verified packet and padded source CIK.")
 
 
-def test_the_hr_save_pads_the_cik(sqlite_store):
-    ctx: Any = SimpleNamespace(store=sqlite_store)
+def test_the_hr_save_pads_the_cik(filing_store):
+    ctx: Any = SimpleNamespace(store=filing_store)
     hr = _book(_UNPADDED).merge(CMAP, on="cusip")[f13._HR_COLS]
 
-    f13.save_hr(ctx, hr)
+    f13.save_hr(ctx, hr.assign(accession_number="padding-direct"))
 
-    assert list(sqlite_store.load(Tables.sec13f_hr, columns=["cik"])["cik"]) == [ROSTER]
+    assert list(filing_store.load(Tables.sec13f_hr, columns=["cik"])["cik"]) == [ROSTER]
     print("\n=== SANITY: 13F hr save CIK padding (walk and data-set backfill) ===")
     print(f"  save_hr stores {ROSTER!r} for an input cik {_UNPADDED!r}. Validated.")

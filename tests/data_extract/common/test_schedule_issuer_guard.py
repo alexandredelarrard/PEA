@@ -8,7 +8,7 @@ storing +0 rows after resolving MDT 28, BLK 50, VTRS 16+6 and ICE 10 predecessor
 
 from __future__ import annotations
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
 #: VTRS as the register holds it: Mylan Inc -> Mylan N.V. -> Viatris.
@@ -49,5 +49,5 @@ def test_an_unrelated_issuer_is_still_rejected():
 
 def test_a_single_cik_ticker_keeps_exactly_its_roster_cik():
     assert _subjects("AAPL", "0000320193") == {"0000320193"}
-    assert EdgarScope().filing_scope("AAPL", "320193").event_ciks == ("0000320193",)
+    assert EdgarScope().filing_scope("AAPL", "0000320193").event_ciks == ("0000320193",)
     print("\n=== SANITY: a single-CIK scope (with or without identity) is its roster CIK ===")

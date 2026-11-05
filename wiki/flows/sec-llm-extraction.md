@@ -2,7 +2,7 @@
 title: SEC and LLM extraction
 description: SEC filing discovery, five focused proxy requests, bounded retries and main-thread persistence.
 type: flow
-source_commit: 58c33f8622d33c4654b139d83677c92e019d15e0
+source_commit: 1b5f33a2a210336c14758ce4897008c72da1d42c
 tags:
   - wiki
   - flow
@@ -12,9 +12,13 @@ tags:
 
 SEC narrative extraction shares discovery, identity, clients, prompts, concurrency and usage tracking. DEF 14A uses five independent requests. Item 5.07 votes retain their own existing schema and grouped persistence.
 
+## LLM step
+
+`StepExtractLlm` in [step_extract_llm.py](../../src/data_extract/transformers/step_extract_llm.py) owns the three provider-backed passes: `run_def14a` (`def14a`), `run_8k_votes` (`sec-8k-votes`, which reads the stored `sec_8k` Item 5.07 narratives and the DEF 14A tables, so it runs after DEF 14A) and `run_employees` (`fundamentals-employees`). Its constructor builds the five DEF 14A section extractors and the votes extractor once and checks the API key of every provider these runs use: a missing key raises `OSError` at construction, before any filing is listed; no pass skips silently. `StepExtractAllData` builds the step only after its EDGAR step, so a missing key fails the LLM passes and what follows, not the zip, identity and EDGAR work before them; it calls `run_def14a` then `run_8k_votes` and leaves employees to their own command. The employee extractors live in one queue per run inside [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py): built on first need, at most one per concurrent ticker worker, each lent to one ticker at a time (an extractor is not re-entrant; `LLMExtractor.run` resets its per-run state).
+
 ## DEF 14A daily flow
 
-The `def14a` CLI invokes `fetch_def14a_llm` in [fetch.py](../../src/data_extract/utils/structure/def14a/fetch.py). Every run lists each accepted CIK window over the configured rolling history. [work.py](../../src/data_extract/utils/structure/def14a/work.py) reads each scoped fact table once, loads candidate archives separately, and replays already-paid answers before considering another request.
+The `def14a` CLI calls `StepExtractLlm.run_def14a`, which invokes `fetch_def14a_llm` in [fetch.py](../../src/data_extract/utils/structure/def14a/fetch.py). Every run lists each accepted CIK window over the configured rolling history. [work.py](../../src/data_extract/utils/structure/def14a/work.py) reads each scoped fact table once and loads candidate archives separately. A section is open when a key field is missing and its `retry` is below two; only filings with an open section are downloaded. Replaying already-paid answers from `def14a_json` is off by default and runs only with `fetch_def14a_llm(..., replay_stored_json=True)`.
 
 | Request/action | Output and counter owner |
 | --- | --- |
@@ -24,7 +28,7 @@ The `def14a` CLI invokes `fetch_def14a_llm` in [fetch.py](../../src/data_extract
 | `def14a_ownership` | `Tables.def14a_ownership`, plus parent insider/CEO summaries |
 | `def14a_governance` | `Tables.def14a_directors`, plus parent board, CEO age/identity and governance disclosures |
 
-Each action has its own schema in [def14a_schema.py](../../src/data_extract/utils/schemas/def14a_schema.py), prompt pair under [prompt_templates](../../src/gpt_extract/prompt_templates), and existing-size budget in [gpt.yml](../../configs/gpt.yml). [carve.py](../../src/data_extract/utils/structure/def14a/carve.py) classifies the filing once and selects domain-specific tables/prose, nearby source units and relevant footnotes. Named historical director payments can be retained without a modern Item 402(k) table; there is no pre-2008 exclusion.
+Each action has its own schema in [def14a_schema.py](../../src/data_extract/utils/structure/def14a/def14a_schema.py), prompt pair under [prompt_templates](../../src/gpt_extract/prompt_templates), and existing-size budget in [gpt.yml](../../configs/gpt.yml). [carve.py](../../src/data_extract/utils/structure/def14a/carve.py) classifies the filing once and selects domain-specific tables/prose, nearby source units and relevant footnotes. Named historical director payments can be retained without a modern Item 402(k) table; there is no pre-2008 exclusion.
 
 ~~~mermaid
 sequenceDiagram
@@ -47,9 +51,9 @@ sequenceDiagram
 
 ## Retry and recovery
 
-[retry.py](../../src/data_extract/utils/structure/def14a/retry.py) binds the five schemas/tables. An unattempted section uses `retry=1`; a saved first attempt with a source-present missing key can run once more at `retry=2`. Two is excluded from further calls, including `-F`. There is no call cap, new retry parameter or separate repair command.
+[retry.py](../../src/data_extract/utils/structure/def14a/retry.py) binds the five schemas/tables. A new filing's section gets one call and `retry=1`; if its key fields are still missing, one more call and `retry=2`. Two is excluded from further calls and from any source read. There is no call cap or separate repair command. A section is a gap when it has no row, or none of its key fields is populated: governance `ceo_name_proxy`; executive pay `total` and `salary`; director pay `total` and `fees_earned`; ownership `shares` and `percent_of_class`; audit any of auditor name and the six fee amounts. Optional nulls elsewhere (bonus, pension, independence flag, tenure, CEO start year) are not gaps.
 
-[evidence.py](../../src/data_extract/utils/structure/def14a/evidence.py) requires a disclosed value tied to a row or label before repairing an attempted section. Missing plus `retry=1` alone does not schedule a request: the source check must recognize the missing key. Supported layouts include named plaintext Summary Compensation Table salary rows, prefixed/repeated year headers, consecutive fiscal-year ranges and an explicitly labelled transposed audit-fee matrix. The complete header must identify Year/Fiscal Year, optionally with the recorded single-letter column or FY/Summary Compensation Table caption prefix. Pay or quantity labels ending in “year” do not identify a fiscal-year column. This check schedules the matching LLM action; it does not insert regex-derived amounts into fact tables. Unknown layouts can remain unresolved at one. Headers alone, optional silence, dashes and less-than bounds do not prove an exact missing value. An unreadable filing consumes no attempt; a provider failure retains its reserved counter. Empty child sections use hidden `_empty` rows with complete primary keys. Marker stamps retain only the table's registered keys, filing date and permitted CIK metadata. Legacy whole-proxy answers/markers prove a first attempt for all domains; a new split archive does not complete its siblings.
+There is no source-evidence pre-check: the stored tables alone decide whether a section is open, so a filing at `retry=2` or without a key gap costs no download, parse or provider call. An open section whose carved payload is empty consumes its attempt without a call. An unreadable filing consumes no attempt; a provider failure retains its reserved counter. Empty child sections use hidden `_empty` rows with complete primary keys. Marker stamps retain only the table's registered keys, filing date and permitted CIK metadata. Legacy whole-proxy answers/markers prove a first attempt for all domains; a new split archive does not complete its siblings.
 
 [postprocess.py](../../src/data_extract/utils/structure/def14a/postprocess.py) applies declared currency/scale, converts percentages to fractions, preserves fiscal years, zeros, negatives and real changes, and normally retains saved non-null facts during partial repair. [basis.py](../../src/data_extract/utils/structure/def14a/basis.py) permits a correction, an explicit null or recovery of a labelled monetary SAR award only when the same filing's named, year-matched, labelled source cells prove the value or conflict. Ownership uses the reported beneficial/common-stock basis rather than a final total that adds cash-settled or additional units. Historical option counts and stock-accounting expense are not monetary option awards; an annual-compensation subtotal is not a full SCT total. Foreign or ambiguous currencies/scales remain unresolved.
 
@@ -65,11 +69,11 @@ A missing director fiscal year can be completed before building the keyed row on
 
 A common-class group percentage does not establish combined economic ownership when actual preferred-class group holdings are also disclosed. Source corrections preserve a different valid saved all-class percentage and the voting leg. A dash accompanied by an omission threshold does not establish zero compensation; a genuinely printed zero remains zero. Surviving holder display names also drop terminal letter footnotes.
 
-The original paid JSON is retained inside the versioned `_def14a_split` archive member alongside raw section responses and source text; the outer object remains readable by legacy consumers. Raw answers are saved before postprocessing. A restart can replay them for free. Each section preserves independently owned facts and counters. Recovering CEO identity also refreshes parent CEO pay and ownership copies from the same filing's already-saved child rows. A matching person's unsupported copies remain unknown, so values selected for another CEO cannot survive the identity repair.
+The original paid JSON is retained inside the versioned `_def14a_split` archive member alongside raw section responses and source text; the outer object remains readable by legacy consumers. Raw answers are saved before postprocessing. A restart restores them for free with `replay_stored_json=True`; replay also reconciles holder aliases. Each section preserves independently owned facts and counters. Recovering CEO identity also refreshes parent CEO pay and ownership copies from the same filing's already-saved child rows. A matching person's unsupported copies remain unknown, so values selected for another CEO cannot survive the identity repair.
 
 ## Storage and consumers
 
-`DataStore.prepare_def14a_retries()` in [store.py](../../src/data_store/store.py) transactionally adds missing BIGINT counters and initializes existing rows to one exactly once. Repeated preparation preserves two and does not refill later nulls. Cold tables use canonical DDL. All writes run on the main thread, with existing worker concurrency retained.
+[Canonical SQL](../../sql/schema.sql) creates the complete five-table retry contract when Docker initializes an empty database. Existing databases are assumed current. The completed retry migration/backfill and runtime preparation hook are removed; ordinary generic saves preserve partial facts and the section owner's monotonic attempts without adding columns or resetting counters. All writes run on the main thread, with existing worker concurrency retained.
 
 The parent default projection excludes large JSON and retry metadata. A shared evidence mask in [filer_tables.py](../../src/utils/filer_tables.py) excludes retry-only rows from governance and prior-CEO vote-role lookup while retaining genuine sparse observations, including audit zero. The legacy paid replacement script refuses writes after the retry contract is installed.
 

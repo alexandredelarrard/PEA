@@ -258,9 +258,9 @@ def universe_columns(tickers: Sequence[str], close: pd.DataFrame) -> list[str]:
     `characteristic_to_factor_return`'s `.sum(axis=1)`), but it makes any bit-identity
     claim between two processes unprovable -- and the CLI runs each sub-step in its own
     process."""
-    universe = sorted(set(map(str, tickers)) & set(map(str, close.columns)))
+    universe = sorted(set(tickers) & set(close.columns))
     if not universe:
-        raise RuntimeError("sp500_tickers empty/unseeded -> cube universe is empty")
+        raise RuntimeError("no universe ticker has prices -> cube universe is empty")
     return universe
 
 

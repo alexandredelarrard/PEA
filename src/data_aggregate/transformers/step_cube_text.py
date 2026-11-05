@@ -89,6 +89,7 @@ class StepCubeText(Step):
         source = self._store.load(Tables.earnings_call_sections, columns=["ticker", "quarter", "as_of"], where={"paragraph": 1}, optional=True)
         sentiment = self._store.load(Tables.earnings_call_sentiment, columns=SENTIMENT_COLUMNS, optional=True)
         embedding = self._store.load(Tables.earning_calls_embedding, columns=["ticker", "quarter", "seq", "as_of", "model"], optional=True)
+
         # Resolve the output window, including schema-triggered full rebuilding.
         columns = self._store.columns(Tables.cube_part_text)
         last = None if full or not columns else self._store.max_date(Tables.cube_part_text)
@@ -98,6 +99,7 @@ class StepCubeText(Step):
             last = None
         cutoff = None if last is None else pd.Timestamp(last).normalize() - pd.Timedelta(days=self._refresh_days)
         window = PartWindow(None if last is None else pd.Timestamp(last), cutoff, cutoff)
+
         # Validate cached scores and match each saved model to the source call.
         source = source if source is not None else pd.DataFrame(columns=["ticker", "quarter", "as_of"])
         source["as_of"] = pd.to_datetime(source["as_of"], errors="coerce")

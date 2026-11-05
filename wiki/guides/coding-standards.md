@@ -20,10 +20,10 @@ Every major `src/` package owns a `step_*.py` orchestrator. A step:
 
 1. inherits [Step](../../src/utils/step.py);
 2. calls `super().__init__(context=context, config=config)`;
-3. exposes `run()` as its only public operation; and
+3. exposes `run()` as its public entry point; a step whose parts also run alone exposes them as public `run_*` sub-runs that `run()` calls in order; and
 4. keeps implementation in package-local private helpers or composed sub-steps.
 
-Class names use `StepPascalCase`; files use `step_snake_case.py`. [StepLongShort](../../src/modelling/steps/step_long_short.py) is the exception: it lives in `src/modelling/steps/` and exposes `run_train()` and `run_predict()` besides `run()` (which calls `run_train()`), because training and prediction share one step's configuration.
+Class names use `StepPascalCase`; files use `step_snake_case.py`. [StepLongShort](../../src/modelling/steps/step_long_short.py) lives in `src/modelling/steps/` and exposes `run_train()` and `run_predict()` besides `run()` (which calls `run_train()`), because training and prediction share one step's configuration. The extraction steps expose one `run_*` per source or stage (for example `StepExtractZips.run_ingest_insider`, `StepExtractIdentity.run_security_master`, `StepExtractEdgar.run_13d`): each CLI command calls one of them, and the constructor declares the state they share (window, run date, tickers, cache directories) once.
 
 Do not cross-import between sibling `src/` packages. Shared logic belongs in the [runtime and shared utilities](../modules/runtime-and-shared-utils.md) package. The sanctioned service exception is [src/gpt_extract](../../src/gpt_extract/), which centralizes LLM clients, prompts, and embeddings.
 
@@ -40,15 +40,15 @@ Do not cross-import between sibling `src/` packages. Shared logic belongs in the
 
 Respect clear logical flow in `run()` or in similar high level function calling themselves dedicated functions or class methods :
 Data flows in the golden-standard order: load → clean → merge → compute features or steps → post-process →  log, report, and sanity checks → save .
-- load the data, model, inputs 
-- clean the data, or inputs 
-- merge the data or inputs 
-- perform the logical calculation, model training, prediction or any other operation on the cleaned data 
-- post process the data if needed 
+- load the data, model, inputs
+- clean the data, or inputs
+- merge the data or inputs
+- perform the logical calculation, model training, prediction or any other operation on the cleaned data
+- post process the data if needed
 - analysis, check or logging
-- save the data 
+- save the data
 
-Never hide cleaning operation across functions, consolidate them into the cleaning function. 
+Never hide cleaning operation across functions, consolidate them into the cleaning function.
 Never go with a spaghetti logic where parts of the logic attached to read, clean, merge, compute, postprocess, analyze, save is unclearly bounded.
 Read or load data, iteratively if data is too large for memory. Use the filters `where` and `columns` from `store.py` to load the strictly necessary part of the data for the flow.
 
@@ -70,10 +70,12 @@ These rules are compulsory for every future coding change:
 - Pass a value computed in one function to the next; never re-declare or recompute it elsewhere.
 - No function input only used by tests + no logger passed as an input of any function.
 - No more than 6 inputs in a function or class method
-- Logical parts of a function are separated by 1 jumped line and one line comment explaining what the block does. 
+- Logical parts of a function are separated by 1 jumped line and one line comment explaining what the block does.
 - No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
 
-- Default assessed ticker lists come from [load_universe_tickers](../../src/utils/universe.py) and are already normalized. CLI `-t` input is a comma-separated string: split it first and call [normalise_ticker](../../src/utils/string.py) once per symbol. Downstream lists need no repeated normalization; reuse the complete universe snapshot when guarding subset writes. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
+- Tickers, CIKs, names, GICS and entry dates come from `context.universe` (`self._universe` in a step), never a table read of the roster and never a complete-universe parameter; [universe.yml](../../configs/universe.yml) is the only hand-edited ticker list. `context.universe.tickers` is already normalized. CLI `-t` input is a comma-separated string: split it and pass it to `context.universe.subset`, which normalizes each symbol and refuses names outside the universe. Downstream lists need no repeated normalization; guard subset writes with `context.universe.outside(scope)` or `is_full(tickers)`. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
+
+- The run date is `run_date(as_of)` from `src/utils/string.py` (the `--as-of` date at midnight, or today); do not re-derive `pd.Timestamp(as_of or today).normalize()` inline, and name a local holding it `start_date`, not `run_date`.
 
 A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.
 
@@ -112,7 +114,7 @@ Do not introduce `*_TABLE` constants or duplicate registries.
 
 ## configs
 
-configs folder has the parameters needed in the code that the user can easily change. 
+configs folder has the parameters needed in the code that the user can easily change.
 - Only put in a config file parameters that worth changing, like hyper parameters or values that would change a calculus and worth parametrizing (number of retries, decay horizon, number of threads, etc)
 - Do not add in configs parameters never changing that has to be deduced in the code (value_usd base in 1000 or 1 -> deduced in code, not in config)
 - brief description and potential values for each parameter for the user to understand.
@@ -146,15 +148,15 @@ Never:
 
 Cube builders keep heavy frames local to `run()`, load only their declared price fields, and let the part registry own incremental policy.
 
-## data_store folder and dedicated files 
+## data_store folder and dedicated files
 
 the data store folder holds the definition of tables in schema.py which has to be used to define anything constant regarding each table in the database:
 - the name of the table, refresh frequency, starting date, granularity, pk, etc.
 
-the store.py is a file only defined and updated to hold all the necessary functions to handle the table : 
-- extract, read, write, iter load, upsert, append, etc. 
-But any dedicated data manipulation for specific table should : 
-- see if store.py does not already have a generic function for the work to be done. If not, create a generic function to be used by all table (for instance alter, or rename a table), call the new store.py function directly from the part handling the table. store.py  should never have anything dedicated to a one table, this is generic data handling function and class. 
+the store.py is a file only defined and updated to hold all the necessary functions to handle the table :
+- extract, read, write, iter load, upsert, append, etc.
+But any dedicated data manipulation for specific table should :
+- see if store.py does not already have a generic function for the work to be done. If not, create a generic function to be used by all table (for instance alter, or rename a table), call the new store.py function directly from the part handling the table. store.py  should never have anything dedicated to a one table, this is generic data handling function and class.
 
 ### Performance
 

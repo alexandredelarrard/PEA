@@ -15,12 +15,12 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.empty_markers import marker_frame
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
-from src.data_extract.utils.schemas.vote_schema import Item507Extract as _Item507Extract
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _result_frames as def14a_result_frames
 from src.data_extract.utils.structure.votes import fetch as votes_fetch
 from src.data_extract.utils.structure.votes.flatten import _marker_frame as votes_marker_frame
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract as _Item507Extract
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import _frames_by_table
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
@@ -91,9 +91,9 @@ def _tickers() -> list[str]:
 def test_zero_proposal_filing_is_queued_once(sqlite_store, llm) -> None:
     context = _context(sqlite_store)
 
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
     first = len(llm.calls)
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
 
     assert first == 3 and len(llm.calls) == 3, llm.calls
     markers = sqlite_store.load(Tables.sec_8k_votes, markers=True)
@@ -109,10 +109,10 @@ def test_a_failed_llm_call_writes_nothing_and_is_queued_again(sqlite_store, llm)
     failed = str(_FIXTURES["jpm_2025"]["accession_number"])
     llm.failing = {failed}
 
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
     stored = set(sqlite_store.distinct(Tables.sec_8k_votes, "accession_number"))
     llm.failing = set()
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
 
     assert failed not in stored and len(stored) == 2
     assert llm.calls[3:] == [failed]
@@ -131,7 +131,7 @@ def test_a_votes_marker_reads_back_as_typed_nulls(sqlite_store, llm) -> None:
     }
     sqlite_store.save(Tables.sec_8k_votes, pd.DataFrame([real]))
 
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
 
     shown = sqlite_store.load(Tables.sec_8k_votes, markers=True)
     row = shown[shown["proposal_seq"] == 0.0].iloc[0]

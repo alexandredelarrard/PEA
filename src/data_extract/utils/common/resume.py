@@ -1,10 +1,6 @@
 """Work-list planners: what each nightly run fetches, derived from the table's own rows, its
 `schema.Resume` contract and the run date. Nothing else is read or written.
 
-`document_worklist` (EDGAR document tables): the local EDGAR index rows of the table's forms for
-each key's filing scope (event CIKs and CIK windows), from the floor on, minus the accessions already stored (empty-filing
-markers included; optionally only on the rows of one source); newest first and capped per run.
-
 `series_windows` (dated per-key series): per key, its own last date minus the overlap through
 `until`; the full history for an absent table, `full`, or a new key whose stored history does not
 yet reach the floor, or its own first date in an optional `listing` table when later (a new key
@@ -27,14 +23,10 @@ from typing import cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.bulk_cache import period_end
-from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import normalise_ticker
-from src.utils.universe import load_universe_tickers, new_tickers
+from src.utils.string import run_date
 
 logger = logging.getLogger(__name__)
 
@@ -57,29 +49,13 @@ def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timest
 
     Every re-check it drives is idempotent, so a key seen on several runs inside the window costs reads only,
     and a failed run is healed by the next one."""
-    since = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize() - pd.Timedelta(days=days)
+    since = run_date(as_of) - pd.Timedelta(days=days)
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
-
-
-@dataclass
-class DocumentWork:
-    """One table's document work list: index rows to read per key (oldest first), plus what `resume-plan` reports."""
-
-    units: dict[str, pd.DataFrame]
-    key_class: dict[str, str]
-    counts: dict[str, int] = field(default_factory=dict)
-    uncapped: int = 0
-    timings: dict[str, float] = field(default_factory=dict)
-    listed: dict[str, pd.DataFrame] = field(default_factory=dict)
-
-    @property
-    def size(self) -> int:
-        return sum(len(df) for df in self.units.values())
 
 
 def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtime_floor: pd.Timestamp | None = None) -> pd.Timestamp:
     """The earliest filing date listed: `as_of - years_history`, the source start or the runtime floor, whichever is latest."""
-    floors = [pd.Timestamp(as_of).normalize() - pd.DateOffset(years=years_history)]
+    floors = [run_date(as_of) - pd.DateOffset(years=years_history)]
     if table.resume is not None and table.resume.source_start is not None:
         floors.append(pd.Timestamp(table.resume.source_start))
     if runtime_floor is not None:
@@ -102,120 +78,6 @@ def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope
         for key, group in df.groupby(key_col, sort=False):
             done.setdefault(str(key), set()).update(group["accession_number"].astype(str))
     return done
-
-
-def _insider_done(context: Context, keys: Sequence[str], recent: pd.Timestamp | None) -> dict[str, set[str]]:
-    """Historical ZIP units count as present; only the recent overlap requires EDGAR authority."""
-    rows = context.store.load(
-        Tables.insider_transactions,
-        columns=["ticker", "accession_number", "source", "filing_date"],
-        where={"ticker": list(keys)},
-        markers=True,
-        optional=True,
-    )
-    done: dict[str, set[str]] = {key: set() for key in keys}
-    if rows is None:
-        return done
-    accepted = rows["source"].eq("edgar")
-    if recent is not None:
-        accepted |= pd.to_datetime(rows["filing_date"]).lt(recent)
-    for ticker, group in rows.loc[accepted].groupby("ticker", sort=False):
-        done[str(ticker)].update(group["accession_number"].astype(str))
-    return done
-
-
-def _key_class(ticker: str, new: set[str], df_listed: pd.DataFrame, df_units: pd.DataFrame) -> str:
-    """`KEY_NEW` inside the table's overlap since `added_on`, `KEY_ROWLESS` when none of its listed documents is stored, else `KEY_ESTABLISHED`."""
-    if ticker in new:
-        return KEY_NEW
-    return KEY_ROWLESS if len(df_units) == len(df_listed) else KEY_ESTABLISHED
-
-
-def _classify_units(df_listed: pd.DataFrame, df_units: pd.DataFrame, key_class: str, overlap_days: int) -> dict[str, int]:
-    """Unit counts by class: a new or rowless key's units, else forward (inside the overlap of the key's
-    last stored filing) and gap (older)."""
-    if df_units.empty:
-        return {}
-    if key_class != KEY_ESTABLISHED:
-        return {key_class: len(df_units)}
-    stored = df_listed.loc[~df_listed["accession"].isin(df_units["accession"]), "filed"]
-    edge = (stored.max() if not stored.empty else df_units["filed"].min()) - pd.Timedelta(days=overlap_days)
-    n_forward = int((df_units["filed"] >= edge).sum())
-    return {"forward": n_forward, "gap": len(df_units) - n_forward}
-
-
-def _cap(units: dict[str, pd.DataFrame], cap: int | None, desc: str) -> tuple[dict[str, pd.DataFrame], int]:
-    """At most `cap` units in total, newest first, each key's list kept oldest first; an ERROR names the uncapped size."""
-    uncapped = sum(len(df) for df in units.values())
-    if cap is None or uncapped <= cap:
-        return units, uncapped
-    logger.error(
-        "%s: work list of %d document(s) exceeds the per-run cap of %d; the newest %d run tonight, the rest on later runs", desc, uncapped, cap, cap
-    )
-    df_all = pd.concat([df.assign(_key=key) for key, df in units.items()], ignore_index=True)
-    df_kept = df_all.sort_values(["filed", "accession"], ascending=False, kind="mergesort").head(cap)
-    capped = {str(key): group.drop(columns="_key").sort_values(["filed", "accession"], ignore_index=True) for key, group in df_kept.groupby("_key")}
-    return capped, uncapped
-
-
-def document_worklist(
-    context: Context,
-    table: Table,
-    keys: pd.DataFrame,
-    as_of: pd.Timestamp,
-    *,
-    forms: Sequence[str],
-    identity: Identity | None,
-    years_history: int,
-    runtime_floor: pd.Timestamp | None = None,
-    done_scope: str = DONE_TABLE,
-    done_where: dict[str, object] | None = None,
-    full: bool = False,
-    cap: int | None = None,
-) -> DocumentWork:
-    """The documents `table` still lacks for `keys` (`ticker`, `cik`): index rows from the floor on,
-    resolved through each key's filing scope (its roster CIK alone without `identity`), minus the
-    accessions stored on the rows matching `done_where` (ignored under `full`)."""
-    started = time.perf_counter()
-    floor = (
-        pd.Timestamp(cast(str, table.resume.source_start))
-        if table == Tables.insider_transactions and table.resume is not None
-        else document_floor(table, as_of, years_history, runtime_floor)
-    )
-    roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
-    scopes = {
-        ticker: identity.filing_scope(ticker) if identity is not None else FilingScope.roster_only(ticker, cik) for ticker, cik in roster.items()
-    }
-    candidates = {ticker: listing_ciks(scope) for ticker, scope in scopes.items()}
-    df_index = edgar_index.entries(context, {c for ciks in candidates.values() for c in ciks}, forms, since=floor)
-    by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
-    read_index = time.perf_counter()
-    done = (
-        ({key: set() for key in roster} if full else _insider_done(context, list(roster), runtime_floor))
-        if table == Tables.insider_transactions
-        else ({key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope, done_where))
-    )
-    read_done = time.perf_counter()
-    overlap = table.resume.overlap_days if table.resume is not None else 0
-    new = new_tickers(context.store, overlap, as_of) if overlap else set()
-    units: dict[str, pd.DataFrame] = {}
-    key_class: dict[str, str] = {}
-    counts: dict[str, int] = {}
-    listed: dict[str, pd.DataFrame] = {}
-    for ticker in roster:
-        frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
-        df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
-        listed[ticker] = df_listed
-        done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
-        df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
-        key_class[ticker] = _key_class(ticker, new, df_listed, df_units)
-        for name, n in _classify_units(df_listed, df_units, key_class[ticker], overlap).items():
-            counts[name] = counts.get(name, 0) + n
-        if not df_units.empty:
-            units[ticker] = df_units
-    units, uncapped = _cap(units, cap, table.name)
-    timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
-    return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings, listed=listed)
 
 
 @dataclass
@@ -257,13 +119,6 @@ def trading_calendar(context: Context) -> pd.DatetimeIndex:
     """The distinct dates of `prices`, sorted; empty when the table is absent. Dates only: a secondary class
     in `prices` is fetched inside its company's own windows, so it adds no session."""
     return pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.prices, "date"))).normalize().unique().sort_values()
-
-
-def session_dates(calendar: pd.DatetimeIndex, since: pd.Timestamp, until: pd.Timestamp) -> pd.DatetimeIndex:
-    """Calendar sessions in `[since, until]`, plus business days after the calendar's last session."""
-    inside = calendar[(calendar >= since) & (calendar <= until)]
-    after = calendar.max() + pd.Timedelta(days=1) if len(calendar) else since
-    return inside.union(pd.bdate_range(max(after, since), until)) if after <= until else inside
 
 
 def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timestamp, edge: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -309,6 +164,7 @@ def series_windows(
     full: bool = False,
     calendar: pd.DatetimeIndex | None,
     listing: Table | None = None,
+    stored: tuple[pd.DataFrame, pd.Timestamp | None] | None = None,
 ) -> SeriesWork:
     """Per-key fetch windows for a dated series `table` from one `key_stats` read (plus one date read
     for the keys with interior holes against the daily `calendar`; None for a non-daily series, which
@@ -327,10 +183,10 @@ def series_windows(
     floor = document_floor(table, as_of, years_history)
 
     # get per ticker, first, last date and n count
-    df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)})
+    df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)}) if stored is None else stored[0]
     stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
-    new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
-    table_max = context.store.max_date(table, date_col)
+    new = set() if full else context.universe.new_since(table.resume.overlap_days, as_of)
+    table_max = context.store.max_date(table, date_col) if stored is None else stored[1]
     reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
 
     windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
@@ -376,7 +232,6 @@ class ArchiveWork:
     screen: list[str]
     scoped: bool
     held: list[str] = field(default_factory=list)
-    universe: list[str] = field(default_factory=list)
 
     def units(self) -> Iterator[tuple[str, list[str]]]:
         """`(period, keys to keep)` in period order; a period is never in both lists."""
@@ -411,14 +266,14 @@ def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collectio
 
     An archive row carries its period; a row without one (an EDGAR row or marker of a table both
     legs write) does not make the key's archive history stored."""
-    new = new_tickers(context.store, ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
+    new = context.universe.new_since(ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
     for table in tables:
         if not new:
             break
         key_col = cast(str, cast(Resume, table.resume).key)
         if {key_col, _period_column(table)} <= set(context.store.columns(table)):
             where = {key_col: sorted(new), _period_column(table): context.store.NOT_NULL}
-            new -= {normalise_ticker(k) for k in context.store.distinct(table, key_col, where=where)}
+            new -= set(context.store.distinct(table, key_col, where=where))
     return new
 
 
@@ -431,7 +286,6 @@ def archive_worklist(
     as_of: pd.Timestamp,
     *,
     full: bool = False,
-    all_tickers: Collection[str] | None = None,
 ) -> ArchiveWork:
     """Which archive periods to parse, and for which keys, from the stored periods of `tables` alone.
 
@@ -441,8 +295,7 @@ def archive_worklist(
     keys = sorted(set(keys))
     listed, stored = archive_periods(context, tables, published)
     missing = [p for p in listed if p not in stored]
-    universe = set(load_universe_tickers(context) if all_tickers is None else all_tickers)
-    scoped = bool(universe - set(keys))
+    scoped = not context.universe.is_full(keys)
     rescan_keys = keys if full else sorted(_new_rowless_keys(context, tables, keys, as_of))
     on_disk = set(cached)
     rescan = [p for p in listed if p in stored and (full or p in on_disk)] if rescan_keys else []
@@ -461,8 +314,7 @@ def archive_worklist(
         rescan=rescan,
         keys=keys,
         rescan_keys=rescan_keys,
-        screen=sorted(universe | set(keys)),
+        screen=sorted(set(context.universe.tickers) | set(keys)),
         scoped=scoped,
         held=held,
-        universe=sorted(universe),
     )

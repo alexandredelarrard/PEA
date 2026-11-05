@@ -5,8 +5,8 @@ Strictly as-filed: every value is a number the filer tagged, on the period shape
 and YTD decumulation happen later, in memory, in the history build. `xbrl_linkbase` picks the concept(s) for a
 field, `entity_scope` picks the consolidated-registrant facts, and this module turns both into rows. A field or
 period with no usable value is emitted as a value-less row carrying a `dc_code`, so every null has a reason.
-`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL, an unreadable one or one
-with no consolidated facts becomes an empty-filing marker.
+`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL or no consolidated facts becomes
+an empty-filing marker, an unreadable one (`ParseFailureError`) is listed again next run.
 """
 
 from __future__ import annotations
@@ -20,16 +20,18 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
+from src.data_extract.utils.edgar_extract.edgar_driver import (
     EdgarFetch,
+    EdgarRun,
     EdgarScope,
     FetchSummary,
     FilingStamp,
+    index_years,
+    refresh_index,
     run_edgar_fetch,
 )
-from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
-from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape
@@ -596,12 +598,11 @@ def parse_fundamentals(
     return {Tables.fundamentals_facts: df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")}
 
 
-def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
-    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of `cik_map`'s tickers."""
+def fundamentals_fetch(context: Context) -> EdgarFetch:
+    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
     catalogue = load_catalogue(str(context.config_dir))
-    levels = ["sector", "industry_group", "sub_industry"]
-    df_gics = cik_map[levels].set_index(cik_map["ticker"].map(str))
-    gics = cast(dict[str, dict], df_gics[~df_gics.index.duplicated(keep="last")].to_dict("index"))
+    df_gics = context.universe.frame.set_index("ticker")[["sector", "industry_group", "sub_industry"]]
+    gics = cast(dict[str, dict], df_gics.to_dict("index"))
     return EdgarFetch(
         tables=(Tables.fundamentals_facts,),
         parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
@@ -626,15 +627,7 @@ def fetch_fundamentals_sec(
     context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
 ) -> FetchSummary:
     """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
-    cik_map = load_cik_mapping(context, tickers)
-    return run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        fundamentals_fetch(context, cik_map),
-        full=full,
-        cik_map=cik_map,
-        max_workers=int(context.config.data_extract.fundamentals_workers),
-        as_of=as_of,
-        no_cap=no_cap,
-    )
+    run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
+    fetch = fundamentals_fetch(context)
+    refresh_index(context, run, index_years(fetch, run.years_history, run.run_date))
+    return run_edgar_fetch(context, fetch, run, max_workers=int(context.config.data_extract.fundamentals_workers))

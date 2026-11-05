@@ -1,40 +1,33 @@
-"""Super step orchestrating the data-extraction sub-steps over one universe from `sp500_tickers`.
+"""Super step orchestrating the data-extraction sub-steps over the universe (`context.universe`).
 
-The universe is seeded via the S&P 500 scraper only when the table is empty. Order: identity stage
-(Form 3/4/5, Notes and FTD zip downloads, SEC current tickers -> symbol_tenure + entity_lineage +
-security_master -> propagation) -> prices ->
-institutionals -> fundamentals (Sharadar then SEC) -> structure -> behavioral. Every domain step only
-reads the propagated lineage. Institutionals must run before structure: the vote parser reads the
-`sec_8k` Item 5.07 narratives institutionals stores.
+Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, universe sync) -> zip downloads (Form 3/4/5,
+Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
+symbol_tenure + entity_lineage + security_master -> propagation) -> zip ingests (insider zip quarters, notes,
+FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
+Sharadar -> fundamentals -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD) -> LLM (DEF 14A, 8-K votes)
+-> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step
+has run, so a missing API key fails from there on; employees stay on their own command (`fundamentals-employees`).
 """
 
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.identity_propagate import propagate_identity
 from src.data_extract.transformers.step_extract_behavioral import StepExtractBehavioral
+from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
+from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
 from src.data_extract.transformers.step_extract_institutionals import (
     StepExtractInstitutionals,
 )
+from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
-from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.entity_lineage import build_entity_lineage
-from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.sec_tickers import download_sec_company_tickers
-from src.data_extract.utils.common.security_master import build_security_master
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
-from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions
-from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_store.schema import Tables
+from src.data_extract.transformers.step_extract_universe import StepExtractUniverse
+from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
+from src.utils.string import run_date
 
 
 class StepExtractAllData(Step):
@@ -46,43 +39,27 @@ class StepExtractAllData(Step):
         self._institutionals = StepExtractInstitutionals(context=context, config=config)
         self._fundamentals_sharadar = StepExtractFundamentalsSharadar(context=context, config=config)
         self._fundamentals = StepExtractFundamentals(context=context, config=config)
-        self._structure = StepExtractStructure(context=context, config=config)
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
-    def _resolve_tickers(self) -> list[str]:
-        if self._context.store.row_count(Tables.sp500_tickers) == 0:
-            get_sp500_tickers(self._context)
-            self._log.info("Extracted ticker list")
-        universe = load_universe_tickers(self._context)
-        self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers}")
-        return universe
-
-    def _refresh_identity(self, tickers: list[str]) -> None:
-        """Cache the identity evidence, rebuild `symbol_tenure`, `entity_lineage` and `security_master`, then propagate the changes."""
-        years_history = int(self._config.data_extract.years_history)
-        download_insider_transactions(self._context)
-        download_financial_notes(self._context, years_history=years_history)
-        download_fails_to_deliver(self._context, years_history=years_history)
-        download_sec_company_tickers(self._context)
-        scan = scan_form345_cache(cache_dir(self._context, self._config.local.paths.insider_transactions))
-        tenure = build_symbol_tenure(self._context, scan, self._context.config_dir)
-        lineage = build_entity_lineage(
-            self._context,
-            tenure,
-            scan.owner_pairs,
-            str(self._context.config_dir),
-            redundant_symbols=frozenset(self._config.data_extract.redundant_ticks),
-        )
-        build_security_master(self._context, lineage, str(self._context.config_dir))
-        propagate_identity(self._context, tickers, identity=load_identity(self._context, refresh=True), all_tickers=tickers)
-
     def run(self) -> None:
-        tickers = self._resolve_tickers()
+        StepExtractUniverse(self._context, self._config, run_date(None)).run()
+        tickers = self._universe.tickers
+        self._log.info(f"Equity universe: {len(tickers)} tickers")
 
-        self._refresh_identity(tickers)
+        zips = StepExtractZips(self._context, self._config, ZipsOptions(tickers=tickers))
+        zips.run_download()
+        StepExtractIdentity(self._context, self._config, IdentityOptions(tickers=tickers)).run()
+        zips.run_ingest()
+
+        # run each extract big block
         self._prices.run(tickers=tickers)
-        self._institutionals.run(tickers=tickers, all_tickers=tickers)
+        self._institutionals.run(tickers=tickers)
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
-        self._fundamentals.run(tickers=tickers, full=False, all_tickers=tickers)
-        self._structure.run(tickers=tickers)
+        self._fundamentals.run(tickers=tickers, full=False)
+        StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()
+        # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a
+        # missing API key fails only from this point on.
+        llm = StepExtractLlm(self._context, self._config, LlmOptions(tickers=tickers))
+        llm.run_def14a()
+        llm.run_8k_votes()
         self._behavioral.run(tickers=tickers)

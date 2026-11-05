@@ -15,7 +15,7 @@ from src.data_aggregate.utils.institutionals.insider_features import InsiderCove
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
-from tests.data_aggregate.insider_pit_reference import compare, frame, reference_panel, row, sentinel_rows
+from tests.data_aggregate.insider_pit_reference import compare, frame, reference_panel, row, sentinel_rows, source_frame
 
 IDX = pd.bdate_range("2024-01-01", "2024-12-31")
 TICKERS = ["AAA", "BBB"]
@@ -27,9 +27,7 @@ def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
     close = pd.DataFrame(100.0, index=IDX, columns=TICKERS)
     fh = pd.DataFrame([{"ticker": t, "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in TICKERS])
     frames = make_frames(IDX, {t: {t: 1.0} for t in TICKERS}, close_split=close)
-    return build_insider_feature_panel(
-        frames, df_rows, shares_out_history=fh, coverage=InsiderCoverage.from_availability(None, pd.Series(COMPLETE, index=TICKERS))
-    )
+    return build_insider_feature_panel(frames, df_rows, shares_out_history=fh, coverage=InsiderCoverage.from_availability(None, COMPLETE))
 
 
 def _series(panel: pd.DataFrame, column: str, ticker: str = "AAA") -> pd.Series:
@@ -251,8 +249,8 @@ def test_an_identical_4a_adds_nothing_linked_or_unlinked():
     alone = _build(frame([original]))
     for rows in ([original, linked], [original, unlinked]):
         pd.testing.assert_frame_equal(_build(frame(rows)), alone, check_exact=True)
-    _, diag_linked = clean_transactions(frame([original, linked]))
-    _, diag_unlinked = clean_transactions(frame([original, unlinked]))
+    _, diag_linked = clean_transactions(source_frame(frame([original, linked])))
+    _, diag_unlinked = clean_transactions(source_frame(frame([original, unlinked])))
     assert diag_linked["amendment_cells_identical"] == 1 and diag_unlinked["copy_rows_dropped"] == 1
     print(
         "SANITY: an identical 4/A leaves every insider column bit-identical, whether linked (1 identical cell dropped) "
@@ -278,10 +276,10 @@ def test_an_unlinked_4a_is_a_normal_filing():
 
 
 def test_a_partial_4a_keeps_the_cells_it_does_not_report():
-    cleaned, diag = clean_transactions(frame(mixed_rows()))
+    cleaned, diag = clean_transactions(source_frame(frame(mixed_rows())))
 
     def cell(accession: str, day: str) -> pd.DataFrame:
-        return cleaned[cleaned["accession_number"].eq(accession) & cleaned["transaction_date"].eq(pd.Timestamp(day).date())]
+        return cleaned[cleaned["accession_number"].eq(accession) & cleaned["transaction_date"].eq(pd.Timestamp(day))]
 
     x_orig, y_orig = cell(_acc(11), "2024-01-30"), cell(_acc(11), "2024-01-31")
     x_amend, z_amend = cell(_acc(12), "2024-01-30"), cell(_acc(12), "2024-02-02")
@@ -315,7 +313,7 @@ def test_an_ambiguous_link_takes_the_original_sharing_most_cells():
             original_submission_date="2024-02-01",
         ),
     ]
-    cleaned, diag = clean_transactions(frame(rows))
+    cleaned, diag = clean_transactions(source_frame(frame(rows)))
     closed = cleaned.loc[cleaned["visible_until"].notna(), "accession_number"].tolist()
     assert diag["amendments_ambiguous"] == 1 and closed == [_acc(2)]
     print(f"SANITY: two same-day originals by the same owner; the 4/A links to {closed[0]}, the one sharing its cell (1 ambiguous link counted).")

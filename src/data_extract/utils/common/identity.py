@@ -22,22 +22,21 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
-from src.data_extract.utils.common.entity_lineage import (
+from src.data_extract.utils.identity.entity_lineage import (
     FORM345_SOURCE,
     MANUAL_SOURCE,
     ROLE_EVENT,
     ROLE_SYMBOL,
     ROLE_WINDOW,
-    ROSTER_COLUMNS,
     SENTINEL_START,
     IdentityError,
     TwoUniverseTickersOneEntityError,
     check_one_entity_per_cik,
     entity_by_cik_map,
     entity_or_singleton,
-    roster_cik_map,
 )
-from src.data_extract.utils.common.security_master import (
+from src.data_extract.utils.identity.identity_store import load_source_identity as load_source_identity
+from src.data_extract.utils.identity.security_master import (
     ACQUIRED_CONSTITUENT,
     MergerBoundary,
     co_registrant_ciks,
@@ -45,7 +44,7 @@ from src.data_extract.utils.common.security_master import (
     merger_boundaries,
     squash,
 )
-from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol
@@ -59,7 +58,7 @@ CikPolicy = Literal["event", "consolidating"]
 
 
 class UnknownUniverseTickerError(IdentityError):
-    """`universe_entity(T)` for a ticker absent from `sp500_tickers`, or holding no CIK."""
+    """`universe_entity(T)` for a ticker absent from the universe."""
 
 
 class AmbiguousSymbolTenureError(IdentityError):
@@ -161,10 +160,9 @@ class FilingScope:
 
     @classmethod
     def roster_only(cls, ticker: str, cik: str) -> FilingScope:
-        """The scope of a ticker known only by its roster CIK: one open window, no other CIK."""
-        key = pad_cik(cik)
-        windows = (CikWindow(key, None, None, None, None),) if key else ()
-        return cls(ticker=normalise_ticker(ticker), entity=f"E{key}", roster_cik=key, event_ciks=(key,) if key else (), windows=windows)
+        """The scope of a universe ticker known only by its roster CIK: one open window, no other CIK."""
+        windows = (CikWindow(cik, None, None, None, None),) if cik else ()
+        return cls(ticker=ticker, entity=f"E{cik}", roster_cik=cik, event_ciks=(cik,) if cik else (), windows=windows)
 
     def ciks_on(self, day: pd.Timestamp) -> frozenset[str]:
         """The CIKs whose seam-widened window admits `day`: the ones a date-limited filing may come from."""
@@ -217,8 +215,7 @@ class Identity:
         """Look up a normalized universe ticker, raising for missing roster CIKs."""
         if key not in self.roster_cik:
             raise UnknownUniverseTickerError(
-                f"identity: {key!r} is not a universe ticker in sp500_tickers (or its roster "
-                f"row carries no CIK). {len(self.roster_cik)} ticker(s) are resolvable."
+                f"identity: {key!r} is not a universe ticker. {len(self.roster_cik)} ticker(s) are resolvable."
             )
         return self.roster_cik[key]
 
@@ -239,10 +236,6 @@ class Identity:
             windows=self.windows_by_entity.get(entity, ()),
             scope_changed_at=self.scope_changed_at_by_entity.get(entity),
         )
-
-    def symbols_changed_at(self, ticker: str) -> pd.Timestamp | None:
-        """When the ticker's entity's symbol rows last changed; None when it has none."""
-        return self.symbols_changed_at_by_entity.get(self.universe_entity(ticker))
 
     def ticker_for_cik(self, cik, filed=None, policy: CikPolicy = "event") -> str | None:
         """The universe ticker a filing by `cik` belongs to, or None.
@@ -352,12 +345,9 @@ class Identity:
             return ACQUIRED_CONSTITUENT
         return CANONICAL_CURRENT if owner == roster else CANONICAL_PREDECESSOR
 
-    def owns(self, ticker: str, cik, on_date=None) -> bool:
-        """Is this CIK's filing about this universe ticker's company?
-
-        `on_date` is accepted but not read: union-policy forms (`registrant.FORM_POLICY`) keep a
-        predecessor's filing past a registrant boundary. Callers pass `filing_date`, not `transaction_date`.
-        """
+    def owns(self, ticker: str, cik) -> bool:
+        """Is this CIK's filing about this universe ticker's company? Undated: union-policy forms
+        (`registrant.FORM_POLICY`) keep a predecessor's filing past a registrant boundary."""
         return self.entity_of(cik) == self.universe_entity(ticker)
 
     # symbol_tenure
@@ -420,31 +410,30 @@ def tickers_for_ciks(identity: Identity, ciks: pd.Series, filed: pd.Series, poli
 def build_identity(
     lineage: pd.DataFrame,
     tenure: pd.DataFrame,
-    roster: pd.DataFrame,
-    redundant_symbols: frozenset[str] | None = None,
+    roster_cik: Mapping[str, str],
+    redundant_symbols: frozenset[str] = frozenset(),
     master: pd.DataFrame | None = None,
     co_registrant_ciks: Collection[str] = (),
     mergers: Collection[MergerBoundary] = (),
 ) -> Identity:
-    """Validate the tables and return the frozen resolver; pure, no DB or config reads.
+    """Validate the tables and return the frozen resolver over the `{universe ticker: CIK}` roster; pure, no DB or config reads.
 
     `TwoUniverseTickersOneEntityError` is asserted before the reverse map is usable. D19 is the
     lineage build's check, not repeated here.
     """
-    _require_tables(lineage, tenure, roster)
+    _require_tables(lineage, tenure, roster_cik)
     check_one_entity_per_cik(lineage)
     entity_by_cik = entity_by_cik_map(lineage)
-    roster_cik = roster_cik_map(roster)
     ticker_by_entity = _ticker_by_entity(roster_cik, entity_by_cik, lineage)
     tenure_by_symbol, manual_tenure_by_symbol = _tenure_maps(_tenure_evidence(tenure), entity_by_cik)
     event_ciks, windows = _cik_scopes(lineage, roster_cik, entity_by_cik)
     identity = Identity(
         entity_by_cik=entity_by_cik,
-        roster_cik=roster_cik,
+        roster_cik=dict(roster_cik),
         ticker_by_entity=ticker_by_entity,
         tenure_by_symbol=tenure_by_symbol,
         manual_tenure_by_symbol=manual_tenure_by_symbol,
-        redundant_symbols=frozenset(yahoo_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
+        redundant_symbols=frozenset(redundant_symbols),
         event_ciks_by_entity=event_ciks,
         windows_by_entity=windows,
         symbol_intervals=_symbol_intervals(lineage),
@@ -456,7 +445,6 @@ def build_identity(
         source_cohort={
             Tables.entity_lineage: lineage.copy(),
             Tables.symbol_tenure: tenure.copy(),
-            Tables.sp500_tickers: roster[["ticker", "cik"]].copy(),
             Tables.security_master: master.copy() if master is not None else pd.DataFrame(),
         },
     )
@@ -464,24 +452,24 @@ def build_identity(
     return identity
 
 
-def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame) -> None:
+def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster_cik: Mapping[str, str]) -> None:
     """Raise when any of the three mandatory identity inputs is missing or empty."""
     if lineage is None or lineage.empty:
         raise IdentityError(
             "identity: `entity_lineage` is empty. That is a LOUD failure and not an empty "
             "map: every universe ticker would fall back to a singleton entity, `owns()` "
             "would reject every predecessor row in the panel, and nothing would raise. Run "
-            "`identity-tables` first. (`load_registrants` returning {} is a different case "
+            "`identity` first. (`load_registrants` returning {} is a different case "
             "-- it is an OPTIONAL curated layer; these two tables are mandatory.)"
         )
     if tenure is None or tenure.empty:
         raise IdentityError(
             "identity: `symbol_tenure` is empty. The D19 cross-check would pass vacuously "
             "and Phase 6's symbol resolution would answer None for every symbol. Run "
-            "`identity-tables` first."
+            "`identity` first."
         )
-    if roster is None or roster.empty:
-        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")
+    if not roster_cik:
+        raise IdentityError("identity: the universe is empty; there is no ticker to resolve rows against.")
 
 
 def _ticker_by_entity(roster_cik: Mapping[str, str], entity_by_cik: Mapping[str, str], lineage: pd.DataFrame) -> dict[str, str]:
@@ -681,16 +669,15 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
         columns=list(Tables.symbol_tenure.read_columns),
         where={"source": [*TENURE_SOURCES, DEI_SOURCE]},
     )
-    roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     master = context.store.load(Tables.security_master, project=True, optional=True)
-    assert lineage is not None and tenure is not None and roster is not None
+    assert lineage is not None and tenure is not None
     evidence = tenure.loc[tenure["source"].isin((FORM345_SOURCE, DEI_SOURCE)), ["issuer_cik", "source", "valid_from", "valid_to"]]
     manual = load_security_manual(str(context.config_dir))
     identity = build_identity(
         lineage=lineage,
         tenure=tenure[tenure["source"].isin(TENURE_SOURCES)],
-        roster=roster,
-        redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
+        roster_cik=context.universe.cik_by_ticker,
+        redundant_symbols=context.universe.alias_symbols,
         master=master,
         co_registrant_ciks=co_registrant_ciks(lineage, evidence, manual.co_registrants),
         mergers=merger_boundaries(manual),
@@ -699,21 +686,7 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     cohort = {
         Tables.entity_lineage: lineage,
         Tables.symbol_tenure: tenure,
-        Tables.sp500_tickers: roster[["ticker", "cik"]],
         Tables.security_master: master if master is not None else pd.DataFrame(),
     }
     identity.source_cohort.update(cohort)
     return identity
-
-
-def load_source_identity(context: Context) -> dict[Table, pd.DataFrame]:
-    """The closed identity projection needed to guard a source-only tape classifier."""
-    cohort: dict[Table, pd.DataFrame] = {}
-    for table in (Tables.entity_lineage, Tables.symbol_tenure, Tables.sp500_tickers, Tables.security_master):
-        rows = (
-            context.store.load(table, columns=["ticker", "cik"], optional=True)
-            if table == Tables.sp500_tickers
-            else context.store.load(table, project=True, optional=True)
-        )
-        cohort[table] = rows if rows is not None else pd.DataFrame()
-    return cohort

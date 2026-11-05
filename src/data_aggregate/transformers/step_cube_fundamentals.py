@@ -9,7 +9,6 @@ from omegaconf import DictConfig
 
 from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common.gics import attach_gics_columns
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     plan_window,
@@ -31,7 +30,6 @@ from src.data_aggregate.utils.fundamentals.feature_views import FEATURE_COLUMNS,
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     build_fundamental_feature_panel,
     load_notes_num_scoped,
-    load_pension_facts_scoped,
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
@@ -98,21 +96,20 @@ class StepCubeFundamentals(Step):
         basis = load_quantity_basis(self._context, frames.universe, self._bugfix, identity)
         df_share_history = load_fundamental_share_observations(self._context, df_fundamentals, basis, identity[0])
         histories = FundamentalHistory(df_fundamentals, df_share_history, basis)
-        df_pension = load_pension_facts_scoped(self._context, tickers=frames.universe, since=source_since)
         df_notes = load_notes_num_scoped(self._context, tickers=frames.universe, since=source_since)
-        df_dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_prices_and_actions -> StepExtractPrices", frames.universe)
+        df_dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_dividends -> StepExtractPrices", frames.universe)
 
         # Compute families on the same saved price and source-unit basis.
         merger = PanelMerger()
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
         merger.add(
             build_fundamental_feature_panel(
-                histories, frames, self._feature_settings(), FundamentalSupplement(df_earnings, df_pension, df_notes), history_fields, output_since
+                histories, frames, self._feature_settings(), FundamentalSupplement(df_earnings, df_notes), history_fields, output_since
             ),
             "peer-relative fundamental",
             "No fundamental features built (missing fundamentals).",
         )
-        del df_pension, df_notes
+        del df_notes
         merger.add(
             self._sector_kpi_panel(frames, df_fundamentals, history_fields, output_since),
             "sector-KPI",
@@ -226,7 +223,7 @@ class StepCubeFundamentals(Step):
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
-        projecting the two columns out of the store: `sp500_tickers` is the authority for
+        projecting the two columns out of the store: `tickers_universe` is the authority for
         sector membership and `fundamentals_history` has never carried it, so this is a
         lookup, not a column the read could have asked for. Without it every sector KPI is
         gated off (`sector_gates.row_gate` fails closed on the absent column)."""
@@ -247,7 +244,7 @@ class StepCubeFundamentals(Step):
             f" since {pd.Timestamp(since).date()}" if since is not None else "",
         )
         df = add_cube_time_growth(df)
-        return attach_gics_columns(df, self._context, self._log)
+        return self._universe.attach_gics(df)
 
     def _load_optional(
         self,

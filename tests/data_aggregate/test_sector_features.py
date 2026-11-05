@@ -8,7 +8,7 @@ weren't reported, so an industrial never gets a bank ROA).
 
 Every row carries `sector` + `industry_group`: the GICS labels are what
 `sector_gates.py` scopes on. In production they are attached by
-`step_cube_fundamentals` from `sp500_tickers` (`gics.attach_gics_columns`) —
+`step_cube_fundamentals` from `tickers_universe` (`context.universe.attach_gics`) —
 `fundamentals_history` itself has never carried them. A row without them is
 deliberately unclassifiable and gets NO sector KPI at all — see
 `test_unclassified_rows_get_no_sector_kpi`.
@@ -425,7 +425,7 @@ def test_unclassified_rows_get_no_sector_kpi():
     business model.
 
     This is also the failure mode the whole audit turned on: `fundamentals_history` has
-    never carried `sector`/`industry_group`, so before `gics.attach_gics_columns` was wired
+    never carried `sector`/`industry_group`, so before the GICS attach was wired
     in, EVERY production row looked like this one and every sector KPI was gated off."""
     df = _fundamentals().drop(columns=["sector", "industry_group"])
     k = compute_sector_kpis(df).set_index("ticker")

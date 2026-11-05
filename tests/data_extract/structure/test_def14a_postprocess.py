@@ -7,7 +7,7 @@ import json
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     AuditExtract,
     Def14AExtract,
     DirectorPayExtract,
@@ -289,6 +289,7 @@ def test_matching_partial_ceo_clears_other_person_copies_and_ignores_future_rows
 
 
 @pytest.mark.parametrize("legacy_replay", [False, True])
+@pytest.mark.usefixtures("filing_store")
 def test_same_ceo_partial_children_preserve_valid_copies_and_refresh_supported_values(
     stamp: dict[str, object], ceo_facts: dict[Table, pd.DataFrame], sqlite_store: DataStore, legacy_replay: bool
 ) -> None:

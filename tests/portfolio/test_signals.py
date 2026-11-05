@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 
 from src.portfolio.transformers import signals
 from src.portfolio.transformers.signals import score_panel
-from src.portfolio.utils.calendar import is_due
+from src.portfolio.utils.calendar import due_flags
 from src.portfolio.utils.contracts import Settings
 
 
@@ -48,10 +48,11 @@ def test_training_horizon_weights_and_complete_daily_cross_sections() -> None:
 
 
 def test_actual_calendar_and_invalid_allocations() -> None:
-    assert is_due(pd.Timestamp("2022-01-14"), pd.Timestamp("2022-01-18"), "weekly")
-    assert not is_due(pd.Timestamp("2022-01-18"), pd.Timestamp("2022-01-19"), "weekly")
-    assert is_due(pd.Timestamp("2022-01-31"), pd.Timestamp("2022-02-01"), "monthly")
+    assert due_flags(pd.DatetimeIndex(["2022-01-14", "2022-01-18"]), "weekly")[1]
+    assert not due_flags(pd.DatetimeIndex(["2022-01-18", "2022-01-19"]), "weekly")[1]
+    assert due_flags(pd.DatetimeIndex(["2022-01-31", "2022-02-01"]), "monthly")[1]
     config = OmegaConf.load("configs/portfolio.yml")
+    config.portfolio.start = "2022-01-03"
     Settings.from_config(config)
     config.portfolio.allocation.cash = -0.1
     with pytest.raises(ValueError, match="allocations"):
@@ -107,7 +108,7 @@ def test_invalid_training_outcomes_fail_before_model_consumption(
     }
     monkeypatch.setattr(signals, "select_run", lambda *args, **kwargs: (Path("exact"), state))
     monkeypatch.setattr(signals, "read_metadata", lambda _: meta)
-    config = OmegaConf.create({"portfolio": {"start": "2022-01-03", "training_cutoff": "2021-12-31"}})
+    config = OmegaConf.create({"portfolio": {"start": "2022-01-03"}, "train": {"end_date": "2021-12-31"}})
     signals.select_cutoff(SimpleNamespace(), config, "exact")
     {"metadata": meta, "fit": audit, "fold": fold}[location][key] = invalid_date
     with pytest.raises(ValueError, match="later than"):

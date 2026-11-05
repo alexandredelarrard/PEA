@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -19,11 +20,11 @@ from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.price import inputs as price_inputs
 from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_books import iter_institutional_books, prepare_institutional_book_history
 from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
-from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_batches, prepare_superinvestor_book_history
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     SuperinvestorFeatureHistory,
@@ -33,7 +34,6 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
-from src.utils.institutional_vintages import prepare_book_vintages
 from src.utils.price.adjustments import ShareBasis, load_bugfix
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
@@ -68,6 +68,7 @@ class StepCubeSecThirteen(Step):
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
     def run(self, full: bool = False) -> None:
+
         # Plan the actual rewrite footprint before loading dependency payloads.
         calendar = load_trading_calendar(self._store)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
@@ -116,14 +117,17 @@ class StepCubeSecThirteen(Step):
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
         return SecThirteenResources(frames, basis, cusip_map, cohorts)
 
-    def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
+    def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
+
         resources = self._load_resources()
-        saved_columns = self._store.columns(Tables.cube_part_sec_thirteen) if existing_columns is None else list(existing_columns)
-        window = window or PartWindow(None, None)
+        saved_columns = list(existing_columns)
 
         # Keep sparse full history for genuine lag comparisons and bounded daily projection.
-        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
+        df_institutionals = self._institutional_features(resources)
+        super_investors = self._superinvestor_history(resources)
+        prepared = PreparedSecThirteen(df_institutionals, super_investors)
         self._require_saved_families(prepared, saved_columns)
+
         dates = resources.frames.trading_index
         output_dates = dates if window.since is None else dates[dates >= window.since]
         panels = self._project_panels(resources, prepared, output_dates)
@@ -144,7 +148,7 @@ class StepCubeSecThirteen(Step):
         return df_panel.reindex(columns=saved_columns)
 
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
-        packets = thirteen_inputs.iter_filing_vintages(self._store, resources.frames.trading_index.max())
+        packets = thirteen_inputs.iter_filing_vintages(self._store, until=resources.frames.trading_index.max())
         cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
@@ -173,21 +177,24 @@ class StepCubeSecThirteen(Step):
         return compute_institutional_feature_history(iter_institutional_books(compact, states), splits=splits)
 
     def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
+
         if resources.cohorts is None:
             return None
-        packet = thirteen_inputs.load_manager_filing_vintages(self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]))
-        if packet is None:
+
+        packets = thirteen_inputs.iter_filing_vintages(
+            self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]), table=Tables.sec13f_manager_holdings
+        )
+        if packets is None:
             return None
 
         # Clean whole books once, retaining mapped off-universe positions and provenance.
-        df_filings, df_holdings = packet
         cfg = self._cfg.get("institutionals", {})
-        df_holdings = clean_public_holdings(attach_tickers(df_holdings, resources.cusip_map), resources.frames.close_pit, cfg.get("value_basis"))
-        df_manifest = prepare_book_vintages(df_filings, df_holdings, resources.frames.trading_index, settle_days=0)
-
-        # Public freshness, archival baselines and the common quarter precede equations.
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        books = prepare_superinvestor_book_history(df_manifest, df_holdings, resources.frames.trading_index, age_days)
+        with closing(clean_public_batches(packets, resources.cusip_map, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+            prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
+            books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
+        if books is None:
+            return None
         market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.basis)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 

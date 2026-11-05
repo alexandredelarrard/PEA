@@ -22,6 +22,7 @@ from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common.sec_io import TransientReadError, download
 from src.data_store.schema import Table, name_of
+from src.utils.string import run_date
 
 __all__ = [
     "ZipRead",
@@ -37,7 +38,7 @@ __all__ = [
     "stored_period_clock",
 ]
 
-_DEFAULT_TIMEOUT = 300  # seconds
+DEFAULT_TIMEOUT = 300  # seconds
 _RELEASE_DAY = 12  # estimated release: this day of the month after the period end
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ def ensure_zip(
     urls: str | tuple[str, ...] | list[str],
     *,
     label: str,
-    timeout: int = _DEFAULT_TIMEOUT,
+    timeout: int = DEFAULT_TIMEOUT,
     log: logging.Logger | None = None,
 ) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
@@ -233,13 +234,13 @@ def archive_available_at(end: date, path: Path, *, observed_from: date, download
         return None
 
 
-def stored_period_clock(context: Context, tables: Sequence[Table], period: str, *, column: str = "period") -> date | None:
+def stored_period_clock(context: Context, tables: Sequence[Table], period: str) -> date | None:
     """The single `available_at` already stored for `period` across `tables`; raises when they disagree."""
     values: set[date] = set()
     for table in tables:
-        if not {column, "available_at"} <= set(context.store.columns(table)):
+        if not {"period", "available_at"} <= set(context.store.columns(table)):
             continue
-        raw = context.store.distinct(table, "available_at", where={column: period})
+        raw = context.store.distinct(table, "available_at", where={"period": period})
         values.update(pd.to_datetime(pd.Series(raw, dtype=object), errors="coerce").dropna().dt.date)
     if len(values) > 1:
         raise ValueError(f"{'/'.join(name_of(t) for t in tables)} {period}: conflicting stored available_at values: {sorted(values)}")
@@ -248,5 +249,5 @@ def stored_period_clock(context: Context, tables: Sequence[Table], period: str, 
 
 def quarter_periods(years_history: int, first_year: int, today: pd.Timestamp | None = None) -> list[str]:
     """`YYYYqN` tags covering the last `years_history` years, never before `first_year`."""
-    now = (today or pd.Timestamp.today()).normalize()
+    now = run_date(today)
     return [f"{year}q{q}" for year in range(now.year - years_history, now.year + 1) if year >= first_year for q in range(1, 5)]

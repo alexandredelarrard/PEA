@@ -11,9 +11,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
 
@@ -66,7 +66,7 @@ def ctx(tmp_path, sqlite_store, monkeypatch) -> Any:
 
 
 def _run(ctx, as_of: pd.Timestamp = _AS_OF):
-    return run_edgar_fetch(ctx, list(_ROSTER), 15, SEC_13G_FETCH, as_of=as_of, refresh_index=False, max_workers=1)
+    return run_edgar_fetch(ctx, SEC_13G_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=as_of), max_workers=1)
 
 
 def test_a_13g_the_key_only_filed_is_one_marker_never_listed_again(ctx, sqlite_store, monkeypatch):

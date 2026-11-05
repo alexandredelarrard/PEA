@@ -24,10 +24,10 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, run_edgar_fetch
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.structure import fetch_def14a_edgar
+from src.data_extract.utils.edgar_extract import edgar_driver, fetch_def14a_edgar
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, FilingStamp, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.structure.def14a.ecd import (
     _CATEGORY_AXIS,
     _PEO_MEMBER,
@@ -37,7 +37,6 @@ from src.data_extract.utils.structure.def14a.ecd import (
     latest_period,
     peo_block,
 )
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, seed_index
 
@@ -238,7 +237,7 @@ def _ba_context(tmp_path, sqlite_store, monkeypatch, filings: list) -> Any:
     context = fake_context(tmp_path, sqlite_store, ["BA"], ciks=["12927"])
     seed_index(context, [(12927, "BOEING CO", f.form, str(f.filing_date), f.accession_number) for f in filings])
     patch_index_filings(monkeypatch, {f.accession_number: f for f in filings})
-    scope = FilingScope.roster_only("BA", "12927")
+    scope = FilingScope.roster_only("BA", "0000012927")
     monkeypatch.setattr(edgar_driver, "load_identity", lambda _context: SimpleNamespace(filing_scope=lambda _ticker: scope))
     return context
 
@@ -248,7 +247,8 @@ def test_the_run_skips_stored_accessions(tmp_path, sqlite_store, monkeypatch):
     context = _ba_context(tmp_path, sqlite_store, monkeypatch, filings)
     sqlite_store.save(Tables.def14a_edgar, _parse(filings[0]))
 
-    summary = run_edgar_fetch(context, ["BA"], 31, DEF14A_EDGAR_FETCH, as_of=pd.Timestamp("2024-07-01"), refresh_index=False, max_workers=1)
+    run = EdgarRun.load(context, ["BA"], 31, as_of=pd.Timestamp("2024-07-01"))
+    summary = run_edgar_fetch(context, DEF14A_EDGAR_FETCH, run, max_workers=1)
 
     df = sqlite_store.load(Tables.def14a_edgar)
     assert summary.work.size == 1 and set(df["accession_number"]) == {"0001-done", "0001-new"}
@@ -296,7 +296,7 @@ def test_ecd_run_never_parses_a_proxy_filed_before_item_402v(tmp_path, sqlite_st
     parsed: list[str] = []
     monkeypatch.setattr(fetch_def14a_edgar, "ecd_facts", lambda filing: parsed.append(filing.accession_number))
 
-    run_edgar_fetch(context, ["BA"], 31, DEF14A_EDGAR_FETCH, as_of=pd.Timestamp("2026-09-30"), refresh_index=False, max_workers=1)
+    run_edgar_fetch(context, DEF14A_EDGAR_FETCH, EdgarRun.load(context, ["BA"], 31, as_of=pd.Timestamp("2026-09-30")), max_workers=1)
 
     assert parsed == ["0001-2024"]
     print("\n=== SANITY: ECD listing floor ===")

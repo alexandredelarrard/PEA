@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 
 pytestmark = pytest.mark.skipif(live_guard.live_enabled(), reason=f"checks the default run; {live_guard.LIVE_FLAG}=1 is set")
@@ -62,6 +63,8 @@ def test_tripwire_blocks_network_and_live_db_writes() -> None:
     store = DataStore(create_engine(_PG_URL))
     frame = pd.DataFrame({"ticker": ["ZZGUARD"]})
     writes: dict[str, Callable[[], Any]] = {
+        "insert": lambda: store.insert("prices", frame),
+        "update": lambda: store.update("prices", {"close": None}, {"ticker": "ZZGUARD"}),
         "save": lambda: store.save("prices", frame),
         "bulk_seed": lambda: store.bulk_seed("prices", frame),
         "append_tail": lambda: store.append_tail("prices", frame, pd.Timestamp("2026-01-01")),
@@ -84,3 +87,20 @@ def test_tripwire_blocks_network_and_live_db_writes() -> None:
     print("  loopback socket: connected (local services stay reachable)")
     assert len(blocked) == 2 + len(writes)
     print(f"  CONCLUSION: network and all {len(writes)} DataStore write methods are refused on a non-SQLite engine. Validated.")
+
+
+def test_bound_write_guard_refuses_before_sql_or_copy(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same facade guard also blocks bound insert/update and COPY-capable methods."""
+    frame = pd.DataFrame({"ticker": ["ZZGUARD"], "date": [pd.Timestamp("2024-01-01")]})
+    with sqlite_store.transaction() as bound:
+        with monkeypatch.context() as patch:
+            patch.setattr(bound.engine.dialect, "name", "postgresql")
+            actions = [
+                lambda: bound.insert(Tables.prices, frame),
+                lambda: bound.update(Tables.prices, {"close_split": None}, {"ticker": "ZZGUARD"}),
+                lambda: bound.bulk_seed(Tables.prices, frame),
+                lambda: bound.replace(Tables.prices, frame),
+            ]
+            assert all("db-write" in _expect_block(action) for action in actions)
+    assert not sqlite_store.exists(Tables.prices)
+    print("SANITY: bound insert/update/bulk/COPY-capable replacement are denied before metadata, SQL or raw cursor effects.")

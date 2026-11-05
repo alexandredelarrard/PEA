@@ -30,6 +30,7 @@ from src.modelling.utils.ensemble import PREDICTION_COLUMNS, ensemble_predict
 from src.modelling.utils.metrics import daily_ic
 from src.utils.config import read_config
 from tests.modelling.model_fixtures import make_config, signal_panel
+from tests.support.universe import universe_of
 
 HORIZONS = (30, 60)
 META_KEYS = {
@@ -104,6 +105,7 @@ def _setup(
     sqlite_store.replace(Tables.cube, cube)
     sqlite_store.replace(Tables.cube_part_prices, cube[["date", "ticker"]])
     spy = _SpyStore(sqlite_store)
+    universe = universe_of(sorted(cube["ticker"].unique()))
     dates = sorted(cube["date"].unique())
     base = {
         "model": {
@@ -116,7 +118,7 @@ def _setup(
         },
         "build_cube": {"output": {"save_cv_results": True, "save_signal": True}},
         "train": {"start_date": str(pd.Timestamp(dates[0]).date()), "end_date": str(pd.Timestamp(dates[-40]).date())},
-        "data_extract": {"prediction_fresh_share": 0.95, "redundant_ticks": []},
+        "data_extract": {"prediction_fresh_share": 0.95},
     }
     cfg = OmegaConf.merge(make_config(**base), OmegaConf.create(overrides))
     paths = {
@@ -126,7 +128,7 @@ def _setup(
         "MODELS_DIR": tmp_path / "models",
         "CUBE_CV_RESULTS_PATH": tmp_path / "cv.parquet",
     }
-    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths)
+    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe)
     return StepLongShort(context=context, config=cfg), spy, cfg  # type: ignore[arg-type]
 
 
@@ -201,37 +203,17 @@ def test_schema_projection_is_present_columns_and_never_a_target() -> None:
     print(f"  load cols {load_cols}; dropped {dropped}; a configured target is never loaded as a feature; horizons from the schema. Validated.")
 
 
-@pytest.mark.parametrize(
-    "legacy",
-    [
-        "f_fwd_eps_yield",
-        "f_forward_earnings_yield",
-        "f_eps_expectation_growth",
-        "f_earningsGrowth",
-        "f_earningsGrowth_vs_hist",
-        "f_y_earnings_growth",
-    ],
-)
-def test_training_refuses_obsolete_fundamentals_cube(legacy: str) -> None:
-    step: Any = object.__new__(StepLongShort)
-    step._context = SimpleNamespace(store=SimpleNamespace(columns=lambda table: ["date", "ticker", legacy]))
-    with pytest.raises(RuntimeError, match="rebuild full fundamentals"):
-        step._resolve_schema()
-    print(f"SANITY: old input {legacy} fails before training or writes; full schema migration is explicit.")
-
-
-def test_real_config_resolves_rf_h30_vs_default() -> None:
+def test_real_config_resolves_nonempty_unique_tree_feature_pools() -> None:
     cfg = read_config("./configs")
     rf = {h: RandomForestModel.configured_columns(cfg, h) for h in (30, 60, 90)}
     lgbm = {h: LightGBMModel.configured_columns(cfg, h) for h in (30, 60, 90)}
     for name, cols in [*(("rf", c) for c in rf.values()), *(("lgbm", c) for c in lgbm.values())]:
+        assert cols, f"{name}: empty configured feature list"
         assert len(cols) == len(set(cols)), f"{name}: duplicate feature in the configured list"
-    assert rf[30] != rf[90]
-    assert lgbm[30] == lgbm[90] and lgbm[30]
     print("\n=== SANITY CHECK: real config ===")
     print(
         f"  RF features by horizon { {h: len(columns) for h, columns in rf.items()} }; "
-        f"LGBM { {h: len(columns) for h, columns in lgbm.items()} }; h60 pools resolve independently of h30/h90; no duplicates. Validated."
+        f"LGBM { {h: len(columns) for h, columns in lgbm.items()} }; every horizon pool is nonempty with no duplicates. Validated."
     )
 
 
@@ -364,6 +346,7 @@ def test_full_history_records_effective_end_and_restores_saved_fitting_controls(
     write_json(initial.run_dir / "assessment/metadata.json", {"run_id": initial.run_id, "complete": True})
     (initial.run_dir / "report.html").write_text("assessed", encoding="utf-8")
     cube = sqlite_store.load(Tables.cube).assign(new_column=42.0)
+    sqlite_store.ensure_columns(Tables.cube, cube)
     sqlite_store.replace(Tables.cube, cube)
     config.seed += 1
     config.lgbm.columns = ["new_column"]

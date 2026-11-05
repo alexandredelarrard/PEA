@@ -249,17 +249,17 @@ def test_pension_adjusted_ev_and_overhang_leverage():
     ratio (deficit / market cap) is emitted, and the deficit is surfaced as
     pension_retirement_liability. The EV inclusion lowers the EV yields vs no-pension.
 
-    The deficit comes from `pension_facts` — the bulk Financial-Statement-Data-Sets
-    recognized net liability, the pool's PRIMARY leg. It used to be hand-built here as a
+    The deficit comes from the `notes_num` recognized net-liability tag, the pool's PRIMARY leg. It used to be hand-built here as a
     `pensionDeficit` column on `fund_hist`, so this test asserted a source that cannot fire
     in production: the Sharadar-first `fundamentals_history` carries no pension column at
     all. Now it exercises the code path the live build actually takes."""
     fh = pd.DataFrame([{"ticker": "P", "as_of": "2019-12-31", "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0, "longTermDebt": 200.0}])
     idx = pd.bdate_range("2020-01-02", periods=30)
     close = pd.DataFrame({"P": 5.0}, index=idx)  # market cap = 100 * 5 = 500
-    pension_facts = pd.DataFrame(
+    notes_num = pd.DataFrame(
         [
             {
+                "adsh": "a-p-1",
                 "ticker": "P",
                 "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
                 "ddate": "2019-09-30",
@@ -270,6 +270,7 @@ def test_pension_adjusted_ev_and_overhang_leverage():
             },
             # a DURATION fact (qtrs>0) is periodic pension COST, not the balance -> must be ignored
             {
+                "adsh": "a-p-1",
                 "ticker": "P",
                 "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
                 "ddate": "2019-09-30",
@@ -283,7 +284,7 @@ def test_pension_adjusted_ev_and_overhang_leverage():
     f = _derived_fields(
         FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
         replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
-        supplement=FundamentalSupplement(pension_facts=pension_facts),
+        supplement=FundamentalSupplement(notes_num=notes_num),
     )
     d = idx[-1]
     assert abs(f["pension_retirement_liability"].loc[d, "P"] - 80.0) < 1e-6
@@ -337,7 +338,7 @@ def test_operating_margin_5y_trend_and_refinancing_risk():
 
 
 def test_pension_footnote_features_from_notes_num():
-    """Financial Statement & NOTES sets (`notes_num`) supply the footnote PBO and
+    """The NOTES sets (`notes_num`) supply the footnote PBO and
     plan assets the primary statements never expose:
       * pension_funded_ratio = plan assets / PBO,
       * pbo_to_mcap (gross obligation vs equity value),
@@ -348,13 +349,14 @@ def test_pension_footnote_features_from_notes_num():
     `pension_underfunding_to_mcap` is deliberately NOT asserted: it was deleted because it
     scaled the same footnote deficit that is the last fallback of the coalesced pool
     `pension_overhang_leverage` uses, measuring r = 1.000000 against it on its own support."""
-    # No `pension_facts` here -> the ONLY pension source is the footnote.
+    # No net-liability tag here -> the ONLY pension source is the footnote.
     fh = pd.DataFrame([{"ticker": "U", "as_of": "2019-12-31", "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0, "longTermDebt": 200.0}])
     idx = pd.bdate_range("2020-01-02", periods=30)
     close = pd.DataFrame({"U": 5.0}, index=idx)  # market cap = 100 * 5 = 500
     notes_num = pd.DataFrame(
         [
             {
+                "adsh": "a-u-1",
                 "ticker": "U",
                 "tag": "DefinedBenefitPlanBenefitObligation",
                 "ddate": "2019-09-30",
@@ -364,6 +366,7 @@ def test_pension_footnote_features_from_notes_num():
                 "available_at": "2019-12-01",
             },
             {
+                "adsh": "a-u-2",
                 "ticker": "U",
                 "tag": "DefinedBenefitPlanFairValueOfPlanAssets",
                 "ddate": "2019-09-30",
@@ -374,6 +377,7 @@ def test_pension_footnote_features_from_notes_num():
             },
             # a DURATION fact (qtrs>0) must be ignored by the instant PBO/asset reshape:
             {
+                "adsh": "a-u-3",
                 "ticker": "U",
                 "tag": "DefinedBenefitPlanBenefitObligation",
                 "ddate": "2019-09-30",
@@ -432,6 +436,7 @@ def test_notes_num_uses_archive_availability_and_expires_after_day_460():
     notes = pd.DataFrame(
         [
             {
+                "adsh": "a-u-4",
                 "ticker": "U",
                 "tag": tag,
                 "ddate": "2021-06-30",
@@ -441,6 +446,7 @@ def test_notes_num_uses_archive_availability_and_expires_after_day_460():
                 "available_at": first_available,
             },
             {
+                "adsh": "a-u-5",
                 "ticker": "U",
                 "tag": tag,
                 "ddate": "2022-06-30",
@@ -450,6 +456,7 @@ def test_notes_num_uses_archive_availability_and_expires_after_day_460():
                 "available_at": second_available,
             },
             {
+                "adsh": "a-missing-6",
                 "ticker": "MISSING",
                 "tag": tag,
                 "ddate": "2021-06-30",
@@ -676,6 +683,6 @@ def test_pension_has_exactly_two_sources_no_fundamentals_history_column():
         "  A `pensionDeficit` column on fundamentals_history is IGNORED: no pension "
         "feature is emitted and EV stays 690 (= 500 mcap + 200 debt - 10 cash), "
         "identical to the run without it. The dead third leg cannot come back. "
-        "Live sources: pension_facts (125 tickers) + notes_num footnote (214 CIKs) "
-        "-> 199 of 489 tickers. Validated."
+        "Sources: the notes_num net-liability tags, then the notes_num footnote "
+        "funded status. Validated."
     )

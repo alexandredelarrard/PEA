@@ -51,7 +51,6 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.context import Context
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.price.frames import PriceFrames
 from tests.conftest import make_frames
@@ -81,7 +80,7 @@ def _select_fundamentals() -> pd.DataFrame:
     NOT the frame production feeds in:
 
       * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
-        a `sp500_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
+        a `tickers_universe` lookup. Without them `sector_gates.row_gate` fails closed and the whole
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
       * `revenueGrowth` / `earningsGrowth` are `CUBE_TIME_COLUMNS`: only the cube can compute
@@ -91,21 +90,19 @@ def _select_fundamentals() -> pd.DataFrame:
     from dotenv import load_dotenv
 
     load_dotenv(ROOT / ".env")  # so `python -m ...aggregate_fingerprint` works standalone
-    from types import SimpleNamespace
 
-    from src.data_aggregate.utils.common.gics import attach_gics_columns
     from src.data_aggregate.utils.common.pit import add_cube_time_growth
     from src.data_store.store import DataStore
+    from src.utils.config import read_config
     from src.utils.db import get_engine
+    from src.utils.tickers_universe.universe import Universe
 
     store = DataStore(get_engine())
     fh = store.load("fundamentals_history")
     assert fh is not None
     if fh.empty:
         raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
-    # `attach_gics_columns` reads `context.store` and nothing else
-    context = cast(Context, SimpleNamespace(store=store))
-    fh = attach_gics_columns(add_cube_time_growth(fh), context)
+    fh = Universe(store, read_config(path=str(ROOT / "configs"))).attach_gics(add_cube_time_growth(fh))
     picked: list[str] = []
     for sector in sorted(fh["sector"].dropna().astype(str).unique()):
         names = sorted(fh.loc[fh["sector"].astype(str) == sector, "ticker"].unique())
@@ -442,7 +439,7 @@ def synthetic_exec_comp(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.D
 
 
 def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """RegSHO short VOLUME + the sparse fails-to-deliver log.
+    """RegSHO short VOLUME and supported daily fails-to-deliver observations.
 
     ⚠ `short_interest` / `avg_daily_volume` are NO LONGER DECLARED HERE. They backed
     `ic_shortvol_days_to_cover`, which is gone: days-to-cover needs FINRA's twice-monthly
@@ -469,6 +466,8 @@ def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rand
             "fails_quantity": rng.lognormal(8.0, 1.2, int(keep.sum())).round(0),
         }
     )
+    # The canonical source records supported no-fail observations explicitly.
+    ftd = si[["date", "ticker"]].merge(ftd, on=["date", "ticker"], how="left").fillna({"fails_quantity": 0.0})
     ftd["period"] = pd.to_datetime(ftd["date"]).map(lambda day: f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}")
     return si, ftd
 
@@ -613,7 +612,7 @@ def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.
     owners = np.array([f"{9000000 + 13 * i:010d}" for i in range(12)])
     titles = np.array(["Chief Executive Officer", "Chief Financial Officer", "President and COO", "Executive Vice President", ""])
     title = rng.choice(titles, n, p=[0.15, 0.15, 0.1, 0.1, 0.5])
-    return pd.DataFrame(
+    df_insider = pd.DataFrame(
         {
             "accession_number": [f"{1000000000 + 7 * i:010d}-00-{i % 1000:06d}" for i in range(n)],
             "ticker": tkr,
@@ -639,6 +638,9 @@ def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.
             # source before 2023, and a 0 there would be a claim the data cannot support.
             "is_10b5_1": np.where(days >= pd.Timestamp("2023-07-01"), (rng.random(n) < 0.6).astype("float64"), np.nan),
         }
+    )
+    return df_insider.assign(
+        owner_ciks=df_insider["owner_cik"], n_reporting_owners=1, issuer_cik="0000000100", document_type="4", original_submission_date=None
     )
 
 
@@ -951,8 +953,8 @@ def compute() -> dict:
             tape_support=close.notna(),
         )
     )
-    # `pension_facts` / `notes_num` are deliberately NOT passed: they are separate bulk SEC
-    # tables, and freezing a slice of each would double the fixture for one feature family.
+    # `notes_num` is deliberately NOT passed: it is a separate bulk SEC table, and
+    # freezing a slice of it would double the fixture for one feature family.
     # The consequence is explicit -- the `pension_*` features are absent from this digest and
     # are guarded by `test_insider_pension_features.py` instead.
     legacy_prices = legacy_capital_frames(fund, close)
@@ -987,15 +989,15 @@ def compute() -> dict:
     ftd_coverage = ftd[["date", "period"]]
     ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
     ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
-    out["panel.short_flow"] = frame_digest(
-        build_short_flow_feature_panel(
-            make_frames(idx, peers, volume=px["volume"], close_total=close),
-            short_quantity_history(short_hist, quantity_basis),
-            ftd_settlement,
-            short_capital,
-            ftd_publication,
-        )
+    df_short_flow = build_short_flow_feature_panel(
+        make_frames(idx, peers, volume=px["volume"], close_total=close),
+        short_quantity_history(short_hist, quantity_basis),
+        ftd_settlement,
+        short_capital,
+        ftd_publication,
     )
+    assert df_short_flow["f_ic_ftd_persistence_30d"].nunique() > 1, "Do not freeze unavailable FTD persistence"
+    out["panel.short_flow"] = frame_digest(df_short_flow)
     # ⚠ `min_prior_holders=0` HERE AND AT `prim.quarter_features`, AND THE GATE DEPENDS ON IT.
     # The production floor is 100 filers (`MIN_PRIOR_HOLDERS`) and `N_MANAGERS` is 8, so the
     # per-ticker coverage-onset guard would null EVERY QoQ delta in this fixture. The digest
@@ -1034,7 +1036,8 @@ def compute() -> dict:
     )
     df_books = clean_public_holdings(attach_tickers(df_books, cusip_map), valuation_close, None)
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
-    book_history = prepare_superinvestor_book_history(df_manifest, df_books, idx, 90)
+    book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
+    assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
     market = BehaviorMarket(idx, valuation_close, ShareBasis(actual, actual, actual, {}))
     cohort = frozenset(pad_cik(cik) for cik in roster)
@@ -1044,9 +1047,12 @@ def compute() -> dict:
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    out["panel.insider"] = frame_digest(
-        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events)
+    df_insider = build_insider_feature_panel(
+        make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events
     )
+    for column in ("f_ic_insider_purchase_pct_prior", "f_ic_insider_management_position_change_60d"):
+        assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
+    out["panel.insider"] = frame_digest(df_insider)
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(

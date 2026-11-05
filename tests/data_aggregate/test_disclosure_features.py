@@ -11,6 +11,8 @@ import pytest
 from src.data_aggregate.utils.fundamentals.disclosure_features import disclosure_return_fields
 from src.data_aggregate.utils.fundamentals.earnings_features import reported_events
 from src.data_store.schema import Tables
+from src.utils.config import read_config
+from src.utils.tickers_universe.universe import Universe
 from tests.conftest import _store
 
 
@@ -66,7 +68,7 @@ def test_disclosure_rejects_non_date_calendar() -> None:
 
 def test_disclosure_reactions_real_returns_and_coverage() -> None:
     context = SimpleNamespace(store=_store())
-    metadata = context.store.load(Tables.sp500_tickers, columns=["ticker", "sector"])
+    metadata = Universe(context.store, read_config(path="configs")).frame[["ticker", "sector"]]
     names = metadata.ticker.astype(str).to_list()
     prices = pd.concat(
         context.store.iter_load(

@@ -153,7 +153,15 @@ class StepCubeInstitutionals(Step):
         if cutoff is not None and earliest is not None:
             cutoff = min(cutoff, earliest)
         tail = canonical if cutoff is None else canonical.loc[canonical["date"] >= cutoff]
-        count = self._store.replace_institutional_output(tail, since=cutoff)
+        if cutoff is not None and (pd.to_datetime(tail["date"]) < cutoff).any():
+            raise ValueError("Institutional replacement rows precede their corrected range")
+        with self._store.transaction() as store:
+            if cutoff is None:
+                count = store.replace(part, tail)
+            else:
+                if set(store.columns(part)) != set(tail.columns):
+                    raise ValueError("Institutional corrected range must retain the stored schema")
+                count = store.append_tail(part, tail, cutoff, inclusive=True)
         self._log.info(
             "Institutional output compared %s rows; earliest change %s; refresh %s -> %s; wrote %s rows",
             compared,
@@ -169,6 +177,7 @@ class StepCubeInstitutionals(Step):
 
     def build_panel(self) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
+
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         df_lines = self._store.load(
@@ -204,27 +213,33 @@ class StepCubeInstitutionals(Step):
         quantity_basis: institutional_inputs.QuantityBasis,
         identity_intervals: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
+
         # Load transactions and their completeness/title evidence before cleaning.
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
         if source is None or source.transactions.empty:
             return None
-        df_insider = source.transactions
-        df_roles = institutional_inputs.load_insider_role_evidence(self._store, df_insider)
+
+        # load and clean roles per person
+        df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
-            df_insider, as_traded_quotes=frames.close_pit, role_evidence=df_roles, share_basis=quantity_basis.events
+            df_insider=source.transactions, df_valuation_close=frames.close_pit, df_roles=df_roles, share_basis=quantity_basis.events
         )
         if "source_first" not in diagnostics:
             return None
-        diagnostics["source_first"] = source.first_filed
-        df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
-        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
+
+        # get shares
         df_shares_out = institutional_inputs.daily_share_quantities(
             frames.shares_outstanding_pit, pd.DatetimeIndex(frames.trading_index), quantity_basis
         )
-        report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
         df_mcap = frames.mcap_pit
+
+        diagnostics["source_first"] = source.first_filed
+        df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
+        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
+        report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
+
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
 
@@ -243,7 +258,7 @@ class StepCubeInstitutionals(Step):
 
         # Put source and outstanding quantities in the tape's terminal security units.
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
-        columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+        columns = pd.Index(frames.universe, name="ticker")
         df_tenure = short_flow._proven_tenure_mask(idx, columns, lines, df_finra)
         df_short = institutional_inputs.short_quantity_history(df_short, quantity_basis)
         df_shares_out = institutional_inputs.daily_share_quantities(frames.shares_outstanding_pit, idx, quantity_basis)

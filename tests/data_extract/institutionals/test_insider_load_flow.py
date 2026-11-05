@@ -20,20 +20,19 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from sqlalchemy import text
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract import cli as cli_mod
-from src.data_extract.utils.common import edgar_driver, edgar_index, resume
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
-from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_store import ddl
-from src.data_store import store as store_module
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
+from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
+from src.data_extract.utils.identity.identity_store import load_source_identity
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
+from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster, seed_universe
 
 AAA_CIK = "0000000001"
 OTHER_CIK = "0000000099"  # an unrelated issuer whose filings claim `AAA`
@@ -163,6 +162,7 @@ class _FakeSec:
             for table, frame in identity.source_cohort.items():
                 if not frame.empty:
                     context.store.save(table, frame)
+            identity.source_cohort.update(load_source_identity(context.store))
             return identity
 
         def archive(context: Any, path: Path, urls: Any, **kwargs: Any) -> Path | None:
@@ -178,7 +178,7 @@ class _FakeSec:
         monkeypatch.setattr(ins, "_read_tables", lambda path: self.zips.get(path.stem))
         monkeypatch.setattr(edgar_driver, "load_identity", load_identity)
         # One worker (the in-memory SQLite store shares one connection across threads) and no index download.
-        monkeypatch.setattr(edgar_driver, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1, refresh_index=False))
+        monkeypatch.setattr(edgar_driver, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
         monkeypatch.setattr(edgar_index, "index_filing", self._filing)
 
     def publish(self, context: Any, specs: list[Spec], *, owner_listed: tuple[tuple[Spec, str], ...] = ()) -> None:
@@ -224,26 +224,30 @@ def identity() -> Identity:
                 }
             ]
         ),
-        roster=pd.DataFrame([{"ticker": "AAA", "cik": AAA_CIK}]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": "AAA", "cik": AAA_CIK}])),
     )
 
 
 def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -> Any:
-    """A fake context whose `sp500_tickers` (the analysis universe) holds `universe`, CIKs 1, 2, ..."""
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {col: [str(i + 1).zfill(10) if col == "cik" else f"{col}-{t}" for i, t in enumerate(universe)] for col in CIK_MAPPING_COLS}
-            | {"ticker": list(universe)}
-        ),
+    """A fake context whose universe holds `universe`, CIKs 1, 2, ..."""
+    create_canonical(
+        store.engine,
+        [
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+        ],
     )
     return SimpleNamespace(
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("tests.insider_load_flow"),
-        config=extract_config(data_extract={"redundant_ticks": []}),
+        config=extract_config(data_extract={}),
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
+        universe=seed_universe(store, universe),
     )
 
 
@@ -273,7 +277,7 @@ def _run_zip(context: Any, *, reparse: bool = False) -> int:
 
 
 def _run_edgar(context: Any, *, full: bool = False) -> None:
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=UNIVERSE, years_history=15, full=full)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, UNIVERSE, 15, full=full))
 
 
 Q0 = Spec("0000000001-26-000010", "2026-02-02", (Trade("2026-01-30", "P", 10, 5, 110),))
@@ -484,12 +488,12 @@ def identity_two() -> Identity:
                 for s, cik in pairs
             ]
         ),
-        roster=pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs])),
     )
 
 
 def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sqlite_store, monkeypatch, identity_two, caplog):
-    """R-01: `insider-transactions -t AAA -F` re-reads AAA only; the stored-row sweep, which adjudicates
+    """R-01: `zips-ingest --only insider -t AAA -F` re-reads AAA only; the stored-row sweep, which adjudicates
     against the whole universe, is skipped, so BBB's zip and EDGAR rows survive unchanged."""
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
@@ -499,7 +503,7 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
     sec.publish(context, [E1, B1])
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=["AAA", "BBB"], years_history=15)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
     df_before = _table(sqlite_store)
     bbb = df_before["ticker"].eq("BBB")
     assert set(df_before.loc[bbb, "source"]) == {"zip", "edgar"}, "BBB holds a zip and an EDGAR filing"
@@ -507,7 +511,7 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
 
     caplog.clear()
     ins.fetch_insider_transactions(context, tickers=["AAA"], years_history=1, reparse=True)
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=["AAA"], years_history=15, full=True)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15, full=True))
     df_after = _table(sqlite_store)
 
     infos = _messages(caplog, logging.INFO)
@@ -529,17 +533,12 @@ def test_cli_csv_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_stor
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
     sec.publish(context, [E1, B1])
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=["AAA", "BBB"], years_history=15)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
     df_before = _table(sqlite_store)
 
     caplog.clear()
-    names, universe = cli_mod._ticker_scope(context, " bbb ,aaa")
-
-    def unexpected_universe_read(context):
-        raise AssertionError("The archive planner and sweep must reuse the CLI universe snapshot.")
-
-    monkeypatch.setattr(resume, "load_universe_tickers", unexpected_universe_read)
-    ins.fetch_insider_transactions(context, tickers=names, all_tickers=universe, years_history=1)
+    names = cli_mod._tickers(context, " bbb ,aaa")
+    ins.fetch_insider_transactions(context, tickers=names, years_history=1)
     df_after = _table(sqlite_store)
 
     sweep = next(message for message in _messages(caplog, logging.INFO) if message.startswith("insider: stored-row sweep -- "))
@@ -556,17 +555,17 @@ def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, 
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
     sec.publish(context, [E1, B1])
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=["AAA", "BBB"], years_history=15)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
 
     a_late = Spec("0000000001-26-000900", "2026-07-01", (Trade("2026-06-30", "P", 5, 10, 50),))
     b_gap = Spec("0000000002-26-000700", "2026-06-01", (Trade("2026-05-29", "P", 5, 10, 50),), issuer_cik=BBB_CIK, symbol="BBB")
     sec.publish(context, [E1, B1, a_late, b_gap])
     sec.read.clear()
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=["AAA"], years_history=15)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15))
     subset_read = list(sec.read)
 
     sec.read.clear()
-    edgar_driver.run_edgar_fetch(context, fetch=edgar.INSIDER_EDGAR_FETCH, tickers=["AAA", "BBB"], years_history=15)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
     full_read = list(sec.read)
     df = _table(sqlite_store)
 
@@ -580,39 +579,25 @@ def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, 
     )
 
 
-def _postgres_add_column(engine: Any, name: str, df: pd.DataFrame) -> list[str]:
-    """The store's Postgres schema evolution (`ADD COLUMN` for frame columns the table lacks), run on
-    SQLite too, where `store.ensure_columns` is a no-op."""
-    if not store_module.table_exists(engine, name):
-        return []
-    missing = [column for column in df.columns if column not in store_module._reflect(engine, name).c]
-    with engine.begin() as conn:
-        for column in missing:
-            sql_type = ddl.sql_type(column, df[column].dtype, spec=Tables.insider_transactions)
-            conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN "{column}" {sql_type}'))
-    return missing
-
-
 def test_an_edgar_first_run_then_a_zip_ingest_stamps_and_reconciles(tmp_path, sqlite_store, monkeypatch, identity, caplog):
-    """R-03: EDGAR creates the table (no `quarter` column, no zip row); its reconcile is a no-op. A
-    zip ingest afterwards adds `quarter` (Postgres schema evolution, emulated here on SQLite), stamps
-    E1 and inserts Z1; EDGAR then re-reads Z1 whole and keeps its quarter."""
+    """EDGAR leaves canonical quarter fields NULL; ZIP fills them while preserving authoritative EDGAR payload."""
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(store_module, "ensure_columns", _postgres_add_column)
     sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
 
     sec.publish(context, [E1, E2])
     _run_edgar(context)
     df_edgar_only = _table(sqlite_store)
-    assert "quarter" not in df_edgar_only.columns and len(df_edgar_only) == 3
+    assert df_edgar_only["quarter"].isna().all() and len(df_edgar_only) == 3
     assert not any("zip-sourced filing" in message for message in _messages(caplog, logging.INFO)), "no zip quarter -> no reconcile"
 
     sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z1])
     assert _run_zip(context) == 1
     df_zip = _table(sqlite_store)
     assert list(_rows_of(df_zip, E1.accession)["quarter"]) == ["2026q2", "2026q2"]
-    pd.testing.assert_frame_equal(_rows_of(df_zip, E1.accession).drop(columns="quarter"), _rows_of(df_edgar_only, E1.accession))
+    pd.testing.assert_frame_equal(
+        _rows_of(df_zip, E1.accession).drop(columns="quarter"), _rows_of(df_edgar_only, E1.accession).drop(columns="quarter")
+    )
     assert _rows_of(df_zip, E2.accession)["quarter"].isna().all()
     assert list(_rows_of(df_zip, Z1.accession)["source"]) == ["zip"]
 
@@ -671,7 +656,9 @@ def test_partial_save_reconciles_when_a_later_key_fails(
 
     monkeypatch.setattr(edgar, "parse_insider", parse)
     with pytest.raises(TypeError) as raised:
-        edgar_driver.run_edgar_fetch(context, ["AAA", "BBB"], 15, edgar.INSIDER_EDGAR_FETCH, as_of=pd.Timestamp("2026-07-08"))
+        edgar_driver.run_edgar_fetch(
+            context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15, as_of=pd.Timestamp("2026-07-08"))
+        )
     assert raised.value is failure
     df_rows = _table(sqlite_store)
     df_first = _rows_of(df_rows, A.accession)
@@ -702,7 +689,9 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
         return original_bounds(table, column)
 
     monkeypatch.setattr(sqlite_store, "bounds", bounds)
-    result = edgar_driver.run_edgar_fetch(context, ["AAA"], 15, edgar.INSIDER_EDGAR_FETCH, as_of=pd.Timestamp("2026-07-08"))
+    result = edgar_driver.run_edgar_fetch(
+        context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15, as_of=pd.Timestamp("2026-07-08"))
+    )
     assert result.work.size == 0 and sec.read == [] and floor_reads == ["quarter"]
     df_rows = _rows_of(_table(sqlite_store), other.accession)
     assert df_rows["row_sequence"].tolist() == [1, 2, 4]
@@ -714,14 +703,15 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     monkeypatch.setattr(sqlite_store, "save", forbidden)
     monkeypatch.setattr(sqlite_store, "delete", forbidden)
     descriptor = replace(edgar.INSIDER_EDGAR_FETCH, run_scope=forbidden)
-    plan = edgar_driver.plan_fetch(
-        context,
-        descriptor,
-        pd.DataFrame({"ticker": ["AAA"], "cik": [AAA_CIK]}),
+    cik_map = pd.DataFrame({"ticker": ["AAA"], "cik": [AAA_CIK]})
+    run = edgar_driver.EdgarRun(
+        ["AAA"],
+        cik_map,
         edgar_driver.EdgarScope(identity_two),
         pd.Timestamp("2026-07-08"),
         15,
     )
+    plan = edgar_driver.plan_fetch(context, descriptor, run)
     assert plan.size == 0 and floor_reads == ["quarter", "quarter"]
     print(
         "SANITY: zero-work AAA execution repairs an old mixed BBB accession with one floor read; static planning enters no context and writes nothing."
@@ -780,11 +770,15 @@ def test_singleton_reuse_keeps_tickers_exclusions_and_floor_local_after_failure(
     monkeypatch.setattr(edgar, "replace_zip_accessions", reconciled)
     caplog.clear()
     with pytest.raises(RuntimeError, match="first cleanup failed"):
-        edgar_driver.run_edgar_fetch(context, ["AAA"], 15, edgar.INSIDER_EDGAR_FETCH, as_of=pd.Timestamp("2026-07-08"))
+        edgar_driver.run_edgar_fetch(
+            context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15, as_of=pd.Timestamp("2026-07-08"))
+        )
     assert any("excluded 1 filing(s), 2 row(s)" in message for message in _messages(caplog, logging.WARNING))
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([{**dict(zip(PK, [Q0.accession, "nonderiv", 1], strict=True)), "quarter": "2026q2"}]))
     caplog.clear()
-    result = edgar_driver.run_edgar_fetch(context, ["BBB"], 15, edgar.INSIDER_EDGAR_FETCH, as_of=pd.Timestamp("2026-07-08"))
+    result = edgar_driver.run_edgar_fetch(
+        context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["BBB"], 15, as_of=pd.Timestamp("2026-07-08"))
+    )
     assert result.missing == {} and scopes == [("AAA",), ("BBB",)]
     assert floors == [pd.Timestamp("2026-04-01"), pd.Timestamp("2026-07-01")]
     assert "insider EDGAR run: no filing excluded by the identity screen" in _messages(caplog, logging.INFO)

@@ -56,9 +56,10 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory  # noqa: E402
 from src.data_aggregate.utils.price.frames import PriceFrames  # noqa: E402
 from src.data_store.errors import TableEmptyError  # noqa: E402
-from src.data_store.schema import BY_NAME, name_of, resolve  # noqa: E402
+from src.data_store.schema import BY_NAME, Tables, name_of, resolve  # noqa: E402
 from src.data_store.store import DataStore  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
+from tests.canonical_schema import create_canonical  # noqa: E402
 
 DATA = ROOT / "data"
 
@@ -346,7 +347,8 @@ def real_frames() -> dict[str, Any]:
 def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.data_aggregate.utils.common.gics import load_gics_maps
+    from src.utils.config import read_config
+    from src.utils.tickers_universe.universe import Universe
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.factors import (
         assemble_factor_panel,
@@ -371,8 +373,8 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
-    context = type("Ctx", (), {"store": store})()
-    sector_groups = load_gics_maps(cast(Any, context))
+    universe = Universe(store, read_config(path=str(Path(__file__).resolve().parents[1] / "configs")))
+    sector_groups = {"sector": universe.sector_map, "industry_group": universe.industry_group_map}
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
     from tests.data_aggregate.fundamental_pit_reference import legacy_capital_frames
@@ -525,3 +527,21 @@ def make_frames(trading_index, peers: dict | None = None, universe=None, **field
         wide = next((f for f in fields.values() if isinstance(f, pd.DataFrame) and not f.empty), None)
         universe = list(wide.columns) if wide is not None else list(peers)
     return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe), peers=peers, **fields)
+
+
+@pytest.fixture
+def filing_store(sqlite_store):
+    """Owner tests start with the canonical schemas supplied to a new initialized database."""
+    create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sec13f_hr,
+            Tables.sec13f_manager_holdings,
+            Tables.def14a_llm,
+            Tables.def14a_executive_comp,
+            Tables.def14a_director_comp,
+            Tables.def14a_ownership,
+            Tables.def14a_directors,
+        ],
+    )
+    return sqlite_store

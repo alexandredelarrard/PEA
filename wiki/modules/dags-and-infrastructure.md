@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: 1b5f33a2a210336c14758ce4897008c72da1d42c
 ---
 # DAGs and infrastructure
 
@@ -15,9 +15,10 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 
 ## Responsibilities
 
-- Run the nightly extraction fan-out with source-specific pools, placing `identity-tables` before every issuer-identity SEC consumer.
+- Start the extraction night with `[sec_company_tickers, sharadar_tickers] >> universe_sync >>` every fetcher (three `universe --only` parts of `StepExtractUniverse`; the two lists refresh in parallel): the universe sync writes `tickers_universe` from [universe.yml](../../configs/universe.yml), so a failed sync stops the night.
+- Run the nightly extraction fan-out with source-specific pools, placing `zips_download >> identity` before every issuer-identity SEC consumer and one `edgar_index` refresh before the six EDGAR walks.
 - Keep SEC facts/history and employee headcount as independent tasks; the Sharadar merge waits for SEC facts/history only.
-- Keep `sharadar_actions` an independent fetcher (no edge beyond the universe seed) and keep `fundamentals >> fundamentals_sharadar`: the merged `fundamentals_history` reads `fundamentals_history_sec`, and `fundamentals_sharadar` fetches the actions itself before the merge, so an actions failure never blocks it and a failed SEC `fundamentals` skips only that night's `fundamentals_sharadar`. The actions are therefore fetched twice a night by two unordered tasks; accepted, since the upsert is idempotent and the cost is one duplicate Sharadar request (at worst a lock wait). A refresh of `sharadar_actions` or `prices_splits` never corrects a restated price basis; only a re-pull of the ticker's history does. The extraction schedule is `0 1 * * *`, its `start_date` is 2026-11-11 with `catchup=False`, so no scheduled run exists before that date.
+- Keep `sharadar_actions` an independent fetcher (no edge beyond the universe sync) and keep `fundamentals >> fundamentals_sharadar`: the merged `fundamentals_history` reads `fundamentals_history_sec`, and `fundamentals_sharadar` fetches the actions itself before the merge, so an actions failure never blocks it and a failed SEC `fundamentals` skips only that night's `fundamentals_sharadar`. The actions are therefore fetched twice a night by two unordered tasks; accepted, since the upsert is idempotent and the cost is one duplicate Sharadar request (at worst a lock wait). A refresh of `sharadar_actions` or `prices_splits` never corrects a restated price basis; only a re-pull of the ticker's history does. The extraction schedule is `0 1 * * *`, its `start_date` is 2026-11-11 with `catchup=False`, so no scheduled run exists before that date.
 - Trigger a sequential, memory-bounded cube build.
 - Retrain models weekly and score the latest cube daily.
 - Initialize and operate the database, Airflow metadata database, scheduler, and webserver.
@@ -25,7 +26,7 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 
 ## Public API / entry points
 
-- [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules insiders (two tasks into the one `insider_transactions` table: `insider-zip`, the pending zip quarters, in the `sec_bulk` pool; `insider-edgar`, the EDGAR walk, in the `sec_api` pool after it, so it never runs beside another EDGAR walk; both are identity consumers), after the identity downloads, identity tables and propagation, like every identity-consuming SEC task; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
+- [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules the step commands: `zips_download` (`zips-download`, `sec_bulk` pool) `>> identity` (`identity`, ALL_DONE) `>>` the identity consumers; the zip ingests as two `sec_bulk` tasks, `zips_ingest_insider` (`zips-ingest --only insider`) and `zips_ingest_datasets` (`zips-ingest --only notes --only ftd`); `identity >> edgar_index` (`edgar-index`, `sec_api` pool) `>>` the six EDGAR walks (`insider_edgar`, `sec_13d`, `sec_13g`, `sec_8k_items`, `filing_text`, `def14a_edgar`), each in the `sec_api` pool so no two EDGAR walks run together; and `zips_ingest_insider >> insider_edgar`, the two halves of the one `insider_transactions` table; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
 - [dag_data_aggregation.py](../../src/dags/dag_data_aggregation.py) chains peer deduction, registered cube parts, assembly, status, and downstream prediction. The extraction DAG's freshness report and aggregation trigger, and every aggregation task, run on `ALL_DONE`, so a failed source or part never stops the night; `modelling predict` alone refuses stale inputs. The 13F new-ticker backfill is a task of the extraction DAG, after the nightly 13F walk.
 - [dag_modelling.py](../../src/dags/dag_modelling.py) runs training, fresh assessment, portfolio backtest and full-history production fitting with the same generated run ID.
 - [dag_strat_prediction.py](../../src/dags/dag_strat_prediction.py) scores the newest cube; its obsolete ledger task has been removed.

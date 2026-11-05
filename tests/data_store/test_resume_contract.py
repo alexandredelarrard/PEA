@@ -2,29 +2,30 @@
 
 from __future__ import annotations
 
-import ast
 import re
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
 import pytest
 
 from src.context import Context
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import EdgarScope, plan_fetch
-from src.data_extract.utils.common.edgar_index import INDEX_FORMS
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch
+from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_store import ddl
 from src.data_store.schema import (
+    ALL,
     KIND_EXTRACT,
     RESUME_ARCHIVE,
     RESUME_DOCUMENTS,
@@ -34,11 +35,11 @@ from src.data_store.schema import (
     Resume,
     Table,
     Tables,
-    by_kind,
     marker_tables,
     resume_tables,
 )
 from src.data_store.store import DataStore
+from tests.support.universe import seed_universe
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 
@@ -72,7 +73,7 @@ def _column_types() -> dict[str, dict[str, str]]:
 
 
 def test_every_extract_table_resumes_or_is_a_side_table() -> None:
-    extract = {t.name for t in by_kind(KIND_EXTRACT)}
+    extract = {t.name for t in ALL if t.kind == KIND_EXTRACT}
     with_contract = {t.name for t in resume_tables() if t.kind == KIND_EXTRACT}
     uncovered = extract - with_contract - SIDE_TABLES
     stale_side = SIDE_TABLES & with_contract
@@ -123,13 +124,13 @@ def test_contract_and_marker_columns_exist_with_compatible_types() -> None:
             assert sql_type == "TEXT", f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r} needs TEXT"
         else:
             assert isinstance(sentinel, int | float) and sql_type in _NUMERIC_SQL, f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r}"
-    assert "added_on" in types[Tables.sp500_tickers.name] and types[Tables.sp500_tickers.name]["added_on"] == "DATE"
+    assert types[Tables.tickers_universe.name]["universe_added_on"] == "DATE"
 
     print("\n=== SANITY CHECK: contract columns in the DDL ===")
     for table in marker_tables():
         assert table.empty_marker is not None
         print(f"  {table.name}.{table.empty_marker[0]} {types[table.name][table.empty_marker[0]]} <- {table.empty_marker[1]!r}")
-    print("  every key/frontier/period/marker column exists, sentinels fit their SQL type, sp500_tickers.added_on is DATE. Validated.")
+    print("  every key/frontier/period/marker column exists, sentinels fit their SQL type, tickers_universe.universe_added_on is DATE. Validated.")
 
 
 def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
@@ -149,7 +150,7 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
 
 
 def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store))
+    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"])))
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
     fetched = (
         SEC_8K_FETCH,
@@ -158,17 +159,22 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         INSIDER_EDGAR_FETCH,
         DEF14A_EDGAR_FETCH,
         FILING_TEXT_FETCH,
-        fundamentals_fetch(context, cik_map),
+        fundamentals_fetch(context),
     )
     planned: list[tuple[Table, Sequence[str]]] = []
 
-    def capture_worklist(context: Context, table: Table, keys: pd.DataFrame, run_date: pd.Timestamp, *, forms: Sequence[str], **kwargs: Any) -> None:
-        planned.append((table, forms))
+    def capture_worklist(context: Context, table: Table, request: WorklistRequest) -> None:
+        planned.append((table, request.forms))
 
     monkeypatch.setattr(edgar_driver, "document_worklist", capture_worklist)
     column_types = _column_types()
     for fetch in fetched:
-        plan_fetch(context, fetch, cik_map.assign(cik="1"), EdgarScope(), pd.Timestamp("2026-10-13"), 10)
+        keys = cik_map.assign(cik="1")
+        plan_fetch(
+            context,
+            fetch,
+            EdgarRun(list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10),
+        )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms
         assert fetch.done.desc
@@ -183,18 +189,3 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
     print(
         f"  {len(fetched)} actual EDGAR fetches use their owning table's exact forms tuple; the index keeps all {len(declared)} registered forms. Validated."
     )
-
-
-def test_extraction_form_lists_are_declared_only_in_schema() -> None:
-    root = _SCHEMA_SQL.parents[1]
-    pattern = re.compile(r"(?:10-[KQ](?:405)?|8-K|DEF 14[AC]|DEFC14A|SC 13[DG]|SCHEDULE 13[DG]|13F-HR|[345])(?:/A)?")
-    duplicates: list[str] = []
-    for package in ("constants", "data_extract", "data_aggregate"):
-        for path in (root / "src" / package).rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if not isinstance(node, ast.List | ast.Tuple | ast.Set) or not node.elts:
-                    continue
-                if all(isinstance(value, ast.Constant) and isinstance(value.value, str) and pattern.fullmatch(value.value) for value in node.elts):
-                    duplicates.append(f"{path.relative_to(root)}:{node.lineno}")
-    assert not duplicates, f"SEC form lists outside schema.py: {duplicates}"
-    print("SANITY: constants, extraction and aggregation contain no independently declared SEC form lists; schema owns the extraction scope.")

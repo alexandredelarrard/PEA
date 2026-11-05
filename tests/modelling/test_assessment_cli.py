@@ -168,7 +168,7 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
     )
     write_json(cutoff / "metadata.json", metadata)
     config.model.models_dir = "output/models"
-    config.portfolio = {"start": "2022-06-01", "training_cutoff": "2021-12-31", "spread_bps": 2.0}
+    config.portfolio = {"start": "2022-06-01", "spread_bps": 2.0}
     write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": state != "incomplete"})
     (run / "report.html").write_text("assessed", encoding="utf-8")
     if state == "missing-configuration":
@@ -185,7 +185,8 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
     if state == "complete":
         assert result.exit_code == 0, repr(result.exception)
         assert config.model.models_dir == str(run / "cutoff") and context.paths["OUTPUT_DIR"] == run / "backtest_portfolio"
-        assert config.portfolio["start"] == "2022-06-01" and config.portfolio["spread_bps"] == 2.0
+        # the backtest starts three days after the training cutoff, whatever the YAML says
+        assert config.portfolio["start"] == "2022-01-03" and config.portfolio["spread_bps"] == 2.0
         constructor.assert_called_once_with(context=context, config=config)
     else:
         assert result.exit_code != 0
@@ -197,6 +198,7 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
 def test_portfolio_cli_refuses_invalid_cutoff_before_consuming_members(state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run, config = completed_run(tmp_path / "runs", "selected", "2026-10-21T10:00:00+00:00")
     config.model.models_dir = "output/models"
+    config.portfolio = {"spread_bps": 2.0}
     write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": True})
     (run / "report.html").write_text("assessed", encoding="utf-8")
     path = run / "cutoff/metadata.json"

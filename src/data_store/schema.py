@@ -142,7 +142,9 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Reference / dimension                                             #
     # ----------------------------------------------------------------- #
-    sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("added_on",))
+    # The traded universe, one row per `configs/universe.yml` ticker. Written only by
+    # `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
+    tickers_universe = Table("tickers_universe", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on",))
 
     superinvestor_roster = Table(
         "superinvestor_roster",
@@ -217,7 +219,7 @@ class Tables:
     )
 
     # SEC's current ticker list with exchanges (`company_tickers_exchange.json`), one snapshot per
-    # `sec-tickers` run. A CURRENT map with no dates: read only for sibling share-class discovery
+    # `zips-download --only sec-tickers` run. A CURRENT map with no dates: read only for sibling share-class discovery
     # and `exchange` in the security master, never for dating or CIK resolution.
     sec_company_tickers = Table(
         "sec_company_tickers",
@@ -265,11 +267,11 @@ class Tables:
         resume=Resume(RESUME_ARCHIVE, "ticker", "period", 31, period_col="period", source_start="2009-07-01"),
     )
     # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
-    # on the CUSIP the file reports. `ftd-download` stores the in-scope lines (lineage symbols
+    # on the CUSIP the file reports. `identity --only capture-ftd` stores the in-scope lines (lineage symbols
     # and the CUSIP-6 of their voted issuers) with `security_id`, `ticker`, `lineage_role` and
     # `security_class` NULL; the security master is derived from these rows. `date` is the
     # settlement date as filed, `trade_date` its settlement-cycle conversion; `price` is NULL
-    # where the file has '.', and so is `fails_value`. `ftd-download` resumes on the periods no stored
+    # where the file has '.', and so is `fails_value`. `identity --only capture-ftd` resumes on the periods no stored
     # line carries; one market-wide frontier (no key), the ticker grain is rebuilt from these rows.
     sec_fails_to_deliver_security = Table(
         "sec_fails_to_deliver_security",
@@ -526,7 +528,7 @@ class Tables:
     # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
     # `source_document` read and `source_quote` (JSON, one verbatim quote per component).
     # A filing with no usable count is a row with NULL components and its status, so the row
-    # itself marks the date decided and the table declares no marker. `identity-propagate`
+    # itself marks the date decided and the table declares no marker. `identity --only propagate`
     # purges rows by `cik` (`filer_tables.PURGE_TABLES`).
     fundamentals_employees = Table(
         "fundamentals_employees",
@@ -610,20 +612,9 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 35, source_start="2002-10-01"),
     )
-    # SEC Financial Statement Data Sets (num/sub): curated pension facts per
-    # company/tag/period-end (`ddate`) / duration (`qtrs`) / ZIP quarter vintage.
-    pension_facts = Table(
-        "pension_facts",
-        ("cik", "tag", "ddate", "qtrs", "quarter"),
-        date_col="ddate",
-        date_type_cols=("ddate", "filed", "available_at"),
-        freshness="quarterly",
-        freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "quarter", 95, period_col="quarter", source_start="2009-01-01", observed_from="2026-09-01"),
-    )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,
-    # employer contributions, discount rate). Grain = one fact per filing (`adsh`) / tag /
+    # employer contributions, discount rate, recognized net pension liability). Grain = one fact per filing (`adsh`) / tag /
     # period-end (`ddate`) / duration (`qtrs`).
     notes_num = Table(
         "notes_num",
@@ -759,7 +750,7 @@ class Tables:
         resume=Resume(RESUME_SERIES, "ticker", "date", 95),
     )
     # Sharadar's own ticker dimension, filtered to `table=fundamentals` (17,826 rows
-    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `sp500_tickers`: this one
+    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `tickers_universe`: this one
     # carries `permaticker` -- Sharadar's stable entity id, which survives a ticker change
     # and is NOT a column in SF1 -- plus `currency`, which the fundamentals fetch reads to
     # enforce the USD assertion (D20). There is no `cik` column in any Sharadar table.
@@ -794,8 +785,7 @@ class Tables:
     # ⚠ `secfilings` IS THE ONLY PLACE A CIK APPEARS IN ANY SHARADAR TABLE -- it is an EDGAR
     # browse URL and the CIK is embedded in its query string (`...&CIK=0000320193&...`).
     # Every one of the 17,867 rows carries one, so it is a full-coverage third opinion on
-    # ticker->CIK, independent of both the Wikipedia-sourced `sp500_tickers.cik` and EDGAR's
-    # own ticker table. `relatedtickers` is added alongside it for the same reason.
+    # ticker->CIK, independent of the SEC-sourced `tickers_universe.cik`. `relatedtickers` is added alongside it for the same reason.
     # `cusips` and `figi` are likewise stored and unread; they are the natural inputs to the
     # deferred `cusip_ticker_map` date axis, which is out of scope here.
     # Corporate actions: dividends, splits, spinoffs, acquisitions, name/SIC changes and
@@ -820,8 +810,8 @@ class Tables:
         resume=Resume(RESUME_SERIES, None, "date", 7),
     )
     # S&P 500 index membership events (added / removed / historical), back to 1992. Ingested
-    # for the survivorship-bias fix, which is a SEPARATE task: `src/utils/universe.py` still
-    # resolves the universe from `sp500_tickers` and is deliberately not touched here (D27).
+    # for the survivorship-bias fix, which is a SEPARATE task: the traded universe is the flat
+    # `configs/universe.yml` list and does not read this table.
     sharadar_sp500 = Table(
         "sharadar_sp500",
         ("date", "ticker", "action"),
@@ -938,7 +928,6 @@ class Tables:
             "expiration_date",
             "original_submission_date",
             "economic_date",
-            "inventory_checked_through",
         ),
         freshness="daily",
         freshness_date_col="filing_date",
@@ -969,10 +958,7 @@ class Tables:
             "document_type",
             "source",
             "row_sequence",
-            "fetched_at",
-            "inventory_checked_through",
         ),
-        optional_columns=frozenset({"fetched_at", "inventory_checked_through"}),
         # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
         # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
         # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
@@ -1376,6 +1362,7 @@ class Tables:
         resume=def14a_llm.resume,
         empty_marker=("name", _EMPTY),
         marker_key_fill=(("fiscal_year", -1),),
+        read_columns=("ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"),
     )
     def14a_director_comp = Table(
         "def14a_director_comp",
@@ -1604,10 +1591,6 @@ def name_of(table: Table | str) -> str:
     being deleted would be backwards.
     """
     return table.name if isinstance(table, Table) else str(table)
-
-
-def by_kind(kind: str) -> tuple[Table, ...]:
-    return tuple(t for t in ALL if t.kind == kind)
 
 
 def freshness_tables() -> tuple[Table, ...]:

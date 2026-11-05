@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 
 from src.data_store.schema import Tables
 from src.validate.checks.employees import check_employees
+from tests.support.universe import seed_universe, universe_in
 
 AAA, PRED, SUCC, FOREIGN = "0000000001", "0000000020", "0000000002", "0000000099"
 SINCE = pd.Timestamp("2010-01-01")
@@ -114,7 +115,7 @@ def _component_rows() -> pd.DataFrame:
 
 
 def _seed(store: Any, employees: pd.DataFrame) -> None:
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": [AAA, SUCC]}))
+    seed_universe(store, ["AAA", "BBB"], rows={"AAA": {"cik": AAA}, "BBB": {"cik": SUCC}})
     store.save(
         Tables.entity_lineage,
         pd.DataFrame([_lineage_row("AAA", AAA), _lineage_row("BBB", PRED, end="2015-07-01"), _lineage_row("BBB", SUCC, start="2015-07-01")]),
@@ -123,7 +124,7 @@ def _seed(store: Any, employees: pd.DataFrame) -> None:
 
 
 def _context(store: Any) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger("test.employees_check"))
+    return SimpleNamespace(store=store, log=logging.getLogger("test.employees_check"), universe=universe_in(store))
 
 
 def test_component_table_findings_match_the_known_truth(sqlite_store, tmp_path):

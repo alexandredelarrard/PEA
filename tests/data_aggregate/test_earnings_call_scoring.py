@@ -85,6 +85,7 @@ def test_legacy_answers_are_reused_and_only_questions_inferred(sqlite_store: Dat
     original = store.load(Tables.earnings_call_sentiment)
     assert original is not None
     legacy = original[original["tag"].ne("questions")].replace({"tag": {"answers": "qa"}}).assign(uncertainty_ratio=0.123456)
+    store.drop(Tables.earnings_call_sentiment)
     store.replace(Tables.earnings_call_sentiment, legacy)
     engine.reset_mock()
     embedding.reset_mock()

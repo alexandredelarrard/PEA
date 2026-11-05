@@ -20,10 +20,10 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
-from src.data_extract.utils.schemas.vote_schema import Item507Extract as _Item507Extract
 from src.data_extract.utils.structure.def14a import fetch as def14a_mod
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _result_frames
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract as _Item507Extract
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
 _GPT_YML = Path(__file__).resolve().parents[3] / "configs" / "gpt.yml"
@@ -81,52 +81,6 @@ def test_each_action_resolves_its_prompt_schema_and_budget(action, schema, budge
 
     print(f"\n=== SANITY: {action} call contract ===")
     print(f"  schema={schema.__name__}, prompt marker {marker!r} present, payload truncated to the {budget:,}-char budget. Validated.")
-
-
-def test_the_def14a_payload_is_the_carve_not_the_raw_html(monkeypatch):
-    """The pool must receive `=== LABEL ===` blocks. Sending raw HTML would be a ~10x bill
-    and a worse extraction."""
-    html = (
-        "<html><body>" + "<p>boilerplate</p>" * 200 + "<p>SUMMARY COMPENSATION TABLE</p><table><tr><td>Name</td>"
-        "<td>Salary</td></tr><tr><td>Jane Roe</td><td>$1,000,000</td></tr></table>" + "</body></html>"
-    )
-    monkeypatch.setattr(def14a_mod, "_fetch_filing_html", lambda context, filing: html)
-
-    filing = pd.Series(
-        {
-            "accession_number": "0000-00-000001",
-            "doc_url": "http://x/p.htm",
-            "filing_date": pd.Timestamp("2024-04-01"),
-            "period_of_report": "2023-12-31",
-            "form": "DEF 14A",
-        }
-    )
-    payload = def14a_mod._payload_for(_context(), "ZZ", filing)
-
-    # The anchor carve itself is covered by the section tests in test_def14a_llm.py; what
-    # this pins is that the POOL receives extracted text rather than the raw markup.
-    assert payload is not None
-    assert "<table" not in payload and "<html" not in payload and "<p>" not in payload
-    assert "SUMMARY COMPENSATION TABLE" in payload
-    assert len(payload) < len(html)
-
-    print("\n=== SANITY: def14a payload is text, not markup ===")
-    print(f"  {len(html):,} chars of HTML -> {len(payload):,} chars of text, zero tags, compensation anchor retained. Validated.")
-
-
-def test_a_filing_that_cannot_be_read_never_becomes_a_task(monkeypatch):
-    """A fetch failure must cost zero tokens, not a failed paid call."""
-
-    def _boom(context, filing):
-        raise RuntimeError("EDGAR said no")
-
-    monkeypatch.setattr(def14a_mod, "_fetch_filing_html", _boom)
-    filing = pd.Series({"accession_number": "0000-00-000002", "filing_date": pd.Timestamp("2024-04-01")})
-
-    assert def14a_mod._payload_for(_context(), "ZZ", filing) is None
-
-    print("\n=== SANITY: unreadable filing ===")
-    print("  a filing whose HTML cannot be fetched returns None and never reaches the queue, so it costs nothing. Validated.")
 
 
 # --------------------------------------------------------------------------- #

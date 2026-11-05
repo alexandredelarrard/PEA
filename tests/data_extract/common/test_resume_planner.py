@@ -6,18 +6,18 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.common.resume import (
     DONE_PER_KEY,
     KEY_ESTABLISHED,
     KEY_NEW,
     KEY_ROWLESS,
     archive_worklist,
-    document_worklist,
 )
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
+from tests.support.universe import seed_universe
 
 _AS_OF = pd.Timestamp("2026-09-30")
 _FORMS = ("8-K", "8-K/A")
@@ -30,20 +30,16 @@ def _rows(cik: int, dates: list[str], prefix: str) -> list[tuple]:
 def _universe(ctx, tickers: dict[str, str], added_on: dict[str, str] | None = None) -> pd.DataFrame:
     cik_map = pd.DataFrame({"ticker": list(tickers), "cik": [c.zfill(10) for c in tickers.values()]})
     if added_on is not None:
-        ctx.store.drop(Tables.sp500_tickers)  # recreated with the column
-        ctx.store.save(
-            Tables.sp500_tickers,
-            pd.DataFrame(
-                {col: ["x"] * len(tickers) for col in CIK_MAPPING_COLS}
-                | {"ticker": list(tickers), "cik": list(tickers.values()), "added_on": [pd.Timestamp(added_on.get(t, "2000-01-01")) for t in tickers]}
-            ),
-        )
+        rows = {t: {"cik": c.zfill(10), "universe_added_on": pd.Timestamp(added_on.get(t, "2000-01-01"))} for t, c in tickers.items()}
+        ctx.store.drop(Tables.tickers_universe)
+        ctx.universe = seed_universe(ctx.store, list(tickers), rows=rows)
     return cik_map
 
 
 def _plan(ctx, cik_map: pd.DataFrame, as_of: pd.Timestamp = _AS_OF, table=Tables.sec_8k, **kwargs):
     defaults = {"forms": _FORMS, "identity": None, "years_history": 5}
-    return document_worklist(ctx, table, cik_map, as_of, **(defaults | kwargs))
+    request = WorklistRequest(keys=cik_map, as_of=as_of, **(defaults | kwargs))
+    return document_worklist(ctx, table, request)
 
 
 def _store(ctx, ticker: str, accessions: list[str], filed: str = "2026-01-05", item: str = "8.01") -> None:
@@ -64,7 +60,7 @@ def test_absent_table_lists_every_index_entry_from_the_floor(tmp_path, sqlite_st
     work = _plan(ctx, _universe(ctx, {"AAA": "1"}))
 
     assert _units(work, "AAA") == ["a-001", "a-002"]  # 2019 is before as_of - 5 years
-    assert work.key_class == {"AAA": KEY_ROWLESS} and work.counts == {KEY_ROWLESS: 2}
+    assert work.counts == {KEY_ROWLESS: 2}
     print("\n=== SANITY CHECK: M2 absent table ===")
     print(f"  no table -> {_units(work, 'AAA')} (2019 filing below the 5-year floor is not listed).")
 
@@ -79,7 +75,6 @@ def test_a_new_key_gets_its_full_history_and_other_keys_are_unchanged(tmp_path, 
 
     assert _units(work, "NEW") == ["n-000", "n-001", "n-002"]
     assert _units(work, "AAA") == ["a-001"]
-    assert work.key_class == {"AAA": KEY_ESTABLISHED, "NEW": KEY_NEW}
     assert work.counts == {KEY_NEW: 3, "forward": 1, "gap": 0}
     print("\n=== SANITY CHECK: M2 new key ===")
     print(f"  NEW (added 2026-09-29) lists its whole history {_units(work, 'NEW')}; AAA only its missing 8-K; counts {work.counts}.")
@@ -190,7 +185,6 @@ def test_done_set_narrowing_keeps_units(tmp_path, sqlite_store):
     work = _plan(ctx, cik_map)
 
     assert _units(work, "AAA") == ["a-000", "a-002"] and _units(work, "BBB") == ["b-001"]
-    assert work.key_class == {"AAA": KEY_ESTABLISHED, "BBB": KEY_ESTABLISHED}
     assert work.counts == {"forward": 2, "gap": 1}
     print("\n=== SANITY CHECK: done-set narrowing ===")
     print(f"  5 stored, 3 never listed -> AAA {_units(work, 'AAA')}, BBB {_units(work, 'BBB')}, counts {work.counts}.")
@@ -366,7 +360,7 @@ _NOTES = (Tables.notes_num, Tables.notes_text)
 
 
 def _archive_ctx(tmp_path, store, tickers: list[str], added_on: dict[str, str] | None = None):
-    ctx = fake_context(tmp_path, store, tickers, redundant_ticks=[])
+    ctx = fake_context(tmp_path, store, tickers)
     if added_on is not None:
         _universe(ctx, {t: str(i + 1) for i, t in enumerate(tickers)}, added_on=added_on)
     return ctx
@@ -375,11 +369,6 @@ def _archive_ctx(tmp_path, store, tickers: list[str], added_on: dict[str, str] |
 def _save_notes(store, table, ticker: str, periods: list[str]) -> None:
     rows = [{"adsh": f"{ticker}-{p}", "tag": "t", "ddate": pd.Timestamp("2026-06-30"), "qtrs": 0, "ticker": ticker, "period": p} for p in periods]
     store.save(table, pd.DataFrame(rows))
-
-
-def _save_pension(store, ticker: str, quarters: list[str]) -> None:
-    rows = [{"cik": ticker, "tag": "t", "ddate": pd.Timestamp("2025-12-31"), "qtrs": 0, "ticker": ticker, "quarter": q} for q in quarters]
-    store.save(Tables.pension_facts, pd.DataFrame(rows))
 
 
 def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, **kwargs):
@@ -412,11 +401,11 @@ def test_m3_absent_tables_list_every_published_period_from_the_source_start(tmp_
 
 def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqlite_store, caplog):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW", "OLD"], added_on={"NEW": "2026-09-27", "OLD": "2026-09-28"})
-    _save_pension(sqlite_store, "AAA", ["2025q4", "2026q1", "2026q2"])
-    _save_pension(sqlite_store, "OLD", ["2026q2"])  # new, but already holds a row: not re-parsed
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2025q4", "2026q1", "2026q2"])
+    _save_notes(sqlite_store, Tables.notes_num, "OLD", ["2026q2"])  # new, but already holds a row: not re-parsed
 
     with caplog.at_level("WARNING"):
-        work = _archive(ctx, (Tables.pension_facts,), ["2025q4", "2026q1", "2026q2", "2026q3"], ["AAA", "NEW", "OLD"], cached={"2026q1", "2026q2"})
+        work = _archive(ctx, (Tables.notes_num,), ["2025q4", "2026q1", "2026q2", "2026q3"], ["AAA", "NEW", "OLD"], cached={"2026q1", "2026q2"})
 
     assert work.pending == ["2026q3"]  # the newest published period, parsed for every key
     assert work.rescan_keys == ["NEW"] and work.rescan == ["2026q1", "2026q2"]  # 2025q4 is stored but not on disk
@@ -430,28 +419,28 @@ def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqli
 def test_m3_new_key_window_is_seven_days_for_every_archive(tmp_path, sqlite_store):
     added = {"D6": "2026-09-24", "D8": "2026-09-22"}  # 6 and 8 days before as_of 2026-09-30
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "D6", "D8"], added_on=added)
-    _save_pension(sqlite_store, "AAA", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026q1"])
     _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026_07"])
     _save_notes(sqlite_store, Tables.notes_text, "AAA", ["2026_07"])
 
-    pension = _archive(ctx, (Tables.pension_facts,), ["2026q1"], ["AAA", "D6", "D8"])  # 95-day table overlap
-    notes = _archive(ctx, _NOTES, ["2026_07"], ["AAA", "D6", "D8"])  # 62-day table overlap
+    quarterly = _archive(ctx, (Tables.notes_num,), ["2026q1"], ["AAA", "D6", "D8"])  # 62-day table overlap, quarterly periods
+    notes = _archive(ctx, _NOTES, ["2026_07"], ["AAA", "D6", "D8"])  # 62-day table overlap, monthly periods
 
-    assert pension.rescan_keys == notes.rescan_keys == ["D6"]
+    assert quarterly.rescan_keys == notes.rescan_keys == ["D6"]
     print("\n=== SANITY CHECK: M3 new-key window ===")
-    print("  D6 (added 6 days ago, no row) is re-parsed; D8 (8 days ago) is not, although the pension overlap is 95 days")
-    print("  and the notes overlap 62: the new-key window is 7 days for every archive; -t D8 -F is the way back.")
+    print("  D6 (added 6 days ago, no row) is re-parsed; D8 (8 days ago) is not, although the table overlap is 62 days")
+    print("  for quarterly and monthly periods alike: the new-key window is 7 days for every archive; -t D8 -F is the way back.")
 
 
 def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlite_store):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
-    _save_pension(sqlite_store, "AAA", ["2026q1", "2026q2"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026q1", "2026q2"])
     published = ["2026q1", "2026q2", "2026q3"]
 
-    night1 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])  # 2026q3: no universe row, or its ZIP failed
-    night2 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
-    sqlite_store.delete(Tables.pension_facts, {"quarter": "2026q1"})
-    night3 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
+    night1 = _archive(ctx, (Tables.notes_num,), published, ["AAA"])  # 2026q3: no universe row, or its ZIP failed
+    night2 = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
+    sqlite_store.delete(Tables.notes_num, {"period": "2026q1"})
+    night3 = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
 
     assert night1.pending == night2.pending == ["2026q3"]
     assert night3.pending == ["2026q1", "2026q3"]
@@ -462,14 +451,14 @@ def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlit
 
 def test_m3_a_ticker_run_then_a_full_run_re_parses_nothing(tmp_path, sqlite_store):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "BBB"])
-    _save_pension(sqlite_store, "AAA", ["2026q1"])
-    _save_pension(sqlite_store, "BBB", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "BBB", ["2026q1"])
     published = ["2026q1", "2026q2"]
 
-    scoped = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
-    everyone = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "BBB"])
-    scoped_full = _archive(ctx, (Tables.pension_facts,), published, ["AAA"], full=True)
-    full = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "BBB"], full=True, cached=set())
+    scoped = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
+    everyone = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"])
+    scoped_full = _archive(ctx, (Tables.notes_num,), published, ["AAA"], full=True)
+    full = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"], full=True, cached=set())
 
     assert scoped.scoped and list(scoped.units()) == [] and scoped.held == ["2026q2"]
     assert not everyone.scoped and dict(everyone.units()) == {"2026q2": ["AAA", "BBB"]}
@@ -478,3 +467,21 @@ def test_m3_a_ticker_run_then_a_full_run_re_parses_nothing(tmp_path, sqlite_stor
     print("\n=== SANITY CHECK: M3 -t then full ===")
     print("  -t AAA parses nothing (2026q2 parsed for AAA alone would hide it from BBB) and leaves 2026q2 to the")
     print("  full run, which parses only 2026q2; -t AAA -F re-reads the stored quarters for AAA; -F re-reads everything.")
+
+
+def test_m3_scope_is_judged_against_the_universe_not_the_run(tmp_path, sqlite_store):
+    """A 2-of-5 run is scoped by `universe.is_full`: unparsed periods are held, the screen is the whole universe."""
+    universe = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+    ctx = _archive_ctx(tmp_path, sqlite_store, universe, added_on={"CCC": "2026-09-29"})
+    for ticker in universe:
+        _save_notes(sqlite_store, Tables.notes_num, ticker, ["2026q1"])
+    published = ["2026q1", "2026q2"]
+
+    scoped = _archive(ctx, (Tables.notes_num,), published, ["AAA", "CCC"])
+    full = _archive(ctx, (Tables.notes_num,), published, universe)
+
+    assert ctx.universe.outside(["AAA", "CCC"]) == frozenset({"BBB", "DDD", "EEE"})
+    assert scoped.scoped and scoped.pending == [] and scoped.held == ["2026q2"] and scoped.screen == universe
+    assert not full.scoped and full.pending == ["2026q2"] and full.held == []
+    print("\n=== SANITY CHECK: M3 scope from the universe ===")
+    print(f"  -t AAA,CCC of 5: held {scoped.held}, screen {scoped.screen}; the 5-ticker run parses {full.pending}.")

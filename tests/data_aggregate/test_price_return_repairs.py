@@ -21,6 +21,7 @@ from src.data_aggregate.utils.price.inputs import PRICE_COLS
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.repairs import apply_return_seams
+from tests.support.universe import universe_of
 
 
 @pytest.fixture(scope="module")
@@ -99,13 +100,17 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
         pair = rows.set_index("date")["close_total"]
         step = pair.loc[when] / pair.loc[pair.index < when].iloc[-1]
         rows.loc[rows["date"].lt(when), "close_total"] *= step / item["target_step"]
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": [ticker]}))
     sqlite_store.save(Tables.prices, rows)
     sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": rows["date"], "close": 1.0}))
     peer_path = tmp_path / "peers.json"
     peer_path.write_text(json.dumps({ticker: {ticker: 1.0}}), encoding="utf-8")
     isolated = SimpleNamespace(
-        store=sqlite_store, config=context.config, config_dir=context.config_dir, log=context.log, paths={"SECTOR_PEERS_PATH": peer_path}
+        store=sqlite_store,
+        config=context.config,
+        config_dir=context.config_dir,
+        log=context.log,
+        paths={"SECTOR_PEERS_PATH": peer_path},
+        universe=universe_of([ticker]),
     )
     writes: list[pd.DataFrame] = []
     original = sqlite_store.replace

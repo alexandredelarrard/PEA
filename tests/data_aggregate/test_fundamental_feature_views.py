@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from scripts.cube_feature_catalogue import CATALOGUE, split
 from src.context import define_global_paths
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -26,8 +25,10 @@ from src.data_aggregate.utils.fundamentals.feature_views import (
 )
 from src.data_store.schema import Tables
 from src.utils.config import read_config
+from src.utils.tickers_universe.universe import Universe
 from tests.conftest import _store
 from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
+from tests.support.cube_feature_catalogue import CATALOGUE, split
 
 EXPECTED_HISTORY_FEATURES = frozenset(
     {
@@ -185,7 +186,7 @@ def test_new_valuation_views_real_yearly_cross_sections() -> None:
     peers = load_peers(context)
     if not peers:
         pytest.skip("existing peer cache is unavailable; this check never reconstructs it")
-    metadata = context.store.load(Tables.sp500_tickers, columns=["ticker", "sector"])
+    metadata = Universe(context.store, read_config(path="configs")).frame[["ticker", "sector"]]
     names = metadata.ticker.astype(str).to_list()
     calendar = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.cube_part_fundamentals, "date")))
     recent = pd.Series(calendar[calendar >= "2022-01-01"])
@@ -325,8 +326,9 @@ def test_active_model_configs_use_only_surviving_fundamental_views() -> None:
     forest = OmegaConf.to_container(OmegaConf.load(paths[2]), resolve=True)["random_forest"]
     _assert_unique("lgbm.columns", lgbm["columns"])
     _assert_unique("linear.columns", linear["columns"])
-    _assert_unique("random_forest.columns", forest["columns"])
-    for horizon, columns in forest["columns_by_horizon"].items():
+    if "columns" in forest:
+        _assert_unique("random_forest.columns", forest["columns"])
+    for horizon, columns in (forest.get("columns_by_horizon") or {}).items():
         _assert_unique(f"random_forest.columns_by_horizon.{horizon}", columns)
 
     print("\n=== SANITY CHECK: model-config compatibility ===")

@@ -25,10 +25,10 @@ would land in its `unused` list and fail every future fundamentals run. Hence
 
 from __future__ import annotations
 
-from scripts.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
-from scripts.cube_governance_catalogue import GOVERNANCE
-from scripts.cube_institutionals_catalogue import INSTITUTIONALS
-from scripts.cube_sec_thirteen_catalogue import SEC_THIRTEEN
+from tests.support.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
+from tests.support.cube_governance_catalogue import GOVERNANCE
+from tests.support.cube_institutionals_catalogue import INSTITUTIONALS
+from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
 from src.data_aggregate.utils.governance import director_comp as dc
 from src.data_aggregate.utils.governance import directors as dr
 from src.data_aggregate.utils.governance import panel as pn

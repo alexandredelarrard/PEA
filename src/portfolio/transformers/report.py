@@ -29,6 +29,15 @@ def _encoded(value: Any) -> str:
     return base64.b64encode(gzip.compress(json.dumps(json_value(value), allow_nan=False, separators=(",", ":")).encode())).decode("ascii")
 
 
+def sector_exposures(positions: pd.DataFrame) -> pd.DataFrame:
+    """Long, short, net and gross held value per close date and sector."""
+    if positions.empty:
+        return pd.DataFrame(columns=["date", "sector", "long", "short", "net", "gross"])
+    value = positions.value
+    held = positions.assign(long=value.clip(lower=0), short=value.clip(upper=0), net=value, gross=value.abs())
+    return held.groupby(["date", "sector"], as_index=False)[["long", "short", "net", "gross"]].sum()
+
+
 def _benchmark_window(benchmark: Simulation, dates: pd.DatetimeIndex) -> Simulation:
     """Retain the shared initial capital and require every compared benchmark observation."""
     if benchmark.daily.empty or benchmark.daily.index[0] != dates[0] or not dates.isin(benchmark.daily.index).all():
@@ -82,7 +91,14 @@ def write_report(
         daily["benchmark_gross"] = benchmark_gross_window.daily.nav
         daily["drawdown"] = daily.nav / daily.nav.cummax() - 1
         daily["benchmark_drawdown"] = daily.benchmark_net / daily.benchmark_net.cummax() - 1
-        payloads[key] = _encoded({"daily": _records(daily.reset_index()), "orders": _records(result.orders), "positions": _records(result.positions)})
+        payloads[key] = _encoded(
+            {
+                "daily": _records(daily.reset_index()),
+                "orders": _records(result.orders),
+                "positions": _records(result.positions),
+                "sectors": _records(sector_exposures(result.positions)),
+            }
+        )
     template = Path(__file__).with_name("report.html").read_text(encoding="utf-8")
     body = template.replace("__PLOTLY__", get_plotlyjs()).replace(
         "__MANIFEST__", json.dumps(json_value(manifest), allow_nan=False).replace("<", "\\u003c")

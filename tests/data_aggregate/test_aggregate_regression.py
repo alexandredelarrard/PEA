@@ -39,7 +39,7 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # Regenerated twice. The 2026-09-01 price/shares basis fix was the first; the second is the
 # 2026-09-03 `MIN_GROUP_SIZE_FOR_NEUTRALIZATION` change in `_neutral_label`, which stops a
 # group with one present member (1996's `Automobiles & Components` held only `F` until
-# `TSLA`'s first target in 2010, because `sp500_tickers` carries CURRENT membership only)
+# `TSLA`'s first target in 2010, because `tickers_universe` carries CURRENT membership only)
 # having its whole residual absorbed by its own indicator column and shipping as an exact 0.0.
 #
 # What the second regeneration folded in, measured by diffing the regenerated file against

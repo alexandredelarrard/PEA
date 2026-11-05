@@ -122,7 +122,7 @@ def _complete_source_mask(
     """Cells for which source absence is proven rather than merely unobserved."""
     if complete_through is None or pd.isna(complete_through):
         return None
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    columns = pd.Index(frames.universe, name="ticker")
     listed = (
         frames.close_split.reindex(index=idx, columns=columns).notna()
         if frames.close_split is not None and not frames.close_split.empty
@@ -247,7 +247,7 @@ def build_ownership_feature_panel(
         g_start = availability.source_date(Tables.sec_13g)
     else:
         g_start = pd.to_datetime(canon_13g["filing_date"], errors="coerce").min()
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    columns = pd.Index(frames.universe, name="ticker")
     d_start = pd.to_datetime(canon_13d["filing_date"], errors="coerce").min()
     act_coverage = (
         _complete_source_mask(

@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, marker_row, run_edgar_fetch
-from src.data_extract.utils.common.empty_markers import drop_markers_over_data, marker_shares_data_key
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, marker_row, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_shares_data_key
 from src.data_store.schema import Table, Tables, marker_tables
-from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
+from tests.data_extract.edgar_fixtures import fake_context, fake_filing, roster_run, seed_index
 
 _AS_OF = pd.Timestamp("2026-09-30")
 _KEPT = "0000000001-26-000001"
@@ -131,9 +131,9 @@ def test_a_full_refetch_that_parses_nothing_leaves_the_stored_proxy_untouched(tm
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"], ["1"])
     seed_index(ctx, [(1, "Fixture Co", "DEF 14A", "2026-04-01", _KEPT), (1, "Fixture Co", "DEF 14A", "2026-04-02", _NEW)])
     sqlite_store.save(Tables.def14a_edgar, _real_proxy())
-    fetch = EdgarFetch(tables=(Tables.def14a_edgar,), parse=_parse_nothing, identity_aware=False)
+    fetch = EdgarFetch(tables=(Tables.def14a_edgar,), parse=_parse_nothing)
 
-    run_edgar_fetch(ctx, ["AAA"], 15, fetch, full=True, as_of=_AS_OF, refresh_index=False, max_workers=1)
+    run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], full=True, as_of=_AS_OF), max_workers=1)
 
     stored = sqlite_store.load(Tables.def14a_edgar, markers=True).set_index("accession_number")
     assert stored.loc[_KEPT, "form"] == "DEF 14A" and stored.loc[_KEPT, "peo_total_comp"] == 12.5

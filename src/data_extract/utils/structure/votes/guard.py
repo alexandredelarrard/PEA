@@ -10,8 +10,8 @@ import re
 
 import pandas as pd
 
-from src.data_extract.utils.schemas.vote_schema import ProposalVote
 from src.data_extract.utils.structure.def14a.validate import clean_person_name
+from src.data_extract.utils.structure.votes.vote_schema import ProposalVote
 
 #: The four vote columns, at proposal level and per role category (also used by `flatten` for per-role names).
 _VOTE_FIELDS = ("votes_for", "votes_against", "votes_abstain", "votes_broker_non_votes")

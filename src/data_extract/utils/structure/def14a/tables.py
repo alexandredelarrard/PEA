@@ -146,7 +146,7 @@ def _cell_text(el) -> str:
 
 
 def _normalise(text: str) -> str:
-    """The same normalisation set as `edgar_extract.html_to_text`, so the flattened-text path
+    """The same normalisation set as `html_text.html_to_text`, so the flattened-text path
     and the table path can never disagree about what a cell says.
 
     A block boundary inside a cell survives as `\\n` up to here and becomes a single space --

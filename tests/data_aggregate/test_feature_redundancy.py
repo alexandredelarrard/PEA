@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_aggregate.utils.common.pit import (
     add_cube_time_growth,
     fundamentals_to_daily,
@@ -44,9 +45,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FACT_COLS,
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
-    _NET_PENSION_TAGS,
     _NOTES_NUM_TABLE,
-    _PENSION_FACTS_TABLE,
     _derived_fields,
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
@@ -57,7 +56,9 @@ from src.data_aggregate.utils.fundamentals.sector_features import (
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.db import get_engine
+from src.utils.tickers_universe.universe import Universe
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 #: |r| at or above which two features are the SAME SIGNAL, not two views of one.
@@ -89,7 +90,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     Taken BEFORE the `_vs_peers` / `_xs` suffixes: a computational no-op is undiluted at
     this level, while the peer-z and the percentile rank both compress it.
 
-    ⚠ THE PENSION TABLES ARE PART OF PRODUCTION'S INPUT AND MUST BE PASSED. Without them
+    ⚠ `notes_num` IS PART OF PRODUCTION'S INPUT AND MUST BE PASSED. Without it
     `_pension_pool` returns empty and every pension feature silently disappears from the
     matrix — an unfaithful-fixture defect of the same shape as one Phase 4 fixed elsewhere,
     and missed here. Passing them raises the comparable-feature
@@ -106,8 +107,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     fh["as_of"] = pd.to_datetime(fh["as_of"])
     fh = add_cube_time_growth(fh)
 
-    ref = store.load(Tables.sp500_tickers, columns=["ticker", "sector", "industry_group"])
-    fh = fh.merge(ref, on="ticker", how="left")
+    fh = Universe(store, read_config(path="configs")).attach_gics(fh)
 
     px = store.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": _TICKERS})
     px["date"] = pd.to_datetime(px["date"])
@@ -121,9 +121,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     frames = _derived_fields(
         FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
         replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
-        supplement=FundamentalSupplement(
-            pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS), notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG))
-        ),
+        supplement=FundamentalSupplement(notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS))),
         yoy_periods=infer_yoy_periods(fh),
     )
     kdf = compute_sector_kpis(fh)

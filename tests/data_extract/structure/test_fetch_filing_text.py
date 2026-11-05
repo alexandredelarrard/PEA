@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
-from src.data_extract.utils.structure.fetch_filing_text import (
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     FILING_SECTION_MDA,
     FILING_SECTION_RISK,
     FILING_TEXT_FETCH,

@@ -39,7 +39,7 @@ x-airflow-common: &airflow-common
     POSTGRES_PORT: "5432"
     # anchor the pipeline's data root to the mounted project (absolute, cwd-independent) so
     # DATA_STORE = /opt/airflow/project/data -> the ./data bind mount below -> the HOST disk.
-    # All heavy downloads (SEC zip bulk sets under sec_financial_notes / sec_financial_statements /
+    # All heavy downloads (SEC zip bulk sets under sec_financial_notes /
     # sec_bulk_cache / sec_13f_insiders, models &
     # peer dict under output/) are written there, so they SURVIVE the container and are reused
     # (incremental fetchers skip a re-download when the cached zip is found on the host).
@@ -72,7 +72,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - stock_pick_strat_pgdata:/var/lib/postgresql/data
-      # - ./sql:/docker-entrypoint-initdb.d:ro
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pea} -d ${POSTGRES_DB:-pea}"]
       interval: 5s
@@ -113,7 +113,7 @@ services:
         airflow users create --username admin --password admin \
           --firstname admin --lastname admin --role Admin --email admin@example.com || true
         # load-aware pools: cap the heavy / rate-limited task groups so only the LIGHT tasks fan out
-        airflow pools set sec_bulk  2 "SEC bulk zip downloads (notes/statements/insider/13F/FTD)" || true
+        airflow pools set sec_bulk  2 "SEC bulk zip downloads (notes/insider/13F/FTD)" || true
         airflow pools set sec_api   2 "per-ticker EDGAR API (companyfacts/employees/DEF14A)"       || true
         airflow pools set aggregate 3 "cube feature-group builds (cap concurrency to bound memory)"  || true
     restart: "no"

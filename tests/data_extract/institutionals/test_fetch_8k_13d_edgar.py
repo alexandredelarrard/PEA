@@ -16,13 +16,13 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
-from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_extract.utils.common.sec_io import ParseFailureError
-from src.data_extract.utils.institutionals import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
-from src.data_extract.utils.institutionals.fetch_13d_edgar import (
+from src.data_extract.utils.edgar_extract import fetch_8k_edgar
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import (
     _ITEM_ANCHORS,
     SCHEDULE_13D,
     _carve_with,
@@ -32,7 +32,7 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _normalize_item_text,
     parse_13d,
 )
-from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
+from src.data_extract.utils.edgar_extract.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
 
@@ -48,35 +48,32 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     over the SAME window as fundamentals_facts, instead of drifting apart through a config
     read nobody can see from the call site.
 
-    8-K and 13D moved to `StepExtractInstitutionals`, so the invariant is now checked on
-    BOTH steps: each reads the window exactly once and passes it to every downloader it
-    owns. Counting only one step would let the other quietly start reading config again."""
+    The invariant is checked on BOTH windowed steps: each reads the window exactly once and
+    passes it to every downloader it owns (the EDGAR step through one shared driver call).
+    Counting only one step would let the other quietly start reading config again."""
     import inspect
 
-    for fn in (run_edgar_fetch,):
-        params = inspect.signature(fn).parameters
-        assert "years_history" in params, f"{fn.__name__} must take years_history"
-        assert params["years_history"].default is inspect.Parameter.empty, (
-            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a second place for the window to diverge"
-        )
+    # the driver's run state carries the window as a required field: no second default can diverge from the step's
+    params = inspect.signature(EdgarRun).parameters
+    assert "years_history" in params, "EdgarRun must carry years_history"
+    assert params["years_history"].default is inspect.Parameter.empty, (
+        "EdgarRun.years_history must be required, not defaulted -- a default is a second place for the window to diverge"
+    )
 
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
-        # 13F, 13F-manager books, bulk insiders, daily insiders, 13D, 13G, 8-K,
-        # short interest (superinvestors takes no window; FTD stamps stored lines and reads none)
-        StepExtractInstitutionals: 8,
-        # DEF 14A edgar + filing text (the LLM and vote passes take no window)
-        StepExtractStructure: 2,
+        # 13F, 13F-manager books (superinvestors takes no window; short interest plans from its latest stored day)
+        StepExtractInstitutionals: (inspect.getsource(StepExtractInstitutionals.run), "years_history=years_history", 2),
+        # insider EDGAR, 13D, 13G, 8-K, filing text, DEF 14A ECD: the init declares one `EdgarRun`, whose loader reads
+        # the window (unless `-y` gives it) and which every walk receives
+        StepExtractEdgar: (inspect.getsource(StepExtractEdgar) + inspect.getsource(EdgarRun.load), "EdgarRun.load(", 1),
     }
-    for step, n_windowed in expected.items():
-        run = inspect.getsource(step.run)
-        assert run.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
-        assert run.count("years_history=years_history") == n_windowed, (
-            f"{step.__name__} passes the window to {run.count('years_history=years_history')} fetchers, expected {n_windowed}"
-        )
+    for step, (source, passed, n_windowed) in expected.items():
+        assert source.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
+        assert source.count(passed) == n_windowed, f"{step.__name__} passes the window {source.count(passed)} time(s), expected {n_windowed}"
     print("\n=== SANITY: extraction window plumbing ===")
     print(
-        f"  {' + '.join(f'{s.__name__}={n}' for s, n in expected.items())} windowed "
+        f"  {' + '.join(f'{s.__name__}={n}' for s, (_, _, n) in expected.items())} windowed "
         "fetchers; each step reads data_extract.years_history exactly once and passes it "
         "down. No fetcher reads the config itself. Validated."
     )
@@ -88,16 +85,13 @@ def test_sec_8k_fetch_declares_its_driver_settings():
     (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
     assert SEC_8K_FETCH.tables == (Tables.sec_8k,) and SEC_8K_FETCH.done == Tables.sec_8k
     assert SEC_8K_FETCH.done.desc == "8-K (edgartools)"
-    assert SEC_8K_FETCH.identity_aware is True
     parse = cast(Any, SEC_8K_FETCH.parse)
     assert parse.func is parse_filing_rows
     assert parse.keywords["table"] == Tables.sec_8k
     assert parse.keywords["row_fn"] is _filing_row
     assert SEC_8K_FETCH.filings is submission_filings
     print("\n=== SANITY: 8-K fetch declaration ===")
-    print(
-        "  SEC_8K_FETCH -> sec_8k over its registered forms, identity_aware, parse_filing_rows with the 8-K row function, item codes from submissions."
-    )
+    print("  SEC_8K_FETCH -> sec_8k over its registered forms, parse_filing_rows with the 8-K row function, item codes from submissions.")
 
 
 def test_8k_item_codes_come_from_the_submissions_listing_of_listed_units(monkeypatch):
@@ -928,7 +922,7 @@ def test_known_13d_parse_failure_is_a_deterministic_parse_failure():
     with pytest.raises(ParseFailureError, match="0001-broken"):
         parse_13d("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), EdgarScope())
     print("\n=== SANITY CHECK: known 13D parse failure ===")
-    print("  the accession raises ParseFailureError naming it: the driver logs it and stores one empty-filing marker")
+    print("  the accession raises ParseFailureError naming it: the driver logs it and lists it again next run")
 
 
 def test_13d_item3_and_item6_use_correct_structured_attribute_names():

@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+source_commit: b0333bd2db32d65b0f573e11fe7160a324789226
 integration_parents:
   - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
   - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
@@ -30,14 +30,15 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 
 | Top-level key | Owner | Responsibility |
 | --- | --- | --- |
-| `seed`, `data_extract` | [configs.yml](../../configs/configs.yml) | Global random seed, history windows, source refresh switches, redundant tickers, the SEC retry policy, document retry rounds, the per-run document cap, and the prediction fresh-share threshold. |
+| `seed`, `data_extract` | [configs.yml](../../configs/configs.yml) | Global random seed, history windows, source refresh switches, the SEC retry policy, document retry rounds, the per-run document cap, and the prediction fresh-share threshold. |
+| `universe` | [universe.yml](../../configs/universe.yml) | The traded universe and the only hand-edited ticker list: `tickers` (491 quoted yfinance symbols, each mapped to its GICS `sector` and sub-industry `industry`; the industry group is derived from `vocabulary.py`) and `aliases` (other share-class symbols of a universe ticker: GOOGL→GOOG, FOXA→FOX, NWSA→NWS, BRK-B→BRK-A). Validated on load (non-empty, no duplicates, every alias key in `tickers`; at sync, every sub-industry known and inside its sector); `data_extract universe` syncs `tickers_universe` from it. |
 | `local.paths` | [paths.yml](../../configs/paths.yml) | Repository root, artifact store, output, model, log, and peer-dictionary locations, and the source caches, including the local EDGAR filing index (`sec_edgar_index`) and the SEC 13F data sets (`sec_13f_datasets`). |
 | `logging` | [logging.yml](../../configs/logging.yml) | Standard-library logging tree and the in-memory log format. |
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
 | `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), fresh assessment controls and train/test boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
 | `linear`, `lgbm`, `random_forest` | [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml) and sibling family files | Family hyperparameters and family-specific feature columns. |
-| `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Fixed LS/S&P/cash budgets, dates/cutoff, allocation cadence, momentum/risk windows, cash remuneration, proportional costs and read batch size. |
+| `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Fixed LS/S&P/cash budgets, optional end date (cutoff and start come from train.end_date), allocation cadence, momentum/risk windows, cash remuneration, proportional costs and read batch size. |
 | `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, the insider frontier lag, and the earnings-call extractor knobs. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
 
@@ -60,11 +61,11 @@ Curated evidence registers under `configs/sec/` are versioned data contracts rat
 - [vendor_coverage_exceptions.json](../../configs/sec/vendor_coverage_exceptions.json): `exceptions`, one accession-exact row per Sharadar quarter missing at a CIK cutover while the SEC filing exists (`ticker`, `quarter`, `period_end`, `cik`, `accession`, `filed`, `label`). An unrecorded missing quarter fails the continuity check, and so does a row whose quarter is present again (healed): delete it.
 - [expected_lineage_changes.json](../../configs/sec/expected_lineage_changes.json): `hypotheses` the identity regression gate checks against the rows it computes at a cutover.
 
-Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register. Every identity edit needs SEC evidence with an accession, then `identity-tables` and `identity-propagate` (`--full` when the edit moves no lineage stamp; see the [run guide](../guides/run-the-pipeline.md#registrant-boundaries)).
+Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register. Every identity edit needs SEC evidence with an accession, then `identity` (and `identity --only propagate --full` when the edit moves no lineage stamp; see the [run guide](../guides/run-the-pipeline.md#registrant-boundaries)).
 
 Identity rules that live in code, not YAML:
 
-- **Automatic CIK windows** are on (`AUTO_WINDOWS_ENABLED = True` in [entity_lineage.py](../../src/data_extract/utils/common/entity_lineage.py)): a window is created only when cover pages (`dei`) and Forms 3/4/5 both place the CIK switch within 31 days (`SWITCH_TOLERANCE_DAYS`). Each is listed as an `automatic_cik_window` item by `validate identity`; a register entry wins.
+- **Automatic CIK windows** are on (`AUTO_WINDOWS_ENABLED = True` in [entity_lineage.py](../../src/data_extract/utils/identity/entity_lineage.py)): a window is created only when cover pages (`dei`) and Forms 3/4/5 both place the CIK switch within 31 days (`SWITCH_TOLERANCE_DAYS`). Each is listed as an `automatic_cik_window` item by `validate identity`; a register entry wins.
 - **Predecessor vendor series.** `fundamentals-sharadar` also fetches the `sharadar_tickers` rows whose SEC CIK is a register predecessor CIK, stored under their vendor ticker: BKR ← BHI, STE ← STE1, LIN ← PX1, EVRG ← WR1, plus the declared `vendor_series_overrides` (JCI ← TYC) (`load_predecessor_series` in [predecessor_series.py](../../src/utils/predecessor_series.py)). The merged history replaces the canonical vendor rows inside the predecessor window with that series, converted by the cited `exchange_ratios`. PLD and DD keep Sharadar's own rows, which are already AMB's and Dow Chemical's.
 - **Share basis inside a predecessor window.** Shares carry only the genuine split events `split_events` accepts; price-only factors Yahoo books as splits (JCI's 2012 ADT spin and 2016 0.955 consolidation) live in the cube's level factor S(d), so JCI's exchange ratio is 1. Inside a predecessor window, S(d) reads the window owner's `sharadar_actions` relabelled to the ticker (`load_level_actions` in [predecessor_series.py](../../src/utils/predecessor_series.py)), the same swap the merge makes.
 
@@ -87,8 +88,7 @@ Key distinctions:
 - `years_history` scopes ordinary equity/filing walks;
 - `macro_years_history` owns the long macro window;
 - `sharadar_years_history` is separate because entitlement and response size differ;
-- `refresh_universe` controls replacement of the current roster;
-- redundant class tickers prevent double-counting after the retained class is active;
+- the universe holds one ticker per issuer; a second share class is an `aliases` entry in [universe.yml](../../configs/universe.yml), never a `tickers` entry, so no class is counted twice;
 - `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread). The dataset repo and file path are module constants of the extractor;
 - In [build_cube.yml](../../configs/build_cube.yml), build_cube.earnings_calls owns sentiment_model (yiyanghkust/finbert-tone), refresh_calendar_days (30) and availability_lag_days (2). [StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) validates them once; embeddings use the existing gpt.embedding model/batch_size/max_chars settings in gpt.yml. Feature eligibility is the first session on/after call date plus the calendar-day lag; raw/saved dates stay unchanged and all twelve features retain their 66-session lifetime. Daily feature writes use the stored frontier minus 30 calendar days with bounded required call history. Older changes need a full text-part rebuild and cube assembly; valid model outputs are reused;
 - `sec_retry` (3 attempts, waits of 5 s then 20 s, Retry-After capped at 120 s) is the one retry policy of every SEC request, applied by [sec_io.py](../../src/data_extract/utils/common/sec_io.py);
@@ -96,7 +96,7 @@ Key distinctions:
 - `max_documents_per_run` (5,000) caps the documents one EDGAR fetch reads per run, newest first; a larger work list logs an ERROR and drains over later runs, and `--no-cap` lifts the cap for a one-time backlog;
 - `prediction_fresh_share` (0.95): `modelling predict` refuses to score, and `extraction-status` marks the table RED, when the share of universe tickers whose own latest `prices`, `fundamentals_sharadar` or `fundamentals_history` date is within the table's cadence tolerance falls below it;
 - LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`. `gpt.threads` (12) sizes the LLM worker pool for DEF 14A and Item 5.07 vote extraction; employee extraction pins one thread per ticker in code;
-- regulatory dates are code constants, not knobs: the DEF 14A ECD listing floor 2022-12-16 (Item 402(v) effective date) is `_PVP_EFFECTIVE` in [fetch_def14a_edgar.py](../../src/data_extract/utils/structure/fetch_def14a_edgar.py).
+- regulatory dates are code constants, not knobs: the DEF 14A ECD listing floor 2022-12-16 (Item 402(v) effective date) is `_PVP_EFFECTIVE` in [fetch_def14a_edgar.py](../../src/data_extract/utils/edgar_extract/fetch_def14a_edgar.py).
 
 ## Data availability and freshness
 
@@ -110,11 +110,11 @@ Runtime eligibility is the intersection of:
 4. required price, denominator, or related-source cells; and
 5. family-specific completeness rules.
 
-`source_freshness.insider_max_lag_days` remains the insider freshness threshold used by `cube-status`. The completeness frontier now comes from per-ticker `insider_transactions.inventory_checked_through` inventory validation, checked against fetched accession payloads, rather than a recent maximum filing date. EDGAR remains authoritative over ZIP duplicates. A missing proof column on an older physical schema is readable but cannot certify quiet absence.
+`source_freshness.insider_max_lag_days` (default 4) is the insider freshness threshold used by `cube-status`: the insider source is late when D, the newest stored `insider_transactions.filing_date` (markers included), is more than that many days behind the reference price date. EDGAR remains authoritative over ZIP duplicates.
 
 ## Cube assembly selection
 
-[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and shared [policy](../../src/data_aggregate/utils/common/assembly.py). All registered parts participate. Prices, targets, betas, fundamentals, momentum and governance are compulsory; the committed optional list contains text, institutionals and SEC thirteen. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
+[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and the [readiness report](../../src/data_aggregate/utils/common/part_status.py). `compulsory_parts` plus `optional_parts` are the parts merged into the cube (prices is the root; betas are not assembled); a registered part missing from both lists is silently excluded, which `test_committed_config` guards. The committed compulsory list is prices, targets, fundamentals, momentum and governance; the optional list contains text, institutionals and SEC thirteen. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
 
 ```yaml
 build_cube:
@@ -123,6 +123,12 @@ build_cube:
       - cube_part_text
       - cube_part_institutionals
       - cube_part_sec_thirteen
+    compulsory_parts:
+      - cube_part_prices
+      - cube_part_targets
+      - cube_part_fundamentals
+      - cube_part_momentum
+      - cube_part_governance
     columns:
       cube_part_fundamentals: null
       cube_part_governance: null
@@ -164,7 +170,7 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 `build_cube.institutionals.ftd_availability_calendar_days` in [build_cube.yml](../../configs/build_cube.yml) is21 calendar days from the persisted ZIP half-period end; publication snaps to the first eligible session. It is a deterministic estimate, independent of cache timestamps, and does not certify historical SEC publication dates.
 
-The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,99 and100. Targets, h30/h60/h90, fitting settings and existing non-institutional selections are unchanged by this addition. No fit was run.
+The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,98 and100. LightGBM excludes the retired `f_y_earnings_growth` input and retains the already selected `f_y_earnings_growth_signed`. Targets, h30/h60/h90 and fitting settings are unchanged. No fit was run.
 
 ## Model settings
 
@@ -174,13 +180,13 @@ Each family selects all inputs, numeric and categorical, through `columns` and `
 
 [validate.yml](../../configs/validate.yml) declares tone/coherence bounds [-1,1], role-delta bounds [-2,2] and cosine-distance bounds [0,2]. It also owns quarterly cadence, 66-trading-session lifetime, Spearman redundancy thresholds, PSI and missingness limits, the latest-20-session audit window and unchanged quality floors (`usable_call_rate_min: 0.985`, `prepared_share_q05_min: 0.15`). Prepared share is measured only on eligible calls containing both sections; raw split status is diagnostic. Train-versus-recent checks use the canonical train.end_date in [modellling.yml](../../configs/modellling.yml). The dedicated validator reads these settings instead of duplicating them in Python.
 
-train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits every development outcome. Observed price sessions and actual label ends purge training strictly before each external test. LightGBM fits all eligible training rows and uses external-test RMSE for early stopping; there is no inner validation tail. Cutoff/full-train rounds use the upward-rounded mean of best rounds in the last two configured chronological folds. Post-2022 never selects rounds. Fixed-cutoff assessment starts 3 January 2022; portfolio starts 3 January 2022. Full-train restores saved fitting settings/schema and fits all currently mature finite labels without CV. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
+train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits every development outcome. Observed price sessions and actual label ends purge training strictly before each external test. LightGBM fits all eligible training rows and uses external-test RMSE for early stopping; there is no inner validation tail. Cutoff/full-train rounds use the upward-rounded mean of best rounds in the last two configured chronological folds. Post-2022 never selects rounds. Fixed-cutoff assessment starts 3 January 2022; the portfolio cutoff is train.end_date and its start is derived as three days after it. Full-train restores saved fitting settings/schema and fits all currently mature finite labels without CV. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
 
 ## Portfolio backtest
 
 [portfolio.yml](../../configs/portfolio.yml) is the sole owner. The defaults allocate50% long/short,25% S&P and25% free cash. The three nonnegative shares must sum to one; invalid values are refused rather than renormalized. All paths start at100.
 
-allocation_frequency defaults to weekly; LS filters independently select daily/weekly/monthly. training_cutoff=2021-12-31 and start=2022-01-03 preserve the intended historical boundary. cash_rate=0.033 compounds only free cash over calendar days. momentum_window=126 and risk_window=63 require full past sessions. commission_bps=0, spread_bps=5 and sell_fee_bps=0.206 are a documented proportional proxy, not exact historical broker fees. read_chunksize controls bounded monthly feature loading.
+allocation_frequency defaults to weekly; LS filters independently select daily/weekly/monthly. The portfolio cutoff is train.end_date from modellling.yml and the CLI sets start to three days after it, so neither is configured here. cash_rate=0.033 compounds only free cash over calendar days. momentum_window=126 and risk_window=63 require full past sessions. commission_bps=0, spread_bps=5 and sell_fee_bps=0.206 are a documented proportional proxy, not exact historical broker fees. read_chunksize controls bounded monthly feature loading.
 
 There are no per-sleeve configs, leverage/target-vol/ERC knobs, Streamlit settings or ledger command. Allocation changes require a fresh Python backtest. See [portfolio](../modules/portfolio.md) for financing, missing-data and output contracts.
 
@@ -201,7 +207,7 @@ A multi-source feature becomes eligible only when all required source clocks hav
 
 ## Constants versus configuration
 
-Use configuration for research choices and operational tuning. Use [constants.py](../../src/constants/constants.py) for URLs, date formats, source series, taxonomy facts, model identifiers, GICS names, plausibility bounds, and other facts that should not vary between runs. Use the [table registry](./table-catalog.md) for table names, grain, and the extracted SEC forms in each table's `Resume.forms`.
+Use configuration for research choices and operational tuning. Use [constants.py](../../src/constants/constants.py) for URLs, date formats, source series, taxonomy facts, model identifiers, plausibility bounds, and other facts that should not vary between runs. The GICS sector and industry-group vocabulary lives with its owner in [vocabulary.py](../../src/utils/tickers_universe/vocabulary.py). Use the [table registry](./table-catalog.md) for table names, grain, and the extracted SEC forms in each table's `Resume.forms`.
 
 ## Related
 

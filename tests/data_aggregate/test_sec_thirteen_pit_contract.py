@@ -110,7 +110,7 @@ def test_broad_source_unit_gate_preserves_reported_usd(monkeypatch: pytest.Monke
     resources = SecThirteenResources(frames, basis, None, None)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._cfg = None, {"institutionals": {}}
-    monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args: iter(()))
+    monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr(step_module, "prepare_institutional_book_history", lambda *args, **kwargs: (compact, pd.DataFrame()))
     monkeypatch.setattr(step_module, "iter_institutional_books", lambda values, states: values)
     monkeypatch.setattr(step_module, "compute_institutional_feature_history", lambda values, **kwargs: values)

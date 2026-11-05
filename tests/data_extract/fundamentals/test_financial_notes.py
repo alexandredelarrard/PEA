@@ -1,5 +1,5 @@
 """Unit tests for the SEC Financial Statement & Notes extractor
-(src/data_extract/utils/fundamentals/fetch_financial_notes.py).
+(src/data_extract/utils/zips/fetch_financial_notes.py).
 
 Covers, with NO network:
   * the pure parse/join (num + text) incl. the dimn==0 / coreg / universe filters,
@@ -21,12 +21,17 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
-from src.constants.constants import MARKET_TIMEZONE
+import src.data_extract.utils.zips.fetch_financial_notes as fn
+import src.data_extract.utils.zips.zip_archive as zip_archive
+from src.constants.constants import MARKET_TIMEZONE, SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork
+from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Resume, Tables
+from src.utils.string import run_date
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+
+AAPL_SCOPE = ZipScope(tickers=["AAPL"], run_date=run_date(None), full=False)
 
 # --------------------------------------------------------------------------- #
 # Synthetic in-memory notes zip                                                  #
@@ -201,6 +206,65 @@ def test_read_notes_empty_when_universe_disjoint(zip_path):
     assert num.empty and txt.empty
 
 
+_PRIMARY, _VARIANT = SEC_NET_PENSION_LIABILITY_TAGS
+_PBO = "DefinedBenefitPlanBenefitObligation"
+_PRE_COLS = ["adsh", "report", "line", "stmt", "inpth", "tag", "version", "prole", "plabel", "negating"]
+HWM = "0000004281-22-000004"  # variant on the balance sheet, primary only on a footnote (OPEB-only)
+IBM = "0000051143-20-001334"  # primary on the balance sheet, variant only on a footnote
+
+
+def _net_liability_zip(path: Path, pre: list[tuple[str, str, str]] | None) -> Path:
+    """Notes zip with undimensioned net-liability and PBO rows on two accessions; `pre` = (adsh, tag, stmt) rows, None = no pre.tsv."""
+    sub = [
+        "\t".join(_SUB_COLS),
+        *(_row(_SUB_COLS, adsh=a, cik="320193", form="10-K", period="20211231", fy="2021", fp="FY", filed="20220201") for a in (HWM, IBM)),
+    ]
+    num = ["\t".join(_NUM_COLS)]
+    for adsh in (HWM, IBM):
+        for tag, value in ((_PRIMARY, 153), (_VARIANT, 771), (_PBO, 5000)):
+            num.append(_row(_NUM_COLS, adsh=adsh, tag=tag, ddate="20211231", qtrs="0", uom="USD", dimn="0", value=value))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("sub.tsv", "\n".join(sub))
+        z.writestr("num.tsv", "\n".join(num))
+        z.writestr("txt.tsv", "\t".join(_TXT_COLS))
+        if pre is not None:
+            rows = ["\t".join(_PRE_COLS)] + [_row(_PRE_COLS, adsh=a, tag=t, stmt=s) for a, t, s in pre]
+            z.writestr("pre.tsv", "\n".join(rows))
+    return path
+
+
+def test_net_liability_tags_kept_only_when_on_the_balance_sheet(tmp_path):
+    pre = [
+        (HWM, _VARIANT, "BS"),  # HWM: variant is the balance-sheet line
+        (HWM, _PRIMARY, ""),  # primary is an OPEB-only footnote line
+        (HWM, _PBO, ""),
+        (IBM, _PRIMARY, "BS"),  # IBM: primary is the balance-sheet line
+        (IBM, _VARIANT, "CF"),
+    ]
+    num, _ = fn._read_notes(_net_liability_zip(tmp_path / "2022q1_notes.zip", pre), IDENTITY, {"AAPL"})
+    kept = {(r.adsh, r.tag) for r in num.itertuples()}
+    assert kept == {(HWM, _VARIANT), (HWM, _PBO), (IBM, _PRIMARY), (IBM, _PBO)}
+    print("\n=== SANITY: net-liability tags need a balance-sheet presentation ===")
+    print(f"  kept = {sorted(kept)}")
+    print("  -> HWM footnote-only primary dropped, IBM balance-sheet primary kept, PBO untouched.")
+
+
+def test_net_liability_tags_dropped_with_warning_when_pre_is_missing(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger=fn.logger.name):
+        num, _ = fn._read_notes(_net_liability_zip(tmp_path / "2022q1_notes.zip", None), IDENTITY, {"AAPL"})
+    assert set(num["tag"]) == {_PBO} and len(num) == 2
+    assert "pre.tsv" in caplog.text and "2022q1_notes.zip" in caplog.text
+    print("\n=== SANITY: pre.tsv missing ===")
+    print(f"  tags kept = {sorted(set(num['tag']))}; warning logged = {'pre.tsv' in caplog.text}")
+
+
+def test_on_balance_sheet_accepts_a_column_less_empty_num() -> None:
+    out = fn._on_balance_sheet(pd.DataFrame(), pd.DataFrame(), "2022q1_notes.zip")
+    assert out.empty
+    print("\n=== SANITY: header-only num.tsv ===")
+    print("  a column-less empty num frame passes through without a KeyError. Validated.")
+
+
 def test_join_num_drops_nan_value():
     sub_meta = pd.DataFrame(
         {
@@ -242,13 +306,13 @@ def test_generate_periods_has_quarterly_and_recent_monthly():
 def test_notes_periods_uses_scrape_when_available(monkeypatch):
     fake = ["2009q1", "2020q3", "2025_07", "2026_06"]
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: fake)
-    got = fn._notes_periods(cast(Any, None), years_history=3, today=pd.Timestamp("2026-07-19"))
+    got = fn.notes_periods(cast(Any, None), years_history=3, today=pd.Timestamp("2026-07-19"))
     assert got == ["2025_07", "2026_06"]  # 2009/2020 outside 3y window
 
 
 def test_notes_periods_falls_back_to_generator(monkeypatch):
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: None)
-    got = fn._notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))
+    got = fn.notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))
     assert got and all(fn._period_year(p) >= 2024 for p in got)
 
 
@@ -398,7 +462,7 @@ def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path
     )
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: pytest.fail("metadata repair must not enter extraction"))
 
-    assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15, repair_availability=True) == 0
+    assert fn.repair_notes_availability(context, tmp_path) == 0
     assert repaired == [(period, date(2021, 9, 13), True)]
     print("\n=== SANITY CHECK: converged notes metadata repair ===")
     print("  an already-ingested August 2021 period is relabelled September 13 without a ZIP reparse. Validated.")
@@ -416,7 +480,6 @@ def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monke
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: _work([]))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(
         fn,
         "stored_period_clock",
@@ -424,7 +487,7 @@ def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monke
     )
 
     with pytest.raises(ValueError, match="conflicting stored available_at values"):
-        fn.fetch_financial_notes(context, ["AAPL"], years_history=15)
+        fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period])
 
     print("\n=== SANITY CHECK: converged notes archive clock ===")
     print("  a fully ingested period still validates its immutable stored archive clock before the fast-path skip. Validated.")
@@ -479,14 +542,13 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
 
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
-    monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
+    monkeypatch.setattr(zip_archive, "ensure_zip", lambda *args, **kwargs: path)
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), txt.copy()))
 
-    assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15) == 2
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period]) == 2
     assert [table for table, _ in saved] == [fn.Tables.notes_num, fn.Tables.notes_text]
     assert all(frame["available_at"].eq(archive_date).all() for _, frame in saved)
 
@@ -536,14 +598,35 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
-    monkeypatch.setattr(fn, "ensure_zip", download)
+    monkeypatch.setattr(zip_archive, "ensure_zip", download)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), pd.DataFrame()))
 
-    assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15) == 1
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period]) == 1
     assert saved[0]["available_at"].iloc[0] == date(2026, 10, 15)
     print("\n=== SANITY CHECK: newly downloaded notes ZIP ===")
     print("  the completed download day in New York wins over the ZIP cache's older file timestamp. Validated.")
+
+
+def test_net_pension_liability_tags_kept_only_undimensioned_and_without_coreg() -> None:
+    liability_tags = list(SEC_NET_PENSION_LIABILITY_TAGS)
+    cols = ["adsh", "tag", "dimn", "coreg"]
+    rows = [
+        ("A", liability_tags[0], 0, ""),  # keep
+        ("A", liability_tags[1], 0, ""),  # keep
+        ("A", liability_tags[0], 1, ""),  # drop: dimension
+        ("A", liability_tags[1], 2, ""),  # drop: dimension
+        ("A", liability_tags[0], 0, "SUBSID"),  # drop: co-registrant
+        ("A", liability_tags[1], 0, "SUBSID"),  # drop: co-registrant
+        ("B", liability_tags[0], 0, ""),  # drop: non-universe filing
+    ]
+    chunk = pd.DataFrame(rows, columns=cols)
+    kept = fn._consolidated_rows(chunk, {"A"}, fn._NOTES_NUM_TAGS)
+    assert kept.tolist() == [True, True, False, False, False, False, False]
+    assert set(chunk.loc[kept, "tag"]) == set(liability_tags)
+
+    print("\n=== SANITY: net pension liability tags ===")
+    print(f"  kept rows = {int(kept.sum())} of {len(chunk)} (dimn==0, no coreg, universe filing only)")
+    print("  -> both recognized net-liability tags are curated; dimension/coreg/non-universe rows are dropped.")

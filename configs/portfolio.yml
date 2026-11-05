@@ -1,12 +1,11 @@
 # Fixed capital budgets; no debt or automatic allocation optimizer.
 portfolio:
-  training_cutoff: "2021-12-31"
-  start: "2022-01-03"
   end: null
   allocation:
-    long_short: 0.50
-    sp500: 0.25
-    cash: 0.25
+    long_short: 0.75
+    sp500: 0.2
+    cash: 0.05
+
   allocation_frequency: weekly
   cash_rate: 0.033
   momentum_window: 126

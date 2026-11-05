@@ -159,8 +159,16 @@ def test_substep_price_fields_are_declared_and_valid():
         "mcap_pit",
     }
     # Short-flow returns retain close_total; supported valuation and counts come from price.
-    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "close_total", "volume", "close_pit", "shares_outstanding_pit", "mcap_pit"}
-    assert set(StepCubeSecThirteen._FIELDS) == {"close_split", "close_pit", "shares_outstanding_pit", "mcap_pit"}
+    assert set(StepCubeInstitutionals._FIELDS) == {
+        "close_split",
+        "close_total",
+        "volume",
+        "close_pit",
+        "shares_outstanding_pit",
+        "mcap_pit",
+        "security_basis",
+    }
+    assert set(StepCubeSecThirteen._FIELDS) == {"close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
     # what the total-return series is for. That is why the exemption above stays a named

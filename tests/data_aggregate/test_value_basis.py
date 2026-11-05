@@ -16,6 +16,7 @@ import logging
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.quotes import period_close
 from src.data_aggregate.utils.sec_thirteen.value_basis import (
     ABSTAINED,
     DIVIDED,
@@ -25,7 +26,7 @@ from src.data_aggregate.utils.sec_thirteen.value_basis import (
     nullable_value_to_daily,
     repair_value_basis,
 )
-from src.utils.price.levels import _period_close, as_traded_close
+from src.utils.price.levels import as_traded_close
 
 PERIOD = pd.Timestamp("2021-12-31")
 CLOSE = 336.0
@@ -638,7 +639,7 @@ def test_shared_as_traded_quote_restores_split_and_level() -> None:
     splits = pd.DataFrame({"ticker": ["AAA"], "date": [idx[2]], "value": [2.0]})
     quotes = as_traded_close(close, level, splits)
     assert quotes["AAA"].tolist() == [100.0, 100.0, 100.0]
-    found = _period_close(quotes, pd.Series(pd.to_datetime(["2019-12-31", "2020-01-04", "2020-01-20"])), 7)
+    found = period_close(quotes, pd.Series(pd.to_datetime(["2019-12-31", "2020-01-04", "2020-01-20"])), 7)
     assert pd.isna(found.loc[(pd.Timestamp("2019-12-31"), "AAA")])
     assert found.loc[(pd.Timestamp("2020-01-04"), "AAA")] == 100
     assert pd.isna(found.loc[(pd.Timestamp("2020-01-20"), "AAA")])

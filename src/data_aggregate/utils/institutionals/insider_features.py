@@ -17,7 +17,6 @@ from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.institutionals.insider_capital import normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
     FLAG_PCT_SHARES_OUTSTANDING,
@@ -111,7 +110,6 @@ def build_insider_feature_panel(
         _log.warning("Saved mcap_pit is unsupported -> active size-scaled insider contributions remain unknown; rebuild prices if evidence changed.")
 
     # Keep execution USD intact while preparing a separate action-date contribution.
-    df_trades = df_trades.assign(declared_units_known=df_position_trades.iloc[: len(df_trades)]["declared_units_known"].to_numpy())
     df_trades = _action_values(df_trades, df_mcap, frames, coverage.identity_intervals)
     # Reconstruct positions with disclosed shares even when execution dollars are unknown.
     df_buys = df_trades[df_trades["code"].eq("P")].copy()
@@ -525,43 +523,48 @@ def _management_uncertainty(activity: pd.DataFrame, idx: pd.DatetimeIndex) -> pd
 
 
 def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: PriceFrames, identity_intervals: pd.DataFrame | None) -> pd.DataFrame:
-    """Attach exact-session capital and intensity without changing clean execution dollars or public intervals."""
-    df_trades = normalize_trade_capital(trades, mcap, pd.DatetimeIndex(frames.trading_index), None)
+    """Attach `action_value = value / mcap_pit` on each trade's action session; clean execution dollars are unchanged.
+
+    The session is the last trading day at or before the action, at most 7 days earlier, with the action already
+    public; a non-session action or a classed title also needs one continuous canonical identity across both dates.
+    """
+    df_trades = trades.copy()
     df_trades["action_session"] = pd.NaT
     df_trades["action_mcap"] = np.nan
     df_trades["action_value"] = np.nan
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
-    if df_trades.empty or mcap is None or mcap.empty or idx.empty:
+    if df_trades.empty or mcap is None or mcap.empty or idx.empty or frames.close_pit is None:
         return df_trades
+
+    # Select the action session on the authoritative calendar.
     action = pd.to_datetime(df_trades["transaction_day"], errors="coerce").dt.normalize()
+    public_day = pd.to_datetime(df_trades["visible_from"], errors="coerce").dt.normalize()
     positions = idx.searchsorted(pd.DatetimeIndex(action), side="right") - 1
-    chosen = pd.Series(idx.take(np.clip(positions, 0, len(idx) - 1)), index=df_trades.index).where(action.notna() & (positions >= 0))
+    rows = np.clip(positions, 0, len(idx) - 1)
+    chosen = pd.Series(idx.take(rows), index=df_trades.index).where(action.notna() & (positions >= 0))
     df_trades["action_session"] = chosen
+    supported = chosen.notna() & (action - chosen).le(pd.Timedelta(days=7)) & action.le(public_day)
+
+    # Read the saved cap and as-traded quote on that session; both must be positive.
     columns = mcap.columns.get_indexer(pd.Index(df_trades["ticker"]))
-    capital = mcap.reindex(index=idx).to_numpy(dtype=float)[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
-    supported = (
-        df_trades["cap_status"].eq("supported")
-        & chosen.notna()
-        & (columns >= 0)
-        & np.isfinite(capital)
-        & (capital > 0)
-        & df_trades["declared_units_known"].fillna(False)
-    )
-    if frames.close_pit is None:
-        return df_trades
-    quotes = frames.close_pit.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)
-    price = quotes[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
-    supported &= np.isfinite(price) & (price > 0)
-    needs_identity = action.ne(chosen) | security_class(df_trades["security_title"]).ne("COMMON")
+    capital = mcap.reindex(index=idx).to_numpy(dtype=float)[rows, np.maximum(columns, 0)]
+    price = frames.close_pit.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)[rows, np.maximum(columns, 0)]
+    supported &= (columns >= 0) & np.isfinite(capital) & (capital > 0) & np.isfinite(price) & (price > 0)
+
+    # A non-session action or a classed title needs one continuous canonical identity.
+    klass = security_class(df_trades["security_title"])
+    needs_identity = action.ne(chosen) | klass.ne("COMMON")
     continuous = pd.Series(False, index=df_trades.index)
     if needs_identity.any():
         continuous.loc[needs_identity] = _action_identity(df_trades.loc[needs_identity], chosen.loc[needs_identity], identity_intervals)
-    supported &= action.eq(chosen) | continuous
-    supported &= security_class(df_trades["security_title"]).eq("COMMON") | continuous
+    supported &= (action.eq(chosen) | continuous) & (klass.eq("COMMON") | continuous)
+
+    # Divide clean execution dollars by the session cap.
     values = pd.to_numeric(df_trades["value"], errors="coerce")
     supported &= np.isfinite(values) & values.gt(0)
     df_trades["action_mcap"] = pd.Series(capital, index=df_trades.index).where(supported)
-    contribution = values / df_trades["action_mcap"]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        contribution = values / df_trades["action_mcap"]
     df_trades["action_value"] = contribution.where(np.isfinite(contribution))
     return df_trades
 

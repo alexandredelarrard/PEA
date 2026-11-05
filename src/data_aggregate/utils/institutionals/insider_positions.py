@@ -7,34 +7,31 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
-from src.utils.price.levels import rebase_security_quantities
+from src.utils.price.levels import convert_quantities, lookup_asof
 
 
-def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.DataFrame:
-    """Rebase transaction-day shares and holdings together; preserve clean source execution USD.
+def position_units(trades: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:
+    """Put unclassed transaction-day shares and holdings in terminal units, `q * F_T / F_d`; keep source execution USD.
 
-    Unknown class/event evidence keeps source quantities for scale-free same-day ratios,
-    while marking their cross-day and cross-account comparability unsupported.
+    `df_basis` is the saved forward basis F (`security_basis`). Class-titled rows and rows without F keep source
+    quantities for scale-free same-day ratios, marked unsupported for cross-day and cross-account comparisons.
     """
     df_rows = trades.copy()
     df_rows["klass"] = security_class(df_rows["security_title"])
-    df_rows["declared_units_known"] = False
-    if basis is None:
-        df_rows["units_known"] = False
+    df_rows["units_known"] = False
+    if df_basis is None or df_basis.empty:
         return df_rows
-    declared = basis.events.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
-    df_rows["declared_units_known"] = declared.gt(0) & np.isfinite(declared) & df_rows["transaction_day"].notna()
-    target = pd.Series(basis.target_date, index=df_rows.index)
-    factor = rebase_security_quantities(
-        basis.events, pd.Series(1.0, index=df_rows.index), df_rows["ticker"], df_rows["transaction_day"], target, declared
-    )
-    factor = factor.where(df_rows["klass"].eq("COMMON"))
-    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna()
+
+    # F on each transaction day and on each ticker's last saved day, carried over the ticker's missing price rows.
+    df_forward = df_basis.sort_index().ffill()
+    basis_from = lookup_asof(df_forward, df_rows["ticker"], df_rows["transaction_day"])
+    factor = convert_quantities(1.0, basis_from, df_rows["ticker"].map(df_forward.iloc[-1]))
+
+    # Convert only unclassed common rows with a known basis.
+    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna() & df_rows["klass"].eq("COMMON")
     for column in ("shares_n", "shares_owned_after"):
-        rebased = df_rows[column] * factor
-        df_rows[column] = rebased.where(df_rows["units_known"], df_rows[column])
+        df_rows[column] = (df_rows[column] * factor).where(df_rows["units_known"], df_rows[column])
     return df_rows
 
 

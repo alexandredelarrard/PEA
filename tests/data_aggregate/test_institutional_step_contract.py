@@ -220,7 +220,8 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     days = pd.bdate_range("2024-01-02", periods=3, name="date").as_unit("ns")
     prices = pd.MultiIndex.from_product([days, names], names=["date", "ticker"]).to_frame(index=False)
     sqlite_store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0, close_total=100.0, volume=1_000.0, level_factor=1.0,
-                                                             close_pit=100.0, shares_outstanding_pit=float("nan"), mcap_pit=float("nan")))
+                                                             close_pit=100.0, shares_outstanding_pit=float("nan"), mcap_pit=float("nan"),
+                                                             security_basis=1.0))
     history = pd.DataFrame(
         [
             row(
@@ -253,11 +254,12 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
         expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]")
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-        return df_insider.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
+        cleaned = df_insider.assign(day=pd.to_datetime(df_insider["filing_date"]), shares_n=df_insider["shares"])
+        return cleaned, {"source_first": pd.Series(dtype="datetime64[ns]")}
 
-    def rebase(source: pd.DataFrame, basis: QuantityBasis) -> pd.DataFrame:
+    def rebase(source: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:
         stages.append("rebase")
-        assert basis.target_date == days[-1]
+        assert df_basis is not None and pd.DatetimeIndex(df_basis.index).max() == days[-1]
         return source
 
     def panel(frames: PriceFrames, field: str, value: float) -> pd.DataFrame:

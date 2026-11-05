@@ -15,13 +15,13 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.inputs import load_insider_role_evidence
-from src.data_aggregate.utils.institutionals.insider_capital import normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_features import (
     CLUSTER_MIN,
     EMISSION,
     INSIDER_FLOOR,
     TEN_B5_1_FLOOR,
     InsiderCoverage,
+    _action_values,
     _owner_surprise,
     _unpriced_masks,
 )
@@ -1543,38 +1543,32 @@ def test_action_cap_market_evidence_does_not_change_non_cap_features() -> None:
     print("SANITY: nonfinite capitalization affects only cap-dependent fields; all other values/nulls remain equal.")
 
 
-def test_action_cap_prepared_lineage_and_finite_execution() -> None:
+def test_action_value_is_one_value_over_saved_cap_on_the_action_session() -> None:
     calendar = pd.bdate_range("2024-03-01", "2024-03-15")
     trades = pd.DataFrame(
         {
-            "ticker": ["AAA", "AAA"],
-            "transaction_day": pd.to_datetime(["2024-03-09", "2024-03-09"]),
-            "visible_from": pd.to_datetime(["2024-03-11", "2024-03-11"]),
-            "value": [1e6, np.inf],
+            "ticker": ["AAA", "AAA", "AAA", "AAA"],
+            "transaction_day": pd.to_datetime(["2024-03-08", "2024-03-08", "2024-03-09", "2024-03-12"]),
+            "visible_from": pd.to_datetime(["2024-03-11", "2024-03-11", "2024-03-11", "2024-03-11"]),
+            "security_title": ["Common Stock"] * 4,
+            "value": [1e6, np.inf, 1e6, 1e6],
         }
     )
     caps = pd.DataFrame(200e6, index=calendar, columns=["AAA"])
-    history = pd.DataFrame(
-        {
-            "ticker": ["AAA", "AAA", "AAA"],
-            "as_of": pd.to_datetime(["2024-01-02", "2024-03-05", "2024-03-09"]),
-            "sharesOutstanding": [1e6, np.nan, 9e6],
-        }
-    )
-    prepared = normalize_trade_capital(trades, caps, calendar, history)
+    frames = make_frames(calendar, close_pit=pd.DataFrame(10.0, index=calendar, columns=["AAA"]), mcap_pit=caps)
 
-    assert prepared["cap_session"].eq(pd.Timestamp("2024-03-08")).all()
-    assert prepared["cap_price_date"].eq(pd.Timestamp("2024-03-08")).all()
-    assert prepared["cap_share_as_of"].eq(pd.Timestamp("2024-01-02")).all()
-    assert prepared.loc[0, "value_mcap"] == pytest.approx(0.005)
-    assert prepared.loc[0, "cap_status"] == "supported"
-    assert prepared.loc[1, "cap_status"] == "unsupported_execution"
-    assert pd.isna(prepared.loc[1, "value_mcap"])
-    pd.testing.assert_series_equal(prepared["value"], trades["value"])
-    overflow = normalize_trade_capital(trades.assign(value=1e308), caps * 1e-308 / 200e6, calendar, history)
-    assert overflow["value_mcap"].isna().all()
-    assert overflow["cap_status"].eq("unsupported_ratio").all()
-    print("SANITY: prepared ratios retain exact prior-session/public-share lineage, reject infinite clean dollars and preserve raw amounts.")
+    valued = _action_values(trades, caps, frames, None)
+
+    assert valued["action_session"].iloc[:3].eq(pd.Timestamp("2024-03-08")).all()
+    assert valued.loc[0, "action_value"] == pytest.approx(0.005)
+    assert valued.loc[1:, "action_value"].isna().all()
+    pd.testing.assert_series_equal(valued["value"], trades["value"])
+    overflow = _action_values(trades.assign(value=1e308), caps * 1e-308 / 200e6, frames, None)
+    assert overflow["action_value"].isna().all()
+    print(
+        "SANITY: $1M over the saved $200M session cap is .005; infinite dollars, a weekend action without a proved identity "
+        "and a not-yet-public action stay NULL; overflow is NULL and clean dollars are unchanged."
+    )
 
 
 @pytest.mark.parametrize("invalid_leg", ["close_pit", "mcap_pit"])

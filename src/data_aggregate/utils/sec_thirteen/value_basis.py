@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.utils.price.levels import _period_close
+from src.data_aggregate.utils.common.quotes import period_close
 
 logger = logging.getLogger(__name__)
 KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9
@@ -30,7 +30,7 @@ def prepare_public_value_quotes(close: pd.DataFrame | None, value_basis: Mapping
     first = pd.Timestamp(close.index.min()).normalize()
     last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=max_age_days)
     periods = pd.Series(pd.date_range(first, last))
-    return _period_close(close, periods, max_age_days)
+    return period_close(close, periods, max_age_days)
 
 
 def repair_value_basis(
@@ -68,7 +68,7 @@ def repair_value_basis(
     shares = pd.to_numeric(df_out["shares"], errors="coerce").astype("float64")
     quote = pd.Series(np.nan, index=df_out.index, dtype=float)
     if period_quotes is None and close is not None and not close.empty and "ticker" in df_out:
-        period_quotes = _period_close(close, df_out["period"], max_price_age_days)
+        period_quotes = period_close(close, df_out["period"], max_price_age_days)
     if period_quotes is not None and "ticker" in df_out:
         quote[:] = period_quotes.reindex(pd.MultiIndex.from_frame(df_out[["period", "ticker"]])).to_numpy()
     common = df_out["position_type"].astype(str).str.lower().eq("common") if "position_type" in df_out else pd.Series(True, index=df_out.index)
@@ -163,7 +163,7 @@ def repair_value_basis(
         market_value = quantity * quote
         market_value = market_value.where(eligible & quantity.gt(0) & np.isfinite(quantity) & np.isfinite(market_value))
         estimates[column] = eligible & uncertain & market_value.notna()
-        
+
         # Estimates follow the raw common-holding unit decision and never vote for it.
         df_out[column] = df_out[column].mask(eligible & uncertain, market_value)
         df_out[f"value_basis_{label}reconstructed"] = estimates[column]

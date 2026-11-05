@@ -8,16 +8,15 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from collections.abc import Callable
 
 from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.common.quotes import period_close
 from src.utils.names import clean_person_name
-from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import _period_close, rebase_security_quantities
 from src.utils.string import pad_cik
 
 _log = logging.getLogger(__name__)
@@ -111,7 +110,7 @@ def clean_officer_title(value: object) -> str:
         return ""
     title = value.replace(".", " ").strip()
     title = re.sub(r",\s*", ", ", title)
-    title = re.sub(r'\([^)]*\)', '', title)
+    title = re.sub(r"\([^)]*\)", "", title)
     title = re.sub(r"\bCHIEF\s+EXEC\b(?=\s+OFF(?:ICER|CR|R)\b)", "Chief Executive", title, flags=re.I)
     title = re.sub(r"\bCHIEF\s+EXEC\b(?!\s*UTIVE)", "Chief Executive Officer", title, flags=re.I)
     return re.sub(r"\s+", " ", title)
@@ -170,9 +169,11 @@ def normalize_insider_dates(df_rows: pd.DataFrame) -> pd.DataFrame:
 
     return df_rows
 
-def _clean_map_dict(df_serie : pd.Series, clean_func: Callable) -> pd.Series:
+
+def _clean_map_dict(df_serie: pd.Series, clean_func: Callable) -> pd.Series:
     dict_values = {v: clean_func(v) for v in df_serie.dropna().unique()}
     return df_serie.map(dict_values).fillna("")
+
 
 def _canonical_inputs(df_insider: pd.DataFrame, df_roles: pd.DataFrame | None) -> pd.DataFrame:
     """Clean shared downstream fields and enrich blank titles from prior public identity evidence."""
@@ -191,7 +192,7 @@ def _canonical_inputs(df_insider: pd.DataFrame, df_roles: pd.DataFrame | None) -
         values = pd.to_numeric(df_rows.get(column, pd.Series(np.nan, index=df_rows.index)), errors="coerce")
         df_rows[column + "_raw"] = df_rows.get(column, values)
         df_rows[column] = values.where(np.isfinite(values))
-    
+
     for column in ("is_director", "is_officer", "is_ten_pct_owner", "is_10b5_1"):
         values = cast(pd.Series, df_rows.get(column, pd.Series(np.nan, index=df_rows.index))).replace({"Y": 1, "N": 0, "true": 1, "false": 0})
         df_rows[column] = pd.to_numeric(values, errors="coerce").where(lambda x: x.isin([0, 1]))
@@ -207,7 +208,7 @@ def _canonical_inputs(df_insider: pd.DataFrame, df_roles: pd.DataFrame | None) -
 
 def _fill_prior_roles(df_rows: pd.DataFrame, df_roles: pd.DataFrame | None) -> pd.DataFrame:
     """Resolve missing job claims from prior issuer/person proof; retain exclusion/uncertainty barriers."""
-    
+
     keys = ["ticker", "issuer_cik", "owner_cik"]
     known_identity = df_rows["issuer_cik"].ne("") & df_rows["owner_cik"].ne("")
 
@@ -223,7 +224,7 @@ def _fill_prior_roles(df_rows: pd.DataFrame, df_roles: pd.DataFrame | None) -> p
     conflict = df_prior.groupby([*keys, "role_as_of"], dropna=False)["officer_title_clean"].transform("nunique").gt(1)
     df_prior.loc[conflict, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting titles"]
     df_prior = df_prior.drop_duplicates([*keys, "role_as_of"])
-    
+
     # 2. Append proxy roles from df_roles if available - already cleaned from load_insider_role_evidence
     if df_roles is not None and not df_roles.empty:
         df_proxy = df_roles.copy()
@@ -233,12 +234,7 @@ def _fill_prior_roles(df_rows: pd.DataFrame, df_roles: pd.DataFrame | None) -> p
         df_prior = pd.concat([df_prior, df_proxy[df_prior.columns]], ignore_index=True)
 
     # 3. Check eligibility
-    eligible = (
-        df_rows["officer_title_clean"].map(role_needs_evidence) & 
-        df_rows["is_officer"].eq(1) & 
-        known_identity & 
-        df_rows["role_as_of"].notna()
-    )
+    eligible = df_rows["officer_title_clean"].map(role_needs_evidence) & df_rows["is_officer"].eq(1) & known_identity & df_rows["role_as_of"].notna()
     if not eligible.any() or df_prior.empty:
         return df_rows
 
@@ -251,7 +247,7 @@ def _fill_prior_roles(df_rows: pd.DataFrame, df_roles: pd.DataFrame | None) -> p
         df_prior["role"].eq(OTHER_OFFICER) & mapped.ne(OTHER_OFFICER)
     )
     df_prior = df_prior.sort_values("role_as_of").drop_duplicates([*keys, "role_as_of"], keep="first")
-    
+
     # 5. Merge asof and update rows
     df_match = pd.merge_asof(
         df_rows.loc[eligible, [*keys, "role_as_of"]].reset_index().sort_values("role_as_of"),
@@ -272,7 +268,7 @@ def _fill_prior_roles(df_rows: pd.DataFrame, df_roles: pd.DataFrame | None) -> p
     for col in ("role", "officer_title_clean", "role_source"):
         df_rows.loc[supported_match.index, col] = supported_match[col]
     df_rows.loc[supported_match.index, "role_as_of"] = supported_match["evidence_day"]
-    
+
     return df_rows
 
 
@@ -358,7 +354,6 @@ def clean_transactions(
     *,
     df_valuation_close: pd.DataFrame | None = None,
     df_roles: pd.DataFrame | None = None,
-    share_basis: ShareBasis | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Return priced common-stock P/S versions and diagnostics for unsupported evidence."""
 
@@ -373,7 +368,7 @@ def clean_transactions(
     for column in ("transaction_date", "original_submission_date"):
         diag["invalid_" + column + "s"] = int((df_trades[column + "_raw"].notna() & df_trades[column].isna()).sum())
     diag["date_fallback_rows"] = int(df_trades["reference_day_estimated"].sum())
-    
+
     # clean transactions
     df_trades, scope_counts = _scope_transactions(df_trades)
     diag.update(scope_counts)
@@ -386,7 +381,7 @@ def clean_transactions(
     df_trades = df_trades[~unsupported]
 
     # Apply quote checks and dated source evidence, retaining unpriced share claims.
-    df_trades, price_counts = _clean_trade_prices(df_trades, df_valuation_close, share_basis, PRICE_TOLERANCE, 7, None)
+    df_trades, price_counts = _clean_trade_prices(df_trades, df_valuation_close, PRICE_TOLERANCE, 7, None)
     diag.update(price_counts)
 
     # Report the same economic and filing-version counts after cleaning.
@@ -404,7 +399,7 @@ def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     # Capture source coverage and other account flows before the P/S scope cut.
     diag["source_first"] = df_trades.loc[df_trades["day"].notna()].groupby("ticker")["day"].min()
     diag["other_flows"] = _other_flow_versions(df_trades)
-    
+
     # Computed before the scope cut, which removes the derivative `M` leg of the package.
     df_trades["in_exercise_package"] = _exercise_packages(df_trades)
 
@@ -427,20 +422,20 @@ def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 def _other_flow_versions(df_trades: pd.DataFrame) -> pd.DataFrame:
     """Retain non-P/S account metadata and its matching amendment-cell visibility."""
-    
+
     df_flows = df_trades.loc[~df_trades["code"].isin(OPEN_MARKET_CODES)].copy()
     df_flows["visible_from"] = df_flows["day"]
     df_flows["visible_until"] = pd.NaT
     df_flows["version_known"] = False
     if df_flows.empty or "accession_number" not in df_trades:
         return df_flows
-    
+
     df_flows["version_known"] = df_flows["document_type"].isin(["3", "4", "5"]) & df_flows["accession_number"].notnull()
     df_key = _copy_key(df_trades, df_trades["price_per_share"])
     links, _ = _link_amendments(df_trades, df_key, require_unique=True)
     if links.empty:
         return df_flows
-    
+
     df_flows["version_known"] |= df_flows["accession_number"].isin(links.index)
     df_cells = df_key.loc[df_flows.index, ["accession_number", "day", *CELL_KEY]].copy()
     df_cells["transaction_day"] = _declared_action_cells(df_key, links).reindex(df_flows.index)
@@ -516,7 +511,6 @@ def account_other_flows(df_flows: pd.DataFrame, ticker: str, owner: str) -> pd.D
 def _clean_trade_prices(
     df_trades: pd.DataFrame,
     as_traded_quotes: pd.DataFrame | None,
-    share_basis: ShareBasis | None,
     price_tolerance: float,
     max_price_age_days: int,
     assessments: tuple[dict[str, object], ...] | None,
@@ -528,21 +522,11 @@ def _clean_trade_prices(
     # A filing-backed reference can estimate a price, never execution-time quantities or capital.
     ref = pd.Series(np.nan, index=df_trades.index, dtype=float)
     if as_traded_quotes is not None and not as_traded_quotes.empty:
-        quotes = _period_close(as_traded_quotes, df_trades["reference_day"], max_price_age_days)
+        quotes = period_close(as_traded_quotes, df_trades["reference_day"], max_price_age_days)
         lookup = pd.MultiIndex.from_arrays([df_trades["reference_day"], df_trades["ticker"]], names=["period", "ticker"])
         ref[:] = quotes.reindex(lookup).to_numpy()
         # An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
         ref = ref.where(security_class(df_trades["security_title"]).eq("COMMON"))
-        if share_basis is not None:
-            declared = share_basis.declared_units(df_trades["ticker"], df_trades["reference_day"], df_trades["security_title"])
-            ref *= rebase_security_quantities(
-                share_basis,
-                pd.Series(1.0, index=df_trades.index),
-                df_trades["ticker"],
-                df_trades["reference_day"],
-                df_trades["reference_day"],
-                declared,
-            )
 
     # Repair gross corruption and apply dated assessments in their original order.
     ratio = filed_price / ref.where(ref.gt(0))

@@ -49,7 +49,7 @@ from src.utils.step import Step
 
 
 class StepCubeInstitutionals(Step):
-    _FIELDS = ("close_split", "close_total", "volume", "close_pit", "shares_outstanding_pit", "mcap_pit")
+    _FIELDS = ("close_split", "close_total", "volume", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis")
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
@@ -128,7 +128,7 @@ class StepCubeInstitutionals(Step):
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(self._insider_panel(frames, quantity_basis, df_lines), "insider-trading")
+        merger.add(self._insider_panel(frames, df_lines), "insider-trading")
         merger.add(self._short_flow_panel(frames, df_lines, df_bars, quantity_basis), "short-flow")
         merger.add(self._ownership_panel(frames), "beneficial-ownership")
 
@@ -136,12 +136,7 @@ class StepCubeInstitutionals(Step):
         fields = [*INSIDER_EMISSION, *short_flow.EMISSION, *OWNERSHIP_EMISSION]
         return merger.to_long().reindex(columns=["date", "ticker", *(f"f_{name}" for name in fields)])
 
-    def _insider_panel(
-        self,
-        frames: PriceFrames,
-        quantity_basis: institutional_inputs.QuantityBasis,
-        identity_intervals: pd.DataFrame | None,
-    ) -> pd.DataFrame | None:
+    def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
@@ -152,25 +147,18 @@ class StepCubeInstitutionals(Step):
         df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
-        df_trades, diagnostics = clean_transactions(
-            df_insider=source.transactions, df_valuation_close=frames.close_pit, df_roles=df_roles, share_basis=quantity_basis.events
-        )
+        df_trades, diagnostics = clean_transactions(df_insider=source.transactions, df_valuation_close=frames.close_pit, df_roles=df_roles)
         if "source_first" not in diagnostics:
             return None
 
-        # get shares
-        df_shares_out = institutional_inputs.daily_share_quantities(
-            frames.shares_outstanding_pit, pd.DatetimeIndex(frames.trading_index), quantity_basis
-        )
-        df_mcap = frames.mcap_pit
-
+        # Put unclassed positions in terminal units through the saved basis; report source-day trades against the saved count.
         diagnostics["source_first"] = source.first_filed
         df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
-        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
-        report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
+        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), frames.security_basis)
+        report_oversized_positions(df_trades, frames.shares_outstanding_pit)
 
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
-        return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
+        return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)
 
     def _short_flow_panel(
         self,

@@ -5,13 +5,13 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, officer_role
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import basis_frame
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.test_insider_features import _frame, _peers, _txn
 
@@ -29,8 +29,8 @@ def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
         ),
     ]
     df_quotes = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2024-06-10"), 100.0, 10.0)}, index=idx)
-    df_clean, _ = clean_transactions(_frame(rows), df_valuation_close=df_quotes, share_basis=share_basis)
-    df_rebased = position_units(df_clean, QuantityBasis(share_basis, idx[-1]))
+    df_clean, _ = clean_transactions(_frame(rows), df_valuation_close=df_quotes)
+    df_rebased = position_units(df_clean, basis_frame(share_basis, ["AAA"], idx[-1]))
     df_before = df_rebased.loc[df_rebased["transaction_day"].eq(pd.Timestamp("2024-06-07"))]
     assert df_before["shares_n"].tolist() == [50]
     assert df_before["shares_owned_after"].tolist() == [1050]
@@ -55,38 +55,31 @@ def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
     )
 
 
-def test_quantity_rebasing_requires_explicit_nonunitary_titles() -> None:
-    df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2024-06-10"]), "value": [0.5]})
-    policy = {
-        "AAA": {
-            "quote_units": {
-                "date": "2024-06-10",
-                "before": 2,
-                "after": 1,
-                "quoted_titles": ["American Depositary Shares"],
-                "ordinary_titles": ["Ordinary Shares"],
-            }
-        }
-    }
-    basis = QuantityBasis(ShareBasis(df_events, df_events, df_events, policy), pd.Timestamp("2024-06-11"))
+def test_single_class_split_converts_through_saved_basis_and_class_rows_keep_source_units() -> None:
+    # Saved forward basis F: AAA splits 10:1 on 2024-06-10; BBB's saved rows stop before the grid end.
+    idx = pd.bdate_range("2024-06-03", "2024-06-14")
+    df_basis = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2024-06-10"), 1.0, 10.0), "BBB": 1.0}, index=idx)
+    df_basis.loc[idx > pd.Timestamp("2024-06-12"), "BBB"] = np.nan
     df_trades = pd.DataFrame(
         {
-            "ticker": ["AAA"] * 3,
-            "transaction_day": pd.to_datetime(["2024-06-07"] * 3),
-            "security_title": ["Ordinary Shares", "American Depositary Shares", "Common Stock"],
-            "shares_n": [10.0] * 3,
-            "shares_owned_after": [100.0] * 3,
-            "value": [500.0] * 3,
+            "ticker": ["AAA", "AAA", "AAA", "BBB"],
+            "transaction_day": pd.to_datetime(["2024-06-07", "2024-06-11", "2024-06-07", "2024-06-12"]),
+            "security_title": ["Common Stock", "Common Stock", "Class B Common Stock", "Common Stock"],
+            "shares_n": [5.0, 50.0, 5.0, 7.0],
+            "shares_owned_after": [105.0, 1100.0, 105.0, 70.0],
+            "value": [500.0] * 4,
         }
     )
-    df_rebased = position_units(df_trades, basis)
-    assert df_rebased["shares_n"].tolist() == [5, 10, 10]
-    assert df_rebased["shares_owned_after"].tolist() == [50, 100, 100]
-    assert df_rebased["units_known"].tolist() == [True, True, False]
-    assert df_rebased["declared_units_known"].tolist() == [True, True, False]
-    pd.testing.assert_series_equal(df_rebased["value"], df_trades["value"])
+
+    df_units = position_units(df_trades, df_basis)
+
+    assert df_units["shares_n"].tolist() == [50.0, 50.0, 5.0, 7.0]
+    assert df_units["shares_owned_after"].tolist() == [1050.0, 1100.0, 105.0, 70.0]
+    assert df_units["units_known"].tolist() == [True, True, False, True]
+    pd.testing.assert_series_equal(df_units["value"], df_trades["value"])
     print(
-        "SANITY: declared ordinary/ADS titles apply0.5/1 quantity conversion once; ambiguous common title stays unverified and all executionUSD is unchanged."
+        "SANITY: a pre-split common trade converts 5->50 by F_T/F_d=10; the class-B row keeps its source 5 shares (units unknown); "
+        "a ticker whose saved basis ends early converts at its last saved F; execution USD unchanged."
     )
 
 
@@ -591,42 +584,32 @@ def test_action_cap_economic_date_amendment_preserves_public_prefix_and_expiry()
     )
 
 
-@pytest.mark.parametrize("case", ["known", "absent", "ambiguous"])
-def test_action_cap_requires_known_source_security_units(case: str) -> None:
+@pytest.mark.parametrize("case", ["known", "absent"])
+def test_action_cap_requires_the_saved_security_basis_and_cap(case: str) -> None:
+    # Saved price-part legs: an unsupported-units ticker (APTV/CRH) has neither F nor mcap_pit.
     idx = pd.bdate_range("2024-06-03", "2024-06-14")
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    shares = pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2024-06-03")], "sharesOutstanding": [10_000_000.0]})
-    events = pd.DataFrame(columns=["ticker", "date", "value"])
-    policy = {
-        "AAA": {
-            "quote_units": {
-                "date": "2024-06-10",
-                "before": 2,
-                "after": 1,
-                "quoted_titles": ["American Depositary Shares"],
-                "ordinary_titles": ["Ordinary Shares"],
-            }
-        }
-    }
-    basis = None if case == "absent" else ShareBasis(events, events, events, policy if case == "ambiguous" else {})
+    saved = 1.0 if case == "known" else np.nan
+    frames = make_frames(
+        idx,
+        _peers(),
+        close_split=close,
+        mcap_pit=pd.DataFrame(1e9 * saved, index=idx, columns=["AAA"]),
+        security_basis=pd.DataFrame(saved, index=pd.date_range("2024-01-01", idx.max()), columns=["AAA"]),
+    )
     rows = [
         _source_row(),
         _txn(accession_number="unit-control", filing_date="2024-06-05", transaction_date="2024-06-04", shares=10_000, shares_owned_after=110_000),
     ]
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close),
-        _frame(rows),
-        shares_out_history=shares,
-        df_valuation_close=close,
-        share_basis=basis,
-        coverage=InsiderCoverage.from_availability(None, idx.max()),
+        frames, _frame(rows), df_valuation_close=close, coverage=InsiderCoverage.from_availability(None, idx.max())
     ).set_index("date")
     value = panel.loc["2024-06-05", "f_ic_insider_buy_value_mcap_60d"]
     assert value == pytest.approx(0.001) if case == "known" else pd.isna(value)
     assert panel.loc["2024-06-04", "f_ic_insider_buy_value_mcap_60d"] == 0
     assert panel.loc["2024-06-05", "f_ic_insider_distinct_buyers_120d"] == 1
     print(
-        f"SANITY: {case} source-unit evidence gates action capital alone; ordinary empty-event basis proves .001, unavailable/ambiguous units stay NULL without erasing the buyer."
+        f"SANITY: {case} saved basis/cap: $1M on a $1B saved cap gives .001; without a saved F and cap the value stays NULL and the buyer still counts."
     )
 
 

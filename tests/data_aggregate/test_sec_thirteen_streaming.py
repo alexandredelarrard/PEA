@@ -149,10 +149,10 @@ def test_streamed_value_repair_reuses_exact_age_bounded_quotes() -> None:
     periods = pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-12", "2024-05-18", "2024-05-25", "2024-05-28"])
     expected = [clean_public_holdings(raw.assign(period=period), close, policy) for period in periods]
 
-    with patch.object(values, "_period_close", wraps=values._period_close) as lookup:
+    with patch.object(values, "period_close", wraps=values.period_close) as lookup:
         quotes = values.prepare_public_value_quotes(close, policy)
         assert lookup.call_count == 1
-    with patch.object(values, "_period_close", side_effect=AssertionError("quote history was rebuilt per book")):
+    with patch.object(values, "period_close", side_effect=AssertionError("quote history was rebuilt per book")):
         actual = [clean_public_holdings(raw.assign(period=period), close, policy, period_quotes=quotes) for period in periods]
 
     for before, after in zip(expected, actual, strict=True):

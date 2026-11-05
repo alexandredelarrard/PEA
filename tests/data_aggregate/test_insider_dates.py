@@ -8,12 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, load_insider_transactions
+from src.data_aggregate.utils.institutionals.inputs import load_insider_transactions
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
 from src.data_store.schema import Tables
-from src.utils.price.adjustments import ShareBasis
-from tests.data_aggregate.insider_pit_reference import row, source_frame
+from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, row, source_frame
 from tests.data_aggregate.test_insider_features import _action_cap_inputs, _build_action_cap
 
 
@@ -283,9 +282,7 @@ def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsuppor
     _, df_close, df_history = _action_cap_inputs()
     source = row(filing_date="2024-03-05", transaction_date="2024-03-20", officer_title="CEO", is_officer=1.0)
     df_clean, _ = clean_transactions(source_frame([source]))
-    df_empty = pd.DataFrame(columns=["ticker", "date", "value"])
-    basis = QuantityBasis.from_context(ShareBasis(df_empty, df_empty, df_empty, {}), pd.DatetimeIndex(df_close.index))
-    df_positions = position_units(df_clean, basis)
+    df_positions = position_units(df_clean, basis_frame(_NO_SPLIT_FIXTURE, df_clean["ticker"], df_close.index.max()))
     df_panel = _build_action_cap([source], df_close, df_history)
     unknown = [
         "f_ic_insider_buy_value_mcap_60d",
@@ -293,7 +290,7 @@ def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsuppor
         "f_ic_insider_management_position_change_60d",
     ]
 
-    assert not df_positions["units_known"].any() and not df_positions["declared_units_known"].any()
+    assert not df_positions["units_known"].any()
     assert df_panel.reindex(index=[pd.Timestamp("2024-03-07")], columns=unknown).isna().to_numpy().all()
     assert df_panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
     df_control = _build_action_cap([source | {"transaction_date": "2024-03-04"}], df_close, df_history)

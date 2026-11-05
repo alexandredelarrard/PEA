@@ -19,7 +19,6 @@ from src.context import Context
 from src.data_aggregate.transformers import step_cube_institutionals as institutional_step
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
@@ -171,7 +170,8 @@ def test_public_step_checks_market_owners_outside_its_universe(
     )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args: frames)
+    monkeypatch.setattr(institutional_step, "load_price_frames", lambda *args, **kwargs: frames)
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
@@ -187,7 +187,7 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     calls: list[str] = []
 
     def panel(name: str) -> pd.DataFrame:
@@ -234,7 +234,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     sqlite_store.save(Tables.insider_transactions, pd.concat([history, pd.DataFrame([row(ticker="OUTSIDE", lineage_role="canonical_current")])], ignore_index=True))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     reads: list[tuple[Any, dict[str, Any]]] = []
     stages: list[str] = []
     stream = sqlite_store.iter_load
@@ -361,7 +361,7 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
     seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = cls(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(f"{cls.__module__}.load_peers_or_raise", lambda ctx: {})
     reads: Counter[str] = Counter()
     for method in ("load", "iter_load"):
         original = getattr(sqlite_store, method)
@@ -463,7 +463,7 @@ def test_public_step_preserves_unusable_insider_source_boundary(
     seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     if source is not None:
         sqlite_store.save(Tables.insider_transactions, pd.DataFrame([row(ticker="AAA")]))
     streamed = sqlite_store.iter_load
@@ -510,7 +510,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     panel = step.build_panel().set_index(["date", "ticker"])
     ratios = [
         "f_ic_insider_net_buy_ratio_180d",
@@ -554,7 +554,7 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
     )
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[20])]))
     ctx = context(sqlite_store, tmp_path)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     gross = "f_ic_insider_distinct_buyers_120d"
 
     # Outage: D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
@@ -618,7 +618,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     sqlite_store.save(Tables.insider_transactions, df_source)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     stages: list[str] = []
     reads: Counter[str] = Counter()
     computing = False
@@ -735,7 +735,7 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
     )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     panel = step.build_panel().set_index(["date", "ticker"]).xs("AAA", level="ticker")

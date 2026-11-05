@@ -72,7 +72,6 @@ def test_unestablished_adr_units_never_become_a_trusted_identity() -> None:
     result = rebase_security_quantities(basis, pd.Series([100.0]), names, source, target, pd.Series([1.0]))
     assert result.isna().all()
     assert basis.factor(names, target, "units").isna().all()
-    assert basis.declared_units(names, target, pd.Series(["Common stock"])).isna().all()
     print("SANITY: an observed ADR-ratio change without an initial unit convention stays unsupported across all quantity adapters.")
 
 

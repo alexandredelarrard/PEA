@@ -22,7 +22,6 @@ from omegaconf import OmegaConf
 from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.class_lines import CLASS_LINE_COLUMNS
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
@@ -198,7 +197,8 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         ),
     )
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args, **kwargs: frames)
+    monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.load_price_frames", lambda *args, **kwargs: frames)
+    monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.load_peers_or_raise", lambda ctx: {})
     monkeypatch.setattr(institutional_inputs, "load_class_bars", lambda *args, **kwargs: bars)
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: None)

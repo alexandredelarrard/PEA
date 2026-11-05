@@ -208,6 +208,8 @@ rtk "$PY" -m src data_aggregate assemble-cube
 rtk "$PY" -m src data_aggregate cube-status
 ```
 
+`build-prices -F` rebuilds `cube_part_prices` in full; `build-prices -t X,Y -F` deletes every saved row of X and Y and rebuilds those tickers from scratch, other tickers untouched (`-t` without `-F` is refused). A normal run takes the same path by itself for any ticker whose history older than the refresh window changed; no other part needs a rerun.
+
 The same nine part objects are driven by eight builders in the composite build, individual CLI commands, and the sequential Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
 
 ### Assemble selected inputs and check readiness

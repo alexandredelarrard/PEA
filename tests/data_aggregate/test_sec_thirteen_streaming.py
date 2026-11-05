@@ -193,7 +193,8 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    history = books.prepare_institutional_book_history(stream, grid, cusip_windows(None, mapping), universe, close, None, settle_days=3)
+    with closing(holdings_clean.clean_public_batches(stream, cusip_windows(None, mapping), universe, close, None)) as batches:
+        history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
     actual = list(books.iter_institutional_books(*history))
 
@@ -298,9 +299,11 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
-        history = books.prepare_institutional_book_history(
-            packets, grid, cusip_windows(None, mapping), ("ABC",), pd.DataFrame(10.0, index=grid, columns=["ABC"]), None, settle_days=0
+        batches = holdings_clean.clean_public_batches(
+            packets, cusip_windows(None, mapping), ("ABC",), pd.DataFrame(10.0, index=grid, columns=["ABC"]), None
         )
+        with closing(batches):
+            history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
     assert history is not None
     assert (repair.call_count, max(len(call.args[0][["cik", "period"]].drop_duplicates()) for call in repair.call_args_list)) == (2, 2)
     print("SANITY: four complete manager-quarters use two batch repairs; empty books and multiple accessions retain their evidence.")

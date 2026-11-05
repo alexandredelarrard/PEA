@@ -323,8 +323,8 @@ def test_missing_reference_excludes_whole_book_only_and_never_fills() -> None:
     prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "OUT": (100, 1000)})
     current = _book("1", "2024-06-30", {"AAA": (150, 1500), "OUT": (100, 1000)})
     market = _market()
-    assert market.as_traded_close is not None
-    market.as_traded_close.loc[pd.Timestamp("2024-03-29"), "OUT"] = np.nan
+    assert market.close_pit is not None
+    market.close_pit.loc[pd.Timestamp("2024-03-29"), "OUT"] = np.nan
     history = _compute(_snapshot([prior, current]), market)
     assert _value(history, "shares_chg") == pytest.approx(0.5)
     assert np.isnan(_value(history, "relative_position_chg"))

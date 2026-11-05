@@ -15,6 +15,7 @@ from src.data_aggregate.utils.common.class_lines import load_class_lines
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
+from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
@@ -44,7 +45,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     with_class_volume,
 )
 from src.data_aggregate.utils.price.clean import apply_volume_scale
-from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
+from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.levels import lookup_asof
@@ -116,7 +117,7 @@ class StepCubeInstitutionals(Step):
         """Compute with full event history; run controls the independently rewritten tail."""
 
         # Load shared price and class inputs once.
-        frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
+        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         df_lines = load_class_lines(self._store)
 
         # Build each family sequentially so raw sources do not overlap in memory.

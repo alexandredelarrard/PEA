@@ -12,7 +12,6 @@ import pytest
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
@@ -142,7 +141,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeSecThirteen(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(step_module, "load_peers_or_raise", lambda ctx: {})
     broad = Mock(
         return_value=pd.DataFrame({"period": [pd.Timestamp("2023-09-30")], "as_of": [days[0]], "ticker": ["AAA"], "ic_inst_concentration": [0.4]})
     )

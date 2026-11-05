@@ -17,7 +17,7 @@ class BehaviorMarket:
     """Saved as-traded quotes (`close_pit`), authoritative sessions and the forward quantity basis F (`security_basis`)."""
 
     trading_index: pd.DatetimeIndex
-    as_traded_close: pd.DataFrame | None
+    close_pit: pd.DataFrame | None
     basis: pd.DataFrame
 
 
@@ -235,9 +235,9 @@ def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prio
     # Exact reference-session quotes only; missing securities are never dropped or filled.
     position = int(market.trading_index.searchsorted(prior_period, side="right")) - 1
     prices = pd.Series(dtype="float64")
-    if position >= 0 and market.as_traded_close is not None:
+    if position >= 0 and market.close_pit is not None:
         reference = market.trading_index[position]
-        prices = market.as_traded_close.reindex(index=[reference]).iloc[0]
+        prices = market.close_pit.reindex(index=[reference]).iloc[0]
     df_pair["price"] = convert_quantities(df_pair.ticker.map(prices), basis_now, prior_basis)
     df_pair["known"] &= np.isfinite(df_pair.prior) & df_pair.prior.ge(0)
     return df_pair

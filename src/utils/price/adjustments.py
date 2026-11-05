@@ -84,23 +84,6 @@ class ShareBasis:
             result.loc[df_group.index] = np.where(np.isfinite(rebased), rebased, np.nan)
         return pd.Series(result.to_numpy(), index=quantities.index, name=quantities.name)
 
-    def declared_units(self, tickers: pd.Series, dates: pd.Series, titles: pd.Series) -> pd.Series:
-        """Ordinary shares per explicitly titled security; ambiguous nonunitary titles stay unknown."""
-        result = pd.Series(1.0, index=dates.index)
-        units = self.factor(tickers, dates, "units")
-        cleaned = titles.fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip().str.casefold()
-        for ticker, policy in self.policies.items():
-            convention = policy.get("quote_units")
-            if convention is None:
-                continue
-            hit = tickers.eq(ticker) & units.ne(1.0)
-            quoted = {" ".join(title.split()).casefold() for title in convention["quoted_titles"]}
-            ordinary = {" ".join(title.split()).casefold() for title in convention.get("ordinary_titles", [])}
-            result.loc[hit] = np.nan
-            result.loc[hit & cleaned.isin(quoted)] = units.loc[hit & cleaned.isin(quoted)]
-            result.loc[hit & cleaned.isin(ordinary)] = 1.0
-        return result.where(units.notna())
-
     def factor(self, tickers: pd.Series, dates: pd.Series, kind: str) -> pd.Series:
         """Strict future-event product, or ordinary shares per quoted security for units."""
         if kind != "units":

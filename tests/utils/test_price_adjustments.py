@@ -294,34 +294,6 @@ def test_price_date_can_heal_independently_and_competing_rows_refuse(healed: boo
     print("SANITY: independent price dates replace/heal once; competing old/new feed rows refuse.")
 
 
-def test_declared_quote_units_need_positive_title_evidence() -> None:
-    events = pd.DataFrame(columns=["ticker", "date", "value"])
-    basis = ShareBasis(
-        events,
-        events,
-        events,
-        {
-            "TEST": {
-                "quote_units": {
-                    "date": "2020-06-01",
-                    "before": 2.0,
-                    "after": 1.0,
-                    "quoted_titles": ["American Depositary Shares"],
-                    "ordinary_titles": ["Ordinary Shares"],
-                }
-            }
-        },
-    )
-    tickers = pd.Series(["TEST"] * 4)
-    dates = pd.Series(pd.to_datetime(["2020-05-01"] * 3 + ["2020-06-01"]))
-    titles = pd.Series([" american   depositary SHARES ", "Ordinary Shares", "Common Stock", "Common Stock"])
-    units = basis.declared_units(tickers, dates, titles)
-    assert units.iloc[:2].tolist() == [2.0, 1.0]
-    assert pd.isna(units.iloc[2])
-    assert units.iloc[3] == 1.0
-    print("SANITY: ADS/ordinary titles resolve explicitly; generic common class cannot establish a nonunitary title's units.")
-
-
 def test_quantity_rebase_uses_actual_events_only() -> None:
     df_actual = pd.DataFrame(
         {

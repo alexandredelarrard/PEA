@@ -18,7 +18,8 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_RE
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
+from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_books import iter_institutional_books, prepare_institutional_book_history
@@ -102,7 +103,7 @@ class StepCubeSecThirteen(Step):
 
     def _load_resources(self) -> SecThirteenResources:
         # Read the shared dependencies once before any cleaning or feature work.
-        frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
+        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
         cusip_map = self._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
         df_lines = load_class_lines(self._store)
@@ -152,15 +153,11 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        history = prepare_institutional_book_history(
-            packets,
-            resources.frames.trading_index,
-            resources.cusip_windows,
-            resources.frames.universe,
-            resources.frames.close_pit,
-            cfg.get("value_basis"),
-            settle_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
-        )
+        settle_days = int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
+        with closing(
+            clean_public_batches(packets, resources.cusip_windows, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))
+        ) as batches:
+            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=settle_days)
         if history is None:
             return None
         compact, states = history

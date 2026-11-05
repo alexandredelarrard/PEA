@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Iterator, Mapping, Sequence
-from contextlib import closing
+from collections.abc import Iterator
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _history_floor
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 
@@ -74,16 +72,9 @@ def _compact_batch_events(
 
 
 def prepare_institutional_book_history(
-    packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
-    trading_index: pd.DatetimeIndex,
-    windows: pd.DataFrame | None,
-    universe: Sequence[str],
-    valuation_close: pd.DataFrame | None,
-    value_basis: Mapping[str, Any] | None,
-    *,
-    settle_days: int,
+    batches: Iterator[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, *, settle_days: int
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Clean many complete books together and retain only compact public events."""
+    """Retain only compact public events of the cleaned complete-book batches."""
     frames: list[pd.DataFrame] = []
     states: list[pd.DataFrame] = []
     identities: dict[frozenset, frozenset] = {}
@@ -91,16 +82,15 @@ def prepare_institutional_book_history(
     filings_count = 0
     raw_rows = 0
 
-    with closing(clean_public_batches(packets, windows, universe, valuation_close, value_basis)) as batches:
-        for df_filings, df_holdings in batches:
-            filings_count += len(df_filings)
-            raw_rows += len(df_holdings)
-            df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days)
-            df_compact, df_states = _compact_batch_events(df_manifest, df_holdings, identities)
-            del df_filings, df_holdings, df_manifest
-            frames.append(df_compact)
-            states.append(df_states.assign(_start=df_states["_start"] + offset, _stop=df_states["_stop"] + offset))
-            offset += len(df_compact)
+    for df_filings, df_holdings in batches:
+        filings_count += len(df_filings)
+        raw_rows += len(df_holdings)
+        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days)
+        df_compact, df_states = _compact_batch_events(df_manifest, df_holdings, identities)
+        del df_filings, df_holdings, df_manifest
+        frames.append(df_compact)
+        states.append(df_states.assign(_start=df_states["_start"] + offset, _stop=df_states["_stop"] + offset))
+        offset += len(df_compact)
 
     if not filings_count:
         logger.warning("No complete immutable 13F filings in scope; recover originals/amendments. Latest-only rows cannot supply PIT books.")

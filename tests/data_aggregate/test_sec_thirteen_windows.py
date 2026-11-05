@@ -14,7 +14,6 @@ from omegaconf import OmegaConf
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
@@ -28,7 +27,7 @@ def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[Ste
     )
     ctx = context(store, path)
     ctx.config.build_cube = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "institutionals": {}})
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(step_module, "load_peers_or_raise", lambda ctx: {})
     return StepCubeSecThirteen(ctx, ctx.config), days
 
 
@@ -158,6 +157,7 @@ def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, mon
                 "close_pit": 100.0,
                 "shares_outstanding_pit": np.nan,
                 "mcap_pit": np.nan,
+                "security_basis": 1.0,
             }
         ),
     )
@@ -446,6 +446,7 @@ def test_observation_before_first_price_remains_supported_after_listing(sqlite_s
                         "close_pit": 100.0,
                         "shares_outstanding_pit": np.nan,
                         "mcap_pit": np.nan,
+                        "security_basis": 1.0,
                     }
                 ),
                 pd.DataFrame(
@@ -457,6 +458,7 @@ def test_observation_before_first_price_remains_supported_after_listing(sqlite_s
                         "close_pit": 100.0,
                         "shares_outstanding_pit": np.nan,
                         "mcap_pit": np.nan,
+                        "security_basis": 1.0,
                     }
                 ),
             ],

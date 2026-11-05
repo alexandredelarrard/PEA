@@ -300,16 +300,17 @@ def _final_status(rows: list[dict[str, Any]]) -> None:
 
 # The table rows
 def symbol_rows(history: CikHistory, holders: pd.DataFrame, existing: pd.DataFrame | None, built_at: pd.Timestamp | None) -> SymbolHistory:
-    """The `universe_cik_symbol` rows: the CIK history's rows plus the universe companies' symbol intervals, each scope's
-    `scope_changed_at` carried from `existing` while unchanged (`built_at`, default now, otherwise)."""
+    """The `universe_cik_symbol` rows: the CIK history's rows plus the universe companies' symbol intervals, an ended
+    company's open rows closed at its end, each scope's `scope_changed_at` carried from `existing` while unchanged
+    (`built_at`, default now, otherwise)."""
     # the universe companies' holder intervals, closed at their CIK window, with the oracle that joined the CIK
     stamp = pd.Timestamp.now(tz="UTC").tz_localize(None).floor("s") if built_at is None else pd.Timestamp(built_at)
     symbols = _close_on_window(holders[holders["canonical_ticker"].notna()], history.window_end).assign(role=ROLE_SYMBOL, confidence=float("nan"))
     symbols["oracle"] = [history.oracle_of.get(cik, "roster") for cik in symbols["cik"]]
     conflicts = _conflict_backlog(symbols)
 
-    # typed rows and the scope key of each row, stored and new
-    rows = _typed_rows(pd.concat([history.rows, symbols[list(TABLE_COLUMNS[:-1])]], ignore_index=True))
+    # typed rows closed at their company's end (REQ-006, before the stamps), and the scope key of each row, stored and new
+    rows = _close_at_end(_typed_rows(pd.concat([history.rows, symbols[list(TABLE_COLUMNS[:-1])]], ignore_index=True)), history.ended_on)
     usable = existing is not None and not existing.empty and {"role", "canonical_ticker", "scope_changed_at", "valid_to"} <= set(existing.columns)
     stored = existing.assign(cik=pad_cik_series(existing["cik"])) if usable and existing is not None else rows.iloc[:0]
     keys, stored_keys = _scope_keys(rows), _scope_keys(stored)
@@ -337,6 +338,19 @@ def _close_on_window(symbol_rows: pd.DataFrame, windows: Mapping[str, pd.Timesta
         for end, start in zip(ends[close], out.loc[close, "valid_from"], strict=True)
     ]
     out.loc[close, "valid_to"] = closed
+    return out
+
+
+def _close_at_end(rows: pd.DataFrame, ended_on: Mapping[str, pd.Timestamp]) -> pd.DataFrame:
+    """Every open CIK window and symbol interval of an ended company closes the day after its `ended_on` (`valid_to` is
+    exclusive), never before the row's own start."""
+    owners = rows[rows["canonical_ticker"].isin(list(ended_on))].drop_duplicates("canonical_ticker")
+    end_of = {str(c): ended_on[t] + pd.Timedelta(days=1) for c, t in zip(owners["company_id"], owners["canonical_ticker"], strict=True)}
+    ends = rows["company_id"].astype(str).map(end_of)
+    close = rows["valid_to"].isna() & ends.notna() & rows["role"].isin([ROLE_WINDOW, ROLE_SYMBOL])
+    out = rows.copy()
+    starts = pd.to_datetime(out.loc[close, "valid_from"]) + pd.Timedelta(days=1)
+    out.loc[close, "valid_to"] = [max(pd.Timestamp(end), start) for end, start in zip(ends[close], starts, strict=True)]
     return out
 
 
@@ -442,15 +456,16 @@ def validate_manual_tenure_entities(manual: pd.DataFrame, entity_by_cik: Mapping
 
 
 def log_symbol_history(context: Context, build: SymbolHistory, manual: pd.DataFrame, n_dei: int, cold: bool) -> None:
-    """One INFO summary of the rows and trading symbols, one WARNING listing the symbol conflicts."""
+    """One INFO summary of the rows and trading symbols; the symbol conflicts in detail at DEBUG (PD-14: each is a
+    `conflict` item of the publish review)."""
     # the rows, their roles and the symbol statuses
     rows = build.rows
-    statuses = dict(rows.loc[rows["role"].eq(ROLE_SYMBOL), "status"].value_counts().sort_index())
+    statuses = {str(k): int(n) for k, n in rows.loc[rows["role"].eq(ROLE_SYMBOL), "status"].value_counts().sort_index().items()}
     logger.info(
         "universe_cik_symbol: %d row(s) over %d entity(ies); roles %s; symbol statuses %s",
         len(rows),
         rows["company_id"].nunique(),
-        dict(rows["role"].value_counts().sort_index()),
+        {str(k): int(n) for k, n in rows["role"].value_counts().sort_index().items()},
         statuses,
     )
 
@@ -470,8 +485,8 @@ def log_symbol_history(context: Context, build: SymbolHistory, manual: pd.DataFr
     # the symbol conflicts, never applied
     conflicts = build.backlog[build.backlog["kind"].eq("conflict")] if not build.backlog.empty else build.backlog
     if not conflicts.empty:
-        logger.warning(
-            "universe_cik_symbol: symbol curation backlog %d conflict(s) (not applied):\n%s", len(conflicts), conflicts.to_string(index=False)
+        logger.debug(
+            "universe_cik_symbol: symbol curation backlog, %d conflict(s) (not applied):\n%s", len(conflicts), conflicts.to_string(index=False)
         )
 
 

@@ -864,16 +864,16 @@ def test_a_rejected_tenure_is_dropped_from_the_derived_partition(tmp_path, caplo
     print("  F: Ford's open interval kept; First Commonwealth's 2018-04-26..2019-04-25 interval rejected (2 accessions cited)")
 
 
-def test_a_rejection_that_no_longer_covers_the_derived_interval_keeps_it_and_warns(tmp_path, caplog):
+def test_a_rejection_that_no_longer_covers_the_derived_interval_keeps_it_and_logs_it_stale(tmp_path, caplog):
     _manual_with_rejections(tmp_path, [_FCF_REJECTION])
-    caplog.set_level(logging.WARNING, logger=tenure_module.__name__)
+    caplog.set_level(logging.INFO, logger=tenure_module.__name__)
 
     out = reject_derived_tenure(_ford_and_fcf(fcf_end="2020-06-01"), load_rejected_symbol_tenure(tmp_path))
 
     assert len(out) == 2
     assert "no longer covers" in caplog.text
     print("\n=== SANITY CHECK: a stale rejection never hides new evidence ===")
-    print("  FCF filed under F past the cited window -> the row is kept and the rejection is flagged for review")
+    print("  FCF filed under F past the cited window -> the row is kept and the stale rejection is logged (INFO, PD-14)")
 
 
 @pytest.mark.parametrize(

@@ -26,6 +26,7 @@ import pandas as pd
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.registrant import Registrant
 from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
+from src.utils.identity_flags import RESOLUTIONS_KEY
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,7 @@ class CikHistory:
     blocked: pd.DataFrame
     evidence: pd.DataFrame
     activity: pd.DataFrame
+    ended_on: Mapping[str, pd.Timestamp] = field(default_factory=dict)
 
 
 # Shared row helpers
@@ -205,11 +207,12 @@ def d19_allowlist(blob: Mapping[str, Any]) -> dict[str, str]:
 
 
 def parse_manual_lineage(blob: Mapping[str, Any]) -> dict[str, dict]:
-    """The manual entries `{key: {same_entity, own_entity, evidence}}`, CIKs padded; an entry deciding nothing raises."""
+    """The manual entries `{key: {same_entity, own_entity, evidence}}`, CIKs padded; an entry deciding nothing raises (the
+    `_`-prefixed keys and the `resolutions` list are not entries)."""
     # validate every entry: a relationship of >= 2 CIKs or an own-entity verdict, always with evidence
     out: dict[str, dict] = {}
     for key, entry in blob.items():
-        if key.startswith("_"):
+        if key.startswith("_") or key == RESOLUTIONS_KEY:
             continue
         same = [pad_cik(c) for c in entry.get("same_entity", [])]
         own = [pad_cik(c) for c in entry.get("own_entity", [])]
@@ -819,38 +822,37 @@ def sharadar_outside(sharadar: Mapping[str, str], entities: Entities, roster_cik
 
 
 def log_cik_history(history: CikHistory, membership: Membership, n_candidates: int, outside: list[str]) -> None:
-    """One INFO summary; one WARNING each for the refused merges and the CIK curation backlog."""
-    # the summary, with the Sharadar CIKs outside their company
+    """One INFO summary; the refused merges and the CIK curation backlog in detail at DEBUG (PD-14: their items reach the
+    publish review as `refused_merge`, `grey_band` and the extra-CIK kinds)."""
+    # the summary, with the Sharadar CIKs outside their company and the backlog counts
     rows = history.rows
     logger.info(
         "universe_cik_symbol: %d candidate CIK(s) -> %d CIK row(s) over %d company(ies); roles %s; owner-overlap verdicts %s; joins %s; "
-        "automatic windows %s; %d merge(s) BLOCKED as two-universe-tickers; %d Sharadar CIK(s) outside their company %s",
+        "automatic windows %s; %d merge(s) BLOCKED as two-universe-tickers; %d Sharadar CIK(s) outside their company %s; "
+        "CIK curation backlog %s (not applied)",
         n_candidates,
         len(rows),
         rows["company_id"].nunique(),
-        dict(rows["role"].value_counts().sort_index()),
+        _plain_counts(rows["role"]),
         dict(membership.overlap_verdicts),
         dict(membership.joins),
         "enabled" if AUTO_WINDOWS_ENABLED else "disabled",
         len(history.blocked),
         len(outside),
         outside,
+        _plain_counts(history.backlog["kind"]),
     )
 
-    # what the build refused or left undecided
+    # what the build refused or left undecided, in detail
     if not history.blocked.empty:
-        logger.warning(
-            "universe_cik_symbol: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",
-            len(history.blocked),
-            history.blocked.to_string(index=False),
-        )
+        logger.debug("universe_cik_symbol: refused merges:\n%s", history.blocked.to_string(index=False))
     if not history.backlog.empty:
-        logger.warning(
-            "universe_cik_symbol: CIK curation backlog %d item(s) %s (excluded or undecided, not applied):\n%s",
-            len(history.backlog),
-            dict(history.backlog["kind"].value_counts().sort_index()),
-            history.backlog.to_string(index=False),
-        )
+        logger.debug("universe_cik_symbol: CIK curation backlog:\n%s", history.backlog.to_string(index=False))
+
+
+def _plain_counts(values: pd.Series) -> dict[str, int]:
+    """`{value: count}` sorted by value, plain integers."""
+    return {str(value): int(count) for value, count in values.value_counts().sort_index().items()}
 
 
 def cik_history_from_rows(rows: pd.DataFrame, evidence: pd.DataFrame, activity: pd.DataFrame) -> CikHistory:

@@ -18,6 +18,7 @@ import pandas as pd
 from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.utils.common.security_lines import SecurityManual, load_security_manual, tape_intervals
 from src.data_extract.utils.identity import cusip_history as ch
+from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.identity.cusip_history import (
     CusipFlags,
     CusipHistory,
@@ -64,9 +65,10 @@ def derive_cusip_history(
     names: pd.DataFrame | None = None,
     listed: Mapping[str, frozenset[str]] | None = None,
     as_of: pd.Timestamp | None = None,
+    ended_on: Mapping[str, pd.Timestamp] | None = None,
 ) -> CusipHistory:
     """`run_cusip_history`'s compute on these inputs (`holdings` = 13F `[cusip, period, issuer_name, n_rows]`; `names` =
-    `company_names` rows); deterministic for fixed inputs and `built_at`."""
+    `company_names` rows; `ended_on` = the anchor's end dates, none by default); deterministic for fixed inputs and `built_at`."""
     obs = prepare_observations(observations)
     view = lineage_view(lineage, roster_cik, tape_intervals(lineage))
     listing, finra, flags = sec_listing(sec_tickers), finra_evidence(finra_presence), CusipFlags()
@@ -83,7 +85,7 @@ def derive_cusip_history(
     roles = CusipRoles(facts={fact.cusip: fact for fact in facts}, segments=segments)
     canonical_segments(candidates, roles.facts, view, segments, obs["trade_date"].max() + pd.Timedelta(days=1) if not obs.empty else pd.Timestamp.max)
 
-    rows = finalise_rows(cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing)), existing, built_at)
+    rows = finalise_rows(cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing)), existing, built_at, ended_on or {})
     detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
     return CusipHistory(rows=rows, flags=detail, items=items, thirteenf=thirteenf)
 
@@ -106,4 +108,5 @@ def run_cusip_stage(context: Any, lineage: pd.DataFrame, as_of: pd.Timestamp | N
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, str(context.config_dir), logging.getLogger("tests.cusip_build")
     step._symbols, step._run_date = SimpleNamespace(rows=lineage), run_date(as_of)
+    step._anchor = CompanyAnchor(company_id={}, sharadar_cik={})
     return step.run_cusip_history()

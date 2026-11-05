@@ -16,6 +16,7 @@ from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_identity as module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
 from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS
+from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
@@ -197,13 +198,14 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(module, "pending_dei_periods", lambda *args: [])
     monkeypatch.setattr(module, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
-    monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: None)
+    anchor = CompanyAnchor(company_id={}, sharadar_cik={})
+    monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: setattr(self, "_anchor", anchor) or anchor)
     activity = SimpleNamespace(activity=pd.DataFrame(columns=["cik", "source", "first", "last"]))
     monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", activity) or activity)
 
     def symbol_history(self: StepExtractIdentity) -> SimpleNamespace:
         sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
-        self._symbols = SimpleNamespace(rows=_scope_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)))  # type: ignore[assignment]
+        self._symbols = SimpleNamespace(rows=_scope_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)), blocked=pd.DataFrame())  # type: ignore[assignment]
         return self._symbols  # type: ignore[return-value]
 
     monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbol_history)

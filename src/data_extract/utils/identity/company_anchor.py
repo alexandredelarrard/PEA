@@ -8,17 +8,19 @@ Seeds: the roster CIK and the CIK of Sharadar's `secfilings` link, read from the
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
 
 @dataclass(frozen=True)
 class CompanyAnchor:
-    """`company_id`: the frozen id of each identified universe ticker; `sharadar_cik`: its Sharadar CIK seed."""
+    """`company_id`: the frozen id of each identified universe ticker; `sharadar_cik`: its Sharadar CIK seed; `ended_on`:
+    the end date of each ended company (D-4), which every later stage closes its open rows at (REQ-006)."""
 
     company_id: dict[str, str]
     sharadar_cik: dict[str, str]
+    ended_on: dict[str, pd.Timestamp] = field(default_factory=dict)
 
 
 def anchor_company_ids(universe_rows: pd.DataFrame | None, lineage_rows: pd.DataFrame | None, tickers: Collection[str]) -> dict[str, str]:

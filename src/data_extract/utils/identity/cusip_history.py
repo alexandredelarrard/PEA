@@ -455,7 +455,7 @@ def capture_ftd_lines(context: Context, plan: FtdCapture, scope: FtdScope, chang
     changed scope; returns the unique lines and the periods they reconcile (none before the first lineage build)."""
     # nothing to capture before the first lineage build
     if not scope.ready:
-        logger.warning("FTD capture: no universe_cik_symbol yet; nothing captured until the lineage is built")
+        logger.info("FTD capture: no universe_cik_symbol yet (cold start); nothing captured until the lineage is built")
         return pd.DataFrame(columns=list(ftd_zip.SECURITY_COLUMNS)), []
 
     # the pending periods, read with the scope
@@ -1268,8 +1268,20 @@ def _signatures(frame: pd.DataFrame) -> dict[str, tuple[tuple[str, ...], ...]]:
     return {str(company): tuple(sorted(map(tuple, group.to_numpy()))) for company, group in text.groupby(frame["canonical_company"].astype(str))}
 
 
-def finalise_rows(rows: list[dict[str, Any]], existing: pd.DataFrame | None, built_at: pd.Timestamp) -> pd.DataFrame:
-    """The typed table, sorted; each company keeps its stored `scope_changed_at` while its rows are unchanged."""
+def _closed_at_end(frame: pd.DataFrame, ended_on: Mapping[str, pd.Timestamp]) -> pd.Series:
+    """`valid_to` with every open line of an ended company closed the day after its end, never before the line's start."""
+    ends = frame["canonical_company"].map(lambda company: ended_on.get(str(company)))
+    close = frame["valid_to"].isna() & ends.notna()
+    starts = frame.loc[close, "valid_from"] + pd.Timedelta(days=1)
+    closed = [max(pd.Timestamp(end) + pd.Timedelta(days=1), start) for end, start in zip(ends[close], starts, strict=True)]
+    return frame["valid_to"].where(~close, pd.Series(closed, index=ends[close].index, dtype="datetime64[ns]"))
+
+
+def finalise_rows(
+    rows: list[dict[str, Any]], existing: pd.DataFrame | None, built_at: pd.Timestamp, ended_on: Mapping[str, pd.Timestamp]
+) -> pd.DataFrame:
+    """The typed table, sorted, an ended company's open lines closed the day after its `ended_on` (REQ-006, before the
+    stamps); each company keeps its stored `scope_changed_at` while its rows are unchanged."""
     # the typed rows
     frame = pd.DataFrame(rows, columns=[c for c in TABLE_COLUMNS if c != "scope_changed_at"])
     frame["valid_from"] = pd.to_datetime(frame["valid_from"])
@@ -1278,6 +1290,7 @@ def finalise_rows(rows: list[dict[str, Any]], existing: pd.DataFrame | None, bui
     frame["n_observations"] = frame["n_observations"].astype("int64")
     for column in ("exchange", "source_accession", "canonical_company"):
         frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
+    frame["valid_to"] = _closed_at_end(frame, ended_on)
 
     # the stored stamp of each company whose rows are unchanged; `built_at` for every other
     companies = frame["canonical_company"].astype(str)

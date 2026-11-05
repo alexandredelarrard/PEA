@@ -202,21 +202,21 @@ def _keys(store, table) -> set[tuple[str, str]]:
     return set(zip(frame["ticker"], frame[key], strict=True))
 
 
-def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per_table(sqlite_store, tmp_path, monkeypatch, caplog, stubs):
+def test_a_contraction_purges_the_removed_cik_in_every_family_and_logs_once_per_table(sqlite_store, tmp_path, monkeypatch, caplog, stubs):
     """AC-031/AC-034: ALB's scope changed after each table's last run; AB's rows go, ALB's own stay, MSFT is not read."""
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
     identity = _stored_identity(sqlite_store, {"ALB": AFTER})
     monkeypatch.setattr(prop, "load_identity", lambda context: identity)
 
-    with caplog.at_level(logging.WARNING, logger=LOGGER):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
         result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
     for table in PURGED_FAMILIES:
         keys = _keys(sqlite_store, table)
         assert ("ALB", "ab-1") not in keys and ("ALB", "ab-2") not in keys, table.name
         assert {("ALB", "alb-1"), ("ALB", "alb-2"), ("MSFT", "msft-1"), ("MSFT", "msft-x")} <= keys, table.name
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "identity propagate: purged" in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "identity propagate: purged" in r.getMessage()]
     assert len(warnings) == len(PURGED_FAMILIES), warnings
     for table in PURGED_FAMILIES:
         line = next(w for w in warnings if f"'{table.name}'" in w)
@@ -226,7 +226,7 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per
     assert stubs["history"] == [(["ALB"], True)] and stubs["merged"] == [(["ALB"], True)]
     print("\n=== SANITY CHECK: contraction purge ===")
     print(
-        f"  4 families: AB's 2 filings (4 rows each) purged under ALB; ALB's own and MSFT's (scope unchanged) rows kept; {len(warnings)} WARNING lines"
+        f"  4 families: AB's 2 filings (4 rows each) purged under ALB; ALB's own and MSFT's (scope unchanged) rows kept; {len(warnings)} INFO lines (PD-14)"
     )
     print("  ALB's history rebuilt (delete + recompute) and its merged history rebuilt in full. Validated.")
 

@@ -1,16 +1,21 @@
 """Identity items needing a manual decision, classified once for the identity build and the identity validator.
 
-Pure: `universe_cik_symbol` rows, each CIK's filing activity (`cik_activity`), optionally the `universe_cusip` lines
-(which decide tape-mix pairs they already stamp) and, from the build only, its grey-band backlog. The build's
-`run_publish` calls the item stages one by one and logs one WARNING block; `identity_flags` composes them for the
-validator and the co-registrant reading of `security_lines`.
+The item stages are pure: `universe_cik_symbol` rows, each CIK's filing activity (`cik_activity`), optionally the
+`universe_cusip` lines (which decide tape-mix pairs they already stamp) and, from the build only, its grey-band backlog
+and refused merges. `identity_flags` composes them for the validator and the co-registrant reading of `security_lines`.
+The build's `run_publish` matches each item to the reviewed `resolutions` of the owning JSONs (REQ-031) and logs a
+WARNING block of the unreviewed action items only, everything else in one INFO summary (REQ-032).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -27,6 +32,7 @@ KIND_ORDER = (
     "missing_sec_filing",
     "end_date_disputed",
     "grey_band",
+    "refused_merge",
     "manual_review",
     "conflict",
     "vendor_coverage_gap",
@@ -52,6 +58,28 @@ _AUTOMATIC_SOURCES = "dei,form345"
 _AUTOMATIC_NOTE = "automatic window: "
 Span = tuple[pd.Timestamp, pd.Timestamp]
 SpanMap = dict[str, tuple[pd.Timestamp, pd.Timestamp, str]]
+#: REQ-031: the `resolutions` list of each owning JSON (under `configs/sec/`); an item is matched on `ITEM_KEY`, verbatim.
+RESOLUTIONS_KEY = "resolutions"
+RESOLUTION_FILES = ("symbol_tenure_manual.json", "entity_lineage_manual.json", "security_master_manual.json")
+ITEM_KEY = ("kind", "ticker", "ciks")
+RESOLUTION_COLUMNS = (*ITEM_KEY, "decision", "evidence", "decided_on", "config_file")
+#: A cited source: a URL or an SEC accession number.
+_CITATION = re.compile(r"https?://\S+|\b\d{10}-\d{2}-\d{6}\b")
+
+
+class ResolutionError(ValueError):
+    """A `resolutions` entry missing a field, citing no URL or accession, or reviewing an item twice."""
+
+
+@dataclass(frozen=True)
+class FlagReview:
+    """The items split by review: `unreviewed` action items (the WARNING block), `information` items, `resolved` items
+    (with their `decision`) and the `stale` resolutions no item matches any more."""
+
+    unreviewed: pd.DataFrame
+    information: pd.DataFrame
+    resolved: pd.DataFrame
+    stale: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -203,6 +231,25 @@ def symbol_status_items(rows: pd.DataFrame) -> list[dict[str, object]]:
     return items
 
 
+def refused_merge_items(blocked: pd.DataFrame | None) -> list[dict[str, object]]:
+    """The build-only kind: one action item per merge refused because it would join two universe tickers."""
+    if blocked is None or blocked.empty:
+        return []
+    suggested = "the refusal is never applied: record the decision (own_entity citing the filing, or a resolution)"
+    return [
+        dict(
+            zip(
+                FLAG_COLUMNS,
+                ("refused_merge", True, str(a_tickers or b_tickers), f"{a},{b}", _refusal_text(source, a_tickers, b_tickers), suggested, _MANUAL),
+                strict=True,
+            )
+        )
+        for a, b, source, a_tickers, b_tickers in zip(
+            blocked["cik_a"], blocked["cik_b"], blocked["proposed_by"], blocked["tickers_a"], blocked["tickers_b"], strict=True
+        )
+    ]
+
+
 def sorted_flags(items: Iterable[dict[str, object]]) -> pd.DataFrame:
     """The items as a `FLAG_COLUMNS` frame, sorted by kind (`KIND_ORDER`, action kinds first) and ticker."""
     flags = pd.DataFrame(list(items), columns=list(FLAG_COLUMNS))
@@ -227,6 +274,39 @@ def identity_flags(
     return sorted_flags([*cik_items(rows, activity, backlog), *mixes, *symbol_status_items(rows)])
 
 
+# Resolutions (REQ-031)
+def load_resolutions(config_dir: str) -> pd.DataFrame:
+    """Every `resolutions` entry of the owning JSONs (`RESOLUTION_COLUMNS`); an entry missing a field or citing no URL or
+    accession, or a second entry for one item, is refused."""
+    # read each owning JSON once
+    entries: list[dict[str, Any]] = []
+    for name in RESOLUTION_FILES:
+        path = Path(config_dir) / "sec" / name
+        blob = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        entries += [{**entry, "config_file": f"configs/sec/{name}"} for entry in blob.get(RESOLUTIONS_KEY, [])]
+
+    # validate and type them
+    return _resolution_frame(entries)
+
+
+def review_flags(flags: pd.DataFrame, resolutions: pd.DataFrame) -> FlagReview:
+    """Each item against the resolutions on `ITEM_KEY`: resolved, an unreviewed action item or information; and the
+    resolutions no item matches any more (stale)."""
+    # match the items and the resolutions on the verbatim item key
+    keys = list(ITEM_KEY)
+    items = flags.merge(resolutions[[*keys, "decision"]], on=keys, how="left")
+    seen = resolutions.merge(flags[keys].drop_duplicates(), on=keys, how="left", indicator=True)
+
+    # split the items by review
+    reviewed, action = items["decision"].notna(), items["action"].astype(bool)
+    return FlagReview(
+        unreviewed=items[action & ~reviewed].drop(columns="decision").reset_index(drop=True),
+        information=items[~action & ~reviewed].drop(columns="decision").reset_index(drop=True),
+        resolved=items[reviewed].reset_index(drop=True),
+        stale=seen.loc[seen["_merge"].eq("left_only"), list(RESOLUTION_COLUMNS)].reset_index(drop=True),
+    )
+
+
 # Logging
 def identity_flag_block(flags: pd.DataFrame) -> str | None:
     """The WARNING block text (action items first, co-registrants left out), or None when there is nothing to show."""
@@ -235,12 +315,23 @@ def identity_flag_block(flags: pd.DataFrame) -> str | None:
         return None
     n_action = int(shown["action"].sum())
     lines = [f"{BLOCK_TITLE}: {n_action} action item(s), {len(shown) - n_action} information item(s)"]
-    for row in shown.itertuples(index=False):
-        target = f" -> edit {row.config_file}" if row.config_file else ""
-        lines.append(
-            f"  [{'ACTION' if row.action else 'info'}] {row.kind} {row.ticker} (CIK {row.ciks}): {row.evidence} | {row.suggested_action}{target}"
-        )
-    return "\n".join(lines)
+    return "\n".join([*lines, *(_item_line(row) for row in shown.to_dict("records"))])
+
+
+def review_summary(review: FlagReview) -> str:
+    """The one INFO line (REQ-032): the unreviewed action items, the information and resolved items by kind, the stale
+    resolutions."""
+    stale = ", ".join(f"{k} {t} (CIK {c}) in {f}" for k, t, c, f in review.stale[[*ITEM_KEY, "config_file"]].itertuples(index=False))
+    return (
+        f"identity items: {len(review.unreviewed)} unreviewed action item(s); information {_by_kind(review.information)}; "
+        f"resolved {_by_kind(review.resolved)}; {len(review.stale)} stale resolution(s)" + (f": {stale}" if stale else "")
+    )
+
+
+def review_details(review: FlagReview) -> str | None:
+    """The DEBUG lines of the information and resolved items (each resolved one with its decision), or None."""
+    shown = pd.concat([review.resolved, review.information], ignore_index=True)
+    return "\n".join(_item_line(row) for row in shown.to_dict("records")) if not shown.empty else None
 
 
 def co_registrant_note(flags: pd.DataFrame) -> str | None:
@@ -259,6 +350,51 @@ def log_identity_flags(log: logging.Logger, flags: pd.DataFrame) -> None:
         log.warning(block)
     if note is not None:
         log.info(note)
+
+
+# Flat helpers: resolutions and log lines
+def _resolution_frame(entries: list[dict[str, Any]]) -> pd.DataFrame:
+    """The entries typed (`evidence` joined, `decided_on` parsed); a missing field, no citation or a duplicate item raises."""
+    # each entry complete and citing a URL or an accession
+    rows = []
+    for entry in entries:
+        evidence = entry.get("evidence") or []
+        cited = [str(text) for text in ([evidence] if isinstance(evidence, str) else evidence)]
+        missing = [c for c in ("kind", "ticker", "decision", "decided_on") if not str(entry.get(c) or "").strip()] + (
+            [] if "ciks" in entry else ["ciks"]
+        )
+        if missing or not any(_CITATION.search(text) for text in cited):
+            raise ResolutionError(f"{entry.get('config_file')}: resolution {entry} lacks {missing or 'evidence citing a URL or an accession'}")
+        typed = {column: str(entry[column]) for column in (*ITEM_KEY, "decision", "config_file")}
+        rows.append({**typed, "evidence": "; ".join(cited), "decided_on": pd.Timestamp(str(entry["decided_on"]))})
+
+    # one resolution per item
+    frame = pd.DataFrame(rows, columns=list(RESOLUTION_COLUMNS))
+    twice = frame[frame.duplicated(list(ITEM_KEY), keep=False)]
+    if not twice.empty:
+        raise ResolutionError(f"one item reviewed twice: {twice[[*ITEM_KEY, 'config_file']].to_dict('records')}")
+    return frame
+
+
+def _refusal_text(source: str, a_tickers: str, b_tickers: str) -> str:
+    """The evidence of one refused merge."""
+    return f"{source} would join {a_tickers or 'no universe ticker'} and {b_tickers or 'no universe ticker'} in one company: refused"
+
+
+def _by_kind(items: pd.DataFrame) -> str:
+    """`n (kind n, ...)` with plain integer counts; `0` when empty."""
+    counts = ", ".join(f"{kind} {int(n)}" for kind, n in items["kind"].value_counts().sort_index().items())
+    return f"{len(items)} ({counts})" if counts else "0"
+
+
+def _item_line(row: dict[str, Any]) -> str:
+    """One item as a log line: level, kind, ticker, CIKs, evidence, the suggested action or the reviewed decision."""
+    decision = row.get("decision")
+    if isinstance(decision, str):
+        return f"  [resolved] {row['kind']} {row['ticker']} (CIK {row['ciks']}): {row['evidence']} | decision: {decision}"
+    target = f" -> edit {row['config_file']}" if row["config_file"] else ""
+    level = "ACTION" if row["action"] else "info"
+    return f"  [{level}] {row['kind']} {row['ticker']} (CIK {row['ciks']}): {row['evidence']} | {row['suggested_action']}{target}"
 
 
 # Flat helpers: filing spans and tape rows

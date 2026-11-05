@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
-from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS
+from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS, BLOCKED_COLUMNS
 from src.data_extract.utils.identity.cik_history import TABLE_COLUMNS as LINEAGE_COLUMNS
 from src.data_extract.utils.identity.cusip_history import TABLE_COLUMNS as CUSIP_COLUMNS
 from src.data_extract.utils.identity.lifecycle import TABLE_COLUMNS as LIFE_COLUMNS
@@ -111,7 +111,9 @@ def _step(store: DataStore) -> Any:
     life = pd.DataFrame([("AAA", "E0000000100", "AAA", pd.Timestamp("2000-01-03"), pd.NaT, "active")], columns=list(LIFE_COLUMNS))
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, context.config_dir, log
-    step._symbols = SimpleNamespace(rows=_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)))
+    step._symbols = SimpleNamespace(
+        rows=_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)), blocked=pd.DataFrame(columns=list(BLOCKED_COLUMNS))
+    )
     step._cik_history = SimpleNamespace(activity=pd.DataFrame(columns=["cik", "source", "first", "last"]))
     step._cusips = SimpleNamespace(rows=_lines(), items=pd.DataFrame(columns=list(FLAG_COLUMNS)))
     step._lifecycle = Lifecycle(rows=life, items=pd.DataFrame(columns=list(FLAG_COLUMNS)))

@@ -43,6 +43,20 @@ def universe_permatickers(universe: pd.DataFrame) -> list[int]:
     return sorted({int(value) for value in values})
 
 
+def ended_dates(universe: pd.DataFrame, sharadar: pd.DataFrame | None) -> dict[str, pd.Timestamp]:
+    """`{universe ticker: ended_on}` of the ended companies (D-4), read before the stamp passes so the CIK, symbol and
+    CUSIP stages close the company's open rows at that end (REQ-006)."""
+    # each universe ticker's permaticker with its Sharadar dates
+    frame = universe.reindex(columns=["ticker", "permaticker"]).assign(
+        permaticker=lambda f: pd.to_numeric(f["permaticker"], errors="coerce").astype("Int64")
+    )
+    frame = frame.merge(_sharadar_life(sharadar), on="permaticker", how="left")
+
+    # the ended ones
+    ended = _end_of(frame)
+    return {str(ticker): pd.Timestamp(end) for ticker, end in zip(frame["ticker"], ended, strict=True) if pd.notna(end)}
+
+
 def company_lifecycle(universe: pd.DataFrame, sharadar: pd.DataFrame | None, prices: pd.DataFrame | None, lineage: pd.DataFrame) -> Lifecycle:
     """First price date, end date, status, trading symbol and company id of each universe ticker, with the end-date items."""
     # clean: each permaticker's Sharadar dates, each ticker's stored price span, company id and trading symbol
@@ -57,7 +71,7 @@ def company_lifecycle(universe: pd.DataFrame, sharadar: pd.DataFrame | None, pri
     frame = frame.merge(life, on="permaticker", how="left").merge(spans, on="ticker", how="left")
 
     # compute the identity columns, then check Sharadar's end against the last stored price
-    rows = _lifecycle_rows(frame)
+    rows = _lifecycle_rows(frame.assign(ended_on=_end_of(frame)))
     return Lifecycle(rows=rows, items=_end_disputes(frame, rows))
 
 
@@ -117,12 +131,17 @@ def _company_ids(lineage: pd.DataFrame) -> pd.DataFrame:
 def _lifecycle_rows(frame: pd.DataFrame) -> pd.DataFrame:
     """The identity columns: first price = the earlier of Sharadar's and the stored one; the end only once delisted."""
     first = pd.concat([pd.to_datetime(frame["sharadar_first"]), frame["price_first"]], axis=1).min(axis=1)
-    ended = pd.to_datetime(frame["sharadar_last"]).where(frame["delisted"].eq("Y"))
+    ended = frame["ended_on"]
     trading = frame["trading_symbol"].fillna(frame["ticker"]).astype(str)
     status = np.select([ended.notna().to_numpy(), trading.ne(frame["ticker"]).to_numpy()], [STATUS_ENDED, STATUS_RENAMED], STATUS_ACTIVE)
     company = frame["company_id"].astype(object).where(frame["company_id"].notna(), None)
     values = (frame["ticker"].astype(str), company, trading, first, ended, pd.Series(status, index=frame.index))
     return pd.DataFrame(dict(zip(TABLE_COLUMNS, values, strict=True))).reset_index(drop=True)
+
+
+def _end_of(frame: pd.DataFrame) -> pd.Series:
+    """The end date of each row: Sharadar's `lastpricedate` of the newest row, only once it is delisted (D-4)."""
+    return pd.to_datetime(frame["sharadar_last"]).where(frame["delisted"].eq("Y"))
 
 
 def _end_disputes(frame: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:

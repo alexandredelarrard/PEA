@@ -39,6 +39,7 @@ from src.data_extract.utils.identity.cik_history import (
     parse_manual_lineage,
     score_overlap,
 )
+from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.identity.symbol_history import ManualTenureEntityError, validate_manual_tenure_entities
 from src.data_extract.utils.identity.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
@@ -95,6 +96,7 @@ def _symbol_step(context: Any, history: Any, symbols: Any = None) -> Any:
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, getattr(context, "config_dir", CONFIG_DIR), logging.getLogger("test.symbol_history")
     step._cik_history, step._symbols, step._cusips, step._lifecycle = history, symbols, None, None
+    step._anchor = CompanyAnchor(company_id={}, sharadar_cik={})
     return step
 
 
@@ -147,7 +149,7 @@ def test_score_overlap_is_symmetric_and_empty_safe():
     print("  OK: symmetric, and a CIK with no Form 345 owner scores 0 rather than raising")
 
 
-def test_the_grey_band_is_excluded_with_a_warning_and_a_backlog_row(tmp_path, caplog):
+def test_the_grey_band_is_excluded_and_listed_in_the_backlog(tmp_path, caplog):
     """`shared > 0` below both thresholds, with no curated row: the CIK stays out, the build goes on."""
     assert classify_overlap(0, 0.0) == "unrelated"
     assert classify_overlap(3, 0.037) == "grey"
@@ -157,7 +159,7 @@ def test_the_grey_band_is_excluded_with_a_warning_and_a_backlog_row(tmp_path, ca
     # COHR's real shape in miniature: 3 owners shared out of 31 and 53, jaccard 0.037
     tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 700), ("AAA", "0000000222", "2013-01-05", None, 700)])
     owners = {"0000000111": {f"{i:010d}" for i in range(31)}, "0000000222": {f"{i:010d}" for i in range(28, 81)}}
-    caplog.set_level(logging.WARNING, logger=lineage_module.__name__)
+    caplog.set_level(logging.DEBUG, logger=cik_module.__name__)
     build = derive_lineage(tenure, as_roster(_roster([("AAA", "0000000222")])), _owner_pairs(owners), _config(tmp_path))
 
     assert "0000000111" not in set(build.rows["cik"])
@@ -170,7 +172,7 @@ def test_the_grey_band_is_excluded_with_a_warning_and_a_backlog_row(tmp_path, ca
     print("\n=== SANITY CHECK: grey band ===")
     print(f"  classify(3, 0.037) = {classify_overlap(3, 0.037)}  (COHR's real score)")
     print(f"  backlog: {grey[['kind', 'canonical_ticker', 'cik', 'detail']].to_dict('records')}")
-    print("  OK: the grey CIK is excluded and listed with a WARNING; AAA keeps one current row")
+    print("  OK: the grey CIK is excluded and listed in the backlog (a grey_band review item); AAA keeps one current row")
 
 
 def test_candidate_set_is_universe_symbols_plus_roster_ciks():

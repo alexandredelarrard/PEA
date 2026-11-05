@@ -489,7 +489,7 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, manual: pd.DataFram
 
 def reject_derived_tenure(derived: pd.DataFrame, rejected: pd.DataFrame) -> pd.DataFrame:
     """`derived` without its rows a rejection covers (same symbol and CIK, interval inside the rejected dates); a rejection
-    matching the pair but no longer covering its interval keeps the row and warns."""
+    matching the pair but no longer covering its interval keeps the row and is logged as stale (INFO)."""
     # nothing to reject
     if rejected.empty or derived.empty:
         return derived
@@ -510,7 +510,7 @@ def reject_derived_tenure(derived: pd.DataFrame, rejected: pd.DataFrame) -> pd.D
         covered = pair & (starts >= start) & ends.notna() & (ends <= end)
         label = f"{symbol}/{cik} {start.date()}..{end.date()}"
         if (pair & ~covered).any():
-            logger.warning("symbol_tenure: the rejection of %s no longer covers the derived interval; kept for review", label)
+            logger.info("symbol_tenure: the rejection of %s no longer covers the derived interval; kept (a stale curation, PD-14)", label)
         if covered.any():
             logger.info("symbol_tenure: rejected %s (%d accession(s) cited)", label, len(accessions))
         drop |= covered

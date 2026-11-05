@@ -95,6 +95,7 @@ from src.data_extract.utils.identity.lifecycle import (
     PRICE_SPAN,
     Lifecycle,
     company_lifecycle,
+    ended_dates,
     log_lifecycle,
     universe_permatickers,
 )
@@ -129,10 +130,14 @@ from src.utils.identity_flags import (
     FLAG_COLUMNS,
     cik_activity,
     cik_items,
-    co_registrant_note,
     flag_rows,
     identity_flag_block,
+    load_resolutions,
     master_lines,
+    refused_merge_items,
+    review_details,
+    review_flags,
+    review_summary,
     sorted_flags,
     symbol_status_items,
     tape_mix_items,
@@ -143,7 +148,7 @@ from src.utils.string import pad_cik_series, run_date
 
 #: The `sec_cik_profile` columns the CIK history reads, and the rows that carry one of its event forms.
 _PROFILE_COLUMNS = ("cik", "form_25", "form_15", "form_8k12b")
-_SHARADAR_COLUMNS = ("permaticker", "secfilings", "lastupdated")
+_SHARADAR_COLUMNS = ("secfilings", *LIFE_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -200,18 +205,20 @@ class StepExtractIdentity(Step):
         return written
 
     def run_company_anchor(self) -> CompanyAnchor:
-        """The frozen `company_id` of each identified universe ticker and its Sharadar CIK seed."""
+        """The frozen `company_id` of each identified universe ticker, its Sharadar CIK seed and the end date of each ended
+        company (D-4: every later stage closes its open rows there, inside its stamp pass)."""
         # load the published company rows, the stored lineage and the Sharadar tickers
         universe = self._context.store.load(Tables.universe_tickers, project=True, optional=True)
         lineage = self._context.store.load(Tables.universe_cik_symbol, columns=["canonical_ticker", "company_id"], optional=True)
         sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(_SHARADAR_COLUMNS), optional=True)
 
-        # anchor the stored ids and read the Sharadar seeds
+        # anchor the stored ids, read the Sharadar seeds and end dates
         tickers = self._universe.tickers
-        self._anchor = CompanyAnchor(company_id=anchor_company_ids(universe, lineage, tickers), sharadar_cik=sharadar_ciks(universe, sharadar))
+        ids, seeds = anchor_company_ids(universe, lineage, tickers), sharadar_ciks(universe, sharadar)
+        self._anchor = CompanyAnchor(company_id=ids, sharadar_cik=seeds, ended_on=ended_dates(self._universe.frame, sharadar))
         self._log.info(
-            f"company anchor: {len(self._anchor.company_id)} of {len(tickers)} universe ticker(s) carry a frozen company_id "
-            f"({len(tickers) - len(self._anchor.company_id)} to mint); {len(self._anchor.sharadar_cik)} Sharadar CIK seed(s)"
+            f"company anchor: {len(ids)} of {len(tickers)} universe ticker(s) carry a frozen company_id ({len(tickers) - len(ids)} to mint); "
+            f"{len(seeds)} Sharadar CIK seed(s); {len(self._anchor.ended_on)} ended company(ies)"
         )
         return self._anchor
 
@@ -257,6 +264,7 @@ class StepExtractIdentity(Step):
             blocked=blocked_frame(membership, roster_cik),
             evidence=evidence,
             activity=cik_activity(pd.concat([tenure] if dei is None else [tenure, dei], ignore_index=True)),
+            ended_on=anchor.ended_on,
         )
 
         # check: the roster CIK names the company its filings name (D19)
@@ -319,10 +327,11 @@ class StepExtractIdentity(Step):
             else None
         )
         manual = load_security_manual(str(self._config_dir))
+        ended_on = (self._anchor if self._anchor is not None else self.run_company_anchor()).ended_on
 
-        # nothing to build without captured FTD lines: the table is left as it is
+        # nothing to build without captured FTD lines (a cold start): the table is left as it is
         if observations is None:
-            self._log.warning(
+            self._log.info(
                 "universe_cusip: no stored FTD lines (run `zips-download --only ftd`, then `identity --only capture-evidence`); table left unchanged"
             )
             return pd.DataFrame(columns=list(CUSIP_COLUMNS))
@@ -349,8 +358,9 @@ class StepExtractIdentity(Step):
             candidates, roles.facts, view, segments, obs["trade_date"].max() + pd.Timedelta(days=1) if not obs.empty else pd.Timestamp.max
         )
 
-        # post-process: the table rows, each company's stamp kept while unchanged
-        rows = finalise_rows(cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing)), existing, pd.Timestamp.now().floor("s"))
+        # post-process: the table rows closed at their company's end, each company's stamp kept while unchanged
+        built = cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing))
+        rows = finalise_rows(built, existing, pd.Timestamp.now().floor("s"), ended_on)
 
         # check: the flags of the build (its WARNING items are logged by `run_publish`) and the INFO summary
         detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
@@ -377,9 +387,10 @@ class StepExtractIdentity(Step):
         return self._lifecycle
 
     def run_publish(self) -> int:
-        """The one save (REQ-008): one WARNING block of identity items, then `universe_cik_symbol` and `universe_cusip` (with
-        `company_id`) unless unchanged and the changed identity columns of `universe_tickers`; returns the rows written."""
-        # load this run's builds (each stage runs from stored inputs when publish runs alone) and the stored tables
+        """The one save (REQ-008): the identity items against their reviewed resolutions (a WARNING block of the unreviewed
+        action items only, REQ-032), then `universe_cik_symbol` and `universe_cusip` (with `company_id`) unless unchanged
+        and the changed identity columns of `universe_tickers`; returns the rows written."""
+        # load this run's builds (each stage runs from stored inputs when publish runs alone), the stored tables, the resolutions
         symbols = self._symbols if self._symbols is not None else self.run_symbol_history()
         history = self._cik_history if self._cik_history is not None else self.run_cik_history()
         lines = self._cusips.rows if self._cusips is not None else self.run_cusip_history()
@@ -388,17 +399,21 @@ class StepExtractIdentity(Step):
         stored_lineage = self._context.store.load(Tables.universe_cik_symbol, project=True, optional=True)
         stored_lines = self._context.store.load(Tables.universe_cusip, project=True, optional=True)
         stored_tickers = self._context.store.load(Tables.universe_tickers, project=True, optional=True)
+        resolutions = load_resolutions(str(self._config_dir))
 
-        # check: the lineage items with the CUSIP and end-date items in one WARNING block, the co-registrants at INFO
+        # compute: the lineage items (refused merges included) with the CUSIP and end-date items, each against its resolution
         rows = flag_rows(symbols.rows)
         mixes = tape_mix_items(tape_mix_pairs(rows, self._universe.alias_symbols), rows, master_lines(stored_lines if lines.empty else lines))
-        found = [*cik_items(rows, history.activity, symbols.backlog), *mixes, *symbol_status_items(rows)]
-        flags = sorted_flags([*found, *cusip_items.to_dict("records"), *lifecycle.items.to_dict("records")])
-        block, note = identity_flag_block(flags), co_registrant_note(flags)
+        found = [*cik_items(rows, history.activity, symbols.backlog), *refused_merge_items(symbols.blocked), *mixes, *symbol_status_items(rows)]
+        review = review_flags(sorted_flags([*found, *cusip_items.to_dict("records"), *lifecycle.items.to_dict("records")]), resolutions)
+
+        # check: a WARNING block of the unreviewed action items only; everything else in one INFO summary, the items at DEBUG
+        block, details = identity_flag_block(review.unreviewed), review_details(review)
         if block is not None:
             self._log.warning(block)
-        if note is not None:
-            self._log.info(note)
+        self._log.info(review_summary(review))
+        if details is not None:
+            self._log.debug(details)
 
         # post-process: the CUSIP lines carry their company's id; the identity columns that changed
         published = cusip_company_ids(lines, symbols.rows)

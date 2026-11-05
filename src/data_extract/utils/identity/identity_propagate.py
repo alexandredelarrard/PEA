@@ -5,7 +5,8 @@ The tickers whose lineage stamp (`universe_cik_symbol.scope_changed_at`) falls i
 idempotent, so a ticker seen on several runs inside the window costs reads only. Contraction: rows
 whose filer CIK is no longer a CIK of the ticker's entity, and 8-K / 13D / 13G rows whose CIK has no
 seam-widened window admitting their date, and consolidating rows (facts, notes, filing text, proxies) whose CIK
-holds no window of the ticker, are deleted, one WARNING per table.
+holds no window of the ticker, are deleted, one INFO line per table (PD-14: a purge is a
+performed change, not an item to review).
 Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds their
 rows but none from a scope CIK it can hold (EDGAR tables list a new CIK's filings in their own fetchers). The raw
 FTD lines and RegSHO short-volume rows of companies whose `universe_cusip` rows changed recently (for
@@ -139,7 +140,7 @@ def _warn(context: Context, table: str, records: list[dict], *, dry_run: bool) -
     if dry_run:
         context.log.info("identity propagate (dry run): would purge %d row(s) from '%s' -- %s", total, table, detail)
     else:
-        context.log.warning("identity propagate: purged %d row(s) from '%s' -- %s", total, table, detail)
+        context.log.info("identity propagate: purged %d row(s) from '%s' -- %s", total, table, detail)
 
 
 def _purge(
@@ -247,7 +248,7 @@ def _refresh_insider(context: Context, identity: Identity, changed: Sequence[str
 
 def _rebuild_history(context: Context, tickers: list[str]) -> None:
     """Delete and rebuild the SEC history of `tickers`, then their merged history in full."""
-    context.log.warning("identity propagate: rebuilding the SEC and merged history of %d purged ticker(s): %s", len(tickers), ", ".join(tickers))
+    context.log.info("identity propagate: rebuilding the SEC and merged history of %d purged ticker(s): %s", len(tickers), ", ".join(tickers))
     build_fundamentals_history(context, tickers, rebuild_history=True)
     build_merged_history(context, tickers, full=True, config_dir=str(context.config_dir))
 

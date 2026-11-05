@@ -56,16 +56,12 @@ def _restore_observation_counts(df_observations: pd.DataFrame, basis: ShareBasis
 
 
 def capitalization_observations(
-    df_history: pd.DataFrame,
-    df_vendor: pd.DataFrame | None,
-    calendar: pd.DatetimeIndex,
-    basis: ShareBasis,
-    predecessors: tuple[PredecessorSeries, ...] = (),
+    df_history: pd.DataFrame, df_vendor: pd.DataFrame | None, basis: ShareBasis, predecessors: tuple[PredecessorSeries, ...] = ()
 ) -> pd.DataFrame:
     """Attach a supported coefficient to the exact public share observation it values.
 
-    Unversioned nonunit coefficients start strictly after lastupdated and expire at
-    the next public observation. Prices and reference caps never fit the coefficient.
+    The vendor class coefficient is public with its filing and expires at the next public
+    observation. Prices and reference caps never fit the coefficient.
     """
     df_observations = df_history.copy()
     df_observations["as_of"] = pd.to_datetime(df_observations["as_of"], errors="coerce")
@@ -73,7 +69,6 @@ def capitalization_observations(
     if df_observations[["ticker", "as_of"]].isna().any().any() or df_observations.duplicated(["ticker", "as_of"]).any():
         raise ValueError("Public share observations require unique, valid ticker/as_of keys")
     df_observations["capitalization_factor"] = np.nan
-    df_observations["capitalization_available"] = pd.NaT
     df_observations["source_owner_supported"] = canonical_source_support(df_observations["ticker"], df_observations["as_of"], predecessors)
     required = ("ticker", "date", "reportperiod", "sharesbas")
     if df_vendor is None or not set(required).issubset(df_vendor.columns):
@@ -92,7 +87,7 @@ def capitalization_observations(
     if df_raw.duplicated(["ticker", "date", "reportperiod"]).any():
         raise ValueError("Conflicting or repeated raw capitalization observation keys")
     df_raw = df_raw.sort_values(["ticker", "date", "reportperiod"]).drop_duplicates(["ticker", "date"], keep="last")
-    df_observations = df_observations.drop(columns=["capitalization_factor", "capitalization_available"]).merge(
+    df_observations = df_observations.drop(columns=["capitalization_factor"]).merge(
         df_raw, how="left", left_on=["ticker", "as_of", "fiscal_end"], right_on=["ticker", "date", "reportperiod"], validate="one_to_one"
     )
     count = pd.to_numeric(df_observations["sharesOutstanding"], errors="coerce")
@@ -103,15 +98,7 @@ def capitalization_observations(
     supported = matched & np.isfinite(coefficient) & coefficient.gt(0) & df_observations["source_owner_supported"]
     # A mixed ADR/class coefficient needs a separate decomposition, never a second U.
     supported &= units.eq(1) | coefficient.eq(1)
-    dated = coefficient.ne(1) | units.ne(1)
-    positions = calendar.searchsorted(df_observations["lastupdated"].dt.normalize(), side="right")
-    ready = pd.Series(pd.NaT, index=df_observations.index, dtype="datetime64[ns]")
-    in_calendar = positions < len(calendar)
-    ready.loc[in_calendar] = calendar.take(positions[in_calendar]).to_numpy()
-    public = df_observations["as_of"]
-    ready = pd.concat([public, ready], axis=1).max(axis=1).where(ready.notna() & df_observations["lastupdated"].notna())
     df_observations["capitalization_factor"] = coefficient.where(supported)
-    df_observations["capitalization_available"] = public.where(~dated, ready).where(supported)
     return _restore_observation_counts(df_observations, basis)
 
 
@@ -144,7 +131,6 @@ def project_security_shares(df_observations: pd.DataFrame, basis: ShareBasis, df
         quantities = np.where(have_source, df_group["quoted_count"].to_numpy(dtype="float64")[selected], np.nan)
         source = df_group["source_basis"].to_numpy(dtype="float64")[selected]
         coefficient = df_group["capitalization_factor"].to_numpy(dtype="float64")[selected]
-        ready = df_group["capitalization_available"].to_numpy(dtype="datetime64[ns]")[selected]
         df_shares[ticker] = convert_quantities(quantities, source, df_basis[ticker].to_numpy(dtype="float64"))
-        df_scale[ticker] = np.where(have_source & (stamps >= ready), coefficient, np.nan)
+        df_scale[ticker] = np.where(have_source, coefficient, np.nan)
     return df_shares, df_scale

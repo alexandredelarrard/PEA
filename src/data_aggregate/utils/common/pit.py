@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Protocol
 
 import numpy as np
@@ -405,28 +404,3 @@ def fiscal_change_to_daily(
         idx,
         max_age_days=max_age_days,
     )
-
-
-def fiscal_apply_to_daily(
-    fund_hist: pd.DataFrame,
-    field: str,
-    idx: pd.DatetimeIndex,
-    func: Callable[[pd.Series], pd.Series],
-    *,
-    max_age_days: int | None = None,
-) -> pd.DataFrame:
-    """Apply a per-ticker series transform (e.g. YoY growth, or acceleration =
-    change in YoY) to a fiscal field, forward-filled point-in-time onto trading
-    days. `func` receives one ticker's chronological series and returns a series
-    of the same length."""
-    if field not in fund_hist.columns:
-        return pd.DataFrame(index=idx)
-    df = fund_hist[["ticker", "as_of", field]].copy()
-    df["as_of"] = pd.to_datetime(df["as_of"])
-    df[field] = pd.to_numeric(df[field], errors="coerce")
-    df = df.dropna(subset=[field]).sort_values(["ticker", "as_of"])
-    if df.empty:
-        return pd.DataFrame(index=idx)
-    df["v"] = df.groupby("ticker")[field].transform(func)
-    df["v"] = df["v"].replace([np.inf, -np.inf], np.nan)
-    return _observations_to_daily(df, "v", idx, max_age_days=max_age_days)

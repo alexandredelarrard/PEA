@@ -406,7 +406,13 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, ()))
     if denominator == "temporarily_unknown":
+        # A priced session before the 2023-09-30 report period, so the saved basis F exists at the period.
+        df_prices = sqlite_store.load(Tables.cube_part_prices)
+        sqlite_store.replace(
+            Tables.cube_part_prices, pd.concat([df_prices.head(1).assign(date=pd.Timestamp("2023-09-29")), df_prices], ignore_index=True)
+        )
         _shares(sqlite_store, days, (0, 112), (100.0, 0.0))
+        days = days.insert(0, pd.Timestamp("2023-09-29"))
     current = _full(step, sqlite_store)
     initial = _saved(current).copy()
     initial["f_ic_inst_ownership_pct"] = 0.2

@@ -23,7 +23,6 @@ from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings as _clean_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     EMISSION,
     INST_DELTA_FLOOR_PERIOD,
@@ -45,6 +44,7 @@ from tests.data_aggregate.sec_thirteen_legacy_reference import (
 )
 from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features as _qf
 from tests.data_aggregate.sec_thirteen_legacy_reference import build_institutional_feature_panel as _panel
+from tests.data_aggregate.sec_thirteen_legacy_reference import clean_holdings as _clean_holdings
 
 LAG = pd.Timedelta(days=45)
 
@@ -65,7 +65,7 @@ def _quarter_features(holdings, **kw):
     # ⚠ CLEAN FIRST, because `_qf` is INTERNAL and its contract is a CLEANED frame. The
     # coercion that used to sit inside it -- dates to midnight, the four numeric legs
     # zero-filled when the source omits them, amendments collapsed last-filed-wins -- now
-    # lives once in `holdings_clean.clean_holdings`, and `build_institutional_feature_panel`
+    # lives once in `sec_thirteen_legacy_reference.clean_holdings`, and `build_institutional_feature_panel`
     # calls it before `_qf` on the production path. A fixture handed straight to `_qf` has
     # no `call_value` / `put_value` and raises `KeyError`; that is the test bypassing a
     # production step, not the builder demanding a column the source lacks.
@@ -642,7 +642,7 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
     """
     import datetime as dt
 
-    from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
+    from tests.data_aggregate.sec_thirteen_legacy_reference import clean_holdings
 
     rows = [
         # the ORIGINAL filing, and its AMENDMENT four days later with a corrected count
@@ -712,7 +712,7 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
 
 
 def _banded(rows: list[dict], band=(45, 60)) -> pd.DataFrame:
-    from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
+    from tests.data_aggregate.sec_thirteen_legacy_reference import clean_holdings
 
     return clean_holdings(pd.DataFrame(rows), key=("ticker", "cik", "period"), filing_band=band)
 

@@ -61,7 +61,7 @@ def pit_fields(
     df_shares = pd.DataFrame(np.nan, index=index, columns=df_close.columns, dtype="float64")
     df_scale = df_shares.copy()
     if inputs.shares is not None:
-        df_observations = capitalization_observations(inputs.shares, inputs.vendor, index, basis, inputs.predecessors)
+        df_observations = capitalization_observations(inputs.shares, inputs.vendor, basis, inputs.predecessors)
         df_shares, df_scale = project_security_shares(df_observations, basis, df_basis)
     for ticker in sorted({owner.ticker for owner in inputs.predecessors} & set(df_close.columns)):
         names = pd.Series(ticker, index=index)

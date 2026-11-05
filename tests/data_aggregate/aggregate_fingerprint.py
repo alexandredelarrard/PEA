@@ -981,7 +981,7 @@ def compute() -> dict:
     # Exercise the same visible dated-quantity preparation as the owning step.
     share_events = resolve_share_events(None, splits, {})
     df_basis = security_basis_frame(share_events, idx, close.columns)
-    observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0, capitalization_available=fund["as_of"])
+    observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0)
     saved_shares, _ = project_security_shares(observations, share_events, df_basis)
     df_terminal = terminal_basis_factor(df_basis)
     price_frames = make_frames(

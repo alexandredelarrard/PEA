@@ -99,7 +99,7 @@ def test_window_seed_keeps_production_date_for_split_basis_and_expiry() -> None:
     splits = pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2025-01-07"]), "value": [2.0]})
     basis = ShareBasis(actual=splits, vendor=splits.iloc[:0], price=splits.iloc[:0], policies={"AAPL": {}})
 
-    observations = history.assign(capitalization_factor=1.0, capitalization_available=history["as_of"])
+    observations = history.assign(capitalization_factor=1.0)
     daily, _ = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(["AAPL"], name="ticker")))
     source_age = fundamentals_to_daily(history.assign(_produced_at=history["as_of"]), "_produced_at", calendar, max_age_days=5)
     daily = daily.where(source_age.notna())

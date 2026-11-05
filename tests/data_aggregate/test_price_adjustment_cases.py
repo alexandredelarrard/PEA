@@ -186,7 +186,7 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     )
     filing = book[["ticker", "as_of"]].assign(sharesOutstandingPit=100.0)
     owned = _daily_owned_shares(book, index, security_basis_frame(basis, pd.bdate_range("2020-03-31", index[-1]), pd.Index(["TEST"])))
-    observations = filing.assign(capitalization_factor=1.0, capitalization_available=filing["as_of"])
+    observations = filing.assign(capitalization_factor=1.0)
     outstanding, _ = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["TEST"])))
     assert pd.isna(owned.iloc[0, 0])
     assert owned["TEST"].iloc[1:].tolist() == [10.0, 5.0, 5.0]

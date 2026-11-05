@@ -113,15 +113,16 @@ def test_capitalization_uses_dated_exact_lineage_and_unknown_successor_ends_supp
         }
     )
     original = df_history.copy(deep=True)
-    observations = capitalization_observations(df_history, df_vendor, index, basis)
+    observations = capitalization_observations(df_history, df_vendor, basis)
     shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["AAA"])))
-    assert scale.loc[:"2024-01-03", "AAA"].isna().all()
-    assert scale.loc["2024-01-04":"2024-01-05", "AAA"].eq(1.5).all()
+    assert scale.loc[:"2024-01-01", "AAA"].isna().all()
+    assert scale.loc["2024-01-02":"2024-01-05", "AAA"].eq(1.5).all()
     assert scale.loc["2024-01-08":, "AAA"].isna().all()
     assert shares.at[pd.Timestamp("2024-01-08"), "AAA"] == 120.0
     pd.testing.assert_frame_equal(df_history, original, check_exact=True)
     print(
-        "SANITY: K starts strictly after lastupdated; mismatched successor stops old K, preserves actual count, and no reference cap fits the coefficient."
+        "SANITY: K is public on its filing date (a later lastupdated does not delay it); "
+        "mismatched successor stops old K, preserves actual count, and no reference cap fits the coefficient."
     )
 
 
@@ -149,7 +150,7 @@ def test_real_sharadar_class_scope_and_public_support() -> None:
     calendar = pd.DatetimeIndex(pd.to_datetime(df_calendar["date"]).sort_values())
     df_empty = pd.DataFrame({"ticker": pd.Series(dtype="str"), "date": pd.Series(dtype="datetime64[ns]"), "value": pd.Series(dtype="float64")})
     basis = ShareBasis(df_empty, df_empty, df_empty, {})
-    observations = capitalization_observations(df_history, df_vendor, calendar, basis)
+    observations = capitalization_observations(df_history, df_vendor, basis)
     shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(names)))
     df_latest = observations.sort_values("as_of").groupby("ticker").tail(1)
     for ticker in names:
@@ -158,13 +159,14 @@ def test_real_sharadar_class_scope_and_public_support() -> None:
         calculated = native["price"] * native["sharesbas"] * native["sharefactor"]
         tolerance = 0.0005 / native["sharefactor"] + 0.005 / native["price"] + 0.5 / native["marketcap"]
         assert abs(calculated / native["marketcap"] - 1) <= tolerance
-        ready = min(day for day in calendar if day > pd.Timestamp(native["lastupdated"]) and day >= row["as_of"])
-        assert scale.loc[(calendar >= row["as_of"]) & (calendar < ready), ticker].isna().all()
-        assert scale.at[ready, ticker] == native["sharefactor"]
-        assert shares.at[ready, ticker] == row["sharesOutstandingPit"]
-        assert scale.at[ready, ticker] > 1
+        public = min(day for day in calendar if day >= row["as_of"])
+        assert scale.loc[calendar < row["as_of"], ticker].ne(native["sharefactor"]).all()
+        assert scale.at[public, ticker] == native["sharefactor"]
+        assert shares.at[public, ticker] == row["sharesOutstandingPit"]
+        assert scale.at[public, ticker] > 1
     print(
-        "SANITY: real BRK-B/V issuer-cap equations agree within source rounding; dated factors never backfill publication gaps or inflate the saved class count."
+        "SANITY: real BRK-B/V issuer-cap equations agree within source rounding; the class factor is public on its filing session "
+        "and never inflates the saved class count."
     )
 
 
@@ -190,7 +192,7 @@ def test_unmatched_vendor_vintages_require_corroborated_original_counts() -> Non
             "lastupdated": pd.to_datetime(["2024-01-08"] * 2),
         }
     )
-    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    observations = capitalization_observations(df_history, df_raw, basis)
     assert observations["sharesOutstandingPit"].iloc[0] == 100.0
     assert pd.isna(observations["sharesOutstandingPit"].iloc[1])
     assert observations["capitalization_factor"].isna().all()
@@ -250,7 +252,7 @@ def test_cancelled_future_events_do_not_certify_an_unmatched_cached_count() -> N
             "lastupdated": pd.to_datetime(["2024-01-05"]),
         }
     )
-    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    observations = capitalization_observations(df_history, df_raw, basis)
     assert observations["sharesOutstandingPit"].isna().all()
     assert observations["capitalization_factor"].isna().all()
     print("SANITY: cancelling future2× and0.5× events do not prove the representation of an unmatched cached count.")
@@ -277,7 +279,7 @@ def test_count_vintage_remains_supported_without_capitalization_coefficient() ->
             "lastupdated": pd.to_datetime(["2024-01-08"]),
         }
     )
-    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    observations = capitalization_observations(df_history, df_raw, basis)
     assert observations["sharesOutstandingPit"].iloc[0] == 100.0
     assert observations["capitalization_factor"].isna().all()
     print("SANITY: missing issuer-cap coefficient keeps supported count restoration and unknown capitalization independent.")
@@ -306,7 +308,7 @@ def test_nonpositive_counts_cannot_corroborate_a_positive_cache(sentinel: float)
             "lastupdated": df_history["as_of"],
         }
     )
-    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    observations = capitalization_observations(df_history, df_raw, basis)
     assert observations["sharesOutstandingPit"].isna().all()
     print("SANITY: one-share rounding never lets a zero/negative source sentinel establish a positive outstanding count.")
 
@@ -335,7 +337,7 @@ def test_missing_fiscal_keys_cannot_establish_or_extend_capitalization_support(p
             "lastupdated": pd.to_datetime(["2024-01-02", "2024-01-08"]),
         }
     )
-    observations = capitalization_observations(df_history, df_raw, calendar, basis)
+    observations = capitalization_observations(df_history, df_raw, basis)
     shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(["AAA"])))
     assert scale.loc["2024-01-03":"2024-01-05", "AAA"].eq(1.5).all()
     assert scale.loc["2024-01-08":, "AAA"].isna().all()

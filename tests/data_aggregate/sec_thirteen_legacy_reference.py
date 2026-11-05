@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import numpy as np
@@ -11,10 +11,11 @@ import pandas as pd
 
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date
+from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import _DATES, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_books import compact_institutional_books
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     DELTA_FEATURES,
@@ -34,6 +35,71 @@ from src.utils.price.levels import security_basis_frame, split_cum_product
 logger = logging.getLogger(__name__)
 F13_REVISION_MIN_MOVE = 0.001
 COVERAGE_BREAK_DEFAULT = 0.50
+
+
+def _apply_filing_band(h: pd.DataFrame, band: tuple[int, int]) -> pd.DataFrame:
+    """Keep legacy rows within the declared deadline band, including unknown dates."""
+    early, late = band
+    if "filing_date" not in h.columns or "period" not in h.columns:
+        logger.info("13F clean: no `filing_date`/`period` -> the [-%s, +%s] filing band CANNOT be applied on this read; every row kept", early, late)
+        return h
+
+    lag = (h["filing_date"] - (h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))).dt.days
+    unknown = lag.isna()
+    drop = ~lag.between(-early, late) & ~unknown
+    if not drop.any():
+        return h
+
+    value = pd.to_numeric(h["value_usd"], errors="coerce") if "value_usd" in h.columns else None
+    total = float(value.sum()) if value is not None else 0.0
+    logger.info(
+        "13F filing band [-%sd, +%sd] vs deadline: %s of %s row(s) dropped (%.3f%%) "
+        "across %s filer(s), carrying %.3f%% of as-filed value (PRE unit-repair, so "
+        "that share is only indicative); %s early, %s late, %s row(s) undated and kept",
+        early,
+        late,
+        f"{int(drop.sum()):,}",
+        f"{len(h):,}",
+        100.0 * float(drop.mean()),
+        f"{h.loc[drop, 'cik'].nunique():,}" if "cik" in h.columns else "?",
+        100.0 * float(value[drop].sum()) / total if (value is not None and total > 0) else 0.0,
+        f"{int((lag < -early).sum()):,}",
+        f"{int((lag > late).sum()):,}",
+        f"{int(unknown.sum()):,}",
+    )
+    return h[~drop]
+
+
+def clean_holdings(
+    holdings: pd.DataFrame,
+    *,
+    key: Sequence[str],
+    filing_band: tuple[int, int] | None = None,
+) -> pd.DataFrame:
+    """Normalize legacy keys, then apply the filing band and amendment order.
+
+    This latest-only adapter does not certify immutable filing completeness."""
+    h = holdings.copy()
+    for col in _DATES:
+        if col in h.columns:
+            h[col] = to_day(h[col])
+    for col in ("shares", "value_usd", "call_value", "put_value"):
+        h[col] = pd.to_numeric(h[col], errors="coerce") if col in h.columns else pd.Series(np.nan if col == "value_usd" else 0.0, index=h.index)
+        if col == "shares":
+            h[col] = h[col].fillna(0.0)
+
+    h = h.dropna(subset=list(key))
+    if filing_band is not None:
+        h = _apply_filing_band(h, filing_band)
+
+    if "filing_date" in h.columns:
+        h = h.sort_values("filing_date")
+    else:
+        logger.info(
+            "13F clean: no `filing_date` column -> amendments cannot be ordered, so `keep='last'` falls back to source order for %s duplicate key(s)",
+            f"{int(h.duplicated(list(key)).sum()):,}",
+        )
+    return h.drop_duplicates(list(key), keep="last")
 
 
 def _basis_grid(trading_index: pd.DatetimeIndex, holdings: pd.DataFrame) -> tuple[pd.DatetimeIndex, pd.Index]:

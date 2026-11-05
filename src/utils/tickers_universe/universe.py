@@ -111,6 +111,13 @@ class Universe:
         return dict(zip(self._frame["ticker"], pairs, strict=True))
 
     @property
+    def trading_symbols(self) -> dict[str, str]:
+        """The symbol each universe ticker trades under today (identity's `trading_symbol`; the key itself when unset)."""
+        stored = self._frame["trading_symbol"].astype(object).fillna("").astype(str).str.strip()
+        symbols = stored.where(stored.ne(""), self._frame["ticker"])
+        return dict(zip(self._frame["ticker"], symbols, strict=True))
+
+    @property
     def sector_map(self) -> dict[str, str]:
         return self._gics_map("sector")
 

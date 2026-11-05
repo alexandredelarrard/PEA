@@ -45,6 +45,7 @@ from src.data_extract.utils.institutionals.security_tape import (
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore, Where
+from src.utils.identity_tables import read_identity
 from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price_basis import prepare_quote_anchors
 from src.utils.string import normalise_ticker, run_date, squash, yahoo_symbol
@@ -372,7 +373,7 @@ def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
 
 def load_fails_master(context: Context) -> pd.DataFrame | None:
     """The stored `universe_cusip` prepared for stamping; None before the first `identity` build."""
-    master = context.store.load(Tables.universe_cusip, columns=[*_MASTER_COLUMNS, "source"], optional=True)
+    master = read_identity(context.store, Tables.universe_cusip, columns=[*_MASTER_COLUMNS, "source"], optional=True)
     return None if master is None else prepare_master(master)
 
 
@@ -680,7 +681,7 @@ def download_fails_to_deliver(context: Context, years_history: int = 31, full: b
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     start_date = run_date(as_of)
-    if context.store.load(Tables.universe_cik_symbol, columns=["company_id"], limit=1, optional=True) is None:
+    if read_identity(context.store, Tables.universe_cik_symbol, columns=["company_id"], limit=1, optional=True) is None:
         periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, start_date)))
         cached = [period for period in periods if ensure_ftd_zip(context, cache, period)]
         logger.warning("FTD download: no universe_cik_symbol yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))

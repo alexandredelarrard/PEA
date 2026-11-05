@@ -13,7 +13,7 @@ Measured 2026-09-07 over `def14a_llm` (10,498 rows carry an `auditor_name`, 85.1
     => spurious "auditor changed" events removed          171 of 336  (51%)
 
 An alias TABLE, not a regex. Every one of the 70 observed strings is listed below, keyed on its
-own lower-cased, whitespace-collapsed form -- the `constants.CUSIP_TICKER_OVERRIDES` pattern:
+own lower-cased, whitespace-collapsed form -- the curated `cusip_ticker_overrides` pattern:
 data, not cleverness. The point is not brevity, it is that an UNRECOGNISED string falls through
 to `other` and gets logged: as the archive grows, a new spelling of Deloitte must be visible as
 a missing table entry rather than silently becoming a new firm. A regex wide enough to swallow

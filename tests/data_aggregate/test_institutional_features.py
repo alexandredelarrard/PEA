@@ -44,6 +44,7 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import CusipTags
 from src.utils.price_adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
@@ -1107,7 +1108,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     sqlite_store.save(Tables.cusip_ticker_map, cusip_map)
     splits = pd.DataFrame(columns=["date", "ticker", "value"])
     basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
-    resources = SecThirteenResources(frames, None, basis, quotes, cusip_map, None)
+    resources = SecThirteenResources(frames, None, basis, quotes, CusipTags.of_map(cusip_map), None)
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)

@@ -16,6 +16,7 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows, vendor_series_overrides
+from src.utils.identity_tables import identity_columns, read_identity
 from src.utils.string import normalise_ticker
 
 #: The security master's cited manual config, relative to the config directory.
@@ -53,9 +54,10 @@ def with_overrides(derived: Iterable[PredecessorSeries], declared: tuple[Predece
 
 def _register_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:
     """The register-derived predecessor series; none before the dated lineage exists."""
-    if "role" not in context.store.columns(Tables.universe_cik_symbol):
+    if "role" not in identity_columns(context.store, Tables.universe_cik_symbol):
         return ()
-    lineage = context.store.load(
+    lineage = read_identity(
+        context.store,
         Tables.universe_cik_symbol,
         columns=["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"],
         where={"role": "cik_window"},

@@ -44,6 +44,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     with_class_volume,
 )
 from src.data_store.schema import Tables
+from src.utils.identity_tables import read_identity
 from src.utils.step import Step
 
 
@@ -179,7 +180,8 @@ class StepCubeInstitutionals(Step):
 
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
-        df_lines = self._store.load(
+        df_lines = read_identity(
+            self._store,
             Tables.universe_cusip,
             columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role"),
             where={"source": "ftd"},

@@ -56,6 +56,7 @@ from src.data_extract.utils.institutionals.value_units import (
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import load_cusip_lines, tag_cusips
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series, run_date
 from src.utils.superinvestor_roster import roster_cik_union
@@ -143,10 +144,11 @@ class ReadFailure:
 
 @dataclass
 class _WalkState:
-    """Running state of one 13F walk: the CUSIP map built so far and rows saved per table."""
+    """Running state of one 13F walk: the CUSIP map built so far, the `universe_cusip` lines read once and rows saved per table."""
 
     looked_up: set[str] = field(default_factory=set)
     cmap: pd.DataFrame | None = None
+    lines: pd.DataFrame | None = None
     hr_saved: int = 0
     hr_suspect: int = 0
     book_saved: int = 0
@@ -548,10 +550,18 @@ class _Saver:
         for manifest, book in pending:
             self.save_packet(manifest, book)
 
+    def cusip_lines(self) -> pd.DataFrame:
+        """The `universe_cusip` lines of this walk, read on first use."""
+        if self.walk.lines is None:
+            self.walk.lines = load_cusip_lines(self.context.store)
+        return self.walk.lines
+
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
-        """Preserve the full source book in each existing destination, without latest-only collapse."""
+        """Preserve the full source book in each existing destination, without latest-only collapse. Each `sec13f_hr` row
+        is tagged by `tag_cusips`: a universe company's CUSIP by its dated `universe_cusip` line (every share class of
+        the company on its universe ticker), any other CUSIP by `cusip_ticker_map`."""
         cmap = _ticker_map(self.context, book, self.walk)
-        broad = book.merge(cmap[["cusip", "ticker"]].drop_duplicates("cusip"), on="cusip", how="left")
+        broad = book.assign(ticker=tag_cusips(book, self.cusip_lines(), cmap))
         broad["ticker"] = broad["ticker"].fillna(Tables.sec13f_hr.empty_marker[1])
         self.walk.hr_saved += save_13f_filing(self.context.store, manifest, broad, table=Tables.sec13f_hr)
         self.walk.hr_suspect += _suspect_prices(book)

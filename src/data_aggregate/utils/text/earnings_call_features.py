@@ -12,6 +12,7 @@ from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_preparation import SENTIMENT_TAGS, quarter_number
 from src.data_store.schema import Tables
+from src.utils.identity_tables import read_identity
 from src.utils.string import pad_cik_series
 
 SENTIMENT_COLUMNS = ("ticker", "quarter", "tag", "as_of", "sent_pos", "sent_neg", "sent_neu", "n_words", "model")
@@ -77,9 +78,13 @@ def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.Data
     """Canonical roster, consolidating lineage and trusted symbol ownership for stored calls."""
     # Load each identity table once with its consumer projection.
     roster = context.universe.roster
-    lineage = context.store.load(Tables.universe_cik_symbol, columns=["cik", "company_id", "role", "valid_from", "valid_to"], optional=True)
-    tenure = context.store.load(
-        Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to"], where={"source": ["form345", "manual"]}, optional=True
+    lineage = read_identity(context.store, Tables.universe_cik_symbol, columns=["cik", "company_id", "role", "valid_from", "valid_to"], optional=True)
+    tenure = read_identity(
+        context.store,
+        Tables.symbol_tenure,
+        columns=["symbol", "issuer_cik", "valid_from", "valid_to"],
+        where={"source": ["form345", "manual"]},
+        optional=True,
     )
     return roster, None if lineage is None else lineage.drop_duplicates(ignore_index=True), tenure
 

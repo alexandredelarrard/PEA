@@ -26,6 +26,7 @@ from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
+from src.utils.identity_tables import load_cusip_lines, load_cusip_map, tag_cusips
 from src.utils.string import pad_cik, run_date
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
@@ -248,6 +249,7 @@ def recover_13f_vintages(
     if dry_run:
         return preview
     saved = 0
+    lines, cmap = load_cusip_lines(context.store), load_cusip_map(context.store)
     cached_packets: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     if archives:
         for path in sorted(set(paths[str(row["accession"])] for row in pending)):
@@ -262,11 +264,8 @@ def recover_13f_vintages(
             raise RuntimeError(f"13F recovery stopped at {accession}: {packet.reason}")
         manifest, holdings = packet
         saved += save_13f_filing(context.store, manifest, holdings)
-        cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-        broad = holdings.assign(ticker=Tables.sec13f_hr.empty_marker[1])
-        if cmap is not None:
-            mapping = cmap.drop_duplicates("cusip").set_index("cusip").ticker
-            broad["ticker"] = broad.cusip.map(mapping).fillna(Tables.sec13f_hr.empty_marker[1])
+        broad = holdings.assign(ticker=tag_cusips(holdings, lines, cmap))
+        broad["ticker"] = broad["ticker"].fillna(Tables.sec13f_hr.empty_marker[1])
         save_13f_filing(context.store, manifest, broad, table=Tables.sec13f_hr)
     preview["saved_rows"] = saved
     return preview

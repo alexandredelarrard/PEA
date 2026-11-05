@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.institutionals.fetch_cusip_map as cm
-from src.constants.constants import CUSIP_TICKER_OVERRIDES
+from src.data_extract.utils.common.security_lines import SecurityManual, load_security_manual
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals.fetch_cusip_map import (
     build_cusip_ticker_map,
@@ -24,6 +24,8 @@ from src.data_extract.utils.institutionals.fetch_cusip_map import (
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
+
+CUSIP_TICKER_OVERRIDES = dict(load_security_manual().cusip_ticker_overrides)
 
 # `build_cusip_ticker_map` now always merges the curated CINS overrides
 # (CUSIP_TICKER_OVERRIDES) into its result, so the returned frame is a SUPERSET of what
@@ -114,7 +116,7 @@ def test_unmapped_cusip_recorded_not_requeried(monkeypatch):
 
 
 def test_walk_reuses_cache_including_known_misses(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cm, "CUSIP_TICKER_OVERRIDES", {})
+    monkeypatch.setattr(cm, "load_security_manual", lambda *_: SecurityManual.empty())
     sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["037833100", "999999999"], "ticker": ["AAPL", None]}))
     context = types.SimpleNamespace(store=sqlite_store)
     loads = []
@@ -136,7 +138,7 @@ def test_walk_reuses_cache_including_known_misses(sqlite_store: DataStore, monke
 
 
 def test_walk_retries_transport_failure_without_caching_a_miss(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cm, "CUSIP_TICKER_OVERRIDES", {})
+    monkeypatch.setattr(cm, "load_security_manual", lambda *_: SecurityManual.empty())
     monkeypatch.setattr(cm.time, "sleep", lambda _: None)
     context = types.SimpleNamespace(store=sqlite_store)
     calls = []

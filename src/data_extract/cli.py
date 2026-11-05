@@ -220,7 +220,7 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession()
+    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession(symbols=context.universe.trading_symbols)
 
     # Splits first: their windows are planned from the stored `prices`, which `fetch_prices` then advances.
     fetch_price_actions(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)

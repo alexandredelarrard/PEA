@@ -45,6 +45,7 @@ from src.data_extract.utils.institutionals.fetch_13f import (
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_store.schema import Resume, Tables
+from src.utils.identity_tables import load_cusip_lines, universe_cusips
 from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 
@@ -180,6 +181,12 @@ def _archive_scope(path: Path, cusips: frozenset[str]) -> tuple[pd.DataFrame, se
     return submissions, set(submissions.loc[submissions.accession.isin(holders), "cik"])
 
 
+def target_cusips(cmap: pd.DataFrame, lines: pd.DataFrame, tickers: list[str]) -> frozenset[str]:
+    """The CUSIPs that tag `tickers`: their companies' `universe_cusip` lines (every share class, any date) and the
+    `cusip_ticker_map` rows naming them."""
+    return frozenset(cmap.loc[cmap.ticker.isin(tickers), "cusip"]) | universe_cusips(lines, tickers)
+
+
 def _backfill_data_set(
     context: Context,
     path: Path,
@@ -193,8 +200,9 @@ def _backfill_data_set(
     completed: frozenset[str] = frozenset(),
 ) -> int:
     """Preserve full source accessions for a scope fixed across all recovery archives."""
+    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     if submissions is None:
-        scope = _archive_scope(path, frozenset(cmap.loc[cmap.ticker.isin(tickers), "cusip"]))
+        scope = _archive_scope(path, target_cusips(cmap, saver.cusip_lines(), tickers))
         if scope is None:
             logger.warning("13F backfill %s: unreadable source; retried next run", data_set.name)
             return 0
@@ -205,7 +213,6 @@ def _backfill_data_set(
     if selected.empty:
         logger.info("13F backfill %s: no pending accession; second source read skipped", data_set.name)
         return 0
-    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     saved_before = saver.walk.hr_saved
     for manifest, holdings in cached_filing_vintages(
         path,
@@ -288,9 +295,10 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         logger.info("13F backfill: no new ticker; nothing to do")
         return 0
     cmap = build_cusip_ticker_map(context, [], include_misses=True)
-    unmapped = sorted(set(targets) - set(cmap["ticker"]))
+    lines = load_cusip_lines(context.store)
+    unmapped = sorted(t for t in targets if not target_cusips(cmap, lines, [t]))
     if unmapped:
-        logger.warning("13F backfill: no CUSIP in %s maps to %s; skipped", Tables.cusip_ticker_map, ", ".join(unmapped))
+        logger.warning("13F backfill: no CUSIP in %s or %s maps to %s; skipped", Tables.universe_cusip, Tables.cusip_ticker_map, ", ".join(unmapped))
     targets = [t for t in targets if t not in unmapped]
     data_sets = published_data_sets(context) if targets else None
     if not data_sets:
@@ -299,7 +307,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     roster_ciks = roster_cik_union(context)
     cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets))
     archived: list[tuple[DataSet, list[str], Path, pd.DataFrame]] = []
-    cusips = frozenset(cmap.loc[cmap.ticker.isin(targets), "cusip"])
+    cusips = target_cusips(cmap, lines, targets)
     relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cusip": sorted(cusips)}))
     for data_set, due in tqdm(work, desc="13F source scope"):
         path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT, log=logger)
@@ -314,7 +322,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         archived.append((data_set, due, path, submissions))
     completed = frozenset() if full else _completed_accessions(context, relevant_ciks, roster_ciks)
     saved = 0
-    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
+    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))

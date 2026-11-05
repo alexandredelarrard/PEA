@@ -12,14 +12,16 @@ from typing import Any
 
 import pandas as pd
 
-from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.common import identity as identity_module
 from src.data_extract.utils.common.identity import build_identity, load_identity
+from src.data_extract.utils.common.security_lines import load_security_manual
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
 from tests.support.universe import as_roster, seed_universe, universe_config
+
+CUSIP_TICKER_OVERRIDES = dict(load_security_manual().cusip_ticker_overrides)
 
 CONFIG_DIR = "configs"
 
@@ -71,6 +73,7 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
     df_stored["earnings_date"] = df_stored["earnings_date"].dt.strftime("%Y-%m-%d")
     sqlite_store.save(Tables.earnings_surprises, df_stored)
     tickers = ["FRESH", "STALE", "NOACTUAL", "DUE", "NEW"]
+    seed_universe(sqlite_store, tickers)
 
     # The plan the full-table read used to give: the latest reported date and the latest stored date per ticker.
     df_full = sqlite_store.load(Tables.earnings_surprises)

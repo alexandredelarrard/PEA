@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,7 @@ _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "val
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
 _EXCHANGE_COLUMNS = ("ticker", "predecessor_cik", "seam_date", "ratio", "source")
 _REVERSE_COLUMNS = ("ticker", "seam_date", "accounting_acquirer_cik", "legal_acquirer_cik", "source")
+_OVERRIDE_COLUMNS = ("cusip", "ticker", "source")
 
 
 class SecurityManualError(ValueError):
@@ -85,8 +86,8 @@ class MergerBoundary:
 @dataclass(frozen=True)
 class SecurityManual:
     """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger
-    metadata, the declared co-registrant CIKs, the merger exchange ratios and the reverse acquisitions. The vendor
-    series overrides are read by `predecessor_series.load_vendor_series`."""
+    metadata, the declared co-registrant CIKs, the merger exchange ratios, the reverse acquisitions and the curated 13F
+    CUSIP -> ticker overrides of `cusip_ticker_map`. The vendor series overrides are read by `predecessor_series.load_vendor_series`."""
 
     ratios: pd.DataFrame
     boundaries: pd.DataFrame
@@ -95,6 +96,7 @@ class SecurityManual:
     co_registrants: tuple[str, ...] = ()
     exchanges: tuple[ShareExchange, ...] = ()
     reverse_acquisitions: tuple[ReverseAcquisition, ...] = ()
+    cusip_ticker_overrides: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def empty(cls) -> SecurityManual:
@@ -139,7 +141,17 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
         co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
         exchanges=_exchanges(_entries(blob, "exchange_ratios", _EXCHANGE_COLUMNS)),
         reverse_acquisitions=_reverse_acquisitions(_entries(blob, "reverse_acquisitions", _REVERSE_COLUMNS)),
+        cusip_ticker_overrides=_cusip_overrides(_entries(blob, "cusip_ticker_overrides", _OVERRIDE_COLUMNS)),
     )
+
+
+def _cusip_overrides(rows: pd.DataFrame) -> dict[str, str]:
+    """`{CUSIP-9: ticker}` of the `cusip_ticker_overrides` entries; a CUSIP listed twice is refused."""
+    if rows["cusip"].duplicated().any():
+        raise SecurityManualError(
+            f"security_master_manual.json: cusip_ticker_overrides lists {sorted(set(rows.loc[rows['cusip'].duplicated(), 'cusip']))} twice"
+        )
+    return dict(zip(rows["cusip"].astype(str), rows["ticker"].astype(str), strict=True))
 
 
 def _exchanges(rows: pd.DataFrame) -> tuple[ShareExchange, ...]:

@@ -19,6 +19,7 @@ from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
 from src.utils.price_adjustments import resolve_share_events
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
@@ -40,7 +41,7 @@ def _manager_batch_owner(
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
     # The stored manager table has no ticker column: tickers come only from the CUSIP map.
     cusip_map = pd.DataFrame({"cusip": ["999999999"], "ticker": ["ZZZ"]})
-    resources = SecThirteenResources(frames, None, resolve_share_events(None, None, {}), None, cusip_map, {"": ciks})
+    resources = SecThirteenResources(frames, None, resolve_share_events(None, None, {}), None, CusipTags.of_map(cusip_map), {"": ciks})
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:

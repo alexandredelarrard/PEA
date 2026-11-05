@@ -121,7 +121,8 @@ def fetch_sharadar_fundamentals(
 ) -> None:
     """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `fundamentals_sharadar`, each ticker from its own window.
 
-    Non-USD filers are skipped, not written. A ticker the subscription does not cover (`NotEntitledError`) is
+    Each ticker is requested under its trading symbol (`Universe.trading_symbols`) and stored under the ticker; a
+    ticker with no window (ended, history stored up to its end date) is skipped. Non-USD filers are skipped, not written. A ticker the subscription does not cover (`NotEntitledError`) is
     counted, not retried. A ticker with a failed page saves nothing, is named in the coverage log, and is
     fetched again next run from the same window.
     """
@@ -145,9 +146,15 @@ def fetch_sharadar_fundamentals(
     non_usd: list[str] = []
     failed: list[str] = []
     total_rows = 0
+    symbols = context.universe.trading_symbols
     for ticker in tqdm(tickers, desc="Downloading tickers"):
-        # vendor spelling (`BRK.B`) for both the request and the roster lookup; the wrong one returns 0 rows
-        symbol = ticker.replace("-", ".")
+        # an ended ticker whose history reaches its end date has no window
+        if not work.windows.get(ticker):
+            context.log.debug("Sharadar SF1: %s has no window (ended)", ticker)
+            continue
+
+        # the trading symbol in vendor spelling (`BRK.B`) for both the request and the roster lookup; the wrong one returns 0 rows
+        symbol = symbols.get(ticker, ticker).replace("-", ".")
         currency = currencies.get(symbol)
         if currency is not None and currency != "USD":
             # refuse to write: only some SF1 columns are USD-converted, so the row would mix units

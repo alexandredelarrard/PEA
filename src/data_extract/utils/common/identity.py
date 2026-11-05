@@ -5,6 +5,8 @@ its dated symbol intervals. `filing_scope`, `ticker_for_cik` and `tape_interval`
 from those rows; `tickers_for_ciks` applies `ticker_for_cik` to whole frames for the bulk data sets. `security_on`
 answers the market tapes from `universe_cusip` (security grain: CUSIP, class, role); `lineage_role` dates a CIK's
 filings against its consolidating windows.
+`bounds` and `trading_symbol` carry the published `universe_tickers` identity columns (`first_price_date`, `ended_on`,
+`trading_symbol`) that clamp and name every per-ticker fetch.
 `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant violations raise at load, never
 per row. An unknown CIK is its own singleton entity `E{cik}`.
 """
@@ -13,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from types import SimpleNamespace
 from typing import Any, Literal, cast
@@ -203,6 +205,10 @@ class Identity:
     source_cohort: dict[Table, pd.DataFrame] = field(default_factory=dict, repr=False, compare=False)
     #: universe ticker -> the boundary days of its mergers (insider lineage).
     merger_boundaries: Mapping[str, tuple[MergerBoundary, ...]] = field(default_factory=dict)
+    #: universe ticker -> `(first_price_date, ended_on)`, None where open (`Universe.bounds`): every fetch window's clamp.
+    bounds: Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]] = field(default_factory=dict)
+    #: universe ticker -> the symbol it trades under today (`Universe.trading_symbols`; PSKY -> SKYD).
+    trading_symbols: Mapping[str, str] = field(default_factory=dict)
 
     # universe_cik_symbol
 
@@ -213,9 +219,7 @@ class Identity:
     def _roster_cik(self, key: str) -> str:
         """Look up a normalized universe ticker, raising for missing roster CIKs."""
         if key not in self.roster_cik:
-            raise UnknownUniverseTickerError(
-                f"identity: {key!r} is not a universe ticker. {len(self.roster_cik)} ticker(s) are resolvable."
-            )
+            raise UnknownUniverseTickerError(f"identity: {key!r} is not a universe ticker. {len(self.roster_cik)} ticker(s) are resolvable.")
         return self.roster_cik[key]
 
     def universe_entity(self, ticker: str) -> str:
@@ -343,6 +347,15 @@ class Identity:
         if owner is None:
             return ACQUIRED_CONSTITUENT
         return CANONICAL_CURRENT if owner == roster else CANONICAL_PREDECESSOR
+
+    def trading_symbol(self, ticker: str) -> str:
+        """The symbol a ticker-keyed source is queried under: identity's current trading symbol, else the ticker."""
+        key = normalise_ticker(ticker)
+        return self.trading_symbols.get(key, key)
+
+    def ended_on(self, ticker: str) -> pd.Timestamp | None:
+        """The last day the ticker's shares traded, None while it trades."""
+        return self.bounds.get(normalise_ticker(ticker), (None, None))[1]
 
     def owns(self, ticker: str, cik) -> bool:
         """Is this CIK's filing about this universe ticker's company? Undated: union-policy forms
@@ -681,6 +694,7 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
         co_registrant_ciks=co_registrant_ciks(lineage, evidence, manual.co_registrants),
         mergers=merger_boundaries(manual),
     )
+    identity = replace(identity, bounds=context.universe.bounds, trading_symbols=context.universe.trading_symbols)
     context._identity_resolver = identity
     cohort = {
         Tables.universe_cik_symbol: lineage,

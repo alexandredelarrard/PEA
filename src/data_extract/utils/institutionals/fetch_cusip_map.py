@@ -3,7 +3,7 @@ fetch_cusip_map.py (src/data_extract/utils/institutionals/fetch_cusip_map.py)
 ---------------------------------------------------------------
 Map 13F CUSIPs to tickers via the OpenFIGI mapping API (idType=ID_CUSIP -> ticker), cached in
 `cusip_ticker_map` so each CUSIP is looked up once (a responded miss is stored as a NULL ticker).
-`CUSIP_TICKER_OVERRIDES` always win over cached and fresh results.
+The curated `cusip_ticker_overrides` of `configs/sec/security_master_manual.json` always win over cached and fresh results.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.context import Context
+from src.data_extract.utils.common.security_lines import load_security_manual
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,8 @@ def build_cusip_ticker_map(
         )
 
     # Overrides apply before the early return, since a cached miss is never retried; keep="last" makes them win.
-    overrides = pd.DataFrame({"cusip": [normalize_cusip(c) for c in CUSIP_TICKER_OVERRIDES], "ticker": list(CUSIP_TICKER_OVERRIDES.values())})
+    curated = load_security_manual(getattr(context, "config_dir", None)).cusip_ticker_overrides
+    overrides = pd.DataFrame({"cusip": [normalize_cusip(c) for c in curated], "ticker": list(curated.values())}, columns=["cusip", "ticker"])
     overrides = overrides.dropna(subset=["cusip"])
     if not overrides.empty:
         corrected = overrides.merge(cached, on="cusip", how="left", suffixes=("", "_cached"))

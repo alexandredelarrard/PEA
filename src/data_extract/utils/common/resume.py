@@ -6,7 +6,9 @@
 yet reach the floor, or its own first date in an optional `listing` table when later (a new key
 whose full pull is stored resumes like any other); the table-wide frontier minus
 the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
-key's stored span.
+key's stored span. Every window is clamped to the key's identity bounds (`Universe.bounds`:
+`[first_price_date, ended_on]`; a ticker-keyed series has no row before its listing's first price); an ended key whose
+stored last date reaches `ended_on` gets none.
 
 `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
 parsed for every key; plus, for a new key with no archive row yet, every cached period re-parsed for it alone.
@@ -51,6 +53,36 @@ def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timest
     and a failed run is healed by the next one."""
     since = run_date(as_of) - pd.Timedelta(days=days)
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
+
+
+#: `{key: (first_price_date, ended_on)}`, None where open (`Universe.bounds`).
+Bounds = Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]
+
+
+def bounded_span(bounds: Bounds, key: str, since: pd.Timestamp, until: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """`(since, until)` clamped to the key's `[first_price_date, ended_on]`; None when nothing is left. A key
+    without bounds (a secondary class, a key outside the universe) keeps its span."""
+    first, ended = bounds.get(key, (None, None))
+    start = max(since, first) if first is not None else since
+    end = min(until, ended) if ended is not None else until
+    return (start, end) if start <= end else None
+
+
+def before_end(keys: pd.Series, dates: pd.Series, bounds: Bounds) -> pd.Series:
+    """True where `dates` (aligned with `keys`) falls on or before the key's `ended_on`; a key without an end, or a null
+    date, is kept. The document, proxy, call and surprise planners take the end only: their filings and calls follow the
+    company's CIK and symbol lineage back before its current listing's `first_price_date` (CHTR before 2010, DELL, AVGO)."""
+    names = keys.astype(object)
+    edges = pd.DataFrame([(key, bounds.get(key, (None, None))[1]) for key in names.unique()], columns=["key", "ended"]).astype({"key": object})
+    joined = pd.DataFrame({"key": names.to_numpy(), "day": pd.to_datetime(dates, errors="coerce").to_numpy()}).merge(edges, on="key", how="left")
+    ended = pd.to_datetime(joined["ended"])
+    keep = ended.isna() | joined["day"].isna() | (joined["day"] <= ended)
+    return pd.Series(keep.to_numpy(), index=keys.index)
+
+
+def ended_keys(bounds: Bounds, last: Mapping[str, pd.Timestamp]) -> list[str]:
+    """Keys whose stored last date reaches their `ended_on`: nothing is left to fetch, sorted."""
+    return sorted(key for key, day in last.items() if (end := bounds.get(key, (None, None))[1]) is not None and pd.Timestamp(day) >= end)
 
 
 def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtime_floor: pd.Timestamp | None = None) -> pd.Timestamp:
@@ -211,6 +243,13 @@ def series_windows(
         for key, group in df_dates.groupby(key_col, sort=False):
             windows[str(key)] = _union_spans(windows[str(key)] + _hole_spans(cast(pd.DatetimeIndex, calendar), group[date_col], *holed[str(key)]))
     last = {key: edges[1] for key, edges in stats.items()}
+
+    # clamp every window to the key's identity bounds; an ended key whose history reaches its end gets none
+    bounds = context.universe.bounds
+    done = set(ended_keys(bounds, {key: day for key, day in last.items() if key in windows}))
+    windows = {key: [] if key in done else [b for span in spans if (b := bounded_span(bounds, key, *span))] for key, spans in windows.items()}
+    if done:
+        logger.info("%s: %d ended key(s) already stored up to their end date, no window: %s", table.name, len(done), ", ".join(sorted(done)))
     timings = {f"{table.name}.key_stats": read_stats - started, f"{table.name}.holes": time.perf_counter() - read_stats}
     return SeriesWork(windows=windows, key_class=key_class, last=last, timings=timings)
 

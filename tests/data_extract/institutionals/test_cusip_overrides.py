@@ -1,5 +1,5 @@
 """CINS -> ticker overrides for the 13F reconciliation
-(src/constants/constants.py::CUSIP_TICKER_OVERRIDES + fetch_cusip_map).
+(configs/sec/security_master_manual.json `cusip_ticker_overrides` + fetch_cusip_map).
 
 13F reports holdings by CUSIP, so an unresolved identifier makes a name INVISIBLE in
 `sec13f_hr` and in the superinvestor sleeve. `cusip_ticker_map` is built from
@@ -19,11 +19,13 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.constants.constants import CUSIP_TICKER_OVERRIDES
+from src.data_extract.utils.common.security_lines import load_security_manual
 
 _CUSIP_RE = re.compile(r"^[0-9A-Z]{9}$")
 # first character of a CINS -> domicile group, for the sanity print
 _CINS_COUNTRY = {"G": "Ireland/UK", "H": "Switzerland", "N": "Netherlands", "V": "Liberia", "Y": "Singapore"}
+
+CUSIP_TICKER_OVERRIDES = dict(load_security_manual().cusip_ticker_overrides)
 
 
 def test_override_identifiers_are_well_formed_and_unique():

@@ -1,8 +1,9 @@
 """EDGAR document work list: what each nightly run fetches for an EDGAR document table.
 
 `document_worklist`: the local EDGAR index rows of the table's forms for
-each key's filing scope (event CIKs and CIK windows), from the floor on, minus the accessions already stored (empty-filing
-markers included; optionally only on the rows of one source); newest first and capped per run.
+each key's filing scope (event CIKs and CIK windows), from the floor on and filed on or before the key's `ended_on`
+(`Universe.bounds`), minus the accessions already
+stored (empty-filing markers included; optionally only on the rows of one source); newest first and capped per run.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
-from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, document_floor, stored_accessions
+from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, before_end, document_floor, stored_accessions
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
 
@@ -127,11 +128,13 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = context.universe.new_since(overlap, as_of) if overlap else set()
+    bounds = context.universe.bounds
     units: dict[str, pd.DataFrame] = {}
     counts: dict[str, int] = {}
     for ticker in roster:
         frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
         df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
+        df_listed = df_listed[before_end(pd.Series(ticker, index=df_listed.index), df_listed["filed"], bounds)]
         done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
         df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
         for name, n in _classify_units(df_listed, df_units, _key_class(ticker, new, df_listed, df_units), overlap).items():

@@ -12,6 +12,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _history_floor
+from src.utils.identity_tables import CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ def _compact_batch_events(
 def prepare_institutional_book_history(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
     trading_index: pd.DatetimeIndex,
-    cusip_map: pd.DataFrame | None,
+    tags: CusipTags,
     universe: Sequence[str],
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
@@ -91,7 +92,7 @@ def prepare_institutional_book_history(
     filings_count = 0
     raw_rows = 0
 
-    with closing(clean_public_batches(packets, cusip_map, universe, valuation_close, value_basis)) as batches:
+    with closing(clean_public_batches(packets, tags, universe, valuation_close, value_basis)) as batches:
         for df_filings, df_holdings in batches:
             filings_count += len(df_filings)
             raw_rows += len(df_holdings)

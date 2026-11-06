@@ -828,6 +828,8 @@ def compute() -> dict:
         build_feature_panel,
         compute_raw_features,
     )
+    from src.data_aggregate.utils.price.capitalization import project_security_shares
+    from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
     from src.data_aggregate.utils.price.returns import (
         forward_compound,
         forward_cumchange,
@@ -847,8 +849,6 @@ def compute() -> dict:
     )
     from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
-    from src.utils.price.capitalization import project_security_shares
-    from src.utils.price.levels import as_traded_close, security_basis_frame
     from src.utils.string import pad_cik
     from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
     from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap

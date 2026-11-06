@@ -12,10 +12,11 @@ import pandas as pd
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
-from src.utils.price.levels import convert_quantities, lookup_asof
+from src.utils.price.levels import convert_quantities
 
 logger = logging.getLogger(__name__)
 

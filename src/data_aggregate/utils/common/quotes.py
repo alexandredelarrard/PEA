@@ -1,4 +1,4 @@
-"""As-of quote lookups shared by the insider and 13F value checks, and the terminal-unit factor of the saved basis."""
+"""As-of lookups on saved date x ticker grids, and the terminal-unit factor of the saved basis."""
 
 from __future__ import annotations
 
@@ -21,6 +21,17 @@ def period_close(close: pd.DataFrame, periods: pd.Series, max_age_days: int) -> 
     result = cast(pd.Series, df_asof.stack(future_stack=True))
     result.index = result.index.set_names(["period", "ticker"])
     return result
+
+
+def lookup_asof(df_values: pd.DataFrame, tickers: pd.Series, dates: pd.Series) -> pd.Series:
+    """Per (ticker, date), the value saved on the last grid date at or before the date; a null there, or a missing date, stays null."""
+    index = pd.DatetimeIndex(df_values.index)
+    stamps = pd.to_datetime(dates).to_numpy(dtype="datetime64[ns]")
+    rows = index.searchsorted(stamps, side="right") - 1
+    cols = df_values.columns.get_indexer(tickers.astype(str))
+    found = (rows >= 0) & (cols >= 0) & ~np.isnat(stamps)
+    values = df_values.to_numpy(dtype="float64")[np.maximum(rows, 0), np.maximum(cols, 0)]
+    return pd.Series(np.where(found, values, np.nan), index=dates.index)
 
 
 def terminal_basis_factor(df_basis: pd.DataFrame) -> pd.DataFrame:

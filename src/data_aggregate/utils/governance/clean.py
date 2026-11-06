@@ -10,6 +10,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.governance.def14a_impute import (
     CEO_COMP,
@@ -42,7 +43,6 @@ from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH
 from src.data_aggregate.utils.governance.staleness import source_date_column
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.names import person_key
-from src.utils.price.levels import lookup_asof
 
 _OWNERSHIP = "insider_ownership_pct"
 _DIRECTOR_OFFICER = "director_officer"

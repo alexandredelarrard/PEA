@@ -16,7 +16,7 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_RE
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.quotes import terminal_basis_factor
+from src.data_aggregate.utils.common.quotes import lookup_asof, terminal_basis_factor
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
@@ -48,7 +48,6 @@ from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
-from src.utils.price.levels import lookup_asof
 from src.utils.step import Step
 
 

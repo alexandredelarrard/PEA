@@ -8,8 +8,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBook, PublicBookSnapshot
-from src.utils.price.levels import convert_quantities, lookup_asof
+from src.utils.price.levels import convert_quantities
 
 
 @dataclass(frozen=True)

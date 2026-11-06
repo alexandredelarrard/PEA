@@ -16,9 +16,10 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import before_end, planner_bounds
+from src.data_extract.utils.common.resume import planner_bounds
 from src.data_store.schema import Resume, Tables
 from src.utils.string import run_date
+from src.utils.tickers_universe.universe import before_end
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",

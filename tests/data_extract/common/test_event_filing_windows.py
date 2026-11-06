@@ -29,7 +29,7 @@ from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
 from tests.support import identity_regression_gate as gate
 from tests.support.propagation import run_propagation
-from tests.support.universe import as_roster
+from tests.support.universe import as_roster, universe_of
 
 SENTINEL = "1900-01-01"
 ACE, OLD_CHUBB = "0000896159", "0000020171"  # CB: Chubb Ltd (ACE) bought The Chubb Corporation on 2016-01-14
@@ -222,7 +222,13 @@ def _seed(store) -> None:
 
 
 def _context(store, tmp_path: Path) -> SimpleNamespace:
-    return SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.event_windows"), config_dir="./configs")
+    return SimpleNamespace(
+        store=store,
+        paths={"DATA_STORE": tmp_path},
+        log=logging.getLogger("test.event_windows"),
+        config_dir="./configs",
+        universe=universe_of(sorted(ROSTER)),
+    )
 
 
 def _keys(store, table) -> set[str]:

@@ -27,7 +27,7 @@ from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
 from tests.support import identity_regression_gate as gate
 from tests.support.propagation import run_propagation
-from tests.support.universe import as_roster
+from tests.support.universe import as_roster, universe_of
 
 SENTINEL = "1900-01-01"
 OLD_JCI, TYCO = "0000053669", "0000833444"  # JCI's prices are Tyco's; old Johnson Controls is the acquired target
@@ -112,6 +112,7 @@ class _Context:
         self.config_dir = str(CONFIG_DIR)
         self.paths = {"DATA_STORE": data_store}
         self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15))
+        self.universe = universe_of(sorted(ROSTER))
 
 
 # --------------------------------------------------------------------------- no deferral left

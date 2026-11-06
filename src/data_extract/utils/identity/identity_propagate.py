@@ -24,7 +24,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_source_identity
-from src.data_extract.utils.common.resume import Bounds, before_end, recently_changed
+from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.common.security_lines import FTD_MASTER_COLUMNS, master_stamps, prepare_master
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
@@ -39,6 +39,7 @@ from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import FilerTable, ListedWindow, delete_filer_rows, foreign_filer_rows, removal_records
 from src.utils.identity_tables import company_lines, load_cusip_lines, load_cusip_map, tag_cusips, universe_cusips
 from src.utils.string import pad_cik_series
+from src.utils.tickers_universe.universe import Bounds, before_end
 
 #: One row per (CUSIP, stored ticker, new ticker) the 13F re-stamp moves.
 RESTAMP_COLUMNS = ("table", "cusip", "from_ticker", "to_ticker", "first_period", "last_period", "rows")

@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.data_store.schema import Tables
 from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags
-from src.validate.checks.identity import check_identity
+from src.validate.checks.identity import check_identity, pending_removals
 from tests.support.universe import seed_universe, universe_in
 
 SENTINEL = "1900-01-01"
@@ -749,3 +749,25 @@ def test_ended_companies_sharadar_ciks_and_shared_cusips_are_findings(sqlite_sto
         "  OK: REG's open window, symbol and CUSIP line after its end, ALB's foreign Sharadar CIK and the shared CUSIP are findings; TMUS is clean."
     )
     print("  OK: once REG's rows close at its end, REG raises neither open_after_end nor a missing current symbol row.")
+
+
+def test_rows_dated_after_the_company_end_are_not_pending_removals(sqlite_store):
+    """R-03 (REQ-014, X114 shape): WBD ended 2026-10-05 and its window closes 2026-10-06; its own 8-K filed 2026-10-06
+    is what the purge keeps (`before_end`), so the validator does not count it; a foreign filer's 8-K inside the life is."""
+    wbd, other = "0001437107", "0000000999"
+    seed_universe(sqlite_store, ["WBD"], rows={"WBD": {"cik": wbd, "ended_on": pd.Timestamp("2026-10-05")}})
+    lineage = pd.DataFrame([_cik("WBD", wbd, "cik_window", end="2026-10-06"), _sym("WBD", wbd, "WBD", "2022-04-11", "2026-10-06")])
+    rows = [("post-end-1", wbd, "2026-10-06"), ("own-1", wbd, "2026-09-01"), ("foreign-1", other, "2020-01-02")]
+    sqlite_store.save(
+        Tables.sec_8k,
+        pd.DataFrame([{"ticker": "WBD", "accession_number": a, "item": "8.01", "cik": c, "filing_date": pd.Timestamp(d)} for a, c, d in rows]),
+    )
+    lineage = lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+
+    pending = pending_removals(_context(sqlite_store), lineage, ["WBD"])
+
+    got = sorted(zip(pending["cik"], pending["rows"], strict=True))
+    assert got == [(other, 1)], pending
+    print("\n=== SANITY CHECK: validator pending removals stop at ended_on (R-03) ===")
+    print(pending.to_string(index=False))
+    print("  OK: WBD's own 8-K filed 2026-10-06 (after ended_on 2026-10-05) is not pending; the foreign 8-K of 2020 is")

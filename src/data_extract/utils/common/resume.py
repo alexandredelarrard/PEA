@@ -29,6 +29,7 @@ from src.data_extract.utils.common.bulk_cache import period_end
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import run_date
+from src.utils.tickers_universe.universe import Bounds
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,6 @@ def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timest
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
 
 
-#: `{key: (first_price_date, ended_on)}`, None where open (`Universe.bounds`).
-Bounds = Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]
 #: U-65: every planner keeps fetching for this many trading sessions after a company's `ended_on` (its completion 8-K,
 #: its last calls and surprises are dated just after the last trade).
 END_GRACE_SESSIONS = 10
@@ -90,18 +89,6 @@ def bounded_span(bounds: Bounds, key: str, since: pd.Timestamp, until: pd.Timest
     start = max(since, first) if first is not None else since
     end = min(until, ended) if ended is not None else until
     return (start, end) if start <= end else None
-
-
-def before_end(keys: pd.Series, dates: pd.Series, bounds: Bounds) -> pd.Series:
-    """True where `dates` (aligned with `keys`) falls on or before the key's `ended_on`; a key without an end, or a null
-    date, is kept. The document, proxy, call and surprise planners take the end only: their filings and calls follow the
-    company's CIK and symbol lineage back before its current listing's `first_price_date` (CHTR before 2010, DELL, AVGO)."""
-    names = keys.astype(object)
-    edges = pd.DataFrame([(key, bounds.get(key, (None, None))[1]) for key in names.unique()], columns=["key", "ended"]).astype({"key": object})
-    joined = pd.DataFrame({"key": names.to_numpy(), "day": pd.to_datetime(dates, errors="coerce").to_numpy()}).merge(edges, on="key", how="left")
-    ended = pd.to_datetime(joined["ended"])
-    keep = ended.isna() | joined["day"].isna() | (joined["day"] <= ended)
-    return pd.Series(keep.to_numpy(), index=keys.index)
 
 
 def ended_keys(bounds: Bounds, last: Mapping[str, pd.Timestamp]) -> list[str]:

@@ -23,13 +23,13 @@ from src.data_extract.utils.common.resume import (
     KEY_ESTABLISHED,
     KEY_NEW,
     KEY_ROWLESS,
-    before_end,
     document_floor,
     planner_bounds,
     stored_accessions,
 )
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
+from src.utils.tickers_universe.universe import before_end
 
 logger = logging.getLogger(__name__)
 

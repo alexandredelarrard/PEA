@@ -35,10 +35,11 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
 )
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, Identity, load_identity
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import before_end, planner_bounds
+from src.data_extract.utils.common.resume import planner_bounds
 from src.data_store.schema import Tables
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
+from src.utils.tickers_universe.universe import before_end
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
 DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"

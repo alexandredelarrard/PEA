@@ -19,11 +19,14 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.context import Context
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
-from src.data_extract.utils.identity.identity_propagate import purge_rows, rebuilt_since, retag_13f, thirteenf_moves
+from src.data_extract.utils.common.resume import planner_bounds
+from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, purge_rows, rebuilt_since, retag_13f, thirteenf_moves
+from src.data_extract.utils.identity.lifecycle import Lifecycle
 from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_13f_filing, save_hr_filing
 from src.data_store.schema import Tables
@@ -32,6 +35,7 @@ from src.utils.filer_tables import PURGE_TABLES_BY_NAME
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
 from tests.data_extract.institutionals.test_13f_one_walk import _line as _info_line
 from tests.support.propagation import stub_propagation
+from tests.support.universe import universe_config
 
 ROOT = Path(__file__).resolve().parents[3]
 RUN = Path("reports") / "validate" / "2026-11-03-identity-security-master" / "_cache"
@@ -255,3 +259,51 @@ def test_the_purge_leaves_rows_dated_after_the_company_end(sqlite_store: DataSto
     assert [(r["cik"], r["rows"]) for r in removed] == [(other, 1)] and kept == {"0001193125-26-415055", "own-1"}, (removed, kept)
     print("\n=== SANITY CHECK: rows after ended_on are left (REQ-014) ===")
     print(f"  no end: {sum(r['rows'] for r in open_life)} row(s) would go; WBD ended 2026-10-05: purged {removed}; kept {sorted(kept)}")
+
+
+def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propagate(
+    published_store: DataStore,  # noqa: F811 (fixture)
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-02 (X80 shape): AAA's `ended_on` 2026-10-05 is first published by this run's publish, which closes its window at
+    2026-10-06; the propagation of the same context (whose universe was read before the publish) must see that end and
+    leave AAA's 8-K filed 2026-10-06, while purging a foreign filer's 8-K inside the life."""
+    end, own, other = pd.Timestamp("2026-10-05"), "0000000100", "0000000999"
+    step: Any = _step(published_store)
+    context: Any = object.__new__(Context)
+    context.store, context.log, context._config, context._config_dir = published_store, step._log, universe_config(["AAA"]), step._config_dir
+    context._universe = None
+    step._context = context
+    lineage = step._symbols.rows.assign(valid_to=end + pd.Timedelta(days=1))
+    step._symbols = SimpleNamespace(rows=lineage, backlog=step._symbols.backlog, blocked=step._symbols.blocked)
+    step._lifecycle = Lifecycle(rows=step._lifecycle.rows.assign(ended_on=end, status="ended"), items=step._lifecycle.items)
+    step._options, step._run_date = IdentityOptions(), RUN_DATE
+    rows = [("AAA", own, "2026-10-06", "post-end-1"), ("AAA", own, "2026-09-01", "own-1"), ("AAA", other, "2020-01-02", "foreign-1")]
+    frame = pd.DataFrame(rows, columns=["ticker", "cik", "filing_date", "accession_number"]).assign(item="8.01")
+    published_store.save(Tables.sec_8k, frame.assign(filing_date=pd.to_datetime(frame["filing_date"])))
+    tenure = {"symbol": "AAA", "issuer_cik": own, "valid_from": pd.Timestamp("2006-01-03"), "valid_to": end, "n_filings": 3}
+    published_store.save(Tables.symbol_tenure, pd.DataFrame([{**tenure, "source": "form345", "evidence_period": "", "evidence": "seed"}]))
+    for name in ("refresh_insider", "refresh_fails", "refresh_short_volume"):
+        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
+    for name in ("reparse_notes", "reparse_insider"):
+        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: {})
+    monkeypatch.setattr(step_module, "thirteenf_moves", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(step_module, "retag_13f", lambda *args, **kwargs: pd.DataFrame(columns=list(RESTAMP_COLUMNS)))
+    monkeypatch.setattr(step_module, "rebuild_history", lambda *args, **kwargs: ())
+
+    seen_before, planned_before = context.universe.bounds["AAA"][1], planner_bounds(context)["AAA"][1]
+    step.run_publish()
+    result = step.run_propagate()
+    planned_after = planner_bounds(context)["AAA"][1]
+
+    kept = sorted(published_store.load(Tables.sec_8k, columns=["accession_number"])["accession_number"])
+    bound_end = context._identity_resolver.bounds["AAA"][1]
+    assert seen_before is None and bound_end == end, (seen_before, bound_end)
+    assert planned_before is None and planned_after == end + pd.offsets.BDay(10), (planned_before, planned_after)
+    assert kept == ["own-1", "post-end-1"], kept
+    assert result.removals["rows"].sum() == 1, result.removals
+    print("\n=== SANITY CHECK: an end first published this run reaches the propagation (R-02, X80) ===")
+    print(
+        f"  universe read before publish: AAA ended_on={seen_before}; resolver bound after publish: {bound_end:%Y-%m-%d}; planner end {planned_before} -> {planned_after:%Y-%m-%d} (grace)"
+    )
+    print(f"  purged {int(result.removals['rows'].sum())} foreign row(s); kept {kept} (the 2026-10-06 8-K stays, REQ-014)")

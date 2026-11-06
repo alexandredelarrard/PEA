@@ -25,7 +25,7 @@ from tqdm import tqdm
 from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.resume import Bounds, SeriesWork, document_floor, series_windows, trading_calendar
+from src.data_extract.utils.common.resume import Bounds, SeriesWork, bounded_span, document_floor, planner_bounds, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
@@ -401,11 +401,16 @@ def _initial_pull(session: YahooSession, work: SeriesWork, full_keys: set[str]) 
 def _apply_repull(
     context: Context, session: YahooSession, df_raw: pd.DataFrame, repull: list[str], floor: pd.Timestamp, until: pd.Timestamp
 ) -> pd.DataFrame:
-    """`df_raw` with the `repull` keys' rows replaced by their whole-window pull."""
+    """`df_raw` with the `repull` keys' rows replaced by their whole-window pull, each window clamped to the key's
+    planner bounds (`bounded_span`); a key with nothing left in its bounds keeps its rows."""
     if not repull:
         return df_raw
-    df_repull = session.pull([(_repull_start(context, floor), until, repull)], "post-action re-pull")
-    return pd.concat([df_raw[~df_raw["ticker"].isin(repull)], df_repull], ignore_index=True)
+    bounds, start = planner_bounds(context), _repull_start(context, floor)
+
+    # compute: each key's clamped window, keys sharing a window pulled together
+    windows = {key: [span] for key in repull if (span := bounded_span(bounds, key, start, until)) is not None}
+    df_repull = session.pull(SeriesWork(windows=windows, key_class={}).groups(), "post-action re-pull")
+    return pd.concat([df_raw[~df_raw["ticker"].isin(list(windows))], df_repull], ignore_index=True)
 
 
 def _report_pull(table: Table, work: SeriesWork, df_raw: pd.DataFrame, n_rows: int) -> None:

@@ -138,7 +138,7 @@ def _stored(store: Any) -> pd.DataFrame:
 
 def _facts(path: Path) -> pd.DataFrame | None:
     """One Notes zip's primary-filer cover-page symbol facts, read as the capture reads them (CIKs padded)."""
-    facts = dei._primary_facts(read_zip_tables(path, dei._DEI_READ, on_corrupt="skip", log=logging.getLogger("test.dei")))
+    facts = dei._primary_facts(read_zip_tables(path, dei._DEI_READ, on_corrupt="skip"))
     return None if facts is None else facts.assign(cik=pad_cik_series(facts["cik"]))
 
 

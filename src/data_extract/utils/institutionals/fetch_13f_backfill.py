@@ -177,7 +177,6 @@ def _archive_scope(path: Path, cusips: frozenset[str]) -> tuple[pd.DataFrame, se
             ),
         },
         on_corrupt="delete",
-        log=logger,
     )
     if not first:
         return None
@@ -356,7 +355,6 @@ def cached_filing_vintages(
             ),
         },
         on_corrupt="skip",
-        log=logger,
     )
     if not tables:
         raise ValueError(f"Unverifiable cached 13F archive: {path.name}")

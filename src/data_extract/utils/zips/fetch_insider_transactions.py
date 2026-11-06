@@ -223,7 +223,7 @@ def _read_tables(path: Path) -> tuple[pd.DataFrame, ...] | None:
     """Read a complete source unit; None when invalid. Invalid content is logged and the file kept;
     only a corrupt archive is deleted for the next normal retry."""
     try:
-        tables = read_zip_tables(path, _ZIP_SPECS, on_corrupt="delete", log=logger)
+        tables = read_zip_tables(path, _ZIP_SPECS, on_corrupt="delete")
         if not tables:
             raise ValueError("missing, ambiguous or unreadable required source member")
         _validate_bulk_tables(tables)

@@ -196,9 +196,7 @@ def recover_13f_vintages(
     paths: dict[str, Path] = {}
     if archives:
         for path in archives:
-            tables = read_zip_tables(
-                path, {"SUBMISSION.tsv": ZipRead(upper=True), "COVERPAGE.tsv": ZipRead(upper=True)}, on_corrupt="skip", log=context.log
-            )
+            tables = read_zip_tables(path, {"SUBMISSION.tsv": ZipRead(upper=True), "COVERPAGE.tsv": ZipRead(upper=True)}, on_corrupt="skip")
             if not tables:
                 raise ValueError(f"Unverifiable recovery metadata: {path}")
             for row in _submissions(tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]).itertuples():

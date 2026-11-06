@@ -153,9 +153,7 @@ def _read_member(archive: zipfile.ZipFile, name: str, spec: ZipRead) -> pd.DataF
     return frame
 
 
-def read_zip_tables(
-    path: Path, specs: Mapping[str, ZipRead], *, on_corrupt: Literal["delete", "skip"], log: logging.Logger
-) -> dict[str, pd.DataFrame] | None:
+def read_zip_tables(path: Path, specs: Mapping[str, ZipRead], *, on_corrupt: Literal["delete", "skip"]) -> dict[str, pd.DataFrame] | None:
     """Tab-separated members of one SEC bulk zip, keyed like `specs` (names match case-insensitively).
 
     Returns None for a corrupt archive (deleted under `on_corrupt="delete"`, kept under "skip"), `{}`
@@ -169,7 +167,7 @@ def read_zip_tables(
                     continue
                 matches = [n for n in archive.namelist() if n.rsplit("/", 1)[-1].lower() == member.lower()]
                 if len(matches) > 1:
-                    log.error("%s: ambiguous ZIP member %s", path.name, member)
+                    logger.error("%s: ambiguous ZIP member %s", path.name, member)
                     return {}
                 if matches:
                     names[member.lower()] = matches[0]
@@ -180,7 +178,7 @@ def read_zip_tables(
                 for member, spec in specs.items()
             }
     except zipfile.BadZipFile as exc:
-        _on_corrupt(path, exc, on_corrupt, log)
+        _on_corrupt(path, exc, on_corrupt, logger)
         return None
 
 

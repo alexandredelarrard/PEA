@@ -58,7 +58,7 @@ def pending_dei_periods(context: Context, cache: Path, full: bool) -> list[str]:
 def capture_dei_period(context: Context, cache: Path, period: str) -> int:
     """Replace one period's `dei` rows with its zip's cover-page symbols unless unchanged; returns the rows written."""
     # load the period's cover-page symbol facts of every filer and its stored rows
-    tables = read_zip_tables(cache / f"{period}_notes.zip", _DEI_READ, on_corrupt="delete", log=logger)
+    tables = read_zip_tables(cache / f"{period}_notes.zip", _DEI_READ, on_corrupt="delete")
     where: dict[str, object] = {"source": DEI_SOURCE, "evidence_period": period}
     existing = context.store.load(Tables.symbol_tenure, project=True, where=where, optional=True)
 

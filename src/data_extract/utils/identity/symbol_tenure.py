@@ -161,7 +161,7 @@ def scan_form345_cache(cache: Path) -> Form345Scan:
     tenure_parts: list[pd.DataFrame | None] = []
     owner_parts: list[pd.DataFrame] = [_owner_pairs(pd.DataFrame(), pd.DataFrame())]
     for path in zips:
-        tables = read_zip_tables(path, _FORM345_READ, on_corrupt="skip", log=logger)
+        tables = read_zip_tables(path, _FORM345_READ, on_corrupt="skip")
         skipped = _unreadable_quarter(tables, path.name)
         if skipped is not None:
             drops[skipped] += 1

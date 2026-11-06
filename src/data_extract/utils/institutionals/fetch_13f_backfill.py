@@ -34,18 +34,23 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_index import index_filing
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.institutionals.fetch_13f import (
+    ReadFailure,
     _pick,
     _Saver,
     _WalkState,
     fetch_13f,
     filing_vintage,
+    read_filing_vintage,
+    replace_hr_filing,
     save_hr,
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_store.schema import Resume, Tables
-from src.utils.identity_tables import load_cusip_lines, universe_cusips
+from src.utils.identity_tables import load_cusip_lines, load_cusip_map, universe_cusips
 from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 
@@ -390,3 +395,53 @@ def cached_filing_vintages(
                 raise ValueError(f"Unverifiable SEC packet {accession}: {error}") from error
             on_invalid(accession, ValueError(str(error)))
     return packets
+
+
+def _reread(context: Context, filings: pd.DataFrame) -> list[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]]:
+    """`(accession, packet or failure)` of each stored accession of `filings`: from the 13F data-set zip it came from
+    (`source`, cached), else from its EDGAR archive through edgartools' cache."""
+    # load: the data-set accessions, one zip read each
+    zipped = filings["source"].fillna("").astype(str).str.endswith("_form13f.zip")
+    reads: list[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]] = []
+    cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets)) if zipped.any() else None
+    for source, group in filings[zipped].groupby("source", sort=True):
+        path = cast(Path, cache) / str(source)
+        packets = (
+            {str(m.iloc[0].accession_number): (m, b) for m, b in cached_filing_vintages(path, group["accession_number"].tolist())}
+            if is_cached(path)
+            else {}
+        )
+        reads += [(a, packets.get(a, ReadFailure(False, f"not in the cached {source}"))) for a in group["accession_number"].astype(str)]
+
+    # load: every other accession from its archive (a stamp from the stored marker; nothing is listed)
+    for row in filings[~zipped].itertuples(index=False):
+        filing = index_filing(row.cik, "", row.form or "13F-HR", row.filing_date, row.accession_number)
+        stamp = FilingStamp(
+            str(row.accession_number),
+            str(row.form or "13F-HR"),
+            str(row.cik),
+            pd.Timestamp(row.filing_date),
+            str(row.form).endswith("/A"),
+            None,
+            filing,
+        )
+        reads.append((str(row.accession_number), read_filing_vintage(stamp)))
+    return reads
+
+
+def reread_hr_filings(context: Context, filings: pd.DataFrame) -> tuple[int, list[str]]:
+    """Rewrite the `sec13f_hr` rows of stored accessions (`filings`: cik, accession_number, form, filing_date, source,
+    one row each) from their re-read source under the published lines (`replace_hr_filing`), after an identity
+    correction. Returns (rows saved, the accessions left as stored because their source could not be re-read)."""
+    # load: the published lines and the stored market map, then each source book
+    lines, cmap = load_cusip_lines(context.store), load_cusip_map(context.store)
+    reads = _reread(context, filings)
+
+    # save: one transaction per accession; an unreadable one keeps its stored rows
+    saved, failed = 0, []
+    for accession, read in tqdm(reads, desc="13F re-read"):
+        if isinstance(read, ReadFailure):
+            failed.append(accession)
+            continue
+        saved += replace_hr_filing(context.store, read[0], read[1], lines, cmap)
+    return saved, failed

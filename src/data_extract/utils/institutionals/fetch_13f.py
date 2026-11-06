@@ -56,7 +56,7 @@ from src.data_extract.utils.institutionals.value_units import (
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import load_cusip_lines, tag_cusips
+from src.utils.identity_tables import company_rows, load_cusip_lines
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series, run_date
 from src.utils.superinvestor_roster import roster_cik_union
@@ -484,12 +484,15 @@ def save_13f_filing(
     holdings: pd.DataFrame,
     *,
     table: Table = Tables.sec13f_manager_holdings,
+    rows: pd.DataFrame | None = None,
 ) -> int:
-    """Preserve one immutable accession and its completion marker in the existing destination."""
+    """Preserve one immutable accession and its completion marker in the existing destination. The source checks and
+    the checksum read the whole per-CUSIP `holdings`; `rows` (default `holdings`) are the position rows stored."""
     checksum = _filing_checksum(manifest, holdings, table)
     row = manifest.iloc[0]
     empty = cast(tuple[str, str], table.empty_marker)[1]
-    if table == Tables.sec13f_hr and ("ticker" not in holdings or holdings.ticker.isna().any()):
+    stored = holdings if rows is None else rows
+    if table == Tables.sec13f_hr and ("ticker" not in stored or stored.ticker.isna().any()):
         raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
     with store.transaction() as bound:
         df_existing = bound.load(
@@ -509,14 +512,45 @@ def save_13f_filing(
             if existing["content_checksum"] != checksum or actual_count != declared_count or actual_total != declared_total:
                 raise ValueError(f"13F checksum conflict for {row['accession_number']}")
             return 0
-        marker = manifest.assign(cusip=empty, content_checksum=checksum)
-        if table == Tables.sec13f_hr:
-            marker["ticker"] = empty
-        positions = holdings.assign(parse_status="position")
-        columns = list(dict.fromkeys([*positions.columns, *marker.columns]))
-        bound.insert(table, positions.reindex(columns=columns))
-        bound.insert(table, marker.reindex(columns=columns))
-    return len(holdings)
+        _insert_filing(bound, table, manifest, stored, checksum)
+    return len(stored)
+
+
+def _insert_filing(bound: DataStore, table: Table, manifest: pd.DataFrame, positions: pd.DataFrame, checksum: str) -> None:
+    """Insert one accession's position rows and its completion marker through a bound store."""
+    empty = cast(tuple[str, str], table.empty_marker)[1]
+    marker = manifest.assign(cusip=empty, content_checksum=checksum)
+    if table == Tables.sec13f_hr:
+        marker["ticker"] = empty
+    positions = positions.assign(parse_status="position")
+    columns = list(dict.fromkeys([*positions.columns, *marker.columns]))
+    bound.insert(table, positions.reindex(columns=columns))
+    bound.insert(table, marker.reindex(columns=columns))
+
+
+def _hr_rows(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
+    """`company_rows` of `book` with every untagged row on the unmapped sentinel."""
+    rows = company_rows(book, lines, cmap)
+    sentinel = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
+    return rows.assign(ticker=rows["ticker"].astype(object).where(rows["ticker"].notna(), sentinel))
+
+
+def save_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
+    """Save one accession's `sec13f_hr` rows: `company_rows` of the whole `book` (one row per universe company in
+    canonical-class shares, other CUSIPs as they are, unmapped on the sentinel). Returns rows saved."""
+    return save_13f_filing(store, manifest, book, table=Tables.sec13f_hr, rows=_hr_rows(book, lines, cmap))
+
+
+def replace_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
+    """Rewrite one stored accession's `sec13f_hr` rows from its re-read `book` (an identity correction): its rows and
+    marker are deleted and its `company_rows` saved, in one transaction. Returns rows saved."""
+    checksum = _filing_checksum(manifest, book, Tables.sec13f_hr)
+    rows = _hr_rows(book, lines, cmap)
+    row = manifest.iloc[0]
+    with store.transaction() as bound:
+        bound.delete(Tables.sec13f_hr, {"cik": row["cik"], "accession_number": row["accession_number"]})
+        _insert_filing(bound, Tables.sec13f_hr, manifest, rows, checksum)
+    return len(rows)
 
 
 @dataclass
@@ -557,13 +591,11 @@ class _Saver:
         return self.walk.lines
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
-        """Preserve the full source book in each existing destination, without latest-only collapse. Each `sec13f_hr` row
-        is tagged by `tag_cusips`: a universe company's CUSIP by its dated `universe_cusip` line (every share class of
-        the company on its universe ticker), any other CUSIP by `cusip_ticker_map`."""
+        """Preserve the source book in each existing destination: `sec13f_hr` holds its `company_rows` (one row per
+        universe company in canonical-class shares, any other CUSIP by `cusip_ticker_map`), a roster manager's
+        `sec13f_manager_holdings` the whole per-CUSIP book."""
         cmap = _ticker_map(self.context, book, self.walk)
-        broad = book.assign(ticker=tag_cusips(book, self.cusip_lines(), cmap))
-        broad["ticker"] = broad["ticker"].fillna(Tables.sec13f_hr.empty_marker[1])
-        self.walk.hr_saved += save_13f_filing(self.context.store, manifest, broad, table=Tables.sec13f_hr)
+        self.walk.hr_saved += save_hr_filing(self.context.store, manifest, book, self.cusip_lines(), cmap)
         self.walk.hr_suspect += _suspect_prices(book)
         if str(manifest.iloc[0].cik) in self.roster_ciks:
             self.walk.book_saved += save_13f_filing(self.context.store, manifest, book)

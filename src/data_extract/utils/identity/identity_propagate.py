@@ -10,7 +10,8 @@ runs inside the window costs reads only.
 - Expansion (`reparse_notes`, `reparse_insider`): the bulk families re-parse, from their cached zips, the changed
   tickers whose table holds their rows but none from a scope CIK it can hold.
 - Re-stamps: insider rows in place (co-registrant rows purged), FTD and short-volume lines of companies whose
-  `universe_cusip` rows changed, and `sec13f_hr` rows whose CUSIP the dated lines now tag with another ticker.
+  `universe_cusip` rows changed; the `sec13f_hr` accessions holding a CUSIP the dated lines now tag with another ticker,
+  or a company CUSIP stored apart from its company row (U-67), are re-read from the local cache and rewritten.
 - A ticker whose facts were purged has its SEC and merged history rebuilt. A dry run only reports.
 """
 
@@ -27,6 +28,7 @@ from src.data_extract.utils.common.resume import Bounds, before_end, recently_ch
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
+from src.data_extract.utils.institutionals.fetch_13f_backfill import reread_hr_filings
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_extract.utils.institutionals.security_tape import restamp_targets
 from src.data_extract.utils.zips.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
@@ -34,12 +36,12 @@ from src.data_extract.utils.zips.fetch_financial_notes import reparse_financial_
 from src.data_extract.utils.zips.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import FilerTable, ListedWindow, delete_filer_rows, foreign_filer_rows, removal_records
-from src.utils.identity_tables import load_cusip_lines, load_cusip_map, tag_cusips, universe_cusips
+from src.utils.identity_tables import company_lines, load_cusip_lines, load_cusip_map, tag_cusips, universe_cusips
 from src.utils.string import pad_cik_series
 
 #: One row per (CUSIP, stored ticker, new ticker) the 13F re-stamp moves.
 RESTAMP_COLUMNS = ("table", "cusip", "from_ticker", "to_ticker", "first_period", "last_period", "rows")
-#: Keys per keyed 13F update.
+#: Accessions per marker read of the 13F rewrite.
 _KEY_CHUNK = 500
 #: `{ticker: CIKs of its company}` and `{ticker: its seam-widened windows}`.
 OwnedScopes = tuple[dict[str, frozenset[str]], dict[str, tuple[ListedWindow, ...]]]
@@ -190,8 +192,10 @@ def refresh_short_volume(context: Context, identity: Identity, tickers: Sequence
 
 
 def thirteenf_moves(context: Context, tickers: Sequence[str], as_of: pd.Timestamp, every: bool) -> pd.DataFrame:
-    """The stored `sec13f_hr` (cusip, period, ticker) groups that `tag_cusips` now tags with another ticker, for the
-    companies whose `universe_cusip` rows changed recently (`every`: every ticker): a CUSIP moved to or from a company."""
+    """The stored `sec13f_hr` (cusip, period, ticker) groups out of place under the published lines, for the companies
+    whose `universe_cusip` rows changed recently (`every`: every ticker): a CUSIP the dated lines now tag with another
+    ticker, or a company CUSIP stored on a row of its own instead of in its company row (U-67: a second class, a lone
+    class at a ratio, or a predecessor beside the current line)."""
     # load: the CUSIP lines, the market-wide map, the companies to re-check and their stored 13F groups
     lines, cmap, master = load_cusip_lines(context.store), load_cusip_map(context.store), load_fails_master(context)
     stamps = {} if master is None else master_stamps(master)
@@ -199,32 +203,42 @@ def thirteenf_moves(context: Context, tickers: Sequence[str], as_of: pd.Timestam
     scope = [{"cusip": sorted(universe_cusips(lines, companies))}, {"ticker": companies}]
     groups = context.store.summarize(Tables.sec13f_hr, ["cusip", "period", "ticker"], {"rows": ("count", None)}, where=scope)
 
-    # compute: each group's ticker under the published lines (unmapped: the sentinel), and the groups that move
+    # compute: each group's ticker under the published lines (unmapped: the sentinel), and its company row's CUSIP
     marker = str(Tables.sec13f_hr.empty_marker[1]) if Tables.sec13f_hr.empty_marker else ""
     groups = groups[groups["cusip"].astype(str).ne(marker)].reset_index(drop=True)
     fresh = tag_cusips(groups, lines, cmap).astype(object).where(lambda tags: tags.notna(), marker)
     moves = groups.assign(new_ticker=fresh.to_numpy(dtype=object))
-    return moves[moves["ticker"].astype(str).ne(moves["new_ticker"].astype(str))].reset_index(drop=True)
+    hits = company_lines(moves.assign(ticker=moves["new_ticker"]), lines)
+
+    # post-process: the groups tagged anew, and the company CUSIPs stored apart from their company row
+    apart = pd.Series(False, index=moves.index)
+    apart[hits.index] = hits["target"].ne(moves.loc[hits.index, "cusip"].astype(str)) | hits["ratio"].ne(1.0)
+    return moves[moves["ticker"].astype(str).ne(moves["new_ticker"].astype(str)) | apart].reset_index(drop=True)
 
 
 def retag_13f(context: Context, moves: pd.DataFrame, dry_run: bool) -> pd.DataFrame:
-    """Move (dry: report) the `sec13f_hr` rows of `moves` to their new ticker by keyed updates; one report row per
-    (CUSIP, stored ticker, new ticker)."""
-    # load: the stored keys of the moving CUSIPs (none on a dry run)
+    """Rewrite (dry: report) the `sec13f_hr` rows of every accession holding a `moves` group: the accession is re-read
+    from the local cache and stored as its `company_rows` under the published lines (`reread_hr_filings`); one report
+    row per (CUSIP, stored ticker, new ticker). An accession whose source cannot be re-read keeps its rows (WARNING)."""
+    # load: the stored keys of the moving groups, then their accessions' markers (none on a dry run)
     keys_wanted = not dry_run and not moves.empty
     stored = (
         context.store.load(Tables.sec13f_hr, columns=list(Tables.sec13f_hr.pk), where={"cusip": sorted(set(moves["cusip"]))}) if keys_wanted else None
     )
+    moving = _moving_keys(stored, moves, list(Tables.sec13f_hr.pk)) if stored is not None else pd.DataFrame(columns=["accession_number"])
+    filings = _accession_markers(context, sorted(set(moving["accession_number"].astype(str))))
 
-    # compute: the report, and the rows each new ticker takes
+    # compute: the report
     report = _move_report(moves)
-    moving = _moving_keys(stored, moves, list(Tables.sec13f_hr.pk)) if stored is not None else pd.DataFrame()
 
-    # save: one keyed update per new ticker and key chunk (the ticker is part of the key, so no row can collide)
-    for new_ticker, group in moving.groupby("new_ticker") if not moving.empty else ():
-        for start in range(0, len(group), _KEY_CHUNK):
-            context.store.update(Tables.sec13f_hr, {"ticker": new_ticker}, where=group[list(Tables.sec13f_hr.pk)].iloc[start : start + _KEY_CHUNK])
-    _log_moves(context, report, dry_run)
+    # save: each accession re-read and rewritten in its own transaction
+    saved, failed = reread_hr_filings(context, filings) if not filings.empty else (0, [])
+    if failed:
+        context.log.warning(
+            f"identity propagate: {len(failed)} '{Tables.sec13f_hr.name}' accession(s) could not be re-read and keep their stored rows: "
+            f"{', '.join(failed[:20])}{' ...' if len(failed) > 20 else ''}"
+        )
+    _log_moves(context, report, dry_run, (len(filings) - len(failed), saved))
     return report
 
 
@@ -279,6 +293,19 @@ def _moving_keys(stored: pd.DataFrame, moves: pd.DataFrame, pk: list[str]) -> pd
     return left.merge(right, on=["cusip", "day", "ticker"], how="inner")[[*pk, "new_ticker"]]
 
 
+def _accession_markers(context: Context, accessions: list[str]) -> pd.DataFrame:
+    """The stored completion markers (cik, accession, form, filing date, source) of `sec13f_hr` `accessions`."""
+    columns = ["cik", "accession_number", "form", "filing_date", "source"]
+    marker = str(Tables.sec13f_hr.empty_marker[1]) if Tables.sec13f_hr.empty_marker else ""
+    frames = [
+        context.store.load(
+            Tables.sec13f_hr, columns=columns, where={"accession_number": accessions[start : start + _KEY_CHUNK], "cusip": marker}, markers=True
+        )
+        for start in range(0, len(accessions), _KEY_CHUNK)
+    ]
+    return pd.concat(frames, ignore_index=True).drop_duplicates(["cik", "accession_number"]) if frames else pd.DataFrame(columns=columns)
+
+
 def _move_report(moves: pd.DataFrame) -> pd.DataFrame:
     """One `RESTAMP_COLUMNS` row per (CUSIP, stored ticker, new ticker) of `moves`."""
     if moves.empty:
@@ -304,12 +331,13 @@ def _log_records(context: Context, table: str, records: list[dict], dry_run: boo
     )
 
 
-def _log_moves(context: Context, report: pd.DataFrame, dry_run: bool) -> None:
-    """One INFO line for the 13F re-stamp: every (CUSIP, from, to, rows) moved."""
+def _log_moves(context: Context, report: pd.DataFrame, dry_run: bool, rewritten: tuple[int, int]) -> None:
+    """One INFO line for the 13F rewrite: every (CUSIP, from, to, rows) group, and the accessions and rows rewritten."""
     if report.empty:
         return
     detail = "; ".join(f"{r.cusip} {r.from_ticker}->{r.to_ticker} {r.rows} row(s)" for r in report.itertuples(index=False))
-    verb = "would move" if dry_run else "moved"
+    verb = "would rewrite" if dry_run else "rewrote"
     context.log.info(
-        f"identity propagate{' (dry run)' if dry_run else ''}: {verb} {int(report['rows'].sum())} '{Tables.sec13f_hr.name}' row(s) -- {detail}"
+        f"identity propagate{' (dry run)' if dry_run else ''}: {verb} {int(report['rows'].sum())} '{Tables.sec13f_hr.name}' row(s) out of place "
+        f"({rewritten[0]} accession(s) re-read, {rewritten[1]} row(s) saved) -- {detail}"
     )

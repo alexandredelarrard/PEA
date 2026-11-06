@@ -37,7 +37,7 @@ def lookup_asof(df_values: pd.DataFrame, tickers: pd.Series, dates: pd.Series) -
 def terminal_basis_factor(df_basis: pd.DataFrame) -> pd.DataFrame:
     """`F_T / F_d` on the saved grid: carries a quantity dated d into each ticker's last saved security units.
 
-    `df_basis` is the saved forward basis F (`security_basis`), carried forward over a ticker's missing price rows.
+    `df_basis` is the saved forward basis F (`security_basis`). F_T is each ticker's last saved value; a null F_d stays null.
     """
-    df_forward = df_basis.sort_index().ffill()
-    return df_forward.rtruediv(df_forward.iloc[-1], axis="columns")
+    df_sorted = df_basis.sort_index()
+    return df_sorted.rtruediv(df_sorted.ffill().iloc[-1], axis="columns")

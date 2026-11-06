@@ -48,6 +48,7 @@ from src.data_extract.utils.identity.cik_history import (
 from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
+from src.utils.identity_tables import LINE_COLUMNS
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -356,6 +357,12 @@ class Identity:
     def ended_on(self, ticker: str) -> pd.Timestamp | None:
         """The last day the ticker's shares traded, None while it trades."""
         return self.bounds.get(normalise_ticker(ticker), (None, None))[1]
+
+    @property
+    def cusip_lines(self) -> pd.DataFrame:
+        """The published `universe_cusip` rows in the `tag_cusips` shape (`LINE_COLUMNS`); empty before the first build."""
+        master = self.source_cohort.get(Tables.universe_cusip)
+        return master.reindex(columns=LINE_COLUMNS) if master is not None and not master.empty else pd.DataFrame(columns=LINE_COLUMNS)
 
     def owns(self, ticker: str, cik) -> bool:
         """Is this CIK's filing about this universe ticker's company? Undated: union-policy forms
@@ -717,6 +724,11 @@ def _log_identity(identity: Identity) -> None:
         len(identity.redundant_symbols),
         len(identity.securities_by_cusip),
     )
+
+
+def identity_published(context: Context) -> bool:
+    """Whether the identity step has published `universe_cik_symbol` (False before the first build)."""
+    return context.store.load(Tables.universe_cik_symbol, columns=["company_id"], limit=1, optional=True) is not None
 
 
 def load_identity(context: Context, refresh: bool = False) -> Identity:

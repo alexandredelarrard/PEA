@@ -42,6 +42,7 @@ from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import reconcile_13f_source
 from src.utils.price_adjustments import ShareBasis
+from tests.support.store_identity import store_identity
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
 
@@ -549,7 +550,7 @@ def test_atomic_save_replay_conflict_and_accession_resume(filing_store: DataStor
     event.remove(filing_store.engine, "before_cursor_execute", crash)
     assert len(completed(filing_store)) == 1
     assert len(filing_store.load(Tables.sec13f_manager_holdings)) == 1
-    context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__))
+    context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__), _identity_resolver=store_identity(filing_store))
     assert pending_vintages(context, "0000000001", ["amendment", "original", "missing_original"]) == ["amendment", "missing_original"]
     print("SANITY: atomic rollback, identical replay, visible payload conflict, and accession gaps all enforced.")
 
@@ -691,7 +692,7 @@ def test_disposable_postgres_atomicity() -> None:
 
 
 def test_bounded_recovery_dry_run_cap_and_original_gap(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__))
+    context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__), _identity_resolver=store_identity(filing_store))
     old = SimpleNamespace(accession_number="orig", filed=pd.Timestamp("2024-08-14"), doc_url="fixture-original")
     new = SimpleNamespace(accession_number="amend", filed=pd.Timestamp("2025-05-14"), doc_url="fixture-amendment")
     monkeypatch.setattr(managers, "configure", lambda context: None)

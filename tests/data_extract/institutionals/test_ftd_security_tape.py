@@ -26,6 +26,7 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.store_identity import store_identity
 from tests.support.universe import as_roster, seed_universe
 
 REPO = Path(__file__).resolve().parents[3]
@@ -309,6 +310,7 @@ def _context(store, tmp_path: Path) -> Any:
         config=extract_config(data_extract={"years_history": 15}),
         config_dir=str(REPO / "configs"),
         universe=seed_universe(store, UNIVERSE, rows={t: {"cik": ROSTER[t]} for t in UNIVERSE}),
+        _identity_resolver=store_identity(store),
     )
 
 
@@ -710,13 +712,15 @@ def test_e31_a_moved_boundary_restamps_exactly_the_affected_rows(sqlite_store, t
 
     derived_before = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert derived_before is not None
-    assert ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, dry_run=True, as_of=RUN_DATE) == []
+    assert (
+        ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=load_source_identity(context.store), dry_run=True, as_of=RUN_DATE) == []
+    )
     pd.testing.assert_frame_equal(_security(sqlite_store), before)
     derived_preview = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert derived_preview is not None
     pd.testing.assert_frame_equal(derived_preview, derived_before)
     assert saved == [], "dry-run prepares complete cached periods without committing source pairs"
-    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, as_of=RUN_DATE)
+    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=load_source_identity(context.store), as_of=RUN_DATE)
 
     after = _security(sqlite_store)
     changed = before.merge(after, on=["cusip", "date"], suffixes=("_b", "_a"))
@@ -811,7 +815,7 @@ def test_f101_a_scoped_restamp_never_touches_another_companys_lines(sqlite_store
     )
     sqlite_store.replace(Tables.universe_cusip, master)
 
-    assert ftd.restamp_fails(context, companies=None, tickers=["CB"], as_of=RUN_DATE) == []
+    assert ftd.restamp_fails(context, companies=None, tickers=["CB"], identity=load_source_identity(context.store), as_of=RUN_DATE) == []
 
     pd.testing.assert_frame_equal(
         _security(sqlite_store).sort_values(["cusip", "date"], ignore_index=True), before.sort_values(["cusip", "date"], ignore_index=True)
@@ -821,7 +825,7 @@ def test_f101_a_scoped_restamp_never_touches_another_companys_lines(sqlite_store
     pd.testing.assert_frame_equal(
         grain_after.sort_values(["ticker", "date"], ignore_index=True), grain_before.sort_values(["ticker", "date"], ignore_index=True)
     )
-    ftd.restamp_fails(context, companies=None, tickers=[*UNIVERSE, "BRK-B"], as_of=RUN_DATE)
+    ftd.restamp_fails(context, companies=None, tickers=[*UNIVERSE, "BRK-B"], identity=load_source_identity(context.store), as_of=RUN_DATE)
     assert _grain(sqlite_store)[("MRK", "2009-11-04")] == 804174.0 + 4163.0
     print("\n=== SANITY CHECK: F-101 scoped FTD re-stamp ===")
     print("  MRK's master moved; a CB-scoped re-stamp leaves every line and ticker row; the unscoped one re-stamps MRK 2009-11-04")
@@ -835,7 +839,7 @@ def test_f113_a_company_whose_master_rows_all_vanished_is_restamped(sqlite_store
     master = _master()
     sqlite_store.replace(Tables.universe_cusip, master[master["canonical_company"].ne(gone)])  # every other stamp is old
 
-    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, as_of=RUN_DATE)
+    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=load_source_identity(context.store), as_of=RUN_DATE)
 
     assert not _security(sqlite_store)["ticker"].eq(gone).any(), "no stored line is still stamped with the vanished company"
     assert not any(t == gone for t, _ in _grain(sqlite_store)) and [r["ticker"] for r in records] == [gone]

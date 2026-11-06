@@ -25,7 +25,7 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_source_identity
 from src.data_extract.utils.common.resume import Bounds, before_end, recently_changed
-from src.data_extract.utils.common.security_lines import load_fails_master, master_stamps, prepare_master
+from src.data_extract.utils.common.security_lines import FTD_MASTER_COLUMNS, master_stamps, prepare_master
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
@@ -183,7 +183,9 @@ def refresh_short_volume(context: Context, identity: Identity, tickers: Sequence
     # save: the companies to re-stamp, then their rows
     if not context.store.exists(Tables.sec_short_volume_security):
         return []
-    changed = restamp_targets(context, Tables.sec_short_volume_security, change_stamps(load_fails_master(context), identity), as_of, every=every)
+    master = context.store.load(Tables.universe_cusip, columns=[*FTD_MASTER_COLUMNS, "source"], optional=True)
+    stamps = change_stamps(None if master is None else prepare_master(master), identity)
+    changed = restamp_targets(context, Tables.sec_short_volume_security, stamps, as_of, every=every)
     if not changed:
         return []
     context.log.info(f"identity propagate: re-stamping short-volume rows for {len(changed)} company(ies): {', '.join(changed)}")
@@ -198,8 +200,9 @@ def thirteenf_moves(context: Context, tickers: Sequence[str], as_of: pd.Timestam
     ticker, or a company CUSIP stored on a row of its own instead of in its company row (U-67: a second class, a lone
     class at a ratio, or a predecessor beside the current line)."""
     # load: the CUSIP lines, the market-wide map, the companies to re-check and their stored 13F groups
-    lines, cmap, master = load_cusip_lines(context.store), load_cusip_map(context.store), load_fails_master(context)
-    stamps = {} if master is None else master_stamps(master)
+    lines, cmap = load_cusip_lines(context.store), load_cusip_map(context.store)
+    master = context.store.load(Tables.universe_cusip, columns=[*FTD_MASTER_COLUMNS, "source"], optional=True)
+    stamps = {} if master is None else master_stamps(prepare_master(master))
     companies = sorted(set(tickers) if every else set(recently_changed(stamps, as_of)) & set(tickers))
     scope = [{"cusip": sorted(universe_cusips(lines, companies))}, {"ticker": companies}]
     groups = context.store.summarize(Tables.sec13f_hr, ["cusip", "period", "ticker"], {"rows": ("count", None)}, where=scope)
@@ -233,7 +236,9 @@ def retag_13f(context: Context, moves: pd.DataFrame, dry_run: bool) -> pd.DataFr
     report = _move_report(moves)
 
     # save: each accession re-read and rewritten in its own transaction
-    saved, failed = reread_hr_filings(context, filings) if not filings.empty else (0, [])
+    saved, failed = (
+        reread_hr_filings(context, filings, load_cusip_lines(context.store), load_cusip_map(context.store)) if not filings.empty else (0, [])
+    )
     if failed:
         context.log.warning(
             f"identity propagate: {len(failed)} '{Tables.sec13f_hr.name}' accession(s) could not be re-read and keep their stored rows: "

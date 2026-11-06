@@ -23,6 +23,7 @@ from tests.canonical_schema import create_canonical
 from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
 from tests.support.cusip_build import capture_ftd
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 
@@ -57,6 +58,7 @@ def _context(sqlite_store, tmp_path, universe: tuple[str, ...] = ("AAPL",)) -> A
         paths={"DATA_STORE": tmp_path},
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
         universe=seed_universe(sqlite_store, universe),
+        _identity_resolver=store_identity(sqlite_store),
     )
 
 

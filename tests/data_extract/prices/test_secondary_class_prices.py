@@ -17,6 +17,7 @@ from omegaconf import OmegaConf
 
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 MASTER_COLUMNS = ("security_id", "canonical_company", "market_symbol", "lineage_role", "valid_from", "valid_to")
@@ -90,6 +91,7 @@ def _context(store: Any) -> Any:
         log=logging.getLogger("test.secondary_prices"),
         config=OmegaConf.create({"data_extract": {"years_history": 15}}),
         universe=seed_universe(store, ["BRK-B", "GOOGL", "WBD"]),
+        _identity_resolver=store_identity(store),
     )
 
 
@@ -103,7 +105,7 @@ def test_yahoo_symbol_spelling(symbol, yahoo):
 def test_fetch_list_is_the_universe_plus_its_current_secondary_classes(fetched):
     store, calls, _ = fetched
     ctx = _context(store)
-    assert fp.secondary_class_symbols(cast(Any, ctx), ["BRK-B", "GOOGL", "WBD"]) == {"BRK-A": "BRK-B", "GOOG": "GOOGL"}
+    assert fp.secondary_class_symbols(ctx._identity_resolver, ["BRK-B", "GOOGL", "WBD"]) == {"BRK-A": "BRK-B", "GOOG": "GOOGL"}
     _seed_stored(store, ["BRK-B", "GOOGL", "WBD"], [])
 
     fp.fetch_prices(cast(Any, ctx), fp.YahooSession(pause=0.0), tickers=["BRK-B", "GOOGL", "WBD"], years_history=15, as_of=_AS_OF)

@@ -29,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import activity_
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _seed_roster
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -172,6 +173,7 @@ def _ctx(tmp_path: Any, store: Any, added_on: dict[str, str]) -> Any:
     ctx = fake_context(tmp_path, store, tickers)
     rows = {t: {"universe_added_on": pd.Timestamp(added_on.get(t, "2000-01-01"))} for t in tickers}
     ctx.universe = seed_universe(store, tickers, rows=rows)
+    ctx._identity_resolver = store_identity(store)
     store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": list(_MAP), "ticker": list(_MAP.values())}))
     _seed_roster(store, [ROSTER])
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)

@@ -24,13 +24,13 @@ from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
+from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.resume import Bounds, SeriesWork, document_floor, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Table, Tables
-from src.utils.identity_tables import read_identity
 from src.utils.string import run_date, yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -298,19 +298,14 @@ class YahooSession:
         return self._download(keys, since, until, "anchor", actions=False)
 
 
-def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str, str]:
+def secondary_class_symbols(identity: Identity, companies: list[str]) -> dict[str, str]:
     """`{Yahoo symbol: canonical company}` of the companies' secondary classes that `universe_cusip` holds as current.
 
     A class whose every row has an end is no longer listed and is not fetched (yfinance has no history for it).
     """
-    rows = read_identity(
-        context.store,
-        Tables.universe_cusip,
-        columns=["canonical_company", "market_symbol", "valid_to"],
-        where={"lineage_role": SECONDARY_CLASS, "canonical_company": companies},
-        optional=True,
-    )
-    if rows is None or rows.empty:
+    lines = identity.cusip_lines
+    rows = lines[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(companies)]
+    if rows.empty:
         return {}
     rows = rows.assign(symbol=rows["market_symbol"].map(yahoo_symbol), current=rows["valid_to"].isna())
     current = cast(pd.DataFrame, rows.groupby(["symbol", "canonical_company"], as_index=False)["current"].any())
@@ -448,7 +443,7 @@ def fetch_prices(
     with no stored bar takes the whole window. A key with a split or cash dividend after its last stored bar, or
     whose first-year `close_split` disagrees with Yahoo's (`anchor_check`), is re-pulled over the whole window."""
     # Windows: the universe plus its current secondary classes
-    owners = secondary_class_symbols(context, tickers)
+    owners = secondary_class_symbols(load_identity(context), tickers)
     if owners:
         logger.info("%d current secondary class(es) fetched with their companies: %s", len(owners), ", ".join(owners))
     work, floor, until = _plan(context, Tables.prices, [*tickers, *owners], years_history, full, as_of)

@@ -26,7 +26,7 @@ from tqdm import tqdm
 from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SHARADAR_ACTION_SPLIT
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
-from src.data_extract.utils.common.identity import Identity, load_source_identity
+from src.data_extract.utils.common.identity import identity_published, load_identity
 from src.data_extract.utils.common.resume import archive_periods
 from src.data_extract.utils.common.security_lines import master_stamps, prepare_master, trade_dates
 from src.data_extract.utils.institutionals.security_tape import (
@@ -44,7 +44,6 @@ from src.data_extract.utils.institutionals.security_tape import (
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore, Where
-from src.utils.identity_tables import read_identity
 from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price_basis import prepare_quote_anchors
 from src.utils.string import normalise_ticker, run_date, squash, yahoo_symbol
@@ -568,7 +567,7 @@ def restamp_fails(
     companies: Collection[str] | None,
     tickers: Collection[str],
     *,
-    identity: dict[Table, pd.DataFrame] | None = None,
+    identity: dict[Table, pd.DataFrame],
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
 ) -> list[dict]:
@@ -581,8 +580,7 @@ def restamp_fails(
     cached originals and report their actual missing keys without downloads or database writes.
     """
 
-    cohort = load_source_identity(context.store) if identity is None else identity
-    master = prepare_master(cohort[Tables.universe_cusip])
+    master = prepare_master(identity[Tables.universe_cusip])
     if master.empty:
         return []
     if companies is None:
@@ -604,7 +602,7 @@ def restamp_fails(
     if rebuilt:
         # the share basis of the rebuilt companies' lines only: another company's share policy never blocks this restamp
         basis = load_fails_basis(context, master[master["canonical_company"].isin(rebuilt)])
-        _, records = _recover_fails_companies(context, master, rebuilt, cohort, basis, dry_run)
+        _, records = _recover_fails_companies(context, master, rebuilt, identity, basis, dry_run)
     logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
     return records
 
@@ -659,7 +657,7 @@ def download_fails_to_deliver(context: Context, years_history: int = 31, full: b
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     start_date = run_date(as_of)
-    if read_identity(context.store, Tables.universe_cik_symbol, columns=["company_id"], limit=1, optional=True) is None:
+    if not identity_published(context):
         periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, start_date)))
         cached = [period for period in periods if ensure_ftd_zip(context, cache, period)]
         logger.warning("FTD download: no universe_cik_symbol yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
@@ -673,15 +671,13 @@ def fetch_fails_to_deliver(
     tickers: Sequence[str],
     full: bool = False,
     as_of: pd.Timestamp | None = None,
-    *,
-    identity: Identity | None = None,
 ) -> int:
     """Stamp the stored raw FTD lines from `universe_cusip` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
 
     Incremental runs reread or recover the complete originals for pending units and changed issuer scopes. `full`
     rebuilds both tables from every cached ZIP; a scoped (`-t`) run replaces only its guarded issuer source pairs.
     """
-    cohort = identity.source_cohort if identity is not None else load_source_identity(context.store)
+    cohort = load_identity(context).source_cohort
     master = prepare_master(cohort[Tables.universe_cusip]) if not cohort[Tables.universe_cusip].empty else None
     if master is None or master.empty:
         logger.warning("FTD: no universe_cusip yet (run `identity` first); nothing stamped")

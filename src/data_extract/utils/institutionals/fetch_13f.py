@@ -36,6 +36,7 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
+from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, RetryRounds
@@ -56,7 +57,7 @@ from src.data_extract.utils.institutionals.value_units import (
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import company_rows, load_cusip_lines
+from src.utils.identity_tables import company_rows
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series, run_date
 from src.utils.superinvestor_roster import roster_cik_union
@@ -587,7 +588,7 @@ class _Saver:
     def cusip_lines(self) -> pd.DataFrame:
         """The `universe_cusip` lines of this walk, read on first use."""
         if self.walk.lines is None:
-            self.walk.lines = load_cusip_lines(self.context.store)
+            self.walk.lines = load_identity(self.context).cusip_lines
         return self.walk.lines
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:

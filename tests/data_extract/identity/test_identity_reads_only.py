@@ -79,3 +79,34 @@ def test_only_the_identity_readers_read_the_identity_tables() -> None:
     assert not reads, f"read the identity tables through src/utils/identity_tables.py or Identity: {reads}"
     assert not builders, f"build_cusip_ticker_map outside the 13F fetchers: {builders}"
     print("  Validated: every identity read goes through the build, Identity or identity_tables.read_identity.")
+
+
+#: U-70: inside `src/data_extract`, only the identity build and the `Identity` module read the published tables; every
+#: other step takes them from `Identity` (`load_identity`, `identity.cusip_lines`, `identity.source_cohort`).
+DATA_EXTRACT_OWNERS = OWNERS[:4]
+#: The shared table readers a data_extract step must not call directly.
+SHARED_READERS = {"read_identity", "identity_columns", "load_cusip_lines", "load_source_identity"}
+
+
+def _shared_reader_calls() -> list[str]:
+    """Calls of a shared identity-table reader in `src/data_extract` outside the identity build and `Identity`."""
+    calls = []
+    for path in sorted((REPO / "src/data_extract").rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        if rel.startswith(DATA_EXTRACT_OWNERS):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) else ""
+                if name in SHARED_READERS:
+                    calls.append(f"{rel}:{node.lineno} {name}")
+    return calls
+
+
+def test_data_extract_steps_read_identity_through_identity_only() -> None:
+    calls = _shared_reader_calls()
+    print("\n=== SANITY CHECK: data_extract steps read identity through Identity only (U-70) ===")
+    print(f"  owners: {', '.join(DATA_EXTRACT_OWNERS)}")
+    print(f"  shared identity-table reader calls outside the owners: {len(calls)} {calls[:10]}")
+    assert not calls, f"take the identity rows from Identity (load_identity): {calls}"
+    print("  Validated: no data_extract step reads the published identity tables except through Identity.")

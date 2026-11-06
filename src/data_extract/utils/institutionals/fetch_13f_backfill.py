@@ -32,6 +32,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
+from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
@@ -50,7 +51,7 @@ from src.data_extract.utils.institutionals.fetch_13f import (
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_store.schema import Resume, Tables
-from src.utils.identity_tables import load_cusip_lines, load_cusip_map, universe_cusips
+from src.utils.identity_tables import universe_cusips
 from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 
@@ -299,7 +300,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         logger.info("13F backfill: no new ticker; nothing to do")
         return 0
     cmap = build_cusip_ticker_map(context, [], include_misses=True)
-    lines = load_cusip_lines(context.store)
+    lines = load_identity(context).cusip_lines
     unmapped = sorted(t for t in targets if not target_cusips(cmap, lines, [t]))
     if unmapped:
         logger.warning("13F backfill: no CUSIP in %s or %s maps to %s; skipped", Tables.universe_cusip, Tables.cusip_ticker_map, ", ".join(unmapped))
@@ -427,12 +428,12 @@ def _reread(context: Context, filings: pd.DataFrame) -> list[tuple[str, tuple[pd
     return reads
 
 
-def reread_hr_filings(context: Context, filings: pd.DataFrame) -> tuple[int, list[str]]:
+def reread_hr_filings(context: Context, filings: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame) -> tuple[int, list[str]]:
     """Rewrite the `sec13f_hr` rows of stored accessions (`filings`: cik, accession_number, form, filing_date, source,
-    one row each) from their re-read source under the published lines (`replace_hr_filing`), after an identity
-    correction. Returns (rows saved, the accessions left as stored because their source could not be re-read)."""
-    # load: the published lines and the stored market map, then each source book
-    lines, cmap = load_cusip_lines(context.store), load_cusip_map(context.store)
+    one row each) from their re-read source under the published `lines` and the market map `cmap` (`replace_hr_filing`),
+    after an identity correction. Returns (rows saved, the accessions left as stored because their source could not be
+    re-read)."""
+    # load: each source book
     reads = _reread(context, filings)
 
     # save: one transaction per accession; an unreadable one keeps its stored rows

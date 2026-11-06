@@ -205,6 +205,7 @@ def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStor
         ),
     )
     identity = _identity(store=sqlite_store)
+    context._identity_resolver = identity
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -234,11 +235,11 @@ def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStor
         return reader(ctx, cache, period, download=download)
 
     monkeypatch.setattr(ftd, "read_ftd_period", observed)
-    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), identity=identity)
+    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"))
     assert requested == ["202607a"], "normal FTD planning skipped a NULL derived period because its raw rows and ZIP already existed"
     rows = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "LEN"})
     assert rows is not None and rows["fails_quantity"].tolist() == [12.0] and rows["source_checked_at"].notna().all()
-    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), identity=identity)
+    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"))
     assert requested == ["202607a"]
     print(
         "SANITY: normal FTD planning rereads a complete original for an old NULL quantity outside the 7-day scope window; successful paired refill is idempotent."
@@ -373,6 +374,7 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
         ),
     )
     identity = _identity(store=sqlite_store)
+    context._identity_resolver = identity
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)

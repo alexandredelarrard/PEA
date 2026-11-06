@@ -19,6 +19,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
@@ -33,7 +34,7 @@ from src.data_extract.utils.institutionals.fetch_13f import (
 )
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
-from src.utils.identity_tables import load_cusip_lines, load_cusip_map
+from src.utils.identity_tables import load_cusip_map
 from src.utils.string import pad_cik, run_date
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
@@ -254,7 +255,7 @@ def recover_13f_vintages(
     if dry_run:
         return preview
     saved = 0
-    lines, cmap = load_cusip_lines(context.store), load_cusip_map(context.store)
+    lines, cmap = load_identity(context).cusip_lines, load_cusip_map(context.store)
     cached_packets: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     if archives:
         for path in sorted(set(paths[str(row["accession"])] for row in pending)):

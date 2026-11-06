@@ -107,6 +107,14 @@ def test_parse_ftd_lines_strips_the_trailer_and_checks_its_count():
     print("SANITY: the two SEC trailer lines are dropped; a record count that disagrees with the data lines refuses the file.")
 
 
+def test_parse_ftd_lines_keeps_a_pipe_inside_the_description():
+    # cnsfails202104b line 52725, as filed by the SEC: the description holds a '|'.
+    lines = ftd._parse_ftd_lines(f"{_HEADER}20210428|23344K110|DMYQWS|351|DMY TECHNOLOGY GROUP INC IV | |1.49\n")
+    row = lines.iloc[0]
+    assert (row["cusip"], row["fails_quantity"], row["price"], row["description"]) == ("23344K110", 351.0, 1.49, "DMY TECHNOLOGY GROUP INC IV |")
+    print(f"SANITY: a 7-field SEC line keeps quantity {row['fails_quantity']:.0f} and price {row['price']}; the extra '|' stays in the description.")
+
+
 def test_real_202609a_parses_its_trailer_count_on_a_copy(tmp_path):
     source = DATA / "sec_fails_to_deliver" / "cnsfails202609a.zip"
     if not source.exists():

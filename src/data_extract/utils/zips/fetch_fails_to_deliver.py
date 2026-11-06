@@ -13,7 +13,6 @@ are cumulative net unsettled balances, not new fails. `full` rebuilds both table
 
 from __future__ import annotations
 
-import io
 import logging
 import re
 from collections.abc import Collection, Sequence
@@ -136,9 +135,11 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
     columns = list(SECURITY_COLUMNS[:8])
     lines = _strip_ftd_trailer(raw.strip().splitlines())
     header = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"
-    if not lines or lines[0].strip().lstrip("\ufeff").upper() != header or any(len(row.split("|")) != 6 for row in lines[1:]):
+    rows = [row.split("|") for row in lines[1:]]
+    if not lines or lines[0].strip().lstrip("\ufeff").upper() != header or any(len(fields) < 6 for fields in rows):
         raise ValueError("FTD invalid header or source line width")
-    df = pd.read_csv(io.StringIO("\n".join([header, *lines[1:]])), sep="|", dtype=str, keep_default_na=False, quoting=3)
+    # A description can itself hold a '|' (cnsfails202104b): the first four fields and the price stay fixed.
+    df = pd.DataFrame([[*fields[:4], "|".join(fields[4:-1]), fields[-1]] for fields in rows], columns=header.split("|"), dtype=str)
     cols = {c.strip().upper(): c for c in df.columns}
     price = pd.to_numeric(_ftd_column(df, cols, "PRICE").where(lambda s: s != "."), errors="coerce")
     qty = pd.to_numeric(_ftd_column(df, cols, "QUANTITY (FAILS)"), errors="coerce")

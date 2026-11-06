@@ -53,6 +53,15 @@ def test_saved_daily_counts_and_finra_quantities_share_one_terminal_basis() -> N
     print("SANITY: a no-trade4:1 split in the saved F changes both quantity legs together; daily short turnover stays10%.")
 
 
+def test_terminal_factor_keeps_a_null_basis_null() -> None:
+    days = pd.bdate_range("2020-01-02", periods=4)
+    df_basis = pd.DataFrame({"TEST": [1.0, np.nan, 2.0, np.nan]}, index=days)
+    factor = terminal_basis_factor(df_basis)["TEST"]
+    assert factor.iloc[0] == 2.0 and factor.iloc[2] == 1.0
+    assert factor.iloc[[1, 3]].isna().all()
+    print("SANITY: F_T is the last saved F (2.0); a date whose F is null converts to null instead of a stale F.")
+
+
 @pytest.mark.parametrize("invalid_factor", [-2.0, 0.0, np.nan, np.inf])
 def test_tape_support_rejects_malformed_genuine_or_vendor_evidence(invalid_factor: float) -> None:
     days = pd.bdate_range("2020-01-02", periods=3)

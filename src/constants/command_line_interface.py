@@ -130,4 +130,3 @@ DELETE_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Delete t
 #
 REPORT_PATH_ARGS = ("--report", "report_path")
 REPORT_PATH_KWARGS: dict[str, Any] = dict(default=None, help="Where to write the markdown report (default: the command's report path).")
-

@@ -7,22 +7,22 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.quotes import lookup_asof, terminal_basis_factor
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
 
 
-def position_units(trades: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:
+def position_units(trades: pd.DataFrame, df_factor: pd.DataFrame | None) -> pd.DataFrame:
     """Put unclassed transaction-day shares and holdings in terminal units, `q * F_T / F_d`; keep source execution USD.
 
-    `df_basis` is the saved forward basis F (`security_basis`). Class-titled rows and rows without F keep source
+    `df_factor` is `terminal_basis_factor` of the saved basis. Class-titled rows and rows without F keep source
     quantities for scale-free same-day ratios, marked unsupported for cross-day and cross-account comparisons.
     """
     df_rows = trades.copy()
     df_rows["klass"] = security_class(df_rows["security_title"])
     df_rows["units_known"] = False
-    if df_basis is None or df_basis.empty:
+    if df_factor is None or df_factor.empty:
         return df_rows
-    factor = lookup_asof(terminal_basis_factor(df_basis), df_rows["ticker"], df_rows["transaction_day"])
+    factor = lookup_asof(df_factor, df_rows["ticker"], df_rows["transaction_day"])
 
     # Convert only unclassed common rows with a known basis.
     df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna() & df_rows["klass"].eq("COMMON")

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, officer_role
@@ -30,7 +31,7 @@ def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
     ]
     df_quotes = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2024-06-10"), 100.0, 10.0)}, index=idx)
     df_clean, _ = clean_transactions(_frame(rows), df_valuation_close=df_quotes)
-    df_rebased = position_units(df_clean, basis_frame(share_basis, ["AAA"], idx[-1]))
+    df_rebased = position_units(df_clean, terminal_basis_factor(basis_frame(share_basis, ["AAA"], idx[-1])))
     df_before = df_rebased.loc[df_rebased["transaction_day"].eq(pd.Timestamp("2024-06-07"))]
     assert df_before["shares_n"].tolist() == [50]
     assert df_before["shares_owned_after"].tolist() == [1050]
@@ -71,7 +72,7 @@ def test_single_class_split_converts_through_saved_basis_and_class_rows_keep_sou
         }
     )
 
-    df_units = position_units(df_trades, df_basis)
+    df_units = position_units(df_trades, terminal_basis_factor(df_basis))
 
     assert df_units["shares_n"].tolist() == [50.0, 50.0, 5.0, 7.0]
     assert df_units["shares_owned_after"].tolist() == [1050.0, 1100.0, 105.0, 70.0]

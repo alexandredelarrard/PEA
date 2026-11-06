@@ -801,7 +801,7 @@ def compute() -> dict:
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-    from src.data_aggregate.utils.common.quotes import terminal_basis_factor
+    from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
     from src.data_aggregate.utils.common.xs import (
         winsorize_xs,
         xs_standardize,
@@ -854,7 +854,6 @@ def compute() -> dict:
     from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
     from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features, build_institutional_feature_panel
-    from tests.data_aggregate.test_short_flow_features import terminal_rows
 
     fund = fundamentals()
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())

@@ -394,7 +394,8 @@ def test_an_unchanged_lineage_neither_purges_nor_reparses(sqlite_store, tmp_path
 def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_store, tmp_path, monkeypatch, stubs):
     """AC-030: MSFT's scope changed; ALB and TMUS stay on their incremental frontier."""
     context = _context(sqlite_store, tmp_path)
-    resolver = _identity({"MSFT": AFTER})
+    # X90: only a scope stamped by this run (on or after the step starts) is re-parsed
+    resolver = _identity({"MSFT": pd.Timestamp.now(tz="UTC").tz_localize(None) + pd.Timedelta(hours=1)})
 
     run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
@@ -626,7 +627,7 @@ def test_the_bulk_reparse_uses_the_propagation_resolver_and_run_date(tmp_path, m
     for module in (notes, insider):
         monkeypatch.setattr(module, "load_identity", lambda context, *a, **k: loads.append("load") or None)
         monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
-    resolver = SimpleNamespace(co_registrant_ciks=frozenset())
+    resolver = SimpleNamespace(co_registrant_ciks=frozenset(), securities_by_cusip={})
     empty = pd.DataFrame(columns=["ticker", "cik", "issuer_cik", "rows"])
     store = SimpleNamespace(exists=lambda table: False, summarize=lambda *args, **kwargs: empty)
     context = SimpleNamespace(store=store, log=logging.getLogger("test.reparse"), config=extract_config())

@@ -12,21 +12,24 @@ import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _history_floor
-from src.utils.identity_tables import CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 
 logger = logging.getLogger(__name__)
 
 
 def compact_institutional_books(df_books: pd.DataFrame) -> pd.DataFrame:
-    """Keep mapped amounts, unknown/zero rows and positive-share security identities."""
+    """Keep mapped amounts, unknown/zero rows and positive-share security identities, one row per (period, manager,
+    company) as stored: `sec13f_hr` holds one row per manager x company x accession in canonical-class shares (U-67)."""
     numeric = ["shares", "value_usd", "call_value", "put_value"]
     keys = ["period", "cik", "ticker"]
     df_mapped = df_books.loc[df_books.ticker.notna()]
-    grouped = df_mapped.groupby(keys)[numeric]
-    df_totals = grouped.sum(min_count=1).where(grouped.count().eq(df_mapped.groupby(keys).size(), axis=0))
-    identities = df_mapped.loc[df_mapped.shares.gt(0)].groupby(keys).cusip.agg(frozenset)
-    df_totals["_cusips"] = identities.astype("object")
+    duplicated = df_mapped.duplicated(keys)
+    if duplicated.any():
+        sample = df_mapped.loc[duplicated, keys].head(3).to_dict("records")
+        raise ValueError(f"13F books hold {int(duplicated.sum())} duplicate manager x company row(s), e.g. {sample}: run `identity --only propagate`")
+    df_totals = df_mapped.set_index(keys)[numeric]
+    identities = [frozenset({cusip}) if held else np.nan for cusip, held in zip(df_mapped["cusip"], df_mapped["shares"].gt(0), strict=True)]
+    df_totals["_cusips"] = pd.Series(identities, index=df_totals.index, dtype="object")
     return df_totals
 
 
@@ -77,14 +80,13 @@ def _compact_batch_events(
 def prepare_institutional_book_history(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
     trading_index: pd.DatetimeIndex,
-    tags: CusipTags,
     universe: Sequence[str],
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
     *,
     settle_days: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Clean many complete books together and retain only compact public events."""
+    """Clean many complete books together (each `sec13f_hr` row on its stored ticker) and retain only compact public events."""
     frames: list[pd.DataFrame] = []
     states: list[pd.DataFrame] = []
     identities: dict[frozenset, frozenset] = {}
@@ -92,7 +94,7 @@ def prepare_institutional_book_history(
     filings_count = 0
     raw_rows = 0
 
-    with closing(clean_public_batches(packets, tags, universe, valuation_close, value_basis)) as batches:
+    with closing(clean_public_batches(packets, None, universe, valuation_close, value_basis)) as batches:
         for df_filings, df_holdings in batches:
             filings_count += len(df_filings)
             raw_rows += len(df_holdings)

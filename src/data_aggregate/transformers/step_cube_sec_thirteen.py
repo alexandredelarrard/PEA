@@ -160,7 +160,6 @@ class StepCubeSecThirteen(Step):
         history = prepare_institutional_book_history(
             packets,
             resources.frames.trading_index,
-            resources.cusip_tags,
             resources.frames.universe,
             resources.valuation_close,
             cfg.get("value_basis"),

@@ -182,18 +182,24 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     grid = pd.bdate_range("2024-01-02", "2025-03-31")
     universe = tuple(mapping.ticker.unique())
     close = pd.DataFrame(10.0, index=grid, columns=list(universe))
-    sqlite_store.save(Tables.sec13f_hr, payload)
+    # extraction tags each stored position (U-67); the cube reads the stored ticker
+    stored = payload.assign(
+        ticker=payload["ticker"].where(
+            ~payload["cusip"].isin(set(mapping.cusip)), payload["cusip"].map(dict(zip(mapping.cusip, mapping.ticker, strict=True)))
+        )
+    )
+    sqlite_store.save(Tables.sec13f_hr, stored)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with closing(packets):
         expected_packets = list(packets)
     manifests = pd.concat([packet[0] for packet in expected_packets], ignore_index=True)
     raw = pd.concat([packet[1] for packet in expected_packets], ignore_index=True)
-    prepared = clean_public_holdings(attach_tickers(raw, CusipTags.of_map(mapping), universe), close, None)
+    prepared = clean_public_holdings(attach_tickers(raw, None, universe), close, None)
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    history = books.prepare_institutional_book_history(stream, grid, CusipTags.of_map(mapping), universe, close, None, settle_days=3)
+    history = books.prepare_institutional_book_history(stream, grid, universe, close, None, settle_days=3)
     assert history is not None
     actual = list(books.iter_institutional_books(*history))
 
@@ -292,14 +298,17 @@ def test_default_stream_batches_many_whole_quarters(sqlite_store: Any, monkeypat
 
 
 def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any) -> None:
-    sqlite_store.save(Tables.sec13f_hr, _payload())
+    payload = _payload()
+    positions = payload["parse_status"].eq("position")
+    payload.loc[positions, "ticker"] = "T" + payload.loc[positions, "cusip"].str[-1]  # one company per CUSIP, as extraction stores it (U-67)
+    sqlite_store.save(Tables.sec13f_hr, payload)
     grid = pd.bdate_range("2024-01-02", "2024-05-16")
-    mapping = pd.DataFrame({"cusip": [f"{number:09d}" for number in range(3)], "ticker": ["ABC"] * 3})
+    universe = ("T0", "T1", "T2")
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
         history = books.prepare_institutional_book_history(
-            packets, grid, CusipTags.of_map(mapping), ("ABC",), pd.DataFrame(10.0, index=grid, columns=["ABC"]), None, settle_days=0
+            packets, grid, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None, settle_days=0
         )
     assert history is not None
     assert (repair.call_count, max(len(call.args[0][["cik", "period"]].drop_duplicates()) for call in repair.call_args_list)) == (2, 2)
@@ -399,3 +408,17 @@ def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
     print("SANITY: a universe-filtered mapping retains every raw row with the existing unknown ticker dtype and null mask.")
+
+
+def test_compact_books_refuse_two_rows_of_one_manager_and_company() -> None:
+    """U-67: `sec13f_hr` holds one row per manager x company x accession; two rows of one key (stored before U-67 and
+    not yet rewritten by the propagation) stop the cube instead of being summed."""
+    rows = pd.DataFrame(
+        {"period": pd.Timestamp("2024-06-30"), "cik": "0000000001", "ticker": "BRK-B", "cusip": ["084670108", "084670702"],
+         "shares": [2.0, 100.0], "value_usd": [1.3e6, 4.3e4], "call_value": 0.0, "put_value": 0.0}
+    )  # fmt: skip
+    with pytest.raises(ValueError, match="duplicate manager x company"):
+        books.compact_institutional_books(rows)
+    one = books.compact_institutional_books(rows.iloc[1:])
+    assert one["shares"].tolist() == [100.0] and one["_cusips"].tolist() == [frozenset({"084670702"})]
+    print("SANITY: a pre-U-67 BRK-A + BRK-B pair is refused; one company row passes through as stored with its CUSIP identity.")

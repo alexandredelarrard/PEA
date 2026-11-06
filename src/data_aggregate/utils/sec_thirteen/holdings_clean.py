@@ -66,10 +66,14 @@ def stamp_legacy_publication(
     return cast(pd.DataFrame, h)
 
 
-def attach_tickers(holdings: pd.DataFrame, tags: CusipTags, universe: Sequence[str] | None = None) -> pd.DataFrame:
-    """Tag each position (`CusipTags`: a universe company's CUSIP by its dated `universe_cusip` line, any other by
-    `cusip_ticker_map`), keeping only `universe` tickers when given, while retaining unmapped whole-book positions."""
-    return holdings.assign(ticker=tags.tag(holdings, universe))
+def attach_tickers(holdings: pd.DataFrame, tags: CusipTags | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
+    """Tag each position, keeping only `universe` tickers when given, while retaining unmapped whole-book positions: a
+    per-CUSIP manager book by `CusipTags` (a universe company's CUSIP by its dated `universe_cusip` line, any other by
+    `cusip_ticker_map`); `sec13f_hr` rows (`tags` None) by their stored ticker, set at extraction (U-67)."""
+    if tags is not None:
+        return holdings.assign(ticker=tags.tag(holdings, universe))
+    stored = holdings["ticker"].astype(object)
+    return holdings.assign(ticker=stored if universe is None else stored.where(stored.isin(set(universe)), None))
 
 
 def clean_public_holdings(
@@ -91,7 +95,7 @@ def clean_public_holdings(
 
 def clean_public_batches(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
-    tags: CusipTags,
+    tags: CusipTags | None,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,

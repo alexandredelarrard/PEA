@@ -34,12 +34,12 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 )
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing, save_hr_filing
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import CusipTags
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import reconcile_13f_source
 from src.utils.price_adjustments import ShareBasis
 
@@ -1168,10 +1168,11 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     original = packet("old", "2024-08-14", {"111111111": 100, "222222222": 100})
     new = packet("new", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
     revised = packet("amend", "2024-12-01", {"111111111": 90, "222222222": 100}, kind="restatement")
+    cmap = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
     for m, h in (original, new, revised):
         save_13f_filing(filing_store, m, h)
-        save_13f_filing(filing_store, m, h.assign(ticker="_empty"), table=Tables.sec13f_hr)
-    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]}))
+        save_hr_filing(filing_store, m, h, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
+    filing_store.save(Tables.cusip_ticker_map, cmap)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
@@ -1206,10 +1207,11 @@ def ordinary_step(
     monkeypatch: pytest.MonkeyPatch,
     packets: tuple[tuple[pd.DataFrame, pd.DataFrame], ...],
 ) -> tuple[StepCubeSecThirteen, PriceFrames]:
+    cmap = pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]})
     for manifest, holdings in packets:
         save_13f_filing(filing_store, manifest, holdings)
-        save_13f_filing(filing_store, manifest, holdings.assign(ticker="_empty"), table=Tables.sec13f_hr)
-    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]}))
+        save_hr_filing(filing_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
+    filing_store.save(Tables.cusip_ticker_map, cmap)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None

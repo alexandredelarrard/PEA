@@ -28,7 +28,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.resume import archive_periods
-from src.data_extract.utils.common.security_lines import SOURCE_FTD, trade_dates
+from src.data_extract.utils.common.security_lines import master_stamps, prepare_master, trade_dates
 from src.data_extract.utils.institutionals.security_tape import (
     assert_tape_owners,
     assert_tape_source,
@@ -69,22 +69,6 @@ SECURITY_COLUMNS = (
     "lineage_role",
     "security_class",
 )
-#: The `universe_cusip` columns read for stamping.
-_MASTER_COLUMNS = [
-    "security_id",
-    "canonical_company",
-    "cusip",
-    "source_symbol",
-    "market_symbol",
-    "security_class",
-    "conversion_ratio",
-    "lineage_role",
-    "valid_from",
-    "valid_to",
-    "scope_changed_at",
-]
-#: The open end of a master interval.
-_FAR = pd.Timestamp("2262-01-01")
 
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
@@ -191,28 +175,6 @@ def cached_ftd_periods(cache: Path) -> set[str]:
 # Stamp from the security master, aggregate to the ticker grain (pure)           #
 # --------------------------------------------------------------------------- #
 _HIT_COLUMNS = ["canonical_company", "lineage_role", "security_class", "conversion_ratio", "market_symbol"]
-
-
-def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
-    """The FTD rows of `universe_cusip`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
-    rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
-    out = rows.reindex(columns=_MASTER_COLUMNS).copy()
-    out["market_symbol"] = out["market_symbol"].fillna(out["source_symbol"]).map(yahoo_symbol)
-    out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
-    out["source_symbol"] = out["source_symbol"].fillna("").map(normalise_ticker)
-    out["valid_from"] = pd.to_datetime(out["valid_from"])
-    out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
-    out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"], errors="coerce").astype("float64")
-    company = out["canonical_company"].astype(object)
-    out["canonical_company"] = company.where(company.notna() & company.astype(str).ne(""), None)
-    out["scope_changed_at"] = pd.to_datetime(out["scope_changed_at"], errors="coerce")
-    return out.reset_index(drop=True)
-
-
-def master_stamps(master: pd.DataFrame) -> dict[str, pd.Timestamp]:
-    """`{canonical company: latest scope_changed_at}` over its master rows."""
-    stamps = master.dropna(subset=["canonical_company"]).groupby("canonical_company")["scope_changed_at"].max()
-    return {str(company): pd.Timestamp(stamp) for company, stamp in stamps.items() if pd.notna(stamp)}
 
 
 def _covering(frame: pd.DataFrame) -> pd.DataFrame:
@@ -389,12 +351,6 @@ def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: stamp the stored lines, rebuild the ticker grain                          #
 # --------------------------------------------------------------------------- #
-
-
-def load_fails_master(context: Context) -> pd.DataFrame | None:
-    """The stored `universe_cusip` prepared for stamping; None before the first `identity` build."""
-    master = read_identity(context.store, Tables.universe_cusip, columns=[*_MASTER_COLUMNS, "source"], optional=True)
-    return None if master is None else prepare_master(master)
 
 
 def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:

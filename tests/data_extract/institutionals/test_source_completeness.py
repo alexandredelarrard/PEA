@@ -17,6 +17,7 @@ from sqlalchemy import event
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.common.security_lines import prepare_master
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
@@ -208,7 +209,7 @@ def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStor
         if not frame.empty:
             sqlite_store.save(table, frame)
     good = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), ftd.prepare_master(_master()))
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), prepare_master(_master()))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -318,7 +319,7 @@ def test_ftd_verified_absence_uses_only_actual_served_dates() -> None:
         "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|5|LEN|10\n20260703|000000000|OTHER|1|OTHER|1\n"
     ).assign(period="202607a")
     basis = ShareBasis(pd.DataFrame(columns=["ticker", "date", "value"]), pd.DataFrame(), pd.DataFrame(), {})
-    grain = ftd._checked_ftd_grain(source, ftd.prepare_master(_master()), frozenset(["LEN"]), basis)
+    grain = ftd._checked_ftd_grain(source, prepare_master(_master()), frozenset(["LEN"]), basis)
     assert grain["date"].tolist() == [pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-03")]
     assert grain["fails_quantity"].tolist() == [5.0, 0.0] and grain["source_checked_at"].notna().all()
     print("SANITY: mapped FTD absence is zero only on dates actually served in the fully parsed ZIP, with no synthetic missing weekday.")
@@ -330,7 +331,7 @@ def test_ftd_class_ratio_and_raw_quantity_use_settlement_basis() -> None:
         "20100122|084670108|BRKA|10|BERKSHIRE CLASS A|100000\n"
         "20100122|084670702|BRKB|100|BERKSHIRE CLASS B|50\n"
     ).assign(period="201001b")
-    master = ftd.prepare_master(_master())
+    master = prepare_master(_master())
     events = pd.DataFrame({"ticker": ["BRK-B"], "date": pd.to_datetime(["2010-01-21"]), "value": [50.0]})
     basis = ShareBasis(events, events, events, {})
     stamped = ftd.stamp_lines(source, master)
@@ -353,7 +354,7 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
     source = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|000000000|OTHER|1|OTHER|1\n").assign(
         period="202607a"
     )
-    assert ftd._checked_ftd_grain(source, ftd.prepare_master(master), frozenset(["LEN"]), None).empty
+    assert ftd._checked_ftd_grain(source, prepare_master(master), frozenset(["LEN"]), None).empty
     print(
         "SANITY: missing, zero or infinite secondary-class conversion remains unknown in FINRA and FTD; it cannot become class factor1 or checked absence0."
     )
@@ -376,7 +377,7 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
         if not frame.empty:
             sqlite_store.save(table, frame)
     good = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), ftd.prepare_master(_master()))
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), prepare_master(_master()))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -461,7 +462,7 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
         home.assign(role="symbol", symbol="LEN", valid_from=pd.Timestamp("2006-01-03"), status="corroborated", sources="form345,roster"),
     )
     text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), ftd.prepare_master(_master()))[list(ftd.SECURITY_COLUMNS)]
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), prepare_master(_master()))[list(ftd.SECURITY_COLUMNS)]
     grain = pd.DataFrame(
         {
             "ticker": ["LEN"],
@@ -714,7 +715,7 @@ def test_captured_brkb_settlement_units_and_previous_close_notional_are_conserve
     source = ftd._parse_ftd_lines(raw).assign(period="201001b")
     events = pd.DataFrame({"ticker": ["BRK-B"], "date": pd.to_datetime(["2010-01-21"]), "value": [50.0]})
     basis = ShareBasis(events, events, events, {})
-    master = ftd.prepare_master(_master())
+    master = prepare_master(_master())
     master.loc[master["canonical_company"].eq("BRK-B") & master["source_symbol"].eq("BRKB"), "market_symbol"] = "BRK-B"
     grain = ftd.ticker_rows(ftd.stamp_lines(source, master), ["BRK-B"], basis)
     assert grain["fails_quantity"].tolist() == [41800.0, 1870995.0]
@@ -752,7 +753,7 @@ def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite
             sqlite_store.save(table, frame)
     text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
     _archive(tmp_path / context.config.local.paths.fails_deliver / "cnsfails202607a.zip", {"fails.txt": text})
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), ftd.prepare_master(_master()))
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), prepare_master(_master()))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -966,7 +967,7 @@ def test_the_ftd_guard_and_the_checked_grain_share_one_ownership_rule() -> None:
     source = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|888888888|LENB|5|LEN B|10\n").assign(
         period="202607a"
     )
-    checked = ftd._checked_ftd_grain(source, ftd.prepare_master(_master()), frozenset(["LEN"]), None)
+    checked = ftd._checked_ftd_grain(source, prepare_master(_master()), frozenset(["LEN"]), None)
     assert checked.empty, checked
     print("\nSANITY: X93 - the lineage-only line is retained without refusing LEN's checked date; the master line is replaced;")
     print("  an unresolved line touching LEN's master refuses the date in the guard and blocks it in the grain (one rule).")

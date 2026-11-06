@@ -25,13 +25,14 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_source_identity
 from src.data_extract.utils.common.resume import Bounds, before_end, recently_changed
+from src.data_extract.utils.common.security_lines import load_fails_master, master_stamps, prepare_master
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.institutionals.fetch_13f_backfill import reread_hr_filings
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_extract.utils.institutionals.security_tape import restamp_targets
-from src.data_extract.utils.zips.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
+from src.data_extract.utils.zips.fetch_fails_to_deliver import restamp_fails
 from src.data_extract.utils.zips.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.zips.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_store.schema import Table, Tables

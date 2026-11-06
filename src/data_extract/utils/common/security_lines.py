@@ -1,5 +1,5 @@
-"""The shared contract of `universe_cusip` lines: their source and role vocabulary, the FTD trade-date rule, the tape
-intervals a line is voted by, the co-registrant CIKs it leaves out and the curated `configs/sec/security_master_manual.json`.
+"""The shared contract of `universe_cusip` lines: their source and role vocabulary, the FTD trade-date rule, the FTD
+lines prepared for stamping and their change stamps, the tape intervals a line is voted by, the co-registrant CIKs it leaves out and the curated `configs/sec/security_master_manual.json`.
 
 Read by the identity step (which builds the lines), the FTD and short-interest tapes, the insider lineage stamp, the
 `Identity` reader and the fundamentals merges (merger metadata, reverse acquisitions, vendor exchanges).
@@ -16,13 +16,16 @@ from typing import Any
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
+from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.identity.cik_history import ROLE_SYMBOL
 from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
+from src.data_store.schema import Tables
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import cik_activity, identity_flags
+from src.utils.identity_tables import read_identity
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
-from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
 
 #: The `source` of a line read off the SEC fails-to-deliver files.
 SOURCE_FTD = "ftd"
@@ -37,6 +40,20 @@ T1_FROM = pd.Timestamp("2024-05-28")
 #: Two tape intervals of one symbol overlapping by more than this are concurrent, not a former listing.
 _LISTING_OVERLAP = pd.Timedelta(days=31)
 _FAR = pd.Timestamp("2262-01-01")
+#: The `universe_cusip` columns read for stamping FTD lines.
+_FTD_MASTER_COLUMNS = [
+    "security_id",
+    "canonical_company",
+    "cusip",
+    "source_symbol",
+    "market_symbol",
+    "security_class",
+    "conversion_ratio",
+    "lineage_role",
+    "valid_from",
+    "valid_to",
+    "scope_changed_at",
+]
 
 _RATIO_COLUMNS = ("ticker", "cusip", "ratio", "valid_from", "valid_to", "source")
 _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "valid_to", "reason", "source")
@@ -57,6 +74,34 @@ def trade_dates(settlement: pd.Series) -> pd.Series:
     t1, t2, t3 = days - bday(1), days - bday(2), days - bday(3)
     out = t3.where(t2 < T2_FROM, t2).where(t1 < T1_FROM, t1)
     return out.where(days.notna())
+
+
+def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
+    """The FTD rows of `universe_cusip`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
+    rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
+    out = rows.reindex(columns=_FTD_MASTER_COLUMNS).copy()
+    out["market_symbol"] = out["market_symbol"].fillna(out["source_symbol"]).map(yahoo_symbol)
+    out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
+    out["source_symbol"] = out["source_symbol"].fillna("").map(normalise_ticker)
+    out["valid_from"] = pd.to_datetime(out["valid_from"])
+    out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
+    out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"], errors="coerce").astype("float64")
+    company = out["canonical_company"].astype(object)
+    out["canonical_company"] = company.where(company.notna() & company.astype(str).ne(""), None)
+    out["scope_changed_at"] = pd.to_datetime(out["scope_changed_at"], errors="coerce")
+    return out.reset_index(drop=True)
+
+
+def load_fails_master(context: Context) -> pd.DataFrame | None:
+    """The stored `universe_cusip` prepared for stamping; None before the first `identity` build."""
+    master = read_identity(context.store, Tables.universe_cusip, columns=[*_FTD_MASTER_COLUMNS, "source"], optional=True)
+    return None if master is None else prepare_master(master)
+
+
+def master_stamps(master: pd.DataFrame) -> dict[str, pd.Timestamp]:
+    """`{canonical company: latest scope_changed_at}` over its master rows."""
+    stamps = master.dropna(subset=["canonical_company"]).groupby("canonical_company")["scope_changed_at"].max()
+    return {str(company): pd.Timestamp(stamp) for company, stamp in stamps.items() if pd.notna(stamp)}
 
 
 @dataclass(frozen=True)

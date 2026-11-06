@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import planner_bounds
+from src.data_extract.utils.common.resume import ended_keys, planner_bounds
 from src.data_store.schema import Resume, Tables
 from src.utils.string import run_date
 from src.utils.tickers_universe.universe import before_end
@@ -119,15 +119,15 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped.
 
     The plan comes from per-ticker stored dates (`key_stats`), never a table read; the staleness
-    window is the table's contract overlap. An ended ticker (`Universe.bounds`) with stored rows is skipped, rows
-    after a ticker's `ended_on` are dropped, and Yahoo is queried under the ticker's trading
-    symbol (`Universe.trading_symbols`) with the rows stored under the ticker.
+    window is the table's contract overlap. An ended ticker whose last reported date reaches its `ended_on` plus the
+    grace (`planner_bounds`) is skipped, rows after that end are dropped, and Yahoo is queried under the ticker's
+    trading symbol (`Universe.trading_symbols`) with the rows stored under the ticker.
     """
     resume = cast(Resume, Tables.earnings_surprises.resume)
     refetch_window_days = resume.overlap_days
     bounds, symbols = planner_bounds(context), context.universe.trading_symbols
     last_reported, next_expected = _resume_dates(context)
-    ended = sorted(t for t in tickers if bounds.get(t, (None, None))[1] is not None and t in next_expected)
+    ended = ended_keys(bounds, {t: last_reported[t] for t in tickers if t in last_reported})
     if ended:
         context.log.info("Earnings surprises: %d ended ticker(s) with stored rows skipped: %s", len(ended), ", ".join(ended))
     full_limit = (years_history + 1) * 4

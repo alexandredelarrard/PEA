@@ -24,10 +24,10 @@ MODULES = [
 #: `module.function` -> the class of its WARNING (PD-14).
 CLASSIFIED = {
     "step_extract_identity.run_publish": "action: the unreviewed action items of the publish review (REQ-032)",
-    "identity_flags.log_identity_flags": "action: the validator's block (`validate identity`, not the build)",
     "symbol_tenure.scan_form345_cache": "operational: fewer cached Form 3/4/5 quarters than expected, a partial history",
     "symbol_tenure._unreadable_quarter": "operational: a cached Form 3/4/5 zip without its submission member is skipped",
     "symbol_tenure._aggregate_submission": "operational: a cached Form 3/4/5 zip missing columns is skipped",
+    "identity_propagate.retag_13f": "operational: a 13F accession whose source cannot be re-read keeps its stored rows",
 }
 
 

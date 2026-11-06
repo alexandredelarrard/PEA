@@ -10,7 +10,6 @@ WARNING block of the unreviewed action items only, everything else in one INFO s
 from __future__ import annotations
 
 import json
-import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -332,24 +331,6 @@ def review_details(review: FlagReview) -> str | None:
     """The DEBUG lines of the information and resolved items (each resolved one with its decision), or None."""
     shown = pd.concat([review.resolved, review.information], ignore_index=True)
     return "\n".join(_item_line(row) for row in shown.to_dict("records")) if not shown.empty else None
-
-
-def co_registrant_note(flags: pd.DataFrame) -> str | None:
-    """The INFO line naming the co-registrant pairs (default scope kept), or None when there are none."""
-    co = flags[flags["kind"].eq("co_registrant")]
-    if co.empty:
-        return None
-    pairs = ", ".join(f"{t} ({c})" for t, c in zip(co["ticker"], co["ciks"], strict=True))
-    return f"identity: {len(co)} co-registrant pair(s), default scope kept (no action): {pairs}"
-
-
-def log_identity_flags(log: logging.Logger, flags: pd.DataFrame) -> None:
-    """The validator's logging: one WARNING block when anything needs a decision; co-registrants once at INFO."""
-    block, note = identity_flag_block(flags), co_registrant_note(flags)
-    if block is not None:
-        log.warning(block)
-    if note is not None:
-        log.info(note)
 
 
 # Flat helpers: resolutions and log lines

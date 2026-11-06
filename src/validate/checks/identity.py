@@ -30,7 +30,19 @@ from src.utils.filer_tables import (
     judged_cik_mask,
     removal_records,
 )
-from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
+from src.utils.identity_flags import (
+    FLAG_COLUMNS,
+    KIND_ORDER,
+    MARGIN,
+    MASTER_COLUMNS,
+    FlagReview,
+    cik_activity,
+    identity_flag_block,
+    identity_flags,
+    load_resolutions,
+    review_flags,
+    review_summary,
+)
 from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.checks.traded_security import traded_security_flags
@@ -43,6 +55,11 @@ _ROLE_WINDOW, _ROLE_EVENT = "cik_window", "cik_event"
 _EXCEPTIONS = "configs/sec/vendor_coverage_exceptions.json"
 _REGISTER = "configs/sec/registrant_cutover.json"
 _VENDOR_COLUMNS = ["ticker", "dimension", "calendardate", "reportperiod", "date", "assets"]
+#: The `universe_cusip` columns the validator reads: the tape-mix rule's, plus the CUSIP for the shared-line check.
+_LINE_COLUMNS = [*MASTER_COLUMNS, "cusip"]
+#: A resolution that records an item as correct as built (REQ-031), not a behavior change.
+_ACKNOWLEDGED = "ACKNOWLEDGED"
+_CIK_IN_URL = r"CIK=(\d+)"
 
 
 @dataclass(frozen=True)
@@ -209,14 +226,96 @@ def _window_overlaps(windows: pd.DataFrame) -> list[dict[str, Any]]:
     return out
 
 
-def _flags(context: Context, lineage: pd.DataFrame) -> pd.DataFrame:
+def _flags(context: Context, lineage: pd.DataFrame, master: pd.DataFrame | None) -> pd.DataFrame:
     ciks = sorted(set(lineage.loc[lineage["role"].ne("symbol"), "cik"]))
     evidence = context.store.load(
         Tables.symbol_tenure, columns=_EVIDENCE_COLUMNS, where={"issuer_cik": ciks, "source": ["dei", "form345"]}, optional=True
     )
     activity = cik_activity(evidence if evidence is not None else pd.DataFrame(columns=_EVIDENCE_COLUMNS))
-    master = context.store.load(Tables.universe_cusip, columns=list(MASTER_COLUMNS), optional=True)
-    return identity_flags(lineage, activity, redundant_symbols=context.universe.alias_symbols, master=master)
+    lines = master[list(MASTER_COLUMNS)] if master is not None else None
+    return identity_flags(lineage, activity, redundant_symbols=context.universe.alias_symbols, master=lines)
+
+
+def _review_metrics(review: FlagReview) -> dict[str, Any]:
+    """REQ-032/033: the items left after the build's `resolutions`, the resolved ones by kind, the acknowledgement-only
+    resolutions and the resolutions no validator item matches (stale, or an item only the build raises)."""
+    acknowledged = review.resolved[review.resolved["decision"].astype(str).str.startswith(_ACKNOWLEDGED)]
+    return {
+        "backlog": len(review.unreviewed),
+        "resolved_by_kind": review.resolved["kind"].value_counts().sort_index().to_dict(),
+        "acknowledged_resolutions": [f"{k} {t} ({c})" for k, t, c in acknowledged[["kind", "ticker", "ciks"]].itertuples(index=False)],
+        "unmatched_resolutions": [f"{k} {t} ({c})" for k, t, c in review.stale[["kind", "ticker", "ciks"]].itertuples(index=False)],
+    }
+
+
+def _secfilings_finding(context: Context, lineage: pd.DataFrame, universe: pd.DataFrame) -> Finding | None:
+    """AC-004: the CIK of every universe company's Sharadar `secfilings` link lies in the company's CIK set."""
+    # load: the Sharadar rows of the scope's permatickers
+    if "permaticker" not in universe or universe["permaticker"].isna().all():
+        return None
+    perma = sorted({int(p) for p in universe["permaticker"].dropna()})
+    vendor = context.store.load(Tables.sharadar_tickers, columns=["permaticker", "secfilings"], where={"permaticker": perma}, optional=True)
+    if vendor is None or vendor.empty:
+        return None
+
+    # compute: each company's Sharadar CIK against the CIKs of its lineage rows
+    vendor = vendor.assign(cik=vendor["secfilings"].astype(str).str.extract(_CIK_IN_URL)[0]).dropna(subset=["cik"])
+    vendor = vendor.assign(cik=pad_cik_series(vendor["cik"]), permaticker=vendor["permaticker"].astype("int64"))
+    pairs = universe[["ticker", "permaticker"]].dropna(subset=["permaticker"]).astype({"permaticker": "int64"}).merge(vendor, on="permaticker")
+    owned = lineage.groupby("canonical_ticker")["cik"].agg(frozenset).to_dict()
+    missing = {str(t): str(c) for t, c in zip(pairs["ticker"], pairs["cik"], strict=True) if c not in owned.get(t, frozenset())}
+    if not missing:
+        return None
+    return Finding.at(
+        6, f"{len(missing)} Sharadar secfilings CIK(s) outside their company's CIK set", "inside it (AC-004)", field="secfilings_cik", ciks=missing
+    )
+
+
+def _open_after_end(lineage: pd.DataFrame, master: pd.DataFrame | None, universe: pd.DataFrame) -> Finding | None:
+    """REQ-006: no CIK window, symbol interval or CUSIP line of an ended company runs past its `ended_on`."""
+    # clean: the day after each ended company's `ended_on` (the exclusive end of its rows)
+    if "ended_on" not in universe:
+        return None
+    close = pd.to_datetime(universe.dropna(subset=["ended_on"]).set_index("ticker")["ended_on"]) + pd.Timedelta(days=1)
+    if close.empty:
+        return None
+
+    # compute: rows open, or closing later than the day after `ended_on` (exclusive end)
+    lines = master if master is not None else pd.DataFrame(columns=_LINE_COLUMNS)
+    rows = pd.concat(
+        [
+            pd.DataFrame({"ticker": lineage["canonical_ticker"], "key": lineage["role"] + " " + lineage["cik"], "end": lineage["valid_to"]}),
+            pd.DataFrame(
+                {"ticker": lines["canonical_company"], "key": "cusip " + lines["cusip"].astype(str), "end": pd.to_datetime(lines["valid_to"])}
+            ),
+        ],
+        ignore_index=True,
+    )
+    rows = rows[rows["ticker"].isin(close.index)]
+    end = pd.to_datetime(rows["end"])
+    late = rows[end.isna() | (end > pd.to_datetime(rows["ticker"].map(close)))]
+    if late.empty:
+        return None
+    by_ticker = late.groupby("ticker")["key"].agg(lambda keys: sorted(set(keys))).to_dict()
+    return Finding.at(
+        7, f"{len(late)} row(s) of ended companies open past ended_on", "closed at ended_on (REQ-006)", field="open_after_end", rows=by_ticker
+    )
+
+
+def _shared_cusip_finding(master: pd.DataFrame | None) -> Finding | None:
+    """REQ-008: no CUSIP belongs to two companies on one date."""
+    if master is None or master.empty:
+        return None
+    lines = master.dropna(subset=["canonical_company"])
+    lines = lines.assign(start=pd.to_datetime(lines["valid_from"]), end=pd.to_datetime(lines["valid_to"]).fillna(pd.Timestamp("2262-01-01")))
+    pairs = lines.merge(lines, on="cusip", suffixes=("", "_b"))
+    pairs = pairs[(pairs["canonical_company"] < pairs["canonical_company_b"]) & (pairs["start"] < pairs["end_b"]) & (pairs["start_b"] < pairs["end"])]
+    if pairs.empty:
+        return None
+    shared = sorted({f"{c} {a}/{b}" for c, a, b in pairs[["cusip", "canonical_company", "canonical_company_b"]].itertuples(index=False)})
+    return Finding.at(
+        7, f"{len(shared)} CUSIP(s) on two companies on one date", "one company per CUSIP and date (REQ-008)", field="shared_cusip", cusips=shared
+    )
 
 
 def _removal_findings(removals: pd.DataFrame) -> list[Finding]:
@@ -381,25 +480,38 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
     if "role" not in lineage.columns:
         return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)
+    master = context.store.load(Tables.universe_cusip, columns=_LINE_COLUMNS, optional=True)
+    universe = context.store.load(Tables.universe_tickers, project=True, where={"ticker": list(scope)}, optional=True)
+    universe = universe if universe is not None else pd.DataFrame(columns=["ticker"])
     continuity, continuity_metrics = continuity_flags(context, lineage, scope, _config_dir(context))
     traded, traded_metrics = traded_security_flags(context, scope)
-    flags = _flags(context, lineage)
+    flags = _flags(context, lineage, master)
     extra = [part for part in (continuity, traded) if not part.empty]
     if extra:
         flags = pd.concat([flags, *extra], ignore_index=True)
         order = flags["kind"].map({kind: rank for rank, kind in enumerate(KIND_ORDER)})
         flags = flags.assign(_order=order).sort_values(["_order", "ticker"], kind="mergesort").drop(columns="_order").reset_index(drop=True)
-    log_identity_flags(context.log, flags)
-    findings = _invariant_findings(lineage, roster[roster["ticker"].isin(scope)])
+
+    # the build's review: the reviewed `resolutions` of the owning JSONs; only unreviewed action items need a decision
+    review = review_flags(flags, load_resolutions(_config_dir(context)))
+    block = identity_flag_block(review.unreviewed)
+    if block is not None:
+        context.log.warning(block)
+    context.log.info(review_summary(review))
+    # an ended company has no current symbol row by design (REQ-006); `_open_after_end` checks its rows instead
+    ended = set(universe.loc[universe["ended_on"].notna(), "ticker"]) if "ended_on" in universe else set()
+    findings = _invariant_findings(lineage, roster[roster["ticker"].isin(scope) & ~roster["ticker"].isin(ended)])
     findings += _removal_findings(removals)
+    checks = (_secfilings_finding(context, lineage, universe), _open_after_end(lineage, master, universe), _shared_cusip_finding(master))
+    findings += [finding for finding in checks if finding is not None]
     findings += [
         Finding.at(2, f"{f.kind}: {f.evidence}", str(f.suggested_action), field="manual_decision", ticker=str(f.ticker))
-        for f in flags[flags["action"].astype(bool)].itertuples()
+        for f in review.unreviewed.itertuples()
     ]
     metrics = {
         **_removal_metrics(removals),
         "flags_by_kind": flags["kind"].value_counts().sort_index().to_dict(),
-        "backlog": int(flags["action"].sum()),
+        **_review_metrics(review),
         "symbol_statuses": lineage.loc[lineage["role"].eq("symbol"), "status"].value_counts().sort_index().to_dict(),
         **continuity_metrics,
         **traded_metrics,

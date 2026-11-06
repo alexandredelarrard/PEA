@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 
 from src.data_store.schema import Tables
-from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags, log_identity_flags
+from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags
 from src.validate.checks.identity import check_identity
 from tests.support.universe import seed_universe, universe_in
 
@@ -165,7 +165,7 @@ def test_every_flag_kind_is_classified_once_from_the_lineage_and_the_filing_evid
     print("  OK: sequential pair flagged, concurrent pair INFO, takeover reviewed, disputed seam flagged, GOOGL-style lag not flagged")
 
 
-def test_the_warning_block_lists_action_items_first_and_is_skipped_when_empty(caplog):
+def test_the_warning_block_lists_action_items_first_and_is_skipped_when_empty():
     lineage, evidence, backlog = _flag_fixture()
     flags = identity_flags(lineage, cik_activity(evidence), redundant_symbols=frozenset({"GOG"}), backlog=backlog)
     block = identity_flag_block(flags)
@@ -175,19 +175,11 @@ def test_the_warning_block_lists_action_items_first_and_is_skipped_when_empty(ca
     others = [i for i, line in enumerate(lines) if "[info]" in line]
     assert actions and others and max(actions) < min(others), block
     assert not any("co_registrant" in line for line in lines), "co-registrants are an INFO line, not a block entry"
-
-    log = logging.getLogger(LOGGER)
-    with caplog.at_level(logging.INFO, logger=LOGGER):
-        log_identity_flags(log, flags)
-        log_identity_flags(log, flags.iloc[0:0])
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
-    assert len(warnings) == 1 and any("co-registrant" in m and "CON" in m for m in infos)
     assert identity_flag_block(flags.iloc[0:0]) is None
 
     print("\n=== SANITY CHECK: flag block ===")
     print(block)
-    print("  OK: one WARNING block with action items first; co-registrants one INFO line; nothing logged when empty")
+    print("  OK: one block with action items first, co-registrants left out; no block when there is nothing to show")
 
 
 # --------------------------------------------------------------------------- #
@@ -662,3 +654,98 @@ def test_a_chunk_without_prices_counts_its_lines_as_unverified(sqlite_store):
     assert [line.split()[:2] for line in metrics["traded_security_unverified_lines"]] == [["NOP", "NOP000001"]]
     assert "(0 matched of 79 FTD days)" in metrics["traded_security_unverified_lines"][0]
     print("  OK: the NOP line is one unverified count (0 matched of 79 FTD days) and check_identity completes.")
+
+
+def test_the_validator_applies_the_builds_resolutions(sqlite_store, tmp_path):
+    """REQ-031/032 (phase 9e): an action item with a reviewed `resolutions` entry needs no decision in the validator either,
+    because the validator matches its items with the build's `load_resolutions` / `review_flags`."""
+    _seed_store(sqlite_store, _store_lineage())
+    sqlite_store.save(Tables.sharadar_fundamentals, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
+    pd.DataFrame({"ticker": ["REG1"], "secfilings": [url.format(PRED)], "lastquarter": pd.to_datetime(["2015-06-30"])}).to_sql(
+        Tables.sharadar_tickers.name, sqlite_store.engine, index=False
+    )
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+    before = check_identity(context)
+    item = before.flags[before.flags["kind"].eq("vendor_series_other_company")].iloc[0]
+    (tmp_path / "sec").mkdir()
+    resolution = {
+        "kind": item["kind"],
+        "ticker": item["ticker"],
+        "ciks": item["ciks"],
+        "decision": "ACKNOWLEDGED: the predecessor series is fetched by the next Sharadar refresh",
+        "evidence": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000000040",
+        "decided_on": "2026-11-06",
+    }
+    (tmp_path / "sec" / "entity_lineage_manual.json").write_text(json.dumps({"resolutions": [resolution]}), encoding="utf-8")
+
+    after = check_identity(context)
+
+    manual_before = [f for f in before.result.findings if f.field == "manual_decision"]
+    manual_after = [f for f in after.result.findings if f.field == "manual_decision"]
+    print("\n=== SANITY CHECK: the validator reviews items with the build's resolutions ===")
+    print(f"  before: {len(manual_before)} manual decision(s), backlog {before.result.metrics['backlog']}")
+    print(
+        f"  after:  {len(manual_after)} manual decision(s), backlog {after.result.metrics['backlog']}, resolved {after.result.metrics['resolved_by_kind']}"
+    )
+    assert len(manual_before) == len(manual_after) + 1 and before.result.metrics["backlog"] == after.result.metrics["backlog"] + 1
+    assert after.result.metrics["resolved_by_kind"] == {"vendor_series_other_company": 1}
+    assert after.result.metrics["acknowledged_resolutions"] == [f"vendor_series_other_company REG ({item['ciks']})"]
+    print("  OK: the resolved item leaves the findings and the backlog; it is listed as an acknowledgement.")
+
+
+def test_ended_companies_sharadar_ciks_and_shared_cusips_are_findings(sqlite_store, tmp_path):
+    """REQ-006 / AC-004 / REQ-008: an ended company's open rows, a Sharadar `secfilings` CIK outside the company's CIK set
+    and one CUSIP on two companies on one date are each one finding; a clean company raises none."""
+    lineage = _store_lineage()
+    rows = {
+        "ALB": {"cik": ALB, "permaticker": 1},
+        "TMUS": {"cik": TMUS, "permaticker": 2},
+        "REG": {"cik": SUCC, "ended_on": pd.Timestamp("2020-01-01")},
+    }
+    seed_universe(sqlite_store, ["ALB", "TMUS", "REG"], rows=rows)
+    sqlite_store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
+    pd.DataFrame(
+        {
+            "permaticker": [1, 2],
+            "ticker": ["ALB", "TMUS"],
+            "secfilings": [url.format(AB), url.format(TMUS)],
+            "lastquarter": pd.to_datetime(["2026-06-30"] * 2),
+        }
+    ).to_sql(Tables.sharadar_tickers.name, sqlite_store.engine, index=False)
+    lines = [
+        _master_row("ALB", "SHARED001", "canonical_current", "2011-01-01"),
+        _master_row("TMUS", "SHARED001", "canonical_current", "2015-01-01"),
+        _master_row("REG", "REG000001", "canonical_current", "2015-07-01"),
+    ]
+    sqlite_store.save(Tables.universe_cusip, pd.DataFrame(lines))
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    report = check_identity(context)
+
+    fields = {f.field: f for f in report.result.findings}
+    print("\n=== SANITY CHECK: ended rows, Sharadar CIKs, shared CUSIPs ===")
+    for name in ("open_after_end", "secfilings_cik", "shared_cusip"):
+        print(f"  {name}: {fields[name].observed if name in fields else None} {fields[name].evidence if name in fields else ''}")
+    assert fields["open_after_end"].evidence["rows"] == {"REG": ["cik_window " + SUCC, "cusip REG000001", "symbol " + SUCC]}
+    assert fields["secfilings_cik"].evidence["ciks"] == {"ALB": AB}
+    assert fields["shared_cusip"].evidence["cusips"] == ["SHARED001 ALB/TMUS"]
+    assert report.result.status == "fail" and "current_symbol_rows" not in fields
+
+    # REG's rows closed the day after its end: neither an open row nor a missing current symbol row
+    closed = lineage.assign(valid_to=lineage["valid_to"].where(lineage["canonical_ticker"].ne("REG"), "2020-01-02"))
+    sqlite_store.replace(
+        Tables.universe_cik_symbol, closed.assign(valid_from=pd.to_datetime(closed["valid_from"]), valid_to=pd.to_datetime(closed["valid_to"]))
+    )
+    sqlite_store.replace(
+        Tables.universe_cusip, pd.DataFrame([*lines[:2], _master_row("REG", "REG000001", "canonical_current", "2015-07-01", "2020-01-02")])
+    )
+    after = {f.field for f in check_identity(context).result.findings}
+    assert "open_after_end" not in after and "current_symbol_rows" not in after, after
+    print(
+        "  OK: REG's open window, symbol and CUSIP line after its end, ALB's foreign Sharadar CIK and the shared CUSIP are findings; TMUS is clean."
+    )
+    print("  OK: once REG's rows close at its end, REG raises neither open_after_end nor a missing current symbol row.")

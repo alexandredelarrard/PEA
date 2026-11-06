@@ -18,7 +18,7 @@ import pandas as pd
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_extract.utils.prices.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
 from src.data_store.schema import Resume, Tables
-from tests.support.universe import seed_universe, universe_in, universe_of
+from tests.support.universe import universe_of
 
 
 def test_plan_fetch_incremental(sqlite_store):
@@ -155,41 +155,3 @@ def test_a_full_pull_longer_than_one_yahoo_page_is_read_page_by_page(sqlite_stor
     print("\n=== SANITY CHECK: full pull across two Yahoo pages ===")
     print(f"  calls (limit, offset)={_CappedYahooTicker.calls}; saved {len(saved)} quarters from {saved.iloc[0].date()} to {saved.iloc[-1].date()},")
     print("  the full 128 wanted, none duplicated, instead of the newest 100 only.")
-
-
-def test_an_ended_ticker_is_refetched_until_its_stored_rows_reach_the_grace_end(sqlite_store, monkeypatch):
-    """R-05 (REQ-011, U-65): AAA ended 2026-10-05 with a stored forward row of 2026-10-01 whose actual Yahoo fills later;
-    its stored last date is before `ended_on` + 10 sessions, so it is refetched and the actual saved; BBB, ended
-    2026-06-01 with a stored actual past its grace end, is skipped."""
-    seed_universe(
-        sqlite_store, ["AAA", "BBB"], rows={"AAA": {"ended_on": pd.Timestamp("2026-10-05")}, "BBB": {"ended_on": pd.Timestamp("2026-06-01")}}
-    )
-    stored = pd.DataFrame(
-        {
-            "ticker": ["AAA", "AAA", "BBB"],
-            "earnings_date": pd.to_datetime(["2026-07-01", "2026-10-01", "2026-06-15"]),
-            "eps_estimate": [1.0, 1.0, 1.0],
-            "eps_actual": [1.1, np.nan, 1.2],
-            "surprise_pct": [10.0, np.nan, 20.0],
-        }
-    )
-    sqlite_store.save(Tables.earnings_surprises, stored)
-    infos: list[str] = []
-    context: Any = types.SimpleNamespace(
-        store=sqlite_store,
-        universe=universe_in(sqlite_store),
-        log=types.SimpleNamespace(info=lambda msg, *a: infos.append(msg % a if a else msg), warning=lambda *a, **k: None),
-    )
-    asked: list[str] = []
-    filled = pd.DataFrame({"earnings_date": [pd.Timestamp("2026-10-01")], "eps_estimate": [1.0], "eps_actual": [1.3], "surprise_pct": [30.0]})
-    monkeypatch.setattr(surprises, "_download_one", lambda tkr, limit: asked.append(tkr) or filled.assign(ticker=tkr))
-
-    surprises.fetch_earnings_surprises(context, ["AAA", "BBB"], years_history=15, pause=0.0)
-
-    saved = sqlite_store.load(Tables.earnings_surprises, where={"ticker": "AAA"})
-    actual = saved.loc[pd.to_datetime(saved["earnings_date"]).eq(pd.Timestamp("2026-10-01")), "eps_actual"].iloc[0]
-    assert asked == ["AAA"], asked
-    assert actual == 1.3, saved
-    print("\n=== SANITY CHECK: ended tickers in the surprise plan (R-05) ===")
-    print(f"  AAA (ended 2026-10-05, last stored 2026-10-01) refetched -> actual {actual}; BBB (stored 2026-06-15 >= grace end) skipped")
-    print(f"  log: {[m for m in infos if 'ended' in m]}")

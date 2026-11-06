@@ -404,17 +404,20 @@ def test_asof_lookup_uses_last_grid_date_and_never_fills_a_null() -> None:
     )
 
 
-def test_volume_pit_is_as_traded_and_null_where_the_tape_is_restated_differently() -> None:
+def test_volume_pit_is_as_traded_and_null_where_the_yahoo_tape_lacks_the_event() -> None:
     index = pd.bdate_range("2022-07-13", "2022-07-20")
-    df_volume = pd.DataFrame({"AAA": 1_000.0, "BBB": 1_000.0}, index=index)
+    df_volume = pd.DataFrame({"AAA": 1_000.0, "BBB": 1_000.0, "CCC": 1_000.0}, index=index)
     df_actual = _events([("AAA", "2022-07-18", 20.0), ("BBB", "2022-07-18", 20.0)])
-    df_vendor = _events([("AAA", "2022-07-18", 20.0), ("BBB", "2022-07-18", 10.0)])
-    basis = ShareBasis(df_actual, df_vendor, df_actual, {})
-    df_basis = security_basis_frame(basis, index, pd.Index(["AAA", "BBB"]))
+    # Yahoo's ledger dates AAA's split, misses BBB's, and files a CCC spin-off price factor as a split.
+    df_ledger = _events([("AAA", "2022-07-18", 20.0), ("CCC", "2022-07-18", 1.3)])
+    basis = ShareBasis(df_actual, df_actual, df_ledger, {})
+    df_basis = security_basis_frame(basis, index, pd.Index(["AAA", "BBB", "CCC"]))
     result = as_traded_volume(df_volume, df_basis, basis)
     split = index >= pd.Timestamp("2022-07-18")
     assert result.loc[~split, "AAA"].eq(50.0).all() and result.loc[split, "AAA"].eq(1_000.0).all()
     assert result.loc[~split, "BBB"].isna().all() and result.loc[split, "BBB"].eq(1_000.0).all()
+    assert result["CCC"].eq(1_000.0).all()
     print(
-        "SANITY: a x20-restated tape returns to 50 as-traded shares before the split; a tape restated by a different vendor event is null before it."
+        "SANITY: a x20 split Yahoo dates returns to 50 as-traded shares before it; one Yahoo never restated is null before it;"
+        " a spin-off factor Yahoo files as a split leaves the tape untouched."
     )

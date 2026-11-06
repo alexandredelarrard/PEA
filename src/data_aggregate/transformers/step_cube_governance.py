@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -98,13 +96,7 @@ class StepCubeGovernance(Step):
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=None)
         if since is None:
             return frames
-        idx = frames.trading_index[frames.trading_index >= since]
-        return replace(
-            frames,
-            trading_index=idx,
-            close_split=frames.close_split.reindex(idx) if frames.close_split is not None else None,
-            close_total=frames.close_total.reindex(idx) if frames.close_total is not None else None,
-        )
+        return frames.on(frames.trading_index[frames.trading_index >= since], "close_split", "close_total")
 
     def _load_def14a(self) -> pd.DataFrame | None:
         """Load usable scalar observations, excluding archives and retry-only parents."""

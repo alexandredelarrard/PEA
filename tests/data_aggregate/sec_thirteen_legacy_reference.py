@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any, cast
 
 import numpy as np
@@ -676,8 +677,7 @@ def build_prepared_institutional_feature_panel(
         _assert_emission_windows_ordered(df_features)
     fields = project_institutional_features(
         df_features,
-        frames,
-        legacy_basis_frame(share_basis, frames.trading_index, holdings),
+        replace(frames, security_basis=legacy_basis_frame(share_basis, frames.trading_index, holdings)),
         settle_trading_days,
         versioned=filings is not None,
         trading_calendar=frames.trading_index,

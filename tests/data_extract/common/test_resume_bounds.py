@@ -195,13 +195,17 @@ def test_earnings_surprises_skip_an_ended_ticker_and_drop_rows_after_its_end(
     wbd_source = pd.to_datetime(stored.loc[stored["ticker"] == "WBD", "earnings_date"])
     assert wbd.max() <= WBD_GRACE_END < wbd_source.max()
 
-    # second run: WBD has stored rows and has ended -> never pulled again
+    # second run: an ended WBD is skipped only once its last reported date reaches the grace end (R-05, REQ-011);
+    # either way no row after the grace end is stored
+    reported = pd.to_datetime(saved.loc[(saved["ticker"] == "WBD") & saved["eps_actual"].notna(), "earnings_date"]).max()
     pulls.clear()
     surprises.fetch_earnings_surprises(context, SAMPLE, years_history=31, pause=0.0)
-    assert "WBD" not in pulls
+    again = pd.to_datetime(sqlite_store.load(Tables.earnings_surprises, where={"ticker": "WBD"})["earnings_date"])
+    assert ("WBD" in pulls) == (reported < WBD_GRACE_END), (reported, pulls)
+    assert again.max() <= WBD_GRACE_END, again.max()
     print("\n=== SANITY CHECK: earnings-surprise plan bounds ===")
     print(f"  WBD first run: {len(wbd)} of {len(wbd_source)} source rows saved, last {wbd.max().date()} (source to {wbd_source.max().date()})")
-    print(f"  WBD second run: not pulled (ended, rows stored); pulls {pulls}")
+    print(f"  WBD second run: last reported {reported.date()} vs grace end {WBD_GRACE_END.date()} -> pulls {pulls}; stored to {again.max().date()}")
     print("  Validated.")
 
 

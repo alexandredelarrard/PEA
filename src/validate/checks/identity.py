@@ -281,7 +281,8 @@ def _secfilings_finding(context: Context, lineage: pd.DataFrame, universe: pd.Da
 
 
 def _open_after_end(lineage: pd.DataFrame, master: pd.DataFrame | None, universe: pd.DataFrame) -> Finding | None:
-    """REQ-006: no CIK window, symbol interval or CUSIP line of an ended company runs past its `ended_on`."""
+    """REQ-006: no CIK window, symbol interval or CUSIP line of an ended company runs past its `ended_on` (its
+    `cik_event` rows stay open: the build closes windows and symbols only)."""
     # clean: the day after each ended company's `ended_on` (the exclusive end of its rows)
     if "ended_on" not in universe:
         return None
@@ -291,6 +292,7 @@ def _open_after_end(lineage: pd.DataFrame, master: pd.DataFrame | None, universe
 
     # compute: rows open, or closing later than the day after `ended_on` (exclusive end)
     lines = master if master is not None else pd.DataFrame(columns=_LINE_COLUMNS)
+    lineage = lineage[lineage["role"].isin([_ROLE_WINDOW, "symbol"])]
     rows = pd.concat(
         [
             pd.DataFrame({"ticker": lineage["canonical_ticker"], "key": lineage["role"] + " " + lineage["cik"], "end": lineage["valid_to"]}),

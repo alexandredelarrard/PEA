@@ -25,6 +25,7 @@ from src.data_store.store import DataStore
 from src.validate.checks.institutionals import check_institutionals
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _FakeFiling, _line, _seed_roster
+from tests.support.store_identity import store_identity
 
 _AS_OF = pd.Timestamp("2026-09-30")
 _UNIVERSE = ["AAPL", "MSFT"]
@@ -70,6 +71,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple
 
 def _ctx(tmp_path: Any, store: Any) -> Any:
     ctx = fake_context(tmp_path, store, _UNIVERSE)
+    ctx._identity_resolver = store_identity(store)
     _seed_roster(store, [ROSTER])
     return ctx
 

@@ -25,6 +25,7 @@ from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_extract.utils.prices import fetch_splits as fs
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "yfinance" / "aapl_mo_nvda_2024-05_06_actions.csv"
@@ -66,7 +67,12 @@ class FakeYahoo:
 def _context(store: DataStore) -> Any:
     config = OmegaConf.create({"data_extract": {"years_history": 3, "macro_years_history": 1}})
     return SimpleNamespace(
-        store=store, log=logging.getLogger("test.one_download"), config=config, config_dir=".", universe=seed_universe(store, _TICKERS)
+        store=store,
+        log=logging.getLogger("test.one_download"),
+        config=config,
+        config_dir=".",
+        universe=seed_universe(store, _TICKERS),
+        _identity_resolver=store_identity(store),
     )
 
 

@@ -32,6 +32,7 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 
@@ -128,7 +129,7 @@ def _yf_frame(ticker: str, dividend: float | None = None) -> pd.DataFrame:
 def test_price_fetch_writes_clean_ohlcv_and_the_ex_dates_elsewhere(sqlite_store, monkeypatch):
     """`prices` gets clean OHLCV; the dividend column of the same response lands only in `prices_dividends`."""
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
-    ctx = SimpleNamespace(store=sqlite_store, universe=seed_universe(sqlite_store, ["AAPL"]))
+    ctx = SimpleNamespace(store=sqlite_store, universe=seed_universe(sqlite_store, ["AAPL"]), _identity_resolver=store_identity(sqlite_store))
 
     session = fp.YahooSession(pause=0.0)
     for fetch in (fp.fetch_price_actions, fp.fetch_dividends, fp.fetch_prices):

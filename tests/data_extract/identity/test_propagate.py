@@ -122,12 +122,12 @@ def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_not
     asked = _offline_reread(monkeypatch)
     before = _rows(filing_store)
 
-    dry = retag_13f(context, thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), True)
+    dry = retag_13f(context, *thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), True)
     after_dry = _rows(filing_store)
-    wet = retag_13f(context, thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), False)
+    wet = retag_13f(context, *thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), False)
     after = _rows(filing_store)
-    again = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False)
-    stale = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE + pd.Timedelta(days=60), False)
+    again, _ = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False)
+    stale, _ = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE + pd.Timedelta(days=60), False)
 
     moved = {(r.cusip, r.from_ticker, r.to_ticker): r.rows for r in dry.itertuples(index=False)}
     assert moved == {(EQR_CUSIP, "EQR", "VMRK"): 3, (BRK_A, "BRK-B", "BRK-B"): 1}, moved
@@ -191,7 +191,7 @@ def test_fixture_eqr_rows_move_to_vmrk_on_the_published_lines() -> None:
     store = DataStore(create_engine(f"sqlite:///file:{path.as_posix()}?mode=ro&uri=true"))
     context = _context(store)
 
-    report = retag_13f(context, thirteenf_moves(context, ["VMRK"], RUN_DATE, True), True)
+    report = retag_13f(context, *thirteenf_moves(context, ["VMRK"], RUN_DATE, True), True)
 
     moved = {(r.from_ticker, r.to_ticker): r.rows for r in report.itertuples(index=False)}
     assert moved == {("EQR", "VMRK"): 39573, ("EQR", "_empty"): 2}, moved
@@ -287,7 +287,7 @@ def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propaga
         monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(step_module, name, lambda *args, **kwargs: {})
-    monkeypatch.setattr(step_module, "thirteenf_moves", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(step_module, "thirteenf_moves", lambda *args, **kwargs: (pd.DataFrame(), None))
     monkeypatch.setattr(step_module, "retag_13f", lambda *args, **kwargs: pd.DataFrame(columns=list(RESTAMP_COLUMNS)))
     monkeypatch.setattr(step_module, "rebuild_history", lambda *args, **kwargs: ())
 

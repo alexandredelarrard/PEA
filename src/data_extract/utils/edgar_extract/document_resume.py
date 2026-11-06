@@ -118,6 +118,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         request.runtime_floor,
         request.full,
     )
+    bounds = planner_bounds(context)
     started = time.perf_counter()
     floor = request.listing_floor if request.listing_floor is not None else document_floor(table, as_of, request.years_history, runtime_floor)
     roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
@@ -137,7 +138,6 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = context.universe.new_since(overlap, as_of) if overlap else set()
-    bounds = planner_bounds(context)
     units: dict[str, pd.DataFrame] = {}
     counts: dict[str, int] = {}
     for ticker in roster:

@@ -484,7 +484,7 @@ class StepExtractIdentity(Step):
         records += refresh_insider(self._context, identity, changed, dry_run)
         records += refresh_fails(self._context, tickers, self._run_date, dry_run, every)
         records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)
-        restamped = retag_13f(self._context, thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
+        restamped = retag_13f(self._context, *thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
 
         # post-process: the history of every ticker whose facts were purged; one summary
         removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))

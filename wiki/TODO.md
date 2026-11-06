@@ -92,7 +92,7 @@ The preceding code pointers and stale-score reproduction describe the historical
 
 ## Entity-symbol-lineage branch: re-runs after the resume merge
 
-Folded into the [identity cutover](./guides/run-the-pipeline.md#identity-cutover-one-off-user-run): Stage C is its step 4 (LLM stop raised to $50), the false tenures and PSKY are handled (entries above), the per-ticker re-runs are its rebuilds and gate diff, and the second AC-003 check is an after-step. Only the earnings-call item stays open after it. The `2026-10-02-entity-symbol-lineage` branch takes `dev` after `feat/db-derived-resume` merges, fixes the identity gaps, re-runs the affected tables and diffs them. Context and evidence: the final report, in the local, gitignored run dir `reports/validate/2026-10-03-db-derived-extraction-resume/05-final-report.md`.
+Folded into the [identity cutover](./guides/run-the-pipeline.md#identity-first-build-one-off-user-run): Stage C is its step 4 (LLM stop raised to $50), the false tenures and PSKY are handled (entries above), the per-ticker re-runs are its rebuilds and gate diff, and the second AC-003 check is an after-step. Only the earnings-call item stays open after it. The `2026-10-02-entity-symbol-lineage` branch takes `dev` after `feat/db-derived-resume` merges, fixes the identity gaps, re-runs the affected tables and diffs them. Context and evidence: the final report, in the local, gitignored run dir `reports/validate/2026-10-03-db-derived-extraction-resume/05-final-report.md`.
 
 
 - **P2 — 12 tickers with no stored earnings call:** ED, EXPD, FDXF, GEHC, GEV, HONA, KVUE, NVR, Q, SNDK, SOLV, VLTO. Check ED, EXPD and NVR first; they are old companies.
@@ -413,6 +413,13 @@ After this migration is reviewed:
 
 # universe expand:
 - After the point-in-time S&P 500 gate above, evaluate Russell 1000 expansion with the same membership and delisting controls.
+
+## Identity follow-ups 2026-11-06
+
+- **Placement exceptions.** Move `insider_common`, `security_tape`, `empty_markers`, `html_text` and `parallel_fetch` into `src/data_extract/utils/common/`; they are 63 of the `PLACEMENT_EXCEPTIONS` of [test_helper_duplicates.py](../tests/data_extract/test_helper_duplicates.py) (deferred, user decision).
+- **Earnings-call attribution off `symbol_tenure` (X70, blocked).** Moving `Identity.entity_for` and the cube's call-issuer check to the published identity misattributes calls under symbols reused outside the universe (VC to VTR, AA to HWM, CG to L, CEG 2008-2011): the published tables hold universe companies only. Options: publish the outside holders of universe symbols, or keep the tenure as the attribution source. Until then the 20 `rejected` tenure entries stay.
+- **Accepted (X113).** The FTD capture keeps its 7-day recheck window; no capture-stamp column.
+- **Accepted (X109a).** A conversion-ratio change hidden inside an already collapsed 13F company row is not detected.
 
 ## SEC 13F feature science follow-ups 2026-10-25
 

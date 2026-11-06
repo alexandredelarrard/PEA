@@ -179,6 +179,15 @@ Before adding code:
 
 Registries such as `Tables`, the cube-part registry and SEC form policy often reduce a multi-file change to one declaration plus its consumer test.
 
+Helper placement (`src/utils/` and `src/data_extract/`):
+
+- Reuse before writing: an existing helper that does the job is called; one that almost does is generalised in place, not copied.
+- No duplicates: two functions with the same behavior are merged into one and the copies deleted; a shared name is only a lead, the body decides.
+- A helper used by one step or sub-step stays with its owner.
+- A helper used by two or more `data_extract` steps or sub-steps goes in `src/data_extract/utils/common/`.
+- A helper also used outside `data_extract` goes in `src/utils/`.
+- [test_helper_duplicates.py](../../tests/data_extract/test_helper_duplicates.py) fails on two identical normalised bodies and on a `data_extract` helper imported by two packages outside `utils/common/`; each accepted exception is listed in the test with its reason.
+
 ## Testing expectations
 
 Feature and economic tests use small real-data samples. Synthetic known-truth fixtures are reserved for parser and mathematical identities, normally paired with a real-data coverage check. Every completed test prints a concise sanity conclusion that a reviewer can interpret.

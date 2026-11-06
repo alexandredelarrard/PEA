@@ -129,12 +129,10 @@ def consolidated_facts(facts: pd.DataFrame) -> pd.DataFrame:
 
 
 def bare_concept(namespaced: str) -> str:
-    """`us-gaap:Assets` -> `Assets`.
+    """`us-gaap:Assets` -> `Assets`: the join key between the namespaced facts, the linkbase and the catalogue.
 
-    The facts frame namespaces `concept`; the calculation linkbase splits the same thing
-    into `concept` + `concept_taxonomy`. The catalogue is written in bare names, so this
-    is the join key between all three. (The legacy `fundamentals_facts` table learned the
-    same lesson the hard way: its `concept` is namespaced and its `bare_tag` is not.)
+    The catalogue namespaces its few non-us-gaap concepts (cover-page `dei:` tags), so both sides are bared before
+    matching; dropping this misses `dei:EntityCommonStockSharesOutstanding`, the only summable multi-class share tag.
     """
     return namespaced.split(":", 1)[-1] if namespaced else namespaced
 

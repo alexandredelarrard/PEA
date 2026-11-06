@@ -182,11 +182,6 @@ def build_peer_dict_hybrid(
     return _peers_from_similarity_matrix(combined, top_k, weighting, redundant_map)
 
 
-# --------------------------------------------------------------------------- #
-# Sector returns from peers (unchanged)                                       #
-# --------------------------------------------------------------------------- #
-
-
 def load_peer_dict(path: Path, redundant_map: dict[str, str] | None = None) -> dict:
     """Load a cached peer dict, applying the dual-class dedup on the way in so a dict
     built before this fix is corrected without recomputing embeddings."""

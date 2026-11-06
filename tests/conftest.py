@@ -347,8 +347,6 @@ def real_frames() -> dict[str, Any]:
 def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.utils.config import read_config
-    from src.utils.tickers_universe.universe import Universe
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.factors import (
         assemble_factor_panel,
@@ -358,6 +356,8 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     )
     from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_peers.utils.sector_peers import build_peer_dict
+    from src.utils.config import read_config
+    from src.utils.tickers_universe.universe import Universe
 
     stock_close = real_frames["stock_close"]  # close_split -- LEVELS
     stock_close_total = real_frames["stock_close_total"]  # close_total -- RETURNS

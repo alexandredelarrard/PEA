@@ -107,10 +107,7 @@ def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]],
 
     A feature at `t` reads its input over index positions `[t-back, t-skip]`, so it straddles a
     seam at position `s` exactly when `t-back < s <= t-skip` -- i.e. for `t` in
-    `[s+skip, s+back-1]`, both ends inclusive. Both ends are load-bearing. Verified on the live
-    panel at `DHR`/2016-07-05: `peer_mom_63` (`back=63, skip=0`) is pinned at rank 0.9978
-    through `s+62` and reads 0.1891 at `s+63`; `mom_12_1` (`back=252, skip=21`) plateaus at
-    0.9934 from `s+21`, holds to 0.9457 at `s+251` and craters to 0.2928 at `s+252`.
+    `[s+skip, s+back-1]`, both ends inclusive. Both ends are load-bearing.
 
     Positional on `frame`'s OWN index, not on calendar arithmetic, so an incrementally trimmed
     window masks the same trading days as a full build. A seam outside the frame is a no-op, and

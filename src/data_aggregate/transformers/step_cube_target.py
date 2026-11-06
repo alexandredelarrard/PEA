@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.assemble.cube import labels_to_wide
-from src.data_aggregate.utils.target.betas import _betas_to_long
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     PART_REFRESH_TRADING_DAYS,
@@ -39,7 +38,7 @@ from src.data_aggregate.utils.price.frames import (
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_aggregate.utils.target.betas import estimate_all_betas
+from src.data_aggregate.utils.target.betas import _betas_to_long, estimate_all_betas
 from src.data_aggregate.utils.target.factors import (
     assemble_factor_panel,
     build_characteristics,

@@ -269,12 +269,9 @@ def load_price_frames(
 def universe_columns(tickers: Sequence[str], close: pd.DataFrame) -> list[str]:
     """The analysis universe as a SORTED, deterministic column list.
 
-    The old code built this as a `set` and let `du._sub` iterate it, so every `stock_*`
-    frame's column order varied with PYTHONHASHSEED across processes. The effect on values
-    is ~1e-16 (float summation order in `ret.mean(axis=1)`,
-    `characteristic_to_factor_return`'s `.sum(axis=1)`), but it makes any bit-identity
-    claim between two processes unprovable -- and the CLI runs each sub-step in its own
-    process."""
+    A set's order varies with PYTHONHASHSEED across processes, which changes float summation
+    order across columns and makes bit-identity between two processes (the CLI runs each
+    sub-step in its own) unprovable."""
     universe = sorted(set(tickers) & set(close.columns))
     if not universe:
         raise RuntimeError("no universe ticker has prices -> cube universe is empty")
@@ -284,11 +281,8 @@ def universe_columns(tickers: Sequence[str], close: pd.DataFrame) -> list[str]:
 def get_trading_days(close: pd.DataFrame, market: pd.Series, market_name: str = "market") -> pd.Series:
     """The trading calendar: a boolean over `close.index`, True where the MARKET traded.
 
-    Takes the market series, not a column name. It used to be `close[market_ticker]`, back
-    when SPY was stored inside `prices` alongside the equities; the market series now lives in
-    `prices_macro`, so the caller reads it and hands it in. Same definition, so the calendar
-    is unchanged -- and the quorum denominator is now right, since `close` no longer carries
-    four non-equity columns it was counting as stocks."""
+    Takes the market series (read from `prices_macro` by the caller), not a column name, so
+    `close` holds equities only and the quorum counts stocks."""
     quorum = 0.5 * close.shape[1]
     trading_days = market.reindex(close.index).notna()
     stock_cov = close.notna().sum(axis=1)

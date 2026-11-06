@@ -61,9 +61,7 @@ from src.utils.price_adjustments import (
 from src.utils.price_adjustments import (
     _is_split_shaped as _is_split_shaped,
 )
-from src.utils.price_adjustments import (
-    forward_split_factor as forward_split_factor,
-)
+from src.utils.price_adjustments import forward_split_factor
 from src.utils.price_adjustments import (
     split_events as split_events,
 )

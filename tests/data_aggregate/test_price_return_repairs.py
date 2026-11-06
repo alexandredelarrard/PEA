@@ -102,6 +102,10 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
         rows.loc[rows["date"].lt(when), "close_total"] *= step / item["target_step"]
     sqlite_store.save(Tables.prices, rows)
     sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": rows["date"], "close": 1.0}))
+    if ticker in blob["share_events"]:
+        # An applicable share policy refuses the build without its own Yahoo, Sharadar and anchor evidence.
+        for table in (Tables.prices_splits, Tables.sharadar_actions, Tables.sharadar_fundamentals):
+            sqlite_store.save(table, context.store.load(table, where={"ticker": [ticker]}))
     peer_path = tmp_path / "peers.json"
     peer_path.write_text(json.dumps({ticker: {ticker: 1.0}}), encoding="utf-8")
     isolated = SimpleNamespace(

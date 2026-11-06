@@ -59,7 +59,7 @@ def test_tape_support_rejects_malformed_genuine_or_vendor_evidence(invalid_facto
     df_events = pd.DataFrame({"ticker": ["TEST"], "date": [days[1]], "value": [invalid_factor]})
     basis = ShareBasis(df_events, df_events, df_events, {})
     with pytest.raises(ValueError, match="positive finite"):
-        compatible_tape_support(basis, days, pd.Index(["TEST"]), days[-1])
+        compatible_tape_support(basis, security_basis_frame(basis, days, pd.Index(["TEST"])))
     print("SANITY: identical invalid G/F factors cannot establish tape compatibility by being silently discarded.")
 
 

@@ -79,10 +79,9 @@ def pit_fields(
 def as_traded_volume(df_volume: pd.DataFrame, df_basis: pd.DataFrame, basis: ShareBasis) -> pd.DataFrame:
     """Vendor volume carried from the terminal basis back to each date's by `F_d / F_T`.
 
-    Null where the vendor tape restatement and the genuine events are not proven compatible.
+    Null where the Yahoo tape restatement is not proven equal to that basis change.
     """
-    index = pd.DatetimeIndex(df_basis.index)
-    supported = compatible_tape_support(basis, index, df_basis.columns, index[-1])
+    supported = compatible_tape_support(basis, df_basis)
     return cast(pd.DataFrame, convert_quantities(df_volume, df_basis.iloc[-1], df_basis)).where(supported)
 
 
@@ -117,24 +116,27 @@ def as_traded_close(
     return df_close.where(np.isfinite(df_close) & df_close.gt(0))
 
 
-def compatible_tape_support(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index, terminal_date: pd.Timestamp) -> pd.DataFrame:
-    """Prove compatibility of the retained adjusted-price/terminal-quoted-tape pair."""
-    df_supported = pd.DataFrame(False, index=index, columns=columns)
+def _tape_events(basis: ShareBasis) -> pd.DataFrame:
+    """The genuine events the Yahoo volume tape is restated by: those its own split ledger also dates.
+
+    Yahoo scales volume for the splits it records, never for the spin-off price factors it files as splits.
+    """
+    ledger = basis.price[["ticker", "date"]].assign(date=lambda df: pd.to_datetime(df["date"]).dt.normalize()).drop_duplicates()
+    events = basis.actual.assign(date=pd.to_datetime(basis.actual["date"]).dt.normalize())
+    return events.merge(ledger, on=["ticker", "date"], how="inner")
+
+
+def compatible_tape_support(basis: ShareBasis, df_basis: pd.DataFrame) -> pd.DataFrame:
+    """True where the Yahoo tape restatement after each date equals `F_T / F_d`, the change `volume_pit` undoes."""
+    index = pd.DatetimeIndex(df_basis.index)
+    df_supported = pd.DataFrame(False, index=index, columns=df_basis.columns)
     if not basis.actual_available:
         return df_supported
     validate_quantity_events(basis.actual)
-    validate_quantity_events(basis.vendor)
-    stamps = index.to_numpy(dtype="datetime64[ns]")
-    actual = suffix_factor(basis.actual, list(columns), stamps)
-    vendor = suffix_factor(basis.vendor, list(columns), stamps)
-    names = pd.Series(columns.astype(str))
-    terminal = pd.Series(terminal_date, index=names.index)
-    target = basis.factor(names, terminal, "actual") * basis.factor(names, terminal, "units")
-    for position, ticker in enumerate(columns):
-        genuine = actual.get(str(ticker), np.ones(len(index)))
-        restatement = vendor.get(str(ticker), np.ones(len(index)))
-        units = basis.factor(pd.Series(str(ticker), index=index), pd.Series(index, index=index), "units")
-        supported = np.isfinite(units) & units.gt(0) & np.isfinite(target.iloc[position]) & (target.iloc[position] > 0)
-        supported &= np.isfinite(genuine) & (genuine > 0) & np.isfinite(restatement) & (restatement > 0)
-        df_supported[ticker] = supported & np.isclose(restatement * target.iloc[position], genuine, rtol=1e-12, atol=0)
+    tape = suffix_factor(_tape_events(basis), list(df_basis.columns), index.to_numpy(dtype="datetime64[ns]"))
+    df_growth = df_basis.iloc[-1] / df_basis
+    for ticker in df_basis.columns:
+        restatement = tape.get(str(ticker), np.ones(len(index)))
+        growth = df_growth[ticker].to_numpy(dtype="float64")
+        df_supported[ticker] = np.isfinite(growth) & (growth > 0) & np.isclose(restatement, growth, rtol=1e-12, atol=0)
     return df_supported

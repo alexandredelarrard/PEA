@@ -19,11 +19,13 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
+from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
 from src.data_extract.utils.identity.identity_propagate import purge_rows, rebuilt_since, retag_13f, thirteenf_moves
 from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_13f_filing, save_hr_filing
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
@@ -139,6 +141,41 @@ def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_not
         f"  real run: {len(asked)} accession(s) re-read offline; rows {len(before)} -> {len(after)}; value {before['value_usd'].sum():,.0f} = {after['value_usd'].sum():,.0f}"
     )
     print(f"  BRK-B: one row of {brk['shares'].iloc[0]:,.0f} B shares (2 x 1,500 + 100); EQR -> VMRK; ZZZ unchanged; second run 0 group(s)")
+
+
+def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_it(filing_store: DataStore) -> None:
+    """R-01 (U-67): an accession holding BRK-A and BRK-B is stored as one BRK-B row, so its `sec13f_hr` marker counts
+    the 2 position rows stored (not the 3 filed) on save and on replace, and the cube's book history reads it."""
+    manifest, book = PACKETS[1]
+    lines = pd.DataFrame(
+        [
+            _line(EQR_CUSIP, "VMRK", "canonical_current", "EQR", 1.0, "1995-01-01"),
+            _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31"),
+            _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
+        ]
+    )
+    cmap = pd.DataFrame({"cusip": [], "ticker": []})
+    grid = pd.bdate_range("2024-06-01", "2024-12-31")
+
+    def marker_and_history() -> tuple[int, int]:
+        stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
+        history = prepare_institutional_book_history(
+            thirteen_inputs.iter_filing_vintages(filing_store, grid.max()), grid, ["BRK-B", "VMRK"], None, None, settle_days=3
+        )
+        assert history is not None
+        return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])
+
+    saved = save_hr_filing(filing_store, manifest, book, lines, cmap)
+    saved_count, saved_events = marker_and_history()
+    replaced = replace_hr_filing(filing_store, manifest, book, lines, cmap)
+    replaced_count, replaced_events = marker_and_history()
+
+    assert len(book) == 3 and saved == replaced == 2
+    assert saved_count == replaced_count == 2, (saved_count, replaced_count)
+    assert saved_events == replaced_events > 0
+    print("\n=== SANITY CHECK: collapsed 13F accession reaches the cube (R-01) ===")
+    print(f"  filed CUSIPs {len(book)} -> stored position rows {saved}; marker parsed_row_count save={saved_count}, replace={replaced_count}")
+    print(f"  cube book history built: {saved_events} event row(s) after save, {replaced_events} after replace -> no 'Incomplete stored 13F book'")
 
 
 def test_fixture_eqr_rows_move_to_vmrk_on_the_published_lines() -> None:

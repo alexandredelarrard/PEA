@@ -518,9 +518,10 @@ def save_13f_filing(
 
 
 def _insert_filing(bound: DataStore, table: Table, manifest: pd.DataFrame, positions: pd.DataFrame, checksum: str) -> None:
-    """Insert one accession's position rows and its completion marker through a bound store."""
+    """Insert one accession's position rows and its completion marker through a bound store. The marker's
+    `parsed_row_count` is the number of position rows stored (fewer than filed when `company_rows` merged classes)."""
     empty = cast(tuple[str, str], table.empty_marker)[1]
-    marker = manifest.assign(cusip=empty, content_checksum=checksum)
+    marker = manifest.assign(cusip=empty, content_checksum=checksum, parsed_row_count=len(positions))
     if table == Tables.sec13f_hr:
         marker["ticker"] = empty
     positions = positions.assign(parse_status="position")

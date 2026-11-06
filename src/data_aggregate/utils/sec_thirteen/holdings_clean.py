@@ -49,7 +49,7 @@ def clean_public_holdings(
     """Repair raw accession values before reconciliation, retaining unsupported rows."""
     if df_holdings.empty:
         return df_holdings
-    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, period_quotes=period_quotes, **dict(value_basis or {}))
+    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
     log_register(df_register, float(df_holdings.value_usd.sum()))
     if "value_basis_excluded" in df_holdings:
         df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan

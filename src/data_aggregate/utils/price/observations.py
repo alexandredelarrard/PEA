@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.price.capitalization import canonical_source_support
 from src.utils.cutover_continuity import PredecessorSeries
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.capitalization import canonical_source_support
 from src.utils.price.levels import vendor_observation_factor
 from src.utils.quarters import quarter_ordinal
 

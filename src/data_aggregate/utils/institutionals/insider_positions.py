@@ -7,9 +7,8 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.quotes import terminal_basis_factor
+from src.data_aggregate.utils.common.quotes import lookup_asof, terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
-from src.utils.price.levels import lookup_asof
 
 
 def position_units(trades: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:

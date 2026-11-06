@@ -24,9 +24,9 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
+from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import security_basis_frame
 from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])

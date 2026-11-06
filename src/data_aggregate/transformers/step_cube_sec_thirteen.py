@@ -19,6 +19,7 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
@@ -35,7 +36,6 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
-from src.utils.price.levels import lookup_asof
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
 

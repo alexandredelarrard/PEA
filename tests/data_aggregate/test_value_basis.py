@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.quotes import period_close
+from src.data_aggregate.utils.price.features import as_traded_close
 from src.data_aggregate.utils.sec_thirteen.value_basis import (
     ABSTAINED,
     DIVIDED,
@@ -26,7 +27,6 @@ from src.data_aggregate.utils.sec_thirteen.value_basis import (
     nullable_value_to_daily,
     repair_value_basis,
 )
-from src.utils.price.levels import as_traded_close
 
 PERIOD = pd.Timestamp("2021-12-31")
 CLOSE = 336.0

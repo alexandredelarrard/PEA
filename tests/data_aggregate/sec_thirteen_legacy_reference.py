@@ -14,6 +14,7 @@ from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.typing import frame_column
+from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import _DATES, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_books import compact_institutional_books
@@ -30,7 +31,7 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import security_basis_frame, split_cum_product
+from src.utils.price.levels import split_cum_product
 
 logger = logging.getLogger(__name__)
 F13_REVISION_MIN_MOVE = 0.001

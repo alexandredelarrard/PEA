@@ -139,30 +139,6 @@ def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.Data
     return out
 
 
-def as_traded_close(
-    close_split: pd.DataFrame | None,
-    level_factor: pd.DataFrame | None,
-    split_events: pd.DataFrame | ShareBasis,
-) -> pd.DataFrame | None:
-    """Restore quoted-security prices using vendor restatements and evidenced quote units."""
-    if close_split is None or level_factor is None:
-        return None
-    df_close = close_split * level_factor.reindex_like(close_split)
-    if isinstance(split_events, ShareBasis):
-        basis = split_events
-        events = basis.vendor
-    else:
-        basis = None
-        events = split_events
-    factors = suffix_factor(events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
-    for ticker, factor in factors.items():
-        df_close[ticker] *= factor
-    if basis is not None:
-        for ticker in basis.policies.keys() & set(df_close.columns):
-            df_close[ticker] *= basis.factor(pd.Series(ticker, index=df_close.index), pd.Series(df_close.index, index=df_close.index), "units")
-    return df_close.where(np.isfinite(df_close) & df_close.gt(0))
-
-
 def rebase_security_quantities(
     basis: ShareBasis,
     quantities: pd.Series,
@@ -186,7 +162,7 @@ def rebase_security_quantities(
     return result.where(np.isfinite(result) & (ordinary.eq(0) | result.ne(0)))
 
 
-def _validate_quantity_events(df_events: pd.DataFrame) -> None:
+def validate_quantity_events(df_events: pd.DataFrame) -> None:
     """Refuse malformed quantity evidence before suffix products can discard it."""
     if df_events.empty:
         return
@@ -203,7 +179,7 @@ def vendor_identity_support(basis: ShareBasis, tickers: pd.Series, source_dates:
     """Prove absence of future nonunit restatements; cancelling products are insufficient."""
     if not tickers.index.equals(source_dates.index):
         raise ValueError("Vendor ticker and source date must be index-aligned")
-    _validate_quantity_events(basis.vendor)
+    validate_quantity_events(basis.vendor)
     source = pd.to_datetime(source_dates, errors="coerce").dt.normalize()
     supported = source.notna() & tickers.notna() & tickers.astype("string").str.strip().ne("") & basis.actual_available
     if basis.vendor.empty:
@@ -220,22 +196,12 @@ def vendor_observation_factor(basis: ShareBasis, tickers: pd.Series, source_date
     """Vendor restatements between a public observation and its evidenced representation vintage."""
     if any(not tickers.index.equals(values.index) for values in (source_dates, vintages)):
         raise ValueError("Vendor ticker, source date and vintage must be index-aligned")
-    _validate_quantity_events(basis.vendor)
+    validate_quantity_events(basis.vendor)
     source = pd.to_datetime(source_dates, errors="coerce").dt.normalize()
     vintage = pd.to_datetime(vintages, errors="coerce").dt.normalize()
     factor = basis.factor(tickers, source, "vendor") / basis.factor(tickers, vintage, "vendor")
     supported = source.notna() & vintage.notna() & vintage.ge(source) & tickers.notna() & tickers.astype("string").str.strip().ne("")
     return factor.where(supported & basis.actual_available & np.isfinite(factor) & factor.gt(0))
-
-
-def rebase_vendor_quantities(
-    basis: ShareBasis, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series
-) -> pd.Series:
-    """Undo the source's F restatement, then carry genuine quantities in target security units."""
-    factor = basis.factor(tickers, source_dates, "vendor")
-    original = pd.to_numeric(quantities, errors="coerce") / factor.where(np.isfinite(factor) & factor.gt(0))
-    result = rebase_security_quantities(basis, original, tickers, source_dates, target_dates, pd.Series(1.0, index=quantities.index))
-    return result if basis.actual_available else result.where(quantities.eq(0))
 
 
 def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series, dates: pd.Series) -> np.ndarray:
@@ -282,49 +248,8 @@ def security_basis(basis: ShareBasis, tickers: pd.Series, dates: pd.Series) -> p
     return result.where(np.isfinite(result) & result.gt(0) & basis.actual_available)
 
 
-def security_basis_frame(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
-    """`security_basis` on a date x ticker grid."""
-    keys = pd.MultiIndex.from_product([index, columns])
-    values = security_basis(basis, pd.Series(keys.get_level_values(1).astype(str)), pd.Series(keys.get_level_values(0)))
-    return pd.DataFrame(values.to_numpy().reshape(len(index), len(columns)), index=index, columns=columns)
-
-
 def convert_quantities(
     quantities: pd.DataFrame | pd.Series | np.ndarray, basis_from: pd.Series | np.ndarray, basis_to: pd.DataFrame | pd.Series | np.ndarray
 ) -> pd.DataFrame | pd.Series | np.ndarray:
     """Carry quoted-security quantities between two forward bases: `q * F_to / F_from` (null where either is null)."""
     return quantities * basis_to / basis_from
-
-
-def lookup_asof(df_values: pd.DataFrame, tickers: pd.Series, dates: pd.Series) -> pd.Series:
-    """Per (ticker, date), the value saved on the last grid date at or before the date; a null there, or a missing date, stays null."""
-    index = pd.DatetimeIndex(df_values.index)
-    stamps = pd.to_datetime(dates).to_numpy(dtype="datetime64[ns]")
-    rows = index.searchsorted(stamps, side="right") - 1
-    cols = df_values.columns.get_indexer(tickers.astype(str))
-    found = (rows >= 0) & (cols >= 0) & ~np.isnat(stamps)
-    values = df_values.to_numpy(dtype="float64")[np.maximum(rows, 0), np.maximum(cols, 0)]
-    return pd.Series(np.where(found, values, np.nan), index=dates.index)
-
-
-def compatible_tape_support(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index, terminal_date: pd.Timestamp) -> pd.DataFrame:
-    """Prove compatibility of the retained adjusted-price/terminal-quoted-tape pair."""
-    df_supported = pd.DataFrame(False, index=index, columns=columns)
-    if not basis.actual_available:
-        return df_supported
-    _validate_quantity_events(basis.actual)
-    _validate_quantity_events(basis.vendor)
-    stamps = index.to_numpy(dtype="datetime64[ns]")
-    actual = suffix_factor(basis.actual, list(columns), stamps)
-    vendor = suffix_factor(basis.vendor, list(columns), stamps)
-    names = pd.Series(columns.astype(str))
-    terminal = pd.Series(terminal_date, index=names.index)
-    target = basis.factor(names, terminal, "actual") * basis.factor(names, terminal, "units")
-    for position, ticker in enumerate(columns):
-        genuine = actual.get(str(ticker), np.ones(len(index)))
-        restatement = vendor.get(str(ticker), np.ones(len(index)))
-        units = basis.factor(pd.Series(str(ticker), index=index), pd.Series(index, index=index), "units")
-        supported = np.isfinite(units) & units.gt(0) & np.isfinite(target.iloc[position]) & (target.iloc[position] > 0)
-        supported &= np.isfinite(genuine) & (genuine > 0) & np.isfinite(restatement) & (restatement > 0)
-        df_supported[ticker] = supported & np.isclose(restatement * target.iloc[position], genuine, rtol=1e-12, atol=0)
-    return df_supported

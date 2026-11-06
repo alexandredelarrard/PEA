@@ -14,14 +14,15 @@ from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
+from src.data_aggregate.utils.price.capitalization import project_security_shares
+from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
 from src.data_aggregate.utils.price.inputs import PRICE_COLS
 from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
 from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price.basis import load_share_basis
-from src.utils.price.capitalization import project_security_shares
-from src.utils.price.levels import apply_level_bugfix, as_traded_close, level_factor, security_basis_frame
+from src.utils.price.levels import apply_level_bugfix, level_factor
 from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
 from tests.support.universe import universe_of
 

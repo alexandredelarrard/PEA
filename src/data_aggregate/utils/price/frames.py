@@ -47,7 +47,7 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.frames import extract_field, prices_long_to_multiindex
-from src.utils.price.levels import rebase_vendor_quantities
+from src.utils.price.levels import rebase_security_quantities
 from src.utils.price.per_share import vendor_ordinary_per_share
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,16 @@ class PriceFrames:
         idx_col = s.columns[0]
         m = s.melt(id_vars=idx_col, var_name="ticker", value_name="_v").dropna(subset=["_v"]).rename(columns={idx_col: "date"})
         return m[["date", "ticker"]].reset_index(drop=True)
+
+
+def rebase_vendor_quantities(
+    basis: ShareBasis, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series
+) -> pd.Series:
+    """Undo the source's F restatement, then carry genuine quantities in target security units."""
+    factor = basis.factor(tickers, source_dates, "vendor")
+    original = pd.to_numeric(quantities, errors="coerce") / factor.where(np.isfinite(factor) & factor.gt(0))
+    result = rebase_security_quantities(basis, original, tickers, source_dates, target_dates, pd.Series(1.0, index=quantities.index))
+    return result if basis.actual_available else result.where(quantities.eq(0))
 
 
 def comparison_share_history(

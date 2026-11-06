@@ -8,6 +8,7 @@ import pytest
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
+from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     _daily_institutional_value_weight,
     _daily_owned_shares,
@@ -15,7 +16,6 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 )
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket, _attach_reference_prices
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import security_basis_frame
 from tests.conftest import make_frames
 
 

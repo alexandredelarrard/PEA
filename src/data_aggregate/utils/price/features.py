@@ -8,11 +8,11 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.price.capitalization import canonical_source_support, capitalization_observations, project_security_shares
 from src.data_aggregate.utils.price.checks import verified_level_support, verified_price_factor_support
 from src.data_aggregate.utils.price.inputs import PriceInputs, merge_price_actions
-from src.utils.price.adjustments import ShareBasis, resolve_share_events
-from src.utils.price.capitalization import canonical_source_support, capitalization_observations, project_security_shares
-from src.utils.price.levels import as_traded_close, compatible_tape_support, convert_quantities, security_basis_frame
+from src.utils.price.adjustments import ShareBasis, resolve_share_events, suffix_factor
+from src.utils.price.levels import convert_quantities, security_basis, validate_quantity_events
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +84,57 @@ def as_traded_volume(df_volume: pd.DataFrame, df_basis: pd.DataFrame, basis: Sha
     index = pd.DatetimeIndex(df_basis.index)
     supported = compatible_tape_support(basis, index, df_basis.columns, index[-1])
     return cast(pd.DataFrame, convert_quantities(df_volume, df_basis.iloc[-1], df_basis)).where(supported)
+
+
+def security_basis_frame(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
+    """`security_basis` on a date x ticker grid."""
+    keys = pd.MultiIndex.from_product([index, columns])
+    values = security_basis(basis, pd.Series(keys.get_level_values(1).astype(str)), pd.Series(keys.get_level_values(0)))
+    return pd.DataFrame(values.to_numpy().reshape(len(index), len(columns)), index=index, columns=columns)
+
+
+def as_traded_close(
+    close_split: pd.DataFrame | None,
+    level_factor: pd.DataFrame | None,
+    split_events: pd.DataFrame | ShareBasis,
+) -> pd.DataFrame | None:
+    """Restore quoted-security prices using vendor restatements and evidenced quote units."""
+    if close_split is None or level_factor is None:
+        return None
+    df_close = close_split * level_factor.reindex_like(close_split)
+    if isinstance(split_events, ShareBasis):
+        basis = split_events
+        events = basis.vendor
+    else:
+        basis = None
+        events = split_events
+    factors = suffix_factor(events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
+    for ticker, factor in factors.items():
+        df_close[ticker] *= factor
+    if basis is not None:
+        for ticker in basis.policies.keys() & set(df_close.columns):
+            df_close[ticker] *= basis.factor(pd.Series(ticker, index=df_close.index), pd.Series(df_close.index, index=df_close.index), "units")
+    return df_close.where(np.isfinite(df_close) & df_close.gt(0))
+
+
+def compatible_tape_support(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index, terminal_date: pd.Timestamp) -> pd.DataFrame:
+    """Prove compatibility of the retained adjusted-price/terminal-quoted-tape pair."""
+    df_supported = pd.DataFrame(False, index=index, columns=columns)
+    if not basis.actual_available:
+        return df_supported
+    validate_quantity_events(basis.actual)
+    validate_quantity_events(basis.vendor)
+    stamps = index.to_numpy(dtype="datetime64[ns]")
+    actual = suffix_factor(basis.actual, list(columns), stamps)
+    vendor = suffix_factor(basis.vendor, list(columns), stamps)
+    names = pd.Series(columns.astype(str))
+    terminal = pd.Series(terminal_date, index=names.index)
+    target = basis.factor(names, terminal, "actual") * basis.factor(names, terminal, "units")
+    for position, ticker in enumerate(columns):
+        genuine = actual.get(str(ticker), np.ones(len(index)))
+        restatement = vendor.get(str(ticker), np.ones(len(index)))
+        units = basis.factor(pd.Series(str(ticker), index=index), pd.Series(index, index=index), "units")
+        supported = np.isfinite(units) & units.gt(0) & np.isfinite(target.iloc[position]) & (target.iloc[position] > 0)
+        supported &= np.isfinite(genuine) & (genuine > 0) & np.isfinite(restatement) & (restatement > 0)
+        df_supported[ticker] = supported & np.isclose(restatement * target.iloc[position], genuine, rtol=1e-12, atol=0)
+    return df_supported

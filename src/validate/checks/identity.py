@@ -26,11 +26,9 @@ from src.utils.filer_tables import (
     REMOVAL_COLUMNS,
     FilerTable,
     ListedWindow,
+    foreign_mask,
     judged_cik_mask,
-    own_filer_mask,
     removal_records,
-    window_owner_mask,
-    windowed_filer_mask,
 )
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.predecessor_series import load_vendor_series, with_overrides
@@ -115,41 +113,26 @@ def _listed_windows(lineage: pd.DataFrame) -> dict[str, tuple[ListedWindow, ...]
     return {ticker: tuple((cik, lo, hi) for cik, _, _, lo, hi in widen_seams(windows)) for ticker, windows in declared.items()}
 
 
-def _outside_windows(context: Context, spec: FilerTable, ticker: str, filers: list, windows: dict[str, tuple[ListedWindow, ...]]) -> list[dict]:
-    """Removal records of a dated table's rows from the entity's own `filers` that no window of their CIK admits."""
-    if not filers or normalise_ticker(ticker) not in windows:
-        return []
-    rows = context.store.load(
-        spec.table, columns=["ticker", spec.cik_col, spec.date_col, spec.key_col], where={"ticker": ticker, spec.cik_col: filers}, optional=True
-    )
-    if rows is None or rows.empty:
-        return []
-    outside = rows[~windowed_filer_mask(rows["ticker"], rows[spec.cik_col].map(pad_cik), rows[spec.date_col], windows)]
-    return removal_records(spec.table.name, outside, spec) if not outside.empty else []
-
-
 def _foreign_in_table(
     context: Context, spec: FilerTable, tickers: Sequence[str], ciks: dict[str, frozenset[str]], windows: dict[str, tuple[ListedWindow, ...]]
 ) -> list[dict]:
-    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity, outside its windows for a dated
-    table, or holding no window of the ticker for a windowed table."""
+    """One removal record per (ticker, filer CIK) of the `spec` rows the purge removes (`foreign_mask`). Only the
+    filers that can own a foreign row are read: one foreign on every day, or any filer of a dated, windowed ticker."""
     records: list[dict] = []
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     for ticker in tickers:
+        # the judged filers that can own a foreign row: every one for a dated ticker with windows, else those foreign on any day
         filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
-        padded = filers.map(pad_cik)
-        tickers_of = pd.Series(ticker, index=filers.index, dtype=object)
-        judged, own = judged_cik_mask(filers), own_filer_mask(tickers_of, padded, ciks)
-        if spec.windowed:
-            own &= window_owner_mask(tickers_of, padded, windows)
-        if spec.dated:
-            records += _outside_windows(context, spec, ticker, filers[judged & own].tolist(), windows)
-        foreign = filers[judged & ~own].tolist()
-        if not foreign:
+        probe = pd.DataFrame({"ticker": ticker, spec.cik_col: filers[judged_cik_mask(filers)], spec.date_col: pd.NaT})
+        if not (spec.dated and normalise_ticker(ticker) in windows):
+            probe = probe[foreign_mask(spec, probe, ciks, windows)]
+        if probe.empty:
             continue
-        rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: foreign}, optional=True)
+
+        # their rows, kept where foreign
+        rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: probe[spec.cik_col].tolist()}, optional=True)
         if rows is not None and not rows.empty:
-            records += removal_records(spec.table.name, rows, spec)
+            records += removal_records(spec.table.name, rows[foreign_mask(spec, rows, ciks, windows)], spec)
     return records
 
 

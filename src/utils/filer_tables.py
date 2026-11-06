@@ -141,6 +141,20 @@ def removal_records(table: str, foreign: pd.DataFrame, spec: FilerTable) -> list
     return records
 
 
+def foreign_mask(
+    spec: FilerTable, rows: pd.DataFrame, own_ciks: Mapping[str, frozenset[str]], own_windows: Mapping[str, Sequence[ListedWindow]]
+) -> pd.Series:
+    """True where a row of `spec` (judged filer CIK) is foreign: its CIK is outside the ticker's entity, for a dated
+    table no window of it admits the row's date, for a windowed table it holds no window of the ticker."""
+    padded = rows[spec.cik_col].map(pad_cik)
+    own = own_filer_mask(rows["ticker"], padded, own_ciks)
+    if spec.dated:
+        own &= windowed_filer_mask(rows["ticker"], padded, rows[spec.date_col], own_windows)
+    if spec.windowed:
+        own &= window_owner_mask(rows["ticker"], padded, own_windows)
+    return ~own
+
+
 def foreign_filer_rows(
     store: DataStore,
     spec: FilerTable,
@@ -160,13 +174,7 @@ def foreign_filer_rows(
         if rows is None or rows.empty:
             continue
         rows = rows[judged_cik_mask(rows[spec.cik_col])]
-        padded = rows[spec.cik_col].map(pad_cik)
-        own = own_filer_mask(rows["ticker"], padded, own_ciks)
-        if spec.dated:
-            own &= windowed_filer_mask(rows["ticker"], padded, rows[spec.date_col], own_windows)
-        if spec.windowed:
-            own &= window_owner_mask(rows["ticker"], padded, own_windows)
-        frames.append(rows[~own])
+        frames.append(rows[foreign_mask(spec, rows, own_ciks, own_windows)])
     found = [frame for frame in frames if not frame.empty]
     return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=columns)
 

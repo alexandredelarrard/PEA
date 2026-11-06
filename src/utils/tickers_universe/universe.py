@@ -22,6 +22,8 @@ from src.utils.tickers_universe.vocabulary import GICS_GROUP_SECTOR, GICS_SUB_IN
 
 GICS_COLUMNS = ("sector", "industry_group")
 SYNC_COMMAND = "python -m src data_extract universe"
+#: `{key: (first_price_date, ended_on)}`, None where open (`Universe.bounds`).
+Bounds = Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]
 
 
 class UniverseError(RuntimeError):
@@ -173,3 +175,15 @@ class Universe:
         if unknown:
             raise UniverseError(f"not in configs/universe.yml: {', '.join(unknown)}")
         return wanted
+
+
+def before_end(keys: pd.Series, dates: pd.Series, bounds: Bounds) -> pd.Series:
+    """True where `dates` (aligned with `keys`) falls on or before the key's `ended_on`; a key without an end, or a null
+    date, is kept. The document, proxy, call and surprise planners take the end only: their filings and calls follow the
+    company's CIK and symbol lineage back before its current listing's `first_price_date` (CHTR before 2010, DELL, AVGO)."""
+    names = keys.astype(object)
+    edges = pd.DataFrame([(key, bounds.get(key, (None, None))[1]) for key in names.unique()], columns=["key", "ended"]).astype({"key": object})
+    joined = pd.DataFrame({"key": names.to_numpy(), "day": pd.to_datetime(dates, errors="coerce").to_numpy()}).merge(edges, on="key", how="left")
+    ended = pd.to_datetime(joined["ended"])
+    keep = ended.isna() | joined["day"].isna() | (joined["day"] <= ended)
+    return pd.Series(keep.to_numpy(), index=keys.index)

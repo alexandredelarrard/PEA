@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.data_store.schema import Tables
 from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags
-from src.validate.checks.identity import check_identity
+from src.validate.checks.identity import check_identity, pending_removals
 from tests.support.universe import seed_universe, universe_in
 
 SENTINEL = "1900-01-01"
@@ -749,3 +749,50 @@ def test_ended_companies_sharadar_ciks_and_shared_cusips_are_findings(sqlite_sto
         "  OK: REG's open window, symbol and CUSIP line after its end, ALB's foreign Sharadar CIK and the shared CUSIP are findings; TMUS is clean."
     )
     print("  OK: once REG's rows close at its end, REG raises neither open_after_end nor a missing current symbol row.")
+
+
+def test_rows_dated_after_the_company_end_are_not_pending_removals(sqlite_store):
+    """R-03 (REQ-014, X114 shape): WBD ended 2026-10-05 and its window closes 2026-10-06; its own 8-K filed 2026-10-06
+    is what the purge keeps (`before_end`), so the validator does not count it; a foreign filer's 8-K inside the life is."""
+    wbd, other = "0001437107", "0000000999"
+    seed_universe(sqlite_store, ["WBD"], rows={"WBD": {"cik": wbd, "ended_on": pd.Timestamp("2026-10-05")}})
+    lineage = pd.DataFrame([_cik("WBD", wbd, "cik_window", end="2026-10-06"), _sym("WBD", wbd, "WBD", "2022-04-11", "2026-10-06")])
+    rows = [("post-end-1", wbd, "2026-10-06"), ("own-1", wbd, "2026-09-01"), ("foreign-1", other, "2020-01-02")]
+    sqlite_store.save(
+        Tables.sec_8k,
+        pd.DataFrame([{"ticker": "WBD", "accession_number": a, "item": "8.01", "cik": c, "filing_date": pd.Timestamp(d)} for a, c, d in rows]),
+    )
+    lineage = lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+
+    pending = pending_removals(_context(sqlite_store), lineage, ["WBD"])
+
+    got = sorted(zip(pending["cik"], pending["rows"], strict=True))
+    assert got == [(other, 1)], pending
+    print("\n=== SANITY CHECK: validator pending removals stop at ended_on (R-03) ===")
+    print(pending.to_string(index=False))
+    print("  OK: WBD's own 8-K filed 2026-10-06 (after ended_on 2026-10-05) is not pending; the foreign 8-K of 2020 is")
+
+
+def test_an_ended_companys_open_event_cik_row_is_not_open_after_end(sqlite_store, tmp_path):
+    """R-04 (REQ-006): the build closes only an ended company's CIK windows and symbol intervals (`_close_at_end`); its
+    `cik_event` rows stay open by design, so TMUS ended 2020-01-01 with window and symbol closed on 2020-01-02 and its
+    open TMO_USA event row raises no `open_after_end` (an open window still does: the test above)."""
+    lineage = _store_lineage()
+    closed = lineage["canonical_ticker"].eq("TMUS") & lineage["role"].isin(["cik_window", "symbol"])
+    lineage = lineage.assign(valid_to=lineage["valid_to"].where(~closed, "2020-01-02"))
+    seed_universe(
+        sqlite_store,
+        ["ALB", "TMUS", "REG"],
+        rows={"ALB": {"cik": ALB}, "TMUS": {"cik": TMUS, "ended_on": pd.Timestamp("2020-01-01")}, "REG": {"cik": SUCC}},
+    )
+    sqlite_store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    fields = {f.field: f for f in check_identity(context).result.findings}
+
+    event = lineage.loc[lineage["role"].eq("cik_event") & lineage["canonical_ticker"].eq("TMUS"), ["cik", "valid_to"]].to_dict("records")
+    assert "open_after_end" not in fields, fields["open_after_end"].evidence
+    print("\n=== SANITY CHECK: open event rows of an ended company (R-04) ===")
+    print(f"  TMUS ended 2020-01-01, window + symbol closed 2020-01-02; open event row {event} -> open_after_end: none")

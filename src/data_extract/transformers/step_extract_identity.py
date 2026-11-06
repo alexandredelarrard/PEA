@@ -451,6 +451,8 @@ class StepExtractIdentity(Step):
         written = save_unless_unchanged(self._context.store, Tables.universe_cik_symbol, stored_lineage, symbols.rows)
         written += save_unless_unchanged(self._context.store, Tables.universe_cusip, stored_lines, published)
         written += update_identity_columns(self._context.store, changed)
+        # the universe and resolver cached before this save hold the old end dates, symbols and CIKs: later readers reload them
+        self._context._universe, self._context._identity_resolver = None, None
         self._log.info(f"identity publish: {written} row(s) written ({len(changed)} universe ticker(s) with changed identity columns)")
         return written
 
@@ -482,7 +484,7 @@ class StepExtractIdentity(Step):
         records += refresh_insider(self._context, identity, changed, dry_run)
         records += refresh_fails(self._context, tickers, self._run_date, dry_run, every)
         records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)
-        restamped = retag_13f(self._context, thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
+        restamped = retag_13f(self._context, *thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
 
         # post-process: the history of every ticker whose facts were purged; one summary
         removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))

@@ -48,9 +48,9 @@ def stub_propagation(monkeypatch: pytest.MonkeyPatch, module: Any = step_module)
         monkeypatch.setattr(module, name, lambda *args, **kwargs: [])
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(module, name, lambda *args, **kwargs: {})
-    monkeypatch.setattr(module, "thirteenf_moves", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(module, "thirteenf_moves", lambda *args, **kwargs: (pd.DataFrame(), None))
     monkeypatch.setattr(
-        module, "retag_13f", lambda context, moves, dry_run: calls["retag"].append(dry_run) or pd.DataFrame(columns=list(RESTAMP_COLUMNS))
+        module, "retag_13f", lambda context, moves, tags, dry_run: calls["retag"].append(dry_run) or pd.DataFrame(columns=list(RESTAMP_COLUMNS))
     )
     monkeypatch.setattr(module, "rebuild_history", lambda *args, **kwargs: ())
     monkeypatch.setattr(module, "log_propagation", lambda *args, **kwargs: None)

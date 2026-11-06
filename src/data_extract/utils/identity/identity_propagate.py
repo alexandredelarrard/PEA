@@ -24,7 +24,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_source_identity
-from src.data_extract.utils.common.resume import Bounds, before_end, recently_changed
+from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.common.security_lines import FTD_MASTER_COLUMNS, master_stamps, prepare_master
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
@@ -37,8 +37,9 @@ from src.data_extract.utils.zips.fetch_financial_notes import reparse_financial_
 from src.data_extract.utils.zips.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import FilerTable, ListedWindow, delete_filer_rows, foreign_filer_rows, removal_records
-from src.utils.identity_tables import company_lines, load_cusip_lines, load_cusip_map, tag_cusips, universe_cusips
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags, company_lines, load_cusip_map, tag_cusips, universe_cusips
 from src.utils.string import pad_cik_series
+from src.utils.tickers_universe.universe import Bounds, before_end
 
 #: One row per (CUSIP, stored ticker, new ticker) the 13F re-stamp moves.
 RESTAMP_COLUMNS = ("table", "cusip", "from_ticker", "to_ticker", "first_period", "last_period", "rows")
@@ -179,12 +180,13 @@ def refresh_fails(context: Context, tickers: Sequence[str], as_of: pd.Timestamp,
 
 
 def refresh_short_volume(context: Context, identity: Identity, tickers: Sequence[str], as_of: pd.Timestamp, dry_run: bool, every: bool) -> list[dict]:
-    """Re-stamp the stored short-volume rows of companies whose CUSIP or symbol rows changed recently."""
+    """Re-stamp the stored short-volume rows of companies whose CUSIP or symbol rows changed recently (the `universe_cusip`
+    rows the bound `identity` holds)."""
     # save: the companies to re-stamp, then their rows
     if not context.store.exists(Tables.sec_short_volume_security):
         return []
-    master = context.store.load(Tables.universe_cusip, columns=[*FTD_MASTER_COLUMNS, "source"], optional=True)
-    stamps = change_stamps(None if master is None else prepare_master(master), identity)
+    master = identity.source_cohort.get(Tables.universe_cusip)
+    stamps = change_stamps(None if master is None or master.empty else prepare_master(master), identity)
     changed = restamp_targets(context, Tables.sec_short_volume_security, stamps, as_of, every=every)
     if not changed:
         return []
@@ -194,14 +196,15 @@ def refresh_short_volume(context: Context, identity: Identity, tickers: Sequence
     return records
 
 
-def thirteenf_moves(context: Context, tickers: Sequence[str], as_of: pd.Timestamp, every: bool) -> pd.DataFrame:
+def thirteenf_moves(context: Context, tickers: Sequence[str], as_of: pd.Timestamp, every: bool) -> tuple[pd.DataFrame, CusipTags]:
     """The stored `sec13f_hr` (cusip, period, ticker) groups out of place under the published lines, for the companies
     whose `universe_cusip` rows changed recently (`every`: every ticker): a CUSIP the dated lines now tag with another
     ticker, or a company CUSIP stored on a row of its own instead of in its company row (U-67: a second class, a lone
-    class at a ratio, or a predecessor beside the current line)."""
-    # load: the CUSIP lines, the market-wide map, the companies to re-check and their stored 13F groups
-    lines, cmap = load_cusip_lines(context.store), load_cusip_map(context.store)
+    class at a ratio, or a predecessor beside the current line). Also returns the lines and map it read, for `retag_13f`."""
+    # load: the CUSIP rows (lines and stamps from one read), the market-wide map, the companies and their 13F groups
     master = context.store.load(Tables.universe_cusip, columns=[*FTD_MASTER_COLUMNS, "source"], optional=True)
+    lines = pd.DataFrame(columns=LINE_COLUMNS) if master is None else master[LINE_COLUMNS]
+    cmap = load_cusip_map(context.store)
     stamps = {} if master is None else master_stamps(prepare_master(master))
     companies = sorted(set(tickers) if every else set(recently_changed(stamps, as_of)) & set(tickers))
     scope = [{"cusip": sorted(universe_cusips(lines, companies))}, {"ticker": companies}]
@@ -217,13 +220,13 @@ def thirteenf_moves(context: Context, tickers: Sequence[str], as_of: pd.Timestam
     # post-process: the groups tagged anew, and the company CUSIPs stored apart from their company row
     apart = pd.Series(False, index=moves.index)
     apart[hits.index] = hits["target"].ne(moves.loc[hits.index, "cusip"].astype(str)) | hits["ratio"].ne(1.0)
-    return moves[moves["ticker"].astype(str).ne(moves["new_ticker"].astype(str)) | apart].reset_index(drop=True)
+    return moves[moves["ticker"].astype(str).ne(moves["new_ticker"].astype(str)) | apart].reset_index(drop=True), CusipTags(lines, cmap)
 
 
-def retag_13f(context: Context, moves: pd.DataFrame, dry_run: bool) -> pd.DataFrame:
+def retag_13f(context: Context, moves: pd.DataFrame, tags: CusipTags, dry_run: bool) -> pd.DataFrame:
     """Rewrite (dry: report) the `sec13f_hr` rows of every accession holding a `moves` group: the accession is re-read
-    from the local cache and stored as its `company_rows` under the published lines (`reread_hr_filings`); one report
-    row per (CUSIP, stored ticker, new ticker). An accession whose source cannot be re-read keeps its rows (WARNING)."""
+    from the local cache and stored as its `company_rows` under the published lines and map `tags` (`reread_hr_filings`);
+    one report row per (CUSIP, stored ticker, new ticker). An accession whose source cannot be re-read keeps its rows."""
     # load: the stored keys of the moving groups, then their accessions' markers (none on a dry run)
     keys_wanted = not dry_run and not moves.empty
     stored = (
@@ -236,9 +239,7 @@ def retag_13f(context: Context, moves: pd.DataFrame, dry_run: bool) -> pd.DataFr
     report = _move_report(moves)
 
     # save: each accession re-read and rewritten in its own transaction
-    saved, failed = (
-        reread_hr_filings(context, filings, load_cusip_lines(context.store), load_cusip_map(context.store)) if not filings.empty else (0, [])
-    )
+    saved, failed = reread_hr_filings(context, filings, tags.lines, tags.cmap) if not filings.empty else (0, [])
     if failed:
         context.log.warning(
             f"identity propagate: {len(failed)} '{Tables.sec13f_hr.name}' accession(s) could not be re-read and keep their stored rows: "

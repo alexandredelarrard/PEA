@@ -19,17 +19,23 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.context import Context
+from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
+from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
-from src.data_extract.utils.identity.identity_propagate import purge_rows, rebuilt_since, retag_13f, thirteenf_moves
+from src.data_extract.utils.common.resume import planner_bounds
+from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, purge_rows, rebuilt_since, retag_13f, thirteenf_moves
+from src.data_extract.utils.identity.lifecycle import Lifecycle
 from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_13f_filing, save_hr_filing
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
 from tests.data_extract.institutionals.test_13f_one_walk import _line as _info_line
 from tests.support.propagation import stub_propagation
+from tests.support.universe import universe_config
 
 ROOT = Path(__file__).resolve().parents[3]
 RUN = Path("reports") / "validate" / "2026-11-03-identity-security-master" / "_cache"
@@ -116,12 +122,12 @@ def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_not
     asked = _offline_reread(monkeypatch)
     before = _rows(filing_store)
 
-    dry = retag_13f(context, thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), True)
+    dry = retag_13f(context, *thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), True)
     after_dry = _rows(filing_store)
-    wet = retag_13f(context, thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), False)
+    wet = retag_13f(context, *thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), False)
     after = _rows(filing_store)
-    again = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False)
-    stale = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE + pd.Timedelta(days=60), False)
+    again, _ = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False)
+    stale, _ = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE + pd.Timedelta(days=60), False)
 
     moved = {(r.cusip, r.from_ticker, r.to_ticker): r.rows for r in dry.itertuples(index=False)}
     assert moved == {(EQR_CUSIP, "EQR", "VMRK"): 3, (BRK_A, "BRK-B", "BRK-B"): 1}, moved
@@ -141,6 +147,41 @@ def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_not
     print(f"  BRK-B: one row of {brk['shares'].iloc[0]:,.0f} B shares (2 x 1,500 + 100); EQR -> VMRK; ZZZ unchanged; second run 0 group(s)")
 
 
+def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_it(filing_store: DataStore) -> None:
+    """R-01 (U-67): an accession holding BRK-A and BRK-B is stored as one BRK-B row, so its `sec13f_hr` marker counts
+    the 2 position rows stored (not the 3 filed) on save and on replace, and the cube's book history reads it."""
+    manifest, book = PACKETS[1]
+    lines = pd.DataFrame(
+        [
+            _line(EQR_CUSIP, "VMRK", "canonical_current", "EQR", 1.0, "1995-01-01"),
+            _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31"),
+            _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
+        ]
+    )
+    cmap = pd.DataFrame({"cusip": [], "ticker": []})
+    grid = pd.bdate_range("2024-06-01", "2024-12-31")
+
+    def marker_and_history() -> tuple[int, int]:
+        stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
+        history = prepare_institutional_book_history(
+            thirteen_inputs.iter_filing_vintages(filing_store, grid.max()), grid, ["BRK-B", "VMRK"], None, None, settle_days=3
+        )
+        assert history is not None
+        return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])
+
+    saved = save_hr_filing(filing_store, manifest, book, lines, cmap)
+    saved_count, saved_events = marker_and_history()
+    replaced = replace_hr_filing(filing_store, manifest, book, lines, cmap)
+    replaced_count, replaced_events = marker_and_history()
+
+    assert len(book) == 3 and saved == replaced == 2
+    assert saved_count == replaced_count == 2, (saved_count, replaced_count)
+    assert saved_events == replaced_events > 0
+    print("\n=== SANITY CHECK: collapsed 13F accession reaches the cube (R-01) ===")
+    print(f"  filed CUSIPs {len(book)} -> stored position rows {saved}; marker parsed_row_count save={saved_count}, replace={replaced_count}")
+    print(f"  cube book history built: {saved_events} event row(s) after save, {replaced_events} after replace -> no 'Incomplete stored 13F book'")
+
+
 def test_fixture_eqr_rows_move_to_vmrk_on_the_published_lines() -> None:
     """AC-009 on real data: the fixture's 39,575 EQR rows of 29476L107 move to VMRK (39,573) or unmapped (2, 1998-Q2/Q3,
     before the line's first confirmed 13F period); read-only, dry run."""
@@ -150,7 +191,7 @@ def test_fixture_eqr_rows_move_to_vmrk_on_the_published_lines() -> None:
     store = DataStore(create_engine(f"sqlite:///file:{path.as_posix()}?mode=ro&uri=true"))
     context = _context(store)
 
-    report = retag_13f(context, thirteenf_moves(context, ["VMRK"], RUN_DATE, True), True)
+    report = retag_13f(context, *thirteenf_moves(context, ["VMRK"], RUN_DATE, True), True)
 
     moved = {(r.from_ticker, r.to_ticker): r.rows for r in report.itertuples(index=False)}
     assert moved == {("EQR", "VMRK"): 39573, ("EQR", "_empty"): 2}, moved
@@ -218,3 +259,51 @@ def test_the_purge_leaves_rows_dated_after_the_company_end(sqlite_store: DataSto
     assert [(r["cik"], r["rows"]) for r in removed] == [(other, 1)] and kept == {"0001193125-26-415055", "own-1"}, (removed, kept)
     print("\n=== SANITY CHECK: rows after ended_on are left (REQ-014) ===")
     print(f"  no end: {sum(r['rows'] for r in open_life)} row(s) would go; WBD ended 2026-10-05: purged {removed}; kept {sorted(kept)}")
+
+
+def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propagate(
+    published_store: DataStore,  # noqa: F811 (fixture)
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-02 (X80 shape): AAA's `ended_on` 2026-10-05 is first published by this run's publish, which closes its window at
+    2026-10-06; the propagation of the same context (whose universe was read before the publish) must see that end and
+    leave AAA's 8-K filed 2026-10-06, while purging a foreign filer's 8-K inside the life."""
+    end, own, other = pd.Timestamp("2026-10-05"), "0000000100", "0000000999"
+    step: Any = _step(published_store)
+    context: Any = object.__new__(Context)
+    context.store, context.log, context._config, context._config_dir = published_store, step._log, universe_config(["AAA"]), step._config_dir
+    context._universe = None
+    step._context = context
+    lineage = step._symbols.rows.assign(valid_to=end + pd.Timedelta(days=1))
+    step._symbols = SimpleNamespace(rows=lineage, backlog=step._symbols.backlog, blocked=step._symbols.blocked)
+    step._lifecycle = Lifecycle(rows=step._lifecycle.rows.assign(ended_on=end, status="ended"), items=step._lifecycle.items)
+    step._options, step._run_date = IdentityOptions(), RUN_DATE
+    rows = [("AAA", own, "2026-10-06", "post-end-1"), ("AAA", own, "2026-09-01", "own-1"), ("AAA", other, "2020-01-02", "foreign-1")]
+    frame = pd.DataFrame(rows, columns=["ticker", "cik", "filing_date", "accession_number"]).assign(item="8.01")
+    published_store.save(Tables.sec_8k, frame.assign(filing_date=pd.to_datetime(frame["filing_date"])))
+    tenure = {"symbol": "AAA", "issuer_cik": own, "valid_from": pd.Timestamp("2006-01-03"), "valid_to": end, "n_filings": 3}
+    published_store.save(Tables.symbol_tenure, pd.DataFrame([{**tenure, "source": "form345", "evidence_period": "", "evidence": "seed"}]))
+    for name in ("refresh_insider", "refresh_fails", "refresh_short_volume"):
+        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
+    for name in ("reparse_notes", "reparse_insider"):
+        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: {})
+    monkeypatch.setattr(step_module, "thirteenf_moves", lambda *args, **kwargs: (pd.DataFrame(), None))
+    monkeypatch.setattr(step_module, "retag_13f", lambda *args, **kwargs: pd.DataFrame(columns=list(RESTAMP_COLUMNS)))
+    monkeypatch.setattr(step_module, "rebuild_history", lambda *args, **kwargs: ())
+
+    seen_before, planned_before = context.universe.bounds["AAA"][1], planner_bounds(context)["AAA"][1]
+    step.run_publish()
+    result = step.run_propagate()
+    planned_after = planner_bounds(context)["AAA"][1]
+
+    kept = sorted(published_store.load(Tables.sec_8k, columns=["accession_number"])["accession_number"])
+    bound_end = context._identity_resolver.bounds["AAA"][1]
+    assert seen_before is None and bound_end == end, (seen_before, bound_end)
+    assert planned_before is None and planned_after == end + pd.offsets.BDay(10), (planned_before, planned_after)
+    assert kept == ["own-1", "post-end-1"], kept
+    assert result.removals["rows"].sum() == 1, result.removals
+    print("\n=== SANITY CHECK: an end first published this run reaches the propagation (R-02, X80) ===")
+    print(
+        f"  universe read before publish: AAA ended_on={seen_before}; resolver bound after publish: {bound_end:%Y-%m-%d}; planner end {planned_before} -> {planned_after:%Y-%m-%d} (grace)"
+    )
+    print(f"  purged {int(result.removals['rows'].sum())} foreign row(s); kept {kept} (the 2026-10-06 8-K stays, REQ-014)")

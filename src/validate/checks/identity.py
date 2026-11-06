@@ -45,6 +45,7 @@ from src.utils.identity_flags import (
 )
 from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
+from src.utils.tickers_universe.universe import Bounds, before_end
 from src.validate.checks.traded_security import traded_security_flags
 from src.validate.result import CheckResult, Finding
 
@@ -131,10 +132,16 @@ def _listed_windows(lineage: pd.DataFrame) -> dict[str, tuple[ListedWindow, ...]
 
 
 def _foreign_in_table(
-    context: Context, spec: FilerTable, tickers: Sequence[str], ciks: dict[str, frozenset[str]], windows: dict[str, tuple[ListedWindow, ...]]
+    context: Context,
+    spec: FilerTable,
+    tickers: Sequence[str],
+    ciks: dict[str, frozenset[str]],
+    windows: dict[str, tuple[ListedWindow, ...]],
+    bounds: Bounds,
 ) -> list[dict]:
-    """One removal record per (ticker, filer CIK) of the `spec` rows the purge removes (`foreign_mask`). Only the
-    filers that can own a foreign row are read: one foreign on every day, or any filer of a dated, windowed ticker."""
+    """One removal record per (ticker, filer CIK) of the `spec` rows the purge removes (`foreign_mask`, up to the
+    ticker's `ended_on` as `before_end` keeps them). Only the filers that can own a foreign row are read: one foreign on
+    every day, or any filer of a dated, windowed ticker."""
     records: list[dict] = []
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     for ticker in tickers:
@@ -146,10 +153,11 @@ def _foreign_in_table(
         if probe.empty:
             continue
 
-        # their rows, kept where foreign
+        # their rows, kept where foreign and dated up to the ticker's end (the purge leaves later rows, REQ-014)
         rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: probe[spec.cik_col].tolist()}, optional=True)
         if rows is not None and not rows.empty:
-            records += removal_records(spec.table.name, rows[foreign_mask(spec, rows, ciks, windows)], spec)
+            foreign = rows[foreign_mask(spec, rows, ciks, windows)]
+            records += removal_records(spec.table.name, foreign[before_end(foreign["ticker"], foreign[spec.date_col], bounds)], spec)
     return records
 
 
@@ -158,10 +166,11 @@ def pending_removals(context: Context, lineage: pd.DataFrame, tickers: Sequence[
 
     `dated=False` skips the window rule (a pre-cutover lineage declares no dated windows)."""
     ciks, windows = _entity_ciks(lineage), _listed_windows(lineage) if dated else {}
+    bounds = context.universe.bounds
     records: list[dict] = []
     for spec in PURGE_TABLES:
         if context.store.exists(spec.table):
-            records += _foreign_in_table(context, spec, tickers, ciks, windows)
+            records += _foreign_in_table(context, spec, tickers, ciks, windows, bounds)
     return pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
 
 
@@ -272,7 +281,8 @@ def _secfilings_finding(context: Context, lineage: pd.DataFrame, universe: pd.Da
 
 
 def _open_after_end(lineage: pd.DataFrame, master: pd.DataFrame | None, universe: pd.DataFrame) -> Finding | None:
-    """REQ-006: no CIK window, symbol interval or CUSIP line of an ended company runs past its `ended_on`."""
+    """REQ-006: no CIK window, symbol interval or CUSIP line of an ended company runs past its `ended_on` (its
+    `cik_event` rows stay open: the build closes windows and symbols only)."""
     # clean: the day after each ended company's `ended_on` (the exclusive end of its rows)
     if "ended_on" not in universe:
         return None
@@ -282,6 +292,7 @@ def _open_after_end(lineage: pd.DataFrame, master: pd.DataFrame | None, universe
 
     # compute: rows open, or closing later than the day after `ended_on` (exclusive end)
     lines = master if master is not None else pd.DataFrame(columns=_LINE_COLUMNS)
+    lineage = lineage[lineage["role"].isin([_ROLE_WINDOW, "symbol"])]
     rows = pd.concat(
         [
             pd.DataFrame({"ticker": lineage["canonical_ticker"], "key": lineage["role"] + " " + lineage["cik"], "end": lineage["valid_to"]}),

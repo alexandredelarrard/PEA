@@ -122,7 +122,7 @@ def fetch_sharadar_fundamentals(
     """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `fundamentals_sharadar`, each ticker from its own window.
 
     Each ticker is requested under its trading symbol (`Universe.trading_symbols`) and stored under the ticker; a
-    ticker with no window (ended, history stored up to its end date) is skipped. Non-USD filers are skipped, not written. A ticker the subscription does not cover (`NotEntitledError`) is
+    ticker with no window (ended, with stored rows, run past its grace end plus overlap) is skipped. Non-USD filers are skipped, not written. A ticker the subscription does not cover (`NotEntitledError`) is
     counted, not retried. A ticker with a failed page saves nothing, is named in the coverage log, and is
     fetched again next run from the same window.
     """
@@ -148,7 +148,7 @@ def fetch_sharadar_fundamentals(
     total_rows = 0
     symbols = context.universe.trading_symbols
     for ticker in tqdm(tickers, desc="Downloading tickers"):
-        # an ended ticker whose history reaches its end date has no window
+        # an ended ticker with stored rows has no window once the run is past its grace end plus overlap
         if not work.windows.get(ticker):
             context.log.debug("Sharadar SF1: %s has no window (ended)", ticker)
             continue

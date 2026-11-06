@@ -105,7 +105,7 @@ def test_series_planner_stops_at_the_end_and_starts_at_the_first_price(fixture: 
         f"  WBD last stored {pd.Timestamp(wbd_last).date()}, ended 2026-10-05: windows {work.windows['WBD']} (no bounds: {open_work.windows['WBD']})"
     )
     print(f"  AAPL windows unchanged {work.windows['AAPL']}; a full pull starts at its first price {full.windows['AAPL'][0][0].date()} (floor 1986)")
-    print("  Validated: nothing after WBD's end + grace, none once its history reaches the end, nothing before AAPL's first price.")
+    print("  Validated: nothing after WBD's end + grace, none once the run is past grace end + overlap, nothing before AAPL's first price.")
 
 
 def test_edgar_document_planner_drops_filings_after_the_end(fixture: tuple[DataStore, pd.DataFrame], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,14 +195,102 @@ def test_earnings_surprises_skip_an_ended_ticker_and_drop_rows_after_its_end(
     wbd_source = pd.to_datetime(stored.loc[stored["ticker"] == "WBD", "earnings_date"])
     assert wbd.max() <= WBD_GRACE_END < wbd_source.max()
 
-    # second run: WBD has stored rows and has ended -> never pulled again
+    # second run, past WBD's grace end plus the table's overlap (R-05): WBD has stored rows and has ended -> not pulled again
+    after = _run_dates(Tables.earnings_surprises)["after"]
+    monkeypatch.setattr(surprises, "run_date", lambda as_of: after)
     pulls.clear()
     surprises.fetch_earnings_surprises(context, SAMPLE, years_history=31, pause=0.0)
     assert "WBD" not in pulls
     print("\n=== SANITY CHECK: earnings-surprise plan bounds ===")
     print(f"  WBD first run: {len(wbd)} of {len(wbd_source)} source rows saved, last {wbd.max().date()} (source to {wbd_source.max().date()})")
-    print(f"  WBD second run: not pulled (ended, rows stored); pulls {pulls}")
+    print(f"  WBD second run on {after.date()}: not pulled (ended, rows stored, past grace end + overlap); pulls {pulls}")
     print("  Validated.")
+
+
+#: R-05: a synthetic ended key with no stored row in any table (ended with WBD).
+ROWLESS = "ZZZ"
+
+
+def _run_dates(table: Any) -> dict[str, pd.Timestamp]:
+    """R-05 run dates around WBD's end: inside the grace, the last day of the table's overlap after the grace end, the day after."""
+    last_day = WBD_GRACE_END + pd.Timedelta(days=table.resume.overlap_days)
+    return {"inside the grace": pd.Timestamp("2026-10-12"), "last overlap day": last_day, "after": last_day + pd.Timedelta(days=1)}
+
+
+class _NewRowlessView(_UniverseView):
+    """The sample plus `ROWLESS`, ended with WBD and listed as a new key of the run."""
+
+    def __init__(self, rows: pd.DataFrame) -> None:
+        super().__init__(rows, bounded=True)
+        self.bounds[ROWLESS] = (None, WBD_END)
+
+    def new_since(self, overlap_days: int, as_of: pd.Timestamp) -> set[str]:
+        return {ROWLESS}
+
+
+@pytest.mark.parametrize("table", [Tables.prices, Tables.sharadar_fundamentals], ids=["prices", "sharadar_fundamentals"])
+def test_an_ended_series_key_with_rows_is_done_once_the_run_is_past_its_grace_end_plus_the_overlap(
+    fixture: tuple[DataStore, pd.DataFrame], table: Any
+) -> None:
+    """R-05: WBD (ended 2026-10-05, grace end 2026-10-19; prices to 2026-10-06, SF1 `date` to 2026-08-06) keeps a window
+    clamped to its grace end until the run date passes the grace end plus the table's overlap, then gets none; an
+    ended key with no row still gets its full pull from the floor."""
+    store, rows = fixture
+    keys = [*SAMPLE, ROWLESS]
+    windows: dict[str, dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]] = {}
+    for label, day in _run_dates(table).items():
+        context = types.SimpleNamespace(store=store, universe=_NewRowlessView(rows))
+        windows[label] = series_windows(context, table, keys, day, until=day, years_history=40, calendar=None).windows
+
+    assert windows["inside the grace"]["WBD"] and windows["last overlap day"]["WBD"], windows
+    assert windows["after"]["WBD"] == [], windows["after"]["WBD"]
+    assert all(end <= WBD_GRACE_END for spans in windows.values() for _, end in spans["WBD"])
+    assert all(spans[ROWLESS] and spans[ROWLESS][0][1] <= WBD_GRACE_END and spans[ROWLESS][0][0].year <= 1987 for spans in windows.values())
+    assert windows["after"]["AAPL"], "an open key keeps its window"
+    print(f"\n=== SANITY CHECK: ended series key done after grace + overlap (R-05) on {table.name} ===")
+    for label, day in _run_dates(table).items():
+        print(f"  run {day.date()} ({label}): WBD {windows[label]['WBD']}; {ROWLESS} (no rows) {windows[label][ROWLESS]}")
+    print(
+        f"  Validated: WBD planned up to its grace end until {_run_dates(table)['last overlap day'].date()}, then done; a rowless ended key keeps its full pull."
+    )
+
+
+def test_earnings_surprises_refetch_an_ended_ticker_until_its_grace_end_plus_the_overlap(
+    fixture: tuple[DataStore, pd.DataFrame], sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R-05: WBD's stored reported surprises end 2026-08-06 (ended 2026-10-05): it is asked of Yahoo inside the grace and the
+    overlap after it, skipped once the run is past grace end + 35 days; an ended ticker with no row gets its full pull."""
+    store, rows = fixture
+    source = store.load(Tables.earnings_surprises, where={"ticker": SAMPLE})
+    reported = source[source["eps_actual"].notna()].reset_index(drop=True)
+    sqlite_store.save(Tables.earnings_surprises, reported)
+    pulls: dict[str, list[tuple[str, int]]] = {}
+
+    def download(symbol: str, limit: int) -> pd.DataFrame | None:
+        pulls[label].append((symbol, limit))
+        found = source[source["ticker"] == symbol].reset_index(drop=True)
+        return found if not found.empty else None
+
+    monkeypatch.setattr(surprises, "_download_one", download)
+    context = types.SimpleNamespace(store=sqlite_store, universe=_NewRowlessView(rows), log=logging.getLogger(__name__))
+    for label, day in _run_dates(Tables.earnings_surprises).items():
+        pulls[label] = []
+        monkeypatch.setattr(surprises, "run_date", lambda as_of, day=day: day)
+        with caplog.at_level(logging.INFO, logger=__name__):
+            surprises.fetch_earnings_surprises(context, [*SAMPLE, ROWLESS], years_history=31, pause=0.0)
+
+    assert "WBD" in dict(pulls["inside the grace"]) and "WBD" in dict(pulls["last overlap day"]), pulls
+    assert "WBD" not in dict(pulls["after"]), pulls["after"]
+    assert all(dict(plan)[ROWLESS] == 32 * 4 for plan in pulls.values()), pulls
+    assert pd.to_datetime(sqlite_store.load(Tables.earnings_surprises, where={"ticker": ["WBD"]})["earnings_date"]).max() <= WBD_GRACE_END
+    print("\n=== SANITY CHECK: earnings-surprise ended-ticker cut-off (R-05) ===")
+    print(
+        f"  WBD last reported {pd.to_datetime(reported.loc[reported['ticker'] == 'WBD', 'earnings_date']).max().date()}, ended 2026-10-05, grace end 2026-10-19"
+    )
+    for label, day in _run_dates(Tables.earnings_surprises).items():
+        print(f"  run {day.date()} ({label}): pulls {pulls[label]}")
+    print(f"  skip log: {[r.getMessage() for r in caplog.records if 'ended ticker' in r.getMessage()]}")
+    print("  Validated: WBD re-asked inside grace + overlap, skipped after; a rowless ended ticker keeps its full pull.")
 
 
 def test_earnings_call_planner_drops_calls_after_the_end(tmp_path: Path, sqlite_store: DataStore) -> None:

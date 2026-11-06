@@ -14,7 +14,7 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.registrant import header_subject_ciks
-from src.data_extract.utils.common.resume import before_end, document_floor, planner_bounds
+from src.data_extract.utils.common.resume import document_floor, planner_bounds
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
@@ -44,6 +44,7 @@ from src.data_store.schema import Resume, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.utils.tickers_universe.universe import before_end
 
 logger = logging.getLogger(__name__)
 

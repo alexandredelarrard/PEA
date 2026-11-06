@@ -7,8 +7,8 @@ yet reach the floor, or its own first date in an optional `listing` table when l
 whose full pull is stored resumes like any other); the table-wide frontier minus
 the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
 key's stored span. Every window is clamped to the key's planner bounds (`planner_bounds`: `[first_price_date, ended_on]`
-with the U-65 grace after the end; a ticker-keyed series has no row before its listing's first price); an ended key whose
-stored last date reaches `ended_on` gets none.
+with the U-65 grace after the end; a ticker-keyed series has no row before its listing's first price); an ended key with
+stored rows gets none once the run date is past its grace end plus the table's overlap (`ended_keys`).
 
 `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
 parsed for every key; plus, for a new key with no archive row yet, every cached period re-parsed for it alone.
@@ -91,9 +91,12 @@ def bounded_span(bounds: Bounds, key: str, since: pd.Timestamp, until: pd.Timest
     return (start, end) if start <= end else None
 
 
-def ended_keys(bounds: Bounds, last: Mapping[str, pd.Timestamp]) -> list[str]:
-    """Keys whose stored last date reaches their `ended_on`: nothing is left to fetch, sorted."""
-    return sorted(key for key, day in last.items() if (end := bounds.get(key, (None, None))[1]) is not None and pd.Timestamp(day) >= end)
+def ended_keys(bounds: Bounds, stored: Collection[str], as_of: pd.Timestamp, overlap_days: int) -> list[str]:
+    """Keys of `stored` (keys with stored rows) whose planner end (`planner_bounds`: `ended_on` plus the U-65 grace) plus
+    the table's `overlap_days` is before the run date `as_of`: nothing is left to fetch, sorted. Until then a late final
+    row is still fetched inside the grace; a key with no stored row is never in it."""
+    cutoff = run_date(as_of) - pd.Timedelta(days=overlap_days)
+    return sorted(key for key in stored if (end := bounds.get(key, (None, None))[1]) is not None and end < cutoff)
 
 
 def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtime_floor: pd.Timestamp | None = None) -> pd.Timestamp:
@@ -255,12 +258,14 @@ def series_windows(
             windows[str(key)] = _union_spans(windows[str(key)] + _hole_spans(cast(pd.DatetimeIndex, calendar), group[date_col], *holed[str(key)]))
     last = {key: edges[1] for key, edges in stats.items()}
 
-    # clamp every window to the key's planner bounds (end + grace); an ended key whose history reaches its end gets none
+    # clamp every window to the key's planner bounds (end + grace); an ended key with rows is done past grace end + overlap
     bounds = planner_bounds(context)
-    done = set(ended_keys(context.universe.bounds, {key: day for key, day in last.items() if key in windows}))
+    done = set(ended_keys(bounds, [key for key in last if key in windows], as_of, table.resume.overlap_days))
     windows = {key: [] if key in done else [b for span in spans if (b := bounded_span(bounds, key, *span))] for key, spans in windows.items()}
     if done:
-        logger.info("%s: %d ended key(s) already stored up to their end date, no window: %s", table.name, len(done), ", ".join(sorted(done)))
+        logger.info(
+            "%s: %d ended key(s) with stored rows past their grace end plus overlap, no window: %s", table.name, len(done), ", ".join(sorted(done))
+        )
     timings = {f"{table.name}.key_stats": read_stats - started, f"{table.name}.holes": time.perf_counter() - read_stats}
     return SeriesWork(windows=windows, key_class=key_class, last=last, timings=timings)
 

@@ -151,7 +151,6 @@ def _mask_daily_institutional_fields(
 def project_institutional_features(
     df_features: pd.DataFrame,
     frames: PriceFrames,
-    df_basis: pd.DataFrame | None,
     settle_trading_days: int,
     *,
     versioned: bool,
@@ -167,7 +166,7 @@ def project_institutional_features(
         for feature in features
     }
     if frames.shares_outstanding_pit is not None and not frames.shares_outstanding_pit.empty and "inst_shares" in df_features:
-        df_owned = _daily_owned_shares(df_features, frames.trading_index, df_basis)
+        df_owned = _daily_owned_shares(df_features, frames.trading_index, frames.security_basis)
         df_shares = frames.shares_outstanding_pit.reindex(frames.trading_index)
         if not df_shares.empty and df_shares.notna().any().any():
             df_supported_shares = df_shares.where(np.isfinite(df_shares) & df_shares.gt(0))

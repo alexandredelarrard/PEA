@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.price.features import security_basis_frame
@@ -80,8 +81,8 @@ def test_saved_ownership_count_and_cap_have_independent_support() -> None:
     )
     shares = pd.DataFrame({"TEST": [100.0, 100.0, 100.0, 400.0, np.nan, 400.0]}, index=index)
     cap = pd.DataFrame({"TEST": [20000.0, 20000.0, 20000.0, np.nan, 20000.0, 20000.0]}, index=index)
-    frames = make_frames(index, shares_outstanding_pit=shares, mcap_pit=cap)
-    fields = project_institutional_features(books, frames, _basis_frame(basis), 0, versioned=True, trading_calendar=index)
+    frames = make_frames(index, shares_outstanding_pit=shares, mcap_pit=cap, security_basis=_basis_frame(basis))
+    fields = project_institutional_features(books, frames, 0, versioned=True, trading_calendar=index)
     ownership = fields["ic_inst_ownership_pct"].TEST
     assert ownership.loc["2024-05-30"] == pytest.approx(0.1)
     assert ownership.loc["2024-06-03"] == pytest.approx(0.1)
@@ -113,7 +114,7 @@ def test_broad_basis_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch
     frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]), security_basis=_basis_frame(basis))
     resources = SecThirteenResources(frames, pd.DataFrame(), None)
     step = object.__new__(StepCubeSecThirteen)
-    step._store, step._cfg = None, {"institutionals": {}}
+    step._store, step._cfg, step._settle_days = None, {"institutionals": {}}, F13_SETTLE_TRADING_DAYS
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr(step_module, "prepare_institutional_book_history", lambda *args, **kwargs: (compact, pd.DataFrame()))
     monkeypatch.setattr(step_module, "iter_institutional_books", lambda values, states: values)

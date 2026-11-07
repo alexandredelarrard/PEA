@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -63,6 +63,7 @@ class StepCubeSecThirteen(Step):
         self._store = context.store
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_sec_thirteen)
+        self._settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
         cfg = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
@@ -153,11 +154,10 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        settle_days = int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
         with closing(
             clean_public_batches(packets, resources.cusip_windows, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))
         ) as batches:
-            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=settle_days)
+            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:
             return None
         compact, states = history
@@ -194,14 +194,8 @@ class StepCubeSecThirteen(Step):
 
     @staticmethod
     def _output_frames(frames: PriceFrames, dates: pd.DatetimeIndex) -> PriceFrames:
-        return replace(
-            frames,
-            trading_index=dates,
-            close_split=frames.close_split.reindex(dates) if frames.close_split is not None else None,
-            close_pit=frames.close_pit.reindex(dates) if frames.close_pit is not None else None,
-            shares_outstanding_pit=frames.shares_outstanding_pit.reindex(dates) if frames.shares_outstanding_pit is not None else None,
-            mcap_pit=frames.mcap_pit.reindex(dates) if frames.mcap_pit is not None else None,
-        )
+        """Output-date frames; the saved basis F stays whole for quarter-end lookups before the output window."""
+        return frames.on(dates, "close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
 
     @staticmethod
     def _require_saved_families(prepared: PreparedSecThirteen, saved_columns: Sequence[str]) -> None:
@@ -228,12 +222,10 @@ class StepCubeSecThirteen(Step):
     def _project_institutional_panel(self, features: pd.DataFrame, frames: PriceFrames, resources: SecThirteenResources) -> pd.DataFrame:
         if features.empty:
             return pd.DataFrame(columns=["date", "ticker"])
-        settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
         fields = project_institutional_features(
             features,
             frames,
-            resources.frames.security_basis,
-            settle_days,
+            self._settle_days,
             versioned=True,
             trading_calendar=resources.frames.trading_index,
         )

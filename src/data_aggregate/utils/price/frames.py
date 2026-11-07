@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from typing import cast
 
 import numpy as np
@@ -116,6 +116,13 @@ class PriceFrames:
         missing = [f for f in fields if getattr(self, f, None) is None]
         if missing:
             raise ValueError(f"PriceFrames was loaded without {missing}; pass fields={tuple(fields)} to load_price_frames")
+
+    def on(self, dates: pd.DatetimeIndex, *names: str) -> PriceFrames:
+        """These frames on `dates`: the named wide fields (all of them when none is named) reindexed, the rest kept whole."""
+        selected = names or tuple(field.name for field in fields(self) if field.name not in {"trading_index", "universe", "peers"})
+        return replace(
+            self, trading_index=dates, **{name: getattr(self, name).reindex(dates) for name in selected if getattr(self, name) is not None}
+        )
 
     @property
     def availability(self) -> pd.DataFrame | None:

@@ -84,7 +84,7 @@ class StepCubeFundamentals(Step):
             output_since = window.refresh_from
             source_since = pd.Timestamp(dividend_frames.trading_index.max()).normalize() - pd.DateOffset(years=_INCREMENTAL_SOURCE_YEARS)
             history_fields = self._load_history_fields(dividend_frames.universe, since=window.since, until=output_since)
-            frames = self._slice_frames(dividend_frames, output_since)
+            frames = dividend_frames.on(dividend_frames.trading_index[dividend_frames.trading_index >= output_since])
 
         # Load each source once and preserve raw financial cash units.
         df_fundamentals = self._load_fundamentals(frames.universe, since=source_since)
@@ -160,31 +160,6 @@ class StepCubeFundamentals(Step):
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
-
-    @staticmethod
-    def _slice_frames(frames: PriceFrames, since: pd.Timestamp) -> PriceFrames:
-        idx = frames.trading_index[frames.trading_index >= pd.Timestamp(since)]
-
-        def _slice(frame: pd.DataFrame | None) -> pd.DataFrame | None:
-            return None if frame is None else frame.reindex(idx)
-
-        return PriceFrames(
-            trading_index=idx,
-            universe=frames.universe,
-            peers=frames.peers,
-            close_split=_slice(frames.close_split),
-            close_total=_slice(frames.close_total),
-            open=_slice(frames.open),
-            high=_slice(frames.high),
-            low=_slice(frames.low),
-            volume=_slice(frames.volume),
-            ret=_slice(frames.ret),
-            sector_ret=_slice(frames.sector_ret),
-            level_factor=_slice(frames.level_factor),
-            close_pit=_slice(frames.close_pit),
-            shares_outstanding_pit=_slice(frames.shares_outstanding_pit),
-            mcap_pit=_slice(frames.mcap_pit),
-        )
 
     def _load_history_fields(
         self,

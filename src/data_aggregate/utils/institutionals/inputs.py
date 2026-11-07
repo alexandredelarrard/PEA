@@ -24,6 +24,8 @@ from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
+CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+
 
 def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.DataFrame:
     """Projected raw secondary-class volume bars, read once."""

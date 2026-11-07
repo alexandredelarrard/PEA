@@ -14,7 +14,7 @@ from src.data_store.store import DataStore, Where
 def load_source_identity(store: DataStore) -> dict[Table, pd.DataFrame]:
     """Load the closed three-table identity projection for source classification and guarded writes."""
     cohort: dict[Table, pd.DataFrame] = {}
-    for table in (Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master):
+    for table in (Tables.universe_cik_symbol, Tables.symbol_tenure, Tables.universe_cusip):
         df_rows = store.load(table, project=True, optional=True)
         cohort[table] = df_rows if df_rows is not None else pd.DataFrame()
     return cohort
@@ -96,9 +96,9 @@ def _scope_rows(df_rows: pd.DataFrame, where: dict[str, object] | None) -> pd.Da
 def _identity_columns(table: Table, available: set[str]) -> list[str]:
     """Semantic identity fields and owner stamps, excluding observation/evidence churn."""
     columns = [*table.pk, "valid_to"]
-    if table == Tables.entity_lineage:
-        columns += ["entity_id", "canonical_ticker", "cik", "scope_changed_at"]
-    elif table == Tables.security_master:
+    if table == Tables.universe_cik_symbol:
+        columns += ["company_id", "canonical_ticker", "cik", "scope_changed_at"]
+    elif table == Tables.universe_cusip:
         columns += [
             "canonical_company",
             "issuer_cik",
@@ -114,7 +114,7 @@ def _identity_columns(table: Table, available: set[str]) -> list[str]:
 
 def save_identity(store: DataStore, table: Table, df_rows: pd.DataFrame, where: dict[str, object] | None = None) -> int:
     """Save one identity scope with physical dependent-proof invalidation."""
-    if table not in (Tables.entity_lineage, Tables.security_master, Tables.symbol_tenure):
+    if table not in (Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure):
         raise ValueError("Only the lineage, master and tenure writers use the identity commit")
     if where == {} or table != Tables.symbol_tenure and where is not None:
         raise ValueError("Only a symbol-tenure partition can carry a replacement scope")

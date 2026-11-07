@@ -31,7 +31,7 @@ from src.data_extract.utils.common.identity import FilingScope, Identity, Unknow
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
-from src.data_extract.utils.identity.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist  # noqa: E402
+from src.data_extract.utils.identity.cik_history import d19_allowlist, entity_by_cik_map, entity_or_singleton, manual_lineage_blob  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
@@ -165,7 +165,7 @@ def _text(values: pd.Series) -> pd.Series:
 
 class LegacyTapeResolver:
     """Frozen copy of the pre-cutover tape resolver (`resolve_symbol_rows`, dev `f2dee43`): the symbol's dated
-    `symbol_tenure` entity, the membership `entity_lineage`, the D19 roster proxies and the redundant-class rule."""
+    `symbol_tenure` entity, the membership `universe_cik_symbol`, the D19 roster proxies and the redundant-class rule."""
 
     def __init__(
         self, lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame, *, allowlist: Mapping[str, str], redundant: Collection[str]
@@ -1044,9 +1044,9 @@ def read_filer_table(store: Any, spec: FilerTable, tickers: Sequence[str] | None
 
 #: Everything `snapshot` dumps: name -> (table, columns or None for all, chunked ticker scope).
 _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
-    "entity_lineage": (Tables.entity_lineage, None),
+    "universe_cik_symbol": (Tables.universe_cik_symbol, None),
     "symbol_tenure": (Tables.symbol_tenure, None),
-    "roster": (Tables.tickers_universe, ("ticker", "cik")),
+    "roster": (Tables.universe_tickers, ("ticker", "cik")),
     "history_sec": (Tables.fundamentals_history_sec, None),
     "ftd": (Tables.sec_fails_to_deliver, ("ticker", "date", "fails_quantity", "fails_value")),
     "short_interest": (Tables.short_interest, ("ticker", "date", "short_volume", "total_volume")),
@@ -1054,14 +1054,14 @@ _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
     "merged": (Tables.fundamentals_history, tuple(Tables.fundamentals_history.read_columns)),
     "prices": (Tables.prices, ("ticker", "date", "open", "high", "low", "close_split", "close_total", "volume")),
 }
-_UNSCOPED = {"entity_lineage", "symbol_tenure", "roster"}
+_UNSCOPED = {"universe_cik_symbol", "symbol_tenure", "roster"}
 _MASTER_COLUMNS = ("security_id", "valid_from", "valid_to", "lineage_role", "lineage_reason", "conversion_ratio", "issuer_cik", "exchange")
 #: The tapes' before stamps and the master behind them, dumped unscoped when the store has them: name -> (table, columns,
 #: raw-line key).
 _STAMPS: dict[str, tuple[Any, tuple[str, ...], tuple[str, ...]]] = {
     "ftd_stamps": (Tables.sec_fails_to_deliver_security, ("cusip", "date", "trade_date", "security_id", "ticker", "lineage_role"), ("cusip", "date")),
     "finra_stamps": (Tables.sec_short_volume_security, ("source_symbol", "date", "security_id", "ticker", "lineage_role"), ("source_symbol", "date")),
-    "master": (Tables.security_master, _MASTER_COLUMNS, ()),
+    "master": (Tables.universe_cusip, _MASTER_COLUMNS, ()),
 }
 
 
@@ -1221,8 +1221,8 @@ def run_diff(
     scope = [normalise_ticker(t) for t in tickers] if tickers else None
     _check_scope(snap_dir, scope)
     identity = load_identity(context, refresh=True)
-    old_lineage, old_tenure, old_roster = _snap(snap_dir, "entity_lineage"), _snap(snap_dir, "symbol_tenure"), _snap(snap_dir, "roster")
-    master = store.load(Tables.security_master, optional=True)
+    old_lineage, old_tenure, old_roster = _snap(snap_dir, "universe_cik_symbol"), _snap(snap_dir, "symbol_tenure"), _snap(snap_dir, "roster")
+    master = store.load(Tables.universe_cusip, optional=True)
     master = (
         master
         if master is not None
@@ -1246,7 +1246,7 @@ def run_diff(
         frames["filing"] = _filing_section(store, snap_dir, identity, _old_ciks(old_lineage, old_roster), scope)
     if "tape" in sections:
         resolver = LegacyTapeResolver(
-            old_lineage, old_tenure, old_roster, allowlist=load_d19_allowlist(config_dir), redundant=context.universe.alias_symbols
+            old_lineage, old_tenure, old_roster, allowlist=d19_allowlist(manual_lineage_blob(config_dir)), redundant=context.universe.alias_symbols
         )
         tape, stats = _tape_section(store, snap_dir, master, resolver, context.universe.tickers, scope)
         frames["tape"] = explain_listed_rows(tape, load_hypotheses(config_dir))

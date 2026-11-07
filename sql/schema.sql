@@ -5,14 +5,16 @@
 -- The cube_part_* tables are deliberately absent: they are private plumbing
 -- between the cube sub-steps and are created by their owning step.
 
--- [reference] tickers_universe  (pk: ticker)
--- The traded universe, one row per `configs/universe.yml` ticker. Written only by
--- `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
+-- [reference] universe_tickers  (pk: ticker)
+-- One row per company ever in `configs/universe.yml`; `in_universe` is false once it leaves the yml.
+-- Two writers own different columns: `src/utils/tickers_universe/sync.py` (ticker, name, GICS, Sharadar
+-- categories, `in_universe`, seed `cik`) and the identity step (`company_id`, `cik`, `trading_symbol`,
+-- `first_price_date`, `ended_on`, `status`). Read only through `context.universe`.
 
-CREATE TABLE IF NOT EXISTS "tickers_universe" (
+CREATE TABLE IF NOT EXISTS "universe_tickers" (
     "ticker" TEXT NOT NULL,
     "name" TEXT,
-    "cik" TEXT NOT NULL,
+    "cik" TEXT,
     "sector" TEXT,
     "industry_group" TEXT,
     "sub_industry" TEXT,
@@ -31,6 +33,12 @@ CREATE TABLE IF NOT EXISTS "tickers_universe" (
     "location" TEXT,
     "isdelisted" TEXT,
     "cusips" TEXT,
+    "in_universe" BOOLEAN,
+    "company_id" TEXT,
+    "trading_symbol" TEXT,
+    "first_price_date" DATE,
+    "ended_on" DATE,
+    "status" TEXT,
     PRIMARY KEY ("ticker")
 );
 
@@ -62,7 +70,7 @@ CREATE INDEX IF NOT EXISTS ix_superinvestor_roster_cik ON "superinvestor_roster"
 
 -- [reference] symbol_tenure  (pk: symbol, issuer_cik, valid_from, source, evidence_period)
 -- WHICH ISSUER CIK HELD A TRADING SYMBOL, AND WHEN -- axis B of ticker identity
--- (`entity_lineage` is axis A). DERIVED, not fetched: the SEC publishes no historical
+-- (`universe_cik_symbol` is axis A). DERIVED, not fetched: the SEC publishes no historical
 -- ticker->CIK data set (`company_tickers.json` is an undated snapshot and
 -- data.sec.gov/submissions has `formerNames` but no `formerTickers`), so the fact exists
 -- only inside the filings. Built offline from the `SUBMISSION.TSV` member of the 81 cached
@@ -100,9 +108,9 @@ CREATE TABLE IF NOT EXISTS "symbol_tenure" (
     PRIMARY KEY ("symbol", "issuer_cik", "valid_from", "source", "evidence_period")
 );
 
--- [reference] entity_lineage  (pk: cik, role, symbol, valid_from)
+-- [reference] universe_cik_symbol  (pk: cik, role, symbol, valid_from)
 -- WHICH CIKs AND SYMBOLS ARE ONE ECONOMIC COMPANY, AND WHEN -- the dated identity verdict and the
--- only identity input of the fetchers (`symbol_tenure` is its evidence). `entity_id` is
+-- only identity input of the fetchers (`symbol_tenure` is its evidence). `company_id` is
 -- `"E" + the oldest CIK in the group`: a natural key with no allocation state, so a full
 -- re-derive reproduces the same ids.
 --
@@ -121,11 +129,11 @@ CREATE TABLE IF NOT EXISTS "symbol_tenure" (
 -- entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has never seen.
 -- `scope_changed_at` (per ticker) is the build time at which that ticker's CIK rows last changed.
 --
--- Index on `entity_id` is HAND-ADDED and NON-UNIQUE (several rows per entity): the generator
+-- Index on `company_id` is HAND-ADDED and NON-UNIQUE (several rows per entity): the generator
 -- only emits ticker_col / date_col indexes and would drop it on a regeneration.
 
-CREATE TABLE IF NOT EXISTS "entity_lineage" (
-    "entity_id" TEXT,
+CREATE TABLE IF NOT EXISTS "universe_cik_symbol" (
+    "company_id" TEXT,
     "canonical_ticker" TEXT,
     "cik" TEXT NOT NULL,
     "role" TEXT NOT NULL,
@@ -141,11 +149,11 @@ CREATE TABLE IF NOT EXISTS "entity_lineage" (
     "scope_changed_at" TIMESTAMP,
     PRIMARY KEY ("cik", "role", "symbol", "valid_from")
 );
-CREATE INDEX IF NOT EXISTS ix_entity_lineage_entity_id ON "entity_lineage" ("entity_id");
+CREATE INDEX IF NOT EXISTS ix_universe_cik_symbol_company_id ON "universe_cik_symbol" ("company_id");
 
--- [reference] security_master  (pk: security_id, source, source_symbol, valid_from)
+-- [reference] universe_cusip  (pk: security_id, source, source_symbol, valid_from)
 -- WHICH SECURITY a market-tape line is, its issuer CIK, class and lineage role, and WHEN: the
--- security grain under entity_lineage's issuer grain. One row per (security, source symbol
+-- security grain under universe_cik_symbol's issuer grain. One row per (security, source symbol
 -- interval, role interval); `security_id` is "C" + CUSIP-9. Derived offline by `identity`
 -- from the stored FTD lines, the lineage, the roster, sec_company_tickers and
 -- configs/sec/security_master_manual.json.
@@ -155,9 +163,11 @@ CREATE INDEX IF NOT EXISTS ix_entity_lineage_entity_id ON "entity_lineage" ("ent
 -- Classes need POSITIVE evidence: a line with none is `unclassified` and excluded.
 -- `valid_from`/`valid_to` are half-open TRADE dates. `conversion_ratio` is the dated number of
 -- canonical-class shares one share of the line is worth (BRK-A 30, then 1,500; 1 elsewhere).
+-- `company_id` is the frozen id of `canonical_company` (as in universe_cik_symbol), written by the identity publish.
 
-CREATE TABLE IF NOT EXISTS "security_master" (
+CREATE TABLE IF NOT EXISTS "universe_cusip" (
     "security_id" TEXT NOT NULL,
+    "company_id" TEXT,
     "canonical_company" TEXT,
     "issuer_cik" TEXT,
     "source" TEXT NOT NULL,
@@ -207,8 +217,35 @@ CREATE TABLE IF NOT EXISTS "sec_company_tickers" (
     PRIMARY KEY ("cik", "ticker")
 );
 
+-- [reference] sec_cik_profile  (pk: cik)
+-- SEC submissions metadata, one row per CIK of the bulk submissions.zip, replaced by each
+-- `universe --only sec-submissions` run; read only by the identity step. `former_names` and the four
+-- form columns are JSON lists (name/from/to; form/filed/accession); `tickers` and `exchanges` are the
+-- CURRENT listing, empty once a CIK stops listing. Form 25 and 15 are filed per security.
+
+CREATE TABLE IF NOT EXISTS "sec_cik_profile" (
+    "cik" TEXT NOT NULL,
+    "name" TEXT,
+    "entity_type" TEXT,
+    "sic" TEXT,
+    "ein" TEXT,
+    "state_of_incorporation" TEXT,
+    "tickers" TEXT,
+    "exchanges" TEXT,
+    "former_names" TEXT,
+    "first_filed" DATE,
+    "last_filed" DATE,
+    "n_filings" BIGINT,
+    "form_25" TEXT,
+    "form_15" TEXT,
+    "form_8k12b" TEXT,
+    "form_8k12g3" TEXT,
+    "fetched_at" TIMESTAMP,
+    PRIMARY KEY ("cik")
+);
+
 -- [extract] prices  (pk: ticker, date)
--- Equities only: the universe and its companies' current secondary share classes (security_master
+-- Equities only: the universe and its companies' current secondary share classes (universe_cusip
 -- role secondary_class, open end) under their Yahoo symbols. Every reader filters on the universe.
 -- TWO price columns, written from ONE yfinance response so they cannot drift apart.
 --   close_split -- Yahoo `Close` under auto_adjust=False: restated for SPLITS ONLY, no
@@ -276,7 +313,7 @@ CREATE TABLE IF NOT EXISTS "sec_short_interest" (
 
 -- [extract] sec_short_volume_security  (pk: source_symbol, date)
 -- FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
--- (case kept), `market` the reporting facilities. The four stamp columns come from security_master;
+-- (case kept), `market` the reporting facilities. The four stamp columns come from universe_cusip;
 -- NULL when the symbol's security is known but not on that date. short-interest rebuilds
 -- sec_short_interest from these rows.
 
@@ -367,7 +404,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- which is why build_cube.yml and SECTOR_KPI_SCOPE need no renaming.
 --
 -- Gone from the legacy shape, each deliberately: `sector` / `industry_group` (a
--- slowly-changing dimension, joined from tickers_universe rather than duplicated into a
+-- slowly-changing dimension, joined from universe_tickers rather than duplicated into a
 -- point-in-time table); `revenueGrowth` / `earningsGrowth` (computed by pit.py at cube time
 -- on a fixed 365-day as_of offset -- a row offset is ~9 months once an amendment row exists);
 -- `employees` (text-sourced, so it lives in fundamentals_employees and a failed parse cannot

@@ -110,7 +110,7 @@ def test_value_columns_are_float():
 def test_share_class_symbols_map_both_ways_and_nothing_else_moves():
     """Sharadar spells a share class `BRK.B`; this repo spells it `BRK-B`.
 
-    The repo's spelling is canonical because `prices`, `tickers_universe` and every cube part
+    The repo's spelling is canonical because `prices`, `universe_tickers` and every cube part
     key on it. The vendor's spelling has to be used for the REQUEST, and the two market-wide
     tables (`sharadar_actions`, `sharadar_sp500`) have to be mapped back on arrival because
     they are joined against the panel on the repo's names.

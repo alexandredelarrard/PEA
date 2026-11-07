@@ -158,7 +158,7 @@ def test_public_step_checks_market_owners_outside_its_universe(
     if conflict:
         competing = primary.assign(canonical_company="OTHER", market_symbol="OTHER", source_symbol="OLD")
         primary = pd.concat([primary, competing], ignore_index=True)
-    sqlite_store.save(Tables.security_master, primary)
+    sqlite_store.save(Tables.universe_cusip, primary)
     sqlite_store.save(Tables.short_interest, pd.DataFrame({"ticker": "AAA", "date": idx, "short_volume": 400.0, "total_volume": 1_000.0}))
     frames = PriceFrames(
         trading_index=idx,
@@ -614,7 +614,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
 
 def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     days = seed_prices(sqlite_store)
-    sqlite_store.save(Tables.security_master, market_lines(["AAA"], days.min()))
+    sqlite_store.save(Tables.universe_cusip, market_lines(["AAA"], days.min()))
     df_source = pd.DataFrame([row(ticker="AAA", transaction_date="2024-01-03", filing_date="2024-01-04", lineage_role="canonical_current")])
     sqlite_store.save(Tables.insider_transactions, df_source)
     ctx = context(sqlite_store, tmp_path)
@@ -660,7 +660,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     result = step.build_panel()
     assert stages == ["clean", "rebase", "compute"]
     assert reads[Tables.insider_transactions.name] == 1 and max(reads.values()) == 1
-    assert reads[Tables.security_master.name] == 1
+    assert reads[Tables.universe_cusip.name] == 1
     assert len(result) == len(days)
     print(
         "SANITY: the populated public step loads each payload once, then executes clean→rebase→compute with a store-read tripwire active throughout the numerical stages."
@@ -724,7 +724,7 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
             }
         ),
     )
-    sqlite_store.save(Tables.security_master, market_lines(["AAA"], days[0]))
+    sqlite_store.save(Tables.universe_cusip, market_lines(["AAA"], days[0]))
     as_traded = pd.Series([4.0 if after else 1.0 for after in split], index=days)
     sqlite_store.save(
         Tables.short_interest,

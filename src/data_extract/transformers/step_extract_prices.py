@@ -40,7 +40,7 @@ class StepExtractPrices(Step):
 
         # One yfinance session serves the three fetchers. Splits come first: their windows are planned from the
         # stored `prices`, which `fetch_prices` then advances. A split or dividend found re-pulls that ticker in full.
-        session = YahooSession()
+        session = YahooSession(symbols=self._context.universe.trading_symbols)
         fetch_price_actions(self._context, session, tickers=tickers, years_history=years_history)
         fetch_dividends(self._context, session, tickers=tickers, years_history=years_history)
         fetch_prices(self._context, session, tickers=tickers, years_history=years_history)

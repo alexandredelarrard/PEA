@@ -12,13 +12,13 @@ import pytest
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
@@ -42,7 +42,7 @@ def _manager_batch_owner(
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
     # The stored manager table has no ticker column: tickers come only from the CUSIP map.
     cusip_map = pd.DataFrame({"cusip": ["999999999"], "ticker": ["ZZZ"]})
-    resources = SecThirteenResources(frames, cusip_windows(None, cusip_map), {"": ciks})
+    resources = SecThirteenResources(frames, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": ciks})
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:

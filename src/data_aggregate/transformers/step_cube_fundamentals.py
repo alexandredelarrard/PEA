@@ -198,7 +198,7 @@ class StepCubeFundamentals(Step):
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
-        projecting the two columns out of the store: `tickers_universe` is the authority for
+        projecting the two columns out of the store: `universe_tickers` is the authority for
         sector membership and `fundamentals_history` has never carried it, so this is a
         lookup, not a column the read could have asked for. Without it every sector KPI is
         gated off (`sector_gates.row_gate` fails closed on the absent column)."""

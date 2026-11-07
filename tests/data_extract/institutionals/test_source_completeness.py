@@ -14,12 +14,14 @@ import pandas as pd
 import pytest
 from sqlalchemy import event
 
+from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.common.security_lines import prepare_master
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.identity import capture_ftd, identity_propagate
+from src.data_extract.utils.identity import cusip_history, identity_propagate
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
@@ -31,6 +33,7 @@ from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_fails_to_deliver import download_and_capture
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
+from tests.support.propagation import run_propagation
 from tests.support.universe import seed_universe
 
 
@@ -39,9 +42,9 @@ def sqlite_store(sqlite_store: DataStore) -> DataStore:
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
@@ -92,7 +95,16 @@ def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, m
     assert before_raw is not None
     before = sqlite_store.load(Tables.short_interest)
     assert before is not None
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: payload)
 
@@ -157,7 +169,16 @@ def test_malformed_ftd_lines_cannot_be_a_complete_source(row: str) -> None:
 
 def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     day = pd.Timestamp("2026-07-01")
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: _file().splitlines()[0] + "\n0\n")
     identity = _identity(store=sqlite_store)
@@ -173,13 +194,23 @@ def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, 
 
 
 def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
+    context._identity_resolver = identity
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
     good = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), ftd.prepare_master(_master()))
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), prepare_master(_master()))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -204,11 +235,11 @@ def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStor
         return reader(ctx, cache, period, download=download)
 
     monkeypatch.setattr(ftd, "read_ftd_period", observed)
-    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), identity=identity)
+    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"))
     assert requested == ["202607a"], "normal FTD planning skipped a NULL derived period because its raw rows and ZIP already existed"
     rows = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "LEN"})
     assert rows is not None and rows["fails_quantity"].tolist() == [12.0] and rows["source_checked_at"].notna().all()
-    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), identity=identity)
+    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"))
     assert requested == ["202607a"]
     print(
         "SANITY: normal FTD planning rereads a complete original for an old NULL quantity outside the 7-day scope window; successful paired refill is idempotent."
@@ -289,7 +320,7 @@ def test_ftd_verified_absence_uses_only_actual_served_dates() -> None:
         "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|5|LEN|10\n20260703|000000000|OTHER|1|OTHER|1\n"
     ).assign(period="202607a")
     basis = ShareBasis(pd.DataFrame(columns=["ticker", "date", "value"]), pd.DataFrame(), pd.DataFrame(), {})
-    grain = ftd._checked_ftd_grain(source, ftd.prepare_master(_master()), frozenset(["LEN"]), basis)
+    grain = ftd._checked_ftd_grain(source, prepare_master(_master()), frozenset(["LEN"]), basis)
     assert grain["date"].tolist() == [pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-03")]
     assert grain["fails_quantity"].tolist() == [5.0, 0.0] and grain["source_checked_at"].notna().all()
     print("SANITY: mapped FTD absence is zero only on dates actually served in the fully parsed ZIP, with no synthetic missing weekday.")
@@ -301,7 +332,7 @@ def test_ftd_class_ratio_and_raw_quantity_use_settlement_basis() -> None:
         "20100122|084670108|BRKA|10|BERKSHIRE CLASS A|100000\n"
         "20100122|084670702|BRKB|100|BERKSHIRE CLASS B|50\n"
     ).assign(period="201001b")
-    master = ftd.prepare_master(_master())
+    master = prepare_master(_master())
     events = pd.DataFrame({"ticker": ["BRK-B"], "date": pd.to_datetime(["2010-01-21"]), "value": [50.0]})
     basis = ShareBasis(events, events, events, {})
     stamped = ftd.stamp_lines(source, master)
@@ -324,7 +355,7 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
     source = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|000000000|OTHER|1|OTHER|1\n").assign(
         period="202607a"
     )
-    assert ftd._checked_ftd_grain(source, ftd.prepare_master(master), frozenset(["LEN"]), None).empty
+    assert ftd._checked_ftd_grain(source, prepare_master(master), frozenset(["LEN"]), None).empty
     print(
         "SANITY: missing, zero or infinite secondary-class conversion remains unknown in FINRA and FTD; it cannot become class factor1 or checked absence0."
     )
@@ -332,13 +363,23 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
 
 @pytest.mark.parametrize("bad", ["malformed", "wrong-period"])
 def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
+    context._identity_resolver = identity
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
     good = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), ftd.prepare_master(_master()))
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(good).assign(period="202607a"), prepare_master(_master()))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -369,7 +410,7 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(capture_ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
+    monkeypatch.setattr(cusip_history, "changed_ftd_scope", lambda *args: cusip_history.FtdScope())
     assert download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 0
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert stored_frame is not None
@@ -401,12 +442,29 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
     concurrent: bool,
     proof_column: bool,
 ) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     for table, frame in _identity(store=sqlite_store).source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
+    # X14: the capture scope is the lineage's symbols and the universe companies' CUSIP-6 (no stored `universe_cusip` read): LEN's symbol row
+    lineage = sqlite_store.load(Tables.universe_cik_symbol)
+    assert lineage is not None
+    home = lineage[lineage["canonical_ticker"].eq("LEN")].iloc[[0]]
+    sqlite_store.save(
+        Tables.universe_cik_symbol,
+        home.assign(role="symbol", symbol="LEN", valid_from=pd.Timestamp("2006-01-03"), status="corroborated", sources="form345,roster"),
+    )
     text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), ftd.prepare_master(_master()))[list(ftd.SECURITY_COLUMNS)]
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), prepare_master(_master()))[list(ftd.SECURITY_COLUMNS)]
     grain = pd.DataFrame(
         {
             "ticker": ["LEN"],
@@ -448,7 +506,7 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
 
     monkeypatch.setattr(sqlite_store, "load", interleaved)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(capture_ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
+    monkeypatch.setattr(cusip_history, "changed_ftd_scope", lambda *args: cusip_history.FtdScope())
     if concurrent:
         with pytest.raises(ValueError, match="source cohort changed"):
             download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30"))
@@ -588,7 +646,16 @@ def test_real_2026q1_insider_zip_validates_on_a_copy(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("fail", [False, True], ids=["unchanged", "rollback"])
 def test_finra_restamp_preserves_or_atomically_rolls_back_source_pair(sqlite_store: DataStore, tmp_path: Path, fail: bool) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -650,7 +717,7 @@ def test_captured_brkb_settlement_units_and_previous_close_notional_are_conserve
     source = ftd._parse_ftd_lines(raw).assign(period="201001b")
     events = pd.DataFrame({"ticker": ["BRK-B"], "date": pd.to_datetime(["2010-01-21"]), "value": [50.0]})
     basis = ShareBasis(events, events, events, {})
-    master = ftd.prepare_master(_master())
+    master = prepare_master(_master())
     master.loc[master["canonical_company"].eq("BRK-B") & master["source_symbol"].eq("BRKB"), "market_symbol"] = "BRK-B"
     grain = ftd.ticker_rows(ftd.stamp_lines(source, master), ["BRK-B"], basis)
     assert grain["fails_quantity"].tolist() == [41800.0, 1870995.0]
@@ -672,14 +739,23 @@ def test_ftd_b_zip_retains_documented_day15_overlap(tmp_path: Path) -> None:
 
 
 def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite_store: DataStore, tmp_path: Path) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
     text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
     _archive(tmp_path / context.config.local.paths.fails_deliver / "cnsfails202607a.zip", {"fails.txt": text})
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), ftd.prepare_master(_master()))
+    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), prepare_master(_master()))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -694,7 +770,7 @@ def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite
             }
         ),
     )
-    assert identity_propagate._refresh_fails(context, ["LEN"], pd.Timestamp("2026-10-06"), dry_run=False, every=True) == []
+    assert identity_propagate.refresh_fails(context, ["LEN"], pd.Timestamp("2026-10-06"), False, True) == []
     rows = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert rows is not None
     assert rows["fails_quantity"].tolist() == [12.0] and rows["source_checked_at"].notna().all()
@@ -749,7 +825,16 @@ def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_st
 def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            universe=_len_universe(sqlite_store),
+        ),
+    )
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -769,14 +854,13 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["shared actual note"]})
     sqlite_store.save(Tables.insider_transactions, rows)
     sqlite_store.save(Tables.insider_footnotes, notes)
-    spec = next(spec for spec in identity_propagate.PURGE_TABLES if spec.table == Tables.insider_transactions)
-    monkeypatch.setattr(identity_propagate, "PURGE_TABLES", (spec,))
-    monkeypatch.setattr(identity_propagate, "_reparse_bulk", lambda *args: {})
-    for name in ("_refresh_insider", "_refresh_fails", "_refresh_short_volume"):
-        monkeypatch.setattr(identity_propagate, name, lambda *args, **kwargs: [])
-    identity_propagate.propagate_identity(
-        context, ["LEN"], every_ticker=True, identity=identity, as_of=pd.Timestamp("2026-10-08")
-    )
+    spec = next(spec for spec in step_module.PURGE_TABLES if spec.table == Tables.insider_transactions)
+    monkeypatch.setattr(step_module, "PURGE_TABLES", (spec,))
+    for name in ("reparse_notes", "reparse_insider"):
+        monkeypatch.setattr(step_module, name, lambda *args: {})
+    for name in ("refresh_insider", "refresh_fails", "refresh_short_volume"):
+        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
+    run_propagation(context, identity, monkeypatch, ["LEN"], full=True, as_of=pd.Timestamp("2026-10-08"))
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None
     assert set(zip(kept["accession_number"], kept["ticker"], strict=True)) == {("a", "AAA"), ("b", "LEN")}
@@ -790,14 +874,16 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
     create_canonical(
         store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
     )
-    context = SimpleNamespace(store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(store))
+    context = SimpleNamespace(
+        store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(store)
+    )
     identity = _identity()
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -849,3 +935,41 @@ def test_actual_bulk_parser_run_writes_the_quarter(sqlite_store: DataStore, monk
     insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-06"))
     assert sqlite_store.row_count(Tables.insider_transactions) > 0 and sqlite_store.row_count(Tables.insider_footnotes) == 1
     print("SANITY: actual bulk parsing writes the quarter's rows and its one footnote.")
+
+
+def _guard_case(lines: list[tuple[str, str, str]]) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """Stored NULL-owner raw FTD lines `(cusip, symbol, settlement date)`, LEN's identity (with a 2025 one-day lineage symbol
+    LENPR the master does not carry) and a replacement grain that marks LEN checked on 2026-07-01."""
+    raw = pd.DataFrame(
+        [{"date": pd.Timestamp(day), "trade_date": pd.Timestamp(day) - pd.offsets.BDay(1), "cusip": cusip, "source_symbol": symbol,
+          "period": "202607a", "ticker": None} for cusip, symbol, day in lines]
+    )  # fmt: skip
+    lineage = pd.DataFrame(
+        [{"canonical_ticker": "LEN", "symbol": "LENPR", "valid_from": pd.Timestamp("2025-01-02"), "valid_to": pd.Timestamp("2025-01-03")}]
+    )
+    identity = {Tables.universe_cusip: _master(), Tables.universe_cik_symbol: lineage, Tables.symbol_tenure: pd.DataFrame()}
+    grain = pd.DataFrame({"ticker": ["LEN"], "date": [pd.Timestamp("2026-07-01")], "source_checked_at": [pd.Timestamp("2026-11-05")]})
+    return raw, identity, grain
+
+
+def test_the_ftd_guard_and_the_checked_grain_share_one_ownership_rule() -> None:
+    """X93: a stored unowned line whose only link to LEN is a lineage symbol held on other dates (JPMPRJ / VIA on the fixture)
+    is not LEN's: the checked grain never counts it, so the guard keeps it and certifies LEN's date. A line the master
+    places in LEN is replaced. A retained line that LEN's master could claim (its symbol LENB, an unknown CUSIP) still
+    refuses the checked date, and the grain built from the same line blocks that date: one rule for both."""
+    raw, identity, grain = _guard_case([("999999999", "LENPR", "2026-07-01"), ("526057104", "LEN", "2026-07-01"), ("000000001", "ZZZ", "2026-07-01")])
+    scope = {"ticker": ["LEN"], "period": ["202607a"]}
+
+    kept = ftd._owned_fails_rows(raw, scope, identity, grain)
+
+    assert kept["cusip"].tolist() == ["526057104"], kept
+    stale, identity, grain = _guard_case([("888888888", "LENB", "2026-07-01")])
+    with pytest.raises(ValueError, match="Ambiguous retained FTD raw ownership"):
+        ftd._owned_fails_rows(stale, scope, identity, grain)
+    source = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|888888888|LENB|5|LEN B|10\n").assign(
+        period="202607a"
+    )
+    checked = ftd._checked_ftd_grain(source, prepare_master(_master()), frozenset(["LEN"]), None)
+    assert checked.empty, checked
+    print("\nSANITY: X93 - the lineage-only line is retained without refusing LEN's checked date; the master line is replaced;")
+    print("  an unresolved line touching LEN's master refuses the date in the guard and blocks it in the grain (one rule).")

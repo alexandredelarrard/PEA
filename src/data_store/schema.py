@@ -142,9 +142,11 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Reference / dimension                                             #
     # ----------------------------------------------------------------- #
-    # The traded universe, one row per `configs/universe.yml` ticker. Written only by
-    # `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
-    tickers_universe = Table("tickers_universe", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on",))
+    # One row per company ever in `configs/universe.yml`; `in_universe` is false once it leaves the yml.
+    # Two writers own different columns: `src/utils/tickers_universe/sync.py` (ticker, name, GICS, Sharadar
+    # categories, `in_universe`, seed `cik`) and the identity step (`company_id`, `cik`, `trading_symbol`,
+    # `first_price_date`, `ended_on`, `status`). Read only through `context.universe`.
+    universe_tickers = Table("universe_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on", "first_price_date", "ended_on"))
 
     superinvestor_roster = Table(
         "superinvestor_roster",
@@ -166,14 +168,14 @@ class Tables:
         read_columns=("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence"),
     )
 
-    entity_lineage = Table(
-        "entity_lineage",
+    universe_cik_symbol = Table(
+        "universe_cik_symbol",
         ("cik", "role", "symbol", "valid_from"),
         KIND_REFERENCE,
         ticker_col=None,
         date_type_cols=("valid_from", "valid_to"),
         read_columns=(
-            "entity_id",
+            "company_id",
             "canonical_ticker",
             "cik",
             "role",
@@ -190,14 +192,15 @@ class Tables:
         ),
     )
 
-    security_master = Table(
-        "security_master",
+    universe_cusip = Table(
+        "universe_cusip",
         ("security_id", "source", "source_symbol", "valid_from"),
         KIND_REFERENCE,
         ticker_col=None,
         date_type_cols=("valid_from", "valid_to"),
         read_columns=(
             "security_id",
+            "company_id",
             "canonical_company",
             "issuer_cik",
             "source",
@@ -238,6 +241,37 @@ class Tables:
         KIND_REFERENCE,
         ticker_col=None,
         read_columns=("cik", "ticker", "name", "exchange", "fetched_at"),
+    )
+
+    # SEC submissions metadata, one row per CIK of the bulk `submissions.zip`, replaced by each `universe --only
+    # sec-submissions` run; read only by the identity step. `former_names` and the four form columns are JSON lists
+    # (name/from/to; form/filed/accession). `tickers` and `exchanges` are the CURRENT listing, empty once a CIK stops listing.
+    sec_cik_profile = Table(
+        "sec_cik_profile",
+        ("cik",),
+        KIND_REFERENCE,
+        ticker_col=None,
+        date_type_cols=("first_filed", "last_filed"),
+        resume=Resume(RESUME_SNAPSHOT, None, None),
+        read_columns=(
+            "cik",
+            "name",
+            "entity_type",
+            "sic",
+            "ein",
+            "state_of_incorporation",
+            "tickers",
+            "exchanges",
+            "former_names",
+            "first_filed",
+            "last_filed",
+            "n_filings",
+            "form_25",
+            "form_15",
+            "form_8k12b",
+            "form_8k12g3",
+            "fetched_at",
+        ),
     )
 
     # ----------------------------------------------------------------- #
@@ -309,7 +343,7 @@ class Tables:
     )
     # FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
     # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities. The four
-    # stamp columns come from `security_master` (a symbol never seen in FTD: the P21 lineage fallback,
+    # stamp columns come from `universe_cusip` (a symbol never seen in FTD: the P21 lineage fallback,
     # `security_id` `S<cik>:<symbol>`); NULL when the symbol's security is known but not on that date.
     # `short-interest` rebuilds the ticker-grain `short_interest` from these rows and plans its day files
     # on that table's per-ticker windows; one day file serves every symbol, so this table has one
@@ -761,7 +795,7 @@ class Tables:
         resume=Resume(RESUME_SERIES, "ticker", "date", 95),
     )
     # Sharadar's own ticker dimension, filtered to `table=fundamentals` (17,826 rows
-    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `tickers_universe`: this one
+    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `universe_tickers`: this one
     # carries `permaticker` -- Sharadar's stable entity id, which survives a ticker change
     # and is NOT a column in SF1 -- plus `currency`, which the fundamentals fetch reads to
     # enforce the USD assertion (D20). There is no `cik` column in any Sharadar table.
@@ -796,7 +830,7 @@ class Tables:
     # ⚠ `secfilings` IS THE ONLY PLACE A CIK APPEARS IN ANY SHARADAR TABLE -- it is an EDGAR
     # browse URL and the CIK is embedded in its query string (`...&CIK=0000320193&...`).
     # Every one of the 17,867 rows carries one, so it is a full-coverage third opinion on
-    # ticker->CIK, independent of the SEC-sourced `tickers_universe.cik`. `relatedtickers` is added alongside it for the same reason.
+    # ticker->CIK, independent of the SEC-sourced `universe_tickers.cik`. `relatedtickers` is added alongside it for the same reason.
     # `cusips` and `figi` are likewise stored and unread; they are the natural inputs to the
     # deferred `cusip_ticker_map` date axis, which is out of scope here.
     # Corporate actions: dividends, splits, spinoffs, acquisitions, name/SIC changes and
@@ -818,7 +852,8 @@ class Tables:
         date_type_cols=("date",),
         freshness="daily",
         read_columns=("date", "action", "ticker", "name", "value", "contraticker", "contraname"),
-        resume=Resume(RESUME_SERIES, None, "date", 7),
+        # replaced whole by each `universe --only sharadar-actions` run: `ticker` is in the PK, so a re-pull cannot upsert
+        resume=Resume(RESUME_SNAPSHOT, None, "date"),
     )
     # S&P 500 index membership events (added / removed / historical), back to 1992. Ingested
     # for the survivorship-bias fix, which is a SEPARATE task: the traded universe is the flat

@@ -1,6 +1,6 @@
 """Identity validator and the P15 manual-fix flags: foreign rows per filer-CIK table (margin and sibling
 filings count as own), lineage invariants, and one flag per kind classified once for the build and the
-validator. Offline: hand-written `entity_lineage` rows, a real `DataStore` on SQLite for the store reads.
+validator. Offline: hand-written `universe_cik_symbol` rows, a real `DataStore` on SQLite for the store reads.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from typing import Any
 import pandas as pd
 
 from src.data_store.schema import Tables
-from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags, log_identity_flags
-from src.validate.checks.identity import check_identity
+from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags
+from src.validate.checks.identity import check_identity, pending_removals
 from tests.support.universe import seed_universe, universe_in
 
 SENTINEL = "1900-01-01"
@@ -23,7 +23,7 @@ LOGGER = "test.identity_check"
 
 def _cik(ticker: str, cik: str, role: str, *, start: str = SENTINEL, end: str | None = None, oracle: str = "roster", sources: str = "roster") -> dict:
     return {
-        "entity_id": f"E-{ticker}",
+        "company_id": f"E-{ticker}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -125,7 +125,7 @@ def _flag_fixture() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             {
                 "kind": "grey_band",
                 "canonical_ticker": "CPT",
-                "entity_id": "E-CPT",
+                "company_id": "E-CPT",
                 "cik": "0000096345",
                 "symbol": "CPT",
                 "detail": "owner overlap with 0000906345",
@@ -165,7 +165,7 @@ def test_every_flag_kind_is_classified_once_from_the_lineage_and_the_filing_evid
     print("  OK: sequential pair flagged, concurrent pair INFO, takeover reviewed, disputed seam flagged, GOOGL-style lag not flagged")
 
 
-def test_the_warning_block_lists_action_items_first_and_is_skipped_when_empty(caplog):
+def test_the_warning_block_lists_action_items_first_and_is_skipped_when_empty():
     lineage, evidence, backlog = _flag_fixture()
     flags = identity_flags(lineage, cik_activity(evidence), redundant_symbols=frozenset({"GOG"}), backlog=backlog)
     block = identity_flag_block(flags)
@@ -175,19 +175,11 @@ def test_the_warning_block_lists_action_items_first_and_is_skipped_when_empty(ca
     others = [i for i, line in enumerate(lines) if "[info]" in line]
     assert actions and others and max(actions) < min(others), block
     assert not any("co_registrant" in line for line in lines), "co-registrants are an INFO line, not a block entry"
-
-    log = logging.getLogger(LOGGER)
-    with caplog.at_level(logging.INFO, logger=LOGGER):
-        log_identity_flags(log, flags)
-        log_identity_flags(log, flags.iloc[0:0])
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
-    assert len(warnings) == 1 and any("co-registrant" in m and "CON" in m for m in infos)
     assert identity_flag_block(flags.iloc[0:0]) is None
 
     print("\n=== SANITY CHECK: flag block ===")
     print(block)
-    print("  OK: one WARNING block with action items first; co-registrants one INFO line; nothing logged when empty")
+    print("  OK: one block with action items first, co-registrants left out; no block when there is nothing to show")
 
 
 # --------------------------------------------------------------------------- #
@@ -217,7 +209,9 @@ def _context(store: Any) -> Any:
 
 def _seed_store(store: Any, lineage: pd.DataFrame) -> None:
     seed_universe(store, ["ALB", "TMUS", "REG"], rows={"ALB": {"cik": ALB}, "TMUS": {"cik": TMUS}, "REG": {"cik": SUCC}})
-    store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
+    store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
     filings = [
         ("ALB", "alb-1", ALB, "2024-02-01"),
         ("ALB", "ab-1", AB, "2019-03-01"),
@@ -340,7 +334,7 @@ def test_lineage_invariant_breaches_are_findings(sqlite_store):
             {**_cik("REG", PRED, "cik_window", end="2016-07-01", oracle="register", sources="register")},
             _cik("REG", SUCC, "cik_window", start="2015-07-01", oracle="register", sources="register"),  # overlap 366 days
             _sym("REG", SUCC, "REG", "2015-07-01"),
-            {**_cik("ALB", AB, "cik_window", oracle="owner_overlap"), "entity_id": "E-OTHER", "canonical_ticker": None},
+            {**_cik("ALB", AB, "cik_window", oracle="owner_overlap"), "company_id": "E-OTHER", "canonical_ticker": None},
             _cik("TMUS", AB, "cik_event", oracle="owner_overlap"),  # AB in two entities
             _cik("TMUS", "0000000099", "cik_event", start="1899-12-31", oracle="owner_overlap"),  # an open start off the sentinel
         ]
@@ -362,19 +356,19 @@ def test_lineage_invariant_breaches_are_findings(sqlite_store):
 
 
 def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrated(sqlite_store):
-    """F-002: the old-shape table (cik, entity_id, ...) reads as event CIKs plus the roster CIK, as the accessor does."""
+    """F-002: the old-shape table (cik, company_id, ...) reads as event CIKs plus the roster CIK, as the accessor does."""
     old = pd.DataFrame(
         {
             "cik": [ALB, TMUS, TMO_USA, PRED, SUCC],
-            "entity_id": ["E-ALB", "E-TMUS", "E-TMUS", "E-REG", "E-REG"],
+            "company_id": ["E-ALB", "E-TMUS", "E-TMUS", "E-REG", "E-REG"],
             "source": "roster",
             "confidence": None,
             "evidence": "old-shape row",
         }
     )
     _seed_store(sqlite_store, _store_lineage())
-    sqlite_store.drop(Tables.entity_lineage)
-    old.to_sql(Tables.entity_lineage.name, sqlite_store.engine, index=False)
+    sqlite_store.drop(Tables.universe_cik_symbol)
+    old.to_sql(Tables.universe_cik_symbol.name, sqlite_store.engine, index=False)
 
     report = check_identity(_context(sqlite_store))
 
@@ -383,7 +377,7 @@ def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrate
     fields = [f.field for f in report.result.findings]
     assert "lineage_not_migrated" in fields and "current_symbol_rows" not in fields, fields
     assert report.result.metrics["foreign_rows"] == 4 and report.flags.empty
-    print("\n=== SANITY CHECK: validator before the cutover (old-shape entity_lineage) ===")
+    print("\n=== SANITY CHECK: validator before the cutover (old-shape universe_cik_symbol) ===")
     print(f"  {report.result.summary()}")
     print("  OK: no KeyError; membership CIKs and roster CIKs are own (no dated windows), AllianceBernstein's 4 rows are pending, invariants skipped")
 
@@ -581,7 +575,9 @@ def _seed_traded(store: Any) -> None:
         [row for i, t in enumerate(tickers) for row in (_cik(t, f"00000009{i:02d}", "cik_window"), _sym(t, f"00000009{i:02d}", t, "2006-01-02"))]
     )
     seed_universe(store, tickers, rows={t: {"cik": f"00000009{i:02d}"} for i, t in enumerate(tickers)})
-    store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
+    store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
     master = [
         _master_row("ALN", "ALN000001", "canonical_current", "2011-01-01"),
         _master_row("ALN", "ALN000002", "secondary_class", "2011-01-01", symbol="ALN.A"),
@@ -593,7 +589,7 @@ def _seed_traded(store: Any) -> None:
         _master_row("TWO", "TWO000002", "canonical_current", "2012-02-15"),
         _master_row("TWO", "TWO000009", "excluded", "2011-01-01"),
     ]
-    store.save(Tables.security_master, pd.DataFrame(master))
+    store.save(Tables.universe_cusip, pd.DataFrame(master))
     n = len(_DAYS) - 1
     jco = [0.90] * 24 + [0.974, 1.0, 1.0] + [1.10] * 23
     ftd = [
@@ -658,3 +654,145 @@ def test_a_chunk_without_prices_counts_its_lines_as_unverified(sqlite_store):
     assert [line.split()[:2] for line in metrics["traded_security_unverified_lines"]] == [["NOP", "NOP000001"]]
     assert "(0 matched of 79 FTD days)" in metrics["traded_security_unverified_lines"][0]
     print("  OK: the NOP line is one unverified count (0 matched of 79 FTD days) and check_identity completes.")
+
+
+def test_the_validator_applies_the_builds_resolutions(sqlite_store, tmp_path):
+    """REQ-031/032 (phase 9e): an action item with a reviewed `resolutions` entry needs no decision in the validator either,
+    because the validator matches its items with the build's `load_resolutions` / `review_flags`."""
+    _seed_store(sqlite_store, _store_lineage())
+    sqlite_store.save(Tables.sharadar_fundamentals, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
+    pd.DataFrame({"ticker": ["REG1"], "secfilings": [url.format(PRED)], "lastquarter": pd.to_datetime(["2015-06-30"])}).to_sql(
+        Tables.sharadar_tickers.name, sqlite_store.engine, index=False
+    )
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+    before = check_identity(context)
+    item = before.flags[before.flags["kind"].eq("vendor_series_other_company")].iloc[0]
+    (tmp_path / "sec").mkdir()
+    resolution = {
+        "kind": item["kind"],
+        "ticker": item["ticker"],
+        "ciks": item["ciks"],
+        "decision": "ACKNOWLEDGED: the predecessor series is fetched by the next Sharadar refresh",
+        "evidence": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000000040",
+        "decided_on": "2026-11-06",
+    }
+    (tmp_path / "sec" / "entity_lineage_manual.json").write_text(json.dumps({"resolutions": [resolution]}), encoding="utf-8")
+
+    after = check_identity(context)
+
+    manual_before = [f for f in before.result.findings if f.field == "manual_decision"]
+    manual_after = [f for f in after.result.findings if f.field == "manual_decision"]
+    print("\n=== SANITY CHECK: the validator reviews items with the build's resolutions ===")
+    print(f"  before: {len(manual_before)} manual decision(s), backlog {before.result.metrics['backlog']}")
+    print(
+        f"  after:  {len(manual_after)} manual decision(s), backlog {after.result.metrics['backlog']}, resolved {after.result.metrics['resolved_by_kind']}"
+    )
+    assert len(manual_before) == len(manual_after) + 1 and before.result.metrics["backlog"] == after.result.metrics["backlog"] + 1
+    assert after.result.metrics["resolved_by_kind"] == {"vendor_series_other_company": 1}
+    assert after.result.metrics["acknowledged_resolutions"] == [f"vendor_series_other_company REG ({item['ciks']})"]
+    print("  OK: the resolved item leaves the findings and the backlog; it is listed as an acknowledgement.")
+
+
+def test_ended_companies_sharadar_ciks_and_shared_cusips_are_findings(sqlite_store, tmp_path):
+    """REQ-006 / AC-004 / REQ-008: an ended company's open rows, a Sharadar `secfilings` CIK outside the company's CIK set
+    and one CUSIP on two companies on one date are each one finding; a clean company raises none."""
+    lineage = _store_lineage()
+    rows = {
+        "ALB": {"cik": ALB, "permaticker": 1},
+        "TMUS": {"cik": TMUS, "permaticker": 2},
+        "REG": {"cik": SUCC, "ended_on": pd.Timestamp("2020-01-01")},
+    }
+    seed_universe(sqlite_store, ["ALB", "TMUS", "REG"], rows=rows)
+    sqlite_store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
+    pd.DataFrame(
+        {
+            "permaticker": [1, 2],
+            "ticker": ["ALB", "TMUS"],
+            "secfilings": [url.format(AB), url.format(TMUS)],
+            "lastquarter": pd.to_datetime(["2026-06-30"] * 2),
+        }
+    ).to_sql(Tables.sharadar_tickers.name, sqlite_store.engine, index=False)
+    lines = [
+        _master_row("ALB", "SHARED001", "canonical_current", "2011-01-01"),
+        _master_row("TMUS", "SHARED001", "canonical_current", "2015-01-01"),
+        _master_row("REG", "REG000001", "canonical_current", "2015-07-01"),
+    ]
+    sqlite_store.save(Tables.universe_cusip, pd.DataFrame(lines))
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    report = check_identity(context)
+
+    fields = {f.field: f for f in report.result.findings}
+    print("\n=== SANITY CHECK: ended rows, Sharadar CIKs, shared CUSIPs ===")
+    for name in ("open_after_end", "secfilings_cik", "shared_cusip"):
+        print(f"  {name}: {fields[name].observed if name in fields else None} {fields[name].evidence if name in fields else ''}")
+    assert fields["open_after_end"].evidence["rows"] == {"REG": ["cik_window " + SUCC, "cusip REG000001", "symbol " + SUCC]}
+    assert fields["secfilings_cik"].evidence["ciks"] == {"ALB": AB}
+    assert fields["shared_cusip"].evidence["cusips"] == ["SHARED001 ALB/TMUS"]
+    assert report.result.status == "fail" and "current_symbol_rows" not in fields
+
+    # REG's rows closed the day after its end: neither an open row nor a missing current symbol row
+    closed = lineage.assign(valid_to=lineage["valid_to"].where(lineage["canonical_ticker"].ne("REG"), "2020-01-02"))
+    sqlite_store.replace(
+        Tables.universe_cik_symbol, closed.assign(valid_from=pd.to_datetime(closed["valid_from"]), valid_to=pd.to_datetime(closed["valid_to"]))
+    )
+    sqlite_store.replace(
+        Tables.universe_cusip, pd.DataFrame([*lines[:2], _master_row("REG", "REG000001", "canonical_current", "2015-07-01", "2020-01-02")])
+    )
+    after = {f.field for f in check_identity(context).result.findings}
+    assert "open_after_end" not in after and "current_symbol_rows" not in after, after
+    print(
+        "  OK: REG's open window, symbol and CUSIP line after its end, ALB's foreign Sharadar CIK and the shared CUSIP are findings; TMUS is clean."
+    )
+    print("  OK: once REG's rows close at its end, REG raises neither open_after_end nor a missing current symbol row.")
+
+
+def test_rows_dated_after_the_company_end_are_not_pending_removals(sqlite_store):
+    """R-03 (REQ-014, X114 shape): WBD ended 2026-10-05 and its window closes 2026-10-06; its own 8-K filed 2026-10-06
+    is what the purge keeps (`before_end`), so the validator does not count it; a foreign filer's 8-K inside the life is."""
+    wbd, other = "0001437107", "0000000999"
+    seed_universe(sqlite_store, ["WBD"], rows={"WBD": {"cik": wbd, "ended_on": pd.Timestamp("2026-10-05")}})
+    lineage = pd.DataFrame([_cik("WBD", wbd, "cik_window", end="2026-10-06"), _sym("WBD", wbd, "WBD", "2022-04-11", "2026-10-06")])
+    rows = [("post-end-1", wbd, "2026-10-06"), ("own-1", wbd, "2026-09-01"), ("foreign-1", other, "2020-01-02")]
+    sqlite_store.save(
+        Tables.sec_8k,
+        pd.DataFrame([{"ticker": "WBD", "accession_number": a, "item": "8.01", "cik": c, "filing_date": pd.Timestamp(d)} for a, c, d in rows]),
+    )
+    lineage = lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+
+    pending = pending_removals(_context(sqlite_store), lineage, ["WBD"])
+
+    got = sorted(zip(pending["cik"], pending["rows"], strict=True))
+    assert got == [(other, 1)], pending
+    print("\n=== SANITY CHECK: validator pending removals stop at ended_on (R-03) ===")
+    print(pending.to_string(index=False))
+    print("  OK: WBD's own 8-K filed 2026-10-06 (after ended_on 2026-10-05) is not pending; the foreign 8-K of 2020 is")
+
+
+def test_an_ended_companys_open_event_cik_row_is_not_open_after_end(sqlite_store, tmp_path):
+    """R-04 (REQ-006): the build closes only an ended company's CIK windows and symbol intervals (`_close_at_end`); its
+    `cik_event` rows stay open by design, so TMUS ended 2020-01-01 with window and symbol closed on 2020-01-02 and its
+    open TMO_USA event row raises no `open_after_end` (an open window still does: the test above)."""
+    lineage = _store_lineage()
+    closed = lineage["canonical_ticker"].eq("TMUS") & lineage["role"].isin(["cik_window", "symbol"])
+    lineage = lineage.assign(valid_to=lineage["valid_to"].where(~closed, "2020-01-02"))
+    seed_universe(
+        sqlite_store,
+        ["ALB", "TMUS", "REG"],
+        rows={"ALB": {"cik": ALB}, "TMUS": {"cik": TMUS, "ended_on": pd.Timestamp("2020-01-01")}, "REG": {"cik": SUCC}},
+    )
+    sqlite_store.save(
+        Tables.universe_cik_symbol, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]))
+    )
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    fields = {f.field: f for f in check_identity(context).result.findings}
+
+    event = lineage.loc[lineage["role"].eq("cik_event") & lineage["canonical_ticker"].eq("TMUS"), ["cik", "valid_to"]].to_dict("records")
+    assert "open_after_end" not in fields, fields["open_after_end"].evidence
+    print("\n=== SANITY CHECK: open event rows of an ended company (R-04) ===")
+    print(f"  TMUS ended 2020-01-01, window + symbol closed 2020-01-02; open event row {event} -> open_after_end: none")

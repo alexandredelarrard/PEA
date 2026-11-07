@@ -17,14 +17,18 @@ logger = logging.getLogger(__name__)
 
 
 def compact_institutional_books(df_books: pd.DataFrame) -> pd.DataFrame:
-    """Keep mapped amounts, unknown/zero rows and positive-share security identities."""
+    """Keep mapped amounts, unknown/zero rows and positive-share security identities, one row per (period, manager,
+    company) as stored: `sec13f_hr` holds one row per manager x company x accession in canonical-class shares (U-67)."""
     numeric = ["shares", "value_usd", "call_value", "put_value"]
     keys = ["period", "cik", "ticker"]
     df_mapped = df_books.loc[df_books.ticker.notna()]
-    grouped = df_mapped.groupby(keys)[numeric]
-    df_totals = grouped.sum(min_count=1).where(grouped.count().eq(df_mapped.groupby(keys).size(), axis=0))
-    identities = df_mapped.loc[df_mapped.shares.gt(0)].groupby(keys).cusip.agg(frozenset)
-    df_totals["_cusips"] = identities.astype("object")
+    duplicated = df_mapped.duplicated(keys)
+    if duplicated.any():
+        sample = df_mapped.loc[duplicated, keys].head(3).to_dict("records")
+        raise ValueError(f"13F books hold {int(duplicated.sum())} duplicate manager x company row(s), e.g. {sample}: run `identity --only propagate`")
+    df_totals = df_mapped.set_index(keys)[numeric]
+    identities = [frozenset({cusip}) if held else np.nan for cusip, held in zip(df_mapped["cusip"], df_mapped["shares"].gt(0), strict=True)]
+    df_totals["_cusips"] = pd.Series(identities, index=df_totals.index, dtype="object")
     return df_totals
 
 

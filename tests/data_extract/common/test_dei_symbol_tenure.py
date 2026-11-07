@@ -18,15 +18,18 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import src.data_extract.utils.identity.capture_dei as dei
+import src.data_extract.utils.identity.evidence as dei
 import src.data_extract.utils.zips.fetch_financial_notes as fn
+from src.data_extract.utils.common.bulk_cache import read_zip_tables
 from src.data_extract.utils.identity.symbol_tenure import (
     DEI_SOURCE,
     TABLE_COLUMNS,
     aggregate_dei_symbols,
     collapse_dei_periods,
+    parse_symbol_field,
 )
 from src.data_store.schema import Tables
+from src.utils.string import pad_cik_series
 from tests.canonical_schema import create_canonical
 
 _SUB_COLS = ["adsh", "cik", "name", "sic", "form", "period", "fy", "fp", "filed"]
@@ -133,12 +136,24 @@ def _stored(store: Any) -> pd.DataFrame:
     return stored.sort_values(["source", "evidence_period", "symbol", "issuer_cik"], ignore_index=True)
 
 
+def _facts(path: Path) -> pd.DataFrame | None:
+    """One Notes zip's primary-filer cover-page symbol facts, read as the capture reads them (CIKs padded)."""
+    facts = dei._primary_facts(read_zip_tables(path, dei._DEI_READ, on_corrupt="skip"))
+    return None if facts is None else facts.assign(cik=pad_cik_series(facts["cik"]))
+
+
+def _aggregate(facts: pd.DataFrame, period: str) -> pd.DataFrame:
+    """`aggregate_dei_symbols` with each distinct symbol field parsed once, as `capture_dei_period` calls it."""
+    fields = {field: parse_symbol_field(field) for field in facts["value"].astype("string").dropna().unique()}
+    return aggregate_dei_symbols(facts, fields, period)
+
+
 def test_one_zip_aggregates_normalised_symbols_over_distinct_accessions(tmp_path: Path) -> None:
     """Known truth for one zip: distinct accessions per (symbol, CIK), symbols normalised, co-registrant facts ignored."""
     path = _write_notes_zip(tmp_path, "2025q3", ["A1", "A2", "A3", "B1", "D1"])
-    facts = dei._read_dei_facts(path)
+    facts = _facts(path)
     assert facts is not None
-    rows = aggregate_dei_symbols(facts, "2025q3")
+    rows = _aggregate(facts, "2025q3")
 
     assert list(rows.columns) == list(TABLE_COLUMNS)
     got = {(r.symbol, r.issuer_cik): (r.n_filings, _day(r.valid_from), _day(r.valid_to)) for r in rows.itertuples(index=False)}
@@ -160,16 +175,16 @@ def test_a_combined_cover_keeps_the_filers_own_securities_only(tmp_path: Path) -
     """Known truth for an Entergy-shaped cover: a symbol dimensioned on another legal entity is that entity's
     security, and a `/26A` series code stays on its issuer's symbol instead of becoming a `26A` ticker."""
     path = _write_notes_zip(tmp_path, "2025q3", ["E1", "B1"], dims=_DIMS)
-    facts = dei._read_dei_facts(path)
+    facts = _facts(path)
     assert facts is not None
-    rows = aggregate_dei_symbols(facts, "2025q3")
+    rows = _aggregate(facts, "2025q3")
 
     got = set(zip(rows["symbol"], rows["issuer_cik"], strict=True))
     assert got == {("ETR", "0000065984"), ("ETR-26A", "0000065984"), ("BFA", "0000000002"), ("BFB", "0000000002")}, got
 
     (tmp_path / "old").mkdir()
-    no_dim = dei._read_dei_facts(_write_notes_zip(tmp_path / "old", "2025q3", ["B1"]))
-    assert no_dim is not None and set(aggregate_dei_symbols(no_dim, "2025q3")["symbol"]) == {"BFA", "BFB"}
+    no_dim = _facts(_write_notes_zip(tmp_path / "old", "2025q3", ["B1"]))
+    assert no_dim is not None and set(_aggregate(no_dim, "2025q3")["symbol"]) == {"BFA", "BFB"}
 
     print("\n=== SANITY CHECK: combined cover page ===")
     print(f"  E1 tags ETR, EAI (LegalEntity=EntergyArkansas), ETR/26A; B1 tags 'BFA, BFB' -> {sorted(got)}")
@@ -181,7 +196,7 @@ def test_monthly_and_quarterly_zips_holding_the_same_accessions_collapse_to_dist
     _write_notes_zip(tmp_path, "2025_07", ["A1", "A2"])
     _write_notes_zip(tmp_path, "2025_08", ["B1"])
     _write_notes_zip(tmp_path, "2025q3", ["A1", "A2", "A3", "B1"])
-    written = dei.capture_dei_symbols(_context(sqlite_store), tmp_path, ["2025_07", "2025_08", "2025q3"])
+    written = sum(dei.capture_dei_period(_context(sqlite_store), tmp_path, period) for period in ["2025_07", "2025_08", "2025q3"])
 
     stored = _stored(sqlite_store)
     per_period = stored[stored["symbol"].eq("XYZ")].set_index("evidence_period")["n_filings"].to_dict()
@@ -205,9 +220,9 @@ def test_reprocessing_a_captured_zip_is_a_row_identical_no_op(tmp_path: Path, sq
     context = _context(sqlite_store)
     writes = _spy_writes(sqlite_store, monkeypatch)
 
-    dei.capture_dei_symbols(context, tmp_path, ["2025q3"])
+    dei.capture_dei_period(context, tmp_path, "2025q3")
     first, first_writes = _stored(sqlite_store), list(writes)
-    dei.capture_dei_symbols(context, tmp_path, ["2025q3"])
+    dei.capture_dei_period(context, tmp_path, "2025q3")
     second = _stored(sqlite_store)
 
     pd.testing.assert_frame_equal(first, second)
@@ -230,13 +245,12 @@ def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: 
     before = _stored(sqlite_store)
 
     read: list[str] = []
-    real_read = dei._read_dei_facts
-    monkeypatch.setattr(dei, "_read_dei_facts", lambda path: (read.append(path.name), real_read(path))[1])
+    monkeypatch.setattr(dei, "read_zip_tables", lambda path, specs, **kwargs: (read.append(path.name), read_zip_tables(path, specs, **kwargs))[1])
     monkeypatch.setattr(fn, "ensure_zip", lambda context, path, urls, **kwargs: path)
 
     context = _context(sqlite_store)
     assert fn.download_notes_periods(context, tmp_path, periods) == 1, "only the uncaptured period is downloaded"
-    written = dei.capture_pending_dei(context, tmp_path, full=False)
+    written = sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path, False))
     after = _stored(sqlite_store)
 
     assert read == ["2025_04_notes.zip"], read
@@ -266,7 +280,7 @@ def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqli
 
     context = _context(sqlite_store)
     fn.download_notes_periods(context, tmp_path, ["2025q3"])
-    dei.capture_pending_dei(context, tmp_path, full=True)
+    sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path, True))
     rows = {(r.symbol, r.source, r.evidence_period) for r in _stored(sqlite_store).itertuples(index=False)}
 
     assert rows == {("XYZ", DEI_SOURCE, "2025q3"), ("KEEP", DEI_SOURCE, "2025q2"), ("XYZ", "form345", ""), ("XYZ", "manual", "")}, rows

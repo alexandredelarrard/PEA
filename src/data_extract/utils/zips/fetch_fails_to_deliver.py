@@ -2,9 +2,9 @@
 fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches
-the ZIPs; the identity step (`utils/identity/capture_ftd.py`) stores their in-scope source lines raw,
+the ZIPs; the identity step (`utils/identity/cusip_history.py`) stores their in-scope source lines raw,
 per CUSIP, in `sec_fails_to_deliver_security`. `fetch_fails_to_deliver` stamps those lines from
-`security_master` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
+`universe_cusip` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
 `sec_fails_to_deliver`, its own table so its publication lag never moves `short_interest`'s frontier:
 per (ticker, settlement date) the sum over the canonical and secondary-class lines of quantity x
 conversion ratio, and of quantity x the file's PRICE (NULL when a summed line has no price). Values
@@ -13,7 +13,6 @@ are cumulative net unsettled balances, not new fails. `full` rebuilds both table
 
 from __future__ import annotations
 
-import io
 import logging
 import re
 from collections.abc import Collection, Sequence
@@ -27,13 +26,9 @@ from tqdm import tqdm
 from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SHARADAR_ACTION_SPLIT
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
-from src.data_extract.utils.common.identity import Identity, load_source_identity
+from src.data_extract.utils.common.identity import identity_published, load_identity
 from src.data_extract.utils.common.resume import archive_periods
-from src.data_extract.utils.identity.security_master import (
-    SOURCE_FTD,
-    squash,
-    trade_dates,
-)
+from src.data_extract.utils.common.security_lines import master_stamps, prepare_master, trade_dates
 from src.data_extract.utils.institutionals.security_tape import (
     assert_tape_owners,
     assert_tape_source,
@@ -51,7 +46,7 @@ from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore, Where
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price.basis import prepare_quote_anchors
-from src.utils.string import normalise_ticker, run_date, yahoo_symbol
+from src.utils.string import normalise_ticker, run_date, squash, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -73,22 +68,6 @@ SECURITY_COLUMNS = (
     "lineage_role",
     "security_class",
 )
-#: The `security_master` columns read for stamping.
-_MASTER_COLUMNS = [
-    "security_id",
-    "canonical_company",
-    "cusip",
-    "source_symbol",
-    "market_symbol",
-    "security_class",
-    "conversion_ratio",
-    "lineage_role",
-    "valid_from",
-    "valid_to",
-    "scope_changed_at",
-]
-#: The open end of a master interval.
-_FAR = pd.Timestamp("2262-01-01")
 
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
@@ -139,9 +118,11 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
     columns = list(SECURITY_COLUMNS[:8])
     lines = _strip_ftd_trailer(raw.strip().splitlines())
     header = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"
-    if not lines or lines[0].strip().lstrip("\ufeff").upper() != header or any(len(row.split("|")) != 6 for row in lines[1:]):
+    rows = [row.split("|") for row in lines[1:]]
+    if not lines or lines[0].strip().lstrip("\ufeff").upper() != header or any(len(fields) < 6 for fields in rows):
         raise ValueError("FTD invalid header or source line width")
-    df = pd.read_csv(io.StringIO("\n".join([header, *lines[1:]])), sep="|", dtype=str, keep_default_na=False, quoting=3)
+    # A description can itself hold a '|' (cnsfails202104b): the first four fields and the price stay fixed.
+    df = pd.DataFrame([[*fields[:4], "|".join(fields[4:-1]), fields[-1]] for fields in rows], columns=header.split("|"), dtype=str)
     cols = {c.strip().upper(): c for c in df.columns}
     price = pd.to_numeric(_ftd_column(df, cols, "PRICE").where(lambda s: s != "."), errors="coerce")
     qty = pd.to_numeric(_ftd_column(df, cols, "QUANTITY (FAILS)"), errors="coerce")
@@ -193,28 +174,6 @@ def cached_ftd_periods(cache: Path) -> set[str]:
 # Stamp from the security master, aggregate to the ticker grain (pure)           #
 # --------------------------------------------------------------------------- #
 _HIT_COLUMNS = ["canonical_company", "lineage_role", "security_class", "conversion_ratio", "market_symbol"]
-
-
-def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
-    """The FTD rows of `security_master`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
-    rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
-    out = rows.reindex(columns=_MASTER_COLUMNS).copy()
-    out["market_symbol"] = out["market_symbol"].fillna(out["source_symbol"]).map(yahoo_symbol)
-    out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
-    out["source_symbol"] = out["source_symbol"].fillna("").map(normalise_ticker)
-    out["valid_from"] = pd.to_datetime(out["valid_from"])
-    out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
-    out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"], errors="coerce").astype("float64")
-    company = out["canonical_company"].astype(object)
-    out["canonical_company"] = company.where(company.notna() & company.astype(str).ne(""), None)
-    out["scope_changed_at"] = pd.to_datetime(out["scope_changed_at"], errors="coerce")
-    return out.reset_index(drop=True)
-
-
-def master_stamps(master: pd.DataFrame) -> dict[str, pd.Timestamp]:
-    """`{canonical company: latest scope_changed_at}` over its master rows."""
-    stamps = master.dropna(subset=["canonical_company"]).groupby("canonical_company")["scope_changed_at"].max()
-    return {str(company): pd.Timestamp(stamp) for company, stamp in stamps.items() if pd.notna(stamp)}
 
 
 def _covering(frame: pd.DataFrame) -> pd.DataFrame:
@@ -318,12 +277,8 @@ def _checked_ftd_grain(
     invalid_ratio = ~np.isfinite(candidates["conversion_ratio"]) | candidates["conversion_ratio"].le(0)
     invalid = set(zip(candidates.loc[invalid_ratio, "canonical_company"], candidates.loc[invalid_ratio, "date"], strict=True))
     candidates = candidates.rename(columns={"canonical_company": "ticker"})[["ticker", "date", "period"]].drop_duplicates()
-    unresolved = stamped.loc[stamped["lineage_role"].isna() | stamped["ticker"].isna()]
-    blocked = unresolved[["cusip", "date"]].merge(master[["cusip", "canonical_company"]].drop_duplicates(), on="cusip")
-    symbols = unresolved[["source_symbol", "date"]].merge(master[["source_symbol", "canonical_company"]].drop_duplicates(), on="source_symbol")
-    blocked = pd.concat([blocked, symbols], ignore_index=True)
-    blocked = set(zip(blocked["canonical_company"], pd.to_datetime(blocked["date"]), strict=True))
-    blocked |= invalid
+    uncertain = uncertain_dates(stamped, master)
+    blocked = set(zip(uncertain["ticker"], uncertain["date"], strict=True)) | invalid
     if held is not None and not held.empty:
         retained = stamped.merge(held[["cusip", "date"]], on=["cusip", "date"])
         blocked.update(zip(retained["ticker"], pd.to_datetime(retained["date"]), strict=True))
@@ -336,6 +291,29 @@ def _checked_ftd_grain(
     result[["fails_quantity", "fails_value"]] = result[["fails_quantity", "fails_value"]].astype("float64")
     result["source_checked_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
     return result
+
+
+def uncertain_dates(stamped: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
+    """`[ticker, date]` an unresolved stamped line could belong to: a master row of the company carrying the line's CUSIP
+    or its symbol. The one FTD ownership rule (X93): the checked grain blocks these dates and the retained-raw guard
+    refuses to certify them; a line linked to a company only by a lineage symbol is not the company's in either."""
+    # the unresolved lines, keyed as the master is
+    unresolved = stamped.loc[stamped["lineage_role"].isna() | stamped["ticker"].isna()]
+    keys = pd.DataFrame(
+        {
+            "cusip": unresolved["cusip"].astype(str).str.strip().str.upper(),
+            "source_symbol": unresolved["source_symbol"].fillna("").map(normalise_ticker),
+            "date": pd.to_datetime(unresolved["date"]).dt.normalize(),
+        }
+    )
+
+    # the companies whose master rows carry the CUSIP or the symbol
+    owners = master.dropna(subset=["canonical_company"])
+    by_cusip = keys.merge(owners[["cusip", "canonical_company"]].drop_duplicates(), on="cusip")
+    named = owners.loc[owners["source_symbol"].ne(""), ["source_symbol", "canonical_company"]].drop_duplicates()
+    by_symbol = keys.loc[keys["source_symbol"].ne("")].merge(named, on="source_symbol")
+    touched = pd.concat([by_cusip, by_symbol], ignore_index=True).rename(columns={"canonical_company": "ticker"})
+    return touched[["ticker", "date"]].drop_duplicates().reset_index(drop=True)
 
 
 def empty_fails_grain() -> pd.DataFrame:
@@ -372,12 +350,6 @@ def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: stamp the stored lines, rebuild the ticker grain                          #
 # --------------------------------------------------------------------------- #
-
-
-def load_fails_master(context: Context) -> pd.DataFrame | None:
-    """The stored `security_master` prepared for stamping; None before the first `identity` build."""
-    master = context.store.load(Tables.security_master, columns=[*_MASTER_COLUMNS, "source"], optional=True)
-    return None if master is None else prepare_master(master)
 
 
 def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:
@@ -595,7 +567,7 @@ def restamp_fails(
     companies: Collection[str] | None,
     tickers: Collection[str],
     *,
-    identity: dict[Table, pd.DataFrame] | None = None,
+    identity: dict[Table, pd.DataFrame],
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
 ) -> list[dict]:
@@ -608,8 +580,7 @@ def restamp_fails(
     cached originals and report their actual missing keys without downloads or database writes.
     """
 
-    cohort = load_source_identity(context.store) if identity is None else identity
-    master = prepare_master(cohort[Tables.security_master])
+    master = prepare_master(identity[Tables.universe_cusip])
     if master.empty:
         return []
     if companies is None:
@@ -629,7 +600,9 @@ def restamp_fails(
     rebuilt = [name for name in names if name in tickers]
     records = []
     if rebuilt:
-        _, records = _recover_fails_companies(context, master, rebuilt, cohort, load_fails_basis(context, master), dry_run)
+        # the share basis of the rebuilt companies' lines only: another company's share policy never blocks this restamp
+        basis = load_fails_basis(context, master[master["canonical_company"].isin(rebuilt)])
+        _, records = _recover_fails_companies(context, master, rebuilt, identity, basis, dry_run)
     logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
     return records
 
@@ -679,15 +652,15 @@ def ensure_ftd_zip(context: Context, cache: Path, period: str) -> Path | None:
 def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Cache the FTD ZIPs the identity capture reads; returns the ZIPs available.
 
-    Before the first `entity_lineage` build every listed period is cached (cold start); afterwards only the
+    Before the first `universe_cik_symbol` build every listed period is cached (cold start); afterwards only the
     periods the capture will read (`pending_ftd_periods`). Writes no table.
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     start_date = run_date(as_of)
-    if context.store.load(Tables.entity_lineage, columns=["entity_id"], limit=1, optional=True) is None:
+    if not identity_published(context):
         periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, start_date)))
         cached = [period for period in periods if ensure_ftd_zip(context, cache, period)]
-        logger.warning("FTD download: no entity_lineage yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
+        logger.warning("FTD download: no universe_cik_symbol yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
         return len(cached)
     pending = pending_ftd_periods(context, cache, years_history, full=full, as_of=start_date)
     return sum(ensure_ftd_zip(context, cache, period) is not None for period in tqdm(pending, desc="FTD download"))
@@ -698,20 +671,19 @@ def fetch_fails_to_deliver(
     tickers: Sequence[str],
     full: bool = False,
     as_of: pd.Timestamp | None = None,
-    *,
-    identity: Identity | None = None,
 ) -> int:
-    """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
+    """Stamp the stored raw FTD lines from `universe_cusip` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
 
     Incremental runs reread or recover the complete originals for pending units and changed issuer scopes. `full`
     rebuilds both tables from every cached ZIP; a scoped (`-t`) run replaces only its guarded issuer source pairs.
     """
-    cohort = identity.source_cohort if identity is not None else load_source_identity(context.store)
-    master = prepare_master(cohort[Tables.security_master]) if not cohort[Tables.security_master].empty else None
+    cohort = load_identity(context).source_cohort
+    master = prepare_master(cohort[Tables.universe_cusip]) if not cohort[Tables.universe_cusip].empty else None
     if master is None or master.empty:
-        logger.warning("FTD: no security_master yet (run `identity` first); nothing stamped")
+        logger.warning("FTD: no universe_cusip yet (run `identity` first); nothing stamped")
         return 0
-    basis = load_fails_basis(context, master)
+    # the share basis of the run's companies only: another company's share policy never blocks this run (X96, as X77)
+    basis = load_fails_basis(context, master[master["canonical_company"].isin(tickers)])
     if full:
         _, saved = _rebuild_from_cache(context, master, tickers, cohort, basis)
     else:
@@ -740,8 +712,8 @@ def _fails_candidate_scope(
     targets = owners if isinstance(owners, list | tuple | set | frozenset | pd.Series | pd.Index | np.ndarray) else [owners]
     cusips, symbols = set(), set()
     for spec, company, symbol in (
-        (Tables.security_master, "canonical_company", "source_symbol"),
-        (Tables.entity_lineage, "canonical_ticker", "symbol"),
+        (Tables.universe_cusip, "canonical_company", "source_symbol"),
+        (Tables.universe_cik_symbol, "canonical_ticker", "symbol"),
     ):
         df_rows = identity[spec]
         if company not in df_rows:
@@ -755,52 +727,15 @@ def _fails_candidate_scope(
     return [scope, {**base, "ticker": None, "cusip": sorted(cusips)}, {**base, "ticker": None, "source_symbol": sorted(symbols)}, keys]
 
 
-def _proved_fails_rows(df_raw: pd.DataFrame, df_master: pd.DataFrame, targets: Sequence[object]) -> set[int]:
-    """Raw NULL owners require one dated company and no matching NULL company, with exact-symbol precedence."""
-    columns = ["cusip", "source_symbol", "trade_date"]
-    df_keys = df_raw.reindex(columns=columns).assign(_row=df_raw.index)
-    df_master = df_master.reindex(columns=["cusip", "source_symbol", "valid_from", "valid_to", "canonical_company"])
-    df_matches = df_keys.dropna(subset=["cusip"]).merge(df_master.dropna(subset=["cusip"]), on="cusip", suffixes=("", "_master"))
-    if df_matches.empty:
-        return set()
-    day = pd.to_datetime(df_matches["trade_date"], errors="coerce")
-    start = pd.to_datetime(df_matches["valid_from"], errors="coerce")
-    end = pd.to_datetime(df_matches["valid_to"], errors="coerce")
-    df_matches = df_matches.loc[day.ge(start) & (end.isna() | day.lt(end))].copy()
-    exact = df_matches["source_symbol"].notna() & df_matches["source_symbol_master"].notna()
-    exact &= df_matches["source_symbol"].eq(df_matches["source_symbol_master"])
-    exact_rows = set(df_matches.loc[exact, "_row"])
-    df_matches = df_matches.loc[exact | ~df_matches["_row"].isin(exact_rows)]
-    counts = df_matches.groupby("_row")["canonical_company"].agg(["nunique", "count", "size"])
-    target_rows = set(df_matches.loc[df_matches["canonical_company"].isin(targets), "_row"])
-    return set(counts.index[counts["nunique"].eq(1) & counts["count"].eq(counts["size"])]) & target_rows
-
-
-def _uncertain_fails_rows(df_raw: pd.DataFrame, identity: dict[Table, pd.DataFrame], targets: Sequence[object]) -> pd.DataFrame:
-    """Retain relevant unresolved raw keys without treating NULL-to-NULL symbols as evidence."""
-    pairs = []
-    for table, company, symbol in (
-        (Tables.security_master, "canonical_company", "source_symbol"),
-        (Tables.entity_lineage, "canonical_ticker", "symbol"),
-    ):
-        df_evidence = identity[table]
-        if company not in df_evidence or symbol not in df_evidence:
-            continue
-        df_evidence = df_evidence.loc[df_evidence[company].isin(targets)]
-        for raw_key, identity_key in [("source_symbol", symbol), *(([("cusip", "cusip")]) if "cusip" in df_evidence else [])]:
-            df_match = df_raw.dropna(subset=[raw_key]).merge(df_evidence.dropna(subset=[identity_key]), left_on=raw_key, right_on=identity_key)
-            if not df_match.empty:
-                pairs.append(df_match[[company, "date"]].rename(columns={company: "ticker"}))
-    return pd.concat(pairs, ignore_index=True).drop_duplicates() if pairs else pd.DataFrame(columns=["ticker", "date"])
-
-
 def _owned_fails_rows(
     df_raw: pd.DataFrame,
     scope: dict[str, object] | None,
     identity: dict[Table, pd.DataFrame] | None,
     df_grain: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Select the exact current FTD replacement cohort and refuse ambiguous checked absence."""
+    """Select the exact current FTD replacement cohort and refuse ambiguous checked absence: a stored unowned line the
+    master places in a target is replaced; one it could place in a target (`uncertain_dates`) refuses that target's
+    checked date, as it blocks the date in `_checked_ftd_grain`."""
     table = Tables.sec_fails_to_deliver_security
     if scope is None or identity is None or "ticker" not in scope:
         return scope_tape_rows(table, df_raw, scope)
@@ -810,8 +745,11 @@ def _owned_fails_rows(
     values = owners if isinstance(owners, list | tuple | set | frozenset | pd.Series | pd.Index | np.ndarray) else [owners]
     targets = pd.Series(list(values), dtype=object).dropna().tolist()
     df_unowned = df_scoped.loc[df_scoped["ticker"].isna()]
-    proved = _proved_fails_rows(df_unowned, identity[Tables.security_master], targets)
-    df_uncertain = _uncertain_fails_rows(df_unowned.loc[~df_unowned.index.isin(proved)], identity, targets)
+    master = prepare_master(identity[Tables.universe_cusip])
+    stamped = stamp_lines(df_unowned, master)
+    owned = stamped["ticker"].isin(targets).to_numpy()
+    proved = set(df_unowned.index[owned])
+    df_uncertain = uncertain_dates(stamped.loc[~owned], master)
     if "source_checked_at" in df_grain and not df_uncertain.empty:
         df_checked = df_grain.loc[df_grain["source_checked_at"].notna(), ["ticker", "date"]].copy()
         df_checked["date"] = pd.to_datetime(df_checked["date"]).dt.normalize()

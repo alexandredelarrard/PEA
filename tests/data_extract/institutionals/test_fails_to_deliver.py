@@ -1,4 +1,4 @@
-"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the FTD capture (`identity --only capture-ftd`) and
+"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the FTD capture (`identity --only capture-evidence`) and
 the FTD feature (fails/volume, publication-lagged so it's leak-free)."""
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.bulk_cache import read_zip_text
-from src.data_extract.utils.identity import capture_ftd
-from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
@@ -23,14 +22,16 @@ from src.utils.string import run_date
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
+from tests.support.cusip_build import capture_ftd
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 
 def download_and_capture(context: Any, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
-    """`zips-download --only ftd` then `identity --only capture-ftd`: cache the ZIPs, then the identity step's raw capture; returns the rows captured."""
+    """`zips-download --only ftd` then the identity step's FTD capture: cache the ZIPs, then the raw capture; returns the rows captured."""
     ftd.download_fails_to_deliver(context, years_history=years_history, full=full, as_of=as_of)
     cache = ftd.cache_dir(context, context.config.local.paths.fails_deliver)
-    return capture_ftd.capture_ftd_cusips(context, cache, years_history, full=full, as_of=run_date(as_of))
+    return capture_ftd(context, cache, years_history, full=full, as_of=run_date(as_of))
 
 
 @pytest.fixture
@@ -38,9 +39,9 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
@@ -57,6 +58,7 @@ def _context(sqlite_store, tmp_path, universe: tuple[str, ...] = ("AAPL",)) -> A
         paths={"DATA_STORE": tmp_path},
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
         universe=seed_universe(sqlite_store, universe),
+        _identity_resolver=store_identity(sqlite_store),
     )
 
 
@@ -105,6 +107,14 @@ def test_parse_ftd_lines_strips_the_trailer_and_checks_its_count():
     with pytest.raises(ValueError, match="trailer"):
         ftd._parse_ftd_lines(body + "Trailer record count 3\nTrailer total quantity of shares 15\n")
     print("SANITY: the two SEC trailer lines are dropped; a record count that disagrees with the data lines refuses the file.")
+
+
+def test_parse_ftd_lines_keeps_a_pipe_inside_the_description():
+    # cnsfails202104b line 52725, as filed by the SEC: the description holds a '|'.
+    lines = ftd._parse_ftd_lines(f"{_HEADER}20210428|23344K110|DMYQWS|351|DMY TECHNOLOGY GROUP INC IV | |1.49\n")
+    row = lines.iloc[0]
+    assert (row["cusip"], row["fails_quantity"], row["price"], row["description"]) == ("23344K110", 351.0, 1.49, "DMY TECHNOLOGY GROUP INC IV |")
+    print(f"SANITY: a 7-field SEC line keeps quantity {row['fails_quantity']:.0f} and price {row['price']}; the extra '|' stays in the description.")
 
 
 def test_real_202609a_parses_its_trailer_count_on_a_copy(tmp_path):
@@ -210,7 +220,7 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
     """FB and META are one CUSIP (one META key); IR before 2020 is the TT entity's CUSIP; the Weight Watchers
     2015 WTW line is a CUSIP the master does not hold, so it is never stored under Willis Towers Watson."""
     ctx = _context(sqlite_store, tmp_path, ("META", "TT", "IR", "WTW"))
-    sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
+    sqlite_store.replace(Tables.universe_cusip, _master(_REUSE_MASTER))
     raw_by_period = {
         "201501a": (
             "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
@@ -252,7 +262,7 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
 def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sqlite_store, monkeypatch, tmp_path):
     """`zips-ingest --only ftd -t META -F` re-reads the cache for META's CUSIPs only and upserts; TT's stored row survives."""
     ctx = _context(sqlite_store, tmp_path, ("META", "TT"))
-    sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
+    sqlite_store.replace(Tables.universe_cusip, _master(_REUSE_MASTER))
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
         pd.DataFrame(
@@ -273,9 +283,30 @@ def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sql
     print("  META's CUSIP re-read and upserted (200); TT's stored row kept, the IR/TT line not read; no table replaced. Validated.")
 
 
+def test_a_scoped_ingest_resolves_the_share_basis_of_its_companies_only(sqlite_store, monkeypatch, tmp_path):
+    """X96 (X77's class on the ingest path): `zips-ingest --only ftd -t META -F` resolves the share basis over META's
+    master rows only, so another company's share policy (HBAN on the fixture) never blocks it."""
+    ctx = _context(sqlite_store, tmp_path, ("META", "TT"))
+    sqlite_store.replace(Tables.universe_cusip, _master(_REUSE_MASTER))
+    raw = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20220720|30303M102|META|200|META PLATFORMS INC|10\n"
+    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: {"202207b"})
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw)
+    seen: list[set[str]] = []
+    real = ftd.load_fails_basis
+    monkeypatch.setattr(
+        ftd, "load_fails_basis", lambda context, master: seen.append(set(master["canonical_company"].dropna())) or real(context, master)
+    )
+
+    ftd.fetch_fails_to_deliver(ctx, ["META"], full=True)
+
+    assert seen == [{"META"}], seen
+    print("\n=== SANITY CHECK: FTD -t META -F share basis (X96) ===")
+    print(f"  the basis was resolved over the master rows of {sorted(seen[0])} only; TT's policy is never read. Validated.")
+
+
 def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.security_master, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
+    sqlite_store.replace(Tables.universe_cusip, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
     seeded = pd.DataFrame(
         {
             "ticker": ["AAPL"],
@@ -303,7 +334,7 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
 
 def test_full_rebuild_refuses_when_a_stored_period_left_the_cache(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.security_master, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
+    sqlite_store.replace(Tables.universe_cusip, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
     lines = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20231215|037833100|AAPL|5|APPLE INC|190\n")
     unstamped = lines.assign(period="202312a", security_id=None, ticker=None, lineage_role=None, security_class=None)
     sqlite_store.save(Tables.sec_fails_to_deliver_security, unstamped[list(ftd.SECURITY_COLUMNS)])
@@ -319,7 +350,7 @@ def test_full_rebuild_refuses_when_a_stored_period_left_the_cache(sqlite_store, 
 
 def test_ftd_download_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.entity_lineage, _scope_lineage())
+    sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
     requested: list[str] = []
 
     class _Response:
@@ -405,7 +436,7 @@ def test_pending_source_replacement_withdraws_only_certified_quiet_zeros(sqlite_
         period="202401a", security_id=None, ticker=None, lineage_role=None, security_class=None
     )
 
-    assert capture_ftd._save_pending_fails(context, raw, ["202401a"]) == 1
+    assert sm.save_ftd_lines(context, raw, ["202401a"]) == 1
 
     stored = sqlite_store.load(Tables.sec_fails_to_deliver).set_index("ticker")
     assert stored.loc["CHECKED", ["fails_quantity", "fails_value"]].isna().all()
@@ -451,7 +482,7 @@ def _scope_lineage() -> pd.DataFrame:
         ("E0000000777", "ABC", "0000000777", "cik_window", "", "1900-01-01", None, "single_source", "roster"),
         ("E0000000777", "ABC", "0000000777", "symbol", "ABC", "2006-01-04", None, "corroborated", "form345,roster"),
     ]
-    columns = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
+    columns = ["company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
     frame = pd.DataFrame(rows, columns=columns)
     frame["valid_from"] = pd.to_datetime(frame["valid_from"])
     frame["valid_to"] = pd.to_datetime(frame["valid_to"])
@@ -460,7 +491,7 @@ def _scope_lineage() -> pd.DataFrame:
 
 def test_ftd_download_ingests_symbols_then_the_voted_cusip6_from_cache(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.entity_lineage, _scope_lineage())
+    sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
     raw_by_period = {
         "201501a": _HEADER + "20150105|000111CCC|ABCWS|7|ABC CORP WT|1.0\n20150105|999999ZZZ|ZZZ|9|OTHER CO|3.0\n",
         "201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|000111BBB|ABCPRA|5|ABC CORP PFD|25.0\n",

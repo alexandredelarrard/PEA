@@ -45,7 +45,6 @@ from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     UNRESOLVED,
     ArcGraph,
     Resolution,
-    bare,
     calculation_arcs,
     resolve_field,
     segment_only_concepts,
@@ -258,7 +257,7 @@ def _retry_without(
     retry = resolve_field(
         catalogue.field(name),
         graph,
-        available - {bare(dead)},
+        available - {scope.bare_concept(dead)},
         catalogue,
         regime,
         duration_concepts=durations,

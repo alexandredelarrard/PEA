@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_prices as mod
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
+from tests.support.universe import universe_of
 
 ORDER = ["price_actions", "dividends", "prices", "macro", "earnings_surprises"]
 
@@ -34,7 +35,7 @@ def _step(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, dict[str, Any]
     monkeypatch.setattr(mod, "fetch_macro", recorder("macro"))
     monkeypatch.setattr(mod, "fetch_earnings_surprises", recorder("earnings_surprises"))
     config = OmegaConf.create({"data_extract": {"years_history": 15, "macro_years_history": 30}})
-    context = SimpleNamespace(config=config, log=logging.getLogger("test"), config_dir="configs")
+    context = SimpleNamespace(config=config, log=logging.getLogger("test"), config_dir="configs", universe=universe_of(["AAPL"]))
     return StepExtractPrices(context=context, config=config)
 
 

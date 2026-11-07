@@ -16,8 +16,6 @@ import pandas as pd
 from src.constants.command_line_interface import (
     ACCESSION_ARGS,
     ACCESSION_KWARGS,
-    APPROVE_REKEY_ARGS,
-    APPROVE_REKEY_KWARGS,
     ARCHIVE_ARGS,
     ARCHIVE_KWARGS,
     AS_OF_ARGS,
@@ -91,7 +89,6 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
-    fetch_sharadar_actions,
     fetch_sharadar_sp500,
 )
 from src.data_extract.utils.fundamentals_sharadar.gap_check import (
@@ -185,11 +182,12 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
 
 
 # --- Universe (runs before every other command) ---
-_UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
+_UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sharadar-actions", "sec-submissions", "sync")
 
 
 @cli.command(
-    help="Refresh sec_company_tickers and sharadar_tickers, then sync tickers_universe with configs/universe.yml "
+    help="Refresh sec_company_tickers, sharadar_tickers, sharadar_actions (full replace) and sec_cik_profile (SEC submissions.zip), "
+    "then sync universe_tickers with configs/universe.yml "
     f"(writes only what changed). --only runs the named part(s) ({', '.join(_UNIVERSE_PARTS)}).",
     help_priority=1,
 )
@@ -199,7 +197,13 @@ _UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
 def universe(config_path: str, as_of: datetime | None, only: tuple[str, ...]) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractUniverse(context, config, run_date(as_of))
-    parts = {"sec-tickers": step.run_sec_tickers, "sharadar-tickers": step.run_sharadar_tickers, "sync": step.run_sync}
+    parts = {
+        "sec-tickers": step.run_sec_tickers,
+        "sharadar-tickers": step.run_sharadar_tickers,
+        "sharadar-actions": step.run_sharadar_actions,
+        "sec-submissions": step.run_sec_submissions,
+        "sync": step.run_sync,
+    }
     for name in only or _UNIVERSE_PARTS:
         parts[name]()
 
@@ -216,7 +220,7 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession()
+    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession(symbols=context.universe.trading_symbols)
 
     # Splits first: their windows are planned from the stored `prices`, which `fetch_prices` then advances.
     fetch_price_actions(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
@@ -225,7 +229,7 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 
 
 @cli.command(
-    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from security_master, "
+    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from universe_cusip, "
     "summed per ticker by class into sec_short_interest. Day files: business days from the earlier of the latest stored "
     "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
     "a fetch error."
@@ -448,7 +452,7 @@ def fundamentals(
 # History depth is `data_extract.sharadar_years_history`, not `years_history`.
 @cli.command(
     name="fundamentals-sharadar",
-    help="The whole Sharadar producer in dependency order: tickers -> SF1 fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
+    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> the MERGED fundamentals_history (tickers and actions: `universe`).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -459,15 +463,6 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractFundamentalsSharadar(context=context, config=config)
     step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
-
-
-@cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history), as_of=run_date(as_of))
 
 
 @cli.command(
@@ -596,45 +591,45 @@ def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: dateti
         sources[name]()
 
 
-_IDENTITY_STAGES = ("capture-dei", "capture-ftd", "tenure", "lineage", "master", "propagate")
+_IDENTITY_STAGES = (
+    "capture-evidence",
+    "company-anchor",
+    "cik-history",
+    "symbol-history",
+    "cusip-history",
+    "lifecycle",
+    "publish",
+    "propagate",
+)
 
 
 @cli.command(
     name="identity",
-    help="Identity layer, OFFLINE (cached zips + DB): capture the Notes cover-page symbols and the FTD lines, then build "
-    "symbol_tenure -> entity_lineage -> security_master and propagate the lineage changes. --only runs one stage "
+    help="Identity layer, OFFLINE (cached zips + DB): capture the evidence (Notes cover-page symbols, FTD lines, Form 3/4/5 "
+    "tenure), anchor each company, build its CIK, symbol and CUSIP history, then propagate the changes. --only runs one stage "
     f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
-    "`identity`, then `identity --only capture-ftd -F`, then `identity --only master`.",
+    "`identity`, then `identity --only capture-evidence -F`, then `identity --only publish` (the only stage that saves).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*APPROVE_REKEY_ARGS, **APPROVE_REKEY_KWARGS)
 @click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
-@click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all six.")
-def identity(
-    config_path: str, tickers: str | None, full: bool, as_of: datetime | None, approved_rekeys: tuple[str, ...], dry_run: bool, only: str | None
-) -> None:
+@click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all eight.")
+def identity(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, dry_run: bool, only: str | None) -> None:
     if dry_run and only != "propagate":
         raise click.UsageError("--dry-run applies to `--only propagate` only.")
-    if approved_rekeys and only not in (None, "lineage"):
-        raise click.UsageError("--approve-rekey applies to the full run or `--only lineage`.")
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    options = IdentityOptions(
-        tickers=_tickers(context, tickers) if tickers else None,
-        full=full,
-        dry_run=dry_run,
-        as_of=run_date(as_of),
-        approved_rekeys=_approved_rekeys(approved_rekeys),
-    )
+    options = IdentityOptions(tickers=_tickers(context, tickers) if tickers else None, full=full, dry_run=dry_run, as_of=run_date(as_of))
     step = StepExtractIdentity(context, config, options)
     stages = {
-        "capture-dei": step.run_capture_dei_symbols,
-        "capture-ftd": step.run_capture_ftd_cusips,
-        "tenure": step.run_symbol_tenure,
-        "lineage": step.run_entity_lineage,
-        "master": step.run_security_master,
+        "capture-evidence": step.run_capture_evidence,
+        "company-anchor": step.run_company_anchor,
+        "cik-history": step.run_cik_history,
+        "symbol-history": step.run_symbol_history,
+        "cusip-history": step.run_cusip_history,
+        "lifecycle": step.run_lifecycle,
+        "publish": step.run_publish,
         "propagate": step.run_propagate,
     }
     if only is None:
@@ -644,17 +639,6 @@ def identity(
         click.echo(removals.to_string(index=False) if not removals.empty else "identity --only propagate: no pending removals")
     else:
         stages[only]()
-
-
-def _approved_rekeys(values: tuple[str, ...]) -> frozenset[tuple[str, str]]:
-    """`--approve-rekey OLD:NEW` values as `(old, new)` entity-id pairs."""
-    parsed: set[tuple[str, str]] = set()
-    for value in values:
-        old, separator, new = value.partition(":")
-        if not separator or not old or not new:
-            raise click.BadParameter("expected OLD_ENTITY_ID:NEW_ENTITY_ID", param_hint="--approve-rekey")
-        parsed.add((old, new))
-    return frozenset(parsed)
 
 
 # --- Structure (governance) ---

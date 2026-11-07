@@ -64,6 +64,8 @@ Row filters are parameterized and validated against known columns. Scalar values
 
 Do not constrain the same date column through both `where` and `since`/`until`; the store raises rather than hide the error behind an empty result.
 
+Identity is read through one object. A `data_extract` step takes CIK windows, symbol intervals, CUSIP lines and fetch bounds from `Identity` (`load_identity(context)` in [identity.py](../../src/data_extract/utils/common/identity.py)), never from its own read of `universe_cik_symbol`, `universe_cusip`, `symbol_tenure` or `universe_tickers`; `test_identity_reads_only.py` enforces it. `data_aggregate`, which cannot import `data_extract`, reads the same published tables through `read_identity` in [identity_tables.py](../../src/utils/identity_tables.py).
+
 ## Missing and empty tables
 
 `load` raises `TableMissingError` or `TableEmptyError` by default. This keeps an unrun source visible.

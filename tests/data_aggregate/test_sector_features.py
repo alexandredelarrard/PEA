@@ -8,7 +8,7 @@ weren't reported, so an industrial never gets a bank ROA).
 
 Every row carries `sector` + `industry_group`: the GICS labels are what
 `sector_gates.py` scopes on. In production they are attached by
-`step_cube_fundamentals` from `tickers_universe` (`context.universe.attach_gics`) —
+`step_cube_fundamentals` from `universe_tickers` (`context.universe.attach_gics`) —
 `fundamentals_history` itself has never carried them. A row without them is
 deliberately unclassifiable and gets NO sector KPI at all — see
 `test_unclassified_rows_get_no_sector_kpi`.

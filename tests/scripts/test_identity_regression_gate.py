@@ -50,7 +50,7 @@ UNIVERSE = ("CB", "MRK", "BRK-B", "FITB", "XOM", "WBD", "APTV", "NWSA", "FOXA", 
 def _old_lineage() -> pd.DataFrame:
     """The pre-cutover membership table: old Chubb joins ACE's entity, Schering-Plough (later Merck) joins old Merck's."""
     rows = [(ACE, f"E{ACE}"), (OLD_CHUBB, f"E{ACE}"), (OLD_MERCK, f"E{OLD_MERCK}"), (SGP, f"E{OLD_MERCK}")]
-    return pd.DataFrame([{"cik": c, "entity_id": e, "source": "register", "confidence": None, "evidence": ""} for c, e in rows])
+    return pd.DataFrame([{"cik": c, "company_id": e, "source": "register", "confidence": None, "evidence": ""} for c, e in rows])
 
 
 def _roster() -> pd.DataFrame:
@@ -674,8 +674,8 @@ class _Context:
 
     @property
     def universe(self) -> Universe:
-        """The stored `tickers_universe`, with GOOG as GOOGL's alias when GOOGL is in it."""
-        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        """The stored `universe_tickers`, with GOOG as GOOGL's alias when GOOGL is in it."""
+        tickers = self.store.load(Tables.universe_tickers, columns=["ticker"])["ticker"].tolist()
         return Universe(self.store, universe_config(tickers, {"GOOGL": ["GOOG"]} if "GOOGL" in tickers else None))
 
 
@@ -696,14 +696,14 @@ def _dated_lineage() -> pd.DataFrame:
     ]
     return pd.DataFrame(
         [
-            {**base, "entity_id": f"E{ACE}" if t == "CB" else f"E{c}", "canonical_ticker": t, "cik": c, "role": role, "valid_from": "1900-01-01"}
+            {**base, "company_id": f"E{ACE}" if t == "CB" else f"E{c}", "canonical_ticker": t, "cik": c, "role": role, "valid_from": "1900-01-01"}
             for t, c, role in rows
         ]
     )
 
 
 def _seed_before(store: Any) -> None:
-    _old_lineage().to_sql(Tables.entity_lineage.name, store.engine, index=False)  # the old shape: SQLite refuses the dated PK on it
+    _old_lineage().to_sql(Tables.universe_cik_symbol.name, store.engine, index=False)  # the old shape: SQLite refuses the dated PK on it
     store.save(Tables.symbol_tenure, _tenure().assign(evidence_period=""))
     seed_universe(store, _roster()["ticker"].tolist(), rows={t: {"cik": c} for t, c in _roster().itertuples(index=False)})
     store.save(
@@ -728,8 +728,8 @@ def _seed_before(store: Any) -> None:
 
 
 def _make_after(store: Any, *, lose_own: bool) -> None:
-    store.drop(Tables.entity_lineage)
-    store.save(Tables.entity_lineage, _dated_lineage())
+    store.drop(Tables.universe_cik_symbol)
+    store.save(Tables.universe_cik_symbol, _dated_lineage())
     master = _master().assign(
         canonical_company=None,
         source="ftd",
@@ -742,7 +742,7 @@ def _make_after(store: Any, *, lose_own: bool) -> None:
         n_observations=1,
         scope_changed_at=pd.Timestamp("2026-10-01"),
     )
-    store.save(Tables.security_master, master)
+    store.save(Tables.universe_cusip, master)
     raw = _raw(TAPE_ROWS[:2]).rename(columns={"quantity": "fails_quantity"}).assign(description="", price=1.0, fails_value=1.0, period="201506a")
     store.save(Tables.sec_fails_to_deliver_security, raw)
     after = {"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [293.0], "fails_value": [1.0], "period": ["201506a"]}
@@ -895,18 +895,18 @@ def _trs_lineage(after: bool) -> pd.DataFrame:
     }
     return pd.DataFrame(
         [
-            {**base, "entity_id": f"E{TRS_ROSTER[t]}", "canonical_ticker": t, "cik": c, "role": role, "valid_from": "1900-01-01"}
+            {**base, "company_id": f"E{TRS_ROSTER[t]}", "canonical_ticker": t, "cik": c, "role": role, "valid_from": "1900-01-01"}
             for t, c, role in members
         ]
     )
 
 
 def _trs_seed(store: Any, side: int, lines: list[tuple[Any, ...]]) -> None:
-    for table in (Tables.entity_lineage, Tables.security_master, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver):
+    for table in (Tables.universe_cik_symbol, Tables.universe_cusip, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver):
         if store.exists(table):
             store.drop(table)
-    store.save(Tables.entity_lineage, _trs_lineage(after=side == 1))
-    store.save(Tables.security_master, _trs_master(side, lines))
+    store.save(Tables.universe_cik_symbol, _trs_lineage(after=side == 1))
+    store.save(Tables.universe_cusip, _trs_master(side, lines))
     raw = _trs_tape(side, lines)
     store.save(Tables.sec_fails_to_deliver_security, raw)
     store.save(Tables.sec_fails_to_deliver, _trs_ticker_table(raw))

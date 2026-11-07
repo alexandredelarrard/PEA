@@ -80,7 +80,7 @@ def _select_fundamentals() -> pd.DataFrame:
     NOT the frame production feeds in:
 
       * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
-        a `tickers_universe` lookup. Without them `sector_gates.row_gate` fails closed and the whole
+        a `universe_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
       * `revenueGrowth` / `earningsGrowth` are `CUBE_TIME_COLUMNS`: only the cube can compute
@@ -473,7 +473,7 @@ def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rand
 
 
 def synthetic_share_classes(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Secondary share classes -- `security_master` `secondary_class` lines and their `prices` volume bars.
+    """Secondary share classes -- `universe_cusip` `secondary_class` lines and their `prices` volume bars.
 
     Two companies: one ratio-1 class that starts mid-window and misses a few bars, and one BRK-style class
     whose ratio steps 30 -> 1,500 (only the latest ratio applies on the restated tape). Without it the digest
@@ -797,7 +797,6 @@ def governance_panel(
 
 
 def compute() -> dict:
-    from src.data_aggregate.utils.common.class_lines import cusip_windows
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
@@ -847,6 +846,7 @@ def compute() -> dict:
         cross_sectional_rank,
         cross_sectional_zscore,
     )
+    from src.utils.identity_tables import LINE_COLUMNS, CusipTags
     from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
@@ -1035,7 +1035,7 @@ def compute() -> dict:
             accepted_at=pd.NaT,
         )
     )
-    df_books = clean_public_holdings(attach_tickers(df_books, cusip_windows(None, cusip_map)), valuation_close, None)
+    df_books = clean_public_holdings(attach_tickers(df_books, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map)), valuation_close, None)
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
     book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None

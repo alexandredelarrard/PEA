@@ -30,6 +30,7 @@ from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import universe_of
 
 #: A stand-in identity whose every ticker is listed from its roster CIK alone.
 _ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"))
@@ -130,6 +131,7 @@ def _daily_context(tmp_path: Path) -> Any:
         paths={"DATA_STORE": tmp_path},
         config_dir="configs",
         config=extract_config(data_extract={"years_history": 15}),
+        universe=universe_of(["PSKY"]),
     )
 
 
@@ -212,6 +214,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
         config_dir="configs",
         config=extract_config(data_extract={"years_history": 15}),
         ensure_edgar_identity=lambda: None,
+        universe=universe_of(["PSKY"]),
     )
     filing = pd.DataFrame(
         [

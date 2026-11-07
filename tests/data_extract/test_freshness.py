@@ -17,15 +17,16 @@ from src.data_extract.utils.prices import fetch_prices as prices_fetcher
 from src.data_store.schema import Resume, Tables
 from src.utils.freshness import fresh_share, table_freshness
 from src.utils.tickers_universe.universe import Universe
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe, universe_config
 
 
 class _Context(SimpleNamespace):
-    """A stub context whose universe is the stored `tickers_universe`, read on each access."""
+    """A stub context whose universe is the stored `universe_tickers`, read on each access."""
 
     @property
     def universe(self) -> Universe:
-        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        tickers = self.store.load(Tables.universe_tickers, columns=["ticker"])["ticker"].tolist()
         return Universe(self.store, universe_config(tickers))
 
 
@@ -39,8 +40,8 @@ def _context(store) -> Any:
 
 def _prices(store: Any, last_by_ticker: dict[str, str]) -> None:
     """A universe of the given tickers, each with one `prices` row on its own last date."""
-    if store.exists(Tables.tickers_universe):
-        store.drop(Tables.tickers_universe)
+    if store.exists(Tables.universe_tickers):
+        store.drop(Tables.universe_tickers)
     seed_universe(store, list(last_by_ticker))
     store.replace(
         Tables.prices,
@@ -127,7 +128,9 @@ def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypat
     monkeypatch.setattr(prices_fetcher, "download_ohlcv", _download)
     # Price anchor checks have dedicated controls in test_price_restatement_anchor.py.
     monkeypatch.setattr(prices_fetcher, "anchor_restated_keys", lambda *args, **kwargs: [])
-    prices_fetcher.fetch_prices(_context(sqlite_store), prices_fetcher.YahooSession(pause=0.0), ["AAA"], years_history=15, as_of=as_of)
+    context = _context(sqlite_store)
+    context._identity_resolver = store_identity(sqlite_store)
+    prices_fetcher.fetch_prices(context, prices_fetcher.YahooSession(pause=0.0), ["AAA"], years_history=15, as_of=as_of)
 
     overlap = pd.Timedelta(days=cast(Resume, Tables.dividends.resume).overlap_days)
     assert captured == [last - overlap]

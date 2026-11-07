@@ -115,8 +115,8 @@ def seeded_case(base: DataStore, stems: list[str]) -> tuple[Context, DictConfig,
     ciks = [str(i + 1).zfill(10) for i in range(len(tickers))]
     universe = seed_universe(base, tickers)
     store.replace(
-        Tables.entity_lineage,
-        pd.DataFrame({"cik": ciks, "symbol": tickers, "entity_id": ciks, "role": "cik_window", "valid_from": "2000-01-01", "valid_to": None}),
+        Tables.universe_cik_symbol,
+        pd.DataFrame({"cik": ciks, "symbol": tickers, "company_id": ciks, "role": "cik_window", "valid_from": "2000-01-01", "valid_to": None}),
     )
     store.replace(
         Tables.symbol_tenure,

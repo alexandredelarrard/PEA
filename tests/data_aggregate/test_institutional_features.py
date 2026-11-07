@@ -21,7 +21,6 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common import quotes
 from src.data_aggregate.utils.common.availability import availability_date
-from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
@@ -34,6 +33,7 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
@@ -1105,7 +1105,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10, close_pit=quotes, security_basis=basis)
     cusip_map = pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
     sqlite_store.save(Tables.cusip_ticker_map, cusip_map)
-    resources = SecThirteenResources(frames, cusip_windows(None, cusip_map), None)
+    resources = SecThirteenResources(frames, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), None)
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)

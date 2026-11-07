@@ -116,6 +116,7 @@ from functools import cached_property
 
 import pandas as pd
 
+from src.data_extract.utils.fundamentals.entity_scope import bare_concept
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, FieldSpec
 
 #: The `menucat` value selecting face-statement arcs. edgartools' own docstring says this
@@ -465,7 +466,7 @@ def segment_only_concepts(arcs: pd.DataFrame) -> frozenset[str]:
         return frozenset()
     roles: dict[str, set[str]] = {}
     for concept, role in zip(arcs["concept"], arcs["role_uri"], strict=False):
-        roles.setdefault(bare(str(concept)), set()).add(str(role))
+        roles.setdefault(bare_concept(str(concept)), set()).add(str(role))
     return frozenset(concept for concept, seen in roles.items() if seen and all(SEGMENT_ROLE.search(role) for role in seen))
 
 
@@ -783,31 +784,17 @@ def sibling_leg(
     return None
 
 
-def bare(concept: str) -> str:
-    """`dei:EntityCommonStockSharesOutstanding` -> `EntityCommonStockSharesOutstanding`.
-
-    The catalogue writes most concepts bare but namespaces the few that are NOT us-gaap
-    (the cover-page `dei:` tags), while the linkbase and the reported-concept set are keyed
-    bare. Matching the two forms without normalising silently skipped
-    `dei:EntityCommonStockSharesOutstanding` -- the ONLY summable share tag for a
-    multi-class issuer -- and fell through to `CommonStockSharesOutstanding`, which is a
-    single class. That is the multi-class NULL defect, and it returns the moment this
-    normalisation is dropped.
-    """
-    return concept.split(":", 1)[-1] if concept else concept
-
-
 def _candidates(spec: FieldSpec, regime: str | None) -> list[str]:
     """The field's concepts in priority order -- declared total first, then the fallback
     list, with `never_use` removed. De-duplicated, order preserved (the total is usually
     also the head of the fallback list). Returned AS DECLARED, namespace included: callers
-    match on `bare()` and store the declared form."""
-    banned = {bare(c) for c in spec.never_use(regime)}
+    match on `bare_concept()` and store the declared form."""
+    banned = {bare_concept(c) for c in spec.never_use(regime)}
     seen: set[str] = set()
     out: list[str] = []
     for concept in [spec.total_concept(regime), *spec.fallback_concepts(regime)]:
-        if concept and bare(concept) not in banned and bare(concept) not in seen:
-            seen.add(bare(concept))
+        if concept and bare_concept(concept) not in banned and bare_concept(concept) not in seen:
+            seen.add(bare_concept(concept))
             out.append(concept)
     return out
 
@@ -857,7 +844,7 @@ def _resolve_subtractions(spec: FieldSpec, graph: ArcGraph, available: frozenset
     is why the test is now named per field rather than assumed.
     """
     adjustment = spec.raw.get("total_adjustment") or {}
-    wanted = [bare(c) for c in adjustment.get("subtract", []) if bare(c) in available]
+    wanted = [bare_concept(c) for c in adjustment.get("subtract", []) if bare_concept(c) in available]
     if not wanted:
         return ()
 
@@ -867,8 +854,8 @@ def _resolve_subtractions(spec: FieldSpec, graph: ArcGraph, available: frozenset
     # key) and nothing read it, so the subtraction fired on `LongTermDebtNoncurrent` too and
     # drove AMT 2021 to -$22.1M. Distinct from `_only_when`, which asks the linkbase about a
     # containment the element name leaves open.
-    only_for = {bare(c) for c in adjustment.get("_only_when_concept", [])}
-    if only_for and bare(concept or "") not in only_for:
+    only_for = {bare_concept(c) for c in adjustment.get("_only_when_concept", [])}
+    if only_for and bare_concept(concept or "") not in only_for:
         return ()
 
     if not adjustment.get("_only_when"):
@@ -1060,7 +1047,7 @@ def resolve_field(
     # has none, because the number it refuses is a DIFFERENT MEASURE and keeping it is the
     # defect. See `SEGMENT_ROLE` for the ORCL measurement.
     candidates = _candidates(spec, regime)
-    withheld = frozenset(bare(c) for c in candidates) & segment_only
+    withheld = frozenset(bare_concept(c) for c in candidates) & segment_only
     available = available - segment_only
 
     strict = _resolve_once(
@@ -1150,7 +1137,7 @@ def _stamp_basis(spec: FieldSpec, resolution: Resolution) -> Resolution:
     declared = spec.raw.get("dc_code_on_fallback") or {}
     if not declared or not resolution.concept:
         return resolution
-    code = declared.get(bare(resolution.concept))
+    code = declared.get(bare_concept(resolution.concept))
     return replace(resolution, basis_qualifier=code) if code else resolution
 
 
@@ -1193,10 +1180,10 @@ def _resolve_once(
         return Resolution(field=spec.name, method=UNRESOLVED, dc_code=regime_block["dc_code"])
 
     candidates = _candidates(spec, regime) if candidates is None else candidates
-    # bare()d to match `_candidates`, which bares its own copy. Left namespaced, a
+    # bare_concept()d to match `_candidates`, which bares its own copy. Left namespaced, a
     # `never_use` entry written with a prefix would silently fail to ban anything in
     # `discover_root`.
-    banned = frozenset(bare(c) for c in spec.never_use(regime))
+    banned = frozenset(bare_concept(c) for c in spec.never_use(regime))
 
     # A declared roll-up LEG is not a total, even when it is also listed as a fallback
     # concept. Letting one satisfy route 1 would re-introduce the exact `shortTermDebt`
@@ -1204,7 +1191,7 @@ def _resolve_once(
     # would win route 1 and `ShortTermBorrowings` -- the larger leg 54.4% of the time --
     # would never be added. Legs stay eligible for route 5, where taking one is the last
     # resort rather than the first answer.
-    legs = {bare(c) for c in spec.roll_up(regime) if c not in catalogue.fields}
+    legs = {bare_concept(c) for c in spec.roll_up(regime) if c not in catalogue.fields}
 
     # ---- 1. the highest-priority catalogue TOTAL the filer reports.
     #
@@ -1255,8 +1242,8 @@ def _resolve_once(
             undeclared_rejected=withheld,
         )
 
-    for candidate in (c for c in candidates if bare(c) not in legs):
-        name = bare(candidate)
+    for candidate in (c for c in candidates if bare_concept(c) not in legs):
+        name = bare_concept(candidate)
         if name not in usable:
             continue
         if prefer_structure and is_note_only(graph, name):
@@ -1303,11 +1290,11 @@ def _resolve_once(
     #         This is the `shortTermDebt` fix: `LongTermDebtCurrent` and
     #         `ShortTermBorrowings` are disjoint legs of `DebtCurrent`, and keeping only
     #         one discarded the LARGER leg in 54.4% of the 2,017 cells tagging both.
-    concept_children = [bare(c) for c in spec.roll_up(regime) if c not in catalogue.fields]
+    concept_children = [bare_concept(c) for c in spec.roll_up(regime) if c not in catalogue.fields]
     if concept_children:
         # The weights are only meaningful against THIS field's own total -- see
         # `_linkbase_weights`.
-        totals = {bare(c) for c in [spec.total_concept(regime), *spec.fallback_concepts(regime)] if c}
+        totals = {bare_concept(c) for c in [spec.total_concept(regime), *spec.fallback_concepts(regime)] if c}
         weighted = _linkbase_weights(graph, concept_children, available, totals)
         if weighted:
             return Resolution(
@@ -1335,7 +1322,7 @@ def _resolve_once(
     # ---- 5. no linkbase (or none covering this concept): the priority list, used only
     #         where it is genuinely the best available evidence.
     for candidate in candidates:
-        name = bare(candidate)
+        name = bare_concept(candidate)
         if name in usable:
             if prefer_structure and is_note_only(graph, name):
                 # A LEG can reach route 5 that route 1 skipped, so the guard has to be
@@ -1481,7 +1468,7 @@ def _leaf_sum(
     if not groups or not anchors or role is None:
         return (), None, None
 
-    declared = [(anchor, *pair) for anchor in anchors for pair in graph.children_on_role(bare(anchor), role)]
+    declared = [(anchor, *pair) for anchor in anchors for pair in graph.children_on_role(bare_concept(anchor), role)]
     if not declared:
         return (), None, None
     want = 1.0 if float(roll_up.get("leaf_weight", -1.0)) >= 0 else -1.0
@@ -1489,18 +1476,18 @@ def _leaf_sum(
     aligned: dict[str, tuple[float, str, str]] = {}
     for anchor, child, weight, arc_role in declared:
         if weight * want > 0 and child not in aligned:
-            aligned[child] = (weight, bare(anchor), arc_role)
+            aligned[child] = (weight, bare_concept(anchor), arc_role)
 
-    classified = {bare(c) for group in groups for c in group}
-    classified |= {bare(c) for c in filer_not_leaves}
+    classified = {bare_concept(c) for group in groups for c in group}
+    classified |= {bare_concept(c) for c in filer_not_leaves}
     # `never_use` bans a concept as a standalone TOTAL, which is a different claim from
     # banning it as a LEG -- bank `totalRevenue` bans `NoninterestIncome` as a total while
     # keeping it a child of the regime roll-up, and MAA's `PaymentsForCapitalImprovements`
     # and `PaymentsToAcquireInProcessResearchAndDevelopment` are exactly that case for
     # capex. So a `never_use` entry does NOT disqualify a leaf; it is only consulted as
     # evidence that the concept is a KNOWN one, i.e. not an unclassifiable sibling.
-    classified |= {bare(c) for c in spec.never_use(regime)}
-    classified |= {bare(c) for c in (candidates if candidates is not None else _candidates(spec, regime))}
+    classified |= {bare_concept(c) for c in spec.never_use(regime)}
+    classified |= {bare_concept(c) for c in (candidates if candidates is not None else _candidates(spec, regime))}
 
     # Weight 1.0, not the filer's declared one, because `_materialise` MULTIPLIES what it
     # is given and the declared weight is an admission test rather than a coefficient: a
@@ -1509,7 +1496,7 @@ def _leaf_sum(
     picked: list[tuple[str, float]] = []
     for group in groups:
         for concept in group:
-            name = bare(concept)
+            name = bare_concept(concept)
             if name in aligned and name in available:
                 picked.append((name, 1.0))
                 break  # first reported alternative only
@@ -1557,7 +1544,7 @@ def _linkbase_weights(
         return ()
     parents = {graph.parent_of(child) for child in children}
     parent = next(iter(parents)) if len(parents) == 1 else None
-    trusted = parent is not None and bare(parent) in {bare(t) for t in totals}
+    trusted = parent is not None and bare_concept(parent) in {bare_concept(t) for t in totals}
     out: list[tuple[str, float]] = []
     for child in children:
         weight = 1.0

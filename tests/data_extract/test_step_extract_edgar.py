@@ -45,7 +45,7 @@ class _Context(SimpleNamespace):
     @property
     def universe(self) -> Any:
         self.reads.append("universe")
-        return self.tickers_universe
+        return self.universe_tickers
 
 
 class Driver:
@@ -59,7 +59,7 @@ class Driver:
         self.reads: list[str] = []
         self.boom = FETCHES[boom] if boom else None
         self.runs: list[EdgarRun] = []
-        self.tickers_universe = universe_of(["AAA", "BBB"])
+        self.universe_tickers = universe_of(["AAA", "BBB"])
         monkeypatch.setattr(edgar_driver, "universe_rows", self.cik_mapping)
         monkeypatch.setattr(edgar_driver, "load_identity", self.identity)
         monkeypatch.setattr(step_mod, "run_edgar_fetch", self.fetch)
@@ -71,7 +71,7 @@ class Driver:
         self.events.append(f"refresh {years_history}y")
 
     def context(self, config: Any) -> _Context:
-        return _Context(config=config, config_dir="configs", reads=self.reads, tickers_universe=self.tickers_universe)
+        return _Context(config=config, config_dir="configs", reads=self.reads, universe_tickers=self.universe_tickers)
 
     def cik_mapping(self, context: Any, tickers: list[str]) -> pd.DataFrame:
         self.reads.append("cik_map")

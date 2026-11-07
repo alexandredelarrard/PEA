@@ -13,7 +13,6 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.class_lines import cusip_windows, load_class_lines
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
@@ -36,6 +35,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
+from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
 
@@ -45,7 +45,7 @@ class SecThirteenResources:
     """One loaded capital/security snapshot shared by both13F families."""
 
     frames: PriceFrames
-    cusip_windows: pd.DataFrame
+    cusip_tags: CusipTags
     cohorts: Mapping[str, frozenset[str]] | None
 
 
@@ -106,8 +106,7 @@ class StepCubeSecThirteen(Step):
         # Read the shared dependencies once before any cleaning or feature work.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
-        cusip_map = self._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-        df_lines = load_class_lines(self._store)
+        cusip_tags = CusipTags.load(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -115,7 +114,7 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, cusip_windows(df_lines, cusip_map), cohorts)
+        return SecThirteenResources(frames, cusip_tags, cohorts)
 
     def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
 
@@ -154,9 +153,8 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        with closing(
-            clean_public_batches(packets, resources.cusip_windows, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))
-        ) as batches:
+        # `sec13f_hr` rows keep the ticker stored at extraction (no tags).
+        with closing(clean_public_batches(packets, None, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:
             return None
@@ -184,7 +182,7 @@ class StepCubeSecThirteen(Step):
         # Clean whole books once, retaining mapped off-universe positions and provenance.
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, resources.cusip_windows, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, resources.cusip_tags, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
             books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
         if books is None:

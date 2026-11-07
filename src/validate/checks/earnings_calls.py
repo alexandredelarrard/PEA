@@ -144,15 +144,15 @@ def _event_entity(tenure_by_symbol: dict[str, pd.DataFrame], symbol: str, date: 
         return None
     candidates = candidates[candidates["valid_from"].le(value)]
     candidates = candidates[candidates["valid_to"].isna() | candidates["valid_to"].gt(value)]
-    if candidates["entity_id"].isna().any():
+    if candidates["company_id"].isna().any():
         return None
-    identifiers = candidates["entity_id"].astype(str).unique()
+    identifiers = candidates["company_id"].astype(str).unique()
     return str(identifiers[0]) if len(identifiers) == 1 else None
 
 
 @dataclass
 class _Identity:
-    """Point-in-time issuer identity: tenure rows (with `entity_id` when lineage resolves them),
+    """Point-in-time issuer identity: tenure rows (with `company_id` when lineage resolves them),
     the current entity of each roster ticker, every symbol of an entity, tenure rows per symbol."""
 
     tenure: pd.DataFrame | None
@@ -199,12 +199,12 @@ def _identity(
     roster tickers' current entity; an empty identity when either table is missing."""
     if tenure is None or tenure.empty or lineage is None or lineage.empty:
         return _Identity(tenure)
-    unique_lineage = lineage.assign(cik=pad_cik_series(lineage["cik"]))[["cik", "entity_id"]].drop_duplicates()
-    memberships = unique_lineage.groupby("cik")["entity_id"].agg(["size", "count", "nunique"])
+    unique_lineage = lineage.assign(cik=pad_cik_series(lineage["cik"]))[["cik", "company_id"]].drop_duplicates()
+    memberships = unique_lineage.groupby("cik")["company_id"].agg(["size", "count", "nunique"])
     valid = memberships[(memberships["size"] == memberships["count"]) & memberships["nunique"].eq(1)]
     unique_lineage = unique_lineage[unique_lineage["cik"].isin(valid.index)]
     tenure = tenure.assign(issuer_cik=pad_cik_series(tenure["issuer_cik"])).merge(
-        unique_lineage[["cik", "entity_id"]].drop_duplicates("cik"),
+        unique_lineage[["cik", "company_id"]].drop_duplicates("cik"),
         left_on="issuer_cik",
         right_on="cik",
         how="left",
@@ -216,23 +216,25 @@ def _identity(
     windows["cik"] = pad_cik_series(windows["cik"])
     windows["valid_from"] = pd.to_datetime(windows["valid_from"], errors="coerce")
     windows["valid_to"] = pd.to_datetime(windows["valid_to"], errors="coerce")
-    identity.windows_by_entity = {str(entity): group for entity, group in windows.groupby("entity_id", sort=False)}
+    identity.windows_by_entity = {str(entity): group for entity, group in windows.groupby("company_id", sort=False)}
     identity.tenure_by_symbol = {str(symbol): group for symbol, group in tenure.groupby(tenure["symbol"].astype(str), sort=False)}
     window_owners = (
-        windows[["cik", "entity_id"]].drop_duplicates().merge(unique_lineage[["cik", "entity_id"]].drop_duplicates(), on=["cik", "entity_id"])
+        windows[["cik", "company_id"]].drop_duplicates().merge(unique_lineage[["cik", "company_id"]].drop_duplicates(), on=["cik", "company_id"])
     )
-    own_tenure = tenure.merge(windows[["cik", "entity_id", "valid_from", "valid_to"]], on=["cik", "entity_id"], how="inner", suffixes=("", "_window"))
-    identity.tenure_by_entity = {str(entity): group for entity, group in own_tenure.groupby("entity_id", sort=False)}
-    for entity_id, group in own_tenure.groupby("entity_id", sort=False):
-        identity.aliases_by_entity[str(entity_id)] = set(group["symbol"].astype(str))
-    aliases = own_tenure[["entity_id", "symbol"]].drop_duplicates()
+    own_tenure = tenure.merge(
+        windows[["cik", "company_id", "valid_from", "valid_to"]], on=["cik", "company_id"], how="inner", suffixes=("", "_window")
+    )
+    identity.tenure_by_entity = {str(entity): group for entity, group in own_tenure.groupby("company_id", sort=False)}
+    for company_id, group in own_tenure.groupby("company_id", sort=False):
+        identity.aliases_by_entity[str(company_id)] = set(group["symbol"].astype(str))
+    aliases = own_tenure[["company_id", "symbol"]].drop_duplicates()
     ownership = aliases.merge(
-        tenure.assign(entity_id=tenure["cik"].map(window_owners.set_index("cik")["entity_id"]))[["symbol", "entity_id"]],
+        tenure.assign(company_id=tenure["cik"].map(window_owners.set_index("cik")["company_id"]))[["symbol", "company_id"]],
         on="symbol",
         suffixes=("", "_owner"),
     )
     identity.contested_entities = set(
-        ownership.loc[ownership["entity_id_owner"].isna() | ownership["entity_id"].ne(ownership["entity_id_owner"]), "entity_id"].astype(str)
+        ownership.loc[ownership["company_id_owner"].isna() | ownership["company_id"].ne(ownership["company_id_owner"]), "company_id"].astype(str)
     )
     today = pd.Timestamp.today().normalize()
     valid_from = pd.to_datetime(tenure["valid_from"], errors="coerce")
@@ -241,9 +243,9 @@ def _identity(
     for ticker in measured_tickers:
         if roster is not None:
             ciks = pad_cik_series(roster.loc[roster["ticker"].astype(str).eq(ticker), "cik"])
-            entities = unique_lineage.set_index("cik")["entity_id"].groupby(level=0).first().reindex(ciks)
+            entities = unique_lineage.set_index("cik")["company_id"].groupby(level=0).first().reindex(ciks)
         else:
-            entities = active.loc[active["symbol"].astype(str).eq(ticker), "entity_id"]
+            entities = active.loc[active["symbol"].astype(str).eq(ticker), "company_id"]
         if entities.notna().all() and entities.astype(str).nunique() == 1:
             identity.roster_entity[ticker] = str(entities.iloc[0])
     return identity
@@ -327,17 +329,17 @@ def _scan_calls(context: Context, symbols: list[str]) -> _CallScan:
     return scan
 
 
-def _canonical_event(identity: _Identity, entity_id: str | None, date: pd.Timestamp) -> bool:
+def _canonical_event(identity: _Identity, company_id: str | None, date: pd.Timestamp) -> bool:
     """Independently require issuer windows and dated support for historically reused aliases."""
     if not identity.windows_by_entity:
         return False
-    windows = identity.windows_by_entity.get(entity_id) if entity_id is not None else None
+    windows = identity.windows_by_entity.get(company_id) if company_id is not None else None
     if windows is None or not (windows["valid_from"].le(date) & (windows["valid_to"].isna() | windows["valid_to"].gt(date))).any():
         return False
-    own = identity.tenure_by_entity.get(entity_id) if entity_id is not None else None
+    own = identity.tenure_by_entity.get(company_id) if company_id is not None else None
     if own is None:
         return False
-    if entity_id not in identity.contested_entities:
+    if company_id not in identity.contested_entities:
         return True
     dated = own[
         own["valid_from"].le(date)
@@ -345,11 +347,15 @@ def _canonical_event(identity: _Identity, entity_id: str | None, date: pd.Timest
         & own["valid_from_window"].le(date)
         & (own["valid_to_window"].isna() | own["valid_to_window"].gt(date))
     ]
-    return any(_event_entity(identity.tenure_by_symbol, str(symbol), date) == entity_id for symbol in dated["symbol"].unique())
+    return any(_event_entity(identity.tenure_by_symbol, str(symbol), date) == company_id for symbol in dated["symbol"].unique())
 
 
 def _linked(
-    dates_by_symbol: dict[str, list[pd.Timestamp]], symbols: set[str], entity_id: str | None, identity: _Identity, canonical_ticker: str | None = None
+    dates_by_symbol: dict[str, list[pd.Timestamp]],
+    symbols: set[str],
+    company_id: str | None,
+    identity: _Identity,
+    canonical_ticker: str | None = None,
 ) -> list[pd.Timestamp]:
     """Event dates of the roster ticker's symbols that belong to its issuer at the event date."""
     return [
@@ -357,20 +363,20 @@ def _linked(
         for symbol in symbols
         for date in dates_by_symbol.get(symbol, [])
         if (
-            _canonical_event(identity, entity_id, date)
+            _canonical_event(identity, company_id, date)
             if symbol == canonical_ticker
-            else entity_id is None or _event_entity(identity.tenure_by_symbol, symbol, date) == entity_id
+            else company_id is None or _event_entity(identity.tenure_by_symbol, symbol, date) == company_id
         )
     ]
 
 
-def _ticker_tenure(tenure: pd.DataFrame | None, ticker: str, entity_id: str | None) -> pd.DataFrame:
+def _ticker_tenure(tenure: pd.DataFrame | None, ticker: str, company_id: str | None) -> pd.DataFrame:
     """Tenure rows of the ticker's issuer (entity when resolved, else the symbol itself)."""
     if tenure is None:
         return pd.DataFrame()
-    if entity_id is None or "entity_id" not in tenure:
+    if company_id is None or "company_id" not in tenure:
         return tenure[tenure["symbol"].astype(str) == ticker]
-    return tenure[tenure["entity_id"].astype(str) == entity_id]
+    return tenure[tenure["company_id"].astype(str) == company_id]
 
 
 def _eligible_quarters(ticker_tenure: pd.DataFrame, bounds: tuple[int, int]) -> set[int]:
@@ -392,14 +398,14 @@ def _measure_ticker(
     coverage: _TickerCoverage, ticker: str, identity: _Identity, scan: _CallScan, release_dates_by_ticker: dict[str, list[pd.Timestamp]]
 ) -> None:
     """Per-quarter presence, release gaps and the three coverage ratios of one roster ticker."""
-    entity_id = identity.roster_entity.get(ticker)
-    symbols = identity.aliases_by_entity.get(entity_id, {ticker}) if entity_id is not None else {ticker}
-    for date in _linked(scan.call_dates_by_ticker, symbols | {ticker}, entity_id, identity, canonical_ticker=ticker):
+    company_id = identity.roster_entity.get(ticker)
+    symbols = identity.aliases_by_entity.get(company_id, {ticker}) if company_id is not None else {ticker}
+    for date in _linked(scan.call_dates_by_ticker, symbols | {ticker}, company_id, identity, canonical_ticker=ticker):
         coverage.tickers_by_quarter.setdefault(cast(int, _calendar_quarter_index(date)), set()).add(ticker)
-    ticker_valid_dates = _linked(scan.valid_dates_by_ticker, symbols | {ticker}, entity_id, identity, canonical_ticker=ticker)
+    ticker_valid_dates = _linked(scan.valid_dates_by_ticker, symbols | {ticker}, company_id, identity, canonical_ticker=ticker)
     for date in ticker_valid_dates:
         coverage.valid_tickers_by_quarter.setdefault(cast(int, _calendar_quarter_index(date)), set()).add(ticker)
-    release_dates = _linked(release_dates_by_ticker, symbols, entity_id, identity)
+    release_dates = _linked(release_dates_by_ticker, symbols, company_id, identity)
     for date in ticker_valid_dates:
         coverage.release_gap_days.append(min(((date - release).days for release in release_dates), key=abs) if release_dates else None)
     indices = [index for index in (_quarter_index(date) for date in release_dates) if index is not None]
@@ -412,7 +418,7 @@ def _measure_ticker(
     coverage.ratios[ticker] = present / (bounds[1] - bounds[0] + 1)
     fixed_present = sum(_FLOOR_QUARTER <= index <= bounds[1] for index in valid_indices)
     coverage.fixed_ratios[ticker] = fixed_present / (bounds[1] - _FLOOR_QUARTER + 1)
-    eligible_quarters = _eligible_quarters(_ticker_tenure(identity.tenure, ticker, entity_id), bounds)
+    eligible_quarters = _eligible_quarters(_ticker_tenure(identity.tenure, ticker, company_id), bounds)
     present_eligible = sum(index in eligible_quarters for index in valid_indices)
     coverage.eligible_ratios[ticker] = present_eligible / len(eligible_quarters) if eligible_quarters else np.nan
 
@@ -461,7 +467,7 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
         where={"source": list(_TENURE_SOURCES)},
         optional=True,
     )
-    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
+    lineage = context.store.load(Tables.universe_cik_symbol, columns=["cik", "company_id", "role", "valid_from", "valid_to"], optional=True)
     lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
     roster = context.universe.roster
     identity = _identity(tenure, lineage, roster_tickers, roster)

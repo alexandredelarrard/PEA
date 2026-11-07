@@ -32,19 +32,26 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
+from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_index import index_filing
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.institutionals.fetch_13f import (
+    ReadFailure,
     _pick,
     _Saver,
     _WalkState,
     fetch_13f,
     filing_vintage,
+    read_filing_vintage,
+    replace_hr_filing,
     save_hr,
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_store.schema import Resume, Tables
+from src.utils.identity_tables import universe_cusips
 from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 
@@ -171,13 +178,18 @@ def _archive_scope(path: Path, cusips: frozenset[str]) -> tuple[pd.DataFrame, se
             ),
         },
         on_corrupt="delete",
-        log=logger,
     )
     if not first:
         return None
     submissions = _submissions(first["SUBMISSION.tsv"], first["COVERPAGE.tsv"])
     holders = set(_pick(first["INFOTABLE.tsv"], "ACCESSION_NUMBER").astype("string").str.strip().dropna())
     return submissions, set(submissions.loc[submissions.accession.isin(holders), "cik"])
+
+
+def target_cusips(cmap: pd.DataFrame, lines: pd.DataFrame, tickers: list[str]) -> frozenset[str]:
+    """The CUSIPs that tag `tickers`: their companies' `universe_cusip` lines (every share class, any date) and the
+    `cusip_ticker_map` rows naming them."""
+    return frozenset(cmap.loc[cmap.ticker.isin(tickers), "cusip"]) | universe_cusips(lines, tickers)
 
 
 def _backfill_data_set(
@@ -193,8 +205,9 @@ def _backfill_data_set(
     completed: frozenset[str] = frozenset(),
 ) -> int:
     """Preserve full source accessions for a scope fixed across all recovery archives."""
+    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     if submissions is None:
-        scope = _archive_scope(path, frozenset(cmap.loc[cmap.ticker.isin(tickers), "cusip"]))
+        scope = _archive_scope(path, target_cusips(cmap, saver.cusip_lines(), tickers))
         if scope is None:
             logger.warning("13F backfill %s: unreadable source; retried next run", data_set.name)
             return 0
@@ -205,7 +218,6 @@ def _backfill_data_set(
     if selected.empty:
         logger.info("13F backfill %s: no pending accession; second source read skipped", data_set.name)
         return 0
-    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     saved_before = saver.walk.hr_saved
     for manifest, holdings in cached_filing_vintages(
         path,
@@ -288,9 +300,10 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         logger.info("13F backfill: no new ticker; nothing to do")
         return 0
     cmap = build_cusip_ticker_map(context, [], include_misses=True)
-    unmapped = sorted(set(targets) - set(cmap["ticker"]))
+    lines = load_identity(context).cusip_lines
+    unmapped = sorted(t for t in targets if not target_cusips(cmap, lines, [t]))
     if unmapped:
-        logger.warning("13F backfill: no CUSIP in %s maps to %s; skipped", Tables.cusip_ticker_map, ", ".join(unmapped))
+        logger.warning("13F backfill: no CUSIP in %s or %s maps to %s; skipped", Tables.universe_cusip, Tables.cusip_ticker_map, ", ".join(unmapped))
     targets = [t for t in targets if t not in unmapped]
     data_sets = published_data_sets(context) if targets else None
     if not data_sets:
@@ -299,7 +312,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     roster_ciks = roster_cik_union(context)
     cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets))
     archived: list[tuple[DataSet, list[str], Path, pd.DataFrame]] = []
-    cusips = frozenset(cmap.loc[cmap.ticker.isin(targets), "cusip"])
+    cusips = target_cusips(cmap, lines, targets)
     relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cusip": sorted(cusips)}))
     for data_set, due in tqdm(work, desc="13F source scope"):
         path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT, log=logger)
@@ -314,7 +327,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         archived.append((data_set, due, path, submissions))
     completed = frozenset() if full else _completed_accessions(context, relevant_ciks, roster_ciks)
     saved = 0
-    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
+    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
@@ -343,7 +356,6 @@ def cached_filing_vintages(
             ),
         },
         on_corrupt="skip",
-        log=logger,
     )
     if not tables:
         raise ValueError(f"Unverifiable cached 13F archive: {path.name}")
@@ -382,3 +394,53 @@ def cached_filing_vintages(
                 raise ValueError(f"Unverifiable SEC packet {accession}: {error}") from error
             on_invalid(accession, ValueError(str(error)))
     return packets
+
+
+def _reread(context: Context, filings: pd.DataFrame) -> list[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]]:
+    """`(accession, packet or failure)` of each stored accession of `filings`: from the 13F data-set zip it came from
+    (`source`, cached), else from its EDGAR archive through edgartools' cache."""
+    # load: the data-set accessions, one zip read each
+    zipped = filings["source"].fillna("").astype(str).str.endswith("_form13f.zip")
+    reads: list[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]] = []
+    cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets)) if zipped.any() else None
+    for source, group in filings[zipped].groupby("source", sort=True):
+        path = cast(Path, cache) / str(source)
+        packets = (
+            {str(m.iloc[0].accession_number): (m, b) for m, b in cached_filing_vintages(path, group["accession_number"].tolist())}
+            if is_cached(path)
+            else {}
+        )
+        reads += [(a, packets.get(a, ReadFailure(False, f"not in the cached {source}"))) for a in group["accession_number"].astype(str)]
+
+    # load: every other accession from its archive (a stamp from the stored marker; nothing is listed)
+    for row in filings[~zipped].itertuples(index=False):
+        filing = index_filing(row.cik, "", row.form or "13F-HR", row.filing_date, row.accession_number)
+        stamp = FilingStamp(
+            str(row.accession_number),
+            str(row.form or "13F-HR"),
+            str(row.cik),
+            pd.Timestamp(row.filing_date),
+            str(row.form).endswith("/A"),
+            None,
+            filing,
+        )
+        reads.append((str(row.accession_number), read_filing_vintage(stamp)))
+    return reads
+
+
+def reread_hr_filings(context: Context, filings: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame) -> tuple[int, list[str]]:
+    """Rewrite the `sec13f_hr` rows of stored accessions (`filings`: cik, accession_number, form, filing_date, source,
+    one row each) from their re-read source under the published `lines` and the market map `cmap` (`replace_hr_filing`),
+    after an identity correction. Returns (rows saved, the accessions left as stored because their source could not be
+    re-read)."""
+    # load: each source book
+    reads = _reread(context, filings)
+
+    # save: one transaction per accession; an unreadable one keeps its stored rows
+    saved, failed = 0, []
+    for accession, read in tqdm(reads, desc="13F re-read"):
+        if isinstance(read, ReadFailure):
+            failed.append(accession)
+            continue
+        saved += replace_hr_filing(context.store, read[0], read[1], lines, cmap)
+    return saved, failed

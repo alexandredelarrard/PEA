@@ -25,6 +25,7 @@ from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_extract.utils.prices import fetch_splits as fs
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "yfinance" / "aapl_mo_nvda_2024-05_06_actions.csv"
@@ -66,7 +67,12 @@ class FakeYahoo:
 def _context(store: DataStore) -> Any:
     config = OmegaConf.create({"data_extract": {"years_history": 3, "macro_years_history": 1}})
     return SimpleNamespace(
-        store=store, log=logging.getLogger("test.one_download"), config=config, config_dir=".", universe=seed_universe(store, _TICKERS)
+        store=store,
+        log=logging.getLogger("test.one_download"),
+        config=config,
+        config_dir=".",
+        universe=seed_universe(store, _TICKERS),
+        _identity_resolver=store_identity(store),
     )
 
 
@@ -164,6 +170,29 @@ def test_a_dividend_after_the_last_bar_re_pulls_that_ticker_and_restates_close_t
     print("\n=== SANITY CHECK: post-dividend re-pull ===")
     print("  MO ex-dividend 2024-06-14 after its last bar 2024-06-07 -> re-pulled with NVDA (split); AAPL's 2024-05-10")
     print(f"  dividend predates its last bar -> not re-pulled. MO 2024-05-01 close_total {truth['MO'] * 1.02:.4f} -> {stored['MO']:.4f}.")
+
+
+def test_a_re_pull_of_an_ended_ticker_stops_at_its_grace_end(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
+    """R-06 (U-65): NVDA ended 2024-06-11, its 10:1 split of 2024-06-10 falls after its last stored bar (2024-06-07), so it
+    is re-pulled; the re-pull stops at `ended_on` + 10 sessions (2024-06-25: the calendar ends 2024-06-07, so weekdays)
+    like its resume window, and no NVDA bar after that end is stored."""
+    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+    sqlite_store.save(Tables.prices, recorded)
+    sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
+    ctx = _context(sqlite_store)
+    ctx.universe = seed_universe(sqlite_store, _TICKERS, rows={"NVDA": {"ended_on": pd.Timestamp("2024-06-11")}})
+    yahoo.calls.clear()
+
+    fp.fetch_prices(ctx, fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=_AS_OF)
+
+    grace_end = pd.Timestamp("2024-06-25")
+    nvda = [c for c in yahoo.pulls if "NVDA" in c["tickers"]]
+    last_bar = pd.to_datetime(cast(pd.DataFrame, sqlite_store.load(Tables.prices, where={"ticker": "NVDA"}))["date"]).max()
+    assert len(nvda) == 2 and all(pd.Timestamp(c["end"]) <= grace_end + pd.Timedelta(days=1) for c in nvda), nvda
+    assert last_bar <= grace_end, last_bar
+    print("\n=== SANITY CHECK: an ended ticker's re-pull is clamped (R-06) ===")
+    print(f"  NVDA ended 2024-06-11 (grace end {grace_end.date()}); resume + re-pull ends {[c['end'] for c in nvda]} (exclusive);")
+    print(f"  last stored NVDA bar {last_bar.date()} <= grace end, while the run reaches 2024-06-28 for AAPL and MO")
 
 
 def test_a_re_pull_starts_at_the_earliest_stored_bar_when_history_predates_the_floor(

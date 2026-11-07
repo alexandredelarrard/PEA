@@ -1,11 +1,11 @@
 """
 universe.py  (src/utils/tickers_universe/universe.py)
 -----------------------------------------------------
-`Universe`: the read-only view of `tickers_universe` every stage uses through `context.universe`.
+`Universe`: the read-only view of `universe_tickers` every stage uses through `context.universe`.
 
-It reads the table once, checks its ticker set equals `configs/universe.yml` and never writes;
-`sync.py` is the only writer. Values are stored clean (upper-case yfinance tickers, 10-digit
-CIKs), so consumers do not re-normalise them.
+It reads the table once, keeps the `in_universe` rows, checks their ticker set equals
+`configs/universe.yml` and never writes; `sync.py` and the identity step are the writers. Values
+are stored clean (upper-case yfinance tickers, 10-digit CIKs), so consumers do not re-normalise them.
 """
 
 from __future__ import annotations
@@ -22,10 +22,12 @@ from src.utils.tickers_universe.vocabulary import GICS_GROUP_SECTOR, GICS_SUB_IN
 
 GICS_COLUMNS = ("sector", "industry_group")
 SYNC_COMMAND = "python -m src data_extract universe"
+#: `{key: (first_price_date, ended_on)}`, None where open (`Universe.bounds`).
+Bounds = Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]
 
 
 class UniverseError(RuntimeError):
-    """`universe.yml` is invalid, `tickers_universe` is out of step with it, or a ticker is outside it."""
+    """`universe.yml` is invalid, `universe_tickers` is out of step with it, or a ticker is outside it."""
 
 
 def universe_config(config: DictConfig) -> tuple[list[str], dict[str, list[str]]]:
@@ -64,16 +66,20 @@ def universe_classification(config: DictConfig) -> pd.DataFrame:
 
 
 class Universe:
-    """The universe tickers and their `tickers_universe` row (name, CIK, CUSIPs, GICS, Sharadar categories)."""
+    """The universe tickers and their `universe_tickers` row (name, CIK, CUSIPs, GICS, Sharadar categories, identity)."""
 
     def __init__(self, store: DataStore, config: DictConfig) -> None:
+        # load the yml and the table
         self._tickers, aliases = universe_config(config)
-        frame = store.load(Tables.tickers_universe, optional=True)
+        frame = store.load(Tables.universe_tickers, optional=True)
         if frame is None:
-            raise UniverseError(f"{Tables.tickers_universe} is missing or empty: run `{SYNC_COMMAND}`")
+            raise UniverseError(f"{Tables.universe_tickers} is missing or empty: run `{SYNC_COMMAND}`")
+
+        # keep the in-universe rows and check they are the yml tickers
+        frame = frame[frame["in_universe"].eq(True)]
         stale = sorted(set(frame["ticker"]) ^ set(self._tickers))
         if stale:
-            raise UniverseError(f"{Tables.tickers_universe} differs from configs/universe.yml on {stale}: run `{SYNC_COMMAND}`")
+            raise UniverseError(f"{Tables.universe_tickers} differs from configs/universe.yml on {stale}: run `{SYNC_COMMAND}`")
         self._frame = frame.sort_values("ticker").reset_index(drop=True)
         self._alias_owner = {alias: owner for owner, symbols in aliases.items() for alias in symbols}
 
@@ -97,6 +103,21 @@ class Universe:
     @property
     def cik_by_ticker(self) -> dict[str, str]:
         return dict(zip(self._frame["ticker"], self._frame["cik"], strict=True))
+
+    @property
+    def bounds(self) -> dict[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]:
+        """`(first_price_date, ended_on)` of every universe ticker; None where identity has no bound (open)."""
+        first = pd.to_datetime(self._frame["first_price_date"])
+        ended = pd.to_datetime(self._frame["ended_on"])
+        pairs = [(None if pd.isna(f) else f, None if pd.isna(e) else e) for f, e in zip(first, ended, strict=True)]
+        return dict(zip(self._frame["ticker"], pairs, strict=True))
+
+    @property
+    def trading_symbols(self) -> dict[str, str]:
+        """The symbol each universe ticker trades under today (identity's `trading_symbol`; the key itself when unset)."""
+        stored = self._frame["trading_symbol"].astype(object).fillna("").astype(str).str.strip()
+        symbols = stored.where(stored.ne(""), self._frame["ticker"])
+        return dict(zip(self._frame["ticker"], symbols, strict=True))
 
     @property
     def sector_map(self) -> dict[str, str]:
@@ -154,3 +175,15 @@ class Universe:
         if unknown:
             raise UniverseError(f"not in configs/universe.yml: {', '.join(unknown)}")
         return wanted
+
+
+def before_end(keys: pd.Series, dates: pd.Series, bounds: Bounds) -> pd.Series:
+    """True where `dates` (aligned with `keys`) falls on or before the key's `ended_on`; a key without an end, or a null
+    date, is kept. The document, proxy, call and surprise planners take the end only: their filings and calls follow the
+    company's CIK and symbol lineage back before its current listing's `first_price_date` (CHTR before 2010, DELL, AVGO)."""
+    names = keys.astype(object)
+    edges = pd.DataFrame([(key, bounds.get(key, (None, None))[1]) for key in names.unique()], columns=["key", "ended"]).astype({"key": object})
+    joined = pd.DataFrame({"key": names.to_numpy(), "day": pd.to_datetime(dates, errors="coerce").to_numpy()}).merge(edges, on="key", how="left")
+    ended = pd.to_datetime(joined["ended"])
+    keep = ended.isna() | joined["day"].isna() | (joined["day"] <= ended)
+    return pd.Series(keep.to_numpy(), index=keys.index)

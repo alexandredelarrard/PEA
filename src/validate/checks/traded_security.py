@@ -1,4 +1,4 @@
-"""Traded-security check: does each canonical `security_master` line trade at the ticker's Yahoo price?
+"""Traded-security check: does each canonical `universe_cusip` line trade at the ticker's Yahoo price?
 
 Per line, every FTD price inside the line's window is compared with Yahoo's raw close of the prior trading day
 (`prices.close_split` times the `prices_splits` ratios dated after that day). A line with too few matched days
@@ -130,10 +130,10 @@ def _load(context: Context, table: Any, columns: list[str], where: dict[str, Any
 
 def traded_security_stats(context: Context, scope: Sequence[str]) -> pd.DataFrame:
     """`line_stats` over the scope, read per chunk of tickers through the store."""
-    needed = (Tables.security_master, Tables.sec_fails_to_deliver_security)
+    needed = (Tables.universe_cusip, Tables.sec_fails_to_deliver_security)
     if not all(context.store.exists(t) for t in needed):
         return pd.DataFrame(columns=list(STAT_COLUMNS))
-    master = _load(context, Tables.security_master, _MASTER_COLUMNS, {"lineage_role": list(CANONICAL_ROLES)})
+    master = _load(context, Tables.universe_cusip, _MASTER_COLUMNS, {"lineage_role": list(CANONICAL_ROLES)})
     lines = _lines(master, scope)
     tickers = sorted(set(lines["ticker"]))
     parts = []

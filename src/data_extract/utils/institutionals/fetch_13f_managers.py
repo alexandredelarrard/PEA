@@ -19,13 +19,22 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
-from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage, save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import (
+    _IMPLIED_PRICE_BAND,
+    ReadFailure,
+    _suspect_prices,
+    read_filing_vintage,
+    save_13f_filing,
+    save_hr_filing,
+)
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
+from src.utils.identity_tables import load_cusip_map
 from src.utils.string import pad_cik, run_date
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
@@ -188,9 +197,7 @@ def recover_13f_vintages(
     paths: dict[str, Path] = {}
     if archives:
         for path in archives:
-            tables = read_zip_tables(
-                path, {"SUBMISSION.tsv": ZipRead(upper=True), "COVERPAGE.tsv": ZipRead(upper=True)}, on_corrupt="skip", log=context.log
-            )
+            tables = read_zip_tables(path, {"SUBMISSION.tsv": ZipRead(upper=True), "COVERPAGE.tsv": ZipRead(upper=True)}, on_corrupt="skip")
             if not tables:
                 raise ValueError(f"Unverifiable recovery metadata: {path}")
             for row in _submissions(tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]).itertuples():
@@ -248,6 +255,7 @@ def recover_13f_vintages(
     if dry_run:
         return preview
     saved = 0
+    lines, cmap = load_identity(context).cusip_lines, load_cusip_map(context.store)
     cached_packets: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     if archives:
         for path in sorted(set(paths[str(row["accession"])] for row in pending)):
@@ -262,11 +270,6 @@ def recover_13f_vintages(
             raise RuntimeError(f"13F recovery stopped at {accession}: {packet.reason}")
         manifest, holdings = packet
         saved += save_13f_filing(context.store, manifest, holdings)
-        cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-        broad = holdings.assign(ticker=Tables.sec13f_hr.empty_marker[1])
-        if cmap is not None:
-            mapping = cmap.drop_duplicates("cusip").set_index("cusip").ticker
-            broad["ticker"] = broad.cusip.map(mapping).fillna(Tables.sec13f_hr.empty_marker[1])
-        save_13f_filing(context.store, manifest, broad, table=Tables.sec13f_hr)
+        save_hr_filing(context.store, manifest, holdings, lines, cmap)
     preview["saved_rows"] = saved
     return preview

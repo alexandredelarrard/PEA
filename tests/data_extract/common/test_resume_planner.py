@@ -31,7 +31,7 @@ def _universe(ctx, tickers: dict[str, str], added_on: dict[str, str] | None = No
     cik_map = pd.DataFrame({"ticker": list(tickers), "cik": [c.zfill(10) for c in tickers.values()]})
     if added_on is not None:
         rows = {t: {"cik": c.zfill(10), "universe_added_on": pd.Timestamp(added_on.get(t, "2000-01-01"))} for t, c in tickers.items()}
-        ctx.store.drop(Tables.tickers_universe)
+        ctx.store.drop(Tables.universe_tickers)
         ctx.universe = seed_universe(ctx.store, list(tickers), rows=rows)
     return cik_map
 

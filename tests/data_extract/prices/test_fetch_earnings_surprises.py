@@ -18,6 +18,7 @@ import pandas as pd
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_extract.utils.prices.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
 from src.data_store.schema import Resume, Tables
+from tests.support.universe import universe_of
 
 
 def test_plan_fetch_incremental(sqlite_store):
@@ -66,6 +67,7 @@ def test_a_run_that_fetches_nothing_returns_without_saving(sqlite_store, monkeyp
     infos: list[str] = []
     context: Any = types.SimpleNamespace(
         store=sqlite_store,
+        universe=universe_of(["AAPL", "MSFT"]),
         log=types.SimpleNamespace(info=lambda msg, *a: infos.append(msg % a if a else msg), warning=lambda *a, **k: None),
     )
     monkeypatch.setattr(surprises, "_download_one", lambda tkr, limit: None)
@@ -110,6 +112,7 @@ def test_a_new_ticker_full_pull_stays_within_the_yahoo_cap(sqlite_store, monkeyp
     warnings: list[str] = []
     context: Any = types.SimpleNamespace(
         store=sqlite_store,
+        universe=universe_of(["HOG"]),
         log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda msg, *a: warnings.append(msg % a if a else msg)),
     )
     _CappedYahooTicker.calls = []
@@ -133,7 +136,9 @@ def test_a_full_pull_longer_than_one_yahoo_page_is_read_page_by_page(sqlite_stor
     """When the wanted history (31 years -> 128 quarters) after the cutoff is longer than Yahoo's
     100-row page, the full pull reads the next page from offset 100 on a fresh Ticker, so the
     oldest quarters are not silently lost. The cutoff is moved to 1990 to make the history long."""
-    context: Any = types.SimpleNamespace(store=sqlite_store, log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
+    context: Any = types.SimpleNamespace(
+        store=sqlite_store, universe=universe_of(["HOG"]), log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+    )
     _CappedYahooTicker.calls = []
     monkeypatch.setattr(surprises.yf, "Ticker", _CappedYahooTicker)
     resume = replace(cast(Resume, Tables.earnings_surprises.resume), source_start="1990-01-01")

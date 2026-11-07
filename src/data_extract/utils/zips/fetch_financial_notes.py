@@ -6,7 +6,7 @@ ticker whose lineage window of its filer CIK holds the filing date (consolidatin
 `period` and point-in-time `available_at` clock. A period counts as done only when both tables hold it; the work
 list comes from `resume.archive_worklist`. Zips are large, so the window is `years_history + 1` years (`StepExtractZips`).
 `download_notes_periods` caches the zips whose cover-page `dei:TradingSymbol` facts the identity step has not
-captured yet (`utils/identity/capture_dei.py`); the notes parse reads its zips itself.
+captured yet (`utils/identity/evidence.py`); the notes parse reads its zips itself.
 """
 
 from __future__ import annotations
@@ -304,7 +304,7 @@ def _read_notes(path: Path, identity: Identity, universe: set[str]) -> tuple[pd.
     The net-liability tags need a balance-sheet presentation in `pre.tsv` (`_on_balance_sheet`).
     """
     empty = (pd.DataFrame(), pd.DataFrame())
-    subs = read_zip_tables(path, {"sub.tsv": ZipRead(usecols=_SUB_USECOLS)}, on_corrupt="delete", log=logger)
+    subs = read_zip_tables(path, {"sub.tsv": ZipRead(usecols=_SUB_USECOLS)}, on_corrupt="delete")
     if not subs:
         return empty
     sub_meta = _sub_meta(subs["sub.tsv"], identity, universe)
@@ -318,7 +318,7 @@ def _read_notes(path: Path, identity: Identity, universe: set[str]) -> tuple[pd.
     specs["pre.tsv"] = ZipRead(
         usecols=_PRE_USECOLS, keep=partial(_balance_sheet_rows, adsh_set=adsh_set), chunksize=CHUNK_ROWS, required=False, skip_bad_lines=True
     )
-    tables = read_zip_tables(path, specs, on_corrupt="delete", log=logger)
+    tables = read_zip_tables(path, specs, on_corrupt="delete")
     if not tables:
         return empty
     num = _on_balance_sheet(tables["num.tsv"], tables["pre.tsv"], path.name)
@@ -356,7 +356,7 @@ def _save_period(context: Context, table: Table, frame: pd.DataFrame, columns: l
 
 
 # --------------------------------------------------------------------------- #
-# Download (the cover-page capture is `utils/identity/capture_dei.py`)          #
+# Download (the cover-page capture is `utils/identity/evidence.py`)          #
 # --------------------------------------------------------------------------- #
 def cached_notes_periods(cache: Path) -> list[str]:
     """Period tags of the notes zips cached under `cache`, oldest first."""

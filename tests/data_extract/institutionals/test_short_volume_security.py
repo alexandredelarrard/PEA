@@ -1,4 +1,4 @@
-"""Short volume per security (Q2c): raw FINRA RegSHO rows stamped through `security_master`, the ticker table rebuilt.
+"""Short volume per security (Q2c): raw FINRA RegSHO rows stamped through `universe_cusip`, the ticker table rebuilt.
 
 The master rows are real (the Q2a build over the whole FTD cache) for BRK-B, BAC, GOOGL, LEN and DOC; the FINRA
 lines copy the real symbology of the CNMSshvol files (`BRK/A`, `BACpB`, `LEN/B`, fractional volumes, `Market`).
@@ -17,8 +17,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity, load_source_identity
-from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -34,7 +35,7 @@ LATER = pd.Timestamp("2026-10-06 09:00:00")
 HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
 UNIVERSE = ["BRK-B", "BAC", "GOOGL", "LEN", "DOC", "AAA"]
 
-# Real `security_master` rows (Q2a build): cusip, company, issuer CIK, symbol, class, ratio, role, valid_from, valid_to, reason.
+# Real `universe_cusip` rows (Q2a build): cusip, company, issuer CIK, symbol, class, ratio, role, valid_from, valid_to, reason.
 MASTER_ROWS = [
     ("084670108", "BRK-B", "0001067983", "BRKA", "class_A", 30.0, "secondary_class", "2009-06-26", "2010-01-21", "class_description"),
     ("084670108", "BRK-B", "0001067983", "BRKA", "class_A", 1500.0, "secondary_class", "2010-01-21", None, "class_description"),
@@ -83,7 +84,7 @@ def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.
     frame = pd.DataFrame(rows, columns=[*columns, "valid_from", "valid_to", "lineage_reason"])
     frame = frame.assign(
         security_id="C" + frame["cusip"],
-        source=sm.SOURCE_FTD,
+        source=sl.SOURCE_FTD,
         market_symbol=frame["source_symbol"],
         exchange=None,
         source_accession=None,
@@ -102,7 +103,7 @@ def _lineage() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "entity_id": entity.get(ticker, f"E{ROSTER[ticker]}"),
+                "company_id": entity.get(ticker, f"E{ROSTER[ticker]}"),
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,
@@ -350,7 +351,7 @@ def test_e31_a_moved_master_boundary_restamps_exactly_the_affected_rows(sqlite_s
     lenb = master["cusip"].eq("526057302")
     master.loc[lenb, "valid_from"] = pd.Timestamp("2020-01-03")  # LEN-B's line now starts one day later
     master.loc[master["canonical_company"].eq("LEN"), "scope_changed_at"] = LATER
-    sqlite_store.replace(Tables.security_master, master)
+    sqlite_store.replace(Tables.universe_cusip, master)
 
     records = si.restamp_short_volume(context, ["LEN"], UNIVERSE, identity=_identity(master, store=sqlite_store))
 

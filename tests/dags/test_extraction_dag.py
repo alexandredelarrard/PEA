@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.data_extract import cli as extraction_cli
+from src.data_store.schema import Tables
 from tests.dags.dag_harness import ALL_DONE, ALL_SUCCESS, load_dag, replay
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
@@ -26,7 +27,9 @@ STRICT_EDGAR_FILES = (
     "src/data_extract/utils/edgar_extract/fetch_def14a_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_filing_text.py",
 )
-UNIVERSE_TASKS = ("sec_company_tickers", "sharadar_tickers", "universe_sync")
+#: the universe step: the two ticker lists and the two identity evidence refreshes, then the sync (AC-020).
+EVIDENCE_TASKS = ("sec_company_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions")
+UNIVERSE_TASKS = (*EVIDENCE_TASKS, "universe_sync")
 REQUIRED_COMMANDS = {
     "universe",
     "macro",
@@ -45,7 +48,6 @@ REQUIRED_COMMANDS = {
     "fundamentals",
     "fundamentals-employees",
     "fundamentals-sharadar",
-    "sharadar-actions",
     "def14a",
     "def14a-edgar",
     "sec-8k-items",
@@ -360,6 +362,9 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     for download in sorted(IDENTITY_DOWNLOADS):
         states = replay(dag, [download])
         assert states["price_history"] == states["identity"] == states["zips_ingest_insider"] == states["fundamentals"] == "success", download
+    for evidence in ("sharadar_actions", "sec_submissions"):
+        states = replay(dag, [evidence])
+        assert states["universe_sync"] == states["identity"] == states["fundamentals"] == "success", evidence
     held = replay(dag, ["identity_check"])
     assert held["trigger_data_aggregation"] == "upstream_failed", held
     assert held["extraction_status"] == "success" and all(held[task_id] == "success" for task_id in fetchers), (
@@ -478,44 +483,100 @@ def test_earnings_calls_are_one_task_outside_the_retired_scrape_pool():
     print("  OK: no task or airflow-init pool definition references the scrape pool")
 
 
-def test_sharadar_actions_is_an_sec_independent_task():
-    """AC-010: the market-wide Sharadar actions table refreshes nightly; an SEC walk failure never blocks it."""
-    dag = load_dag(DAG_FILE)
-    task = dag.tasks["sharadar_actions"]
-    assert str(task.kwargs["bash_command"]).split(" data_extract ", 1)[1].split()[0] == "sharadar-actions"
-    assert task.upstream == {"universe_sync"}, "no SEC edge: it waits for the universe sync only"
-    assert "sharadar_actions" in dag.tasks["extraction_status"].upstream
-    assert "sharadar_actions" not in dag.tasks["fundamentals_sharadar"].upstream
-    assert dag.tasks["fundamentals_sharadar"].upstream >= {"fundamentals"}
-    assert "fundamentals >> fundamentals_sharadar" in _source(DAG_FILE)
-
-    states = replay(dag, ["fundamentals"])
-    assert states["sharadar_actions"] == "success", states
-    assert states["fundamentals_sharadar"] == "upstream_failed", states
-    assert states["trigger_data_aggregation"] == "success", states
-
-    agg = _source(AGG_DAG_FILE)
-    assert "sharadar_actions" not in agg and "sharadar-actions" not in agg, "the aggregation DAG is untouched"
-    assert {"fundamentals", "fundamentals_employees", "def14a"} <= IDENTITY_CONSUMERS and "sharadar_actions" not in IDENTITY_CONSUMERS
-    assert DERIVED_PARENTS["fundamentals_sharadar"] == {"fundamentals"}
-
-    print("\n=== SANITY CHECK: sharadar_actions task (AC-010) ===")
-    print(f"  upstream {sorted(task.upstream)}; feeds extraction_status; not an ancestor of fundamentals_sharadar")
-    print("  fundamentals failure -> sharadar_actions success, fundamentals_sharadar upstream_failed; schedule/start_date unchanged")
-
-
-def test_the_universe_is_synced_after_both_ticker_lists_and_before_every_fetcher():
-    """[sec_company_tickers, sharadar_tickers] -> universe_sync -> every other extract task, each a `universe --only` part."""
+def test_the_evidence_lands_before_the_universe_sync_and_never_stops_the_night():
+    """AC-020 / PD-15: [ticker lists, sharadar_actions, sec_submissions] >> universe_sync >> zips_download >> identity >> consumers;
+    the sync runs on ALL_DONE, so a failed evidence refresh leaves identity on the stored inputs."""
     dag = load_dag(DAG_FILE)
     parts = {task_id: str(dag.tasks[task_id].kwargs["bash_command"]).split(" data_extract ", 1)[1].split(" -c ")[0] for task_id in UNIVERSE_TASKS}
+
     assert parts == {
         "sec_company_tickers": "universe --only sec-tickers",
         "sharadar_tickers": "universe --only sharadar-tickers",
+        "sharadar_actions": "universe --only sharadar-actions",
+        "sec_submissions": "universe --only sec-submissions",
         "universe_sync": "universe --only sync",
     }
-    assert dag.tasks["universe_sync"].upstream == {"sec_company_tickers", "sharadar_tickers"}
-    assert dag.tasks["sec_company_tickers"].upstream == set() and dag.tasks["sharadar_tickers"].upstream == set()
+    assert dag.tasks["universe_sync"].upstream == set(EVIDENCE_TASKS) and dag.tasks["universe_sync"].trigger_rule == ALL_DONE
+    assert all(dag.tasks[task_id].upstream == set() for task_id in EVIDENCE_TASKS), "the evidence tasks are the DAG roots"
+    assert dag.tasks["sec_submissions"].kwargs["pool"] == "sec_bulk", "the bulk SEC download shares the bulk pool"
+    assert {"universe_sync"} <= dag.tasks["zips_download"].upstream and {"zips_download"} <= dag.tasks["identity"].upstream
     roots = {task_id for task_id, task in dag.tasks.items() if task.upstream == {"universe_sync"}}
-    assert roots, "fetchers hang off the universe sync"
-    print("\n=== SANITY CHECK: universe ordering ===")
-    print(f"  [sec_company_tickers, sharadar_tickers] -> universe_sync -> {len(roots)} root fetchers.")
+    assert "zips_download" in roots and not set(EVIDENCE_TASKS) & roots, "every fetcher hangs off the universe sync"
+    assert "sharadar_actions" not in dag.tasks["fundamentals_sharadar"].upstream and "sharadar-actions" not in extraction_cli.cli.commands
+
+    for failed in EVIDENCE_TASKS[2:]:
+        states = replay(dag, [failed])
+        assert states["universe_sync"] == states["identity"] == states["fundamentals"] == "success", (failed, states)
+        assert states["trigger_data_aggregation"] == "success", (failed, states)
+    agg = _source(AGG_DAG_FILE)
+    assert "sharadar_actions" not in agg and "sec_submissions" not in agg, "the aggregation DAG is untouched"
+
+    print("\n=== SANITY CHECK: evidence before identity (AC-020, PD-15) ===")
+    print(f"  {sorted(EVIDENCE_TASKS)} (roots) -> universe_sync (ALL_DONE) -> zips_download -> identity; {len(roots)} tasks hang off the sync")
+    print("  a failed sharadar_actions or sec_submissions -> sync, identity, consumers and the aggregation trigger still succeed. Validated.")
+
+
+#: identity build modules: every `Tables.<name>` they name is an input of the build (captures write, propagation rewrites).
+IDENTITY_BUILD_FILES = (
+    "src/data_extract/utils/identity/symbol_tenure.py",
+    "src/data_extract/transformers/step_extract_identity.py",
+    "src/data_extract/utils/identity/evidence.py",
+    "src/data_extract/utils/identity/company_anchor.py",
+    "src/data_extract/utils/identity/cik_history.py",
+    "src/data_extract/utils/identity/symbol_history.py",
+    "src/data_extract/utils/identity/cusip_history.py",
+)
+#: the DAG task(s) that add rows to each identity input (keys are `Tables` attributes); `identity` writes its own outputs
+#: and the captured evidence.
+INPUT_PRODUCERS = {
+    "universe_tickers": {"universe_sync"},
+    "sec_company_tickers": {"sec_company_tickers"},
+    "sharadar_tickers": {"sharadar_tickers"},
+    "sharadar_actions": {"sharadar_actions"},
+    "sec_cik_profile": {"sec_submissions"},
+    "symbol_tenure": {"identity"},
+    "universe_cik_symbol": {"identity"},
+    "universe_cusip": {"identity"},
+    "sec_fails_to_deliver_security": {"identity"},  # the capture adds the lines; `zips_ingest_datasets` only stamps them
+    "sec_fails_to_deliver": {"identity", "zips_ingest_datasets"},  # the capture keeps (unverified) the derived rows of a re-read period
+    "sec_short_volume_security": {"short_interest"},
+    "prices": {"price_history"},
+    "sec13f_hr": {"thirteen_f", "thirteen_f_backfill"},
+    "sec_13d": {"sec_13d"},
+    "sec_13g": {"sec_13g"},
+}
+#: inputs read one night old, as history only. U-3: prices, 13F and 13D/G CUSIPs. X15 (2026-11-04): the CUSIP history's
+#: FINRA presence check (`sec_short_volume_security`). `sec_fails_to_deliver`: the FTD capture keeps the derived rows the
+#: ingest wrote last night for a period it re-reads (the ingest rebuilds them after identity).
+ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security", "sec_fails_to_deliver"}
+
+
+def test_identity_reads_no_input_written_later_in_the_night():
+    """AC-020: every table the identity build reads is produced upstream of `identity`, by `identity` itself, or is a declared one-night lag."""
+    dag = load_dag(DAG_FILE)
+    root = DAG_FILE.parents[2]
+    reads = {"universe_tickers"}  # `context.universe`
+    for path in IDENTITY_BUILD_FILES:
+        tree = ast.parse(_source(root / path))
+        reads |= {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "Tables"
+        }
+    ancestors: set[str] = set()
+    pending = list(dag.tasks["identity"].upstream)
+    while pending:
+        task_id = pending.pop()
+        if task_id not in ancestors:
+            ancestors.add(task_id)
+            pending.extend(dag.tasks[task_id].upstream)
+
+    undeclared = sorted(reads - set(INPUT_PRODUCERS))
+    late = {table: sorted(INPUT_PRODUCERS[table] - ancestors - {"identity"}) for table in sorted(reads - set(undeclared))}
+    late = {table: tasks for table, tasks in late.items() if tasks and table not in ONE_NIGHT_LAG}
+    assert not undeclared, f"identity reads tables with no declared producer: {undeclared}"
+    assert not late, f"identity reads tables written later in the night: {late}"
+    assert {"sharadar_actions", "sec_submissions", "universe_sync", "zips_download"} <= ancestors
+    assert set(INPUT_PRODUCERS) <= set(vars(Tables)), "producer keys are `Tables` attributes"
+
+    print("\n=== SANITY CHECK: identity inputs land before identity (AC-020) ===")
+    print(f"  build reads {sorted(reads)}")
+    print(f"  {len(ancestors)} upstream tasks; one-night lag only for {sorted(reads & ONE_NIGHT_LAG)}; nothing else written later. Validated.")

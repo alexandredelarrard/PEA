@@ -108,13 +108,6 @@ PROPOSE_KWARGS: dict[str, Any] = dict(
     is_flag=True, default=False, help="Merge inert override candidates with approved: null; existing entries are never touched."
 )
 
-APPROVE_REKEY_ARGS = ("--approve-rekey", "approved_rekeys")
-APPROVE_REKEY_KWARGS: dict[str, Any] = dict(
-    multiple=True,
-    metavar="OLD_ENTITY_ID:NEW_ENTITY_ID",
-    help="Apply one exact older-CIK entity-id change that the build excluded and backlogged (WARNING log).",
-)
-
 REPAIR_AVAILABILITY_ARGS = ("--repair-availability",)
 REPAIR_AVAILABILITY_KWARGS: dict[str, Any] = dict(
     is_flag=True,
@@ -137,4 +130,3 @@ DELETE_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Delete t
 #
 REPORT_PATH_ARGS = ("--report", "report_path")
 REPORT_PATH_KWARGS: dict[str, Any] = dict(default=None, help="Where to write the markdown report (default: the command's report path).")
-

@@ -2,7 +2,7 @@
   "_README": {
     "purpose": "Which statement TEMPLATE a filer's numbers should be read against. Drives the per-regime overrides in configs/fundamentals/fundamentals_kpis.json and the expected-absence register in configs/fundamentals/fundamentals_exceptions.json.",
     "primary_signal": "THE FILER'S OWN STATEMENT ROLE URI. A filer that presents a deposit-based balance sheet has told us it is a bank, in its own filing, for that period. That is evidence; a GICS label is a third-party classification applied to the whole company today and back-dated over its entire history.",
-    "tiebreak_signal": "GICS, from tickers_universe (sector / industry_group / sub_industry), used ONLY when no role URI matches -- older filings and small filers often ship no recognisable role.",
+    "tiebreak_signal": "GICS, from universe_tickers (sector / industry_group / sub_industry), used ONLY when no role URI matches -- older filings and small filers often ship no recognisable role.",
     "why_role_uri_first": "GICS routes a company; a role URI routes a FILING. A company that changed business mix (or was reclassified) keeps one GICS label across a history in which its statements genuinely changed shape.",
     "resolution": [
       "1. Match the filing's presentation role URIs against `role_patterns` below. First regime with a match wins, in the declared order.",
@@ -76,7 +76,7 @@
         "Real Estate Services": ["CBRE", "CSGP"]
       },
       "_roster_correction": "PLD (Prologis, Industrial REITs) was MISSING from this roster until 2026-08-21, giving 23 entries where the live membership is 24. The absence register's arithmetic was unaffected -- its real_estate._n of 19 already counted PLD among the 24 candidates minus 5 with no facts -- but this file's README calls these lists 'the LIVE membership, not an illustration', so the gap was real. It is also the single most predictable omission available: Industrial REITs (GICS 601025) is the sub-industry the first research already flagged as the one a contiguous-code-range scan silently drops, which is why this file matches sub-industry NAMES instead.",
-      "not_contiguous_note": "The equity-REIT sub-industry set is NOT one contiguous GICS block -- Industrial REITs sits apart from the residential/retail run. Matching a code RANGE silently drops it. This config therefore matches sub-industry NAMES, which is also what tickers_universe actually stores.",
+      "not_contiguous_note": "The equity-REIT sub-industry set is NOT one contiguous GICS block -- Industrial REITs sits apart from the residential/retail run. Matching a code RANGE silently drops it. This config therefore matches sub-industry NAMES, which is also what universe_tickers actually stores.",
       "entity_scope_note": "Up-C / operating-partnership filers scope the LP along `LegalEntityAxis`, frequently with a COMPANY-EXTENSION member (MAA uses `maa:LimitedPartnershipMember`). Filter on the AXIS, never on a fixed member list."
     },
 

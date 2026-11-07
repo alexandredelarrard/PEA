@@ -1,4 +1,4 @@
-"""Tier C: the CIK-keyed bulk data sets resolve rows through the dated `entity_lineage` only.
+"""Tier C: the CIK-keyed bulk data sets resolve rows through the dated `universe_cik_symbol` only.
 
 `notes_num`/`notes_text` are CONSOLIDATING: a row belongs to a ticker when its
 filer CIK's seam-widened window holds the filing date (`ticker_for_cik(..., "consolidating")`).
@@ -144,11 +144,15 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml"
 #: The identity layer itself: the accessor, the lineage/tenure builds and the register loader they read.
 _ACCESSOR = {
     "src/data_extract/utils/common/identity.py",
-    "src/data_extract/utils/identity/identity_store.py",
-    "src/data_extract/utils/identity/entity_lineage.py",
+    "src/data_extract/utils/common/identity_store.py",
+    "src/data_extract/transformers/step_extract_identity.py",
+    "src/data_extract/utils/identity/evidence.py",
+    "src/data_extract/utils/identity/company_anchor.py",
+    "src/data_extract/utils/identity/cik_history.py",
+    "src/data_extract/utils/identity/symbol_history.py",
     "src/data_extract/utils/identity/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",
-    "src/data_extract/utils/identity/security_master.py",
+    "src/data_extract/utils/identity/cusip_history.py",
 }
 #: 13F managers are listed by their own CIK, not an issuer (00-run N1).
 _MANAGER_LISTING = "src/data_extract/utils/institutionals/fetch_13f_managers.py"
@@ -170,7 +174,7 @@ def _names(tree: ast.AST) -> set[str]:
 
 def test_fetchers_resolve_identity_only_through_the_accessor():
     """AC-027: no retired CIK/symbol map anywhere in `src`; outside the identity layer no fetcher reads the
-    register, `tickers_universe` or builds `Company` from anything but `int(cik)`."""
+    register, `universe_tickers` or builds `Company` from anything but `int(cik)`."""
     retired, register, roster, company = [], [], [], []
     for path in sorted((REPO / "src").rglob("*.py")):
         rel = path.relative_to(REPO).as_posix()
@@ -185,7 +189,7 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in {"load", "iter_load", "distinct", "summarize", "load_cohort"}
             and any(
-                {"Tables", "tickers_universe"} <= _names(arg)
+                {"Tables", "universe_tickers"} <= _names(arg)
                 for arg in node.args[:1] + [keyword.value for keyword in node.keywords if keyword.arg == "table"]
             )
             for node in ast.walk(tree)
@@ -202,16 +206,16 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
                     company.append(f"{rel}:{node.lineno}")
     assert retired == [], f"retired identity maps still referenced: {retired}"
     assert register == [], f"fetchers reading the register directly: {register}"
-    assert roster == [], f"fetchers reading tickers_universe directly: {roster}"
+    assert roster == [], f"fetchers reading universe_tickers directly: {roster}"
     assert company == [], f"Company() built from a non-int argument: {company}"
     print("\n=== SANITY CHECK: AC-027 one identity source ===")
-    print(f"  no {sorted(_RETIRED)} in src; outside {len(_ACCESSOR)} identity modules no register read, no tickers_universe read,")
+    print(f"  no {sorted(_RETIRED)} in src; outside {len(_ACCESSOR)} identity modules no register read, no universe_tickers read,")
     print("  every issuer Company() takes int(cik). Validated.")
 
 
 @pytest.mark.parametrize("method", ["load", "iter_load", "distinct", "summarize", "load_cohort"])
 @pytest.mark.parametrize(
-    "table_arg", ["Tables.tickers_universe", "table=Tables.tickers_universe", "Tables.tickers_universe.name", "table=Tables.tickers_universe.name"]
+    "table_arg", ["Tables.universe_tickers", "table=Tables.universe_tickers", "Tables.universe_tickers.name", "table=Tables.universe_tickers.name"]
 )
 def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fetcher = tmp_path / "src/data_extract/utils/edgar_extract/insider_store.py"
@@ -219,7 +223,7 @@ def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str
     fetcher.write_text(f"context.store.{method}({table_arg})\n", encoding="utf-8")
     monkeypatch.setitem(globals(), "REPO", tmp_path)
 
-    with pytest.raises(AssertionError, match="fetchers reading tickers_universe directly"):
+    with pytest.raises(AssertionError, match="fetchers reading universe_tickers directly"):
         test_fetchers_resolve_identity_only_through_the_accessor()
     print(f"SANITY: {method}({table_arg}) is rejected even inside an owner module. Validated.")
 
@@ -228,10 +232,10 @@ def test_identity_guard_accepts_metadata_and_loaded_cohort(monkeypatch: pytest.M
     fetcher = tmp_path / "src/data_extract/utils/edgar_extract/insider_store.py"
     fetcher.parent.mkdir(parents=True)
     fetcher.write_text(
-        "identities = {Tables.tickers_universe, Tables.entity_lineage}\n"
-        "roster = cohort[Tables.tickers_universe]\n"
-        "columns = context.store.columns(Tables.tickers_universe)\n"
-        "lineage = context.store.load(Tables.entity_lineage)\n",
+        "identities = {Tables.universe_tickers, Tables.universe_cik_symbol}\n"
+        "roster = cohort[Tables.universe_tickers]\n"
+        "columns = context.store.columns(Tables.universe_tickers)\n"
+        "lineage = context.store.load(Tables.universe_cik_symbol)\n",
         encoding="utf-8",
     )
     monkeypatch.setitem(globals(), "REPO", tmp_path)

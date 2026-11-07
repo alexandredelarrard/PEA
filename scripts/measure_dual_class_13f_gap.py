@@ -10,7 +10,7 @@ for `FOX` (Fox Corp Class B) and `NWS` (News Corp Class B).
 DESIGN in `prices` / `short_interest` / `fails_to_deliver`, where a second share class would be
 a duplicate row for one economic position. Here it is a straight UNDERCOUNT: a manager's total
 exposure to Alphabet is the SUM of both classes, and this is the one place in the repo where
-summing across share classes is exactly what is wanted. Issuer-grain `entity_id` is why -- both
+summing across share classes is exactly what is wanted. Issuer-grain `company_id` is why -- both
 CUSIPs sit on one entity.
 
 ⚠ THE DROPPED ROWS ARE NOT IN `sec13f_hr` TO BE COUNTED -- the filter runs before the write, so

@@ -24,12 +24,12 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
-from src.data_aggregate.utils.common.class_lines import normalised_lines
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -187,10 +187,21 @@ def _publish_ftd_zip_states(
     return published
 
 
+def _normalised_lines(lines: pd.DataFrame) -> pd.DataFrame:
+    """Lines with `company`, Yahoo `symbol`, numeric `ratio` and half-open `[start, end)` days, oldest start first."""
+    return lines.assign(
+        company=lines["canonical_company"].astype(str),
+        symbol=lines["market_symbol"].map(yahoo_symbol),
+        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce"),
+        start=pd.to_datetime(lines["valid_from"]).dt.normalize(),
+        end=pd.to_datetime(lines["valid_to"]).dt.normalize(),
+    ).sort_values("start", kind="stable")
+
+
 def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Wide secondary-class volume in canonical shares, and company-days lacking supported active-class input.
 
-    A class counts only on its `security_master` dates. Yahoo volume is restated to today's split basis, so a class
+    A class counts only on its `universe_cusip` dates. Yahoo volume is restated to today's split basis, so a class
     enters at its latest conversion ratio: a dated ratio step is a split of one class (BRK-B's 50:1, BRK-A 30 -> 1,500)
     that Yahoo already restated. Ratios must be finite and positive; bars and converted quantities finite and nonnegative.
     Unsupported active legs add nothing and flag the complete company denominator as unknown.
@@ -198,7 +209,7 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
     idx = pd.DatetimeIndex(idx).normalize()
     if lines.empty:
         return pd.DataFrame(index=idx, dtype="float64"), pd.DataFrame(index=idx, dtype="bool")
-    work = normalised_lines(lines)
+    work = _normalised_lines(lines)
     tape = bars.assign(date=to_day(bars["date"])).drop_duplicates(["ticker", "date"], keep="last")
     tape = tape.pivot(index="date", columns="ticker", values="volume").reindex(idx) if not tape.empty else pd.DataFrame(index=idx)
     companies = sorted(work["company"].unique())

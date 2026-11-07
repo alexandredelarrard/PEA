@@ -32,8 +32,20 @@ def test_missing_or_stale_table_raises_and_writes_nothing(sqlite_store) -> None:
     seed_universe(sqlite_store, ["AAPL"])
     with pytest.raises(UniverseError, match=r"\['MSFT'\]"):
         Universe(sqlite_store, config)
-    assert sqlite_store.row_count(Tables.tickers_universe) == 1
+    assert sqlite_store.row_count(Tables.universe_tickers) == 1
     print("\n=== SANITY CHECK: reader guards === missing and stale tables raise with the sync command; nothing written.")
+
+
+def test_rows_out_of_the_universe_are_hidden_and_a_yml_ticker_on_one_raises(sqlite_store) -> None:
+    frame = pd.DataFrame({"ticker": ["AAPL", "GEHC"], "cik": ["0000320193", "0001932393"], "in_universe": [True, False]})
+    sqlite_store.save(Tables.universe_tickers, frame.assign(universe_added_on=pd.Timestamp("2000-01-01"), first_price_date=None, ended_on=None))
+    universe = Universe(sqlite_store, make_config(["AAPL"]))
+
+    assert universe.tickers == ["AAPL"] and universe.roster["ticker"].tolist() == ["AAPL"] and list(universe.bounds) == ["AAPL"]
+    with pytest.raises(UniverseError, match=r"\['GEHC'\]"):
+        Universe(sqlite_store, make_config(["AAPL", "GEHC"]))
+    print("\n=== SANITY CHECK: in_universe filter === GEHC (in_universe=false) is hidden from tickers, roster and bounds;")
+    print("  a yml listing GEHC while its row is out of the universe raises with the sync command.")
 
 
 def test_subset_normalises_dedupes_and_lists_every_unknown(sqlite_store) -> None:

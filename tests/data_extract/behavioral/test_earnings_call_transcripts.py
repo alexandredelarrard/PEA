@@ -75,7 +75,7 @@ def _source(path: Path, tag: str) -> tuple[ect.TranscriptSource, _Opener]:
 
 
 class _Context(types.SimpleNamespace):
-    """A stub context whose universe is the stored `tickers_universe`, read on each access."""
+    """A stub context whose universe is the stored `universe_tickers`, read on each access."""
 
     @property
     def universe(self) -> Any:
@@ -83,9 +83,11 @@ class _Context(types.SimpleNamespace):
 
 
 def _ctx(tmp_path: Path, store: Any) -> Any:
-    if not store.exists(Tables.tickers_universe):
+    if not store.exists(Tables.universe_tickers):
         seed_universe(store, UNIVERSE)
-    return _Context(store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity())
+    return _Context(
+        store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity()
+    )
 
 
 def _identity() -> Identity:
@@ -101,12 +103,12 @@ def _identity() -> Identity:
     ]:
         cik = roster.set_index("ticker").loc[ticker, "cik"]
         rows.append(
-            dict(cik=cik, entity_id=f"E{cik}", role="symbol", symbol=symbol, valid_from=start, valid_to=end, status="curated", sources="manual")
+            dict(cik=cik, company_id=f"E{cik}", role="symbol", symbol=symbol, valid_from=start, valid_to=end, status="curated", sources="manual")
         )
     rows.append(
         dict(
             cik="0000000999",
-            entity_id="E0000000999",
+            company_id="E0000000999",
             role="symbol",
             symbol="ECHO",
             valid_from="2000-01-01",
@@ -126,10 +128,8 @@ def _identity() -> Identity:
             if row.ticker not in {"ECHO", "BNY"}
         ]
     )
-    return build_identity(
-        lineage=pd.DataFrame(rows),
-        tenure=tenure,
-        roster_cik=as_roster(roster),
+    return replace(
+        build_identity(lineage=pd.DataFrame(rows), tenure=tenure, roster_cik=as_roster(roster)),
         redundant_symbols=frozenset({"GOOG", "BFA"}),
     )
 
@@ -142,7 +142,7 @@ def _recovery_context(tmp_path: Path, store: Any) -> Any:
         [
             dict(
                 cik="1730168",
-                entity_id="E1730168",
+                company_id="E1730168",
                 role="cik_window",
                 symbol="",
                 valid_from="2016-01-01",
@@ -152,7 +152,7 @@ def _recovery_context(tmp_path: Path, store: Any) -> Any:
             ),
             dict(
                 cik="1730168",
-                entity_id="E1730168",
+                company_id="E1730168",
                 role="symbol",
                 symbol="AVGO",
                 valid_from="2016-01-01",
@@ -381,11 +381,11 @@ def test_rebased_support_requires_unambiguous_dated_alias_and_its_own_cik_window
     roster = pd.DataFrame({"ticker": ["NEW", "OTHER"], "cik": ["2", "3"]})
     lineage = pd.DataFrame(
         [
-            dict(cik=cik, entity_id=entity, role="cik_window", symbol="", valid_from=start, valid_to=end, status="curated", sources="manual")
+            dict(cik=cik, company_id=entity, role="cik_window", symbol="", valid_from=start, valid_to=end, status="curated", sources="manual")
             for cik, entity, start, end in [("1", "E1", "1900-01-01", "2020-01-01"), ("2", "E1", "1900-01-01", None), ("3", "E2", "1900-01-01", None)]
         ]
         + [
-            dict(cik=cik, entity_id=entity, role="symbol", symbol=symbol, valid_from=start, valid_to=end, status="curated", sources="manual")
+            dict(cik=cik, company_id=entity, role="symbol", symbol=symbol, valid_from=start, valid_to=end, status="curated", sources="manual")
             for cik, entity, symbol, start, end in [
                 ("1", "E1", "OLD", "2000-01-01", "2020-01-01"),
                 ("3", "E2", "OLD", "2000-01-01", "2015-01-01"),

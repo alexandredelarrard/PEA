@@ -8,7 +8,6 @@ skipped, never deleted.
 
 from __future__ import annotations
 
-import logging
 from functools import cache
 from pathlib import Path
 
@@ -37,7 +36,7 @@ def zip_path() -> Path | None:
 @cache
 def zip_members(path: Path) -> tuple[pd.DataFrame, ...]:
     """(SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS, DERIV_TRANS, NONDERIV_HOLDING, DERIV_HOLDING) of `path`, cut to the fixture accessions."""
-    tables = read_zip_tables(path, ins._ZIP_SPECS, on_corrupt="skip", log=logging.getLogger(__name__))
+    tables = read_zip_tables(path, ins._ZIP_SPECS, on_corrupt="skip")
     assert tables, f"{path} has no SUBMISSION member"
     accessions = set(fixture_accessions())
     names = ("SUBMISSION.TSV", "REPORTINGOWNER.TSV", "NONDERIV_TRANS.TSV", "DERIV_TRANS.TSV", "NONDERIV_HOLDING.TSV", "DERIV_HOLDING.TSV")

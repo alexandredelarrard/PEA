@@ -11,7 +11,6 @@ from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.class_lines import load_class_lines
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
@@ -47,6 +46,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_store.schema import Tables
+from src.utils.identity_tables import read_identity
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
 
@@ -117,7 +117,13 @@ class StepCubeInstitutionals(Step):
 
         # Load shared price and class inputs once.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
-        df_lines = load_class_lines(self._store)
+        df_lines = read_identity(
+            self._store,
+            Tables.universe_cusip,
+            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role"),
+            where={"source": "ftd"},
+            optional=True,
+        )
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
 
         # Build each family sequentially so raw sources do not overlap in memory.

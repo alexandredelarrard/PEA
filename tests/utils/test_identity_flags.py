@@ -1,4 +1,4 @@
-"""Known-truth cases for the tape-mix rule of `identity_flags` read against `security_master` lines."""
+"""Known-truth cases for the tape-mix rule of `identity_flags` read against `universe_cusip` lines."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import pandas as pd
 
 from src.utils.identity_flags import identity_flags
 
-_LINEAGE = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle", "evidence")
+_LINEAGE = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle", "evidence")
 _MASTER = ("canonical_company", "source", "source_symbol", "cusip", "lineage_role", "lineage_reason", "valid_from", "valid_to")
 _ACTIVITY = pd.DataFrame(columns=["cik", "source", "first", "last"])
 
@@ -87,16 +87,16 @@ def test_master_decides_tape_mix_items_outside_the_tape_era_covered_or_unwindowe
     assert set(without) == {"IIV", "BRK-A", "OLX", "UNX", "UNY", "NWX", "UNZ", "REX"}, sorted(without)
     assert all(bool(row["action"]) for row in without.values()), "without a master every tape-mix pair is an action"
     assert set(items) == set(without)
-    assert not items["IIV"]["action"] and "decided by security_master (canonical_current)" in items["IIV"]["evidence"]
-    assert not items["BRK-A"]["action"] and "decided by security_master (secondary_class)" in items["BRK-A"]["evidence"]
+    assert not items["IIV"]["action"] and "decided by universe_cusip (canonical_current)" in items["IIV"]["evidence"]
+    assert not items["BRK-A"]["action"] and "decided by universe_cusip (secondary_class)" in items["BRK-A"]["evidence"]
     assert not items["OLX"]["action"] and "before the tape era" in items["OLX"]["evidence"]
     assert not items["NWX"]["action"] and "no CIK window" in items["NWX"]["evidence"]
     assert items["UNX"]["action"] and items["UNX"]["config_file"] == "configs/sec/symbol_tenure_manual.json"
     assert items["UNY"]["action"] and "2013-01-01..2015-01-01" in items["UNY"]["evidence"], items["UNY"]["evidence"]
-    assert items["UNZ"]["action"] and "not covered by security_master: 2012-01-01..2015-01-01" in items["UNZ"]["evidence"]
-    assert not items["REX"]["action"] and "decided by security_master (secondary_class)" in items["REX"]["evidence"]
+    assert items["UNZ"]["action"] and "not covered by universe_cusip: 2012-01-01..2015-01-01" in items["UNZ"]["evidence"]
+    assert not items["REX"]["action"] and "decided by universe_cusip (secondary_class)" in items["REX"]["evidence"]
 
-    print("\n=== SANITY CHECK: tape-mix items read against security_master ===")
+    print("\n=== SANITY CHECK: tape-mix items read against universe_cusip ===")
     for symbol, row in sorted(items.items()):
         print(f"  {symbol:6} {'ACTION' if row['action'] else 'info  '} {row['evidence']}")
     print("  OK: acquired constituent, declared and redundant classes, pre-tape-era and event-only-CIK overlaps are info;")
@@ -114,4 +114,4 @@ def test_without_a_master_the_flags_are_unchanged() -> None:
 
     print("\n=== SANITY CHECK: no master ===")
     print(f"  {len(before)} flag(s), {int(before['action'].sum())} action(s), identical with master=None and with an empty master")
-    print("  OK: the rule without security_master is byte-identical")
+    print("  OK: the rule without universe_cusip is byte-identical")

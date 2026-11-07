@@ -22,9 +22,9 @@ from omegaconf import OmegaConf
 from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.class_lines import CLASS_LINE_COLUMNS
 from src.data_aggregate.utils.common.quotes import terminal_rows
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
+from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS
 from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_store.schema import Tables
@@ -35,7 +35,7 @@ from tests.data_aggregate.test_short_flow_features import _fails_fields, build_s
 
 def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     lines = store.load(
-        Tables.security_master, columns=CLASS_LINE_COLUMNS, where={"lineage_role": SECONDARY_CLASS, "canonical_company": universe}, optional=True
+        Tables.universe_cusip, columns=CLASS_LINE_COLUMNS, where={"lineage_role": SECONDARY_CLASS, "canonical_company": universe}, optional=True
     )
     if lines is None:
         return None
@@ -46,7 +46,7 @@ OPEN = pd.NaT
 
 
 def _lines(*rows: tuple[str, str, float, str, object]) -> pd.DataFrame:
-    """`security_master` secondary-class rows: (company, market symbol, ratio, valid_from, valid_to)."""
+    """`universe_cusip` secondary-class rows: (company, market symbol, ratio, valid_from, valid_to)."""
     return pd.DataFrame(rows, columns=["canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to"])
 
 
@@ -165,7 +165,7 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         }
     )
     sqlite_store.save(
-        Tables.security_master,
+        Tables.universe_cusip,
         pd.concat(
             [
                 lines.assign(
@@ -387,7 +387,7 @@ def test_loader_reads_universe_secondary_classes_and_only_their_bars(sqlite_stor
             "n_observations": [10, 10, 10, 10],
         }
     )
-    sqlite_store.save(Tables.security_master, master)
+    sqlite_store.save(Tables.universe_cusip, master)
     days = pd.bdate_range("2024-01-02", periods=3)
     sqlite_store.save(
         Tables.prices,
@@ -423,7 +423,7 @@ def test_loader_applies_the_registered_brk_a_volume_unit_repair(sqlite_store: An
             "n_observations": [10, 10],
         }
     )
-    sqlite_store.save(Tables.security_master, master)
+    sqlite_store.save(Tables.universe_cusip, master)
     days = pd.bdate_range("2013-06-03", "2013-08-30")
     volume = [24_800.0 if day < pd.Timestamp("2013-07-29") else 300.0 for day in days]
     sqlite_store.save(Tables.prices, _bars("BRK-A", days, volume).assign(close_split=170_000.0, close_total=170_000.0))
@@ -443,4 +443,4 @@ def test_loader_applies_the_registered_brk_a_volume_unit_repair(sqlite_store: An
 def test_loader_without_a_master_returns_none(sqlite_store: Any) -> None:
     assert _load_classes(sqlite_store, ["LEN"]) is None
     print("\n=== SANITY CHECK: no master ===")
-    print("  before `security_master` exists the class read returns None, so the features keep the canonical tape. Validated.")
+    print("  before `universe_cusip` exists the class read returns None, so the features keep the canonical tape. Validated.")

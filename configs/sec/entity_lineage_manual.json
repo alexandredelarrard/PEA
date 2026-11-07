@@ -1,6 +1,6 @@
 {
   "_README": [
-    "HAND ADJUDICATIONS FOR `entity_lineage` -- the curated layer of AXIS A (which CIKs are",
+    "HAND ADJUDICATIONS FOR `universe_cik_symbol` -- the curated layer of AXIS A (which CIKs are",
     "the same economic company). Sibling of `registrant_cutover.json`, and deliberately a",
     "SEPARATE file, because the two answer different questions and are read by different",
     "code.",
@@ -35,12 +35,13 @@
     "Measured 2026-09-11 over 621 candidate CIKs and all 500 universe tickers: 39 pairs",
     "decided `same` automatically, 73 `unrelated`, 13 grey. The 13 are adjudicated below,",
     "minus the two `IR` rows, which fall out of the `TT` register entry with no `IR`-specific",
-    "rule anywhere."
+    "rule anywhere.",
+    "resolutions: reviewed identity items of the build's WARNING block, {kind, ticker, ciks (the item's fields, verbatim), decision, evidence (a URL or an SEC accession; refused at load without one), decided_on}. A resolved item logs at INFO; a resolution no item matches any more is stale (INFO, listed by the validator)."
   ],
 
   "_d19_allowlist": {
     "_README": [
-      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(tickers_universe.cik[T])`",
+      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(universe_tickers.cik[T])`",
       "agrees with the entity of the CIK that dominates symbol T in `symbol_tenure` today. It",
       "exists because the roster CIK comes from Wikipedia and has been wrong before (XOM, found",
       "2026-09-09), and a disagreement is that class of defect until proven otherwise.",
@@ -219,5 +220,21 @@
     "same_entity": ["0000915912", "0000906107"],
     "evidence": "AvalonBay Communities (0000915912) merged into a subsidiary of Equity Residential (0000906107) on 2026-08-17 in a merger of equals; Equity Residential, the surviving registrant, renamed itself and its common shares began trading as VMRK on 2026-08-18, while AvalonBay's AVB common was delisted (8-K 0001140361-26-033377). Yahoo's VMRK series is Equity Residential's EQR series back to 1995 (price ratio 1.000), so under the traded-security rule the price owner is Equity Residential: no register entry, AvalonBay's filings and price stop at the merger, and its CIK is integrated into VMRK's entity as an acquired target (event-only; its Forms 3/4/5 acquired_constituent), the D3a pattern. If the first post-merger VMRK reports present AvalonBay as the accounting predecessor, their comparatives need the PLD-style handling (open TODO).",
     "decided": "2026-10-08"
-  }
+  },
+
+  "resolutions": [
+    {
+      "kind": "refused_merge",
+      "ticker": "TT",
+      "ciks": "0001466258,0001699150",
+      "decision": "ACKNOWLEDGED (own entities): Ingersoll-Rand plc (CIK 0001466258) was renamed Trane Technologies plc and moved to TT on 2020-03-02, when Gardner Denver Holdings (CIK 0001699150) took the name Ingersoll Rand Inc. and the reused IR symbol. Two universe companies; the refusal is right.",
+      "evidence": [
+        "0001140361-20-004470 (Trane Technologies 8-K 2020-03-02)",
+        "0001140361-20-004816 (Ingersoll Rand Inc. 8-K 2020-03-04, Items 2.01/5.03)",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001466258",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001699150"
+      ],
+      "decided_on": "2026-11-05"
+    }
+  ]
 }

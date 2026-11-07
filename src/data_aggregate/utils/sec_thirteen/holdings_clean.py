@@ -10,8 +10,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.class_lines import dated_tickers
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, prepare_public_value_quotes, repair_value_basis
+from src.utils.identity_tables import CusipTags
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,14 @@ def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> t
     return df_filings, df_holdings
 
 
-def attach_tickers(holdings: pd.DataFrame, windows: pd.DataFrame | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
-    """Attach the dated canonical ticker of each CUSIP (`cusip_windows`), retaining unmapped whole-book positions."""
-    if windows is None or windows.empty:
-        return holdings.assign(ticker=pd.NA)
-    tickers = dated_tickers(holdings["cusip"], holdings["period"], windows)
-    return holdings.assign(ticker=tickers if universe is None else tickers.where(tickers.isin(set(universe))))
+def attach_tickers(holdings: pd.DataFrame, tags: CusipTags | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
+    """Tag each position, keeping only `universe` tickers when given, while retaining unmapped whole-book positions: a
+    per-CUSIP manager book by `CusipTags` (a universe company's CUSIP by its dated `universe_cusip` line, any other by
+    `cusip_ticker_map`); `sec13f_hr` rows (`tags` None) by their stored ticker, set at extraction (U-67)."""
+    if tags is not None:
+        return holdings.assign(ticker=tags.tag(holdings, universe))
+    stored = holdings["ticker"].astype(object)
+    return holdings.assign(ticker=stored if universe is None else stored.where(stored.isin(set(universe)), None))
 
 
 def clean_public_holdings(
@@ -58,16 +60,17 @@ def clean_public_holdings(
 
 def clean_public_batches(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
-    windows: pd.DataFrame | None,
+    tags: CusipTags | None,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
-    """Prepare shared quotes once and attach tickers and repair all completed books per batch."""
+    """Prepare shared quotes once, tag (`attach_tickers`) and repair all completed books per batch."""
     period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
     with closing(packets):
         for df_filings, df_raw in packets:
-            df_holdings = clean_public_holdings(attach_tickers(df_raw, windows, universe), valuation_close, value_basis, period_quotes=period_quotes)
+            df_holdings = attach_tickers(df_raw, tags, universe)
+            df_holdings = clean_public_holdings(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
             del df_raw
             yield df_filings, df_holdings
             del df_filings, df_holdings

@@ -1,8 +1,9 @@
-"""Dated `entity_lineage` fixtures for listing tests: a real `Identity` built from hand-written CIK rows."""
+"""Dated `universe_cik_symbol` fixtures for listing tests: a real `Identity` built from hand-written CIK rows."""
 
 from __future__ import annotations
 
 import types
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
@@ -33,7 +34,7 @@ def dated_identity(
     lineage = pd.DataFrame(
         [
             {
-                "entity_id": entity_of[ticker],
+                "company_id": entity_of[ticker],
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,
@@ -79,7 +80,7 @@ def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant:
     windows = [
         {
             **base,
-            "entity_id": entity_of[t],
+            "company_id": entity_of[t],
             "canonical_ticker": t,
             "cik": c,
             "role": "cik_window",
@@ -93,7 +94,7 @@ def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant:
     symbols = [
         {
             **base,
-            "entity_id": entity_of[t],
+            "company_id": entity_of[t],
             "canonical_ticker": t,
             "cik": c,
             "role": "symbol",
@@ -118,12 +119,12 @@ def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant:
             for t, c in roster.items()
         ]
     )
-    return build_identity(
+    identity = build_identity(
         lineage=pd.DataFrame(windows + symbols),
         tenure=tenure,
         roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()])),
-        redundant_symbols=redundant,
     )
+    return replace(identity, redundant_symbols=frozenset(redundant))
 
 
 def filing(accession: str, filing_date: str, cik: int | None = None, period: str | None = None) -> types.SimpleNamespace:

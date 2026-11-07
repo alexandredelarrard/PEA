@@ -11,6 +11,7 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows
+from src.utils.identity_tables import identity_columns, read_identity
 from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.price.adjustments import ShareBasis, quantity_basis, resolve_share_events
 from src.utils.price.repairs import apply_return_seams, apply_split_vintage
@@ -21,8 +22,8 @@ def load_price_identity(context: Context, tickers: list[str]) -> tuple[tuple[Pre
     store = context.store
     columns = ["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"]
     df_lineage = (
-        store.load(Tables.entity_lineage, columns=columns, where={"role": "cik_window"}, optional=True)
-        if "role" in store.columns(Tables.entity_lineage)
+        read_identity(store, Tables.universe_cik_symbol, columns=columns, where={"role": "cik_window"}, optional=True)
+        if "role" in identity_columns(store, Tables.universe_cik_symbol)
         else None
     )
     security_columns = ["ticker", "secfilings", "lastquarter"]

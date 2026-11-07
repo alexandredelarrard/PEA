@@ -28,7 +28,7 @@ from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
 
-if TYPE_CHECKING:  # identity -> entity_lineage -> registrant: annotation-only import breaks the cycle
+if TYPE_CHECKING:  # identity -> universe_cik_symbol -> registrant: annotation-only import breaks the cycle
     from src.data_extract.utils.common.identity import CikWindow, FilingScope
 
 logger = logging.getLogger(__name__)

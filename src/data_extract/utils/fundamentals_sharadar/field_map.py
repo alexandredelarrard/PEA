@@ -31,12 +31,11 @@ from src.constants.constants import (
     SHARADAR_MAP_OPS,
     SHARADAR_MAP_SPLIT_BASES,
     SHARADAR_NEGATE_IF_NON_POSITIVE,
-    SHARADAR_REGISTER_DOC_PREFIX,
     SHARADAR_SF1_COLUMNS,
     SHARADAR_ZERO_FILLED_FIELDS,
     SHARADAR_ZERO_RULES_FILENAME,
 )
-from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_extract.utils.common.config_paths import config_entries, resolve_config_dir
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
     DEFAULT_CONFIG_DIR,
     HISTORY_STATEMENT_ORDER,
@@ -161,11 +160,6 @@ class TranslationReport:
 # --------------------------------------------------------------------------- #
 # loading and validation                                                       #
 # --------------------------------------------------------------------------- #
-def _entries(raw: dict) -> dict:
-    """The register's real entries -- documentation keys skipped, as both files declare."""
-    return {k: v for k, v in raw.items() if not k.startswith(SHARADAR_REGISTER_DOC_PREFIX)}
-
-
 def _require_approval(raw: dict, path: Path) -> None:
     """Raise RuntimeError unless the register carries an `_APPROVED` block with `on` and `scope`."""
     block = raw.get(SHARADAR_APPROVAL_KEY)
@@ -182,7 +176,7 @@ def load_zero_rules(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, str]:
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_ZERO_RULES_FILENAME
     raw = json.loads(path.read_text(encoding="utf-8"))
     _require_approval(raw, path)
-    rules = {name: block["rule"] for name, block in _entries(raw).items()}
+    rules = {name: block["rule"] for name, block in config_entries(raw).items()}
     missing = sorted(SHARADAR_ZERO_FILLED_FIELDS - set(rules))
     if missing:
         raise RuntimeError(f"{path} has no rule for {len(missing)} zero-filled field(s): {missing}")
@@ -203,7 +197,7 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
         raise FileNotFoundError(f"{path} is missing; the field map refuses to run without the correction register (phase-3 §0)")
     raw = json.loads(path.read_text(encoding="utf-8"))
     _require_approval(raw, path)
-    register = _entries(raw)
+    register = config_entries(raw)
     for field, by_ticker in register.items():
         for ticker, entry in by_ticker.items():
             _check_correction(f"{path}: {field}/{ticker}", entry)

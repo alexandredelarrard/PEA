@@ -18,17 +18,18 @@ import pandas as pd
 import pytest
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
+from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import Combine, combine_for, resolve_registrant_entries
+from src.data_extract.utils.common.security_lines import ACQUIRED_CONSTITUENT
 from src.data_extract.utils.edgar_extract import schedule_rows
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
-from src.data_extract.utils.identity import identity_propagate as prop
-from src.data_extract.utils.identity.security_master import ACQUIRED_CONSTITUENT
 from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
 from tests.support import identity_regression_gate as gate
-from tests.support.universe import as_roster
+from tests.support.propagation import run_propagation
+from tests.support.universe import as_roster, universe_of
 
 SENTINEL = "1900-01-01"
 ACE, OLD_CHUBB = "0000896159", "0000020171"  # CB: Chubb Ltd (ACE) bought The Chubb Corporation on 2016-01-14
@@ -52,7 +53,7 @@ def _lineage() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "entity_id": f"E{ROSTER[ticker]}",
+                "company_id": f"E{ROSTER[ticker]}",
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,
@@ -221,7 +222,13 @@ def _seed(store) -> None:
 
 
 def _context(store, tmp_path: Path) -> SimpleNamespace:
-    return SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.event_windows"), config_dir="./configs")
+    return SimpleNamespace(
+        store=store,
+        paths={"DATA_STORE": tmp_path},
+        log=logging.getLogger("test.event_windows"),
+        config_dir="./configs",
+        universe=universe_of(sorted(ROSTER)),
+    )
 
 
 def _keys(store, table) -> set[str]:
@@ -232,12 +239,13 @@ def test_the_purge_removes_event_rows_outside_their_ciks_windows_and_keeps_insid
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
     identity = _identity()
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scopes, resolver, run_date: {})
-    monkeypatch.setattr(prop, "_refresh_insider", lambda context, identity, changed, dry_run: [])
+    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
+    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
+    monkeypatch.setattr(step_module, "refresh_insider", lambda *args: [])
     lineage = _lineage()
     pending = pending_removals(context, lineage, list(ROSTER))
 
-    result = prop.propagate_identity(context, list(ROSTER), identity=identity, as_of=RUN_DATE)
+    result = run_propagation(context, identity, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
     assert _keys(sqlite_store, Tables.sec_8k) == {"ace-1", "merck-1", "mrk-1", "t-1"}
     assert _keys(sqlite_store, Tables.sec_13g) == {"g-ace"}

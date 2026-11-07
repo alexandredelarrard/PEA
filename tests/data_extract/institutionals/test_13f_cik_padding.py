@@ -15,6 +15,7 @@ import pandas as pd
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_store.schema import Tables
 from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _line
+from tests.support.store_identity import store_identity
 
 _UNPADDED = ROSTER.lstrip("0")  # "1067983", the legacy form
 
@@ -40,7 +41,7 @@ def _packet():
 
 def test_the_walk_save_pads_the_cik_in_both_tables(filing_store, monkeypatch):
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
-    ctx: Any = SimpleNamespace(store=filing_store)
+    ctx: Any = SimpleNamespace(store=filing_store, _identity_resolver=store_identity(filing_store))
     saver = f13._Saver(ctx, {"AAPL"}, {ROSTER}, save_every=1)
     saver.save_packet(*_packet())
     for table in [Tables.sec13f_hr, Tables.sec13f_manager_holdings]:

@@ -29,9 +29,9 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
-from src.data_aggregate.utils.target.betas import _betas_to_long
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.target.betas import (
+    _betas_to_long,
     estimate_all_betas,
     estimate_betas_for_stock,
 )
@@ -306,7 +306,7 @@ def test_label_window_does_not_overlap_estimation_window():
     """beta_t is fitted on returns up to and including day t; the label is the
     return of days t+1..t+h. No overlap => using beta_t on that label is not
     in-sample fitting, and needs no extra lag."""
-    from src.data_aggregate.utils.common.prices import forward_return
+    from src.data_aggregate.utils.price.returns import forward_return
 
     n = 20
     dates = pd.bdate_range("2020-01-01", periods=n)

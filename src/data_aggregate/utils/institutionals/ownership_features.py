@@ -19,7 +19,7 @@ from src.data_aggregate.utils.common.availability import InstitutionalAvailabili
 from src.data_aggregate.utils.common.decay import decay_events
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 
 #: The columns `_canonicalize` reads off EITHER schedule without checking first. The

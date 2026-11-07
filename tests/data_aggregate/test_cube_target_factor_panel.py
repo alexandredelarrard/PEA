@@ -25,7 +25,7 @@ import pandas as pd
 from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.target.factors import (
     assemble_factor_panel,
     build_characteristics,
@@ -101,7 +101,10 @@ def _synthetic_inputs():
 
     # A dividend-free synthetic fixture, so the two bases are identical by construction and
     # the panel this test hand-composes is unaffected by the split.
-    frames = PriceFrames(trading_index=dates, universe=tuple(tickers), peers={}, close_split=close, close_total=close, ret=ret, sector_ret=sector_ret)
+    df_cap = close.mul(fundamentals.groupby("ticker")["sharesOutstanding"].first(), axis="columns")
+    frames = PriceFrames(
+        trading_index=dates, universe=tuple(tickers), peers={}, close_split=close, close_total=close, ret=ret, sector_ret=sector_ret, mcap_pit=df_cap
+    )
     return frames, fundamentals, close, ret, macro_wide, macro_long, dates
 
 
@@ -128,7 +131,7 @@ def test_factor_panel_matches_hand_composed_reference():
 
     # hand-composed reference: the same building blocks `_factor_panel` calls, composed
     # independently here rather than by importing its loop
-    chars_expected = build_characteristics(close, ret, fundamentals, resvol_window=63, stock_close_split=close)
+    chars_expected = build_characteristics(close, ret, fundamentals, resvol_window=63, mcap_pit=frames.mcap_pit)
     style_cols_expected = {}
     for name, char in chars_expected.items():
         char.name = name

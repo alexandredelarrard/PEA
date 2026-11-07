@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import compute_raw_features
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 
 def _prices(n_days=200, seed=0):
@@ -23,7 +24,9 @@ def _prices(n_days=200, seed=0):
 
 def test_price_anomalies_present_and_exact():
     close, open_, sector = _prices()
-    feats = compute_raw_features(close, open_, sector)
+    feats = compute_raw_features(
+        PriceFrames(trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector)
+    )
     for k in ("max_21", "ret_skew_126", "downside_vol_63", "idio_vol_63"):
         assert k in feats, f"missing anomaly feature {k}"
 

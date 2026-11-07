@@ -19,8 +19,8 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history, tape_share_quantities
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     EMISSION,
     SHORTVOL_PUB_LAG,
@@ -39,9 +39,21 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     build_short_flow_feature_panel as compute_short_panel,
 )
+from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_extract.utils.institutionals.fetch_short_interest import _parse_regsho
-from src.utils.price_adjustments import ShareBasis, resolve_share_events
+from src.utils.price.adjustments import ShareBasis, resolve_share_events
 from tests.conftest import make_frames
+
+
+def terminal_factor(basis: ShareBasis, idx: pd.DatetimeIndex, tickers: Any) -> pd.DataFrame:
+    """The step's `F_T / F_d` from known-truth events, built by the production saved-basis builder."""
+    return terminal_basis_factor(security_basis_frame(basis, pd.DatetimeIndex(idx), pd.Index(tickers)))
+
+
+def split_factor(splits: pd.DataFrame | None, idx: pd.DatetimeIndex, tickers: Any) -> pd.DataFrame:
+    """`terminal_factor` for Yahoo-style split rows (`ticker`, `date`, `ratio`)."""
+    df_splits = splits if splits is not None else pd.DataFrame(columns=["ticker", "date", "ratio"])
+    return terminal_factor(resolve_share_events(None, df_splits, {}), idx, tickers)
 
 
 def build_short_flow_feature_panel(
@@ -57,17 +69,15 @@ def build_short_flow_feature_panel(
     denominators = capital if capital is not None else ShortFlowCapital(None, frames.volume)
     if idx.empty:
         return compute_short_panel(frames, None, None, denominators, None)
-    basis = QuantityBasis.from_context(resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {}), idx)
-    df_short = short_quantity_history(short_history, basis)
     settlement = None
     if fails_history is not None or publication is not None:
         df_fails = fails_history if fails_history is not None else pd.DataFrame(columns=["date", "ticker", "fails_quantity", "period"])
         df_coverage = publication.coverage if publication is not None else df_fails[["date", "period"]]
         columns = pd.Index(frames.universe, name="ticker")
-        settlement = prepare_fails_quantities(df_fails, df_coverage, idx, columns, tenure_mask, basis)
+        settlement = prepare_fails_quantities(df_fails, df_coverage, idx, columns, tenure_mask)
         if publication is None:
             publication = FtdPublication(df_coverage, _ftd_available_dates(df_coverage, 21))
-    return compute_short_panel(frames, df_short, settlement, denominators, publication, tenure_mask)
+    return compute_short_panel(frames, short_history, settlement, denominators, publication, tenure_mask)
 
 
 def _fails_fields(
@@ -79,9 +89,9 @@ def _fails_fields(
     tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Known-truth dated-quantity fixture; numerical expectations remain explicit in each test."""
-    df_splits = splits if splits is not None else pd.DataFrame(columns=["ticker", "date", "ratio"])
-    basis = QuantityBasis.from_context(resolve_share_events(None, df_splits, {}), idx)
-    settlement = prepare_fails_quantities(fails_hist, fails_hist[["date", "period"]], idx, None, tenure_mask, basis)
+    df_factor = split_factor(splits, idx, sorted(set(fails_hist["ticker"])))
+    df_fails = terminal_rows(fails_hist, ("fails_quantity",), df_factor)
+    settlement = prepare_fails_quantities(df_fails, fails_hist[["date", "period"]], idx, None, tenure_mask)
     publication = FtdPublication(fails_hist[["date", "period"]], _ftd_available_dates(fails_hist, 21))
     return compute_fails_fields(settlement, ShortFlowCapital(shares_out, volume), publication, tenure_mask)
 
@@ -172,13 +182,12 @@ def test_publication_lag_is_one_trading_day():
 def test_source_adapters_normalize_both_rolling_legs_and_pit_counts() -> None:
     idx = pd.bdate_range("2024-06-03", periods=21)
     df_events = pd.DataFrame({"ticker": ["TEST"], "date": [idx[19]], "value": [10.0]})
-    basis = QuantityBasis(ShareBasis(df_events, df_events, df_events, {}), idx[-1])
+    df_factor = terminal_factor(ShareBasis(df_events, df_events, df_events, {}), idx, ["TEST"])
     df_raw = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": [9.0] * 19 + [10.0] * 2, "total_volume": [10.0] * 19 + [100.0] * 2})
     df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0], "sharesOutstanding": [1000.0]})
-    df_normalized = short_quantity_history(df_raw, basis)
-    df_shares = daily_share_quantities(df_filing, idx, basis)
-    df_tape = tape_share_quantities(pd.DataFrame({"TEST": 200.0}, index=idx), basis)
-    assert df_normalized is not None and df_shares is not None and df_tape is not None
+    df_normalized = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
+    df_shares = pd.DataFrame({"TEST": [100.0] * 19 + [1000.0] * 2}, index=idx) * df_factor
+    df_tape = pd.DataFrame({"TEST": 200.0}, index=idx)
     result = _shortvol_fields(df_normalized, idx, df_shares, None, df_tape)
     assert result["ic_shortvol_ratio_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 2000)
     assert result["ic_shortvol_turnover_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 1000)
@@ -193,16 +202,13 @@ def test_source_adapters_normalize_both_rolling_legs_and_pit_counts() -> None:
 def test_future_event_cannot_advance_the_vendor_tape_basis() -> None:
     idx = pd.bdate_range("2024-06-03", periods=21)
     df_events = pd.DataFrame({"ticker": ["TEST"], "date": [idx[-1] + pd.Timedelta(days=10)], "value": [10.0]})
-    basis = QuantityBasis.from_context(ShareBasis(df_events, df_events, df_events, {}), idx)
+    df_factor = terminal_factor(ShareBasis(df_events, df_events, df_events, {}), idx, ["TEST"])
     df_raw = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": 5.0, "total_volume": 10.0})
-    df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0]})
-    df_normalized = short_quantity_history(df_raw, basis)
-    df_shares = daily_share_quantities(df_filing, idx, basis)
-    df_tape = tape_share_quantities(pd.DataFrame({"TEST": 20.0}, index=idx), basis)
-    assert basis.target_date == idx[-1]
-    assert df_normalized is not None
+    df_normalized = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
+    df_shares = pd.DataFrame({"TEST": 100.0}, index=idx) * df_factor
+    df_tape = pd.DataFrame({"TEST": 20.0}, index=idx)
     pd.testing.assert_frame_equal(df_normalized, df_raw)
-    assert df_shares is not None and df_shares["TEST"].eq(100).all()
+    assert df_shares["TEST"].eq(100).all()
     assert df_tape is not None and df_tape["TEST"].eq(20).all()
     print(
         "SANITY: a scheduled event beyond the last vendor bar cancels inF(source)/F(target); raw quantities, PIT counts and existing tape remain compatible."
@@ -212,19 +218,16 @@ def test_future_event_cannot_advance_the_vendor_tape_basis() -> None:
 def test_paired_vendor_restatement_preserves_earlier_dimensionless_outputs() -> None:
     idx = pd.bdate_range("2024-01-02", periods=45)
     df_raw = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": 5.0, "total_volume": 10.0})
-    df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0]})
     empty = pd.DataFrame(columns=["ticker", "date", "ratio"])
-    basis = QuantityBasis.from_context(resolve_share_events(None, empty, {}), idx)
-    df_shares = daily_share_quantities(df_filing, idx, basis)
-    df_history = short_quantity_history(df_raw, basis)
-    assert df_history is not None
+    df_factor = split_factor(empty, idx, ["TEST"])
+    df_shares = pd.DataFrame({"TEST": 100.0}, index=idx) * df_factor
+    df_history = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
     original = _shortvol_fields(df_history, idx, df_shares, None, pd.DataFrame({"TEST": 20.0}, index=idx))
     extended = pd.DatetimeIndex(idx.append(pd.DatetimeIndex([idx[-1] + pd.Timedelta(days=10)])))
     events = pd.DataFrame({"ticker": ["TEST"], "date": [extended[-1]], "ratio": [10.0]})
-    later_basis = QuantityBasis.from_context(resolve_share_events(None, events, {}), extended)
-    df_later = short_quantity_history(df_raw, later_basis)
-    df_later_shares = daily_share_quantities(df_filing, extended, later_basis)
-    assert df_later is not None
+    later_factor = split_factor(events, extended, ["TEST"])
+    df_later = terminal_rows(df_raw, ("short_volume", "total_volume"), later_factor)
+    df_later_shares = pd.DataFrame({"TEST": [100.0] * len(idx) + [1000.0]}, index=extended) * later_factor
     restated = _shortvol_fields(df_later, extended, df_later_shares, None, pd.DataFrame({"TEST": 200.0}, index=extended))
     for name, df_before in original.items():
         pd.testing.assert_frame_equal(df_before, restated[name].reindex(idx))
@@ -940,9 +943,7 @@ def test_market_coverage_is_split_basis_free():
     splits = pd.DataFrame([{"date": split_date, "ticker": "GEX", "ratio": 0.125}])
 
     before = _shortvol_fields(regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
-    basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
-    df_regsho = short_quantity_history(regsho, basis)
-    assert df_regsho is not None
+    df_regsho = terminal_rows(regsho, ("short_volume", "total_volume"), split_factor(splits, idx, ["GEX"]))
     after = _shortvol_fields(df_regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
     pre, post = idx[50], idx[110]
     assert before.loc[pre, "GEX"] == pytest.approx(0.80, rel=1e-6), "the defect must reproduce"

@@ -16,7 +16,6 @@ from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, replace_insider_source
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-from src.utils.price_adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 
 
@@ -197,14 +196,11 @@ def test_invalidated_quiet_rows_cannot_become_legacy_cube_observations(sqlite_st
     rows = sqlite_store.load(Tables.short_interest, project=True)
     assert rows is not None
     dates = pd.bdate_range("2026-06-01", periods=4)
-    empty = pd.DataFrame(columns=["ticker", "date", "value"])
-    basis = inputs.QuantityBasis(ShareBasis(empty, empty, empty, {}), dates[-1])
-    prepared = inputs.short_quantity_history(rows.sort_values("date").reset_index(drop=True), basis)
-    assert prepared is not None
+    prepared = rows.sort_values("date").reset_index(drop=True)
     assert prepared.loc[1, "short_volume"] == 2.0 and prepared.loc[2, "short_volume"] == 0.0
     fails, coverage = inputs.load_fails(sqlite_store, ["AAA"])
     assert fails is not None and coverage is not None
-    operands, _ = short._settlement_fails(fails, coverage, dates, pd.Index(["AAA"]), None)
+    operands = short.prepare_fails_quantities(fails, coverage, dates, pd.Index(["AAA"]), None).quantities
     assert operands.loc[dates[1], "AAA"] == 3.0 and operands.loc[dates[2], "AAA"] == 0.0
     if metric == "finra":
         assert pd.isna(prepared.loc[0, "short_volume"]), "invalidated inferred FINRA zero reached the cube as an explicit operand"

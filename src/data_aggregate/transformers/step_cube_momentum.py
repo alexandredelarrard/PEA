@@ -22,26 +22,27 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_quote_seams, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.price_frames import (
+from src.data_aggregate.utils.momentum.features import build_feature_panel
+from src.data_aggregate.utils.price.checks import measure_quote_seams, measure_seams
+from src.data_aggregate.utils.price.frames import (
     PriceFrames,
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import Tables
+from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
 
 
 class StepCubeMomentum(Step):
     # `ret` is read from the part rather than recomputed: build_feature_panel used to derive
     # it internally from close, duplicating what the price step already persisted
-    # BOTH price bases: `close_total` for every return-shaped feature, `close_split` for the
-    # four that subtract or multiply an `open`/`high`/`low`/`volume` (all split-adjusted
-    # only). See the basis table at the top of momentum/features.py.
-    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "level_factor")
+    # THREE price bases: `close_total` for every return-shaped feature, `close_split` for the
+    # three that subtract an `open`/`high`/`low` (all split-adjusted only), and the as-traded
+    # `close_pit x volume_pit` for dollar volume. See the basis table at the top of momentum/features.py.
+    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "close_pit", "volume_pit")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -86,9 +87,9 @@ class StepCubeMomentum(Step):
         assert frames.close_total is not None
         assert frames.open is not None
         assert frames.sector_ret is not None
-        seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
+        seams = measure_seams(frames.close_total, self._bugfix)
         assert frames.close_split is not None
-        quote_seams = measure_quote_seams(frames.close_split, self._bugfix, self._log.info)
+        quote_seams = measure_quote_seams(frames.close_split, self._bugfix)
         split_seams = {ticker: sorted(set(seams.get(ticker, [])) | set(quote_seams.get(ticker, []))) for ticker in seams.keys() | quote_seams.keys()}
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         # a SKIP here is not cosmetic: it means the register no longer matches this build's
@@ -100,17 +101,9 @@ class StepCubeMomentum(Step):
             len(seams),
         )
         panel = build_feature_panel(
-            frames.close_total,
-            frames.open,
-            frames.sector_ret,
+            frames,
             method=self._cfg.features.standardize_method,
-            high=frames.high,
-            low=frames.low,
-            volume=frames.volume,
             seasonal_horizons=[int(h) for h in self._cfg.targets.horizons],
-            returns=frames.ret,
-            close_split=frames.close_split,
-            level_factor=frames.level_factor,
             seams=seams,
             split_seams=split_seams,
         )

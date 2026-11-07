@@ -15,13 +15,13 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.inputs import load_insider_role_evidence
-from src.data_aggregate.utils.institutionals.insider_capital import normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_features import (
     CLUSTER_MIN,
     EMISSION,
     INSIDER_FLOOR,
     TEN_B5_1_FLOOR,
     InsiderCoverage,
+    _action_values,
     _owner_surprise,
     _unpriced_masks,
 )
@@ -1236,7 +1236,7 @@ def test_no_usable_transaction_returns_an_empty_panel_not_a_crash():
     )
 
 
-def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them():
+def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     """The seven `*_mcap_*` insider features must EXIST, and losing them must be AUDIBLE.
 
     ⚠ THE FAILURE MODE IS ABSENCE, WHICH IS WHY THIS TEST IS SHAPED AS A DELTA.
@@ -1289,22 +1289,25 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     mcap_feats = [f for f in EMISSION if "mcap" in f]
     assert len(mcap_feats) == 7, mcap_feats
 
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    saved_cap = pd.DataFrame(100_000_000.0, index=idx, columns=["AAA"])
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close, close_pit=close, mcap_pit=saved_cap), _frame(rows))
     missing = [f for f in mcap_feats if f"f_{f}" not in panel.columns]
     assert not missing, f"size-scaled insider features absent from the panel: {missing}"
     built = {f: int(panel[f"f_{f}"].notna().sum()) for f in mcap_feats}
     assert all(built.values()), f"an mcap feature is all-NaN: {built}"
 
-    # ... and the PIT column ALONE is not a substitute.
+    # A cached count cannot supply a missing issuer capitalization.
     pit_only = fh.drop(columns=["sharesOutstanding"])
     with _capture_warnings("src.data_aggregate.utils.institutionals.insider_features") as logged:
-        degraded = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=pit_only)
+        degraded = build_insider_feature_panel(
+            make_frames(idx, _peers(), close_split=close, close_pit=close), _frame(rows), shares_out_history=pit_only
+        )
     survived = [f for f in mcap_feats if f"f_{f}" in degraded.columns]
     assert not survived, survived
-    assert any("sharesOutstanding" in m for m in logged), f"the empty-market-cap path must name the missing column; logged: {logged}"
+    assert any("mcap_pit" in m for m in logged), f"the unsupported saved-cap path must be reported; logged: {logged}"
 
     print()
-    print("=== SANITY: the size-scaled insider family is built on the VENDOR share basis ===")
+    print("=== SANITY: the size-scaled insider family uses saved PIT issuer cap ===")
     print(f"  shares_out_history columns passed: {sorted(fh.columns)}")
     for f, n in built.items():
         print(f"    {f:<42} {n:>4} non-null rows")
@@ -1312,8 +1315,8 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     for m in logged:
         print(f"    WARNING {m}")
     print(
-        "  CONCLUSION: all 7 mcap features build from `sharesOutstanding`; projecting only "
-        "`sharesOutstandingPit` deletes every one of them, and that deletion is now "
+        "  CONCLUSION: all 7 mcap features use saved capitalization; an unsupported cap "
+        "cannot be reconstructed from a cached count, and missing support is "
         "REPORTED instead of silent. Validated."
     )
 
@@ -1540,60 +1543,53 @@ def test_action_cap_market_evidence_does_not_change_non_cap_features() -> None:
     print("SANITY: nonfinite capitalization affects only cap-dependent fields; all other values/nulls remain equal.")
 
 
-def test_action_cap_prepared_lineage_and_finite_execution() -> None:
+def test_action_value_is_one_value_over_saved_cap_on_the_action_session() -> None:
     calendar = pd.bdate_range("2024-03-01", "2024-03-15")
     trades = pd.DataFrame(
         {
-            "ticker": ["AAA", "AAA"],
-            "transaction_day": pd.to_datetime(["2024-03-09", "2024-03-09"]),
-            "visible_from": pd.to_datetime(["2024-03-11", "2024-03-11"]),
-            "value": [1e6, np.inf],
+            "ticker": ["AAA", "AAA", "AAA", "AAA"],
+            "transaction_day": pd.to_datetime(["2024-03-08", "2024-03-08", "2024-03-09", "2024-03-12"]),
+            "visible_from": pd.to_datetime(["2024-03-11", "2024-03-11", "2024-03-11", "2024-03-11"]),
+            "security_title": ["Common Stock"] * 4,
+            "value": [1e6, np.inf, 1e6, 1e6],
         }
     )
     caps = pd.DataFrame(200e6, index=calendar, columns=["AAA"])
-    history = pd.DataFrame(
-        {
-            "ticker": ["AAA", "AAA", "AAA"],
-            "as_of": pd.to_datetime(["2024-01-02", "2024-03-05", "2024-03-09"]),
-            "sharesOutstanding": [1e6, np.nan, 9e6],
-        }
+    frames = make_frames(calendar, close_pit=pd.DataFrame(10.0, index=calendar, columns=["AAA"]), mcap_pit=caps)
+
+    valued = _action_values(trades, caps, frames, None)
+
+    assert valued["action_session"].iloc[:3].eq(pd.Timestamp("2024-03-08")).all()
+    assert valued.loc[0, "action_value"] == pytest.approx(0.005)
+    assert valued.loc[1:, "action_value"].isna().all()
+    pd.testing.assert_series_equal(valued["value"], trades["value"])
+    overflow = _action_values(trades.assign(value=1e308), caps * 1e-308 / 200e6, frames, None)
+    assert overflow["action_value"].isna().all()
+    print(
+        "SANITY: $1M over the saved $200M session cap is .005; infinite dollars, a weekend action without a proved identity "
+        "and a not-yet-public action stay NULL; overflow is NULL and clean dollars are unchanged."
     )
-    prepared = normalize_trade_capital(trades, caps, calendar, history)
-
-    assert prepared["cap_session"].eq(pd.Timestamp("2024-03-08")).all()
-    assert prepared["cap_price_date"].eq(pd.Timestamp("2024-03-08")).all()
-    assert prepared["cap_share_as_of"].eq(pd.Timestamp("2024-01-02")).all()
-    assert prepared.loc[0, "value_mcap"] == pytest.approx(0.005)
-    assert prepared.loc[0, "cap_status"] == "supported"
-    assert prepared.loc[1, "cap_status"] == "unsupported_execution"
-    assert pd.isna(prepared.loc[1, "value_mcap"])
-    pd.testing.assert_series_equal(prepared["value"], trades["value"])
-    overflow = normalize_trade_capital(trades.assign(value=1e308), caps * 1e-308 / 200e6, calendar, history)
-    assert overflow["value_mcap"].isna().all()
-    assert overflow["cap_status"].eq("unsupported_ratio").all()
-    print("SANITY: prepared ratios retain exact prior-session/public-share lineage, reject infinite clean dollars and preserve raw amounts.")
 
 
-@pytest.mark.parametrize("invalid_leg", ["close", "level_factor"])
+@pytest.mark.parametrize("invalid_leg", ["close_pit", "mcap_pit"])
 def test_action_cap_double_negative_components_cannot_certify_capital(invalid_leg: str) -> None:
     idx, close, history = _action_cap_inputs()
-    history["sharesOutstanding"] = -1e6
-    factor = pd.DataFrame(1.0, index=idx, columns=["AAA"])
-    if invalid_leg == "close":
-        close.loc["2024-03-04", "AAA"] = -100.0
+    saved_quote = close.copy()
+    saved_cap = pd.DataFrame(100e6, index=idx, columns=["AAA"])
+    if invalid_leg == "close_pit":
+        saved_quote.loc["2024-03-04", "AAA"] = -100.0
     else:
-        factor.loc["2024-03-04", "AAA"] = -1.0
+        saved_cap.loc["2024-03-04", "AAA"] = -100e6
     row = _txn(filing_date="2024-03-05", transaction_date="2024-03-04", value_usd=1e6)
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close, level_factor=factor),
+        make_frames(idx, _peers(), close_split=close, close_pit=saved_quote, mcap_pit=saved_cap),
         _frame([row]),
-        shares_out_history=history,
         coverage=InsiderCoverage.from_availability(None, idx[-1]),
     ).set_index("date")
 
     assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
     assert panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
-    print("SANITY: two invalid negative inputs cannot manufacture a compatible positive capitalization.")
+    print("SANITY: an invalid saved quote or cap cannot certify a positive action contribution; breadth remains supported.")
 
 
 @pytest.mark.parametrize("action", ["2024-03-11", "2024-03-09"])

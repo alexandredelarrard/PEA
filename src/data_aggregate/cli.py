@@ -31,7 +31,7 @@ import json
 
 import click
 
-from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, FULL_ARGS, FULL_KWARGS
+from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, FULL_ARGS, FULL_KWARGS, TICKERS_ARGS, TICKERS_KWARGS
 from src.context import get_config_context
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
@@ -59,13 +59,16 @@ def _step(cls, config_path: str):
 @cli.command(
     help="Normalize `prices` -> cube_part_prices (pivot, trading "
     "calendar, returns, universe restriction, peer sector returns). Every other "
-    "step reads these instead of re-loading the whole prices table.",
+    "step reads these instead of re-loading the whole prices table. `-t X,Y -F` deletes and rebuilds only X and Y.",
     help_priority=1,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_prices(config_path: str, full: bool) -> None:
-    _step(StepCubePrices, config_path).run(full=full)
+def build_prices(config_path: str, tickers: str | None, full: bool) -> None:
+    if tickers and not full:
+        raise click.UsageError("-t/--tickers rebuilds those tickers from scratch and needs -F/--full")
+    _step(StepCubePrices, config_path).run(full=full, tickers=tickers.split(",") if tickers else [])
 
 
 @cli.command(

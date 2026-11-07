@@ -27,6 +27,9 @@ synthetic frame that hand-builds the missing column reproduces none of it.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -45,15 +48,18 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _NOTES_NUM_TABLE,
     _derived_fields,
 )
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.sector_features import (
     SECTOR_KPI_COLS,
     compute_sector_kpis,
 )
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
 from src.utils.db import get_engine
 from src.utils.tickers_universe.universe import Universe
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 #: |r| at or above which two features are the SAME SIGNAL, not two views of one.
 #: Deliberately not 1.0: `net_debt_to_ebitdare` reduced to `net_debt_to_ebitda` at 0.9998,
@@ -113,11 +119,10 @@ def feature_frames() -> dict[str, pd.DataFrame]:
         return got.reset_index(drop=True) if got is not None else None
 
     frames = _derived_fields(
-        fund_hist=fh,
-        idx=idx,
-        close=close,
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+        supplement=FundamentalSupplement(notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS))),
         yoy_periods=infer_yoy_periods(fh),
-        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS)),
     )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:

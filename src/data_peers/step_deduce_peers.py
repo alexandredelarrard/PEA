@@ -5,7 +5,6 @@ from omegaconf import DictConfig
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
-from src.data_aggregate.utils.common import data_utils as du
 from src.data_peers.utils.embeddings import (
     fetch_business_descriptions,
     get_openai_embeddings,
@@ -20,6 +19,7 @@ from src.data_peers.utils.sector_peers import (
 )
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series
+from src.utils.price.frames import daily_returns, extract_field, prices_long_to_multiindex
 from src.utils.step import Step
 
 
@@ -57,15 +57,15 @@ class StepDeducePeers(Step):
         self._log.info("Loaded peer dict from %s (%s tickers, %s with peers)", peers_path, len(self.peers), n)
         return self.peers
 
-    def normalize_prices(self):
+    def normalize_prices(self) -> None:
         prices_long = self.prices_long
         if prices_long is None:
             raise RuntimeError("prices must be loaded before normalization")
-        raw = du.prices_long_to_multiindex(prices_long)
+        raw = prices_long_to_multiindex(prices_long)
         # `CloseTotal`: the peer graph is built from the CORRELATION of daily returns, so it
         # needs the buy-and-hold path. On the price-only series two names with different
         # dividend policies look less correlated than they are.
-        self.close_total = du.extract_field(raw, "CloseTotal")
+        self.close_total = extract_field(raw, "CloseTotal")
 
         # The trading calendar is the days the MARKET traded, which now lives in
         # `prices_macro` rather than as a column inside this equity frame. Same definition as
@@ -77,7 +77,7 @@ class StepDeducePeers(Step):
             )
 
         self.close_total = self.close_total.loc[market.reindex(self.close_total.index).notna()]
-        self.returns = du.daily_returns(self.close_total)
+        self.returns = daily_returns(self.close_total)
         # prices were read for the universe tickers only, so peers are built among them alone
         self.stock_ret = self.returns
         self._log.info("Normalized prices: %s dates, %s stocks", self.close_total.shape[0], self.stock_ret.shape[1])

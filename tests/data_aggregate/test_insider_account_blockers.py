@@ -4,16 +4,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import _daily_positions
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, row, source_frame
+from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, row, source_frame
 
 
 def _account_result(df_raw: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
     df_trades, diagnostics = clean_transactions(df_raw)
-    df_trades = position_units(df_trades, QuantityBasis.from_context(_NO_SPLIT_FIXTURE, idx))
+    df_trades = position_units(df_trades, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_trades["ticker"], idx.max())))
     df_flows = diagnostics.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_trades, df_flows)
     return df_trades, df_positions, cumulative_positions(df_trades, df_positions, df_flows, idx, 60)

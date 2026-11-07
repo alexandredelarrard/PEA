@@ -34,7 +34,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.level_basis import mask_seam_windows
+from src.data_aggregate.utils.price.checks import mask_seam_windows
 
 #: The lookback `momentum_characteristic` reads, as `(back, skip)` for `mask_seam_windows`:
 #: the value at `t` reads `close_total` at positions `t-252` and `t-21` only, so it straddles a
@@ -102,3 +102,20 @@ def forward_cumchange(level_change: pd.Series | pd.DataFrame, horizon: int, min_
     """Cumulative forward change over t+1..t+h from a daily-CHANGE series/frame."""
     mp = horizon if min_periods is None else min_periods
     return level_change[::-1].rolling(horizon, min_periods=mp).sum()[::-1].shift(-1)
+
+
+def compute_sector_returns(stock_returns: pd.DataFrame, peer_dict: dict) -> pd.DataFrame:
+    sector = pd.DataFrame(index=stock_returns.index, columns=stock_returns.columns, dtype="float64")
+    for ticker, peers in peer_dict.items():
+        if not peers or ticker not in stock_returns.columns:
+            continue
+        cols = [p for p in peers if p in stock_returns.columns]
+        if not cols:
+            continue
+        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
+        w = w / w.sum()
+        mat = stock_returns[cols]
+        weighted = mat.mul(w, axis=1).sum(axis=1, min_count=1)
+        denom = mat.notna().mul(w, axis=1).sum(axis=1)
+        sector[ticker] = weighted.div(denom.where(denom > 0))
+    return sector

@@ -2,28 +2,32 @@
 
 from __future__ import annotations
 
-import logging
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.level_basis import apply_return_seams, measure_quote_seams, measure_seams
+from src.data_aggregate.utils.price.checks import measure_quote_seams, measure_seams
+from src.data_aggregate.utils.price.frames import pivot_fields
+from src.data_aggregate.utils.price.inputs import PRICE_COLS
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import load_bugfix
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.repairs import apply_return_seams
 from tests.support.universe import universe_of
 
 
 @pytest.fixture(scope="module")
 def return_sources() -> tuple[Context, dict[str, Any], pd.DataFrame]:
     _, context = get_config_context("./configs", use_cache=False, save=False)
-    raw = context.store.load(
-        Tables.prices, columns=price_step.PRICE_COLS, where={"ticker": ["VTR", "SJM", "JCI"]}, since="2001-12-01", until="2016-02-18"
-    )
+    raw = context.store.load(Tables.prices, columns=PRICE_COLS, where={"ticker": ["VTR", "SJM", "JCI"]}, since="2001-12-01", until="2016-02-18")
     assert raw is not None
     raw["date"] = pd.to_datetime(raw["date"])
     return context, load_bugfix(context.config_dir), raw
@@ -44,7 +48,7 @@ def test_real_total_return_target_and_price_isolation(
     when = pd.Timestamp(stamp)
     rows = raw.loc[raw["ticker"].eq(ticker) & raw["date"].between(when - pd.Timedelta(days=180), when + pd.Timedelta(days=180))]
     assert len(rows) >= 249
-    wide = price_step.StepCubePrices._pivot_fields(rows)
+    wide = pivot_fields(rows)
     before = {field: frame.copy() for field, frame in wide.items()}
     assert apply_return_seams(wide, blob) == 1
     returns = wide["close_total"].pct_change(fill_method=None)
@@ -65,13 +69,13 @@ def test_real_total_return_target_and_price_isolation(
     pd.testing.assert_frame_equal(wide["close_total"].loc[when:], before["close_total"].loc[when:], check_exact=True)
     for field in set(wide) - {"close_total"}:
         pd.testing.assert_frame_equal(wide[field], before[field], check_exact=True)
-    assert measure_seams(wide["close_total"], blob, lambda *args: None) == {}
-    assert measure_quote_seams(wide["close_split"], blob, lambda *args: None) == {ticker: [when]}
+    assert measure_seams(wide["close_total"], blob) == {}
+    assert measure_quote_seams(wide["close_split"], blob) == {ticker: [when]}
     healed = wide["close_total"].copy()
     assert apply_return_seams(wide, blob) == 0
     pd.testing.assert_frame_equal(healed, wide["close_total"], check_exact=True)
     with pytest.raises(ValueError, match="rebuild historical prices"):
-        measure_seams(before["close_total"], blob, lambda *args: None)
+        measure_seams(before["close_total"], blob)
     print(
         f"SANITY: {ticker} {len(rows)} real bars recover {(target - 1):+.9%}; cash returns/OHLC/volume survive, quote masks remain and reapplication is exact."
     )
@@ -80,7 +84,7 @@ def test_real_total_return_target_and_price_isolation(
 @pytest.mark.parametrize(("ticker", "stamp"), [("VTR", "2015-08-18"), ("JCI", "2007-07-02")])
 @pytest.mark.parametrize("state", ["changed", "missing", "nan", "healed"])
 def test_refused_return_repair_cannot_emit_unprotected_returns(
-    return_sources: tuple[Context, dict[str, Any], pd.DataFrame], monkeypatch: pytest.MonkeyPatch, state: str, ticker: str, stamp: str
+    return_sources: tuple[Context, dict[str, Any], pd.DataFrame], state: str, ticker: str, stamp: str, sqlite_store: Any, tmp_path: Path
 ) -> None:
     context, blob, raw = return_sources
     when = pd.Timestamp(stamp)
@@ -96,36 +100,44 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
         pair = rows.set_index("date")["close_total"]
         step = pair.loc[when] / pair.loc[pair.index < when].iloc[-1]
         rows.loc[rows["date"].lt(when), "close_total"] *= step / item["target_step"]
-
-    class CaptureStore:
-        def load(self, table: Any, **kwargs: Any) -> pd.DataFrame:
-            assert table == Tables.prices
-            return rows.copy()
-
-    step = price_step.StepCubePrices.__new__(price_step.StepCubePrices)
-    actual = cast(Any, step)
-    actual._store = CaptureStore()
-    actual._bugfix = blob
-    actual._context = SimpleNamespace(universe=universe_of([ticker]))
-    actual._log = logging.getLogger(__name__)
+    sqlite_store.save(Tables.prices, rows)
+    sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": rows["date"], "close": 1.0}))
+    if ticker in blob["share_events"]:
+        # An applicable share policy refuses the build without its own Yahoo, Sharadar and anchor evidence.
+        for table in (Tables.prices_splits, Tables.sharadar_actions, Tables.sharadar_fundamentals):
+            sqlite_store.save(table, context.store.load(table, where={"ticker": [ticker]}))
+    peer_path = tmp_path / "peers.json"
+    peer_path.write_text(json.dumps({ticker: {ticker: 1.0}}), encoding="utf-8")
+    isolated = SimpleNamespace(
+        store=sqlite_store,
+        config=context.config,
+        config_dir=context.config_dir,
+        log=context.log,
+        paths={"SECTOR_PEERS_PATH": peer_path},
+        universe=universe_of([ticker]),
+    )
     writes: list[pd.DataFrame] = []
-    monkeypatch.setattr(step, "_plan_window", lambda full: SimpleNamespace(since=None))
-    monkeypatch.setattr(step, "_trading_calendar", lambda close: pd.DatetimeIndex(close.index))
-    monkeypatch.setattr(step, "_vendor_price", lambda: None)
-    monkeypatch.setattr(step, "_peers", lambda: {})
-    monkeypatch.setattr(step, "_universe_frames", lambda wide, returns, peers: {**wide, "ret": returns})
-    monkeypatch.setattr(step, "_level_factor", lambda idx, close, vendor: close * 0 + 1)
-    monkeypatch.setattr(price_step, "write_part", lambda store, table, frame, window: writes.append(frame))
-    if state == "healed":
-        step.run(full=True)
-        assert len(writes) == 1
-        emitted = writes[0].set_index("date")
-        assert cast(float, emitted.at[when, "ret"]) + 1 == pytest.approx(blob["return_seams"][ticker][0]["target_step"], rel=1e-12)
-    else:
-        with pytest.raises(ValueError, match="REFUSED"):
-            step.run(full=True)
-        assert not writes
-    print(f"SANITY: {ticker} ordinary builder state={state}: {'verified return emitted once' if writes else 'refusal before any write'}.")
+    original = sqlite_store.replace
+
+    def capture(table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
+        assert table == Tables.cube_part_prices
+        writes.append(frame.copy())
+        return original(table, frame, **kwargs)
+
+    with patch.object(sqlite_store, "replace", side_effect=capture):
+        if state == "healed":
+            price_step.StepCubePrices(isolated, context.config).run(full=True)
+            assert len(writes) == 1
+            emitted = writes[0].set_index("date")
+            assert cast(float, emitted.at[when, "ret"]) + 1 == pytest.approx(blob["return_seams"][ticker][0]["target_step"], rel=1e-12)
+        else:
+            with pytest.raises(ValueError, match="REFUSED"):
+                price_step.StepCubePrices(isolated, context.config).run(full=True)
+            assert not writes
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.prices, columns=list(rows.columns)), rows.reset_index(drop=True), check_exact=True)
+    print(
+        f"SANITY: {ticker} actual isolated builder state={state}: {'verified return emitted once' if writes else 'refusal before any write'}; source unchanged."
+    )
 
 
 def test_small_total_repair_applies_once_inside_defect_tolerance() -> None:

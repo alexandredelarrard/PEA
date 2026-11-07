@@ -15,14 +15,19 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from omegaconf import OmegaConf
 
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
-from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, level_factor
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
+from src.utils.predecessor_series import load_level_actions as level_actions
+from src.utils.price.adjustments import split_events as genuine_splits
+from src.utils.price.levels import level_factor
 from src.validate.utils import prices as vprices
 from tests.conftest import FakeStore
 from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
+from tests.support.universe import universe_of
 
 LOGGER = "test.level_predecessor_actions"
 #: Real Sharadar TYC ARQ rows (`_cache/tyc_sf1.csv`): (date, sharesbas, marketcap, JCI close_split on `date`).
@@ -67,12 +72,49 @@ def _context(tmp_path: Path, overrides: list[dict]) -> SimpleNamespace:
     return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config_dir=tmp_path)
 
 
-def _cube_s(context: SimpleNamespace, tickers: list[str]) -> pd.DataFrame:
-    """S(d) through `StepCubePrices._level_factor`, on a close grid that is never null."""
-    step = StepCubePrices.__new__(StepCubePrices)
-    step._context, step._store, step._log, step._bugfix = context, context.store, context.log, {}
-    close = pd.DataFrame(1.0, index=DAYS, columns=tickers)
-    return step._level_factor(DAYS, close)
+#: The owner table rows the price build reads for JCI: TYC's series to the seam, then its own.
+JCI_OWNERS = [
+    {
+        "ticker": "JCI",
+        "traded_symbol": "TYC",
+        "issuer_cik": "0000833444",
+        "valid_from": pd.Timestamp("1900-01-01"),
+        "valid_to": pd.Timestamp("2016-09-02"),
+    },
+    {"ticker": "JCI", "traded_symbol": "JCI", "issuer_cik": None, "valid_from": pd.Timestamp("2016-09-02"), "valid_to": pd.NaT},
+]
+
+
+def _cube_s(context: SimpleNamespace, tickers: list[str], owners: list[dict] | None = None) -> pd.DataFrame:
+    """Exercise actual price creation with known predecessor action and quote inputs."""
+    context.universe = universe_of(tickers)
+    if owners:
+        context.store.replace(Tables.price_owner_windows, pd.DataFrame(owners))
+    context.store.replace(
+        Tables.sharadar_fundamentals,
+        pd.DataFrame(columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]),
+    )
+    context.store.replace(
+        Tables.fundamentals_history, pd.DataFrame(columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"])
+    )
+    context.store.save(
+        Tables.prices,
+        pd.DataFrame(
+            [
+                {"ticker": ticker, "date": day, "open": 1.0, "high": 1.0, "low": 1.0, "close_split": 1.0, "close_total": 1.0, "volume": 1.0}
+                for ticker in tickers
+                for day in DAYS
+            ]
+        ),
+    )
+    context.store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": DAYS, "close": 1.0}))
+    peer_path = context.config_dir / "peers.json"
+    peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in tickers}), encoding="utf-8")
+    context.paths = {"SECTOR_PEERS_PATH": peer_path}
+    context.config = OmegaConf.create({"build_cube": {}, "data_extract": {"redundant_ticks": []}})
+    StepCubePrices(context, context.config).run(full=True)
+    rows = context.store.load(Tables.cube_part_prices)
+    return rows.pivot(index="date", columns="ticker", values="level_factor").reindex(index=DAYS, columns=tickers)
 
 
 def _validate_s(context: SimpleNamespace, tickers: list[str]) -> pd.DataFrame:
@@ -84,7 +126,7 @@ def _validate_s(context: SimpleNamespace, tickers: list[str]) -> pd.DataFrame:
 
 def test_jci_level_factor_reads_tyco_actions_before_the_seam(tmp_path: Path) -> None:
     context = _context(tmp_path, [JCI_OVERRIDE])
-    cube, check = _cube_s(context, ["JCI"])["JCI"], _validate_s(context, ["JCI"])["JCI"]
+    cube, check = _cube_s(context, ["JCI"], JCI_OWNERS)["JCI"], _validate_s(context, ["JCI"])["JCI"]
     rows = pd.DataFrame(TYC_ROWS, columns=["date", "sharesbas", "marketcap", "close_split"]).assign(date=lambda f: pd.to_datetime(f["date"]))
     s_rows = cube.reindex(rows["date"]).to_numpy()
     ratio = rows["close_split"].to_numpy() * s_rows * rows["sharesbas"].to_numpy() / rows["marketcap"].to_numpy()
@@ -111,6 +153,27 @@ def test_a_ticker_without_a_vendor_series_is_unchanged(tmp_path: Path) -> None:
     assert cube.equals(raw) and check.equals(raw)
     assert plain.equals(jci_raw)
     print("  OK: an ordinary ticker's S is bit-identical to its own actions' S, and JCI without the override keeps its own actions.")
+
+
+def test_price_build_reads_owners_only_through_the_owner_table(tmp_path: Path) -> None:
+    context = _context(tmp_path, [])
+    df_cube = _cube_s(context, ["AAA", "JCI"], JCI_OWNERS)
+    actions = context.store.load(Tables.sharadar_actions, where={"ticker": ["AAA"]})
+    yf = context.store.load(Tables.prices_splits, where={"ticker": ["AAA"]})
+    raw = level_factor(DAYS, ["AAA"], yf, genuine_splits(actions, yf))["AAA"]
+    plain = _cube_s(_context(tmp_path / "config_only", [JCI_OVERRIDE]), ["JCI"])["JCI"]
+    jci_raw = level_factor(DAYS, ["JCI"], *_jci_inputs(context))["JCI"]
+    print("\n=== SANITY CHECK: owners come from the owner table, absent tickers own themselves ===")
+    print(
+        pd.DataFrame({"JCI_table": df_cube["JCI"], "expected": TYCO_S, "AAA_cube": df_cube["AAA"], "AAA_raw": raw, "JCI_config_only": plain})
+        .round(6)
+        .to_string()
+    )
+    assert df_cube["JCI"].tolist() == pytest.approx(TYCO_S, rel=1e-12)
+    assert df_cube["AAA"].equals(raw)
+    assert plain.equals(jci_raw)
+    print("  OK: JCI reads TYC's actions through its owner-table row with no config override; AAA (no row) is its own owner;")
+    print("  a config override without a table row no longer changes the price build.")
 
 
 def _jci_inputs(context: SimpleNamespace) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -145,7 +208,6 @@ def test_level_actions_warns_when_the_owner_actions_are_not_stored(tmp_path: Pat
     print(warnings)
     assert out is not None and sorted(out["date"].dt.strftime("%Y-%m-%d")) == ["2004-01-05", "2007-10-03", "2016-10-31"]
     assert warnings == [
-        "level factor: no selected predecessor split/spinoff rows for TYC of JCI (CIK 0000833444); "
-        "actions before 2016-09-02 are kept as fetched"
+        "level factor: no selected predecessor split/spinoff rows for TYC of JCI (CIK 0000833444); actions before 2016-09-02 are kept as fetched"
     ]
     print("  OK: JCI keeps its 3 own actions and one WARNING names the missing TYC series.")

@@ -221,6 +221,17 @@ class Tables:
         ),
     )
 
+    # Which traded symbol's vendor series a universe ticker's price history follows over
+    # [valid_from, valid_to); an open start is 1900-01-01, an open end NULL. A ticker with no row
+    # is its own owner. Read only by the price build.
+    price_owner_windows = Table(
+        "price_owner_windows",
+        ("ticker", "valid_from"),
+        KIND_REFERENCE,
+        date_type_cols=("valid_from", "valid_to"),
+        read_columns=("ticker", "traded_symbol", "issuer_cik", "valid_from", "valid_to", "evidence"),
+    )
+
     # SEC's current ticker list with exchanges (`company_tickers_exchange.json`), one snapshot per
     # `zips-download --only sec-tickers` run. A CURRENT map with no dates: read only for sibling share-class discovery
     # and `exchange` in the security master, never for dating or CIK resolution.

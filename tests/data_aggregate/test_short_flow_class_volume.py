@@ -22,15 +22,15 @@ from omegaconf import OmegaConf
 from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common import inputs as capital_inputs
-from src.data_aggregate.utils.common.level_basis import load_bugfix
-from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS, QuantityBasis, short_quantity_history
+from src.data_aggregate.utils.common.quotes import terminal_rows
+from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
+from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS
 from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
+from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import resolve_share_events
+from src.utils.price.adjustments import load_bugfix
 from tests.conftest import make_frames
-from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel
+from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel, split_factor
 
 
 def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
@@ -39,10 +39,7 @@ def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -
     )
     if lines is None:
         return None
-    context = SimpleNamespace(store=store, log=logging.getLogger(__name__), config_dir=Path(DEFAULT_CONFIG_DIR))
-    frames = PriceFrames(trading_index=pd.DatetimeIndex([]), universe=tuple(universe), peers={})
-    _, _, _, _, bars = capital_inputs.load_share_inputs(context, frames, bugfix or {}, lines)
-    return lines, bars
+    return lines, apply_volume_scale(institutional_inputs.load_class_bars(store, lines), bugfix or {})
 
 
 OPEN = pd.NaT
@@ -144,7 +141,12 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
     volume = pd.DataFrame({"LEN": 1_000.0, "MRK": 1_000.0}, index=idx)
     volume.loc[bad_day, "LEN"] = -1.0
     frames = make_frames(
-        idx, {"LEN": {"MRK": 1.0}, "MRK": {"LEN": 1.0}}, volume=volume, close_split=pd.DataFrame(100.0, index=idx, columns=volume.columns)
+        idx,
+        {"LEN": {"MRK": 1.0}, "MRK": {"LEN": 1.0}},
+        volume=volume,
+        close_split=pd.DataFrame(100.0, index=idx, columns=volume.columns),
+        shares_outstanding_pit=pd.DataFrame(float("nan"), index=idx, columns=volume.columns),
+        security_basis=pd.DataFrame(1.0, index=idx, columns=volume.columns),
     )
     lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN))
     bars = _bars("LEN-B", idx, 500.0)
@@ -173,8 +175,9 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
                     security_class="class_B",
                     lineage_role="secondary_class",
                     n_observations=1,
+                    cusip="526057302",
                 ),
-                primary,
+                primary.assign(cusip=["526057104", "589331107"]),
             ],
             ignore_index=True,
         ),
@@ -195,9 +198,9 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         ),
     )
     step = StepCubeInstitutionals(ctx, ctx.config)
-    events = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
-    monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args, **kwargs: frames)
-    monkeypatch.setattr(capital_inputs, "load_share_inputs", lambda *args, **kwargs: (None, None, events, None, bars))
+    monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.load_price_frames", lambda *args, **kwargs: frames)
+    monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_inputs, "load_class_bars", lambda *args, **kwargs: bars)
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: None)
 
@@ -280,9 +283,7 @@ def test_brk_style_ratio_step_matches_the_as_traded_identity_across_a_one_class_
     regsho = pd.DataFrame(
         [{"date": d, "ticker": "BRK-B", "short_volume": 1.0, "total_volume": 1_000 + 30 * 5 if d < split else 50_000 + 1_500 * 5} for d in idx]
     )
-    basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
-    df_regsho = short_quantity_history(regsho, basis)
-    assert df_regsho is not None
+    df_regsho = terminal_rows(regsho, ("short_volume", "total_volume"), split_factor(splits, idx, ["BRK-B"]))
     cov = _shortvol_fields(df_regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
 
     assert _cell(ratio, "2010-01-05", "BRK-B") == pytest.approx(160 / 2_300)

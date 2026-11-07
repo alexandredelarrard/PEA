@@ -21,6 +21,7 @@ from src.data_aggregate.utils.momentum.features import (
     _rsi,
     compute_raw_features,
 )
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 
 def _number(value: object) -> float:
@@ -97,7 +98,11 @@ def test_technicals_are_lagged_no_same_day_leakage():
     low = base - 1.5
     sector = pd.DataFrame(0.0, index=base.index, columns=["AAA"])
 
-    f1 = compute_raw_features(base, base, sector, high=high, low=low)
+    f1 = compute_raw_features(
+        PriceFrames(
+            trading_index=(base).index, universe=tuple((base).columns), peers={}, close_total=base, open=base, sector_ret=sector, high=high, low=low
+        )
+    )
     # perturb ONLY the last close (and its high/low) by a large shock
     base2 = base.copy()
     base2.iloc[-1, 0] = _number(base2.iloc[-1, 0]) + 25.0
@@ -105,7 +110,18 @@ def test_technicals_are_lagged_no_same_day_leakage():
     high2.iloc[-1, 0] = _number(high2.iloc[-1, 0]) + 25.0
     low2 = low.copy()
     low2.iloc[-1, 0] = _number(low2.iloc[-1, 0]) + 25.0
-    f2 = compute_raw_features(base2, base, sector, high=high2, low=low2)
+    f2 = compute_raw_features(
+        PriceFrames(
+            trading_index=(base2).index,
+            universe=tuple((base2).columns),
+            peers={},
+            close_total=base2,
+            open=base,
+            sector_ret=sector,
+            high=high2,
+            low=low2,
+        )
+    )
 
     d = pd.Timestamp(base.index[-1])
     for name in ["macd", "macd_hist", "rsi_14", "atr_14"]:

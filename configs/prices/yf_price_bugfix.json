@@ -264,6 +264,36 @@
           "Common Shares"
         ]
       }
+    },
+    "JCI": {
+      "anchors": [
+        {
+          "date": "2016-11-23",
+          "ordinary_shares": 936718105,
+          "rtol": 0.0002,
+          "source": "https://www.sec.gov/Archives/edgar/data/833444/000083344416000216/jciplc201610-k.htm"
+        }
+      ],
+      "events": [
+        {
+          "expect": {
+            "yahoo": {
+              "date": "2016-09-06",
+              "ratio": 0.955
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "2016-09-06",
+            "ratio": 0.955
+          },
+          "evidence": "Tyco 0.955-for-one ordinary-share consolidation immediately prior to the JCI merger on 2016-09-02; JCI's quote before 2016-09-06 is Tyco's. 8-K Items 2.01/3.03: each Tyco ordinary share outstanding immediately prior to the merger was converted into 0.955 shares; ordinary shares begin trading as JCI effective September 6. FY2016 10-K: Tyco shares at September 2 427181743 x 0.955 = 407958565 post-consolidation. First new-basis session 2016-09-06: issuer-independent FTD prior-day closes TYC 45.59 (09-02) and JCI 48.90 (09-06), raw ratio 1.07260 versus close_split 1.02434, implied 1.04711 = 1/0.955. Sharadar did not restate: TYC ARQ 2016-07-29 sharesbas 426224367 equals the original 10-Q cover, and JCI 2016-11-23 sharesbas equals the 10-K cover 936718105. https://www.sec.gov/Archives/edgar/data/833444/000110465916143068/a16-17941_18k.htm ; https://www.sec.gov/Archives/edgar/data/833444/000083344416000216/jciplc201610-k.htm ; https://www.sec.gov/Archives/edgar/data/833444/000083344416000197/tyc-2016624x10q.htm",
+          "vendor": {
+            "date": "2016-09-06",
+            "ratio": 1.0
+          }
+        }
+      ]
     }
   },
   "level_factor": {

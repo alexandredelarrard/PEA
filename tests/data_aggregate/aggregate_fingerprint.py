@@ -44,12 +44,15 @@ from __future__ import annotations
 
 import json
 import zlib
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
+from src.data_aggregate.utils.price.frames import PriceFrames
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -767,8 +770,9 @@ def governance_panel(
     from the proxy say-on-pay fallback rows the stage appends, and the holder-table ownership
     estimate is not digested (`test_governance_ownership_estimate.py` guards it).
     """
-    from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+    from src.data_aggregate.utils.governance.clean import GovernanceInputs
     from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
+    from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
     proxies = synthetic_def14a(tickers, idx, rng_for("def14a"))
     board = synthetic_directors(proxies, rng_for("directors"))
@@ -794,16 +798,9 @@ def governance_panel(
 
 def compute() -> dict:
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
-    from src.data_aggregate.utils.common.level_basis import as_traded_close
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
-    from src.data_aggregate.utils.common.prices import (
-        forward_compound,
-        forward_cumchange,
-        forward_return,
-        momentum_characteristic,
-        trailing_vol,
-    )
+    from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+    from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
     from src.data_aggregate.utils.common.xs import (
         winsorize_xs,
         xs_standardize,
@@ -814,7 +811,6 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history, tape_share_quantities
     from src.data_aggregate.utils.institutionals.ownership_features import (
         build_ownership_feature_panel,
     )
@@ -831,11 +827,16 @@ def compute() -> dict:
         build_feature_panel,
         compute_raw_features,
     )
-    from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
-    from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-        _quarter_features,
-        build_institutional_feature_panel,
+    from src.data_aggregate.utils.price.capitalization import project_security_shares
+    from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
+    from src.data_aggregate.utils.price.returns import (
+        forward_compound,
+        forward_cumchange,
+        forward_return,
+        momentum_characteristic,
+        trailing_vol,
     )
+    from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
     from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
     from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
     from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
@@ -847,9 +848,12 @@ def compute() -> dict:
     )
     from src.utils.identity_tables import LINE_COLUMNS, CusipTags
     from src.utils.institutional_vintages import prepare_book_vintages
-    from src.utils.price_adjustments import ShareBasis, resolve_share_events
+    from src.utils.price.adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
+    from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
+    from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+    from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features, build_institutional_feature_panel
 
     fund = fundamentals()
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
@@ -908,7 +912,20 @@ def compute() -> dict:
                 k: v
                 for k, v in sorted(
                     compute_raw_features(
-                        close, px["open"], sector_ret, high=px["high"], low=px["low"], volume=px["volume"], seasonal_horizons=[30, 60, 90]
+                        PriceFrames(
+                            trading_index=close.index,
+                            universe=tuple(close.columns),
+                            peers={},
+                            close_total=close,
+                            open=px["open"],
+                            sector_ret=sector_ret,
+                            high=px["high"],
+                            low=px["low"],
+                            volume=px["volume"],
+                            volume_pit=px["volume"],
+                            close_pit=close,
+                        ),
+                        seasonal_horizons=[30, 60, 90],
                     ).items()
                 )
                 if isinstance(v, pd.DataFrame)
@@ -916,30 +933,66 @@ def compute() -> dict:
             axis=1,
         )
     )
-    out["panel.price"] = frame_digest(build_feature_panel(close, px["open"], sector_ret, "rank", px["high"], px["low"], px["volume"], [30, 60, 90]))
+    out["panel.price"] = frame_digest(
+        build_feature_panel(
+            PriceFrames(
+                trading_index=close.index,
+                universe=tuple(close.columns),
+                peers={},
+                close_total=close,
+                open=px["open"],
+                sector_ret=sector_ret,
+                high=px["high"],
+                low=px["low"],
+                volume=px["volume"],
+                volume_pit=px["volume"],
+                close_pit=close,
+            ),
+            method="rank",
+            seasonal_horizons=[30, 60, 90],
+        )
+    )
     # `notes_num` is deliberately NOT passed: it is a separate bulk SEC table, and
     # freezing a slice of it would double the fixture for one feature family.
     # The consequence is explicit -- the `pension_*` features are absent from this digest and
     # are guarded by `test_insider_pension_features.py` instead.
-    fp = build_fundamental_feature_panel(fund, peers, idx, stock_close=close, earnings_history=earn)
+    legacy_prices = legacy_capital_frames(fund, close)
+    fp = build_fundamental_feature_panel(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
+        supplement=FundamentalSupplement(earnings_history=earn),
+    )
     out["panel.fundamental"] = frame_digest(fp)
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
-    out["panel.earnings"] = frame_digest(build_earnings_feature_panel(earn, peers, idx, stock_close=close))
+    out["panel.earnings"] = frame_digest(
+        build_earnings_feature_panel(earn, PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close))
+    )
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
-    out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
+    out["panel.dividend"] = frame_digest(
+        build_dividend_feature_panel(
+            div,
+            replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
+            FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        )
+    )
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
     # Exercise the same visible dated-quantity preparation as the owning step.
-    quantity_basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
-    short_capital = ShortFlowCapital(
-        daily_share_quantities(fund, idx, quantity_basis), with_class_volume(tape_share_quantities(px["volume"], quantity_basis), class_volume)
+    share_events = resolve_share_events(None, splits, {})
+    df_basis = security_basis_frame(share_events, idx, close.columns)
+    observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0)
+    saved_shares, _ = project_security_shares(observations, share_events, df_basis)
+    df_terminal = terminal_basis_factor(df_basis)
+    price_frames = make_frames(
+        idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
     )
+    short_capital = ShortFlowCapital(saved_shares * df_terminal, with_class_volume(px["volume"], class_volume))
     ftd_coverage = ftd[["date", "period"]]
-    ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
+    ftd_settlement = prepare_fails_quantities(terminal_rows(ftd, ("fails_quantity",), df_terminal), ftd_coverage, idx, None, None)
     ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
     df_short_flow = build_short_flow_feature_panel(
         make_frames(idx, peers, volume=px["volume"], close_total=close),
-        short_quantity_history(short_hist, quantity_basis),
+        terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal),
         ftd_settlement,
         short_capital,
         ftd_publication,
@@ -955,10 +1008,10 @@ def compute() -> dict:
     # say-on-pay hole), so the guard is turned OFF here and covered instead by
     # test_institutional_features.py::test_per_ticker_coverage_onset_guard.
     institutional = build_institutional_feature_panel(
-        make_frames(idx, peers, close_split=close),
+        price_frames,
         priced_holdings,
-        shares_out_history=fund,
         splits=splits,
+        share_basis=share_events,
         min_prior_holders=0,
         valuation_close=valuation_close,
     )
@@ -987,7 +1040,8 @@ def compute() -> dict:
     book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
-    market = BehaviorMarket(idx, valuation_close, ShareBasis(actual, actual, actual, {}))
+    basis_grid = idx.union(pd.DatetimeIndex(df_books["period"].unique()))
+    market = BehaviorMarket(idx, valuation_close, security_basis_frame(ShareBasis(actual, actual, actual, {}), basis_grid, valuation_close.columns))
     cohort = frozenset(pad_cik(cik) for cik in roster)
     super_history = compute_superinvestor_feature_history(book_history, {"": cohort, "topk": cohort}, tuple(tickers), market)
     superinvestor = project_superinvestor_features(
@@ -995,9 +1049,7 @@ def compute() -> dict:
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    df_insider = build_insider_feature_panel(
-        make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events
-    )
+    df_insider = build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=share_events)
     for column in ("f_ic_insider_purchase_pct_prior", "f_ic_insider_management_position_change_60d"):
         assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
     out["panel.insider"] = frame_digest(df_insider)

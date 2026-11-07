@@ -8,7 +8,9 @@ shared trailing repair window.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -17,7 +19,10 @@ import pytest
 from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables, name_of
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 
 class _StopAfterPlanError(RuntimeError):
@@ -181,17 +186,13 @@ def test_real_fundamentals_full_and_incremental_tail_parity(real_frames):
     window = calendar[calendar >= warmup_start]
 
     full = build_fundamental_feature_panel(
-        fundamentals,
-        peers,
-        calendar,
-        stock_close=close.reindex(calendar),
+        FundamentalHistory(raw_history=fundamentals, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fundamentals, close.reindex(calendar))), trading_index=calendar, peers=peers),
     )
 
     incremental = build_fundamental_feature_panel(
-        fundamentals,
-        peers,
-        window,
-        stock_close=close.reindex(window),
+        FundamentalHistory(raw_history=fundamentals, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fundamentals, close.reindex(window))), trading_index=window, peers=peers),
     )
 
     keys = ["date", "ticker"]

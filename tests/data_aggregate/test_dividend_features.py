@@ -10,6 +10,9 @@ covered in test_da_capex_and_dividend_consolidation.py.)
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -19,6 +22,9 @@ from src.data_aggregate.utils.fundamentals.dividend_features import (
     _dividend_fields,
     build_dividend_feature_panel,
 )
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 _YOY = 252
 
@@ -54,7 +60,7 @@ def _synth():
 
 def test_dividend_fields_economics_and_pit():
     dates, tickers, close, div_hist, fund = _synth()
-    F = _dividend_fields(div_hist, close, fund)
+    F = _dividend_fields(div_hist, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
     for k in ("dividend_yield", "dividend_growth", "dividend_payer", "shareholder_yield"):
         assert k in F, f"missing {k}"
 
@@ -74,7 +80,7 @@ def test_dividend_fields_economics_and_pit():
     # point-in-time: perturb everything AFTER t -> value at t unchanged
     div2 = pd.concat([div_hist, pd.DataFrame([{"date": dates[-1], "ticker": "P0", "dividends": 99.0}])], ignore_index=True)
     tm = dates[len(dates) // 2]
-    F2 = _dividend_fields(div2, close, fund)
+    F2 = _dividend_fields(div2, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
     assert np.isclose(F["dividend_yield"].loc[tm, "P0"], F2["dividend_yield"].loc[tm, "P0"])
 
     print("\n=== SANITY CHECK: dividend economics + point-in-time ===")
@@ -109,7 +115,7 @@ def _synth_reconcile():
 
 def test_reconcile_sources_5y_growth_payout_coverage():
     dates, close, div_hist, fund = _synth_reconcile()
-    F = _dividend_fields(div_hist, close, fund)
+    F = _dividend_fields(div_hist, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
     t = dates[-1]
     for k in ("dividend_growth_5y", "dividend_payout_ratio", "dividend_coverage"):
         assert k in F, f"missing {k}"
@@ -163,7 +169,7 @@ def test_zero_fill_is_scoped_to_the_listed_window():
     div_hist = pd.DataFrame([{"date": d, "ticker": "PAYER", "dividends": 0.5} for d in dates[::63]])
     fund = pd.DataFrame([{"ticker": t, "as_of": aso, "sharesOutstanding": 1e9} for aso in dates[::63] for t in ("OLD", "NEW", "PAYER")])
 
-    F = _dividend_fields(div_hist, close, fund)
+    F = _dividend_fields(div_hist, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
     before, after = dates[10], dates[-1]
     for k in ("dividend_yield", "dividend_payer", "shareholder_yield"):
         assert pd.isna(F[k].loc[before, "NEW"]), f"{k} fabricated on a pre-listing row"
@@ -188,7 +194,11 @@ def test_panel_exposes_f_columns():
     dates, tickers, close, div_hist, fund = _synth()
     # give each ticker enough peers for the _vs_peers column to populate
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    panel = build_dividend_feature_panel(div_hist, peers, dates, stock_close=close, fundamentals_history=fund)
+    panel = build_dividend_feature_panel(
+        div_hist,
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=dates, peers=peers),
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+    )
     for c in (
         "f_dividend_yield",
         "f_dividend_yield_vs_hist",
@@ -223,16 +233,19 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
     )
     peers = {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
 
-    full = build_dividend_feature_panel(dividends, peers, dates, stock_close=close)
+    full = build_dividend_feature_panel(
+        dividends,
+        replace(cast(PriceFrames, legacy_capital_frames(None, close)), trading_index=dates, peers=peers),
+        FundamentalHistory(share_basis=known_no_share_events()),
+    )
     warmup = PART_BY_NAME["cube_part_fundamentals"].warmup_trading_days
     last_pos = 7 * 252 - 40
     refresh_from = dates[last_pos - PART_REFRESH_TRADING_DAYS]
     start = dates[last_pos - PART_REFRESH_TRADING_DAYS - warmup]
     windowed = build_dividend_feature_panel(
         dividends,
-        peers,
-        dates[dates >= start],
-        stock_close=close.loc[start:],
+        replace(cast(PriceFrames, legacy_capital_frames(None, close.loc[start:])), trading_index=dates[dates >= start], peers=peers),
+        FundamentalHistory(share_basis=known_no_share_events()),
     )
 
     columns = ["f_dividend_growth_5y"]

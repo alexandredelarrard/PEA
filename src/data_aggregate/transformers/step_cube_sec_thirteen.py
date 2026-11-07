@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -14,11 +14,12 @@ from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
+from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_aggregate.utils.common.quotes import lookup_asof
+from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_books import iter_institutional_books, prepare_institutional_book_history
@@ -35,7 +36,6 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import Behavior
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags
-from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
 
@@ -45,9 +45,6 @@ class SecThirteenResources:
     """One loaded capital/security snapshot shared by both13F families."""
 
     frames: PriceFrames
-    shares: pd.DataFrame | None
-    basis: ShareBasis
-    valuation_close: pd.DataFrame | None
     cusip_tags: CusipTags
     cohorts: Mapping[str, frozenset[str]] | None
 
@@ -59,14 +56,14 @@ class PreparedSecThirteen:
 
 
 class StepCubeSecThirteen(Step):
-    _FIELDS = ("close_split", "level_factor")
+    _FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis")
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_sec_thirteen)
-        self._bugfix = load_bugfix(context.config_dir)
+        self._settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
         cfg = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
@@ -107,10 +104,9 @@ class StepCubeSecThirteen(Step):
 
     def _load_resources(self) -> SecThirteenResources:
         # Read the shared dependencies once before any cleaning or feature work.
-        frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
+        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
         cusip_tags = CusipTags.load(self._store)
-        shares, _, basis, valuation_close, _ = capital_inputs.load_share_inputs(self._context, frames, self._bugfix)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -118,7 +114,7 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, shares, basis, valuation_close, cusip_tags, cohorts)
+        return SecThirteenResources(frames, cusip_tags, cohorts)
 
     def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
 
@@ -157,19 +153,20 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        history = prepare_institutional_book_history(
-            packets,
-            resources.frames.trading_index,
-            resources.frames.universe,
-            resources.valuation_close,
-            cfg.get("value_basis"),
-            settle_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
-        )
+        # `sec13f_hr` rows keep the ticker stored at extraction (no tags).
+        with closing(clean_public_batches(packets, None, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:
             return None
         compact, states = history
-        splits = resources.basis.actual.rename(columns={"value": "ratio"})
-        return compute_institutional_feature_history(iter_institutional_books(compact, states), splits=splits)
+
+        # Quantities count only where the saved basis F supports the ticker on the report date.
+        compact = compact.copy()
+        keys = compact.index.to_frame(index=False)
+        df_basis = resources.frames.security_basis
+        if not compact.empty:
+            compact["shares"] = compact["shares"].where(lookup_asof(df_basis, keys["ticker"], keys["period"]).notna().to_numpy())
+        return compute_institutional_feature_history(iter_institutional_books(compact, states), df_basis=df_basis)
 
     def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
 
@@ -185,22 +182,18 @@ class StepCubeSecThirteen(Step):
         # Clean whole books once, retaining mapped off-universe positions and provenance.
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, resources.cusip_tags, None, resources.valuation_close, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, resources.cusip_tags, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
             books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
         if books is None:
             return None
-        market = BehaviorMarket(resources.frames.trading_index, resources.valuation_close, resources.basis)
+        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
     @staticmethod
     def _output_frames(frames: PriceFrames, dates: pd.DatetimeIndex) -> PriceFrames:
-        return replace(
-            frames,
-            trading_index=dates,
-            close_split=frames.close_split.reindex(dates) if frames.close_split is not None else None,
-            level_factor=frames.level_factor.reindex(dates) if frames.level_factor is not None else None,
-        )
+        """Output-date frames; the saved basis F stays whole for quarter-end lookups before the output window."""
+        return frames.on(dates, "close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
 
     @staticmethod
     def _require_saved_families(prepared: PreparedSecThirteen, saved_columns: Sequence[str]) -> None:
@@ -227,14 +220,10 @@ class StepCubeSecThirteen(Step):
     def _project_institutional_panel(self, features: pd.DataFrame, frames: PriceFrames, resources: SecThirteenResources) -> pd.DataFrame:
         if features.empty:
             return pd.DataFrame(columns=["date", "ticker"])
-        settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
         fields = project_institutional_features(
             features,
             frames,
-            resources.shares,
-            resources.basis,
-            settle_days,
-            versioned=True,
+            self._settle_days,
             trading_calendar=resources.frames.trading_index,
         )
         emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
@@ -257,9 +246,13 @@ class StepCubeSecThirteen(Step):
         broad = prepared.institutional
         if broad is not None and not broad.empty:
             fields.update(name for name in INSTITUTIONAL_EMISSION if name in broad and broad[name].notna().any())
-            if resources.shares is not None and not resources.shares.empty:
-                derived = {"inst_shares": "ic_inst_ownership_pct", "inst_value": "ic_inst_value_to_mcap"}
-                fields.update(name for source, name in derived.items() if source in broad and broad[source].notna().any())
+            denominators = (
+                (resources.frames.shares_outstanding_pit, "inst_shares", "ic_inst_ownership_pct"),
+                (resources.frames.mcap_pit, "inst_value", "ic_inst_value_to_mcap"),
+            )
+            for df_denominator, source, name in denominators:
+                if df_denominator is not None and df_denominator.gt(0).any().any() and source in broad and broad[source].notna().any():
+                    fields.add(name)
         if prepared.superinvestor is not None:
             fields.update(SUPERINVESTOR_EMISSION)
         return {"f_" + name for name in fields}

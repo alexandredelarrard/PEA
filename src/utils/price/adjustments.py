@@ -37,6 +37,7 @@ class ShareBasis:
     price: pd.DataFrame
     policies: dict[str, dict]
     actual_available: bool = True
+    unknown_units: frozenset[str] = frozenset()
 
     def rebase(self, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series) -> pd.Series:
         """Convert ordinary-share quantities between explicit dates using genuine events only.
@@ -83,23 +84,6 @@ class ShareBasis:
             result.loc[df_group.index] = np.where(np.isfinite(rebased), rebased, np.nan)
         return pd.Series(result.to_numpy(), index=quantities.index, name=quantities.name)
 
-    def declared_units(self, tickers: pd.Series, dates: pd.Series, titles: pd.Series) -> pd.Series:
-        """Ordinary shares per explicitly titled security; ambiguous nonunitary titles stay unknown."""
-        result = pd.Series(1.0, index=dates.index)
-        units = self.factor(tickers, dates, "units")
-        cleaned = titles.fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip().str.casefold()
-        for ticker, policy in self.policies.items():
-            convention = policy.get("quote_units")
-            if convention is None:
-                continue
-            hit = tickers.eq(ticker) & units.ne(1.0)
-            quoted = {" ".join(title.split()).casefold() for title in convention["quoted_titles"]}
-            ordinary = {" ".join(title.split()).casefold() for title in convention.get("ordinary_titles", [])}
-            result.loc[hit] = np.nan
-            result.loc[hit & cleaned.isin(quoted)] = units.loc[hit & cleaned.isin(quoted)]
-            result.loc[hit & cleaned.isin(ordinary)] = 1.0
-        return result
-
     def factor(self, tickers: pd.Series, dates: pd.Series, kind: str) -> pd.Series:
         """Strict future-event product, or ordinary shares per quoted security for units."""
         if kind != "units":
@@ -114,7 +98,7 @@ class ShareBasis:
                 continue
             hit = tickers.eq(ticker)
             result.loc[hit] = np.where(stamps.loc[hit] < pd.Timestamp(units["date"]), units["before"], units["after"])
-        return result
+        return result.mask(tickers.isin(self.unknown_units))
 
 
 def _closed(record: object, allowed: set[str], required: set[str], label: str) -> dict:
@@ -423,7 +407,9 @@ def _is_simple_split(ratio: float) -> bool:
     return frac.denominator == 1 or frac.numerator == 1
 
 
-def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: SplitReport | None = None) -> pd.DataFrame:
+def split_events(
+    actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: SplitReport | None = None, report_events: bool = True
+) -> pd.DataFrame:
     """The genuine share splits from both vendors, as `(ticker, date, value)`.
 
     `sharadar_actions` is incomplete per ticker, so it is cross-validated against yfinance (`prices_splits`) by
@@ -466,8 +452,9 @@ def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = 
         yf = yf.dropna(subset=["date", "value"])
         yf = yf[yf["value"] != 0.0]
 
-    out = union_split_sources(sharadar, yf, report=report)
-    _log_codated(out, codated)
+    out = union_split_sources(sharadar, yf, report=report, report_events=report_events)
+    if report_events:
+        _log_codated(out, codated)
     return out
 
 
@@ -534,7 +521,7 @@ def _reject_yfinance_only(row: pd.Series, report: SplitReport | None) -> None:
         report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
 
 
-def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: SplitReport | None = None) -> pd.DataFrame:
+def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: SplitReport | None = None, report_events: bool = True) -> pd.DataFrame:
     """Merge two cleaned split lists into one, sorted by `(ticker, date)`.
 
     In both (within `SPLIT_MATCH_DAYS`): kept on the yfinance DATE (so it steps with `close_split`), ratio per
@@ -574,14 +561,15 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Spl
         elif report is not None:
             report.splits_rejected.append(f"{label} (uncorroborated, not split-shaped)")
 
-    if uncorroborated:
+    if uncorroborated and report_events:
         log.warning(
             "%d split event(s) in sharadar_actions but NOT in yfinance, kept because the ratio is split-shaped -- review: %s",
             len(uncorroborated),
             ", ".join(uncorroborated),
         )
     if conflicts:
-        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: %s", len(conflicts), "; ".join(conflicts))
+        if report_events:
+            log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: %s", len(conflicts), "; ".join(conflicts))
         if report is not None:
             report.splits_rejected.extend(conflicts)
 
@@ -591,10 +579,60 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Spl
         .sort_values(["ticker", "date"])
         .reset_index(drop=True)
     )
-    log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
+    if report_events:
+        log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
     if report is not None:
         report.splits_applied.extend(f"{r.ticker} {pd.Timestamp(cast(Any, r.date)).date()} x{r.value}" for r in out.itertuples())
     return out
+
+
+def quantity_basis(
+    actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None, bugfix: dict, tickers: Sequence[str], security: pd.DataFrame | None = None
+) -> ShareBasis:
+    """Prepare source-checked genuine events and dated units for consumers of saved prices.
+
+    Price creation owns anchor verification and price reconciliation. This adapter checks
+    applicable event evidence without reloading anchors or resolving a price-level factor.
+    """
+    validate_bugfix(bugfix)
+    df_actual = split_events(actions, yf_splits, report_events=False)
+    df_vendor = df_actual.copy()
+    sources = {
+        "sharadar": None if actions is None else actions.loc[actions["action"].eq(SHARADAR_ACTION_SPLIT), ["ticker", "date", "value"]].copy(),
+        "yahoo": None if yf_splits is None else yf_splits.rename(columns={"ratio": "value"})[["ticker", "date", "value"]].copy(),
+    }
+    for df_source in sources.values():
+        if df_source is not None:
+            df_source["date"] = pd.to_datetime(df_source["date"])
+    policies = {ticker: policy for ticker, policy in bugfix.get("share_events", {}).items() if ticker in tickers}
+    for ticker, policy in policies.items():
+        for event in policy["events"]:
+            for source, df_source in sources.items():
+                _check_source(df_source, ticker, event, source)
+            df_actual = _replace_event(df_actual, ticker, event, event["actual"])
+            df_vendor = _replace_event(df_vendor, ticker, event, event.get("vendor", event["actual"]))
+    df_actual = df_actual.sort_values(["ticker", "date"]).reset_index(drop=True)
+    df_empty = df_actual.iloc[:0].copy()
+    return ShareBasis(
+        df_actual,
+        df_vendor.sort_values(["ticker", "date"]).reset_index(drop=True),
+        df_empty,
+        policies,
+        actual_available=actions is not None or yf_splits is not None,
+        unknown_units=unsupported_units(actions, security, tickers, bugfix),
+    )
+
+
+def unsupported_units(df_actions: pd.DataFrame | None, df_security: pd.DataFrame | None, tickers: Sequence[str], bugfix: dict) -> frozenset[str]:
+    """Identify evidenced ADR/ADS histories lacking a verified quote-unit convention."""
+    unknown: set[str] = set()
+    if df_actions is not None:
+        unknown.update(df_actions.loc[df_actions["action"].eq("adrratiosplit") & df_actions["ticker"].isin(tickers), "ticker"])
+    if df_security is not None and "category" in df_security:
+        adr = df_security["category"].astype("string").str.contains(r"\bADR\b|\bADS\b", case=False, na=False)
+        unknown.update(df_security.loc[adr & df_security["ticker"].isin(tickers), "ticker"])
+    unknown.difference_update(ticker for ticker, policy in bugfix.get("share_events", {}).items() if "quote_units" in policy)
+    return frozenset(unknown)
 
 
 def forward_split_factor(tickers: pd.Series, dates: pd.Series, splits: pd.DataFrame) -> pd.Series:

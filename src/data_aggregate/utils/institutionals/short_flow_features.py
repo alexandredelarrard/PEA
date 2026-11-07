@@ -27,9 +27,8 @@ from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.xs import self_history_z
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -69,7 +68,7 @@ EMISSION: dict[str, str] = {
 
 @dataclass(frozen=True)
 class ShortFlowCapital:
-    """PIT outstanding counts and terminal-restated ordinary-share tape on one target basis."""
+    """Outstanding counts and the vendor-restated tape, both in each ticker's last saved security units."""
 
     shares_out: pd.DataFrame | None
     tape: pd.DataFrame | None
@@ -188,6 +187,17 @@ def _publish_ftd_zip_states(
     return published
 
 
+def _normalised_lines(lines: pd.DataFrame) -> pd.DataFrame:
+    """Lines with `company`, Yahoo `symbol`, numeric `ratio` and half-open `[start, end)` days, oldest start first."""
+    return lines.assign(
+        company=lines["canonical_company"].astype(str),
+        symbol=lines["market_symbol"].map(yahoo_symbol),
+        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce"),
+        start=pd.to_datetime(lines["valid_from"]).dt.normalize(),
+        end=pd.to_datetime(lines["valid_to"]).dt.normalize(),
+    ).sort_values("start", kind="stable")
+
+
 def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Wide secondary-class volume in canonical shares, and company-days lacking supported active-class input.
 
@@ -199,13 +209,7 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
     idx = pd.DatetimeIndex(idx).normalize()
     if lines.empty:
         return pd.DataFrame(index=idx, dtype="float64"), pd.DataFrame(index=idx, dtype="bool")
-    work = lines.assign(
-        company=lines["canonical_company"].astype(str),
-        symbol=lines["market_symbol"].map(yahoo_symbol),
-        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce"),
-        start=pd.to_datetime(lines["valid_from"]).dt.normalize(),
-        end=pd.to_datetime(lines["valid_to"]).dt.normalize(),
-    ).sort_values("start", kind="stable")
+    work = _normalised_lines(lines)
     tape = bars.assign(date=to_day(bars["date"])).drop_duplicates(["ticker", "date"], keep="last")
     tape = tape.pivot(index="date", columns="ticker", values="volume").reindex(idx) if not tape.empty else pd.DataFrame(index=idx)
     companies = sorted(work["company"].unique())
@@ -493,27 +497,9 @@ def _rolling_tape_support(supported: pd.DataFrame | None, idx: pd.DatetimeIndex,
 
 
 def prepare_fails_quantities(
-    fails_hist: pd.DataFrame,
-    coverage: pd.DataFrame,
-    idx: pd.DatetimeIndex,
-    columns: pd.Index | None,
-    tenure_mask: pd.DataFrame | None,
-    basis: QuantityBasis,
-) -> FtdSettlement:
-    """Rebase explicit dated canonical fails, including verified source zeros, to target ordinary shares."""
-    df_fails, on_file = _settlement_fails(fails_hist, coverage, idx, columns, tenure_mask)
-    source = pd.Series(idx, index=idx)
-    target = pd.Series(basis.target_date, index=idx)
-    for ticker in df_fails.columns:
-        names = pd.Series(ticker, index=idx)
-        df_fails[ticker] = basis.events.rebase(df_fails[ticker], names, source, target)
-    return FtdSettlement(df_fails, on_file)
-
-
-def _settlement_fails(
     fails_hist: pd.DataFrame, coverage: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index | None, tenure_mask: pd.DataFrame | None
-) -> tuple[pd.DataFrame, pd.Series]:
-    """Align explicit issuer observations; global period metadata cannot create another issuer's zero."""
+) -> FtdSettlement:
+    """Align explicit issuer observations, including verified zeros; global period metadata cannot create another issuer's zero."""
     df_fails = _pivot(fails_hist, "fails_quantity", idx) if not fails_hist.empty else pd.DataFrame(index=idx, dtype="float64")
     if columns is not None:
         df_fails = df_fails.reindex(columns=columns)
@@ -531,7 +517,7 @@ def _settlement_fails(
         len(idx),
         100 * float(on_file.mean()),
     )
-    return df_fails, on_file
+    return FtdSettlement(df_fails, on_file)
 
 
 def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd.DatetimeIndex) -> pd.DataFrame:

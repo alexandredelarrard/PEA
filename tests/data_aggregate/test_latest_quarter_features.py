@@ -1,5 +1,5 @@
 """Tests for the LATEST-QUARTER momentum features
-(src/data_aggregate/utils/fundamental_features.py: fiscal_apply_to_daily and
+(fiscal_apply_to_daily, a test-only transform kept here, and
 the discrete single-quarter characteristics in _derived_fields).
 
 These capture the acceleration/inflection that the TTM series smooths away, and
@@ -8,11 +8,41 @@ must be point-in-time (a value only appears once its filing is public).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fiscal_apply_to_daily
+from src.data_aggregate.utils.common.pit import _observations_to_daily
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events
+
+
+def fiscal_apply_to_daily(
+    fund_hist: pd.DataFrame,
+    field: str,
+    idx: pd.DatetimeIndex,
+    func: Callable[[pd.Series], pd.Series],
+    *,
+    max_age_days: int | None = None,
+) -> pd.DataFrame:
+    """Apply a per-ticker series transform (e.g. YoY growth, or acceleration =
+    change in YoY) to a fiscal field, forward-filled point-in-time onto trading
+    days. `func` receives one ticker's chronological series and returns a series
+    of the same length."""
+    if field not in fund_hist.columns:
+        return pd.DataFrame(index=idx)
+    df = fund_hist[["ticker", "as_of", field]].copy()
+    df["as_of"] = pd.to_datetime(df["as_of"])
+    df[field] = pd.to_numeric(df[field], errors="coerce")
+    df = df.dropna(subset=[field]).sort_values(["ticker", "as_of"])
+    if df.empty:
+        return pd.DataFrame(index=idx)
+    df["v"] = df.groupby("ticker")[field].transform(func)
+    df["v"] = df["v"].replace([np.inf, -np.inf], np.nan)
+    return _observations_to_daily(df, "v", idx, max_age_days=max_age_days)
 
 
 def _synth_quarterly():
@@ -67,7 +97,11 @@ def test_latest_quarter_margin_inflection_exact():
     fund, ends, rev_q, ni_q = _synth_quarterly()
     idx = pd.bdate_range("2019-01-01", "2021-06-01")
 
-    fields = _derived_fields(fund, idx, close=None, yoy_periods=4)
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        PriceFrames(trading_index=idx, universe=(), peers={}),
+        yoy_periods=4,
+    )
     assert "q_margin_vs_ttm" in fields
     assert "q_rev_growth" not in fields
 

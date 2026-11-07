@@ -14,7 +14,7 @@ from src.context import define_global_paths
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.peers_io import load_peers
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.fundamentals.feature_views import (
     EXCLUDED_FEATURES,
     FEATURE_COLUMNS,
@@ -27,6 +27,7 @@ from src.data_store.schema import Tables
 from src.utils.config import read_config
 from src.utils.tickers_universe.universe import Universe
 from tests.conftest import _store
+from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
 from tests.support.cube_feature_catalogue import CATALOGUE, split
 
 EXPECTED_HISTORY_FEATURES = frozenset(

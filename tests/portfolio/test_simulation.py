@@ -67,7 +67,7 @@ def test_missing_stock_session_does_not_delay_sp_execution(levels: list[int]) ->
         data,
         quotes=data.quotes.drop(sessions[1]),
         returns=data.returns.drop(sessions[1]),
-        share_basis=data.share_basis.drop(sessions[1]),
+        security_basis=data.security_basis.drop(sessions[1]),
     )
     result = simulate(data, settings(allocation=(0, 1, 0), allocation_frequency="monthly", end=sessions[-1]), 10, "monthly")
     assert result.status == "complete", result.reason
@@ -81,7 +81,7 @@ def test_missing_stock_session_does_not_delay_sp_execution(levels: list[int]) ->
 def test_missing_entire_stock_session_interrupts_selected_or_held_book(missing: str, field: str) -> None:
     data = market()
     date = pd.Timestamp(missing)
-    data = replace(data, quotes=data.quotes.drop(date), returns=data.returns.drop(date), share_basis=data.share_basis.drop(date))
+    data = replace(data, quotes=data.quotes.drop(date), returns=data.returns.drop(date), security_basis=data.security_basis.drop(date))
     result = simulate(data, settings(end=pd.Timestamp("2022-01-06")), 2, "monthly")
     assert result.status == "incomplete"
     assert f"{missing}: missing/invalid {field}" in str(result.reason)
@@ -99,7 +99,7 @@ def test_macro_only_weekend_and_holiday_carries_are_not_sessions() -> None:
         scores=data.scores.loc[sessions],
         quotes=data.quotes.loc[sessions[[0, 2]]],
         returns=data.returns.loc[sessions[[0, 2]]],
-        share_basis=data.share_basis.loc[sessions[[0, 2]]],
+        security_basis=data.security_basis.loc[sessions[[0, 2]]],
         market=pd.Series([100, 100, 100, 150, 200, 220], index=pd.date_range(sessions[0], sessions[-1])),
     )
     result = simulate(data, settings(start=sessions[0], end=sessions[-1], allocation=(0, 1, 0)), 10, "monthly")
@@ -146,7 +146,7 @@ def test_missing_execution_price_interrupts_without_reselection() -> None:
 def test_split_and_dividend_preserve_nav_without_fake_trades(ticker: str) -> None:
     data = market()
     data.returns.loc["2022-01-04":] = 0
-    data.share_basis.loc[:"2022-01-07", ticker] = 2
+    data.security_basis.loc["2022-01-10":, ticker] = 2
     data.quotes.loc["2022-01-10":, ticker] = 50
     result = simulate(data, settings(cash_rate=0, allocation_frequency="monthly", end=pd.Timestamp("2022-01-14")), 2, "monthly")
     assert result.status == "complete", result.reason

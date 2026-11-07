@@ -34,6 +34,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS
@@ -95,6 +96,31 @@ def plan_window(
     return PartWindow(
         last, window_start(trading_index, last, warmup + extra_back + refresh), window_start(trading_index, last, refresh) if refresh else None
     )
+
+
+def changed_tickers(store: DataStore, part: Table, df_rows: pd.DataFrame, before: pd.Timestamp) -> list[str]:
+    """Stream the saved rows dated before `before` once; return the tickers whose keys, nulls or exact values differ from `df_rows`."""
+    keys = list(part.pk)
+    df_old = df_rows.loc[pd.to_datetime(df_rows["date"]) < before]
+    index = pd.MultiIndex.from_arrays([pd.to_datetime(df_old["date"]), df_old["ticker"]])
+    fields = [field for field in df_rows if field not in keys]
+    values = df_old[fields].to_numpy(dtype="float64")
+    seen = np.zeros(len(df_old), dtype=bool)
+    changed: set[str] = set()
+    stream = store.iter_load(part, columns=list(df_rows.columns), until=pd.Timestamp(before) - pd.Timedelta(days=1))
+    try:
+        for df_chunk in stream:
+            positions = index.get_indexer(pd.MultiIndex.from_arrays([pd.to_datetime(df_chunk["date"]), df_chunk["ticker"]]))
+            matched = positions >= 0
+            seen[positions[matched]] = True
+            old, new = df_chunk.loc[matched, fields].to_numpy(dtype="float64"), values[positions[matched]]
+            differs = ~matched
+            differs[matched] = ~((old == new) | (np.isnan(old) & np.isnan(new))).all(axis=1)
+            changed.update(df_chunk.loc[differs, "ticker"])
+    finally:
+        stream.close()
+    changed.update(df_old.loc[~seen, "ticker"])
+    return sorted(changed)
 
 
 def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str], part: Table) -> pd.DataFrame:

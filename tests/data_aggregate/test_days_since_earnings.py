@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel, days_since_earnings
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 
 def _earnings() -> pd.DataFrame:
@@ -35,7 +36,7 @@ def test_panel_emits_raw_feature_leakfree() -> None:
     idx = pd.bdate_range("2020-01-01", "2020-09-01")
     df_close = pd.DataFrame(100.0, index=idx, columns=["A", "B"])
     peers = {"A": {"B": 1.0}, "B": {"A": 1.0}}
-    panel = build_earnings_feature_panel(_earnings(), peers, idx, stock_close=df_close)
+    panel = build_earnings_feature_panel(_earnings(), PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=df_close))
     df_a = panel.loc[panel["ticker"].eq("A")].dropna(subset=["f_days_since_earnings"])
     assert pd.to_datetime(df_a["date"]).min() == pd.Timestamp("2020-01-16")
     assert "f_days_since_earnings_vs_peers" not in panel

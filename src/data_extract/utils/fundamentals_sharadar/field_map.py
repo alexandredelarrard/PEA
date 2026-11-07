@@ -42,29 +42,31 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import (
     Catalogue,
     load_catalogue,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     SPLIT_INTEGER_TOL as SPLIT_INTEGER_TOL,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     SPLIT_MATCH_DAYS as SPLIT_MATCH_DAYS,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     SPLIT_MAX_DENOMINATOR as SPLIT_MAX_DENOMINATOR,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     SPLIT_RATIO_CONFLICT_TOL as SPLIT_RATIO_CONFLICT_TOL,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     _is_simple_split as _is_simple_split,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     _is_split_shaped as _is_split_shaped,
 )
-from src.utils.price_adjustments import forward_split_factor
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
+    forward_split_factor as forward_split_factor,
+)
+from src.utils.price.adjustments import (
     split_events as split_events,
 )
-from src.utils.price_adjustments import (
+from src.utils.price.adjustments import (
     union_split_sources as union_split_sources,
 )
 

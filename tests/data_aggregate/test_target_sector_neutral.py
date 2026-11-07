@@ -13,8 +13,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.prices import forward_compound
 from src.data_aggregate.utils.common.xs import xs_group_dummies, xs_project_out
+from src.data_aggregate.utils.price.returns import forward_compound
 from src.data_aggregate.utils.target.targets import (
     build_targets_multi,
     compute_epsilon,

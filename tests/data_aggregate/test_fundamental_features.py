@@ -14,6 +14,8 @@ Two layers:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -28,11 +30,15 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
     _derived_fields,
+    _FiscalView,
     _pegy_fields,
     _self_history_z,
     build_fundamental_feature_panel,
     load_notes_num_scoped,
 )
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory, FundamentalSupplement
+from src.data_aggregate.utils.price.frames import PriceFrames
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 
 # --------------------------------------------------------------------------- #
@@ -79,7 +85,10 @@ def test_regime_masks_earnings_metrics_but_keeps_robust_ones():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
     close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
-    F = _derived_fields(fund, idx, close)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+    )
     d = idx[-1]
 
     # profitable AAA -> earnings/fcf/ebitda yields defined
@@ -125,7 +134,10 @@ def test_loss_intensity_carries_what_the_earnings_mask_discards():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
     close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
-    F = _derived_fields(fund, idx, close)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+    )
     d = idx[-1]
 
     assert "loss_intensity" in F
@@ -153,7 +165,9 @@ def test_loss_intensity_carries_what_the_earnings_mask_discards():
 def test_regime_state_flags_exact_and_raw():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
-    F = _derived_fields(fund, idx, close=None)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     d = idx[-1]
 
     assert F["profitable"].loc[d, "AAA"] == 1.0 and F["profitable"].loc[d, "ZZZ"] == 0.0
@@ -337,7 +351,10 @@ def test_derived_valuation_and_dilution_exact():
     # constant price so market cap = shares * price is easy to reason about
     close = pd.DataFrame({"AAA": 2.0, "BBB": 3.0}, index=idx)
 
-    F = _derived_fields(fund, idx, close)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+    )
     d = idx[-1]
 
     # AAA 2020: revenue120, ni15, equity60, fcf12, shares1100, price2 -> mcap=2200
@@ -365,7 +382,9 @@ def test_derived_valuation_and_dilution_exact():
 def test_valuation_skipped_without_close():
     fund = _synth_fundamentals()
     idx = pd.bdate_range("2020-03-01", periods=5)
-    F = _derived_fields(fund, idx, close=None)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     assert "earnings_yield" not in F  # needs a price
     assert "grossMargins" in F  # raw ratios still built
     print("\n=== SANITY CHECK: valuation gracefully skipped without prices ===")
@@ -467,7 +486,9 @@ def test_yearly_ttm_features_computed_correctly() -> None:
     )
     idx = pd.bdate_range("2019-01-01", "2021-06-01")
 
-    F = _derived_fields(fund, idx, close=None)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
 
     # ---- y_rev_growth ----
     assert "y_rev_growth" in F, "y_rev_growth missing from _derived_fields"
@@ -601,7 +622,9 @@ def _synth_fundamentals_rich():
 def test_distress_sga_ma_sbc_features_exact():
     fund = _synth_fundamentals_rich()
     idx = pd.bdate_range("2019-01-01", "2020-06-01")
-    F = _derived_fields(fund, idx, close=None)  # no close -> valuation skipped, rest built
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )  # no close -> valuation skipped, rest built
 
     d = pd.Timestamp("2020-03-02")  # after the 2020-02-03 filing (uses y2 values)
 
@@ -660,12 +683,9 @@ def test_panel_emits_vs_hist_columns():
     peers = {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}
 
     panel = build_fundamental_feature_panel(
-        fund,
-        peers,
-        idx,
-        stock_close=close,
-        hist_window=60,
-        hist_min_periods=20,
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx, peers=peers),
+        settings=FundamentalFeatureSettings(history_window=60, history_min_periods=20),
     )
 
     hist_cols = [c for c in panel.columns if c.endswith("_vs_hist")]
@@ -715,7 +735,9 @@ def test_accruals_and_profitability_passthrough_exact():
         ]
     )
     idx = pd.bdate_range("2020-03-01", periods=3)  # after the 2020 filing
-    F = _derived_fields(fund, idx, close=None)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     d = idx[-1]
 
     # accruals = (netIncome - freeCashflow) / revenue = (15 - 12)/120
@@ -745,7 +767,9 @@ def test_raw_levels_preserved_across_universe():
         ]
     )
     idx = pd.bdate_range("2020-03-02", periods=3)
-    panel = build_fundamental_feature_panel(fund, peer_dict={}, trading_index=idx, stock_close=None)
+    panel = build_fundamental_feature_panel(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     d = idx[-1]
     raw = panel[panel["date"] == d].set_index("ticker")["f_profitMargins"]
 
@@ -888,7 +912,10 @@ def test_valuation_engine_kpis_exact():
     )
     idx = pd.bdate_range("2021-03-01", periods=3)
     close = pd.DataFrame({t: 2.0 for t in ("GEN", "REI", "OIL")}, index=idx)
-    F = _derived_fields(fund, idx, close)  # annual history -> yoy_periods default 1
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+    )  # annual history -> yoy_periods default 1
     d = idx[-1]
 
     # GEN: PE = 200 mcap / 15 NI = 13.33; growth 50%, div yield 2% -> PEGY = 13.33/52
@@ -937,7 +964,12 @@ def test_pegy_uses_reported_eps_growth_after_release() -> None:
     d = idx[-1]
 
     # PE=20; reported quarterly EPS growth=1.4/1.0-1=40%; dividend yield=0.2%.
-    actual = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn)
+    actual = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+        supplement=FundamentalSupplement(earnings_history=earn),
+        yoy_periods=4,
+    )
     assert actual["pegy"].loc[d, "A"] == pytest.approx(20 / (40 + 0.2), rel=1e-6)
     assert actual["pegy"].loc[:"2025-11-03", "A"].isna().all()
     assert actual["pegy"].loc["2025-11-04", "A"] == pytest.approx(20 / (40 + 0.2))
@@ -945,12 +977,26 @@ def test_pegy_uses_reported_eps_growth_after_release() -> None:
     changed = earn.copy()
     changed["eps_estimate"] = 999.0
     changed.loc[changed["earnings_date"].eq("2026-02-16"), "eps_actual"] = 100.0
-    changed_result = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=changed)
+    changed_result = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+        supplement=FundamentalSupplement(earnings_history=changed),
+        yoy_periods=4,
+    )
     pd.testing.assert_frame_equal(actual["pegy"], changed_result["pegy"])
-    without_future = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn.iloc[:-1])
+    without_future = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+        supplement=FundamentalSupplement(earnings_history=earn.iloc[:-1]),
+        yoy_periods=4,
+    )
     pd.testing.assert_frame_equal(actual["pegy"], without_future["pegy"])
     # without earnings: single fundamentals row -> TTM growth undefined -> PEGY NaN (fallback path)
-    F_ttm = _derived_fields(fund, idx, close, yoy_periods=4)
+    F_ttm = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+        yoy_periods=4,
+    )
     assert "pegy" not in F_ttm or np.isnan(F_ttm["pegy"].loc[d, "A"])
 
     print("\n=== SANITY CHECK: PEGY uses reported EPS growth ===")
@@ -975,7 +1021,7 @@ def test_pegy_masks_invalid_latest_growth_and_missing_quarters(prior_eps: float)
     dividends = pd.DataFrame({"A": 2.0}, index=idx)
 
     def calculate(history: pd.DataFrame) -> dict[str, pd.DataFrame]:
-        return _pegy_fields(lambda field: dividends, pd.DataFrame(), idx, mcap, income, 4, history)
+        return _pegy_fields(_FiscalView(pd.DataFrame(), idx, 4, lambda field: dividends, None, frozenset()), pd.DataFrame(), mcap, income, history)
 
     assert "pegy" not in calculate(reports)
     reports.loc[0, "eps_actual"] = 1.0
@@ -1030,7 +1076,10 @@ def test_true_enterprise_value_fully_diluted():
     )
     idx = pd.bdate_range("2020-03-02", periods=3)
     close = pd.DataFrame({"AAA": 2.0}, index=idx)
-    F = _derived_fields(fund, idx, close)
+    F = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),
+    )
     d = idx[-1]
 
     # EV = FD mcap (1100*2=2200) + debt(50) + leases(10) + minority(5) - cash(25)
@@ -1181,7 +1230,10 @@ def test_panel_features_are_float32_for_memory():
     close = pd.DataFrame({t: 10.0 + i for i, t in enumerate(tickers)}, index=idx)
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}  # 5 mutual peers >= min_peers
 
-    panel = build_fundamental_feature_panel(fund, peers, idx, stock_close=close)
+    panel = build_fundamental_feature_panel(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx, peers=peers),
+    )
     feat_cols = [c for c in panel.columns if c not in ("date", "ticker")]
     assert feat_cols, "no fundamental features produced"
     non_f32 = {c: str(panel[c].dtype) for c in feat_cols if panel[c].dtype != np.float32}

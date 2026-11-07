@@ -14,12 +14,16 @@ hand-built the missing columns.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import cast
 
 import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.fundamentals.sector_features import compute_sector_kpis
+from src.data_aggregate.utils.price.frames import PriceFrames
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 
 def _number(value: object) -> float:
@@ -116,7 +120,10 @@ def test_universal_quick_wins_a2_a3_a5():
         freeCashflow=180,
     )
     rows = [{"ticker": "AAA", "as_of": f"{yr}-12-31", **base} for yr in (2021, 2022)] + [{"ticker": "AAA", "as_of": "2023-12-31", **impr}]
-    f = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"AAA": 100.0}, index=idx))
+    f = _derived_fields(
+        FundamentalHistory(raw_history=pd.DataFrame(rows), share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(pd.DataFrame(rows), pd.DataFrame({"AAA": 100.0}, index=idx))), trading_index=idx),
+    )
     d = idx[-1]
 
     assert abs(f["asset_growth"].loc[d, "AAA"] - 0.05) < 1e-6  # A2: 5250/5000-1

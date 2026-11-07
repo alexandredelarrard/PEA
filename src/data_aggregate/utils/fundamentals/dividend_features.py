@@ -1,44 +1,11 @@
 # ruff: noqa: N806
-"""
-dividend_features.py  (src/data_aggregate/utils/dividend_features.py)
----------------------------------------------------------------------
-Peer-relative DIVIDEND / SHAREHOLDER-YIELD features. All point-in-time (a dividend
-enters TTM only on/after its ex-date, and growth compares past-vs-past):
+"""Public dividend and shareholder yields with separate matched price/count bases.
 
-    dividend_yield        trailing-12m cash dividends / price   (income / value tilt)
-    dividend_growth       TTM dividends vs TTM one year ago      (payout trajectory)
-    dividend_growth_5y    5-year CAGR of TTM dividends           (durable dividend grower)
-    dividend_payer        1 if the firm paid a dividend in the trailing year
-    dividend_payout_ratio cash dividends / net income            (how much earnings is paid out)
-    dividend_coverage     free cash flow / cash dividends        (dividend SAFETY; >1 = covered)
-    shareholder_yield     dividend_yield + buyback yield
-                          (buyback yield = -YoY change in shares outstanding; net
-                           issuance/dilution lowers it, buybacks raise it)
-
-RECONCILED across the two dividend sources (they measure the same cash two ways):
-  * source A = the per-share EX-DATE history (`dividends` table, `dividends` column,
-    from the price download) -> precise, per-share, full history; PRIMARY for
-    yield/growth.
-  * source B = the SEC cash-flow `dividendsPaid` total (from fundamentals) -> the
-    dollar figure that pairs with net income / FCF; powers payout & coverage and
-    GAP-FILLS names the ex-date history misses.
-The reconciled TTM total = per-share x shares where the name paid (source A), else
-`dividendsPaid` (source B); one consistent number feeds every ratio here.
-
-Non-payers get a real 0 dividend yield (not NaN) so the raw state is distinct from
-missing data; shareholder_yield still captures their buybacks/dilution.
-
-⚠ THAT ZERO IS SCOPED TO THE LISTED WINDOW (`close.notna()`). The panel is a near-dense
-date x ticker grid, so every ticker carries rows back to 1995 whether or not it existed,
-and an unscoped `.fillna(0.0)` wrote "this company pays no dividend" onto 565,893
-pre-listing rows. Those rows are dropped at training (no label), but they would still enter
-the trailing self-history window after listing and used to contaminate the retired daily
-cross-sectional rank. Either path creates an artificial time trend. Masking costs 448 rows
-of genuine data (holes inside a listed span, 0.014% of listed rows, max 2 per ticker) -- and
-a day with no quote has no yield anyway.
-"""
+Adjusted dividend/quote pairs remain matched; cash fallback uses saved issuer cap and buybacks use genuine comparison units."""
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -46,6 +13,8 @@ import pandas as pd
 from src.data_aggregate.utils.common.frames import sanitize
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames, comparison_share_history
 
 _YOY = 252  # ~1 trading year
 _FIVE_Y = 5 * 252  # ~5 trading years
@@ -71,40 +40,20 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex, universe
     return piv.rolling(_YOY, min_periods=1).sum()
 
 
-def _dividend_fields(
-    dividends_hist: pd.DataFrame, close_split: pd.DataFrame, fundamentals: pd.DataFrame | None, level_factor: pd.DataFrame | None = None
-) -> dict:
-    """⚠ `close_split`, the SPLIT-ADJUSTED quote, and every leg here depends on it.
-
-    `dividend_yield` is `ttm_ps / close_split`, and it only cancels because yfinance's
-    `Dividends` column is split-adjusted the same way the quote is -- so a 4:1 split divides
-    both legs and the yield is unchanged. On `close_total` the denominator would additionally
-    carry the FUTURE-dividend factor D(d), making the dividend yield a function of dividends
-    not yet paid.
-
-    ⚠ AND THE SPINOFF FACTOR CANCELS HERE TOO -- MEASURED, so `yield_a` is deliberately left
-    alone. On the 2,968 rows with `|S-1| > 10%`, `(ttm_ps/close_split)` divided by Sharadar's
-    own level-basis `dps/price` has median exactly 1.0, sitting ~150,000x closer to 1.0 than
-    to `S` (`2026-09-01-spinoff-level-basis/before.md`). Yahoo back-adjusts `Dividends`
-    across a spinoff exactly as it does the quote, so both legs move together. The EARNINGS
-    leg measured the opposite way and IS corrected -- see `earnings_features`.
-
-    `mcap` is the exception, and it is not a yield: it is a LEVEL in dollars, divided into a
-    LEVEL in dollars (`total`, which reaches the SEC `dividendsPaid` figure whenever the
-    ex-date history misses a payer). `close_split x shares` is short by `S` for a spinoff
-    name, so that fallback yield would read `S` too high without the factor.
-    """
-    close = close_split
-    idx = close.index
+def _dividend_fields(dividends_hist: pd.DataFrame, prices: PriceFrames, history: FundamentalHistory | None = None) -> dict[str, pd.DataFrame]:
+    """Keep raw dividend cash units distinct from normalized share comparisons."""
+    fundamentals = None if history is None else history.raw_history
+    share_basis = None if history is None else history.share_basis
+    comparison_history = None if history is None else history.normalized_share_history
+    prices.require("close_split")
+    close = prices.close_split
+    assert close is not None
+    idx = pd.DatetimeIndex(close.index)
     universe = list(close.columns)
     ttm_ps = _ttm_dividends(dividends_hist, idx, universe)  # per-share TTM (source A)
     close_pos = close.where(close > 0)
-    # THE LISTED WINDOW. Three features below fill a real 0 for non-payers, which is right
-    # in the cross-section and wrong on the pre-listing pad -- see the module docstring.
-    # `close` is the only frame here that knows when the company was quotable.
     listed = close.notna()
 
-    # ---- source B (SEC cash-flow statement): reconciliation + payout / coverage ----
     def _fd(field: str) -> pd.DataFrame:
         if fundamentals is None or fundamentals.empty:
             return pd.DataFrame()
@@ -120,10 +69,8 @@ def _dividend_fields(
     net_income = _fd("netIncome")
     fcf = _fd("freeCashflow")
 
-    # RECONCILED total cash dividends: per-share x shares where the name actually paid
-    # (source A, ttm_ps>0), else the SEC `dividendsPaid` total (source B) fills the gap.
-    lvl = 1.0 if level_factor is None or level_factor.empty else level_factor.reindex_like(close).fillna(1.0)
-    mcap = (shares * close * lvl).where(lambda x: x > 0) if not shares.empty else pd.DataFrame()
+    mcap = pd.DataFrame(index=idx) if prices.mcap_pit is None else prices.mcap_pit.reindex_like(close)
+    mcap = mcap.where(shares.reindex_like(mcap).gt(0) & np.isfinite(mcap) & mcap.gt(0))
     total_a = (ttm_ps * shares).where(ttm_ps > 0) if not shares.empty else pd.DataFrame()
     if not total_a.empty:
         total = total_a.combine_first(div_paid) if not div_paid.empty else total_a
@@ -132,15 +79,13 @@ def _dividend_fields(
 
     F: dict[str, pd.DataFrame] = {}
 
-    # ---- dividend yield (reconciled): precise per-share/price where paid, source-B
-    # fill for names the ex-date history misses, real 0 for true non-payers ----
     yield_a = sanitize(ttm_ps.where(ttm_ps > 0) / close_pos)
-    if not mcap.empty and not total.empty:
-        F["dividend_yield"] = yield_a.combine_first(sanitize(total / mcap)).fillna(0.0).where(listed)
-    else:
-        F["dividend_yield"] = sanitize(ttm_ps / close_pos).fillna(0.0).where(listed)
+    payer = ttm_ps.gt(0)
+    if not div_paid.empty:
+        payer = payer | div_paid.gt(0)
+    fallback = sanitize(total / mcap) if not mcap.empty and not total.empty else pd.DataFrame(index=idx)
+    F["dividend_yield"] = yield_a.combine_first(fallback).where(payer, 0.0).where(listed)
 
-    # ---- growth (1y + 5y CAGR), per-share source A primary, source-B total fills ----
     g1 = sanitize(ttm_ps / ttm_ps.shift(_YOY).where(lambda x: x > 0)) - 1.0
     g5 = _cagr(ttm_ps, _FIVE_Y, 5.0)
     if not div_paid.empty:
@@ -149,52 +94,49 @@ def _dividend_fields(
     F["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan)
     F["dividend_growth_5y"] = g5
 
-    # ---- payer flag: paid in the trailing year per EITHER source ----
-    # A comparison can never be NaN, so this flag is 0/1 on EVERY cell of the grid unless
-    # it is scoped: unmasked it asserted "did not pay a dividend" for companies that had
-    # not listed yet, which is not a fact about them.
-    payer = ttm_ps > 0
-    if not div_paid.empty:
-        payer = payer | (div_paid > 0)
     F["dividend_payer"] = payer.astype("float64").where(listed)
 
-    # ---- payout ratio + FCF coverage (dividend safety) off the reconciled total ----
     if not total.empty and not net_income.empty:
         F["dividend_payout_ratio"] = sanitize(total / net_income.where(net_income > 0)).clip(lower=0.0, upper=3.0)
     if not total.empty and not fcf.empty:
-        # FCF / dividends: >1 => free cash flow covers the payout (safe); <1 or <0 => not.
         F["dividend_coverage"] = sanitize(fcf / total.where(total > 0))
 
-    # ---- shareholder yield = dividend yield + buyback yield (- share issuance) ----
-    if not shares.empty and shares.notna().any().any():
-        buyback_yield = -(shares / shares.shift(_YOY) - 1.0)  # >0 => net buyback
-        # `fill_value=0.0` treats a missing leg as zero, so this inherits whatever scope
-        # `dividend_yield` has; `.where(listed)` is re-applied rather than assumed.
+    if fundamentals is not None:
+        df_comparison = comparison_share_history(
+            fundamentals if comparison_history is None else comparison_history, share_basis, pd.Timestamp(idx.max())
+        )
+        df_comparison_shares = fundamentals_to_daily(df_comparison, "sharesOutstanding", idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
+    else:
+        df_comparison_shares = pd.DataFrame(index=idx)
+    if not df_comparison_shares.empty and df_comparison_shares.notna().any().any():
+        buyback_yield = -(df_comparison_shares / df_comparison_shares.shift(_YOY) - 1.0)
         F["shareholder_yield"] = F["dividend_yield"].add(buyback_yield, fill_value=0.0).replace([np.inf, -np.inf], np.nan).where(listed)
     return F
 
 
 def build_dividend_feature_panel(
     dividends_history: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
-    stock_close: pd.DataFrame | None,
-    level_factor: pd.DataFrame | None = None,
-    fundamentals_history: pd.DataFrame | None = None,
+    prices: PriceFrames | None,
+    history: FundamentalHistory | None = None,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Long-format dividend panel using the approved raw/self-history view contract.
-    Empty if no dividend history is available."""
-    if dividends_history is None or dividends_history.empty or "dividends" not in dividends_history.columns or stock_close is None:
+    """Build dividend views with raw cash and normalized count comparisons."""
+    if (
+        dividends_history is None
+        or dividends_history.empty
+        or "dividends" not in dividends_history.columns
+        or prices is None
+        or prices.close_split is None
+    ):
         return pd.DataFrame(columns=["date", "ticker"])
-    close = stock_close.reindex(trading_index)
-    fields = _dividend_fields(dividends_history, close, fundamentals_history, level_factor)
-    semantics = {name: mode for name, mode in DIVIDEND_TRANSFORM_SEMANTICS.items() if name in fields}
-    return build_fundamental_views(
-        fields,
-        peer_dict,
-        semantics=semantics,
-        history_fields=history_fields,
-        output_since=output_since,
+
+    # Restrict prices to the declared calculation grid before evaluating cash yields.
+    prices = replace(
+        prices,
+        close_split=prices.close_split.reindex(prices.trading_index),
+        mcap_pit=None if prices.mcap_pit is None else prices.mcap_pit.reindex(prices.trading_index),
     )
+    fields = _dividend_fields(dividends_history, prices, history)
+    semantics = {name: mode for name, mode in DIVIDEND_TRANSFORM_SEMANTICS.items() if name in fields}
+    return build_fundamental_views(fields, prices.peers, semantics=semantics, history_fields=history_fields, output_since=output_since)

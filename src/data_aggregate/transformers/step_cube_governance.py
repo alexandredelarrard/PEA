@@ -15,18 +15,18 @@ from src.data_aggregate.utils.common.incremental import (
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.price_frames import (
+from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
+from src.data_aggregate.utils.price.frames import (
     PriceFrames,
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
-from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_store.schema import Tables
 from src.utils.filer_tables import def14a_evidence_mask
 from src.utils.step import Step
 
-_PRICE_FIELDS = ("close_split", "close_total")
+_PRICE_FIELDS = ("close_split", "close_total", "shares_outstanding_pit")
 _OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
 #: the cleaning stage reads later proxies (stint constants, the historical pay backfill), so an
 #: incremental run cannot restate the rows it does not rewrite
@@ -92,7 +92,11 @@ class StepCubeGovernance(Step):
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=since)
+        """Retain full count lineage while bounding the daily feature/return grid."""
+        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=None)
+        if since is None:
+            return frames
+        return frames.on(frames.trading_index[frames.trading_index >= since], "close_split", "close_total")
 
     def _load_def14a(self) -> pd.DataFrame | None:
         """Load usable scalar observations, excluding archives and retry-only parents."""
@@ -153,7 +157,7 @@ class StepCubeGovernance(Step):
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
-        df = self._store.load(Tables.fundamentals_history, optional=True)
+        df = self._store.load(Tables.fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], optional=True)
         if df is None or df.empty:
             self._log.warning("No fundamentals history -> the pay-vs-revenue-growth misalignment feature is skipped.")
             return None
@@ -177,7 +181,7 @@ class StepCubeGovernance(Step):
             ownership=self._load_ownership(),
         )
         fundamentals = self._load_fundamentals()
-        inputs, stats = clean_governance_inputs(raw, fundamentals)
+        inputs, stats = clean_governance_inputs(raw, frames)
         lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
         for key, value in stats.items():
             if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):

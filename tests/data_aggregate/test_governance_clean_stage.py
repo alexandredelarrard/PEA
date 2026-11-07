@@ -18,9 +18,10 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.governance.clean import VOTE_SOURCE_PROXY, GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import VOTE_SOURCE_PROXY, GovernanceInputs
 from src.data_aggregate.utils.governance.def14a_impute import fill_kind_column
 from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale, source_date_column
+from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GOV = _ROOT / "src" / "data_aggregate" / "utils" / "governance"

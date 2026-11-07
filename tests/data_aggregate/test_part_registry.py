@@ -34,7 +34,7 @@ from src.data_aggregate.utils.common.parts import (
     FEATURE_PARTS,
     PART_COMMANDS,
 )
-from src.data_aggregate.utils.common.price_frames import ALL_FIELDS
+from src.data_aggregate.utils.price.frames import ALL_FIELDS
 from src.data_store.schema import Tables
 
 # the sub-step that owns each CLI command
@@ -149,18 +149,33 @@ def test_substep_price_fields_are_declared_and_valid():
         )
     for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
         assert not ({"open", "high", "low"} & set(declared[name])), f"{name} does not build bars, so materialising the OHLC range is pure memory"
-    assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor", "ret", "sector_ret"}
-    # Short-flow returns use close_total; market-cap levels use close_split.
-    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "close_total", "volume", "level_factor"}
+    assert set(StepCubeFundamentals._FIELDS) == {
+        "close_split",
+        "level_factor",
+        "ret",
+        "sector_ret",
+        "close_pit",
+        "shares_outstanding_pit",
+        "mcap_pit",
+    }
+    # Short-flow returns retain close_total; supported valuation and counts come from price.
+    assert set(StepCubeInstitutionals._FIELDS) == {
+        "close_split",
+        "close_total",
+        "volume",
+        "close_pit",
+        "shares_outstanding_pit",
+        "mcap_pit",
+        "security_basis",
+    }
+    assert set(StepCubeSecThirteen._FIELDS) == {"close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
     # what the total-return series is for. That is why the exemption above stays a named
     # 3-tuple rather than "every step but momentum": the rule is about what a step BUILDS,
-    # not about how many fields it reads. `close_split` rides along because
-    # `PriceFrames.skeleton()` keys the universe grid on it -- but NOT `level_factor`, and
-    # that absence is the real assertion: without it no level (market cap, EV, per-share
-    # ratio) can be computed here even by accident, which is what licenses the return series.
-    assert set(StepCubeGovernance._FIELDS) == {"close_split", "close_total"}
+    # not about how many fields it reads. Governance reads the saved public count for
+    # source-compatible proxy comparisons and never reconstructs it from a level factor.
+    assert set(StepCubeGovernance._FIELDS) == {"close_split", "close_total", "shares_outstanding_pit"}
     assert "level_factor" not in StepCubeGovernance._FIELDS, (
         "governance takes close_total, so it must not also hold the level factor -- the pair is what a market-cap/EV computation needs"
     )

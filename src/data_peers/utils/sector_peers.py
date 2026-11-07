@@ -182,26 +182,6 @@ def build_peer_dict_hybrid(
     return _peers_from_similarity_matrix(combined, top_k, weighting, redundant_map)
 
 
-# --------------------------------------------------------------------------- #
-# Sector returns from peers (unchanged)                                       #
-# --------------------------------------------------------------------------- #
-def compute_sector_returns(stock_returns: pd.DataFrame, peer_dict: dict) -> pd.DataFrame:
-    sector = pd.DataFrame(index=stock_returns.index, columns=stock_returns.columns, dtype="float64")
-    for ticker, peers in peer_dict.items():
-        if not peers or ticker not in stock_returns.columns:
-            continue
-        cols = [p for p in peers if p in stock_returns.columns]
-        if not cols:
-            continue
-        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
-        w = w / w.sum()
-        mat = stock_returns[cols]
-        weighted = mat.mul(w, axis=1).sum(axis=1, min_count=1)
-        denom = mat.notna().mul(w, axis=1).sum(axis=1)
-        sector[ticker] = weighted.div(denom.where(denom > 0))
-    return sector
-
-
 def load_peer_dict(path: Path, redundant_map: dict[str, str] | None = None) -> dict:
     """Load a cached peer dict, applying the dual-class dedup on the way in so a dict
     built before this fix is corrected without recomputing embeddings."""

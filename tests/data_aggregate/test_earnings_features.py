@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.earnings_features import _derived_earnings_fields, reported_events
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 
 def _basis(events: list[tuple[str, str, float]] | None = None) -> ShareBasis:
@@ -29,7 +29,13 @@ def _history() -> pd.DataFrame:
 
 
 def _fields(df_history: pd.DataFrame, idx: pd.DatetimeIndex, basis: ShareBasis | None = None) -> dict[str, pd.DataFrame]:
-    return _derived_earnings_fields(df_history, idx, pd.DataFrame({"A": 100.0}, index=idx), share_basis=_basis() if basis is None else basis)
+    return _derived_earnings_fields(
+        df_history,
+        idx,
+        pd.DataFrame({"A": 100.0}, index=idx),
+        pd.DataFrame({"A": 1.0}, index=idx),
+        share_basis=_basis() if basis is None else basis,
+    )
 
 
 def test_report_consensus_appears_only_next_actual_session() -> None:

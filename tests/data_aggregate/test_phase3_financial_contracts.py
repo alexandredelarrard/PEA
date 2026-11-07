@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import cast
+
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.fundamentals.sector_features import compute_sector_kpis
+from src.data_aggregate.utils.price.frames import PriceFrames
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 
 def test_bank_roa_uses_average_comparable_fiscal_assets_without_fallback() -> None:
@@ -39,7 +45,7 @@ def test_bank_roa_uses_average_comparable_fiscal_assets_without_fallback() -> No
     assert result.loc[1, "bank_roa"] == pytest.approx(20.0 / 900.0)
 
     print("\n=== SANITY CHECK: bank ROA definition ===")
-    print("  first fiscal observation is null; second is 20 / mean(800, 1000) = " f"{result.loc[1, 'bank_roa']:.6f}. Validated.")
+    print(f"  first fiscal observation is null; second is 20 / mean(800, 1000) = {result.loc[1, 'bank_roa']:.6f}. Validated.")
 
 
 def test_capitalized_rd_roic_tax_adjusts_operating_profit() -> None:
@@ -69,7 +75,7 @@ def test_capitalized_rd_roic_tax_adjusts_operating_profit() -> None:
     assert result["rd_capitalized_roic"] == pytest.approx(expected)
 
     print("\n=== SANITY CHECK: capitalized-R&D ROIC definition ===")
-    print(f"  adjusted operating profit is tax-adjusted at 20%; ROIC={expected:.6f}. " "Validated.")
+    print(f"  adjusted operating profit is tax-adjusted at 20%; ROIC={expected:.6f}. Validated.")
 
 
 def test_earnings_yield_uses_positive_common_income_without_fallback() -> None:
@@ -95,13 +101,16 @@ def test_earnings_yield_uses_positive_common_income_without_fallback() -> None:
         ]
     )
 
-    fields = _derived_fields(history, idx, close)
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(history, close)), trading_index=idx),
+    )
 
     assert fields["earnings_yield"].loc[idx[-1], "AAA"] == pytest.approx(60.0 / 1_000.0)
     assert "MISS" not in fields["earnings_yield"].columns or pd.isna(fields["earnings_yield"].loc[idx[-1], "MISS"])
 
     print("\n=== SANITY CHECK: common-equity earnings yield ===")
-    print("  AAA uses common income 60 / market cap 1000; MISS stays null rather than " "falling back to consolidated income 100. Validated.")
+    print("  AAA uses common income 60 / market cap 1000; MISS stays null rather than falling back to consolidated income 100. Validated.")
 
 
 def test_invalid_gross_profit_sentinel_is_null_before_feature_transforms() -> None:
@@ -121,7 +130,9 @@ def test_invalid_gross_profit_sentinel_is_null_before_feature_transforms() -> No
         ]
     )
 
-    fields = _derived_fields(history, idx, close=None)
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
 
     assert "grossMargins" not in fields or fields["grossMargins"]["BAD"].isna().all()
     assert "gross_profitability" not in fields or fields["gross_profitability"]["BAD"].isna().all()
@@ -183,7 +194,9 @@ def test_piotroski_uses_prior_fiscal_year_not_a_daily_grid_offset() -> None:
         },
     ]
 
-    fields = _derived_fields(pd.DataFrame(rows), idx, close=None)
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=pd.DataFrame(rows), share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     score = fields["piotroski_f_score"].loc[pd.Timestamp("2024-08-02"), "AAA"]
 
     assert score == pytest.approx(9.0)
@@ -209,7 +222,9 @@ def test_quarterly_projection_expires_on_day_186() -> None:
         ]
     )
 
-    fields = _derived_fields(history, idx, close=None)
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     gross_margin = fields["grossMargins"]["AAA"]
 
     assert gross_margin.loc[filed + pd.Timedelta(days=185)] == pytest.approx(0.40)

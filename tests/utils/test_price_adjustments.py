@@ -13,8 +13,8 @@ import pytest
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.predecessor_series import load_level_actions
-from src.utils.price_adjustments import ShareBasis, resolve_share_events, validate_bugfix
-from src.utils.price_basis import load_share_basis
+from src.utils.price.adjustments import ShareBasis, resolve_share_events, validate_bugfix
+from src.utils.price.basis import load_share_basis
 
 
 def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -167,7 +167,7 @@ def test_vendor_exclusion_keeps_actual_stock_dividend(caplog: pytest.LogCaptureF
     }
     shares = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "sharesbas": [100.0]})
     snapshot = yahoo.copy(deep=True)
-    with caplog.at_level("INFO", logger="src.utils.price_adjustments"):
+    with caplog.at_level("INFO", logger="src.utils.price.adjustments"):
         basis = resolve_share_events(actions, yahoo, _policy(event), shares=shares, tickers=["TEST"])
     assert "TEST VERIFIED configured overrides" in caplog.text
     assert _factor(basis, "actual", ["2020-01-02"]) == [1.1]
@@ -292,34 +292,6 @@ def test_price_date_can_heal_independently_and_competing_rows_refuse(healed: boo
     with pytest.raises(ValueError, match="changed yahoo"):
         resolve_share_events(actions, competing, blob, shares=shares, quotes=quotes)
     print("SANITY: independent price dates replace/heal once; competing old/new feed rows refuse.")
-
-
-def test_declared_quote_units_need_positive_title_evidence() -> None:
-    events = pd.DataFrame(columns=["ticker", "date", "value"])
-    basis = ShareBasis(
-        events,
-        events,
-        events,
-        {
-            "TEST": {
-                "quote_units": {
-                    "date": "2020-06-01",
-                    "before": 2.0,
-                    "after": 1.0,
-                    "quoted_titles": ["American Depositary Shares"],
-                    "ordinary_titles": ["Ordinary Shares"],
-                }
-            }
-        },
-    )
-    tickers = pd.Series(["TEST"] * 4)
-    dates = pd.Series(pd.to_datetime(["2020-05-01"] * 3 + ["2020-06-01"]))
-    titles = pd.Series([" american   depositary SHARES ", "Ordinary Shares", "Common Stock", "Common Stock"])
-    units = basis.declared_units(tickers, dates, titles)
-    assert units.iloc[:2].tolist() == [2.0, 1.0]
-    assert pd.isna(units.iloc[2])
-    assert units.iloc[3] == 1.0
-    print("SANITY: ADS/ordinary titles resolve explicitly; generic common class cannot establish a nonunitary title's units.")
 
 
 def test_quantity_rebase_uses_actual_events_only() -> None:

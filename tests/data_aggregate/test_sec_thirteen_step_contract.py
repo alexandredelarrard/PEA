@@ -12,16 +12,14 @@ import pytest
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
-from src.utils.price_adjustments import resolve_share_events
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
 
@@ -37,13 +35,14 @@ def _manager_batch_owner(
     step = StepCubeSecThirteen(ctx, ctx.config)
     grid = pd.bdate_range("2024-01-02", "2024-12-31")
     df_close = pd.DataFrame(100.0, index=grid, columns=["AAA"])
-    frames = PriceFrames(trading_index=grid, universe=("AAA",), peers={"AAA": {"AAA": 1.0}}, close_split=df_close, level_factor=df_close / 100.0)
+    basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", "2024-12-31"), columns=["AAA"])
+    frames = PriceFrames(
+        trading_index=grid, universe=("AAA",), peers={"AAA": {"AAA": 1.0}}, close_split=df_close, level_factor=df_close / 100.0, security_basis=basis
+    )
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
     # The stored manager table has no ticker column: tickers come only from the CUSIP map.
     cusip_map = pd.DataFrame({"cusip": ["999999999"], "ticker": ["ZZZ"]})
-    resources = SecThirteenResources(
-        frames, None, resolve_share_events(None, None, {}), None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": ciks}
-    )
+    resources = SecThirteenResources(frames, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": ciks})
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
@@ -142,7 +141,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeSecThirteen(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(step_module, "load_peers_or_raise", lambda ctx: {})
     broad = Mock(
         return_value=pd.DataFrame({"period": [pd.Timestamp("2023-09-30")], "as_of": [days[0]], "ticker": ["AAA"], "ic_inst_concentration": [0.4]})
     )

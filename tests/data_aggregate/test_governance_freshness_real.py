@@ -10,7 +10,7 @@ import pytest
 
 from src.context import get_config_context
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import GovernanceInputs
 from src.data_aggregate.utils.governance.panel import _ceo_pay_growth, build_governance_feature_panel
 from src.data_aggregate.utils.governance.pay_features import _comp_history, pay_fields
 from src.data_aggregate.utils.governance.staleness import expire_stale
@@ -18,6 +18,7 @@ from src.data_aggregate.utils.governance.vote_dissent_features import vote_disse
 from src.data_store.schema import Tables
 from src.validate.checks.bounds import check_bounds
 from src.validate.io import write_result
+from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
 
 @pytest.fixture(scope="module")

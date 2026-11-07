@@ -8,17 +8,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.quotes import period_bases
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBook, PublicBookSnapshot
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.levels import convert_quantities
 
 
 @dataclass(frozen=True)
 class BehaviorMarket:
-    """Existing as-traded quotes, authoritative sessions and genuine share actions."""
+    """Saved as-traded quotes (`close_pit`), authoritative sessions and the forward quantity basis F (`security_basis`)."""
 
     trading_index: pd.DatetimeIndex
-    as_traded_close: pd.DataFrame | None
-    basis: ShareBasis
+    close_pit: pd.DataFrame | None
+    basis: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -227,23 +228,18 @@ def _join_positions(current: BookSummary, prior: BookSummary) -> pd.DataFrame:
 
 
 def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prior_period: pd.Timestamp, period: pd.Timestamp) -> pd.DataFrame:
-    """Rebase prior shares and the single pre-comparison quote vector inversely."""
-    df_actions = market.basis.actual
-    actions = df_actions.loc[df_actions.date.gt(prior_period) & df_actions.date.le(period)]
-    ratios = actions.groupby("ticker").value.prod()
-    ratio = df_pair.ticker.map(ratios).fillna(1.0)
-    df_pair["prior"] *= ratio
+    """Carry prior shares onto the current basis (`F_period / F_prior`) and the pre-comparison quote inversely."""
+    prior_basis, basis_now = period_bases(market.basis, df_pair.ticker, prior_period, period)
+    df_pair["prior"] = convert_quantities(df_pair.prior, prior_basis, basis_now)
 
     # Exact reference-session quotes only; missing securities are never dropped or filled.
     position = int(market.trading_index.searchsorted(prior_period, side="right")) - 1
     prices = pd.Series(dtype="float64")
-    if position >= 0 and market.as_traded_close is not None:
+    if position >= 0 and market.close_pit is not None:
         reference = market.trading_index[position]
-        prices = market.as_traded_close.reindex(index=[reference]).iloc[0]
-    df_pair["price"] = df_pair.ticker.map(prices) / ratio
-    dates = pd.Series(period, index=df_pair.index)
-    units = market.basis.factor(df_pair.ticker, dates, "units")
-    df_pair["known"] &= units.eq(1.0) & np.isfinite(ratio) & ratio.gt(0)
+        prices = market.close_pit.reindex(index=[reference]).iloc[0]
+    df_pair["price"] = convert_quantities(df_pair.ticker.map(prices), basis_now, prior_basis)
+    df_pair["known"] &= np.isfinite(df_pair.prior) & df_pair.prior.ge(0)
     return df_pair
 
 

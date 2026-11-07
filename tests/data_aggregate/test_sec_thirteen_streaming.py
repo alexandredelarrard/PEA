@@ -149,10 +149,10 @@ def test_streamed_value_repair_reuses_exact_age_bounded_quotes() -> None:
     periods = pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-12", "2024-05-18", "2024-05-25", "2024-05-28"])
     expected = [clean_public_holdings(raw.assign(period=period), close, policy) for period in periods]
 
-    with patch.object(values, "_period_close", wraps=values._period_close) as lookup:
+    with patch.object(values, "period_close", wraps=values.period_close) as lookup:
         quotes = values.prepare_public_value_quotes(close, policy)
         assert lookup.call_count == 1
-    with patch.object(values, "_period_close", side_effect=AssertionError("quote history was rebuilt per book")):
+    with patch.object(values, "period_close", side_effect=AssertionError("quote history was rebuilt per book")):
         actual = [clean_public_holdings(raw.assign(period=period), close, policy, period_quotes=quotes) for period in periods]
 
     for before, after in zip(expected, actual, strict=True):
@@ -199,7 +199,8 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    history = books.prepare_institutional_book_history(stream, grid, universe, close, None, settle_days=3)
+    with closing(holdings_clean.clean_public_batches(stream, None, universe, close, None)) as batches:
+        history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
     actual = list(books.iter_institutional_books(*history))
 
@@ -307,9 +308,11 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
-        history = books.prepare_institutional_book_history(
-            packets, grid, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None, settle_days=0
+        batches = holdings_clean.clean_public_batches(
+            packets, None, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None
         )
+        with closing(batches):
+            history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
     assert history is not None
     assert (repair.call_count, max(len(call.args[0][["cik", "period"]].drop_duplicates()) for call in repair.call_args_list)) == (2, 2)
     print("SANITY: four complete manager-quarters use two batch repairs; empty books and multiple accessions retain their evidence.")

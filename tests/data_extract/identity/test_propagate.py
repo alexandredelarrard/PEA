@@ -11,6 +11,7 @@ ticker; the next publish does not.
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,6 +22,7 @@ from sqlalchemy import create_engine
 
 from src.context import Context
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
@@ -162,9 +164,9 @@ def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_
 
     def marker_and_history() -> tuple[int, int]:
         stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
-        history = prepare_institutional_book_history(
-            thirteen_inputs.iter_filing_vintages(filing_store, grid.max()), grid, ["BRK-B", "VMRK"], None, None, settle_days=3
-        )
+        packets = thirteen_inputs.iter_filing_vintages(filing_store, grid.max())
+        with closing(clean_public_batches(packets, None, ["BRK-B", "VMRK"], None, None)) as batches:
+            history = prepare_institutional_book_history(batches, grid, settle_days=3)
         assert history is not None
         return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])
 

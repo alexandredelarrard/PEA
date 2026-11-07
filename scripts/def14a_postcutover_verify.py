@@ -216,13 +216,14 @@ def check_cube(context, results: list) -> None:
     the dropped ones. The aggregate fingerprint moving is expected — features were removed."""
     from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
     from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
+    from src.data_aggregate.utils.price.frames import PriceFrames
 
     store = context.store
     hist = store.load(Tables.def14a_llm)
     idx = pd.DatetimeIndex(sorted(pd.to_datetime(hist["as_of"]).dropna().unique()))
     tickers = sorted(hist["ticker"].dropna().unique())[:40]
     peers = {t: [x for x in tickers if x != t][:8] for t in tickers}
-    inputs, _ = clean_governance_inputs(GovernanceInputs(def14a=hist[hist["ticker"].isin(tickers)]), None)
+    inputs, _ = clean_governance_inputs(GovernanceInputs(def14a=hist[hist["ticker"].isin(tickers)]), PriceFrames(pd.DatetimeIndex([]), (), {}))
     panel, _ = build_governance_feature_panel(inputs.def14a, peers, idx)
     feats = sorted(c for c in panel.columns if c.startswith("f_"))
     dropped = [c for c in feats if "technolog" in c]

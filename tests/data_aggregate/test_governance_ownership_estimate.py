@@ -14,9 +14,10 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import GovernanceInputs
 from src.data_aggregate.utils.governance.def14a_impute import FILL_ESTIMATE, fill_kind_column
 from src.data_aggregate.utils.governance.staleness import source_date_column
+from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
 _COL = "insider_ownership_pct"
 

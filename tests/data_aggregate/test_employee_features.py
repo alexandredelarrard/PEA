@@ -231,6 +231,7 @@ def test_step_loads_the_projected_employee_table_with_two_years_of_lookback():
 
     step = cast(Any, object.__new__(StepCubeFundamentals))
     step._context = SimpleNamespace(store=_Store())
+    step._store = step._context.store
     step._log = SimpleNamespace(warning=lambda *a, **k: None, info=lambda *a, **k: None)
     frame = step._load_employees(("AAA", "BBB"), since=pd.Timestamp("2020-06-30"))
     assert frame is not None and len(calls) == 1

@@ -1,5 +1,5 @@
 """
-price_frames.py  (src/data_aggregate/utils/common/price_frames.py)
+Projected price-part fields shared by the cube builders.
 ---------------------------------------------------------------
 THE price contract between the cube sub-steps: `StepCubePrices` normalizes the raw
 `prices` table ONCE into `cube_part_prices`, and every later step reads it back through
@@ -37,27 +37,42 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
+from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.price.adjustments import ShareBasis
+from src.utils.price.frames import extract_field, prices_long_to_multiindex
+from src.utils.price.levels import rebase_security_quantities
+from src.utils.price.per_share import vendor_ordinary_per_share
 
 logger = logging.getLogger(__name__)
 
-#: ⚠ TWO price fields, and no bare `close`. `close_split` is split-adjusted ONLY (the basis
-#: every LEVEL needs -- market cap, EV, dividend yield, ATR -- because on it the future-split
-#: factor cancels against Sharadar's `sharesbas`); `close_total` is that series further
-#: reduced for later dividends (the basis every RETURN needs -- ret, momentum, betas, labels).
-#: There is deliberately NO `close` alias: a reader that picks the wrong one must KeyError,
-#: not quietly compute price returns.
-#:
-#: ⚠ `level_factor` IS NOT A PRICE. It is the dimensionless `S(d)` from
-#: `utils/common/level_basis.py` -- the SPINOFF adjustment Yahoo applied to `close_split` that
-#: `sharesOutstanding` does not carry. `close_split` alone is right for splits and short by
-#: `S` for spinoffs, so any LEVEL must multiply by it and no RETURN may.
-ALL_FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "level_factor")
+# Adjusted close_total drives returns; close_split preserves the existing adjusted levels.
+# close_pit is the historical security quote. Counts preserve source class coverage;
+# mcap_pit is issuer equity and requires its separately supported class coefficient.
+# level_factor is dimensionless and must never enter return calculations.
+# security_basis is the forward quantity basis F (q_t = q_s * F_t / F_s); volume_pit is as-traded volume.
+ALL_FIELDS = (
+    "close_split",
+    "close_total",
+    "open",
+    "high",
+    "low",
+    "volume",
+    "ret",
+    "sector_ret",
+    "level_factor",
+    "close_pit",
+    "shares_outstanding_pit",
+    "mcap_pit",
+    "security_basis",
+    "volume_pit",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +102,13 @@ class PriceFrames:
     volume: pd.DataFrame | None = None
     ret: pd.DataFrame | None = None
     sector_ret: pd.DataFrame | None = None
-    #: `S(d)`, the spinoff LEVEL factor -- a dimensionless multiplier, never a price. 1.0 on
-    #: ~89% of cells. Multiply a LEVEL by it (market cap, EV, dollar volume); never a RETURN,
-    #: because `close_split x S` would break exactly at the spinoff bar that Yahoo's
-    #: back-adjustment exists to smooth. See `utils/common/level_basis.py`.
+    #: Persisted compatibility factor S = Y * H / (F * U); never a return input.
     level_factor: pd.DataFrame | None = None
+    close_pit: pd.DataFrame | None = None
+    shares_outstanding_pit: pd.DataFrame | None = None
+    mcap_pit: pd.DataFrame | None = None
+    security_basis: pd.DataFrame | None = None
+    volume_pit: pd.DataFrame | None = None
 
     def require(self, *fields: str) -> None:
         """Fail at the top of a builder rather than with a None-arithmetic TypeError two
@@ -99,6 +116,13 @@ class PriceFrames:
         missing = [f for f in fields if getattr(self, f, None) is None]
         if missing:
             raise ValueError(f"PriceFrames was loaded without {missing}; pass fields={tuple(fields)} to load_price_frames")
+
+    def on(self, dates: pd.DatetimeIndex, *names: str) -> PriceFrames:
+        """These frames on `dates`: the named wide fields (all of them when none is named) reindexed, the rest kept whole."""
+        selected = names or tuple(field.name for field in fields(self) if field.name not in {"trading_index", "universe", "peers"})
+        return replace(
+            self, trading_index=dates, **{name: getattr(self, name).reindex(dates) for name in selected if getattr(self, name) is not None}
+        )
 
     @property
     def availability(self) -> pd.DataFrame | None:
@@ -113,10 +137,46 @@ class PriceFrames:
         pattern by construction (one response, one upsert), but `close_split` is the one that
         is never null when the other is -- `close_total` is derived from it."""
         self.require("close_split")
-        s = self.close_split.where(self.availability).reset_index()
+        assert self.close_split is not None
+        s = self.close_split.where(self.close_split.notna()).reset_index()
         idx_col = s.columns[0]
         m = s.melt(id_vars=idx_col, var_name="ticker", value_name="_v").dropna(subset=["_v"]).rename(columns={idx_col: "date"})
         return m[["date", "ticker"]].reset_index(drop=True)
+
+
+def rebase_vendor_quantities(
+    basis: ShareBasis, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series
+) -> pd.Series:
+    """Undo the source's F restatement, then carry genuine quantities in target security units."""
+    factor = basis.factor(tickers, source_dates, "vendor")
+    original = pd.to_numeric(quantities, errors="coerce") / factor.where(np.isfinite(factor) & factor.gt(0))
+    result = rebase_security_quantities(basis, original, tickers, source_dates, target_dates, pd.Series(1.0, index=quantities.index))
+    return result if basis.actual_available else result.where(quantities.eq(0))
+
+
+def comparison_share_history(
+    df_history: pd.DataFrame,
+    basis: ShareBasis | None,
+    target_date: pd.Timestamp,
+    count_fields: Sequence[str] = ("sharesOutstanding",),
+    per_share_fields: Sequence[str] = (),
+) -> pd.DataFrame:
+    """Copy declared source fields into common comparison units, preserving raw definitions."""
+    df_result = df_history.copy(deep=False)
+    if basis is None:
+        for field in (*count_fields, *per_share_fields):
+            if field in df_result:
+                df_result[field] = np.nan
+        return df_result
+    target = pd.Series(target_date, index=df_result.index)
+    for field in count_fields:
+        if field in df_result:
+            values = rebase_vendor_quantities(basis, df_result[field], df_result["ticker"], df_result["as_of"], target)
+            df_result[field] = values.where(values.gt(0))
+    for field in per_share_fields:
+        if field in df_result:
+            df_result[field] = vendor_ordinary_per_share(basis, df_result[field], df_result["ticker"], df_result["as_of"], target)
+    return df_result
 
 
 def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -134,7 +194,7 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
         if wide is None or wide.empty:
             continue
         wide = wide.where(active.reindex(index=wide.index, columns=wide.columns, fill_value=False))
-        s = wide.stack(future_stack=True)
+        s = cast(pd.Series, wide.stack(future_stack=True))
         s.index = s.index.set_names(["date", "ticker"])
         s.name = field
         frames.append(s)
@@ -184,7 +244,7 @@ def load_price_frames(
 
     wide: dict[str, pd.DataFrame] = {}
     for f in fields:
-        piv = long.pivot(index="date", columns="ticker", values=f).sort_index()
+        piv = long.pivot(index="date", columns="ticker", values=f).sort_index().astype("float64")
         piv.index.name, piv.columns.name = "date", "ticker"
         wide[f] = piv
 
@@ -205,19 +265,52 @@ def load_price_frames(
         ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),
         level_factor=wide.get("level_factor"),
+        close_pit=wide.get("close_pit"),
+        shares_outstanding_pit=wide.get("shares_outstanding_pit"),
+        mcap_pit=wide.get("mcap_pit"),
+        security_basis=wide.get("security_basis"),
+        volume_pit=wide.get("volume_pit"),
     )
 
 
 def universe_columns(tickers: Sequence[str], close: pd.DataFrame) -> list[str]:
     """The analysis universe as a SORTED, deterministic column list.
 
-    The old code built this as a `set` and let `du._sub` iterate it, so every `stock_*`
-    frame's column order varied with PYTHONHASHSEED across processes. The effect on values
-    is ~1e-16 (float summation order in `ret.mean(axis=1)`,
-    `characteristic_to_factor_return`'s `.sum(axis=1)`), but it makes any bit-identity
-    claim between two processes unprovable -- and the CLI runs each sub-step in its own
-    process."""
+    A set's order varies with PYTHONHASHSEED across processes, which changes float summation
+    order across columns and makes bit-identity between two processes (the CLI runs each
+    sub-step in its own) unprovable."""
     universe = sorted(set(tickers) & set(close.columns))
     if not universe:
         raise RuntimeError("no universe ticker has prices -> cube universe is empty")
     return universe
+
+
+def get_trading_days(close: pd.DataFrame, market: pd.Series, market_name: str = "market") -> pd.Series:
+    """The trading calendar: a boolean over `close.index`, True where the MARKET traded.
+
+    Takes the market series (read from `prices_macro` by the caller), not a column name, so
+    `close` holds equities only and the quorum counts stocks."""
+    quorum = 0.5 * close.shape[1]
+    trading_days = market.reindex(close.index).notna()
+    stock_cov = close.notna().sum(axis=1)
+    holes = close.index[(~trading_days) & (stock_cov >= quorum)]
+    if len(holes):
+        logger.warning(
+            "%s (market series) missing on %d date(s) where >=50%% of stocks "
+            "trade (%s .. %s) -> these dates are dropped for the ENTIRE universe. "
+            "Re-run `data_extract macro` to backfill %s.",
+            market_name,
+            len(holes),
+            holes.min().date(),
+            holes.max().date(),
+            market_name,
+        )
+
+    return trading_days
+
+
+def pivot_fields(df_prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Pivot Yahoo bars into float64 adjusted price and volume frames."""
+    df_pivot = prices_long_to_multiindex(df_prices)
+    fields = {"open": "Open", "high": "High", "low": "Low", "close_split": "CloseSplit", "close_total": "CloseTotal", "volume": "Volume"}
+    return {field: extract_field(df_pivot, source) for field, source in fields.items()}

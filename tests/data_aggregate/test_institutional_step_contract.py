@@ -19,12 +19,10 @@ from src.context import Context
 from src.data_aggregate.transformers import step_cube_institutionals as institutional_step
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
-from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import resolve_share_events
 from tests.canonical_schema import create_canonical
 from tests.data_aggregate.insider_pit_reference import row
 
@@ -73,8 +71,24 @@ def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
     days = pd.bdate_range("2024-01-02", periods=periods, name="date")
     store.replace(
         Tables.cube_part_prices,
-        pd.DataFrame({"date": days, "ticker": "AAA", "close_split": 100.0, "close_total": 100.0, "volume": 1000.0, "level_factor": 1.0}),
+        pd.DataFrame(
+            {
+                "date": days,
+                "ticker": "AAA",
+                "close_split": 100.0,
+                "close_total": 100.0,
+                "volume": 1000.0,
+                "level_factor": 1.0,
+                "close_pit": 100.0,
+                "shares_outstanding_pit": float("nan"),
+                "mcap_pit": float("nan"),
+                "security_basis": 1.0,
+            }
+        ),
     )
+    if not store.exists(Tables.prices_splits):
+        store.save(Tables.prices_splits, pd.DataFrame({"ticker": ["AAA"], "date": [days[0]], "ratio": [1.0]}))
+        store.delete(Tables.prices_splits, where={"ticker": "AAA"})
     return days
 
 
@@ -93,6 +107,7 @@ def market_lines(tickers: Sequence[str], start: pd.Timestamp) -> pd.DataFrame:
                 "conversion_ratio": 1.0,
                 "valid_from": start,
                 "valid_to": None,
+                "cusip": f"{number:09d}",
             }
             for number, ticker in enumerate(tickers, start=1)
         ]
@@ -151,12 +166,13 @@ def test_public_step_checks_market_owners_outside_its_universe(
         peers={},
         close_split=pd.DataFrame({"AAA": 100.0}, index=idx),
         volume=pd.DataFrame({"AAA": 1_000.0}, index=idx),
+        shares_outstanding_pit=pd.DataFrame({"AAA": float("nan")}, index=idx),
+        security_basis=pd.DataFrame({"AAA": 1.0}, index=idx),
     )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    basis = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
-    monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args: frames)
-    monkeypatch.setattr(capital_inputs, "load_share_inputs", lambda *args: (None, None, basis, None, pd.DataFrame()))
+    monkeypatch.setattr(institutional_step, "load_price_frames", lambda *args, **kwargs: frames)
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
@@ -172,7 +188,7 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     calls: list[str] = []
 
     def panel(name: str) -> pd.DataFrame:
@@ -201,7 +217,9 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     delivered = names[:15]
     days = pd.bdate_range("2024-01-02", periods=3, name="date").as_unit("ns")
     prices = pd.MultiIndex.from_product([days, names], names=["date", "ticker"]).to_frame(index=False)
-    sqlite_store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0, close_total=100.0, volume=1_000.0, level_factor=1.0))
+    sqlite_store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0, close_total=100.0, volume=1_000.0, level_factor=1.0,
+                                                             close_pit=100.0, shares_outstanding_pit=float("nan"), mcap_pit=float("nan"),
+                                                             security_basis=1.0))
     history = pd.DataFrame(
         [
             row(
@@ -217,7 +235,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     sqlite_store.save(Tables.insider_transactions, pd.concat([history, pd.DataFrame([row(ticker="OUTSIDE", lineage_role="canonical_current")])], ignore_index=True))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     reads: list[tuple[Any, dict[str, Any]]] = []
     stages: list[str] = []
     stream = sqlite_store.iter_load
@@ -234,11 +252,12 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
         expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]")
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-        return df_insider.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
+        cleaned = df_insider.assign(day=pd.to_datetime(df_insider["filing_date"]), shares_n=df_insider["shares"])
+        return cleaned, {"source_first": pd.Series(dtype="datetime64[ns]")}
 
-    def rebase(source: pd.DataFrame, basis: QuantityBasis) -> pd.DataFrame:
+    def rebase(source: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:
         stages.append("rebase")
-        assert basis.target_date == days[-1]
+        assert df_basis is not None and pd.DatetimeIndex(df_basis.index).max() == days[-1]
         return source
 
     def panel(frames: PriceFrames, field: str, value: float) -> pd.DataFrame:
@@ -314,7 +333,7 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     else:
         monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
     expected_saved = expected.copy()
-    if not full and cls is StepCubeSecThirteen:
+    if not full:
         expected_saved.loc[0, "f_test"] = -2.0
     method = "replace" if full else "append_tail"
     save = Mock(side_effect=getattr(type(sqlite_store), method))
@@ -329,13 +348,7 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     assert len(initial.loc[initial["date"] >= cutoff]) == 8
     other = Tables.cube_part_sec_thirteen if table == Tables.cube_part_institutionals else Tables.cube_part_institutionals
     assert not sqlite_store.exists(other)
-    mode = (
-        "repairs older differences atomically"
-        if cls is StepCubeInstitutionals
-        else "replaces full history"
-        if full
-        else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
-    )
+    mode = "replaces full history" if full else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
     print(f"SANITY: {table.name} {mode} with one save per run and an idempotent repeat.")
 
 
@@ -349,7 +362,7 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
     seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = cls(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(f"{cls.__module__}.load_peers_or_raise", lambda ctx: {})
     reads: Counter[str] = Counter()
     for method in ("load", "iter_load"):
         original = getattr(sqlite_store, method)
@@ -404,7 +417,14 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
         )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    frames = PriceFrames(trading_index=idx, universe=("AAA",), peers={}, volume=pd.DataFrame({"AAA": 1000.0}, index=idx))
+    frames = PriceFrames(
+        trading_index=idx,
+        universe=("AAA",),
+        peers={},
+        volume=pd.DataFrame({"AAA": 1000.0}, index=idx),
+        shares_outstanding_pit=pd.DataFrame({"AAA": float("nan")}, index=idx),
+        security_basis=pd.DataFrame({"AAA": 1.0}, index=idx),
+    )
     streams = []
     original = sqlite_store.iter_load
 
@@ -413,9 +433,7 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = step._short_flow_panel(
-        frames, None, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(resolve_share_events(None, None, {}), idx)
-    )
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), terminal_basis_factor(frames.security_basis))
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
@@ -446,7 +464,7 @@ def test_public_step_preserves_unusable_insider_source_boundary(
     seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     if source is not None:
         sqlite_store.save(Tables.insider_transactions, pd.DataFrame([row(ticker="AAA")]))
     streamed = sqlite_store.iter_load
@@ -493,7 +511,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     panel = step.build_panel().set_index(["date", "ticker"])
     ratios = [
         "f_ic_insider_net_buy_ratio_180d",
@@ -537,7 +555,7 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
     )
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[20])]))
     ctx = context(sqlite_store, tmp_path)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     gross = "f_ic_insider_distinct_buyers_120d"
 
     # Outage: D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
@@ -570,7 +588,14 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
     )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    frames = PriceFrames(trading_index=idx, universe=("AAA",), peers={}, volume=pd.DataFrame({"AAA": 1000.0}, index=idx))
+    frames = PriceFrames(
+        trading_index=idx,
+        universe=("AAA",),
+        peers={},
+        volume=pd.DataFrame({"AAA": 1000.0}, index=idx),
+        shares_outstanding_pit=pd.DataFrame({"AAA": float("nan")}, index=idx),
+        security_basis=pd.DataFrame({"AAA": 1.0}, index=idx),
+    )
     calls: list[object] = []
 
     def fixed_clock(coverage: pd.DataFrame, calendar_days: int) -> dict[str, pd.Timestamp]:
@@ -579,8 +604,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
         return {"202401a": pd.Timestamp("2024-02-05")}
 
     monkeypatch.setattr("src.data_aggregate.utils.institutionals.short_flow_features._ftd_available_dates", fixed_clock)
-    events = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
-    result = step._short_flow_panel(frames, None, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(events, idx))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), terminal_basis_factor(frames.security_basis))
     assert result is not None and len(calls) == 1
     values = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
     assert pd.isna(values.loc[(pd.Timestamp("2024-02-02"), "AAA")])
@@ -595,7 +619,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     sqlite_store.save(Tables.insider_transactions, df_source)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     stages: list[str] = []
     reads: Counter[str] = Counter()
     computing = False
@@ -679,3 +703,51 @@ def test_changed_columns_trigger_full_owned_part_replacement(
     saved = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(saved, expected, check_dtype=False)
     print(f"SANITY: {table.name} builds once and replaces its obsolete schema once; all {len(expected)} saved rows match.")
+
+
+def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    days = pd.bdate_range("2024-01-02", periods=60, name="date")
+    split = days >= days[30]
+    sqlite_store.replace(
+        Tables.cube_part_prices,
+        pd.DataFrame(
+            {
+                "date": days,
+                "ticker": "AAA",
+                "close_split": 100.0,
+                "close_total": 100.0,
+                "volume": 4_000.0,
+                "close_pit": 100.0,
+                "shares_outstanding_pit": [4_000.0 if after else 1_000.0 for after in split],
+                "mcap_pit": 400_000.0,
+                "security_basis": [4.0 if after else 1.0 for after in split],
+            }
+        ),
+    )
+    sqlite_store.save(Tables.universe_cusip, market_lines(["AAA"], days[0]))
+    as_traded = pd.Series([4.0 if after else 1.0 for after in split], index=days)
+    sqlite_store.save(
+        Tables.short_interest,
+        pd.DataFrame({"ticker": "AAA", "date": days, "short_volume": 100.0 * as_traded.values, "total_volume": 1_000.0 * as_traded.values}),
+    )
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver,
+        pd.DataFrame({"date": [pd.Timestamp("2024-01-25")], "ticker": ["AAA"], "fails_quantity": [100.0], "period": ["202401b"]}),
+    )
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
+    panel = step.build_panel().set_index(["date", "ticker"]).xs("AAA", level="ticker")
+    turnover = panel["f_ic_shortvol_turnover_20d"].loc[days[21] :]  # full 20-session windows, straddling the split from days[31]
+    coverage = panel["f_ic_shortvol_market_coverage"].dropna()
+    ftd = panel.loc[pd.Timestamp("2024-02-21"), "f_ic_ftd_to_adv20"]
+    assert len(turnover) > 30 and turnover.to_numpy() == pytest.approx(2.0, rel=1e-6)
+    assert len(coverage) > 30 and coverage.to_numpy() == pytest.approx(1.0, rel=1e-6)
+    assert ftd == pytest.approx(0.1, rel=1e-6)
+    print(
+        f"SANITY: across a 4:1 split saved only in security_basis, as-traded FINRA and FTD rows convert by F_T/F_d: "
+        f"turnover stays {turnover.min():.3f}..{turnover.max():.3f} over {len(turnover)} days, coverage {coverage.min():.3f}..{coverage.max():.3f}, "
+        f"pre-split fails 100 -> ftd_to_adv20 {ftd:.3f} (400 terminal shares over a 4,000 ADV)."
+    )

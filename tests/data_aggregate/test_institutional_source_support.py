@@ -77,7 +77,7 @@ def test_ftd_other_ticker_observation_cannot_create_zero() -> None:
     idx = pd.bdate_range("2026-07-01", periods=3)
     hist = pd.DataFrame({"ticker": ["AAA"], "date": [idx[0]], "fails_quantity": [12.0], "period": ["202607a"]})
     coverage = hist[["date", "period"]]
-    fails, _ = short._settlement_fails(hist, coverage, idx, pd.Index(["AAA", "BBB"]), None)
+    fails = short.prepare_fails_quantities(hist, coverage, idx, pd.Index(["AAA", "BBB"]), None).quantities
     assert fails.loc[idx[0], "AAA"] == 12.0 and fails["BBB"].isna().all()
     print("SANITY: a valid explicit legacy FTD observation survives; another ticker's served date cannot fabricate an absent leg.")
 
@@ -168,7 +168,7 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     assert ratios[20].iloc[-1, 0] == 0.0
     fails_rows, coverage = inputs.load_fails(sqlite_store, ["AAA", "BBB"])
     assert fails_rows is not None and coverage is not None
-    fails, _ = short._settlement_fails(fails_rows, coverage, dates, pd.Index(["AAA", "BBB"]), None)
+    fails = short.prepare_fails_quantities(fails_rows, coverage, dates, pd.Index(["AAA", "BBB"]), None).quantities
     assert fails.loc[dates[0], "AAA"] == 12.0 and fails["BBB"].isna().all()
     for table, proof in (
         (Tables.short_interest, "source_checked_at"),

@@ -15,6 +15,7 @@ It also owns the live-test gate: `@pytest.mark.live` tests skip unless PEA_LIVE_
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -47,10 +48,13 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 # `tests/` is on sys.path (pytest prepends a conftest's directory), so the guard imports flat.
+
 import live_guard  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory  # noqa: E402
+from src.data_aggregate.utils.price.frames import PriceFrames  # noqa: E402
 from src.data_store.errors import TableEmptyError  # noqa: E402
 from src.data_store.schema import BY_NAME, Tables, name_of, resolve  # noqa: E402
 from src.data_store.store import DataStore  # noqa: E402
@@ -197,7 +201,7 @@ class FakeStore:
         **kw: Any,
     ) -> pd.DataFrame | None:
         name = name_of(table)
-        df = self._filter(self.t.get(name, pd.DataFrame()), where)
+        df = self._filter(self.t[name], where) if name in self.t else pd.DataFrame()
         marker = None if markers or name not in BY_NAME else BY_NAME[name].empty_marker
         if marker is not None and marker[0] in df.columns:
             values = cast(pd.Series, df[marker[0]])
@@ -298,8 +302,8 @@ def real_frames() -> dict[str, Any]:
     series were mixed into `prices`.
     """
     from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
-    from src.data_aggregate.utils.common import data_utils as du
     from src.utils.macro import load_macro_wide
+    from src.utils.price.frames import daily_returns, extract_field, prices_long_to_multiindex
 
     store = _store()
     all_tickers = sorted(store.distinct("prices", "ticker"))
@@ -313,16 +317,16 @@ def real_frames() -> dict[str, Any]:
     macro = macro.set_index("date").sort_index()
 
     prices = cast(pd.DataFrame, store.load("prices", where={"ticker": sorted(subset)}))
-    raw = du.prices_long_to_multiindex(prices)
+    raw = prices_long_to_multiindex(prices)
     # BOTH bases, because the builders under test need both: `close_split` for market cap and
     # the intraday features that pair with open/high/low, `close_total` for every return.
-    close = du.extract_field(raw, "CloseSplit")
-    close_total = du.extract_field(raw, "CloseTotal")
+    close = extract_field(raw, "CloseSplit")
+    close_total = extract_field(raw, "CloseTotal")
     # the trading calendar is still the dates the MARKET traded -- sourced from prices_macro
     calendar = macro[MACRO_MARKET_SERIES].reindex(close.index).notna()
     close = close.loc[calendar]
     close_total = close_total.loc[calendar]
-    returns = du.daily_returns(close_total)
+    returns = daily_returns(close_total)
 
     cols = list(returns.columns)
     keep = (["AMD"] if "AMD" in cols else []) + [c for c in cols if c != "AMD"][:SUBSET_SIZE]
@@ -343,8 +347,6 @@ def real_frames() -> dict[str, Any]:
 def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.utils.config import read_config
-    from src.utils.tickers_universe.universe import Universe
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.factors import (
         assemble_factor_panel,
@@ -354,6 +356,8 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     )
     from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_peers.utils.sector_peers import build_peer_dict
+    from src.utils.config import read_config
+    from src.utils.tickers_universe.universe import Universe
 
     stock_close = real_frames["stock_close"]  # close_split -- LEVELS
     stock_close_total = real_frames["stock_close_total"]  # close_total -- RETURNS
@@ -373,7 +377,10 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     sector_groups = {"sector": universe.sector_map, "industry_group": universe.industry_group_map}
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
-    chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, stock_close_split=stock_close)
+    from tests.data_aggregate.fundamental_pit_reference import legacy_capital_frames
+
+    price_inputs = legacy_capital_frames(fundamentals, stock_close, max_age_days=None)
+    chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, mcap_pit=price_inputs.mcap_pit)
     style_cols = {}
     for name, char in chars.items():
         char.name = name
@@ -436,6 +443,7 @@ def fundamental_panel(real_frames):
     plus the inputs needed to sanity-check it against the target."""
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_peers.utils.sector_peers import build_peer_dict
+    from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
@@ -448,10 +456,8 @@ def fundamental_panel(real_frames):
         pytest.skip("fundamentals_history has no rows for the sample universe")
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     panel = build_fundamental_feature_panel(
-        fundamentals,
-        peers,
-        stock_close.index,
-        stock_close=stock_close,
+        FundamentalHistory(raw_history=fundamentals, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fundamentals, stock_close)), trading_index=stock_close.index, peers=peers),
     )
     return {"panel": panel, "fundamentals": fundamentals, "peers": peers, "stock_close": stock_close}
 
@@ -511,7 +517,7 @@ def make_frames(trading_index, peers: dict | None = None, universe=None, **field
     not load it" -- so a builder's degrade-on-absent path is reachable by simply not passing
     the frame.
     """
-    from src.data_aggregate.utils.common.price_frames import PriceFrames
+    from src.data_aggregate.utils.price.frames import PriceFrames
 
     idx = pd.DatetimeIndex(trading_index)
     if idx.name is None:

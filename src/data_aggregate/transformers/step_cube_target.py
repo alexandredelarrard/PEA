@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.assemble.cube import labels_to_wide
-from src.data_aggregate.utils.target.betas import _betas_to_long
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     PART_REFRESH_TRADING_DAYS,
@@ -31,16 +30,15 @@ from src.data_aggregate.utils.common.incremental import (
     window_start,
     write_part,
 )
-from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.pit import daily_market_cap
-from src.data_aggregate.utils.common.price_frames import (
+from src.data_aggregate.utils.price.checks import measure_seams
+from src.data_aggregate.utils.price.frames import (
     PriceFrames,
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_aggregate.utils.target.betas import estimate_all_betas
+from src.data_aggregate.utils.target.betas import _betas_to_long, estimate_all_betas
 from src.data_aggregate.utils.target.factors import (
     assemble_factor_panel,
     build_characteristics,
@@ -51,6 +49,7 @@ from src.data_aggregate.utils.target.factors import (
 from src.data_aggregate.utils.target.targets import build_targets_multi, fitted_beta_columns
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
+from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
 
 
@@ -63,10 +62,8 @@ class StepCubeTarget(Step):
     # The price fields this step reads back from `cube_part_prices`: `ret` as well as
     # `close`, because the factor panel is built from returns. Declared rather than inlined
     # so the projection stays introspectable (see test_part_registry.py).
-    # `close_split` for market cap and the size characteristic (the basis on which the
-    # split factor cancels against `sharesbas`); `close_total` for momentum; `ret` for every
-    # LABEL, which is now a forward COMPOUNDED total return rather than a price ratio.
-    _FIELDS = ("close_split", "close_total", "ret", "level_factor")
+    # close_split anchors observed keys; valuation reads saved issuer cap only.
+    _FIELDS = ("close_split", "close_total", "ret", "mcap_pit")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -104,7 +101,7 @@ class StepCubeTarget(Step):
 
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
-        targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons, sector_groups, sector_excess, fundamentals, seams)
+        targets = self._build_targets(price_frames, (betas, panel, macro_cols), horizons, (sector_groups, sector_excess), seams)
         n = self._persist(
             targets,
             betas,
@@ -124,7 +121,8 @@ class StepCubeTarget(Step):
     def _measure_seams(self, frames: PriceFrames) -> dict[str, list[pd.Timestamp]]:
         """The registered `null_ret` basis changes, re-measured on THIS step's `close_total`."""
         frames.require("close_total")
-        seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
+        assert frames.close_total is not None
+        seams = measure_seams(frames.close_total, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info(
             "Seam masks: %s of %s registered null_ret entries measured (%s ticker(s)) "
@@ -135,8 +133,8 @@ class StepCubeTarget(Step):
         )
         return seams
 
-    def _load_fundamentals(self) -> pd.DataFrame:
-        columns = ("ticker", "as_of", "totalRevenue", "sharesOutstanding", "netIncome", "freeCashflow", "stockholdersEquity")
+    def _load_fundamentals(self) -> pd.DataFrame | None:
+        columns = ("ticker", "as_of", "netIncome", "freeCashflow", "stockholdersEquity")
         return self._context.store.load(Tables.fundamentals_history, columns=columns)
 
     def _load_macro(self) -> pd.DataFrame:
@@ -193,14 +191,15 @@ class StepCubeTarget(Step):
         away, so every factor family that goes into the panel is visible here instead of
         behind another wrapper."""
 
-        frames.require("close_split", "close_total", "ret")
+        frames.require("close_total", "ret")
+        assert frames.close_total is not None
+        assert frames.ret is not None
         chars = build_characteristics(
             stock_close_total=frames.close_total,
             stock_ret=frames.ret,
             fundamentals_history=fundamentals,
             resvol_window=63,
-            stock_close_split=frames.close_split,
-            level_factor=frames.level_factor,
+            mcap_pit=frames.mcap_pit,
             seams=seams,
         )
         macro = self._load_macro()  # ONE read, ONE pivot, all macro below
@@ -225,6 +224,7 @@ class StepCubeTarget(Step):
         cfg = self._cfg.betas
         sector = sector_groups["sector"]
         frames.require("ret")
+        assert frames.ret is not None
 
         # `market_ret` is the panel's own `market` column, passed in rather than re-derived:
         # this de-markets the sector REGRESSOR before any beta is fit, so it must be the exact
@@ -241,6 +241,7 @@ class StepCubeTarget(Step):
     def _estimate_betas(self, frames: PriceFrames, panel: pd.DataFrame, sector_excess: pd.DataFrame | None) -> dict:
         cfg = self._cfg.betas
         frames.require("ret")
+        assert frames.ret is not None
         betas = estimate_all_betas(
             stock_returns=frames.ret,
             global_factors=panel,
@@ -268,26 +269,22 @@ class StepCubeTarget(Step):
     def _build_targets(
         self,
         frames: PriceFrames,
-        betas: dict,
-        panel: pd.DataFrame,
-        macro_cols: list[str],
+        factors: tuple[dict, pd.DataFrame, list[str]],
         horizons: list[int],
-        sector_groups: dict[str, dict[str, str]],
-        sector_excess: pd.DataFrame | None,
-        fundamentals: pd.DataFrame,
+        sectors: tuple[dict[str, dict[str, str]], pd.DataFrame | None],
         seams: dict[str, list[pd.Timestamp]] | None = None,
     ) -> dict:
+        """Build labels from the fitted factor bundle and matched sector exposures."""
+        betas, panel, macro_cols = factors
+        sector_groups, sector_excess = sectors
         cfg = self._cfg.targets
-        frames.require("ret")
+        frames.require("close_total", "ret")
+        assert frames.close_total is not None
 
         # store EVERY configured target version (e.g. rank AND zscore) so the modelling step
         # can pick one via model.target_type without a cube rebuild
         label_types = list(cfg.get("labels", ["zscore", "rank", "epsilon"]))
-        # recomputed here rather than reused from `PitFrames.market_cap`: that cache belongs to
-        # the fundamentals sub-step, which runs later and over a different warm-up window.
-        market_cap = (
-            daily_market_cap(fundamentals, frames.close_split, level_factor=frames.level_factor) if cfg.get("neutralize_log_mcap", False) else None
-        )
+        market_cap = frames.mcap_pit if cfg.get("neutralize_log_mcap", False) else None
         labels = build_targets_multi(
             close_total=frames.close_total,
             betas=betas,

@@ -18,6 +18,7 @@ is how 24 dead features stayed green for a whole vintage of the table.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import cast
 
 import numpy as np
@@ -32,6 +33,9 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _forensic_fields,
     _notes_num_daily,
 )
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
+from src.data_aggregate.utils.price.frames import PriceFrames
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 IDX = pd.bdate_range("2022-01-03", periods=300)  # >252 so shift(_YEAR) has a year-ago
 _SPLIT = 252  # rows [0:252) = "a year ago", [252:] = "now"
@@ -277,7 +281,11 @@ def test_pension_adjusted_ev_and_overhang_leverage():
             },
         ]
     )
-    f = _derived_fields(fh, idx, close, notes_num=notes_num)
+    f = _derived_fields(
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+        supplement=FundamentalSupplement(notes_num=notes_num),
+    )
     d = idx[-1]
     assert abs(f["pension_retirement_liability"].loc[d, "P"] - 80.0) < 1e-6
     assert abs(f["pension_overhang_leverage"].loc[d, "P"] - 80.0 / 500.0) < 1e-9  # 0.16
@@ -310,7 +318,10 @@ def test_operating_margin_5y_trend_and_refinancing_risk():
                 "sharesOutstanding": 100.0,
             }
         )
-    f = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"M": 10.0}, index=idx))
+    f = _derived_fields(
+        FundamentalHistory(raw_history=pd.DataFrame(rows), share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(pd.DataFrame(rows), pd.DataFrame({"M": 10.0}, index=idx))), trading_index=idx),
+    )
     d = idx[-1]
     # refinancing risk = ST debt / (cash + positive FCF) = 200 / (50+50) = 2.0
     assert abs(f["refinancing_risk"].loc[d, "M"] - 2.0) < 1e-9
@@ -377,7 +388,11 @@ def test_pension_footnote_features_from_notes_num():
             },
         ]
     )
-    f = _derived_fields(fh, idx, close, notes_num=notes_num)
+    f = _derived_fields(
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+        supplement=FundamentalSupplement(notes_num=notes_num),
+    )
     d = idx[-1]
     assert abs(f["pension_funded_ratio"].loc[d, "U"] - 0.6) < 1e-9  # 600 / 1000
     assert abs(f["pbo_to_mcap"].loc[d, "U"] - 1000.0 / 500.0) < 1e-9  # 2.0
@@ -389,7 +404,10 @@ def test_pension_footnote_features_from_notes_num():
     assert abs(f["ebitda_to_ev"].loc[d, "U"] - 50.0 / 1090.0) < 1e-6
 
     # absent notes_num -> footnote features simply don't appear (no crash)
-    f0 = _derived_fields(fh, idx, close)
+    f0 = _derived_fields(
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+    )
     assert "pension_funded_ratio" not in f0 and "pbo_to_mcap" not in f0
 
     print("\n=== SANITY CHECK: pension FOOTNOTE features (notes_num) ===")
@@ -529,7 +547,10 @@ def test_bank_cash_is_not_netted_from_ev_but_still_ratios_into_cash_to_debt():
     fh = pd.DataFrame([{"ticker": "BANKX", "industry_group": "Banks", **base}, {"ticker": "TECHY", "industry_group": "Software & Services", **base}])
     idx = pd.bdate_range("2020-01-02", periods=30)
     close = pd.DataFrame({"BANKX": 5.0, "TECHY": 5.0}, index=idx)  # mcap = 500 each
-    f = _derived_fields(fh, idx, close)
+    f = _derived_fields(
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+    )
     d = idx[-1]
 
     # TECHY nets its cash: EV = 500 mcap + 200 debt - 300 cash = 400
@@ -595,7 +616,10 @@ def test_distress_debt_prefers_the_reconciled_total_debt_column():
             ),
         ]
     )
-    f = _derived_fields(fh, idx, close)
+    f = _derived_fields(
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+    )
     d = idx[-1]
 
     # BOTH get the feature, and both get the same value: 300 / 200
@@ -637,8 +661,14 @@ def test_pension_has_exactly_two_sources_no_fundamentals_history_column():
     idx = pd.bdate_range("2020-01-02", periods=30)
     close = pd.DataFrame({"Z": 5.0}, index=idx)
 
-    without = _derived_fields(pd.DataFrame([base]), idx, close)
-    with_col = _derived_fields(pd.DataFrame([{**base, "pensionDeficit": 80.0}]), idx, close)
+    without = _derived_fields(
+        FundamentalHistory(raw_history=pd.DataFrame([base]), share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(pd.DataFrame([base]), close)), trading_index=idx),
+    )
+    with_col = _derived_fields(
+        FundamentalHistory(raw_history=pd.DataFrame([{**base, "pensionDeficit": 80.0}]), share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(pd.DataFrame([{**base, "pensionDeficit": 80.0}]), close)), trading_index=idx),
+    )
 
     # no pension source at all -> no pension features, with or without the phantom column
     for f in (without, with_col):

@@ -14,7 +14,9 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
-from src.utils.price_adjustments import ShareBasis
+from src.data_aggregate.utils.price.frames import PriceFrames
+from src.utils.price.adjustments import ShareBasis
+from src.utils.price.per_share import eps_basis_supported, eps_price
 
 logger = logging.getLogger(__name__)
 SURPRISE_WINDOW = 4
@@ -57,13 +59,6 @@ def _report_state_to_daily(
     return fields
 
 
-def _supported_eps_basis(df_reports: pd.DataFrame, share_basis: ShareBasis | None) -> pd.Series:
-    """Retain report EPS with compatible quoted-security units, irrespective of later splits."""
-    if share_basis is None:
-        return pd.Series(False, index=df_reports.index)
-    return share_basis.factor(df_reports["ticker"], df_reports["earnings_date"], "units").eq(1.0)
-
-
 def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex, cap_days: int = 180) -> pd.DataFrame:
     """Calendar age of the latest actual-bearing report, visible next session and capped."""
     df_reports = reported_events(df, idx)
@@ -83,7 +78,7 @@ def _derived_earnings_fields(
 ) -> dict[str, pd.DataFrame]:
     """Build observed report expectations; unsupported EPS bases never enter price ratios."""
     df_reports = reported_events(hist, idx)
-    safe = _supported_eps_basis(df_reports, share_basis)
+    safe = eps_basis_supported(df_reports["ticker"], df_reports["earnings_date"], share_basis)
     logger.info("Report EPS share basis: supported=%s, masked_unknown_units=%s", int(safe.sum()), int((~safe).sum()))
     df_reports["reported_expected_eps_yield"] = df_reports["eps_estimate"].where(safe)
     grouped = df_reports.groupby("ticker", sort=False)
@@ -115,13 +110,7 @@ def _derived_earnings_fields(
     ]
     df_reports[names] = df_reports[names].replace([np.inf, -np.inf], np.nan)
     fields = {name: values.reindex(columns=close.columns) for name, values in _report_state_to_daily(df_reports, names, idx).items()}
-    price = close.reindex(idx)
-    if level_factor is not None:
-        price = price.mul(level_factor.reindex_like(price))
-    if share_basis is not None:
-        for ticker in share_basis.policies.keys() & set(price.columns):
-            units = share_basis.factor(pd.Series(ticker, index=idx), pd.Series(idx, index=idx), "units")
-            price[ticker] = price[ticker].where(units.eq(1.0))
+    price = eps_price(close.reindex(idx), level_factor, share_basis)
     for name in ("reported_expected_eps_yield", "reported_expected_ttm_yield"):
         fields[name] = ratio(fields[name], price, positive_den=True)
     return fields
@@ -129,21 +118,17 @@ def _derived_earnings_fields(
 
 def build_earnings_feature_panel(
     earnings_history: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
-    stock_close: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
+    prices: PriceFrames,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
-    *,
     share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
-    """Long-format report features using the approved raw/self-history view contract."""
-    if earnings_history is None or earnings_history.empty or stock_close is None or "earnings_date" not in earnings_history.columns:
+    """Build report features from saved prices and the dated quantity basis."""
+    if earnings_history is None or earnings_history.empty or prices.close_split is None or "earnings_date" not in earnings_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
-    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor, share_basis=share_basis)
-    panel = build_fundamental_views(fields, peer_dict, history_fields=history_fields, output_since=output_since)
-    days = days_since_earnings(earnings_history, trading_index)
+    fields = _derived_earnings_fields(earnings_history, prices.trading_index, prices.close_split, prices.level_factor, share_basis=share_basis)
+    panel = build_fundamental_views(fields, prices.peers, history_fields=history_fields, output_since=output_since)
+    days = days_since_earnings(earnings_history, prices.trading_index)
     if output_since is not None:
         days = days.loc[days.index >= pd.Timestamp(output_since)]
     if not days.empty and days.notna().any().any():

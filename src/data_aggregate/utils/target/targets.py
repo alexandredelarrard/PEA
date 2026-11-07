@@ -43,12 +43,6 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.prices import (
-    forward_compound,
-    forward_cumchange,
-    momentum_characteristic,
-    trailing_vol,
-)
 from src.data_aggregate.utils.common.xs import (
     MIN_GROUP_SIZE_FOR_NEUTRALIZATION,
     XS_CLIP_CHARACTERISTIC,
@@ -57,6 +51,12 @@ from src.data_aggregate.utils.common.xs import (
     xs_project_out,
     xs_rank_pct,
     xs_z,
+)
+from src.data_aggregate.utils.price.returns import (
+    forward_compound,
+    forward_cumchange,
+    momentum_characteristic,
+    trailing_vol,
 )
 
 

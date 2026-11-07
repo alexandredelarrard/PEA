@@ -331,13 +331,20 @@ def _serve(monkeypatch: pytest.MonkeyPatch, lines: dict[str, list[str]]) -> list
 
 
 def _rebuild(
-    store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lines: dict[str, list[str]] = REAL_LINES, master: pd.DataFrame | None = None
+    store,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lines: dict[str, list[str]] = REAL_LINES,
+    master: pd.DataFrame | None = None,
+    events: bool = True,
 ) -> Any:
-    """A full rebuild from `lines` as the whole cache, over a fresh source pair."""
+    """A full rebuild from `lines` as the whole cache, over a fresh source pair (with the closed event history unless `events` is False)."""
     store.drop(Tables.sec_fails_to_deliver_security)
     store.drop(Tables.sec_fails_to_deliver)
     create_canonical(store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
     store.replace(Tables.universe_cusip, _master() if master is None else master)
+    if events:
+        _fixture_share_events(store)
     _serve(monkeypatch, lines)
     context = _context(store, tmp_path)
     ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], full=True)
@@ -345,8 +352,25 @@ def _rebuild(
 
 
 def _fixture_share_events(store: DataStore) -> None:
-    """Supply this fixture's complete closed event history; the tested class intervals contain no event."""
-    store.save(Tables.prices_splits, pd.DataFrame({"ticker": ["BRK-B"], "date": [pd.Timestamp("2010-01-21")], "ratio": [50.0]}))
+    """Supply this fixture's complete closed event history and the evidence the shipped JCI 0.955 share policy checks."""
+    store.save(
+        Tables.prices_splits,
+        pd.DataFrame({"ticker": ["BRK-B", "JCI"], "date": pd.to_datetime(["2010-01-21", "2016-09-06"]), "ratio": [50.0, 0.955]}),
+    )
+    create_canonical(store.engine, [Tables.sharadar_actions])  # Sharadar has no JCI 2016 action, as the policy expects
+    store.save(  # the JCI policy's 10-K share anchor, as Sharadar reports it
+        Tables.sharadar_fundamentals,
+        pd.DataFrame(
+            {
+                "ticker": ["JCI"],
+                "dimension": ["ARQ"],
+                "date": [pd.Timestamp("2016-11-23")],
+                "reportperiod": [pd.Timestamp("2016-09-30")],
+                "sharesbas": [936718105.0],
+                "price": [None],
+            }
+        ),
+    )
 
 
 def _grain(store) -> dict[tuple[str, str], float]:
@@ -551,8 +575,7 @@ def test_e15_a_summed_line_without_price_makes_the_ticker_day_dollars_null(sqlit
         ]
     }
     with pytest.raises(ValueError, match="settlement quantity basis is unavailable"):
-        _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master)
-    _fixture_share_events(sqlite_store)
+        _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master, events=False)
     _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master)
     rows = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("date").reset_index(drop=True)
     assert rows["fails_quantity"].tolist() == [150.0, 100.0]
@@ -634,6 +657,7 @@ def _seed_unstamped(store, lines: dict[str, list[str]]) -> None:
 
 def test_incremental_run_stamps_only_unstamped_rows_and_builds_their_periods(sqlite_store, tmp_path, monkeypatch):
     sqlite_store.replace(Tables.universe_cusip, _master())
+    _fixture_share_events(sqlite_store)
     source = {p: REAL_LINES[p] for p in ("201506a", "200907b")}
     _seed_unstamped(sqlite_store, source)
     initial_raw = _security(sqlite_store)
@@ -769,6 +793,7 @@ def _with_universe(context: Any, store) -> Any:
 
 def test_f103_a_scoped_incremental_run_stamps_only_its_own_lines_and_saves_stamps_after_the_rebuild(sqlite_store, tmp_path, monkeypatch):
     sqlite_store.replace(Tables.universe_cusip, _master())
+    _fixture_share_events(sqlite_store)
     _seed_unstamped(sqlite_store, {"201506a": REAL_LINES["201506a"]})
     context = _with_universe(_context(sqlite_store, tmp_path), sqlite_store)
     reads = _serve(monkeypatch, {"201506a": REAL_LINES["201506a"]})

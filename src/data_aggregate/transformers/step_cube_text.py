@@ -12,7 +12,7 @@ from omegaconf import DictConfig
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import PartWindow, write_part
-from src.data_aggregate.utils.common.price_frames import load_price_frames, load_trading_calendar
+from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     build_embedding_rows,

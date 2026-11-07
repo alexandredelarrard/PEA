@@ -14,7 +14,6 @@ from omegaconf import OmegaConf
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
@@ -23,9 +22,12 @@ from tests.data_aggregate.test_institutional_step_contract import context, seed_
 
 def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[StepCubeSecThirteen, pd.DatetimeIndex]:
     days = seed_prices(store, periods=120)
+    assert store.exists(Tables.prices_splits) and store.row_count(Tables.prices_splits) == 0, (
+        "Known-truth no-event history needs an existing empty feed"
+    )
     ctx = context(store, path)
     ctx.config.build_cube = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "institutionals": {}})
-    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(step_module, "load_peers_or_raise", lambda ctx: {})
     return StepCubeSecThirteen(ctx, ctx.config), days
 
 
@@ -92,10 +94,13 @@ def _load(store: Any) -> pd.DataFrame:
 
 
 def _shares(store: Any, days: pd.DatetimeIndex, offsets: Sequence[int], amounts: Sequence[float]) -> None:
-    store.replace(
-        Tables.fundamentals_history,
-        pd.DataFrame({"ticker": "AAA", "as_of": days[list(offsets)], "sharesOutstanding": amounts, "sharesOutstandingPit": amounts}),
-    )
+    df_prices = store.load(Tables.cube_part_prices)
+    assert df_prices is not None
+    counts = pd.Series(amounts, index=days[list(offsets)]).reindex(days).ffill()
+    counts = counts.where(counts.gt(0))
+    df_prices["shares_outstanding_pit"] = df_prices.date.map(counts)
+    df_prices["mcap_pit"] = df_prices["shares_outstanding_pit"] * df_prices["close_pit"]
+    store.replace(Tables.cube_part_prices, df_prices)
 
 
 def _bounded(projections: tuple[Mock, Mock], days: pd.DatetimeIndex, maximum: int) -> None:
@@ -103,8 +108,8 @@ def _bounded(projections: tuple[Mock, Mock], days: pd.DatetimeIndex, maximum: in
         for call in projection.call_args_list:
             frames = call.args[1]
             assert 0 < len(frames.trading_index) <= maximum
-            pd.testing.assert_index_equal(frames.close_split.index, frames.trading_index)
-            pd.testing.assert_index_equal(frames.level_factor.index, frames.trading_index)
+            for field in ("close_pit", "shares_outstanding_pit", "mcap_pit"):
+                pd.testing.assert_index_equal(getattr(frames, field).index, frames.trading_index)
             assert frames.universe == ("AAA",)
             if family == 0:
                 pd.testing.assert_index_equal(call.args[2].frames.trading_index, days)
@@ -141,7 +146,21 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
 def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, _ = _owner(sqlite_store, monkeypatch, tmp_path)
     days = pd.bdate_range("2013-08-01", periods=120, name="date")
-    sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"date": days, "ticker": "AAA", "close_split": 100.0, "level_factor": 1.0}))
+    sqlite_store.replace(
+        Tables.cube_part_prices,
+        pd.DataFrame(
+            {
+                "date": days,
+                "ticker": "AAA",
+                "close_split": 100.0,
+                "level_factor": 1.0,
+                "close_pit": 100.0,
+                "shares_outstanding_pit": np.nan,
+                "mcap_pit": np.nan,
+                "security_basis": 1.0,
+            }
+        ),
+    )
     facts = _facts(days, (0,), ic_inst_concentration=[0.25]).assign(period=pd.Timestamp("2013-06-30"))
     _prepare(step, monkeypatch, facts, _elite(days, ()))
     full = _full(step, sqlite_store)
@@ -387,7 +406,13 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, ()))
     if denominator == "temporarily_unknown":
+        # A priced session before the 2023-09-30 report period, so the saved basis F exists at the period.
+        df_prices = sqlite_store.load(Tables.cube_part_prices)
+        sqlite_store.replace(
+            Tables.cube_part_prices, pd.concat([df_prices.head(1).assign(date=pd.Timestamp("2023-09-29")), df_prices], ignore_index=True)
+        )
         _shares(sqlite_store, days, (0, 112), (100.0, 0.0))
+        days = days.insert(0, pd.Timestamp("2023-09-29"))
     current = _full(step, sqlite_store)
     initial = _saved(current).copy()
     initial["f_ic_inst_ownership_pct"] = 0.2
@@ -418,8 +443,30 @@ def test_observation_before_first_price_remains_supported_after_listing(sqlite_s
         Tables.cube_part_prices,
         pd.concat(
             [
-                pd.DataFrame({"date": days, "ticker": "OTHER", "close_split": 100.0, "level_factor": 1.0}),
-                pd.DataFrame({"date": days[100:], "ticker": "AAA", "close_split": 100.0, "level_factor": 1.0}),
+                pd.DataFrame(
+                    {
+                        "date": days,
+                        "ticker": "OTHER",
+                        "close_split": 100.0,
+                        "level_factor": 1.0,
+                        "close_pit": 100.0,
+                        "shares_outstanding_pit": np.nan,
+                        "mcap_pit": np.nan,
+                        "security_basis": 1.0,
+                    }
+                ),
+                pd.DataFrame(
+                    {
+                        "date": days[100:],
+                        "ticker": "AAA",
+                        "close_split": 100.0,
+                        "level_factor": 1.0,
+                        "close_pit": 100.0,
+                        "shares_outstanding_pit": np.nan,
+                        "mcap_pit": np.nan,
+                        "security_basis": 1.0,
+                    }
+                ),
             ],
             ignore_index=True,
         ),

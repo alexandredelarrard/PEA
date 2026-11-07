@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
-import logging
+import json
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pytest
 
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, as_traded_close, level_actions, level_factor, load_share_basis
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
+from src.data_aggregate.utils.price.capitalization import project_security_shares
+from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
+from src.data_aggregate.utils.price.inputs import PRICE_COLS
 from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
+from src.utils.predecessor_series import load_level_actions as level_actions
+from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
+from src.utils.price.basis import load_share_basis
+from src.utils.price.levels import apply_level_bugfix, level_factor
+from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
 from tests.support.universe import universe_of
 
 
@@ -27,7 +34,7 @@ def source_case() -> tuple[Context, pd.DataFrame, ShareBasis, dict]:
     names = ["IVZ", "HBAN", "APA", "SJM"]
     shares = context.store.load(
         Tables.sharadar_fundamentals,
-        columns=["ticker", "date", "sharesbas", "price"],
+        columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "price"],
         where={"ticker": names, "dimension": "ARQ"},
         since="1995-01-01",
         until="2008-12-31",
@@ -62,7 +69,7 @@ def test_original_ordinary_share_controls(source_case: tuple, ticker: str, stamp
     print(f"SANITY: {ticker} {stamp} vendor count restores {actual:,.3f} original ordinary shares (within one share).")
 
 
-def test_real_ivz_level_quote_and_pit_carry(source_case: tuple) -> None:
+def test_real_ivz_level_quote_and_legacy_ordinary_carry(source_case: tuple) -> None:
     context, shares, basis, _ = source_case
     raw = context.store.load(
         Tables.prices, columns=["ticker", "date", "close_split"], where={"ticker": "IVZ"}, since="2006-01-01", until="2007-12-31"
@@ -79,11 +86,11 @@ def test_real_ivz_level_quote_and_pit_carry(source_case: tuple) -> None:
     filing = shares.loc[shares["ticker"].eq("IVZ") & pd.to_datetime(shares["date"]).eq(pd.Timestamp("2007-11-09"))]
     history = filing[["ticker", "date"]].rename(columns={"date": "as_of"}).assign(sharesOutstandingPit=836680132.0)
     index = pd.DatetimeIndex(["2007-11-09", "2007-12-03", "2007-12-04", "2007-12-05"])
-    daily = fundamentals_to_daily(history, "sharesOutstandingPit", index, share_basis=basis)
+    daily = legacy_fundamentals_to_daily(history, "sharesOutstandingPit", index, share_basis=basis)
     assert daily["IVZ"].tolist() == [836680132.0, 836680132.0, 418340066.0, 418340066.0]
     assert pd.Timestamp(history["as_of"].iloc[0]) == pd.Timestamp("2007-11-09")
     assert history["sharesOutstandingPit"].iloc[0] == 836680132.0
-    stale = fundamentals_to_daily(history, "sharesOutstandingPit", index, max_age_days=20, share_basis=basis)
+    stale = legacy_fundamentals_to_daily(history, "sharesOutstandingPit", index, max_age_days=20, share_basis=basis)
     assert stale.loc[pd.Timestamp("2007-12-04"), "IVZ"] != stale.loc[pd.Timestamp("2007-12-04"), "IVZ"]
     print("SANITY: IVZ level S=1 preserves ADS quotes; carried ordinary count converts December4 without refreshing its filing age.")
 
@@ -105,7 +112,7 @@ def test_real_level_boundaries(source_case: tuple, ticker: str, start: str, boun
     raw["date"] = pd.to_datetime(raw["date"])
     vendor["date"] = pd.to_datetime(vendor["date"])
     close = raw.pivot(index="date", columns="ticker", values="close_split")
-    factor = apply_level_bugfix(pd.DataFrame(1.0, index=close.index, columns=close.columns), blob, vendor, close, lambda *args: None)
+    factor = apply_level_bugfix(pd.DataFrame(1.0, index=close.index, columns=close.columns), blob, vendor, close)
     assert factor.loc[factor.index >= pd.Timestamp(boundary), ticker].eq(1.0).all()
     old_boundary = "2009-12-31" if ticker == "BLDR" else "2002-06-30"
     assert int(close.loc[(close.index >= boundary) & (close.index < old_boundary), ticker].notna().sum()) == expected_count
@@ -123,7 +130,8 @@ def test_actual_quantity_normalization_does_not_borrow_vendor_factor(source_case
             "shares_owned_after": [1000.0],
         }
     )
-    normalized = position_units(trades, QuantityBasis.from_context(basis, pd.DatetimeIndex(shares["date"])))
+    days = pd.DatetimeIndex(sorted(pd.to_datetime(shares["date"]).unique()))
+    normalized = position_units(trades, terminal_basis_factor(security_basis_frame(basis, days, pd.Index(["HBAN"]))))
     assert normalized["units_known"].all()
     assert normalized["shares_n"].iloc[0] == pytest.approx(100.0 * 1.1**5)
     assert normalized["shares_owned_after"].iloc[0] == pytest.approx(1000.0 * 1.1**5)
@@ -133,9 +141,11 @@ def test_actual_quantity_normalization_does_not_borrow_vendor_factor(source_case
 
 
 @pytest.mark.parametrize("changed", ["source", "anchor"])
-def test_ordinary_price_builder_refuses_changed_share_policy_before_write(source_case: tuple, monkeypatch: pytest.MonkeyPatch, changed: str) -> None:
-    context, shares, _, blob = source_case
-    raw = context.store.load(Tables.prices, columns=price_step.PRICE_COLS, where={"ticker": "IVZ"}, since="2007-11-01", until="2007-12-10")
+def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
+    source_case: tuple, monkeypatch: pytest.MonkeyPatch, changed: str, sqlite_store: Any, tmp_path: Path
+) -> None:
+    context, shares, _, _ = source_case
+    raw = context.store.load(Tables.prices, columns=PRICE_COLS, where={"ticker": "IVZ"}, since="2007-11-01", until="2007-12-10")
     yahoo = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": "IVZ"})
     actions = context.store.load(
         Tables.sharadar_actions, columns=["ticker", "date", "action", "value"], where={"ticker": "IVZ", "action": ["split", "spinoff"]}
@@ -146,30 +156,27 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(source
     vendor = shares.copy()
     if changed == "anchor":
         vendor.loc[vendor["ticker"].eq("IVZ"), "sharesbas"] *= 2
-    inputs = {Tables.prices: raw, Tables.prices_splits: yahoo, Tables.sharadar_fundamentals: vendor}
+    sqlite_store.save(Tables.prices, raw)
+    sqlite_store.save(Tables.prices_splits, yahoo)
+    sqlite_store.save(Tables.sharadar_actions, actions.assign(contraticker=""))
+    sqlite_store.save(Tables.sharadar_fundamentals, vendor)
+    sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": raw["date"], "close": 1.0}))
+    peer_path = tmp_path / "peers.json"
+    peer_path.write_text(json.dumps({"IVZ": {"IVZ": 1.0}}), encoding="utf-8")
+    isolated = SimpleNamespace(
+        store=sqlite_store,
+        config=context.config,
+        config_dir=context.config_dir,
+        log=context.log,
+        paths={"SECTOR_PEERS_PATH": peer_path},
+        universe=universe_of(["IVZ"]),
+    )
     writes: list[object] = []
-
-    class GuardStore:
-        def load(self, table: Any, **kwargs: Any) -> pd.DataFrame:
-            return inputs[table].copy()
-
-    step = price_step.StepCubePrices.__new__(price_step.StepCubePrices)
-    actual = cast(Any, step)
-    actual._store = GuardStore()
-    actual._context = SimpleNamespace(store=actual._store, log=context.log, config_dir=context.config_dir, universe=universe_of(["IVZ"]))
-    actual._bugfix = blob
-    actual._log = logging.getLogger(__name__)
-    monkeypatch.setattr(step, "_plan_window", lambda full: SimpleNamespace(since=None))
-    monkeypatch.setattr(step, "_trading_calendar", lambda close: pd.DatetimeIndex(close.index))
-    monkeypatch.setattr(step, "_vendor_price", lambda: None)
-    monkeypatch.setattr(step, "_peers", lambda: {})
-    monkeypatch.setattr(step, "_universe_frames", lambda wide, returns, peers: {**wide, "ret": returns})
-    monkeypatch.setattr(price_step, "level_actions", lambda *args: actions)
-    monkeypatch.setattr(price_step, "write_part", lambda *args, **kwargs: writes.append(args))
+    monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))
     with pytest.raises(ValueError, match="changed sharadar|share anchor"):
-        step.run(full=True)
+        price_step.StepCubePrices(isolated, context.config).run(full=True)
     assert not writes
-    print(f"SANITY: ordinary StepCubePrices.run refuses changed {changed} evidence before any part write; correction math is exercised.")
+    print(f"SANITY: actual StepCubePrices.run refuses changed {changed} evidence before any part write.")
 
 
 def test_carried_ownership_rebases_both_quantity_legs() -> None:
@@ -180,8 +187,9 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
         {"ticker": ["TEST"], "period": pd.to_datetime(["2020-03-31"]), "as_of": pd.to_datetime(["2020-05-29"]), "inst_shares": [10.0]}
     )
     filing = book[["ticker", "as_of"]].assign(sharesOutstandingPit=100.0)
-    owned = _daily_owned_shares(book, index, basis)
-    outstanding = fundamentals_to_daily(filing, "sharesOutstandingPit", index, share_basis=basis)
+    owned = _daily_owned_shares(book, index, security_basis_frame(basis, pd.bdate_range("2020-03-31", index[-1]), pd.Index(["TEST"])))
+    observations = filing.assign(capitalization_factor=1.0)
+    outstanding, _ = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["TEST"])))
     assert pd.isna(owned.iloc[0, 0])
     assert owned["TEST"].iloc[1:].tolist() == [10.0, 5.0, 5.0]
     assert (owned / outstanding)["TEST"].iloc[1:].tolist() == [0.1, 0.1, 0.1]
@@ -189,13 +197,14 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     print("SANITY: a configured reverse split halves both carried ownership legs; ownership stays10% and the book never appears before publication.")
 
 
-def test_level_diagnostic_counts_only_observed_quote_bars() -> None:
+def test_level_diagnostic_counts_only_observed_quote_bars(monkeypatch: pytest.MonkeyPatch) -> None:
     index = pd.bdate_range("2020-01-01", periods=4)
     close = pd.DataFrame({"TEST": [float("nan"), float("nan"), 5.0, 5.0]}, index=index)
     vendor = pd.DataFrame({"ticker": ["TEST"], "date": [index[-1]], "price": [10.0]})
     blob = {"level_factor": {"TEST": {"segments": [{"before": "2020-02-01", "factor": 2.0}]}}}
     messages: list[str] = []
-    factor = apply_level_bugfix(close * 0 + 1, blob, vendor, close, lambda msg, *args: messages.append(msg % args))
+    monkeypatch.setattr("src.utils.price.levels.logger.info", lambda msg, *args: messages.append(msg % args))
+    factor = apply_level_bugfix(close * 0 + 1, blob, vendor, close)
     assert "APPLIED to 2 bar(s)" in messages[-1]
     assert factor["TEST"].dropna().eq(2.0).all()
     print("SANITY: a hidden wedge logs two observed quotes, excluding two prelisting NaN grid positions.")

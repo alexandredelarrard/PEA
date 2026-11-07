@@ -27,7 +27,7 @@ from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config

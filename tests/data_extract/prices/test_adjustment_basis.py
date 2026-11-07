@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.prices import forward_compound, forward_return
+from src.data_aggregate.utils.price.returns import forward_compound, forward_return
 from src.data_store.schema import Tables
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")

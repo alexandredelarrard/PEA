@@ -46,7 +46,7 @@ def test_all_nine_books_have_requested_counts_and_distinct_cadences() -> None:
     dates = data.quotes.index[data.quotes.index <= pd.Timestamp("2022-01-14")]
     names = pd.Index([f"T{i:03d}" for i in range(240)])
     data.quotes = pd.DataFrame(100.0, index=dates, columns=names)
-    data.share_basis = data.quotes * 0 + 1
+    data.security_basis = data.quotes * 0 + 1
     data.returns = pd.DataFrame(
         np.outer(np.where(np.arange(len(dates)) % 2, 1, -1), np.linspace(0.001, 0.004, len(names))), index=dates, columns=names
     )

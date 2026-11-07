@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily, two_stage_dcf
+from tests.data_aggregate.fundamental_pit_reference import legacy_capital_frames
 
 
 def _number(value: object) -> float:
@@ -78,7 +79,12 @@ def test_intrinsic_value_daily_pit_and_identity():
     )
     close = pd.DataFrame({"AAA": 2.0}, index=idx)
 
-    out = intrinsic_value_daily(fund, close, idx, discount_rate=0.10, terminal_growth=0.025, years=5, growth_cap=0.15, growth_floor=-0.10)
+    out = intrinsic_value_daily(
+        fund,
+        legacy_capital_frames(fund, close),
+        idx,
+        settings={"discount_rate": 0.1, "terminal_growth": 0.025, "years": 5, "growth_cap": 0.15, "growth_floor": -0.1},
+    )
     d = pd.Timestamp("2020-04-01")
     exp_total = _closed_form(100.0, 0.05, 0.10, 0.025, 5)
     assert abs(out["total"].loc[d, "AAA"] - exp_total) < 1e-6

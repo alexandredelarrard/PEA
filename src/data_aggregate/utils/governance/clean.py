@@ -112,7 +112,7 @@ def _record(stats: dict[str, int], stage: str, part: dict[str, int]) -> None:
     stats.update({f"{stage}|{k}": int(v) for k, v in part.items()})
 
 
-def clean_governance_inputs(raw: GovernanceInputs, prices: PriceFrames | None = None) -> tuple[GovernanceInputs, dict[str, int]]:
+def clean_governance_inputs(raw: GovernanceInputs, prices: PriceFrames) -> tuple[GovernanceInputs, dict[str, int]]:
     """Clean the raw governance inputs. Returns `(cleaned bundle, stats keyed "<stage>|<rule>")`.
 
     Order: child fills, board merge, `impute_def14a`, board provenance, ownership basis repair,
@@ -177,7 +177,7 @@ def _board_fill_kinds(frame: pd.DataFrame) -> None:
             frame.loc[frame[f"{field}_source"] == SOURCE_DERIVED, fill_kind_column(field)] = FILL_CROSS_SOURCE
 
 
-def _clean_ownership(frame: pd.DataFrame, ownership: pd.DataFrame | None, prices: PriceFrames | None, stats: dict[str, int]) -> pd.DataFrame:
+def _clean_ownership(frame: pd.DataFrame, ownership: pd.DataFrame | None, prices: PriceFrames, stats: dict[str, int]) -> pd.DataFrame:
     """Blank per-class ownership, then fill it from economic ownership and the holder-row estimate over the saved PIT count."""
     tally: dict[str, int] = {}
     shares_out = pit_shares_outstanding(frame, prices, tally)
@@ -191,10 +191,10 @@ def _clean_ownership(frame: pd.DataFrame, ownership: pd.DataFrame | None, prices
     return frame
 
 
-def pit_shares_outstanding(def14a_hist: pd.DataFrame, prices: PriceFrames | None, tally: dict[str, int] | None = None) -> pd.Series | None:
+def pit_shares_outstanding(def14a_hist: pd.DataFrame, prices: PriceFrames, tally: dict[str, int]) -> pd.Series | None:
     """The saved `shares_outstanding_pit` as of each proxy date (last session at or before it; a saved null stays null)."""
-    if prices is None or prices.shares_outstanding_pit is None:
-        if tally is not None and "insider_shares" in def14a_hist.columns:
+    if prices.shares_outstanding_pit is None:
+        if "insider_shares" in def14a_hist.columns:
             tally["⚠ economic ownership not computed: shares_outstanding_pit unsupported"] = 1
         return None
     return lookup_asof(prices.shares_outstanding_pit, def14a_hist["ticker"], _proxy_dates(def14a_hist))

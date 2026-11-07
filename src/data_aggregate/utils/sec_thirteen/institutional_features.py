@@ -11,7 +11,6 @@ import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
@@ -153,18 +152,11 @@ def project_institutional_features(
     frames: PriceFrames,
     settle_trading_days: int,
     *,
-    versioned: bool,
     trading_calendar: pd.DatetimeIndex,
 ) -> dict[str, pd.DataFrame]:
     """Project quarter features and the existing ownership/value denominators onto daily dates."""
     features = [column for column in EMISSION if column in df_features.columns]
-    value_fields = {"ic_inst_concentration", "ic_inst_net_options_ratio"}
-    fields = {
-        feature: (nullable_value_to_daily if versioned or feature in value_fields else fundamentals_to_daily)(
-            df_features, feature, frames.trading_index
-        )
-        for feature in features
-    }
+    fields = {feature: nullable_value_to_daily(df_features, feature, frames.trading_index) for feature in features}
     if frames.shares_outstanding_pit is not None and not frames.shares_outstanding_pit.empty and "inst_shares" in df_features:
         df_owned = _daily_owned_shares(df_features, frames.trading_index, frames.security_basis)
         df_shares = frames.shares_outstanding_pit.reindex(frames.trading_index)

@@ -679,7 +679,6 @@ def build_prepared_institutional_feature_panel(
         df_features,
         replace(frames, security_basis=legacy_basis_frame(share_basis, frames.trading_index, holdings)),
         settle_trading_days,
-        versioned=filings is not None,
         trading_calendar=frames.trading_index,
     )
     if not fields:

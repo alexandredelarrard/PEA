@@ -437,8 +437,7 @@ These are source/data/model tasks, separate from the approved feature implementa
 
 ## Price PIT quantity basis follow-ups (2026-11-07)
 
-Deferred at the close of the price PIT quantity-basis refactor; every item is output-neutral or waits on another branch.
+Deferred at the close of the price PIT quantity-basis refactor; every item is output-neutral. P1 (identity adoption) was done in merge `4f33f011`.
 
-- **P1 — Adopt the identity branch (P12).** After the identity run is complete, merge it, take its company-level 13F CUSIP tags, delete `common/class_lines.py`, `attach_tickers` and the cube's insider/13F class conversions (keep `secondary_class_volume` and the F conversion), and re-check that BRK-B/V `shares_outstanding_pit` is the canonical-class count. Expect a conflict in `institutional_books.py`.
 - **P2 — Simplification leftovers (output-neutral).** Move `validate_quantity_events`, `vendor_identity_support` and `vendor_observation_factor` from [levels.py](../src/utils/price/levels.py) to `data_aggregate/utils/price/capitalization.py`; make `position_units`' factor and `capitalization_observations`' `predecessors` required; drop the unreachable `df_basis is None` branches in [institutional features](../src/data_aggregate/utils/sec_thirteen/institutional_features.py); replace the `_output_frames` pass-through in the 13F step with one slice per build; strip the remaining docstring measurements in `levels.py`, `price/frames.py` and `price/returns.py`; fix the stale governance `_load_fundamentals` docstring and the no-op `where` in `PriceFrames.skeleton`.
 - **P3 — 13F speed.** `resolve_prepared_books` per-quarter loop and `compute_institutional_feature_history` dominate the remaining 13F build time.

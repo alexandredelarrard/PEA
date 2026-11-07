@@ -1083,3 +1083,9 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Profile: internal/standard; branch `harness/price-pit-quantity-basis` (prior `harness/price-cube-pit-refactor` merged with `dev` @ `5a8a2ce3`).
 - Scope: `cube_part_prices` saves `security_basis` (forward basis F) and `volume_pit`; the price build reads owners from `price_owner_windows`; an old-history change rebuilds only the affected tickers (`build-prices -t X,Y -F` by hand); governance, momentum, institutionals, SEC 13F and the portfolio inputs convert through the saved F and load no split, unit or owner evidence; 13F attaches CUSIPs by dated `security_master` lines.
 - Pages: [Cube aggregation](./modules/data-aggregate.md), [Cube build](./flows/cube-build.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [Testing and validation](./guides/testing.md), [Configuration](./reference/configuration.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Table catalog](./reference/table-catalog.md).
+
+## 2026-11-07: refresh — identity adoption (P12) in the price PIT branch
+
+- Profile: internal/standard; branch `harness/price-pit-quantity-basis` merged with `dev` @ `abdf8231` (merge `4f33f011`).
+- Scope: `sec13f_hr` rows keep the company-level ticker stored at extraction; manager books are tagged through `CusipTags`; `common/class_lines.py` removed (class lines read from `universe_cusip`); the price identity reads `universe_cik_symbol`. P1 removed from the TODO.
+- Pages: [Cube aggregation](./modules/data-aggregate.md), [Table catalog](./reference/table-catalog.md), [TODO](./TODO.md).

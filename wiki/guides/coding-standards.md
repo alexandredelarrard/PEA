@@ -64,20 +64,33 @@ These rules are compulsory for every future coding change:
 ## Function design and data flow
 
 - One function does one thing in at most 90 lines. A top-level orchestrator (a Step's `run()` or a `build_fundamentals_<x>` function) only calls the small step functions in order.
-- Nesting is at most 3 levels; 2 is the standard. Flatten deeper blocks with guard clauses, early returns, or a helper.
 - No pass-through functions: a function whose body only calls another function is removed, and callers call the target directly.
 - Functions doing the same thing are declared once. Logic repeated in two or more places, including across fetchers, is extracted to the closest shared utils module (package `utils/` for one package, `src/utils/` across packages) and called from every dependent; speculative one-use abstractions remain discouraged.
 - Pass a value computed in one function to the next; never re-declare or recompute it elsewhere.
 - No function input only used by tests + no logger passed as an input of any function.
-- No more than 6 inputs in a function or class method
 - Logical parts of a function are separated by 1 jumped line and one line comment explaining what the block does.
 - No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
+- **Call depth counted from the step.** Level 0 = `run()`; level 1 = a `run_*` sub-step; level 2 = a domain function it calls; level 3 = a helper, which is FLAT: it calls no repository function, only pandas, numpy or stdlib operations. Maximum 3 levels; 2 preferred. No pass-through functions at any level.
+- **Every function:** at most 6 inputs; at most 90 lines; control-flow nesting at most 2 inside a function; logical blocks separated by one blank line, each opened by a one-line comment; ordered load -> clean -> merge -> compute -> post-process -> check -> save; table reads at the top, each table read once.
 
 - Tickers, CIKs, names, GICS and entry dates come from `context.universe` (`self._universe` in a step), never a table read of the roster and never a complete-universe parameter; [universe.yml](../../configs/universe.yml) is the only hand-edited ticker list. `context.universe.tickers` is already normalized. CLI `-t` input is a comma-separated string: split it and pass it to `context.universe.subset`, which normalizes each symbol and refuses names outside the universe. Downstream lists need no repeated normalization; guard subset writes with `context.universe.outside(scope)` or `is_full(tickers)`. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
 
 - The run date is `run_date(as_of)` from `src/utils/string.py` (the `--as-of` date at midnight, or today); do not re-derive `pd.Timestamp(as_of or today).normalize()` inline, and name a local holding it `start_date`, not `run_date`.
 
 A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.
+
+
+## Helper reuse contract
+
+- **Search scope.** Helpers are looked up in `src/utils/` and `src/data_extract/` (including `data_extract/utils/**`) and nowhere else, to keep the reading bounded when code editing data_extract. If code edits data_aggregate then replace with `data_extract/utils**`.
+- **Reuse before writing.** Before any new helper is written in phases 1-8, the phase agent checks the helper inventory (below). If an existing helper does the job, it is called; if one almost does, it is generalised in place rather than copied.
+- **No duplicates.** Two functions in that scope with the same behavior are merged into one; the copies and their now-dead callers' wrappers are deleted. Same-name private helpers are the first candidates. A shared name is only a lead; the body comparison decides.
+- **Placement example for data_extract code edit**
+  - A helper used by one step or sub-step stays with its owner.
+  - A helper used by two or more steps or sub-steps of `data_extract` goes in `src/data_extract/utils/common/`.
+  - A helper also used outside `data_extract` stays in or goes to `src/utils/`.
+  - `src/utils/step.py` and `src/constants/` stay out of scope (approval gate).
+- **Tests stay targeted.** A merged helper's change is checked by running its own tests plus those of each caller module it touches, not the full suite.
 
 ## Ruff and Pyright contract
 

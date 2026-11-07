@@ -1,1 +1,1 @@
-"""The traded universe: `configs/universe.yml` -> `tickers_universe` (`sync.py`) -> `context.universe` (`universe.py`)."""
+"""The traded universe: `configs/universe.yml` -> `universe_tickers` (`sync.py`) -> `context.universe` (`universe.py`)."""

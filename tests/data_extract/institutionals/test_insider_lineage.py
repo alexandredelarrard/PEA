@@ -19,14 +19,15 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
+from src.data_extract.transformers import step_extract_identity as step_module
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.edgar_extract import insider_common as ic
-from src.data_extract.utils.identity import identity_propagate as prop
-from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
+from tests.support.propagation import run_propagation
 from tests.support.universe import as_roster
 
 OLD_MERCK, SGP = "0000064978", "0000310158"
@@ -44,7 +45,7 @@ CO_REGISTRANTS = (DLR_LP, PCG_UTILITY)
 
 def _row(ticker: str, cik: str, role: str, start: str = SENTINEL, end: str | None = None, stamp: pd.Timestamp = STAMP) -> dict[str, Any]:
     return {
-        "entity_id": f"E{ROSTER[ticker]}",
+        "company_id": f"E{ROSTER[ticker]}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -88,16 +89,16 @@ def _lineage(*, mrk_windows: bool = True, pld_windows: bool = False, stamp: pd.T
     ]
     frame = pd.DataFrame(rows)
     # MRK and PLD each form one entity whatever the oldest CIK is.
-    frame.loc[frame["canonical_ticker"].eq("MRK"), "entity_id"] = f"E{OLD_MERCK}"
-    frame.loc[frame["canonical_ticker"].eq("PLD"), "entity_id"] = f"E{OLD_PROLOGIS}"
+    frame.loc[frame["canonical_ticker"].eq("MRK"), "company_id"] = f"E{OLD_MERCK}"
+    frame.loc[frame["canonical_ticker"].eq("PLD"), "company_id"] = f"E{OLD_PROLOGIS}"
     return frame
 
 
 #: The former accounting view's PLD boundary day (removed from the shipped config by the traded-security realignment).
-ACCOUNTING_PLD = sm.MergerBoundary("PLD", pd.Timestamp("2011-06-03"), None, AMB, OLD_PROLOGIS, "AMB")
+ACCOUNTING_PLD = sl.MergerBoundary("PLD", pd.Timestamp("2011-06-03"), None, AMB, OLD_PROLOGIS, "AMB")
 
 
-def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> Any:
+def _identity(*, mergers: tuple[sl.MergerBoundary, ...] = (), **kwargs: Any) -> Any:
     tenure = pd.DataFrame(
         [
             {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
@@ -105,7 +106,7 @@ def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> 
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    shipped = sm.merger_boundaries(sm.load_security_manual(None))
+    shipped = sl.merger_boundaries(sl.load_security_manual(None))
     return build_identity(_lineage(**kwargs), tenure, as_roster(roster), co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
 
 
@@ -340,10 +341,10 @@ def test_insider_ddl_block_carries_the_lineage_columns() -> None:
 def test_co_registrant_ciks_union_the_declared_list() -> None:
     """The flags rule finds co-registrants beside a roster window; curated subsidiaries (ACN SCA, T-Mobile USA,
     Iron Mountain Global, WFC Holdings) are declared, each with a source."""
-    manual = sm.load_security_manual(None)
+    manual = sl.load_security_manual(None)
     declared = {entry for entry in manual.co_registrants}
     assert {"0001143908", "0001097609", "0001132694", "0000105598"} <= declared
-    got = sm.co_registrant_ciks(_lineage(), None, declared=declared)
+    got = sl.co_registrant_ciks(_lineage(), None, declared=declared)
     assert declared <= got
     print("\nSANITY: the shipped config declares the four curated co-registrants and co_registrant_ciks returns them")
 
@@ -447,9 +448,10 @@ def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_stor
     """The re-stamp is wired into `identity --only propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
     sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=True, mergers=(ACCOUNTING_PLD,))))
     context = _context(sqlite_store, tmp_path)
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
+    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
+    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
     after = _identity(stamp=pd.Timestamp("2026-01-12 09:00"))
-    prop.propagate_identity(context, list(UNIVERSE), identity=after, as_of=pd.Timestamp("2026-01-13"))
+    run_propagation(context, after, monkeypatch, list(UNIVERSE), as_of=pd.Timestamp("2026-01-13"))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     assert roles["amb"] == "canonical_current" and roles["opld"] == "acquired_constituent"
@@ -484,10 +486,11 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     sourced = kept.assign(source="zip")
     sqlite_store.save(Tables.insider_transactions, sourced[[c for c in ic.INSIDER_COLUMNS if c in sourced.columns]])
     context = _context(sqlite_store, tmp_path)
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
+    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
+    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
 
     after = _identity()  # same lineage and stamps; the shipped merger metadata and both fixture co-registrants
-    result = prop.propagate_identity(context, list(UNIVERSE), identity=after, as_of=STAMP + pd.Timedelta(days=10))
+    result = run_propagation(context, after, monkeypatch, list(UNIVERSE), as_of=STAMP + pd.Timedelta(days=10))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     print("\n=== SANITY CHECK: config-driven re-stamp (P32) ===")

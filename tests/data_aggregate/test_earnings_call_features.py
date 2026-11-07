@@ -51,7 +51,7 @@ def test_canonical_calls_require_a_consolidating_issuer_window() -> None:
     lineage = pd.DataFrame(
         {
             "cik": ["1", "2", "3", "4"],
-            "entity_id": ["E1", "E2", "E2", "E4"],
+            "company_id": ["E1", "E2", "E2", "E4"],
             "role": ["cik_window", "cik_window", "cik_window", "cik_event"],
             "valid_from": pd.to_datetime(["2022-01-01", "1900-01-01", "2023-01-01", "1900-01-01"]),
             "valid_to": pd.to_datetime(pd.Series([None, "2022-01-01", None, None])),
@@ -69,7 +69,7 @@ def test_canonical_calls_require_a_consolidating_issuer_window() -> None:
 def test_canonical_ticker_keeps_calls_before_the_symbol_change() -> None:
     calls = pd.DataFrame({"ticker": ["ECHO", "ECHO", "UNKNOWN"], "as_of": pd.to_datetime(["2008-05-13", "2026-08-03", "2026-08-03"])})
     roster = _roster(["ECHO"], ["1"])
-    lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
+    lineage = pd.DataFrame({"cik": ["1"], "company_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
     identified = attach_issuer_identity(calls, roster, lineage, _canonical_tenure(roster))
     assert identified["issuer_id"].tolist() == ["E1", "E1"]
     assert identified["as_of"].tolist() == calls["as_of"].iloc[:2].tolist()
@@ -84,7 +84,7 @@ def test_reused_alias_requires_dated_own_support_but_preserves_uncontested_histo
         }
     )
     roster = _roster(["CEG", "ECHO", "FOXA", "CRH"], ["1", "2", "3", "4"])
-    lineage = pd.DataFrame({"cik": ["1", "2", "3", "4"], "entity_id": ["E1", "E2", "E3", "E4"]}).assign(
+    lineage = pd.DataFrame({"cik": ["1", "2", "3", "4"], "company_id": ["E1", "E2", "E3", "E4"]}).assign(
         role="cik_window", valid_from="1900-01-01", valid_to=None
     )
     tenure = pd.DataFrame(
@@ -106,7 +106,7 @@ def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(vari
     lineage = pd.DataFrame(
         {
             "cik": ["1", "2", "3"],
-            "entity_id": ["E1", "E1", "E1" if variant == "same_entity" else "E2"],
+            "company_id": ["E1", "E1", "E1" if variant == "same_entity" else "E2"],
             "valid_from": ["1900-01-01", "2020-01-01", "1900-01-01"],
             "valid_to": ["2020-01-01", None, None],
             "role": "cik_window",
@@ -384,7 +384,7 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
             "total_words": [1000.0, 2000.0],
         }
     )
-    lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
+    lineage = pd.DataFrame({"cik": ["1", "2"], "company_id": ["E1", "E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
     roster = _roster(["NEW"], ["2"])
     prepared = prepare_earnings_call_kpis(attach_issuer_identity(calls, roster, lineage, _canonical_tenure(roster)))
     newest = prepared.iloc[-1]
@@ -397,7 +397,7 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
         ],
         ignore_index=True,
     )
-    ambiguous_lineage = pd.concat([lineage, pd.DataFrame({"cik": ["3"], "entity_id": ["E2"]})], ignore_index=True)
+    ambiguous_lineage = pd.concat([lineage, pd.DataFrame({"cik": ["3"], "company_id": ["E2"]})], ignore_index=True)
     assert attach_issuer_identity(calls.tail(1), ambiguous, ambiguous_lineage, _canonical_tenure(ambiguous)).empty
     unresolved = pd.concat(
         [roster, _roster(["NEW"], ["9"])],
@@ -413,15 +413,15 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
 
 
 def test_issuer_identity_reads_roster_and_distinct_lineage_pairs(sqlite_store) -> None:
-    """The dated `entity_lineage` has several rows per CIK and `symbol_tenure` gains `dei` rows; the attach must not move."""
+    """The dated `universe_cik_symbol` has several rows per CIK and `symbol_tenure` gains `dei` rows; the attach must not move."""
     calls = pd.DataFrame({"ticker": ["NEW", "NEW"], "quarter": ["2023Q4", "2024Q1"], "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"])})
     universe = seed_universe(sqlite_store, ["NEW"], rows={"NEW": {"cik": "0000000002"}})
     sqlite_store.save(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         pd.DataFrame(
             {
                 "cik": ["1", "1", "2", "2"],
-                "entity_id": ["E1"] * 4,
+                "company_id": ["E1"] * 4,
                 "role": ["cik_window", "symbol", "cik_window", "symbol"],
                 "symbol": ["", "OLD", "", "NEW"],
                 "valid_from": ["1900-01-01", "2020-01-01", "2024-01-01", "2024-01-01"],

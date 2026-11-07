@@ -18,9 +18,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, level_factor, load_share_basis
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, gap_check, merge_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
-from src.data_extract.utils.identity import security_master as sm
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
 from src.utils.predecessor_series import load_predecessor_series, load_vendor_series
@@ -71,7 +71,7 @@ def _lineage() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "entity_id": f"E-{t}",
+                "company_id": f"E-{t}",
                 "canonical_ticker": t,
                 "cik": c,
                 "role": "cik_window",
@@ -120,7 +120,7 @@ def _arq(ticker: str, labels: list[str], **values: float) -> pd.DataFrame:
 def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list[tuple[str, str, float]]) -> FakeStore:
     return FakeStore(
         {
-            Tables.entity_lineage: _lineage(),
+            Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
             Tables.sharadar_fundamentals: vendor,
             Tables.sharadar_actions: pd.DataFrame(
@@ -276,15 +276,15 @@ def test_a_window_without_a_cited_ratio_nulls_the_share_block(
 
 
 def test_the_shipped_config_cites_one_exchange_ratio_per_replaced_window() -> None:
-    exchanges = {x.ticker: x for x in sm.load_security_manual(str(REPO_CONFIGS)).exchanges}
+    exchanges = {x.ticker: x for x in sl.load_security_manual(str(REPO_CONFIGS)).exchanges}
     print("\n=== SANITY CHECK: shipped exchange ratios ===")
     for x in exchanges.values():
         print(f"  {x.ticker} {x.predecessor_cik} {x.seam_date.date()} x{x.ratio}")
     assert set(exchanges) == {"LIN", "EVRG", "BKR", "STE", "JCI"}, "PLD and DD follow their traded security: no replacement, no ratio"
     assert all(exchanges[t].ratio == 1 for t in ("LIN", "EVRG", "BKR", "STE"))
     assert (exchanges["JCI"].predecessor_cik, exchanges["JCI"].seam_date, exchanges["JCI"].ratio) == ("0000833444", pd.Timestamp("2016-09-02"), 1)
-    with pytest.raises(sm.SecurityManualError):
-        sm.parse_security_manual({"exchange_ratios": [{"ticker": "X", "predecessor_cik": "1", "seam_date": "2020-01-01", "ratio": 2.0}]})
+    with pytest.raises(sl.SecurityManualError):
+        sl.parse_security_manual({"exchange_ratios": [{"ticker": "X", "predecessor_cik": "1", "seam_date": "2020-01-01", "ratio": 2.0}]})
     print("  OK: five cited entries, each ratio 1 (JCI's 0.955 consolidation is price-only for split_events, so it lives in S); PLD/DD have none;")
     print("  an entry without a source is refused.")
 
@@ -329,7 +329,7 @@ def _jci_store() -> FakeStore:
     )
     return FakeStore(
         {
-            Tables.entity_lineage: _lineage(),
+            Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
             Tables.sharadar_fundamentals: pd.concat([canonical, _tyc()], ignore_index=True),
             Tables.sharadar_actions: pd.DataFrame(

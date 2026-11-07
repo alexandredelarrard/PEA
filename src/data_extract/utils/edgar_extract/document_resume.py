@@ -1,8 +1,9 @@
 """EDGAR document work list: what each nightly run fetches for an EDGAR document table.
 
 `document_worklist`: the local EDGAR index rows of the table's forms for
-each key's filing scope (event CIKs and CIK windows), from the floor on, minus the accessions already stored (empty-filing
-markers included; optionally only on the rows of one source); newest first and capped per run.
+each key's filing scope (event CIKs and CIK windows), from the floor on and filed on or before the key's `ended_on`
+(`Universe.bounds`), minus the accessions already
+stored (empty-filing markers included; optionally only on the rows of one source); newest first and capped per run.
 """
 
 from __future__ import annotations
@@ -17,9 +18,18 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
-from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, document_floor, stored_accessions
+from src.data_extract.utils.common.resume import (
+    DONE_TABLE,
+    KEY_ESTABLISHED,
+    KEY_NEW,
+    KEY_ROWLESS,
+    document_floor,
+    planner_bounds,
+    stored_accessions,
+)
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
+from src.utils.tickers_universe.universe import before_end
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +118,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         request.runtime_floor,
         request.full,
     )
+    bounds = planner_bounds(context)
     started = time.perf_counter()
     floor = request.listing_floor if request.listing_floor is not None else document_floor(table, as_of, request.years_history, runtime_floor)
     roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
@@ -132,6 +143,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     for ticker in roster:
         frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
         df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
+        df_listed = df_listed[before_end(pd.Series(ticker, index=df_listed.index), df_listed["filed"], bounds)]
         done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
         df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
         for name, n in _classify_units(df_listed, df_units, _key_class(ticker, new, df_listed, df_units), overlap).items():

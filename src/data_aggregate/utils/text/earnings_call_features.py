@@ -12,6 +12,7 @@ from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_preparation import SENTIMENT_TAGS, quarter_number
 from src.data_store.schema import Tables
+from src.utils.identity_tables import read_identity
 from src.utils.string import pad_cik_series
 
 SENTIMENT_COLUMNS = ("ticker", "quarter", "tag", "as_of", "sent_pos", "sent_neg", "sent_neu", "n_words", "model")
@@ -77,9 +78,13 @@ def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.Data
     """Canonical roster, consolidating lineage and trusted symbol ownership for stored calls."""
     # Load each identity table once with its consumer projection.
     roster = context.universe.roster
-    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
-    tenure = context.store.load(
-        Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to"], where={"source": ["form345", "manual"]}, optional=True
+    lineage = read_identity(context.store, Tables.universe_cik_symbol, columns=["cik", "company_id", "role", "valid_from", "valid_to"], optional=True)
+    tenure = read_identity(
+        context.store,
+        Tables.symbol_tenure,
+        columns=["symbol", "issuer_cik", "valid_from", "valid_to"],
+        where={"source": ["form345", "manual"]},
+        optional=True,
     )
     return roster, None if lineage is None else lineage.drop_duplicates(ignore_index=True), tenure
 
@@ -97,7 +102,7 @@ def _dated_call_rows(calls: pd.DataFrame, intervals: pd.DataFrame, left_on: str,
 def attach_issuer_identity(
     per_call: pd.DataFrame,
     roster: pd.DataFrame | None,
-    entity_lineage: pd.DataFrame | None,
+    universe_cik_symbol: pd.DataFrame | None,
     symbol_tenure: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Attach canonical issuer history, excluding unsupported dates of reused issuer aliases."""
@@ -105,39 +110,39 @@ def attach_issuer_identity(
     # Require complete identity inputs before assigning issuer ownership.
     out = per_call.copy()
     out["issuer_id"] = pd.Series(pd.NA, index=out.index, dtype="string")
-    if roster is None or roster.empty or entity_lineage is None or entity_lineage.empty or symbol_tenure is None or symbol_tenure.empty:
+    if roster is None or roster.empty or universe_cik_symbol is None or universe_cik_symbol.empty or symbol_tenure is None or symbol_tenure.empty:
         return out.iloc[0:0]
 
     # Map current tickers only when their CIK has a unique issuer owner.
-    lineage = entity_lineage.assign(cik=pad_cik_series(entity_lineage["cik"]))[["cik", "entity_id"]].drop_duplicates()
-    memberships = lineage.groupby("cik")["entity_id"].agg(["size", "count", "nunique", "first"])
+    lineage = universe_cik_symbol.assign(cik=pad_cik_series(universe_cik_symbol["cik"]))[["cik", "company_id"]].drop_duplicates()
+    memberships = lineage.groupby("cik")["company_id"].agg(["size", "count", "nunique", "first"])
     valid = memberships[(memberships["size"] == memberships["count"]) & memberships["nunique"].eq(1)]
     current = roster[["ticker", "cik"]].drop_duplicates()
-    current["entity_id"] = current["cik"].map(valid["first"])
-    owners = current.groupby("ticker")["entity_id"].agg(["size", "count", "nunique", "first"])
+    current["company_id"] = current["cik"].map(valid["first"])
+    owners = current.groupby("ticker")["company_id"].agg(["size", "count", "nunique", "first"])
     owners = owners[(owners["size"] == owners["count"]) & owners["nunique"].eq(1)]
     out["issuer_id"] = out["ticker"].map(owners["first"]).astype("string")
 
     # Admit call dates inside their issuer's consolidating filing windows.
-    windows = entity_lineage[entity_lineage["role"].eq("cik_window")].copy()
+    windows = universe_cik_symbol[universe_cik_symbol["role"].eq("cik_window")].copy()
     windows["cik"] = pad_cik_series(windows["cik"])
     calls = out[["issuer_id", "as_of"]].assign(call_position=np.arange(len(out)))
-    admitted = _dated_call_rows(calls, windows[["entity_id", "valid_from", "valid_to"]], "issuer_id", "entity_id")["call_position"]
+    admitted = _dated_call_rows(calls, windows[["company_id", "valid_from", "valid_to"]], "issuer_id", "company_id")["call_position"]
     keep = pd.Series(np.arange(len(out))).isin(admitted) & out["issuer_id"].reset_index(drop=True).notna()
     tenure = symbol_tenure.assign(issuer_cik=pad_cik_series(symbol_tenure["issuer_cik"]))
-    window_owners = windows[windows["entity_id"].eq(windows["cik"].map(valid["first"]))][["cik", "entity_id"]].drop_duplicates()
+    window_owners = windows[windows["company_id"].eq(windows["cik"].map(valid["first"]))][["cik", "company_id"]].drop_duplicates()
     tenure = tenure.merge(window_owners, left_on="issuer_cik", right_on="cik", how="left")
-    aliases = tenure.dropna(subset=["entity_id"])[["entity_id", "symbol"]].drop_duplicates()
-    keep &= out["issuer_id"].reset_index(drop=True).isin(aliases["entity_id"])
+    aliases = tenure.dropna(subset=["company_id"])[["company_id", "symbol"]].drop_duplicates()
+    keep &= out["issuer_id"].reset_index(drop=True).isin(aliases["company_id"])
 
     # Resolve reused symbols through dated ownership rather than ticker spelling.
-    ownership = aliases.merge(tenure[["symbol", "entity_id"]], on="symbol", suffixes=("", "_owner"))
-    contested = ownership.loc[ownership["entity_id_owner"].isna() | ownership["entity_id"].ne(ownership["entity_id_owner"]), "entity_id"]
-    supported = _dated_call_rows(calls, tenure, "issuer_id", "entity_id")[["call_position", "issuer_id", "as_of", "symbol", "cik"]]
+    ownership = aliases.merge(tenure[["symbol", "company_id"]], on="symbol", suffixes=("", "_owner"))
+    contested = ownership.loc[ownership["company_id_owner"].isna() | ownership["company_id"].ne(ownership["company_id_owner"]), "company_id"]
+    supported = _dated_call_rows(calls, tenure, "issuer_id", "company_id")[["call_position", "issuer_id", "as_of", "symbol", "cik"]]
     supported = _dated_call_rows(supported, windows[["cik", "valid_from", "valid_to"]], "cik", "cik")
     dated_owners = _dated_call_rows(supported[["call_position", "issuer_id", "as_of", "symbol"]].drop_duplicates(), tenure, "symbol", "symbol")
     ambiguous = dated_owners.loc[
-        dated_owners["entity_id"].isna() | dated_owners["issuer_id"].ne(dated_owners["entity_id"]), ["call_position", "symbol"]
+        dated_owners["company_id"].isna() | dated_owners["issuer_id"].ne(dated_owners["company_id"]), ["call_position", "symbol"]
     ]
     supported = supported.merge(ambiguous.drop_duplicates(), on=["call_position", "symbol"], how="left", indicator=True)
     supported = supported.loc[supported["_merge"].eq("left_only"), "call_position"]

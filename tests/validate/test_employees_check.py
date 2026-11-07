@@ -25,7 +25,7 @@ _INDEX = pa.schema([("cik", pa.int64()), ("company", pa.string()), ("form", pa.s
 
 def _lineage_row(ticker: str, cik: str, start: str = "1900-01-01", end: str | None = None) -> dict[str, Any]:
     return {
-        "entity_id": f"E-{ticker}",
+        "company_id": f"E-{ticker}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": "cik_window",
@@ -117,7 +117,7 @@ def _component_rows() -> pd.DataFrame:
 def _seed(store: Any, employees: pd.DataFrame) -> None:
     seed_universe(store, ["AAA", "BBB"], rows={"AAA": {"cik": AAA}, "BBB": {"cik": SUCC}})
     store.save(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         pd.DataFrame([_lineage_row("AAA", AAA), _lineage_row("BBB", PRED, end="2015-07-01"), _lineage_row("BBB", SUCC, start="2015-07-01")]),
     )
     store.save(Tables.fundamentals_employees, employees)

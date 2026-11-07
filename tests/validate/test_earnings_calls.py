@@ -56,8 +56,8 @@ def _seed_identity(store: DataStore, tickers: list[str]) -> None:
     roster = pd.DataFrame({"ticker": tickers, "cik": [str(i) for i in range(1, len(tickers) + 1)]})
     seed_universe(store, tickers, rows={t: {"cik": c} for t, c in zip(roster["ticker"], roster["cik"], strict=True)})
     store.save(
-        Tables.entity_lineage,
-        roster[["cik"]].assign(entity_id="E" + roster["cik"], role="cik_window", symbol="", valid_from="1900-01-01", valid_to=None),
+        Tables.universe_cik_symbol,
+        roster[["cik"]].assign(company_id="E" + roster["cik"], role="cik_window", symbol="", valid_from="1900-01-01", valid_to=None),
     )
     store.save(
         Tables.symbol_tenure,
@@ -70,8 +70,8 @@ def _seed_identity(store: DataStore, tickers: list[str]) -> None:
 def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqlite_store) -> None:
     seed_universe(sqlite_store, ["ECHO"], rows={"ECHO": {"cik": "1"}})
     sqlite_store.save(
-        Tables.entity_lineage,
-        pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["1900-01-01"], "valid_to": [None]}),
+        Tables.universe_cik_symbol,
+        pd.DataFrame({"cik": ["1"], "company_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["1900-01-01"], "valid_to": [None]}),
     )
     sqlite_store.save(
         Tables.symbol_tenure,
@@ -103,8 +103,8 @@ def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqli
 def test_coverage_excludes_canonical_calls_outside_consolidating_windows(sqlite_store) -> None:
     seed_universe(sqlite_store, ["CEG"], rows={"CEG": {"cik": "1"}})
     sqlite_store.save(
-        Tables.entity_lineage,
-        pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["2022-01-01"], "valid_to": [None]}),
+        Tables.universe_cik_symbol,
+        pd.DataFrame({"cik": ["1"], "company_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["2022-01-01"], "valid_to": [None]}),
     )
     sqlite_store.save(
         Tables.symbol_tenure,
@@ -128,7 +128,7 @@ def test_coverage_excludes_canonical_calls_outside_consolidating_windows(sqlite_
 
 def test_canonical_coverage_checks_alias_lifetime_without_rejecting_supported_renames() -> None:
     roster = pd.DataFrame({"ticker": ["ECHO", "FOXA", "CRH"], "cik": ["1", "2", "3"]})
-    lineage = pd.DataFrame({"cik": ["1", "2", "3"], "entity_id": ["E1", "E2", "E3"]}).assign(
+    lineage = pd.DataFrame({"cik": ["1", "2", "3"], "company_id": ["E1", "E2", "E3"]}).assign(
         role="cik_window", valid_from="1900-01-01", valid_to=None
     )
     tenure = pd.DataFrame(
@@ -154,10 +154,10 @@ def test_canonical_coverage_checks_alias_lifetime_without_rejecting_supported_re
 
 def test_canonical_coverage_excludes_missing_and_contradictory_issuer_identity() -> None:
     roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["1"]})
-    lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
+    lineage = pd.DataFrame({"cik": ["1"], "company_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
     tenure = pd.DataFrame({"symbol": ["NEW"], "issuer_cik": ["1"], "valid_from": ["2020-01-01"], "valid_to": [None]})
     date = pd.Timestamp("2024-02-01")
-    contradictory = pd.concat([lineage, lineage.assign(entity_id=None)], ignore_index=True)
+    contradictory = pd.concat([lineage, lineage.assign(company_id=None)], ignore_index=True)
     for evidence in (None, contradictory):
         identity = _identity(tenure, evidence, ["NEW"], roster)
         assert not _linked({"NEW": [date]}, {"NEW"}, identity.roster_entity.get("NEW"), identity, canonical_ticker="NEW")
@@ -172,7 +172,7 @@ def test_canonical_validator_requires_unambiguous_alias_inside_its_cik_window(va
     lineage = pd.DataFrame(
         {
             "cik": ["1", "2", "3"],
-            "entity_id": ["E1", "E1", "E1" if variant == "same_entity" else "E2"],
+            "company_id": ["E1", "E1", "E1" if variant == "same_entity" else "E2"],
             "valid_from": ["1900-01-01", "2020-01-01", "1900-01-01"],
             "valid_to": ["2020-01-01", None, None],
             "role": "cik_window",
@@ -316,11 +316,11 @@ def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
 def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store: Any, has_call: bool) -> None:
     seed_universe(sqlite_store, ["NEW", "BRK-B"], rows={"NEW": {"cik": "1"}, "BRK-B": {"cik": "3"}})
     sqlite_store.save(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         pd.DataFrame(
             {
                 "cik": ["1", "2", "3"],
-                "entity_id": ["E1", "E2", "E3"],
+                "company_id": ["E1", "E2", "E3"],
                 "role": "cik_window",
                 "symbol": "",
                 "valid_from": "1900-01-01",
@@ -379,14 +379,14 @@ def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store:
 
 
 def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sqlite_store) -> None:
-    """The dated `entity_lineage` holds several rows per CIK and `symbol_tenure` gains `dei` rows; coverage must not move."""
+    """The dated `universe_cik_symbol` holds several rows per CIK and `symbol_tenure` gains `dei` rows; coverage must not move."""
     seed_universe(sqlite_store, ["NEW"], rows={"NEW": {"cik": "1"}})
     sqlite_store.save(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         pd.DataFrame(
             {
                 "cik": ["1", "1", "1", "2", "2"],
-                "entity_id": ["E1", "E1", "E1", "E2", "E2"],
+                "company_id": ["E1", "E1", "E1", "E2", "E2"],
                 "role": ["cik_window", "symbol", "symbol", "cik_window", "symbol"],
                 "symbol": ["", "OLD", "NEW", "", "OLD"],
                 "valid_from": ["1900-01-01", "2020-01-01", "2024-01-01", "1900-01-01", "2024-04-01"],

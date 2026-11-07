@@ -27,9 +27,9 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
@@ -122,7 +122,7 @@ def test_an_empty_table_and_full_start_at_the_source_start(sqlite_store):
 
 
 def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, monkeypatch):
-    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.replace(Tables.universe_cusip, _master())
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2020-01-02", 1.0, 2.0), ("LEN", "2020-01-03", 3.0, 4.0)]))
     sqlite_store.save(
         Tables.short_interest,
@@ -149,7 +149,7 @@ def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, 
 
 
 def test_full_refetches_every_served_day_from_the_source_start(sqlite_store, monkeypatch):
-    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.replace(Tables.universe_cusip, _master())
     legacy = pd.DataFrame({"date": pd.to_datetime(["2018-08-02"]), "ticker": "LEN", "short_volume": [99.0], "total_volume": [99.0]})
     sqlite_store.save(Tables.short_interest, legacy)
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-03")))
@@ -172,7 +172,7 @@ def test_full_refetches_every_served_day_from_the_source_start(sqlite_store, mon
 
 
 def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite_store, monkeypatch):
-    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.replace(Tables.universe_cusip, _master())
     sqlite_store.save(
         Tables.short_interest,
         pd.DataFrame({"date": pd.to_datetime(["2018-08-01", "2018-08-02"]), "ticker": "LEN", "short_volume": [1.0, 3.0], "total_volume": [2.0, 4.0]}),
@@ -197,7 +197,7 @@ def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite
 
 def test_a_run_upserts_its_tickers_and_leaves_every_other_key(sqlite_store, monkeypatch):
     """A `-t` run re-reads the planned days for its tickers only: another key's rows survive."""
-    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.replace(Tables.universe_cusip, _master())
     sqlite_store.save(
         Tables.short_interest,
         pd.DataFrame(

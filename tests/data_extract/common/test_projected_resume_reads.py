@@ -12,14 +12,16 @@ from typing import Any
 
 import pandas as pd
 
-from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.common import identity as identity_module
 from src.data_extract.utils.common.identity import build_identity, load_identity
+from src.data_extract.utils.common.security_lines import load_security_manual
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
 from tests.support.universe import as_roster, seed_universe, universe_config
+
+CUSIP_TICKER_OVERRIDES = dict(load_security_manual().cusip_ticker_overrides)
 
 CONFIG_DIR = "configs"
 
@@ -35,7 +37,7 @@ class _Context:
 
     @property
     def universe(self) -> Universe:
-        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        tickers = self.store.load(Tables.universe_tickers, columns=["ticker"])["ticker"].tolist()
         return Universe(self.store, universe_config(tickers))
 
 
@@ -71,6 +73,7 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
     df_stored["earnings_date"] = df_stored["earnings_date"].dt.strftime("%Y-%m-%d")
     sqlite_store.save(Tables.earnings_surprises, df_stored)
     tickers = ["FRESH", "STALE", "NOACTUAL", "DUE", "NEW"]
+    seed_universe(sqlite_store, tickers)
 
     # The plan the full-table read used to give: the latest reported date and the latest stored date per ticker.
     df_full = sqlite_store.load(Tables.earnings_surprises)
@@ -94,12 +97,12 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
 
 def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any, monkeypatch: Any) -> None:
     sqlite_store.save(
-        Tables.entity_lineage,
+        Tables.universe_cik_symbol,
         pd.DataFrame(
             [
                 {
                     "cik": "0000000100",
-                    "entity_id": "E0000000100",
+                    "company_id": "E0000000100",
                     "role": "cik_window",
                     "symbol": "",
                     "valid_from": "1900-01-01",
@@ -108,7 +111,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                 },
                 {
                     "cik": "0000000200",
-                    "entity_id": "E0000000100",
+                    "company_id": "E0000000100",
                     "role": "cik_window",
                     "symbol": "",
                     "valid_from": "2015-01-01",
@@ -117,7 +120,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                 },
                 {
                     "cik": "0000000900",
-                    "entity_id": "E0000000900",
+                    "company_id": "E0000000900",
                     "role": "cik_window",
                     "symbol": "",
                     "valid_from": "1900-01-01",
@@ -193,10 +196,9 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     assert len(evidence_reads) == 1 and set(evidence_reads[0]["source"]) == {"form345", "dei"}
     pd.testing.assert_frame_equal(projected.source_cohort[Tables.symbol_tenure], full_tenure)
     full = build_identity(
-        lineage=sqlite_store.load(Tables.entity_lineage, project=True),
+        lineage=sqlite_store.load(Tables.universe_cik_symbol, project=True),
         tenure=full_tenure,
-        roster_cik=as_roster(sqlite_store.load(Tables.tickers_universe, columns=["ticker", "cik"])),
-        redundant_symbols=frozenset(),
+        roster_cik=as_roster(sqlite_store.load(Tables.universe_tickers, columns=["ticker", "cik"])),
     )
 
     assert projected.roster_cik == full.roster_cik == {"AAA": "0000000100", "BBB": "0000000900"}

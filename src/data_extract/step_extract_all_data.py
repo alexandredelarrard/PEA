@@ -1,8 +1,9 @@
 """Super step orchestrating the data-extraction sub-steps over the universe (`context.universe`).
 
-Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, universe sync) -> zip downloads (Form 3/4/5,
+Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, Sharadar actions, SEC submissions metadata, universe sync)
+-> zip downloads (Form 3/4/5,
 Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
-symbol_tenure + entity_lineage + security_master -> propagation) -> zip ingests (insider zip quarters, notes,
+symbol_tenure + universe_cik_symbol + universe_cusip -> propagation) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
 Sharadar -> fundamentals -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD) -> LLM (DEF 14A, 8-K votes)
 -> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step

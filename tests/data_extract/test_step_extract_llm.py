@@ -38,12 +38,12 @@ class _Context(SimpleNamespace):
     @property
     def universe(self) -> Any:
         self.on_read()
-        return self.tickers_universe
+        return self.universe_tickers
 
 
 def _context(config: Any, fetchers: Fetchers | None = None) -> Any:
     on_read = (lambda: fetchers.call("universe")) if fetchers is not None else (lambda: None)
-    return _Context(config=config, config_dir="configs", on_read=on_read, tickers_universe=universe_of(["AAA", "BBB"]))
+    return _Context(config=config, config_dir="configs", on_read=on_read, universe_tickers=universe_of(["AAA", "BBB"]))
 
 
 def _clear_keys(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,6 +20,7 @@ from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import universe_of
 
 PROXY = """<html><body><h1>Election of Directors</h1>
 <p>Jane Example, age 54, Director since 2018. Jane Example is Chief Executive Officer.</p>
@@ -33,6 +34,7 @@ def daily(tmp_path, monkeypatch):
         log=logging.getLogger("test.def14a.retry"),
         config_dir="configs",
         config=extract_config(data_extract={"years_history": 31}),
+        universe=universe_of(["ZZ"]),
     )
     create_canonical(
         context.store.engine,

@@ -4,7 +4,7 @@ vocabulary.py  (src/utils/tickers_universe/vocabulary.py)
 The GICS vocabulary, once: sector -> industry group -> sub-industry. `configs/universe.yml` declares each
 ticker's sector and sub-industry; the industry group is derived here.
 
-GICS in `tickers_universe` is today's classification projected backwards over the whole
+GICS in `universe_tickers` is today's classification projected backwards over the whole
 history (no date axis), the same look-ahead the static peer basket already carries.
 """
 

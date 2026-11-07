@@ -15,10 +15,14 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src.data_store.schema import Table, Tables
-from src.utils.string import normalise_ticker, pad_cik_series
+from src.data_store.store import DataStore
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 #: One row per (table, ticker, filer CIK) a propagation removes; `cik` is empty for a symbol tape.
 REMOVAL_COLUMNS = ("table", "ticker", "cik", "first_filed", "last_filed", "keys", "rows")
+#: Tickers read per scoped load, and keys per targeted delete.
+_TICKER_CHUNK = 50
+_KEY_CHUNK = 500
 #: One CIK's seam-widened window over a ticker: (cik, listed_from, listed_to); a None bound is open.
 ListedWindow = tuple[str, pd.Timestamp | None, pd.Timestamp | None]
 
@@ -135,6 +139,52 @@ def removal_records(table: str, foreign: pd.DataFrame, spec: FilerTable) -> list
             }
         )
     return records
+
+
+def foreign_mask(
+    spec: FilerTable, rows: pd.DataFrame, own_ciks: Mapping[str, frozenset[str]], own_windows: Mapping[str, Sequence[ListedWindow]]
+) -> pd.Series:
+    """True where a row of `spec` (judged filer CIK) is foreign: its CIK is outside the ticker's entity, for a dated
+    table no window of it admits the row's date, for a windowed table it holds no window of the ticker."""
+    padded = rows[spec.cik_col].map(pad_cik)
+    own = own_filer_mask(rows["ticker"], padded, own_ciks)
+    if spec.dated:
+        own &= windowed_filer_mask(rows["ticker"], padded, rows[spec.date_col], own_windows)
+    if spec.windowed:
+        own &= window_owner_mask(rows["ticker"], padded, own_windows)
+    return ~own
+
+
+def foreign_filer_rows(
+    store: DataStore,
+    spec: FilerTable,
+    tickers: Sequence[str],
+    own_ciks: Mapping[str, frozenset[str]],
+    own_windows: Mapping[str, Sequence[ListedWindow]],
+) -> pd.DataFrame:
+    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity, for a dated table whose CIK
+    has no window admitting the row's date, and for a windowed table whose CIK holds no window of the ticker (a CIK with
+    no digit is never judged)."""
+    columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
+    if spec.table == Tables.insider_transactions:
+        columns = list(dict.fromkeys([*columns, *Tables.insider_transactions.pk]))
+    frames: list[pd.DataFrame] = []
+    for start in range(0, len(tickers), _TICKER_CHUNK):
+        rows = store.load(spec.table, columns=columns, where={"ticker": list(tickers[start : start + _TICKER_CHUNK])}, optional=True)
+        if rows is None or rows.empty:
+            continue
+        rows = rows[judged_cik_mask(rows[spec.cik_col])]
+        frames.append(rows[foreign_mask(spec, rows, own_ciks, own_windows)])
+    found = [frame for frame in frames if not frame.empty]
+    return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=columns)
+
+
+def delete_filer_rows(store: DataStore, spec: FilerTable, foreign: pd.DataFrame) -> None:
+    """Delete `foreign` rows of `spec` by (ticker, filer CIK, keys), a bounded key list per statement."""
+    for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
+        keys = sorted(group[spec.key_col].astype(str).unique())
+        for start in range(0, len(keys), _KEY_CHUNK):
+            store.delete(spec.table, where={"ticker": ticker, spec.cik_col: cik, spec.key_col: keys[start : start + _KEY_CHUNK]})
 
 
 def def14a_evidence_mask(frame: pd.DataFrame) -> pd.Series:

@@ -30,12 +30,10 @@ from src.constants.constants import (
     FUNDAMENTALS_KPIS_FILENAME,
     FUNDAMENTALS_REGIMES_FILENAME,
 )
-from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_extract.utils.common.config_paths import config_entries, resolve_config_dir
 
 # `DEFAULT_CONFIG_DIR` is re-exported: sibling fundamentals modules import it from here.
 
-#: Keys with this prefix are inline documentation in the JSONs, not data; the loader skips them.
-_DOC_PREFIX = "_"
 
 #: The placeholder that means "the research could not establish a primary source".
 UNVERIFIED = "UNVERIFIED"
@@ -459,11 +457,6 @@ def _read_json(config_dir: Path, filename: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _data_items(blob: dict[str, Any]) -> dict[str, Any]:
-    """The blob's real entries, with the inline documentation keys dropped."""
-    return {k: v for k, v in blob.items() if not k.startswith(_DOC_PREFIX)}
-
-
 def _build_field(name: str, entry: dict[str, Any]) -> FieldSpec:
     missing = [k for k in ("tier", "kind", "sign", "unit", "definition", "authority") if k not in entry]
     if missing:
@@ -500,9 +493,9 @@ def _catalogue_at(config_dir: str) -> Catalogue:
     regimes_blob = _read_json(root, FUNDAMENTALS_REGIMES_FILENAME)
     exceptions_blob = _read_json(root, FUNDAMENTALS_EXCEPTIONS_FILENAME)
 
-    kpis = _data_items(kpis_blob)
+    kpis = config_entries(kpis_blob)
     fields = {name: _build_field(name, entry) for name, entry in kpis.items()}
-    derived_columns = _data_items(kpis_blob.get("_derived_columns", {}))
+    derived_columns = config_entries(kpis_blob.get("_derived_columns", {}))
 
     # An inherited authority must name a field that exists.
     for name, spec in fields.items():
@@ -510,18 +503,18 @@ def _catalogue_at(config_dir: str) -> Catalogue:
             if parent not in fields:
                 raise ValueError(f"{name}: authority_inherits_from names unknown field {parent!r}")
 
-    regimes = _data_items(regimes_blob.get("regimes", {}))
+    regimes = config_entries(regimes_blob.get("regimes", {}))
     if not regimes:
         raise ValueError("regimes config declares no regimes")
 
     force: dict[str, str] = {}
-    for sub_industry, block in _data_items(regimes_blob.get("exceptions", {}).get("force_regime", {})).items():
+    for sub_industry, block in config_entries(regimes_blob.get("exceptions", {}).get("force_regime", {})).items():
         force[sub_industry] = block["regime"]
 
-    regime_exceptions = {regime: _data_items(block) for regime, block in _data_items(exceptions_blob.get("by_regime", {})).items()}
+    regime_exceptions = {regime: config_entries(block) for regime, block in config_entries(exceptions_blob.get("by_regime", {})).items()}
 
-    ticker_exceptions = {ticker: _data_items(block) for ticker, block in _data_items(exceptions_blob.get("by_ticker", {})).items()}
-    periodicity = {ticker: _data_items(block) for ticker, block in _data_items(exceptions_blob.get("by_ticker_periodicity", {})).items()}
+    ticker_exceptions = {ticker: config_entries(block) for ticker, block in config_entries(exceptions_blob.get("by_ticker", {})).items()}
+    periodicity = {ticker: config_entries(block) for ticker, block in config_entries(exceptions_blob.get("by_ticker_periodicity", {})).items()}
 
     # An exception-register field missing from the catalogue is a typo that would excuse nothing.
     for regime, block in regime_exceptions.items():

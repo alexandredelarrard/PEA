@@ -3,7 +3,7 @@ fetch_short_interest.py (src/data_extract/utils/institutionals/fetch_short_inter
 ---------------------------------------------------------------------------------
 FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files; not reported short interest).
 Each day-file line is stored raw in `sec_short_volume_security`, keyed on the symbol as filed and stamped
-from `security_master`: the FINRA symbol is read before upper-casing (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`,
+from `universe_cusip`: the FINRA symbol is read before upper-casing (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`,
 the FTD spelling) and resolved on its trade date with `Identity.security_on`; a symbol never seen in FTD maps
 only through a lineage window CIK inside its window (P21). The ticker-grain `short_interest` is rebuilt from
 those rows: per (ticker, date) the sum over the canonical and secondary-class lines of volume x conversion
@@ -29,14 +29,13 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
-from src.data_extract.utils.identity.security_master import EXCLUDED, SOURCE_FTD
+from src.data_extract.utils.common.security_lines import EXCLUDED, SOURCE_FTD, master_stamps
 from src.data_extract.utils.institutionals.security_tape import (
     SUMMED_ROLES,
     commit_tape_source,
     summed_lines,
     validate_tape_frames,
 )
-from src.data_extract.utils.zips.fetch_fails_to_deliver import master_stamps
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import filing_window
@@ -111,7 +110,7 @@ def _parse_regsho(text: str) -> pd.DataFrame:
 
 
 def finra_key(symbol: str) -> str:
-    """The FTD spelling of a FINRA symbol, the key `security_master` rows are found by (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`)."""
+    """The FTD spelling of a FINRA symbol, the key `universe_cusip` rows are found by (`BACpB` -> `BACPRB`, `BRK/A` -> `BRKA`)."""
     return squash("".join(_MARKER_SPELLING.get(char, char) for char in str(symbol)))
 
 

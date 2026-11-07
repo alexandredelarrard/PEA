@@ -1,6 +1,6 @@
 """Shared plumbing of the security-grain market tapes (FTD lines, RegSHO short-volume rows).
 
-Both tapes store raw lines stamped from `security_master` (`STAMP_COLUMNS`) and rebuild a ticker-grain table by
+Both tapes store raw lines stamped from `universe_cusip` (`STAMP_COLUMNS`) and rebuild a ticker-grain table by
 summing the canonical and secondary-class lines (`SUMMED_ROLES`). These helpers load stored rows in keyed chunks,
 compare stamps, and write only the ticker rows that changed.
 """

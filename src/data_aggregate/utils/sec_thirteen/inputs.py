@@ -46,6 +46,8 @@ def _filing_layout(
         "class_evidence",
         *numeric,
         *("raw_" + column for column in numeric if "value" in column),
+        # `sec13f_hr` rows carry the company ticker set at extraction (U-67); manager books are tagged per CUSIP
+        *(("ticker",) if "ticker" in actual else ()),
     )
     if not set(manifests) <= set(actual):
         logger.warning("%s has no completed accession schema; replay original sources before building PIT features.", table.name)
@@ -84,7 +86,7 @@ def iter_filing_vintages(
     """Open one projected source stream of many complete CIK-quarter groups."""
     if not isinstance(chunksize, int) or isinstance(chunksize, bool) or chunksize <= 0:
         raise ValueError("13F chunksize must be a positive integer")
-    
+
     layout = _filing_layout(store, table, until, ciks)
     if layout is None:
         return None

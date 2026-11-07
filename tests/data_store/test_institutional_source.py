@@ -12,8 +12,8 @@ from sqlalchemy import event
 from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_extract.utils.common.identity import load_source_identity
+from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, replace_insider_source
-from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.price_adjustments import ShareBasis
@@ -24,9 +24,9 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
     create_canonical(
         store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
             Tables.short_interest,
@@ -49,9 +49,9 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
     )
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["known original"]})
     identities = {
-        Tables.entity_lineage: pd.DataFrame(
+        Tables.universe_cik_symbol: pd.DataFrame(
             {
-                "entity_id": ["E1"],
+                "company_id": ["E1"],
                 "canonical_ticker": ["AAA"],
                 "cik": ["0000000001"],
                 "role": ["canonical_current"],
@@ -69,7 +69,7 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
                 "evidence_period": ["2026q2"],
             }
         ),
-        Tables.security_master: pd.DataFrame(
+        Tables.universe_cusip: pd.DataFrame(
             {
                 "security_id": ["S1"],
                 "source": ["ftd"],
@@ -165,8 +165,8 @@ def test_identity_replacement_clears_proof_in_same_commit(sqlite_store: DataStor
         table: sqlite_store.load(table, columns=[str(column) for column in originals[table]])
         for table in (Tables.sec_short_volume_security, Tables.sec_fails_to_deliver_security)
     }
-    changed = identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01"))
-    save_identity(sqlite_store, Tables.entity_lineage, changed)
+    changed = identities[Tables.universe_cik_symbol].assign(valid_from=pd.Timestamp("2019-01-01"))
+    save_identity(sqlite_store, Tables.universe_cik_symbol, changed)
     actual = sqlite_store.load(Tables.insider_transactions, markers=True)
     assert actual is not None and len(actual) == len(transactions)
     for table, quantity in ((Tables.short_interest, "short_volume"), (Tables.sec_fails_to_deliver, "fails_quantity")):
@@ -193,7 +193,7 @@ def test_identity_replacement_clears_proof_in_same_commit(sqlite_store: DataStor
 def test_invalidated_quiet_rows_cannot_become_legacy_cube_observations(sqlite_store: DataStore, metric: str) -> None:
     _, _, identities = _inventory(sqlite_store)
     _tape_observations(sqlite_store)
-    save_identity(sqlite_store, Tables.entity_lineage, identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01")))
+    save_identity(sqlite_store, Tables.universe_cik_symbol, identities[Tables.universe_cik_symbol].assign(valid_from=pd.Timestamp("2019-01-01")))
     rows = sqlite_store.load(Tables.short_interest, project=True)
     assert rows is not None
     dates = pd.bdate_range("2026-06-01", periods=4)
@@ -221,7 +221,7 @@ def test_invalidated_quiet_rows_cannot_become_legacy_cube_observations(sqlite_st
 def test_identity_invalidation_rolls_back_quiet_payloads_and_proof(sqlite_store: DataStore, failed_table: Table) -> None:
     _, _, identities = _inventory(sqlite_store)
     originals = _tape_observations(sqlite_store)
-    originals[Tables.entity_lineage] = identities[Tables.entity_lineage]
+    originals[Tables.universe_cik_symbol] = identities[Tables.universe_cik_symbol]
     before = {table: sqlite_store.load(table, columns=[str(column) for column in frame]) for table, frame in originals.items()}
 
     def refuse_stamp(_conn: Any, _cursor: Any, statement: str, _parameters: Any, _context: Any, _executemany: bool) -> None:
@@ -231,7 +231,9 @@ def test_identity_invalidation_rolls_back_quiet_payloads_and_proof(sqlite_store:
     event.listen(sqlite_store.engine, "before_cursor_execute", refuse_stamp)
     try:
         with pytest.raises(RuntimeError, match="controlled failure"):
-            save_identity(sqlite_store, Tables.entity_lineage, identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01")))
+            save_identity(
+                sqlite_store, Tables.universe_cik_symbol, identities[Tables.universe_cik_symbol].assign(valid_from=pd.Timestamp("2019-01-01"))
+            )
     finally:
         event.remove(sqlite_store.engine, "before_cursor_execute", refuse_stamp)
     for table, expected in before.items():

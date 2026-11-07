@@ -36,7 +36,7 @@ def _lineage() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "entity_id": f"E-{t}",
+                "company_id": f"E-{t}",
                 "canonical_ticker": t,
                 "cik": c,
                 "role": "cik_window",
@@ -96,12 +96,12 @@ def _context(store: FakeStore) -> Any:
 
 
 def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:
-    store = FakeStore({Tables.entity_lineage: _lineage(), Tables.sharadar_tickers: _vendor_tickers()})
+    store = FakeStore({Tables.universe_cik_symbol: _lineage(), Tables.sharadar_tickers: _vendor_tickers()})
     found = fetch_sharadar.predecessor_vendor_tickers(_context(store), ["PLD", "STE", "XOM", "AAPL"])
     print("\n=== SANITY CHECK: predecessor vendor tickers ===")
     print(f"  derived: {found}")
     assert found == ["STE1"]
-    old_shape = FakeStore({Tables.entity_lineage: pd.DataFrame({"cik": ["1"], "entity_id": ["E"]}), Tables.sharadar_tickers: _vendor_tickers()})
+    old_shape = FakeStore({Tables.universe_cik_symbol: pd.DataFrame({"cik": ["1"], "company_id": ["E"]}), Tables.sharadar_tickers: _vendor_tickers()})
     assert fetch_sharadar.predecessor_vendor_tickers(_context(old_shape), ["STE"]) == []
     print("  OK: STE1 from sharadar_tickers x register windows; PLD1 is not derived (PLD has no closed window); XOM's own series")
     print("  is canonical; an old-shape lineage gives none.")
@@ -109,7 +109,7 @@ def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:
 
 def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], bool]] = []
-    for name in ("fetch_sharadar_actions", "fetch_sharadar_sp500", "build_merged_history"):
+    for name in ("fetch_sharadar_sp500", "build_merged_history"):
         monkeypatch.setattr(step_module, name, lambda *a, **k: None)
     monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers, **k: calls.append((list(tickers), k["full"])))
     monkeypatch.setattr(step_module, "predecessor_vendor_tickers", lambda context, tickers: ["STE1"])
@@ -131,7 +131,7 @@ def test_the_merge_replaces_inside_the_window_before_ttm(monkeypatch: pytest.Mon
     store = FakeStore(
         {
             **_empties(),
-            Tables.entity_lineage: _lineage(),
+            Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
             Tables.sharadar_fundamentals: pd.concat([canonical, owner], ignore_index=True),
         }
@@ -161,7 +161,7 @@ def test_the_merge_replaces_inside_the_window_before_ttm(monkeypatch: pytest.Mon
 def test_a_missing_owner_series_leaves_the_canonical_rows_and_warns(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     canonical = _arq("STE", ["2015Q1", "2015Q2"], 600.0e6)
     store = FakeStore(
-        {**_empties(), Tables.entity_lineage: _lineage(), Tables.sharadar_tickers: _vendor_tickers(), Tables.sharadar_fundamentals: canonical}
+        {**_empties(), Tables.universe_cik_symbol: _lineage(), Tables.sharadar_tickers: _vendor_tickers(), Tables.sharadar_fundamentals: canonical}
     )
     seen: dict[str, pd.DataFrame] = {}
     monkeypatch.setattr(merge_history, "build_frame", lambda arq, *a, **k: seen.setdefault("arq", arq).iloc[:0])
@@ -181,7 +181,7 @@ def test_a_traded_view_ticker_keeps_the_vendors_own_rows(monkeypatch: pytest.Mon
     store = FakeStore(
         {
             **_empties(),
-            Tables.entity_lineage: _lineage(),
+            Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
             Tables.sharadar_fundamentals: pd.concat([canonical, owner], ignore_index=True),
         }

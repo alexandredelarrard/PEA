@@ -1,4 +1,4 @@
-"""`sync` builds `tickers_universe` from scratch on live-exported fixtures and keeps it current.
+"""`sync` builds `universe_tickers` from scratch on live-exported fixtures and keeps it current.
 
 Fixtures (read-only exports): `roster.csv` is the pre-refactor roster table (500 rows, 2026-11-02),
 `sharadar_tickers.csv` the Sharadar rows of the 491 universe tickers and their alias symbols (2026-11-02),
@@ -58,18 +58,19 @@ def test_first_build_takes_sec_identity_and_the_yml_gics(store, roster, sec, con
     universe = Universe(store, config)
     built = universe.frame.set_index("ticker")
     expected = roster.set_index("ticker").loc[universe.tickers]
-    gics = ["cik", "sector", "industry_group", "sub_industry"]
+    gics = ["sector", "industry_group", "sub_industry"]
     diff = (built[gics] != expected[gics]).any(axis=1)
 
     assert written == len(universe.tickers) == 491
     assert not diff.any(), built[gics][diff]
+    assert built["cik"].isna().all(), "U-49: the CIK is an identity column, the sync never writes it"
     assert built["name"].tolist() == sec.set_index("ticker").loc[universe.tickers, "name"].tolist()
     assert set(built["universe_added_on"].astype(str)) == {"2000-01-01"}
     assert built.loc["GOOGL", "cusips"] == "02079K305 38259P508"
     assert built.loc["BRK-B", "cusips"] == "084670207 084670702"
     assert built["cusips"].notna().all()
     print("\n=== SANITY CHECK: first build ===")
-    print(f"  {written} rows; CIK (SEC) and the 3 GICS columns (yml) equal the pre-refactor roster for all 491; names are SEC's;")
+    print(f"  {written} rows; the 3 GICS columns (yml) equal the pre-refactor roster for all 491; names are SEC's; CIK left NULL (U-49);")
     print(f"  every row has CUSIPs; {built['sector'].nunique()} sectors / {built['industry_group'].nunique()} groups.")
 
 
@@ -133,7 +134,7 @@ def test_an_invalid_gics_entry_aborts_naming_every_ticker(store, config) -> None
     entries["MSFT"] = {"sector": "Information Technology", "industry": "Fintech"}
     with pytest.raises(UniverseError, match=r"AAPL .*MSFT"):
         sync(store, universe_config(entries), AS_OF)
-    assert not store.exists(Tables.tickers_universe)
+    assert not store.exists(Tables.universe_tickers)
     print("\n=== SANITY CHECK: invalid GICS ===")
     print("  a sub-industry outside its sector (AAPL) and an unknown one (MSFT) -> one UniverseError naming both, nothing written.")
 
@@ -142,6 +143,7 @@ def test_entering_and_leaving_tickers(store, config) -> None:
     sync(store, config, AS_OF)
     tickers = [t for t in config.universe.tickers if t != "ZTS"]
     sync(store, universe_config(_entries(config, tickers), config.universe.aliases), AS_OF)
+    assert store.row_count(Tables.universe_tickers) == 491
     store.delete(Tables.prices, {"ticker": ["ZTS"]})
     sync(store, config, AS_OF + pd.Timedelta(days=3))
     universe = Universe(store, config)
@@ -154,11 +156,61 @@ def test_entering_and_leaving_tickers(store, config) -> None:
     print("  ZTS removed, then re-added with no prices: stamped with the sync date and the only new ticker in the overlap.")
 
 
+def test_a_ticker_removed_from_the_yml_stays_with_in_universe_false_and_flips_back(store, config) -> None:
+    sync(store, config, AS_OF)
+    before = store.load(Tables.universe_tickers).set_index("ticker").loc["ZTS"]
+    without = universe_config(_entries(config, [t for t in config.universe.tickers if t != "ZTS"]), config.universe.aliases)
+    written = sync(store, without, AS_OF + pd.Timedelta(days=1))
+    left = store.load(Tables.universe_tickers).set_index("ticker")
+    universe = Universe(store, without)
+
+    assert written == 1 and len(left) == 491 and not bool(left.loc["ZTS", "in_universe"])
+    assert left.loc["ZTS", ["name", "cik", "sector", "sub_industry"]].tolist() == before[["name", "cik", "sector", "sub_industry"]].tolist()
+    assert left.drop(index="ZTS")["in_universe"].astype(bool).all()
+    assert "ZTS" not in universe.tickers and "ZTS" not in set(universe.frame["ticker"]) and len(universe.frame) == 490
+    assert sync(store, without, AS_OF + pd.Timedelta(days=2)) == 0
+
+    assert sync(store, config, AS_OF + pd.Timedelta(days=3)) == 1
+    back = Universe(store, config)
+    assert "ZTS" in back.tickers and len(back.frame) == 491
+    print("\n=== SANITY CHECK: removed ticker kept ===")
+    print("  ZTS left the yml -> its row stays (name, CIK, GICS kept) with in_universe=false, 1 row written, the reader lists 490;")
+    print("  a second night writes 0; ZTS re-added -> in_universe=true again, 1 row written, the reader lists 491.")
+
+
+def test_identity_owned_columns_survive_a_sync_and_the_reader_returns_bounds(store, config) -> None:
+    sync(store, config, AS_OF)
+    identity = {
+        "ticker": ["WBD", "PSKY"],
+        "cik": ["0001437107", "0002041610"],
+        "company_id": ["E0001437107", "E0000813828"],
+        "trading_symbol": ["WBD", "SKYD"],
+        "first_price_date": [pd.Timestamp("2005-07-08"), pd.Timestamp("1986-01-02")],
+        "ended_on": [pd.Timestamp("2026-10-05"), None],
+        "status": ["ended", "renamed"],
+    }
+    store.save(Tables.universe_tickers, pd.DataFrame(identity))
+    store.save(Tables.sharadar_tickers, pd.DataFrame({"table": ["fundamentals"], "permaticker": [193488], "ticker": ["WBD"], "category": ["X"]}))
+    written = sync(store, config, AS_OF + pd.Timedelta(days=1))
+    universe = Universe(store, config)
+    rows = universe.frame.set_index("ticker")
+
+    assert written == 1 and rows.loc["WBD", "category"] == "X"
+    for column in ("cik", "company_id", "trading_symbol", "status"):
+        assert rows.loc[["WBD", "PSKY"], column].tolist() == identity[column], column
+    assert universe.bounds["WBD"] == (pd.Timestamp("2005-07-08"), pd.Timestamp("2026-10-05"))
+    assert universe.bounds["PSKY"] == (pd.Timestamp("1986-01-02"), None)
+    assert universe.bounds["AAPL"] == (None, None) and set(universe.bounds) == set(universe.tickers)
+    print("\n=== SANITY CHECK: two writers ===")
+    print("  identity wrote cik, company_id, trading_symbol, bounds and status on WBD/PSKY; a sync rewriting WBD's Sharadar row keeps them all;")
+    print("  bounds: WBD 2005-07-08..2026-10-05, PSKY open, AAPL (no identity yet) unbounded; one entry per universe ticker.")
+
+
 def test_a_ticker_without_a_sharadar_row_aborts(store) -> None:
     gics = {"sector": "Information Technology", "industry": "Application Software"}
     with pytest.raises(UniverseError, match="FOO"):
         sync(store, universe_config({"AAPL": gics, "FOO": gics}), AS_OF)
-    assert not store.exists(Tables.tickers_universe)
+    assert not store.exists(Tables.universe_tickers)
     print("\n=== SANITY CHECK: unmatched ticker ===")
     print("  FOO has no Sharadar row -> UniverseError naming it, nothing written.")
 
@@ -185,11 +237,11 @@ def test_alias_cusips_join_the_union_and_a_listed_row_beats_a_delisted_one(store
     print("  GOOG's own CUSIP joins GOOGL's union; AAPL keeps its listed row over a newer delisted one.")
 
 
-def test_a_ticker_the_sec_no_longer_lists_takes_sharadars_cik_and_name(store, config) -> None:
+def test_a_ticker_the_sec_no_longer_lists_takes_sharadars_name(store, config) -> None:
     store.delete(Tables.sec_company_tickers, {"ticker": ["AAPL"]})
     sync(store, config, AS_OF)
     built = Universe(store, config).frame.set_index("ticker")
 
-    assert built.loc["AAPL", "cik"] == "0000320193" and built.loc["AAPL", "name"] == "APPLE INC"
+    assert built.loc["AAPL", "name"] == "APPLE INC" and pd.isna(built.loc["AAPL", "cik"])
     print("\n=== SANITY CHECK: SEC-unlisted ticker ===")
-    print("  AAPL missing from the SEC snapshot takes Sharadar's secfilings CIK 0000320193 and Sharadar's name.")
+    print("  AAPL missing from the SEC snapshot takes Sharadar's name; its CIK is left to identity (U-49).")

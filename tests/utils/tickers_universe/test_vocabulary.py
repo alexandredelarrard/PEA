@@ -1,4 +1,4 @@
-"""Every GICS name the code or the configs key on exists in the one vocabulary (`tickers_universe.vocabulary`)."""
+"""Every GICS name the code or the configs key on exists in the one vocabulary (`universe_tickers.vocabulary`)."""
 
 from __future__ import annotations
 

@@ -14,19 +14,22 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.identity import cusip_history as sm
+from src.data_extract.utils.identity.cusip_history import CusipHistory
 from src.data_extract.utils.identity.sec_tickers import parse_company_tickers_exchange
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import load_vendor_exceptions
 from src.utils.predecessor_series import load_vendor_series
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.cusip_build import derive_cusip_history, run_cusip_stage
 from tests.support.universe import as_roster, seed_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 BUILT_AT = pd.Timestamp("2026-10-04 12:00:00")
-LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
+LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -34,7 +37,7 @@ LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "va
 
 def _row(ticker: str, entity_cik: str, cik: str, role: str, symbol: str = "", vf: str | None = None, vt: str | None = None, **kw: str) -> dict:
     return {
-        "entity_id": f"E{entity_cik}",
+        "company_id": f"E{entity_cik}",
         "canonical_ticker": ticker,
         "cik": cik,
         "role": role,
@@ -78,16 +81,16 @@ def _roster(*pairs: tuple[str, str]) -> pd.DataFrame:
     return pd.DataFrame(pairs, columns=["ticker", "cik"])
 
 
-def _derive(observations: pd.DataFrame, lineage: pd.DataFrame, roster: pd.DataFrame, manual: sm.SecurityManual | None = None, **kw) -> sm.MasterBuild:
-    return sm.derive_security_master(observations, lineage, as_roster(roster), manual or sm.SecurityManual.empty(), built_at=BUILT_AT, **kw)
+def _derive(observations: pd.DataFrame, lineage: pd.DataFrame, roster: pd.DataFrame, manual: sl.SecurityManual | None = None, **kw) -> CusipHistory:
+    return derive_cusip_history(observations, lineage, as_roster(roster), manual or sl.SecurityManual.empty(), built_at=BUILT_AT, **kw)
 
 
-def _rows(build: sm.MasterBuild, cusip: str, symbol: str | None = None) -> pd.DataFrame:
+def _rows(build: CusipHistory, cusip: str, symbol: str | None = None) -> pd.DataFrame:
     rows = build.rows[build.rows["cusip"].eq(cusip)]
     return rows if symbol is None else rows[rows["source_symbol"].eq(symbol)]
 
 
-def _canonical_overlaps(build: sm.MasterBuild, ticker: str) -> list[tuple]:
+def _canonical_overlaps(build: CusipHistory, ticker: str) -> list[tuple]:
     rows = build.rows[build.rows["canonical_company"].eq(ticker) & build.rows["lineage_role"].isin(sm.CANONICAL_ROLES)]
     spans = sorted(
         (r.valid_from, r.valid_to if pd.notna(r.valid_to) else pd.Timestamp("2262-01-01"), r.cusip, r.source_symbol) for r in rows.itertuples()
@@ -130,7 +133,7 @@ BRK_OBS = pd.concat(
     ],
     ignore_index=True,
 )
-BRK_MANUAL = sm.parse_security_manual(
+BRK_MANUAL = sl.parse_security_manual(
     {
         "conversion_ratios": [
             {"ticker": "BRK-B", "cusip": "084670108", "ratio": 30, "valid_from": None, "valid_to": "2010-01-21", "source": "0001157523-10-000241"},
@@ -231,7 +234,7 @@ def test_class_letter_from_description(desc, letter):
 
 def test_trade_dates_follow_the_settlement_cycle():
     settle = pd.Series(pd.to_datetime(["2017-09-06", "2017-09-07", "2024-05-28", "2024-05-29", "2010-01-20"]))
-    got = sm.trade_dates(settle).dt.strftime("%Y-%m-%d").tolist()
+    got = sl.trade_dates(settle).dt.strftime("%Y-%m-%d").tolist()
     assert got == ["2017-09-01", "2017-09-05", "2024-05-24", "2024-05-28", "2010-01-15"], got
     print(f"\n=== SANITY CHECK: T+3 / T+2 / T+1 eras ===\n  {got}\n  OK: settlement dates convert to trade dates by the cycle in force")
 
@@ -415,7 +418,7 @@ def test_ac103_one_symbol_two_cusips_on_one_date_is_a_conflict():
     conflicts = build.flags[build.flags["kind"].eq("security_symbol_conflict")]
     assert conflicts["source_symbol"].tolist() == ["BAC"] and "060505999" in conflicts["detail"].iloc[0]
     identity = _identity(BAC, ("BAC", "0000070858"), build.rows)
-    day = sm.trade_dates(pd.Series([pd.Timestamp("2010-01-13")])).iloc[0]
+    day = sl.trade_dates(pd.Series([pd.Timestamp("2010-01-13")])).iloc[0]
     assert identity.security_on(symbol="BAC", source="ftd", day=day) is None
     assert identity.security_on(cusip="060505104", source="ftd", day=day) is not None
     print("\n=== SANITY CHECK: AC-103 ===")
@@ -423,7 +426,7 @@ def test_ac103_one_symbol_two_cusips_on_one_date_is_a_conflict():
 
 
 def test_manual_boundaries_dlph_exe_xom_from_the_real_config():
-    manual = sm.load_security_manual(str(CONFIG_DIR))
+    manual = sl.load_security_manual(str(CONFIG_DIR))
     aptv = _lineage(
         _row("APTV", "0001521332", "0001521332", "cik_window", sources="roster"),
         _row("APTV", "0001521332", "0001521332", "symbol", "APTV", "2017-12-06"),
@@ -498,7 +501,7 @@ def test_scope_changed_at_is_carried_for_unchanged_companies():
     first = _derive(obs, lineage, roster).rows
     later = pd.Timestamp("2026-10-05 12:00:00")
     grown = pd.concat([obs, _obs("58933Y105", "MRK", "MERCK & CO INC;COM USD0.01", "2011-01-05", "2011-02-02")], ignore_index=True)
-    second = sm.derive_security_master(grown, lineage, as_roster(roster), sm.SecurityManual.empty(), built_at=later, existing=first).rows
+    second = derive_cusip_history(grown, lineage, as_roster(roster), sl.SecurityManual.empty(), built_at=later, existing=first).rows
     stamps = second.groupby("canonical_company")["scope_changed_at"].max().to_dict()
     assert stamps == {"GOOGL": BUILT_AT, "MRK": later}, stamps
     print("\n=== SANITY CHECK: scope_changed_at ===\n  GOOGL unchanged keeps its stamp; MRK's master rows changed and carry the new build time")
@@ -558,12 +561,12 @@ def test_security_on_answers_by_cusip_or_symbol_and_none_outside():
 
 def test_manual_entries_require_a_source():
     with pytest.raises(ValueError, match="source"):
-        sm.parse_security_manual({"market_boundaries": [{"ticker": "X", "cusip": "123456789", "issuer_cik": "1", "role": "canonical_current"}]})
+        sl.parse_security_manual({"market_boundaries": [{"ticker": "X", "cusip": "123456789", "issuer_cik": "1", "role": "canonical_current"}]})
     print("\n=== SANITY CHECK: manual config ===\n  an entry with no URL or accession is refused at load")
 
 
 def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
-    manual = sm.load_security_manual(str(CONFIG_DIR))
+    manual = sl.load_security_manual(str(CONFIG_DIR))
     brk = manual.ratios[manual.ratios["cusip"].eq("084670108")].sort_values("ratio")
     assert brk["ratio"].tolist() == [30.0, 1500.0]
     assert brk["valid_to"].iloc[0] == pd.Timestamp("2010-01-21") == brk["valid_from"].iloc[1]
@@ -710,7 +713,7 @@ def test_a_former_listing_under_the_company_ticker_is_not_a_co_registrant():
         ],
         columns=["issuer_cik", "source", "valid_from", "valid_to"],
     )
-    assert sm.co_registrant_ciks(lineage, evidence) == frozenset({"0000075488"})
+    assert sl.co_registrant_ciks(lineage, evidence) == frozenset({"0000075488"})
     print(
         "\n=== SANITY CHECK: co-registrants ===\n  the PG&E utility is a co-registrant (not stored); old GM traded as GM, so it stays an acquired constituent"
     )
@@ -860,7 +863,7 @@ def test_a_superseded_cusip_that_still_fails_or_is_listed_does_not_stay_open():
 
 
 def test_wbd_seam_discovery_stays_canonical_until_wbd_first_trades():
-    manual = sm.load_security_manual(str(CONFIG_DIR))
+    manual = sl.load_security_manual(str(CONFIG_DIR))
     wbd = _lineage(
         _row("WBD", "0001437107", "0001437107", "cik_window", sources="roster"),
         _row("WBD", "0001437107", "0001437107", "symbol", "DISCA", "2008-09-18", "2022-04-09"),
@@ -893,7 +896,7 @@ def _trading_days(*spans: tuple[str, str, str]) -> pd.DataFrame:
     return pd.concat([_finra(symbol, first, last, freq="B") for symbol, first, last in spans], ignore_index=True)
 
 
-def _finra_hit(build: sm.MasterBuild, lineage: pd.DataFrame, roster_pair: tuple[str, str], symbol: str, day: str):
+def _finra_hit(build: CusipHistory, lineage: pd.DataFrame, roster_pair: tuple[str, str], symbol: str, day: str):
     """How a stored FINRA row of `symbol` on trade date `day` is stamped (`stamp_short_volume` resolves by FTD symbol)."""
     return _identity(lineage, roster_pair, build.rows).security_on(symbol=symbol, source="ftd", day=pd.Timestamp(day))
 
@@ -904,7 +907,7 @@ def test_seam_boundaries_from_the_real_config():
     Fixtures mirror the stored FTD lines (settlement dates) and FINRA day ranges of each seam; the market dates are
     the 8-K dates the manual boundaries cite.
     """
-    manual = sm.load_security_manual(str(CONFIG_DIR))
+    manual = sl.load_security_manual(str(CONFIG_DIR))
 
     # FOX: 21st Century Fox's Class B traded as FOX until 2019-03-18; Fox Corp's FOX starts 2019-03-19.
     fox_pair = ("FOXA", "0001754301")
@@ -1041,14 +1044,14 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
     )
-    obs = STZ_OBS.assign(trade_date=sm.trade_dates(STZ_OBS["date"]), fails_quantity=1000.0)
+    obs = STZ_OBS.assign(trade_date=sl.trade_dates(STZ_OBS["date"]), fails_quantity=1000.0)
     sqlite_store.save(
         Tables.sec_fails_to_deliver_security,
         obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
@@ -1057,9 +1060,14 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
     finra = _finra("STZ/B", "2020-02-07", "2022-10-14").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
     sqlite_store.save(Tables.sec_short_volume_security, finra)
     context = SimpleNamespace(
-        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config(), universe=universe
+        store=sqlite_store,
+        paths={"DATA_STORE": tmp_path},
+        log=logging.getLogger("test.master"),
+        config_dir=str(CONFIG_DIR),
+        config=extract_config(),
+        universe=universe,
     )
-    rows = sm.build_security_master(context, STZ, str(CONFIG_DIR), built_at=BUILT_AT)
+    rows = run_cusip_stage(context, STZ)
     stzb = rows[rows["cusip"].eq("21036P207")]
     assert stzb["valid_to"].max() == pd.Timestamp("2022-10-15"), stzb
     print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of STZ/B reach the derivation: the class line runs to 2022-10-14")
@@ -1214,7 +1222,7 @@ def test_a_canonical_line_never_runs_back_into_another_use_of_its_symbol():
     assert tight["valid_from"].min() == pd.Timestamp("2016-11-14") and not tight["evidence"].str.contains("FINRA from").any(), tight
     no_interval = _derive(EG_OBS, EG.iloc[:2], _roster(("EG", "0001095073")), finra_presence=_finra("EG", "2023-07-10", "2024-06-28", freq="B"))
     assert _rows(no_interval, "G3223R108", "EG")["valid_from"].min() == pd.Timestamp("2023-07-19")
-    manual = sm.parse_security_manual(
+    manual = sl.parse_security_manual(
         {
             "market_boundaries": [
                 {
@@ -1243,14 +1251,14 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
     )
-    obs = EG_OBS.assign(trade_date=sm.trade_dates(EG_OBS["date"]), fails_quantity=1000.0)
+    obs = EG_OBS.assign(trade_date=sl.trade_dates(EG_OBS["date"]), fails_quantity=1000.0)
     sqlite_store.save(
         Tables.sec_fails_to_deliver_security,
         obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
@@ -1259,9 +1267,14 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
     finra = _finra("EG", "2023-07-10", "2024-06-28", freq="B").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
     sqlite_store.save(Tables.sec_short_volume_security, finra)
     context = SimpleNamespace(
-        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config(), universe=universe
+        store=sqlite_store,
+        paths={"DATA_STORE": tmp_path},
+        log=logging.getLogger("test.master"),
+        config_dir=str(CONFIG_DIR),
+        config=extract_config(),
+        universe=universe,
     )
-    rows = sm.build_security_master(context, EG, str(CONFIG_DIR), built_at=BUILT_AT)
+    rows = run_cusip_stage(context, EG)
     assert rows[rows["source_symbol"].eq("EG")]["valid_from"].min() == pd.Timestamp("2023-07-10")
     print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of a common symbol (EG) reach the derivation: the line starts at 2023-07-10")
 
@@ -1294,18 +1307,45 @@ def test_f107_a_line_run_back_ends_the_bridge_of_the_earlier_cusip_of_its_symbol
 
 def test_reverse_acquisitions_declare_pld_and_jci_only():
     """REQ-014: the survivor's post-seam comparatives are the accounting acquirer's; DD (DowDuPont is a new registrant) is not declared."""
-    manual = sm.load_security_manual(str(CONFIG_DIR))
+    manual = sl.load_security_manual(str(CONFIG_DIR))
     by_ticker = {entry.ticker: entry for entry in manual.reverse_acquisitions}
     assert set(by_ticker) == {"PLD", "JCI"}, sorted(by_ticker)
-    assert all(isinstance(entry, sm.ReverseAcquisition) and entry.source for entry in by_ticker.values())
+    assert all(isinstance(entry, sl.ReverseAcquisition) and entry.source for entry in by_ticker.values())
     pld, jci = by_ticker["PLD"], by_ticker["JCI"]
     assert (pld.seam_date, pld.accounting_acquirer_cik, pld.legal_acquirer_cik) == (pd.Timestamp("2011-06-03"), "0000899881", "0001045609")
     assert (jci.seam_date, jci.accounting_acquirer_cik, jci.legal_acquirer_cik) == (pd.Timestamp("2016-09-02"), "0000053669", "0000833444")
     with pytest.raises(ValueError, match="source"):
-        sm.parse_security_manual(
+        sl.parse_security_manual(
             {"reverse_acquisitions": [{"ticker": "X", "seam_date": "2020-01-01", "accounting_acquirer_cik": "1", "legal_acquirer_cik": "2"}]}
         )
-    assert sm.SecurityManual.empty().reverse_acquisitions == ()
+    assert sl.SecurityManual.empty().reverse_acquisitions == ()
     print("\n=== SANITY CHECK: reverse_acquisitions ===")
     print("  PLD 2011-06-03 (accounting acquirer old ProLogis 0000899881, survivor AMB 0001045609)")
     print("  JCI 2016-09-02 (accounting acquirer old JCI 0000053669, survivor Tyco 0000833444); DD undeclared; an unsourced entry is refused")
+
+
+def test_a_class_line_never_runs_back_into_another_issuers_use_of_its_symbol():
+    """X91: META's class A line (30303M102, 'CL A') ran back over the FINRA days of the symbol META from 2021-06-30, which
+    another issuer traded before Meta Platforms took it on 2022-06-09, and overlapped the FB row by a year. A line's run
+    back now also stops where its own CUSIP last traded under an earlier symbol (FB's last FINRA day 2022-06-08 here)."""
+    meta = _lineage(
+        _row("META", "0001326801", "0001326801", "cik_window", sources="roster"),
+        _row("META", "0001326801", "0001326801", "symbol", "FB", "2012-05-18", "2022-06-09", sources="dei,form345,roster"),
+        _row("META", "0001326801", "0001326801", "symbol", "META", "2022-06-09", sources="dei,form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("30303M102", "FB", "FACEBOOK INC CL A", "2019-01-03", "2022-06-07", freq="B"),
+            _obs("30303M102", "META", "META PLATFORMS INC CL A", "2022-06-13", "2024-06-26", freq="B"),  # first trade 2022-06-09 (T+2)
+        ],
+        ignore_index=True,
+    )
+    presence = pd.concat([_finra("FB", "2019-01-02", "2022-06-08", freq="B"), _finra("META", "2021-06-30", "2024-06-28", freq="B")])
+    build = _derive(obs, meta, _roster(("META", "0001326801")), finra_presence=presence)
+    current = _rows(build, "30303M102", "META")
+    assert current["valid_from"].min() == pd.Timestamp("2022-06-09"), current
+    assert _canonical_overlaps(build, "META") == []
+    print("\n=== SANITY CHECK: run back bounded by the CUSIP's earlier symbol (X91) ===")
+    print(
+        f"  META CL A starts {current['valid_from'].min().date()}, the day after its last FB trading day (FINRA META days from 2021-06-30 unused); no overlap"
+    )

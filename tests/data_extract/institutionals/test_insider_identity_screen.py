@@ -70,16 +70,16 @@ def identity():
     lineage = pd.DataFrame(
         [
             # Broadcom: a register chain, two CIKs one entity
-            {"cik": BROADCOM, "entity_id": "E0001441634", "source": "register"},
-            {"cik": BROADCOM_LTD, "entity_id": "E0001441634", "source": "register"},
+            {"cik": BROADCOM, "company_id": "E0001441634", "source": "register"},
+            {"cik": BROADCOM_LTD, "company_id": "E0001441634", "source": "register"},
             # Trane: the old Ingersoll-Rand plc belongs with Trane Technologies, NOT with `IR`
-            {"cik": TRANE, "entity_id": "E0001699150", "source": "register"},
-            {"cik": TRANE_NEW, "entity_id": "E0001699150", "source": "register"},
+            {"cik": TRANE, "company_id": "E0001699150", "source": "register"},
+            {"cik": TRANE_NEW, "company_id": "E0001699150", "source": "register"},
             # `IR` (Ingersoll Rand Inc) is a DIFFERENT entity that happens to hold the symbol
-            {"cik": INGERSOLL_OLD, "entity_id": "E0000836102", "source": "roster"},
-            {"cik": DUPONT_EI, "entity_id": "E0000030554", "source": "register"},
-            {"cik": ABC, "entity_id": "E0001140859", "source": "roster"},
-            {"cik": CORESITE, "entity_id": "E0001490892", "source": "owner_overlap"},
+            {"cik": INGERSOLL_OLD, "company_id": "E0000836102", "source": "roster"},
+            {"cik": DUPONT_EI, "company_id": "E0000030554", "source": "register"},
+            {"cik": ABC, "company_id": "E0001140859", "source": "roster"},
+            {"cik": CORESITE, "company_id": "E0001490892", "source": "owner_overlap"},
         ]
     ).assign(confidence=None, evidence="test")
     tenure = pd.DataFrame(
@@ -160,7 +160,7 @@ def test_a_coresite_row_filed_under_cor_is_rejected_as_entity_mismatch(identity)
 
 def test_a_dupont_e_i_row_filed_under_dd_is_kept(identity):
     """The case a fail-closed rule would destroy: genuine predecessor history. Same entity,
-    different CIK -- which is exactly what `entity_lineage` exists to say."""
+    different CIK -- which is exactly what `universe_cik_symbol` exists to say."""
     kept, rejected = screen_insider_rows(_rows([("DD", DUPONT_EI)]), UNIVERSE, identity)
 
     assert rejected.empty

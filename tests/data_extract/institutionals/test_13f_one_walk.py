@@ -31,6 +31,7 @@ from src.data_extract.utils.institutionals import fetch_13f_managers as f13m
 from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
 ROSTER = "0001067983"
@@ -111,7 +112,13 @@ class _FakeFiling:
 
 
 def _ctx(store: Any) -> Any:
-    return SimpleNamespace(store=store, log=_LOG, ensure_edgar_identity=lambda: None, universe=seed_universe(store, UNIVERSE))
+    return SimpleNamespace(
+        store=store,
+        log=_LOG,
+        ensure_edgar_identity=lambda: None,
+        universe=seed_universe(store, UNIVERSE),
+        _identity_resolver=store_identity(store),
+    )
 
 
 def _seed_roster(store: Any, ciks: list[str]) -> None:

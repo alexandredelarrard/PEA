@@ -1,4 +1,4 @@
-"""Ticker -> CIK, name and GICS come from `context.universe` (the `tickers_universe` rows); `load_cik_mapping` is gone.
+"""Ticker -> CIK, name and GICS come from `context.universe` (the `universe_tickers` rows); `load_cik_mapping` is gone.
 
 test_universe_rows_are_the_requested_universe_rows — `universe_rows` keeps the 10-digit CIK, the name and GICS.
 test_fundamentals_gics_come_from_the_universe — the XBRL regime GICS dict equals the universe rows.
@@ -49,4 +49,4 @@ def test_fundamentals_gics_come_from_the_universe(sqlite_store):
     levels = ("sector", "industry_group", "sub_industry")
     assert gics == {ticker: {level: row[level] for level in levels} for ticker, row in ROWS.items()}
     print("\n=== SANITY CHECK: XBRL regime GICS ===")
-    print(f"  {len(gics)} tickers, three GICS levels each, equal to the tickers_universe rows. Validated.")
+    print(f"  {len(gics)} tickers, three GICS levels each, equal to the universe_tickers rows. Validated.")

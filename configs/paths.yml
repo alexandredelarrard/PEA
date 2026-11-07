@@ -7,6 +7,7 @@ local:
     insider_transactions: "sec_insider_transactions"
     fails_deliver: "sec_fails_to_deliver"
     financial_notes: "sec_financial_notes"
+    sec_submissions: "sec_submissions" # the bulk SEC submissions.zip (one nightly download, ~1.5 GB)
     sec_edgar_index: "sec_edgar_index"
     sec_13f_datasets: "sec_13f_datasets"
     fundamentals_catalogue_subdir: "fundamentals"

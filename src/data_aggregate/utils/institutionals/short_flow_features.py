@@ -191,7 +191,7 @@ def _publish_ftd_zip_states(
 def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Wide secondary-class volume in canonical shares, and company-days lacking supported active-class input.
 
-    A class counts only on its `security_master` dates. Yahoo volume is restated to today's split basis, so a class
+    A class counts only on its `universe_cusip` dates. Yahoo volume is restated to today's split basis, so a class
     enters at its latest conversion ratio: a dated ratio step is a split of one class (BRK-B's 50:1, BRK-A 30 -> 1,500)
     that Yahoo already restated. Ratios must be finite and positive; bars and converted quantities finite and nonnegative.
     Unsupported active legs add nothing and flag the complete company denominator as unknown.

@@ -16,8 +16,10 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
+from src.data_extract.utils.common.resume import ended_keys, planner_bounds
 from src.data_store.schema import Resume, Tables
 from src.utils.string import run_date
+from src.utils.tickers_universe.universe import before_end
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",
@@ -117,20 +119,29 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped.
 
     The plan comes from per-ticker stored dates (`key_stats`), never a table read; the staleness
-    window is the table's contract overlap.
+    window is the table's contract overlap. An ended ticker with stored rows is skipped once the run date is past its
+    grace end plus that overlap (`resume.ended_keys`), rows after its grace end (`planner_bounds`) are dropped, and Yahoo is queried under the ticker's trading
+    symbol (`Universe.trading_symbols`) with the rows stored under the ticker.
     """
     resume = cast(Resume, Tables.earnings_surprises.resume)
     refetch_window_days = resume.overlap_days
+    bounds, symbols = planner_bounds(context), context.universe.trading_symbols
     last_reported, next_expected = _resume_dates(context)
+    ended = ended_keys(bounds, [t for t in tickers if t in next_expected], run_date(None), refetch_window_days)
+    if ended:
+        context.log.info(
+            "Earnings surprises: %d ended ticker(s) with stored rows past grace end plus overlap skipped: %s", len(ended), ", ".join(ended)
+        )
     full_limit = (years_history + 1) * 4
-    plan = _plan_fetch(tickers, last_reported, next_expected, full_limit, refetch_window_days)
+    plan = _plan_fetch([t for t in tickers if t not in set(ended)], last_reported, next_expected, full_limit, refetch_window_days)
     context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)", len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []
     empty, failed = [], []
     for tkr, limit in tqdm(plan, desc="Fetching earnings-surprise history"):
         try:
-            df = _download_one(tkr, limit)
+            df = _download_one(symbols.get(tkr, tkr), limit)
+            df = df.assign(ticker=tkr) if df is not None else None
         except Exception as e:  # noqa: BLE001 - network/parse issues are per-ticker
             context.log.warning("%s: earnings history failed (%s)", tkr, e)
             failed.append(tkr)
@@ -155,6 +166,7 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
 
     # upsert on (ticker, earnings_date): a now-filled actual overwrites its forward-estimate row
     new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
-    new = new.loc[new["earnings_date"] >= pd.Timestamp(cast(str, resume.source_start))].reset_index(drop=True)
+    new = new.loc[new["earnings_date"] >= pd.Timestamp(cast(str, resume.source_start))]
+    new = new.loc[before_end(new["ticker"], new["earnings_date"], bounds)].reset_index(drop=True)
     context.store.save(Tables.earnings_surprises, new)
     context.log.info(f"Saved {len(new)} new earnings rows: {new['ticker'].unique()} tickers to DB")

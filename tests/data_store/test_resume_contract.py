@@ -124,13 +124,13 @@ def test_contract_and_marker_columns_exist_with_compatible_types() -> None:
             assert sql_type == "TEXT", f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r} needs TEXT"
         else:
             assert isinstance(sentinel, int | float) and sql_type in _NUMERIC_SQL, f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r}"
-    assert types[Tables.tickers_universe.name]["universe_added_on"] == "DATE"
+    assert types[Tables.universe_tickers.name]["universe_added_on"] == "DATE"
 
     print("\n=== SANITY CHECK: contract columns in the DDL ===")
     for table in marker_tables():
         assert table.empty_marker is not None
         print(f"  {table.name}.{table.empty_marker[0]} {types[table.name][table.empty_marker[0]]} <- {table.empty_marker[1]!r}")
-    print("  every key/frontier/period/marker column exists, sentinels fit their SQL type, tickers_universe.universe_added_on is DATE. Validated.")
+    print("  every key/frontier/period/marker column exists, sentinels fit their SQL type, universe_tickers.universe_added_on is DATE. Validated.")
 
 
 def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:

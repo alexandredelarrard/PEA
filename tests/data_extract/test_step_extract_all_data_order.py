@@ -1,5 +1,5 @@
-"""`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, build,
-propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> fundamentals -> `StepExtractEdgar`
+"""`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, anchor,
+CIK / symbol / CUSIP history, propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> fundamentals -> `StepExtractEdgar`
 -> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
 
 from __future__ import annotations
@@ -17,12 +17,16 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
 from src.data_extract.transformers import step_extract_universe as universe_module
 from src.data_extract.transformers import step_extract_zips as zips_module
+from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe
+
+#: an empty published lineage, as the stubbed resolver inputs carry
+_NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
 
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
 EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
-UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "universe_sync")
+UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions", "universe_sync")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
@@ -31,8 +35,10 @@ IDENTITY_STAGE = (
     "ftd_capture",
     "form345_scan",
     "symbol_tenure",
-    "entity_lineage",
-    "security_master",
+    "company_anchor",
+    "cik_history",
+    "universe_cik_symbol",
+    "universe_cusip",
     "identity_refresh",
     "propagate",
 )
@@ -40,7 +46,6 @@ ZIP_INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 
 
 def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> Any:
-    identity = object()
     scan = SimpleNamespace(owner_pairs=object())
     tenure = object()
 
@@ -55,6 +60,9 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(universe_module, "download_sec_company_tickers", mark("sec_tickers", 0))
     monkeypatch.setattr(universe_module, "fetch_sharadar_tickers", mark("sharadar_tickers"))
+    monkeypatch.setattr(universe_module, "fetch_sharadar_actions", mark("sharadar_actions", 0))
+    monkeypatch.setattr(universe_module, "refresh_sec_cik_profile", mark("sec_submissions", 0))
+    monkeypatch.setattr(universe_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(universe_module, "sync", mark("universe_sync", 0))
     monkeypatch.setattr(zips_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(zips_module, "notes_periods", lambda context, years_history, today: ["2026q1"])
@@ -65,51 +73,64 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
-    monkeypatch.setattr(identity_module, "capture_pending_dei", lambda context, cache, full: mark("dei_capture")())
-    monkeypatch.setattr(identity_module, "capture_ftd_cusips", lambda context, cache, years, full, as_of: mark("ftd_capture")())
+    monkeypatch.setattr(identity_module, "pending_dei_periods", lambda context, cache, full: mark("dei_capture", [])())
+    monkeypatch.setattr(identity_module, "capture_ftd_lines", lambda context, plan, scope, changed: mark("ftd_capture", (pd.DataFrame(), []))())
 
     def form345_scan(cache):
         assert cache == Path("cache") / "sec_insider_transactions"
         return mark("form345_scan", scan)()
 
-    def symbol_tenure(context, given_scan, config_dir):
+    def symbol_tenure(context, given_scan, manual, rejected):
         assert given_scan is scan
         return mark("symbol_tenure", tenure)()
 
     lineage = object()
+    history = object()
 
-    def entity_lineage(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset()):
-        assert given_tenure is tenure and owner_pairs is scan.owner_pairs
-        return mark("entity_lineage", lineage)()
+    def cik_history(step):
+        assert step._tenure is tenure and step._scan is scan, "the CIK history reads this run's tenure and Form 3/4/5 scan"
+        step._cik_history = history
+        return mark("cik_history", history)()
 
-    def security_master(context, given_lineage, config_dir):
-        assert given_lineage is lineage, "the security master is derived from the lineage just built"
-        return mark("security_master")()
+    def universe_cik_symbol(step):
+        assert step._cik_history is history
+        step._symbols = SimpleNamespace(rows=lineage)
+        return mark("universe_cik_symbol", step._symbols)()
 
-    def refresh(context, refresh=False):
-        assert refresh, "the identity stage must reload the resolver it just rebuilt"
-        return mark("identity_refresh", identity)()
+    def universe_cusip(step):
+        assert step._symbols.rows is lineage, "the CUSIP history is derived from the lineage just built"
+        return mark("universe_cusip")()
 
-    def propagate(context, tickers, **kwargs):
+    def refresh(context):
+        # the identity stage reloads the resolver from the tables it just published
+        inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
+        return mark("identity_refresh", inputs)()
+
+    def propagate(scopes, as_of, every):
         today = pd.Timestamp.today().normalize()
-        assert list(tickers) == ["AAA", "BBB"] and kwargs["identity"] is identity
-        assert not kwargs["dry_run"] and not kwargs["every_ticker"] and kwargs["as_of"] == today
-        return mark("propagate")()
+        assert sorted(scopes) == ["AAA", "BBB"] and not every and as_of == today
+        return mark("propagate", [])()
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
-    monkeypatch.setattr(identity_module, "build_entity_lineage", entity_lineage)
-    monkeypatch.setattr(identity_module, "build_security_master", security_master)
-    monkeypatch.setattr(identity_module, "load_identity", refresh)
-    monkeypatch.setattr(identity_module, "propagate_identity", propagate)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_lifecycle", lambda step: None)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_publish", lambda step: None)
+    monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cusip_history", universe_cusip)
+    stub_propagation(monkeypatch, identity_module)
+    monkeypatch.setattr(identity_module, "identity_inputs", refresh)
+    monkeypatch.setattr(identity_module, "recheck_tickers", propagate)
 
     config = SimpleNamespace(
-        data_extract=SimpleNamespace(years_history=15),
+        data_extract=SimpleNamespace(years_history=15, sharadar_years_history=31),
         local=SimpleNamespace(
             paths=SimpleNamespace(
                 insider_transactions="sec_insider_transactions",
                 financial_notes="notes",
                 fails_deliver="sec_fails_to_deliver",
+                sec_submissions="sec_submissions",
             )
         ),
     )
@@ -148,7 +169,7 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch, sqlite_store)
     print("  OK: decision-1 order; the LLM step is built after the EDGAR step; every consumer reads the propagated lineage")
 
 
-@pytest.mark.parametrize("boom", ["entity_lineage", "security_master", "propagate"])
+@pytest.mark.parametrize("boom", ["universe_cik_symbol", "universe_cusip", "propagate"])
 def test_identity_or_propagation_failure_stops_before_any_consumer(monkeypatch, sqlite_store, boom):
     order: list[str] = []
     with pytest.raises(RuntimeError, match=boom):

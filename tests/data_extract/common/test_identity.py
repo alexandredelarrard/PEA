@@ -35,7 +35,7 @@ from src.data_extract.utils.common.identity import (
     load_identity,
     tickers_for_ciks,
 )
-from src.data_extract.utils.identity.entity_lineage import (
+from src.data_extract.utils.identity.cik_history import (
     CikInTwoEntitiesError,
     IdentityError,
     TwoUniverseTickersOneEntityError,
@@ -53,7 +53,7 @@ CONFIG_DIR = "./configs"
 
 
 def _lineage(rows: list[tuple[str, str, str]]) -> pd.DataFrame:
-    return pd.DataFrame([{"cik": c, "entity_id": e, "source": s, "confidence": None, "evidence": "test"} for c, e, s in rows])
+    return pd.DataFrame([{"cik": c, "company_id": e, "source": s, "confidence": None, "evidence": "test"} for c, e, s in rows])
 
 
 def _tenure(rows: list[tuple[str, str, object, object, int]]) -> pd.DataFrame:
@@ -92,7 +92,7 @@ def _simple() -> Identity:
 
 
 def test_an_unseen_cik_is_its_own_entity_and_does_not_raise():
-    """Absence in `entity_lineage` is a VERDICT -- the table stores only non-singleton groups
+    """Absence in `universe_cik_symbol` is a VERDICT -- the table stores only non-singleton groups
     and the roster, so a CIK with no row is a company of its own and `owns()` needs exactly
     that answer from it."""
     identity = _simple()
@@ -287,7 +287,7 @@ def test_ambiguity_is_entity_grain_not_cik_grain():
 
 
 # --------------------------------------------------------------------------- #
-# dated entity_lineage accessor                                                 #
+# dated universe_cik_symbol accessor                                                 #
 # --------------------------------------------------------------------------- #
 
 _CHANGED_AAA = pd.Timestamp("2026-10-03 10:00:00")
@@ -295,12 +295,12 @@ _CHANGED_BBB = pd.Timestamp("2026-09-01 08:00:00")
 
 
 def _dated_lineage(rows: list[tuple[str, str, str, str, str, str, str | None, str]]) -> pd.DataFrame:
-    """`entity_lineage` rows: (entity, ticker, cik, role, symbol, valid_from, valid_to, status)."""
+    """`universe_cik_symbol` rows: (entity, ticker, cik, role, symbol, valid_from, valid_to, status)."""
     stamps = {"E0000000100": _CHANGED_AAA, "E0000000900": _CHANGED_BBB}
     return pd.DataFrame(
         [
             {
-                "entity_id": entity,
+                "company_id": entity,
                 "canonical_ticker": ticker,
                 "cik": cik,
                 "role": role,
@@ -555,7 +555,7 @@ def test_load_identity_caches_per_context_and_not_across_them():
 
     def frames(cik, ticker):
         return {
-            "entity_lineage": _lineage([(cik, f"E{cik}", "roster")]),
+            "universe_cik_symbol": _lineage([(cik, f"E{cik}", "roster")]),
             "symbol_tenure": _tenure([(ticker, cik, pd.Timestamp("2006-01-01"), None, 5)]),
         }
 
@@ -586,7 +586,7 @@ def test_load_identity_caches_per_context_and_not_across_them():
 def test_load_identity_takes_its_roster_and_aliases_from_the_universe():
     """The roster is the universe (3 tickers), not every lineage entity; `redundant_symbols` are its alias symbols."""
     frames = {
-        Tables.entity_lineage.name: _lineage([(c, f"E{c}", "roster") for c in ("0000000100", "0000000200", "0000000300", "0000000400")]),
+        Tables.universe_cik_symbol.name: _lineage([(c, f"E{c}", "roster") for c in ("0000000100", "0000000200", "0000000300", "0000000400")]),
         Tables.symbol_tenure.name: _tenure(
             [(t, c, pd.Timestamp("2006-01-01"), None, 5) for t, c in (("AAA", "0000000100"), ("GOOGL", "0000000200"), ("CCC", "0000000300"))]
         ),
@@ -737,7 +737,7 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     assert not wrong, f"{len(wrong)} group(s) resolved against the reviewed verdict: {wrong}"
 
     print("\n=== SANITY CHECK: all 102 flagged groups ===")
-    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  genuine predecessors, retained by entity_lineage")
+    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  genuine predecessors, retained by universe_cik_symbol")
     print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  relabelled onto the universe ticker that owns them")
     print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  another company -- quarantined")
     print("  OK: every one of the 102 matches the verdict read from the issuer name")
@@ -773,7 +773,7 @@ def test_only_one_alphabet_ticker_is_investable(live):
     print("\n=== SANITY CHECK: dual class stays one investable ticker ===")
     print(f"  GOOGL -> {alphabet}; GOOG absent from the roster; same for FOX/FOXA, NWS/NWSA")
     print("  OK: one entity, one universe ticker, so the two-ticker raise cannot fire on it")
-    print("  -> FTD/RegSHO separate the classes per security (security_master) before aggregation.")
+    print("  -> FTD/RegSHO separate the classes per security (universe_cusip) before aggregation.")
 
 
 def test_no_live_entity_holds_two_universe_tickers(live):

@@ -24,9 +24,9 @@ import pytest
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract import cli as cli_mod
 from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.identity_store import load_source_identity
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
-from src.data_extract.utils.identity.identity_store import load_source_identity
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
@@ -199,7 +199,7 @@ def identity() -> Identity:
             [
                 {
                     "cik": AAA_CIK,
-                    "entity_id": "E0000000001",
+                    "company_id": "E0000000001",
                     "canonical_ticker": "AAA",
                     "role": "cik_window",
                     "symbol": "",
@@ -233,9 +233,9 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
     create_canonical(
         store.engine,
         [
-            Tables.entity_lineage,
+            Tables.universe_cik_symbol,
             Tables.symbol_tenure,
-            Tables.security_master,
+            Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
         ],
@@ -461,7 +461,7 @@ def identity_two() -> Identity:
             [
                 {
                     "cik": cik,
-                    "entity_id": f"E{cik}",
+                    "company_id": f"E{cik}",
                     "canonical_ticker": symbol,
                     "role": "cik_window",
                     "symbol": "",

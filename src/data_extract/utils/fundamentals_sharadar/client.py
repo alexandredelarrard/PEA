@@ -37,8 +37,9 @@ from src.utils.polite_http import get_once, http_get
 # Rows per request. Measured 2026-08-26: the API honours a `limit` above this (20000 returned
 # 17,826 rows in one call), so paging is belt-and-braces rather than strictly required -- but
 # an undocumented server-side cap is exactly the kind of silent truncation that costs a
-# re-extraction to discover, and `offset` demonstrably works.
-_PAGE_LIMIT = 10_000
+# re-extraction to discover. `offset` paging itself is capped per query and can repeat or skip
+# rows tied on the sort column, so a large market-wide pull goes window by window (`fetch_sharadar_actions`).
+PAGE_LIMIT = 10_000
 _TIMEOUT = 60
 SHARADAR_API_KEY_ENV = "SHARADAR_API_KEY"
 
@@ -165,7 +166,7 @@ def sharadar_get(
     frames: list[pd.DataFrame] = []
     offset = 0
     while True:
-        params = {"api_key": key, "limit": _PAGE_LIMIT, "offset": offset, **filters}
+        params = {"api_key": key, "limit": PAGE_LIMIT, "offset": offset, **filters}
         text = _page(context, url, params)
         if text is None:
             raise SharadarRequestError(f"Sharadar {table}: page at offset {offset} failed ({filters.get('ticker', 'market-wide')})")
@@ -176,9 +177,9 @@ def sharadar_get(
             _validate_header(context, table, df_page, expect_columns)
             df_page = df_page.reindex(columns=list(expect_columns))
         frames.append(df_page)
-        if len(df_page) < _PAGE_LIMIT:
+        if len(df_page) < PAGE_LIMIT:
             break
-        offset += _PAGE_LIMIT
+        offset += PAGE_LIMIT
     if not frames:
         return pd.DataFrame(columns=list(expect_columns) if expect_columns else None)
     return pd.concat(frames, ignore_index=True)

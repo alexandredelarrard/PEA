@@ -17,8 +17,8 @@ from src.data_extract.transformers.step_extract_institutionals import (
 IDENTITY_STAGE_NAMES = (
     "scan_form345_cache",
     "build_symbol_tenure",
-    "build_entity_lineage",
-    "propagate_identity",
+    "symbol_rows",
+    "identity_propagate",
     "download_insider_transactions",
     "download_notes_periods",
     "refresh=True",

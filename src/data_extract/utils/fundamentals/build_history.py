@@ -26,6 +26,7 @@ from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.identity import CikWindow, load_identity
 from src.data_extract.utils.common.resume import recently_changed
+from src.data_extract.utils.common.security_lines import load_security_manual
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -37,7 +38,6 @@ from src.data_extract.utils.fundamentals.periods import (
     fiscal_year_ends,
     load_guards,
 )
-from src.data_extract.utils.identity.security_master import load_security_manual
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik_series
 

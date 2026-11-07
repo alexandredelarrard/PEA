@@ -91,7 +91,7 @@ def test_zip_fallback_warns_only_when_every_url_fails(
 def test_corrupt_zip_follows_the_site_policy(tmp_path: Path, policy: str, kept: bool) -> None:
     path = tmp_path / "2026q1.zip"
     path.write_bytes(b"PK\x03\x04 truncated, not a zip")
-    assert read_zip_tables(path, {"sub.txt": ZipRead()}, on_corrupt=policy, log=LOG) is None  # type: ignore[arg-type]
+    assert read_zip_tables(path, {"sub.txt": ZipRead()}, on_corrupt=policy) is None  # type: ignore[arg-type]
     assert path.exists() is kept
     print(f"\n=== SANITY CHECK: corrupt zip, policy={policy} ===")
     print(f"  returned None, file kept={kept}: delete sites re-download next run, skip sites keep the file. Validated.")
@@ -103,23 +103,22 @@ def test_members_case_insensitive_required_optional_and_upper(tmp_path: Path) ->
         path,
         {"SUBMISSION.TSV": ZipRead(usecols=frozenset({"ACCESSION_NUMBER", "ISSUERCIK"}), upper=True), "FOOTNOTES.TSV": ZipRead(required=False)},
         on_corrupt="skip",
-        log=LOG,
     )
     assert tables is not None
     assert list(tables["SUBMISSION.TSV"].columns) == ["ACCESSION_NUMBER", "ISSUERCIK"]
     assert tables["SUBMISSION.TSV"]["ISSUERCIK"].tolist() == ["1"]  # dtype=str: no int coercion
     assert tables["FOOTNOTES.TSV"].empty and list(tables["FOOTNOTES.TSV"].columns) == []
-    assert read_zip_tables(path, {"num.txt": ZipRead()}, on_corrupt="skip", log=LOG) == {}
+    assert read_zip_tables(path, {"num.txt": ZipRead()}, on_corrupt="skip") == {}
     print("\n=== SANITY CHECK: member mapping ===")
     print("  mixed-case member found, columns upper-cased and projected, optional absent -> empty frame, required absent -> {}. Validated.")
 
 
 def test_nested_members_and_ambiguous_basenames(tmp_path: Path) -> None:
     path = _zip(tmp_path / "nested.zip", {"SEC_2025/Submission.tsv": "id\na1\n"})
-    frames = read_zip_tables(path, {"SUBMISSION.tsv": ZipRead()}, on_corrupt="skip", log=LOG)
+    frames = read_zip_tables(path, {"SUBMISSION.tsv": ZipRead()}, on_corrupt="skip")
     assert frames["SUBMISSION.tsv"].id.tolist() == ["a1"]
     path = _zip(tmp_path / "ambiguous.zip", {"a/submission.tsv": "id\na1\n", "b/submission.tsv": "id\na2\n"})
-    assert read_zip_tables(path, {"SUBMISSION.tsv": ZipRead()}, on_corrupt="skip", log=LOG) == {}
+    assert read_zip_tables(path, {"SUBMISSION.tsv": ZipRead()}, on_corrupt="skip") == {}
     print("SANITY: nested SEC members are found; duplicate basenames never select an arbitrary source.")
 
 
@@ -127,11 +126,11 @@ def test_chunked_keep_concatenates_matches_and_returns_bare_frame_when_none_matc
     rows = "".join(f"a{i}\t{'Pension' if i % 3 == 0 else 'Other'}\n" for i in range(10))
     path = _zip(tmp_path / "q.zip", {"num.txt": "adsh\ttag\n" + rows})
     spec = {"num.txt": ZipRead(keep=lambda chunk: chunk["tag"] == "Pension", chunksize=4)}
-    tables = read_zip_tables(path, spec, on_corrupt="delete", log=LOG)
+    tables = read_zip_tables(path, spec, on_corrupt="delete")
     assert tables is not None
     assert tables["num.txt"]["adsh"].tolist() == ["a0", "a3", "a6", "a9"]
     assert tables["num.txt"].index.tolist() == [0, 1, 2, 3]
-    none = read_zip_tables(path, {"num.txt": ZipRead(keep=lambda chunk: chunk["tag"] == "Nope", chunksize=4)}, on_corrupt="delete", log=LOG)
+    none = read_zip_tables(path, {"num.txt": ZipRead(keep=lambda chunk: chunk["tag"] == "Nope", chunksize=4)}, on_corrupt="delete")
     assert none is not None and none["num.txt"].shape == (0, 2)
     with pytest.raises(ValueError):
         ZipRead(keep=lambda chunk: chunk["tag"] == "Pension")

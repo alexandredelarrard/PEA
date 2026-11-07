@@ -82,7 +82,7 @@ def test_saved_ownership_count_and_cap_have_independent_support() -> None:
     shares = pd.DataFrame({"TEST": [100.0, 100.0, 100.0, 400.0, np.nan, 400.0]}, index=index)
     cap = pd.DataFrame({"TEST": [20000.0, 20000.0, 20000.0, np.nan, 20000.0, 20000.0]}, index=index)
     frames = make_frames(index, shares_outstanding_pit=shares, mcap_pit=cap, security_basis=_basis_frame(basis))
-    fields = project_institutional_features(books, frames, 0, versioned=True, trading_calendar=index)
+    fields = project_institutional_features(books, frames, 0, trading_calendar=index)
     ownership = fields["ic_inst_ownership_pct"].TEST
     assert ownership.loc["2024-05-30"] == pytest.approx(0.1)
     assert ownership.loc["2024-06-03"] == pytest.approx(0.1)

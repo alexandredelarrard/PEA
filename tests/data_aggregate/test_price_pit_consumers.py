@@ -97,5 +97,5 @@ def test_proxy_count_is_the_saved_count_as_of_the_proxy_date() -> None:
     assert actual is not None
     expected = pd.Series([np.nan, 100.0, 100.0, 400.0, np.nan, np.nan], index=df_proxy.index)
     pd.testing.assert_series_equal(actual, expected, check_names=False)
-    assert pit_shares_outstanding(df_proxy, None, tally) is None and len(tally) == 1
+    assert pit_shares_outstanding(df_proxy, price_frames.PriceFrames(days, ("TEST",), {}), tally) is None and len(tally) == 1
     print("SANITY: a Sunday proxy reads Friday's saved count (not Monday's post-split x4), a saved null and a pre-history or missing date stay null.")

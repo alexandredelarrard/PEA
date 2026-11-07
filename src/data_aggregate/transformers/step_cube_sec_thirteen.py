@@ -226,7 +226,6 @@ class StepCubeSecThirteen(Step):
             features,
             frames,
             self._settle_days,
-            versioned=True,
             trading_calendar=resources.frames.trading_index,
         )
         emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}

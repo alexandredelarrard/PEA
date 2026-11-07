@@ -935,15 +935,15 @@ def _collapse_copies(df: pd.DataFrame, df_key: pd.DataFrame, *, eligible: pd.Ser
     return drop, df_owners, counts
 
 
-def report_oversized(t: pd.DataFrame, shares_outstanding: pd.DataFrame | None, *, threshold: float = FLAG_PCT_SHARES_OUTSTANDING) -> pd.DataFrame:
-    """Transactions above `threshold` of shares outstanding, as a frame to log (never a filter);
+def report_oversized(t: pd.DataFrame, shares_outstanding: pd.DataFrame | None) -> pd.DataFrame:
+    """Transactions above `FLAG_PCT_SHARES_OUTSTANDING` of shares outstanding, as a frame to log (never a filter);
     empty when no share count is available.
     """
     if t.empty or shares_outstanding is None or shares_outstanding.empty:
         return pd.DataFrame()
     so = lookup_asof(shares_outstanding.ffill(), t["ticker"], t["day"]).to_numpy()
     pct = t["shares_n"].to_numpy() / np.where(so > 0, so, np.nan)
-    hit = pct > threshold
+    hit = pct > FLAG_PCT_SHARES_OUTSTANDING
     if not hit.any():
         return pd.DataFrame()
     cols = [c for c in ("ticker", "day", "code", "owner_name", "shares_n", "value") if c in t]

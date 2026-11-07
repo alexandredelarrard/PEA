@@ -25,9 +25,15 @@ def legacy_count_inputs(df_proxies: pd.DataFrame, df_history: pd.DataFrame | Non
     return PriceFrames(index, tuple(map(str, df_counts.columns)), {}, shares_outstanding_pit=df_counts)
 
 
+def _counts(df_proxies: pd.DataFrame | None, fundamentals: pd.DataFrame | None) -> PriceFrames:
+    """The fixture's saved-count frames, or frames without a count when the scenario has none."""
+    counts = legacy_count_inputs(df_proxies, fundamentals) if df_proxies is not None else None
+    return PriceFrames(pd.DatetimeIndex([]), (), {}) if counts is None else counts
+
+
 def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | None) -> tuple[GovernanceInputs, dict[str, int]]:
-    return clean_inputs(raw, legacy_count_inputs(raw.def14a, fundamentals) if raw.def14a is not None else None)
+    return clean_inputs(raw, _counts(raw.def14a, fundamentals))
 
 
-def pit_shares_outstanding(df_proxies: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None) -> pd.Series | None:
-    return saved_counts(df_proxies, legacy_count_inputs(df_proxies, fundamentals), tally)
+def pit_shares_outstanding(df_proxies: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int]) -> pd.Series | None:
+    return saved_counts(df_proxies, _counts(df_proxies, fundamentals), tally)

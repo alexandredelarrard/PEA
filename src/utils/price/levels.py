@@ -23,7 +23,7 @@ def level_factor(
     """Return S=Y/(F*U), before hidden wedges, aligned to the requested date/ticker grid.
 
     A ShareBasis supplies separately verified price, vendor-count and quoted-unit views.
-    The legacy DataFrame argument preserves the default event-product behavior.
+    A DataFrame of genuine events gives the plain event product.
     """
     if isinstance(genuine_splits, ShareBasis):
         basis = genuine_splits
@@ -82,9 +82,9 @@ def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.Data
     THE VERIFICATION IS THE POINT. `vendor_price` (`fundamentals_sharadar.price`) is the only
     independent statement of what a stock actually traded at, so the observed wedge is
     `median(price / close_split)` over the segment's own rows. An entry whose wedge has moved
-    outside `BUGFIX_WEDGE_TOL` is REFUSED rather than applied: a moved wedge means either
-    Yahoo fixed it (the repair is no longer needed) or something else changed (the repair is
-    no longer correct), and both call for a human rather than a silent multiply.
+    outside `BUGFIX_WEDGE_TOL` is REFUSED rather than applied: a moved wedge means the repair
+    is no longer needed or no longer correct, and both call for a human rather than a silent
+    multiply.
 
     ⚠ This makes invariant 2 partly SELF-REFERENTIAL for the registered tickers -- the factor
     is derived from the same vendor price the invariant scores against. The independent
@@ -99,13 +99,9 @@ def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.Data
     for ticker, spec in entries.items():
         if ticker not in out.columns:
             continue
-        # ⚠ A SEGMENT IS A WINDOW, NOT A PREFIX, and `[lower, before)` is what makes both
-        # halves of this loop correct. Measured on the live tables: IP reads 1.07078 before
-        # its Veritiv spinoff and 1.05600 between Veritiv and Sylvamo, and HBAN steps
-        # 1.61051 / 1.46410 / 1.33100 / 1.21000 / 1.10005 through its five stock dividends.
-        # Every one of those is the WHOLE wedge for its own era, so segments must not
-        # compound -- and an unbounded window would re-measure the era before it, which
-        # skipped three of HBAN's five entries and applied IP's second on a 1.4% coincidence.
+        # ⚠ A SEGMENT IS A WINDOW `[lower, before)`, NOT A PREFIX: each segment is the WHOLE
+        # wedge for its own era, so segments never compound, and each is measured only on its
+        # own era, never on the one before it.
         lower = pd.Timestamp.min
         for segment in sorted(spec.get("segments", []), key=lambda s: s["before"]):
             before, claimed = pd.Timestamp(segment["before"]), float(segment["factor"])

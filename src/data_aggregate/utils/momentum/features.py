@@ -120,7 +120,6 @@ SEAM_EWMA_SPAN_MULTIPLE = 3
 #: positions `[t-back, t-skip]`, so it straddles a seam at `s` for `t` in `[s+skip, s+back-1]`.
 #: The technical block's `skip=1` is its own `.shift(1)`, and its `back` is
 #: `SEAM_EWMA_SPAN_MULTIPLE x span + 1` for the same reason.
-#: Verified against the live panel at `DHR`/2016-07-05 -- see `mask_seam_windows`.
 SEAM_WINDOWS: dict[str, tuple[int, int]] = {
     "mom_12_1": (252, 21),  # close.shift(21) / close.shift(252)
     "rev_5": (5, 0),

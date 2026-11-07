@@ -5,14 +5,10 @@ from __future__ import annotations
 import pandas as pd
 
 
-def _sub(f, universe):
-    return f[[c for c in universe if c in f.columns]] if f is not None else None
-
-
 def to_day(s) -> pd.Series:
     """Coerce to a midnight-normalized `datetime64` Series.
 
-    ⚠ NOT `to_datetime(..., format="%Y-%m-%d")`, and the difference is measured. On the
+    ⚠ NOT `to_datetime(..., format="%Y-%m-%d")`. On the
     `DATE` / `TIMESTAMP` columns these sources actually have, an explicit format is IGNORED,
     so it buys nothing; it does NOT strip a time component, where `.dt.normalize()` does; and
     on a STRING column any value carrying a time silently becomes `NaT` under

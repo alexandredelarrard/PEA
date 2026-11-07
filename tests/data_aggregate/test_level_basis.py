@@ -526,6 +526,7 @@ def test_a_level_wedge_moves_s_and_only_s():
     assert early == pytest.approx(1.07078)
     assert (out.loc[out.index >= before, "IP"] == 1.0).all()
     assert (close["IP"] == 40.0).all(), "a level wedge must never touch a price"
+    print("SANITY: the IP wedge sets S to 1.07078 before its segment end and 1.0 after, and the close is untouched.")
 
 
 def test_a_level_wedge_whose_observation_moved_is_refused(monkeypatch: pytest.MonkeyPatch):
@@ -543,6 +544,7 @@ def test_a_level_wedge_whose_observation_moved_is_refused(monkeypatch: pytest.Mo
 
     assert (out["IP"] == 1.0).all()
     assert any("GONE or CHANGED" in m for m in logged), logged
+    print("SANITY: a wedge the vendor no longer shows is refused: S stays 1.0 and the refusal is logged.")
 
 
 def test_a_multi_segment_wedge_is_a_staircase_not_a_product(monkeypatch: pytest.MonkeyPatch):

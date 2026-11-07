@@ -452,8 +452,6 @@ class StepExtractIdentity(Step):
         written = save_unless_unchanged(self._context.store, Tables.universe_cik_symbol, stored_lineage, symbols.rows)
         written += save_unless_unchanged(self._context.store, Tables.universe_cusip, stored_lines, published)
         written += update_identity_columns(self._context.store, changed)
-        # the universe and resolver cached before this save hold the old end dates, symbols and CIKs: later readers reload them
-        self._context._universe, self._context._identity_resolver = None, None
         self._log.info(f"identity publish: {written} row(s) written ({len(changed)} universe ticker(s) with changed identity columns)")
         return written
 
@@ -461,13 +459,15 @@ class StepExtractIdentity(Step):
         """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
         scope, re-parse, re-stamp the insider, FTD, short-volume and 13F rows, rebuild purged histories. A first build or
         `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
-        # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49)
+        # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49), bound to
+        # the universe re-read after the publish (the cached one predates this run's end dates, symbols and CIKs)
         inputs = identity_inputs(self._context)
+        universe = self._universe.reread()
         current = newest_window_ciks(inputs.lineage)
-        roster_cik = {ticker: current[ticker] for ticker in self._universe.tickers if ticker in current}
+        roster_cik = {ticker: current[ticker] for ticker in universe.tickers if ticker in current}
         built = build_identity(inputs.lineage, inputs.tenure, roster_cik, inputs.master, inputs.co_registrants, inputs.mergers)
-        identity = bind_identity(self._context, built)
-        tickers, dry_run, every = self._options.tickers or self._universe.tickers, self._options.dry_run, self._options.full or self._first_build
+        identity = bind_identity(self._context, built, universe)
+        tickers, dry_run, every = self._options.tickers or universe.tickers, self._options.dry_run, self._options.full or self._first_build
 
         # compute: the tickers whose scope changed, and what each company owns
         scopes = {ticker: identity.filing_scope(ticker) for ticker in tickers}

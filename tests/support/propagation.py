@@ -37,7 +37,7 @@ def stub_propagation(monkeypatch: pytest.MonkeyPatch, module: Any = step_module)
     resolver = SimpleNamespace(filing_scope=lambda ticker: SimpleNamespace(scope_changed_at=None), bounds={})
     monkeypatch.setattr(module, "identity_inputs", lambda context: calls["reload"].append(context) or inputs)
     monkeypatch.setattr(module, "build_identity", lambda *args: resolver)
-    monkeypatch.setattr(module, "bind_identity", lambda context, built: built)
+    monkeypatch.setattr(module, "bind_identity", lambda context, built, universe: built)
     monkeypatch.setattr(
         module,
         "recheck_tickers",
@@ -71,7 +71,7 @@ def run_propagation(
     inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     monkeypatch.setattr(step_module, "identity_inputs", lambda context: inputs)
     monkeypatch.setattr(step_module, "build_identity", lambda *args: identity)
-    monkeypatch.setattr(step_module, "bind_identity", lambda context, built: built)
+    monkeypatch.setattr(step_module, "bind_identity", lambda context, built, universe: built)
     monkeypatch.setattr(step_module, "cache_dir", lambda context, name: Path(name))
     if getattr(context, "universe", None) is None:
         context.universe = universe_of(sorted(identity.roster_cik))

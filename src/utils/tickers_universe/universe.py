@@ -69,7 +69,8 @@ class Universe:
     """The universe tickers and their `universe_tickers` row (name, CIK, CUSIPs, GICS, Sharadar categories, identity)."""
 
     def __init__(self, store: DataStore, config: DictConfig) -> None:
-        # load the yml and the table
+        # load the yml and the table (the store and config kept for `reread`)
+        self._store, self._config = store, config
         self._tickers, aliases = universe_config(config)
         frame = store.load(Tables.universe_tickers, optional=True)
         if frame is None:
@@ -82,6 +83,10 @@ class Universe:
             raise UniverseError(f"{Tables.universe_tickers} differs from configs/universe.yml on {stale}: run `{SYNC_COMMAND}`")
         self._frame = frame.sort_values("ticker").reset_index(drop=True)
         self._alias_owner = {alias: owner for owner, symbols in aliases.items() for alias in symbols}
+
+    def reread(self) -> Universe:
+        """This universe read again from `universe_tickers`, e.g. after the identity publish changed its identity columns."""
+        return Universe(self._store, self._config)
 
     @property
     def tickers(self) -> list[str]:

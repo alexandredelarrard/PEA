@@ -26,7 +26,6 @@ from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_ba
 from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
-from src.data_extract.utils.common.resume import planner_bounds
 from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, purge_rows, rebuilt_since, retag_13f, thirteenf_moves
 from src.data_extract.utils.identity.lifecycle import Lifecycle
 from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
@@ -268,7 +267,7 @@ def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propaga
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """R-02 (X80 shape): AAA's `ended_on` 2026-10-05 is first published by this run's publish, which closes its window at
-    2026-10-06; the propagation of the same context (whose universe was read before the publish) must see that end and
+    2026-10-06; the propagation of the same context (whose cached universe was read before the publish) re-reads the universe, sees that end and must
     leave AAA's 8-K filed 2026-10-06, while purging a foreign filer's 8-K inside the life."""
     end, own, other = pd.Timestamp("2026-10-05"), "0000000100", "0000000999"
     step: Any = _step(published_store)
@@ -293,19 +292,19 @@ def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propaga
     monkeypatch.setattr(step_module, "retag_13f", lambda *args, **kwargs: pd.DataFrame(columns=list(RESTAMP_COLUMNS)))
     monkeypatch.setattr(step_module, "rebuild_history", lambda *args, **kwargs: ())
 
-    seen_before, planned_before = context.universe.bounds["AAA"][1], planner_bounds(context)["AAA"][1]
+    seen_before = context.universe.bounds["AAA"][1]
     step.run_publish()
     result = step.run_propagate()
-    planned_after = planner_bounds(context)["AAA"][1]
+    cached_after = context.universe.bounds["AAA"][1]
 
     kept = sorted(published_store.load(Tables.sec_8k, columns=["accession_number"])["accession_number"])
     bound_end = context._identity_resolver.bounds["AAA"][1]
     assert seen_before is None and bound_end == end, (seen_before, bound_end)
-    assert planned_before is None and planned_after == end + pd.offsets.BDay(10), (planned_before, planned_after)
+    assert cached_after is None, "the context cache is left as read: only the propagation re-reads the universe"
     assert kept == ["own-1", "post-end-1"], kept
     assert result.removals["rows"].sum() == 1, result.removals
     print("\n=== SANITY CHECK: an end first published this run reaches the propagation (R-02, X80) ===")
     print(
-        f"  universe read before publish: AAA ended_on={seen_before}; resolver bound after publish: {bound_end:%Y-%m-%d}; planner end {planned_before} -> {planned_after:%Y-%m-%d} (grace)"
+        f"  universe read before publish: AAA ended_on={seen_before}; resolver bound after publish: {bound_end:%Y-%m-%d}; context cache untouched ({cached_after})"
     )
     print(f"  purged {int(result.removals['rows'].sum())} foreign row(s); kept {kept} (the 2026-10-06 8-K stays, REQ-014)")

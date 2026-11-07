@@ -50,6 +50,7 @@ from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.identity_tables import LINE_COLUMNS
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
+from src.utils.tickers_universe.universe import Universe
 
 logger = logging.getLogger(__name__)
 
@@ -510,10 +511,9 @@ def build_identity(
     )
 
 
-def bind_identity(context: Context, identity: Identity) -> Identity:
-    """`identity` with the universe's alias symbols and fetch bounds, cached on `context` for the run."""
+def bind_identity(context: Context, identity: Identity, universe: Universe) -> Identity:
+    """`identity` with `universe`'s alias symbols and fetch bounds, cached on `context` for the run."""
     # compute: the universe's columns on the resolver, cached for every later reader of this run
-    universe = context.universe
     bound = replace(identity, redundant_symbols=frozenset(universe.alias_symbols), bounds=universe.bounds)
     context._identity_resolver = bound
     _log_identity(bound)
@@ -727,4 +727,4 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
         return cached
     inputs = identity_inputs(context)
     built = build_identity(inputs.lineage, inputs.tenure, context.universe.cik_by_ticker, inputs.master, inputs.co_registrants, inputs.mergers)
-    return bind_identity(context, built)
+    return bind_identity(context, built, context.universe)

@@ -870,28 +870,3 @@ def log_cik_history(history: CikHistory, membership: Membership, n_candidates: i
 def _plain_counts(values: pd.Series) -> dict[str, int]:
     """`{value: count}` sorted by value, plain integers."""
     return {str(value): int(count) for value, count in values.value_counts().sort_index().items()}
-
-
-def cik_history_from_rows(rows: pd.DataFrame, evidence: pd.DataFrame, activity: pd.DataFrame) -> CikHistory:
-    """The CIK history as stored in `universe_cik_symbol` (its CIK rows), for a symbol history run on its own."""
-    # the stored CIK rows, typed
-    cik = rows[rows["role"].ne(ROLE_SYMBOL)].copy()
-    cik["cik"] = pad_cik_series(cik["cik"])
-    cik["valid_from"] = pd.to_datetime(cik["valid_from"])
-    cik["valid_to"] = pd.to_datetime(cik["valid_to"])
-
-    # what the symbol history reads: companies, tickers, window ends and oracles
-    entity_of = dict(zip(cik["cik"], cik["company_id"].astype(str), strict=True))
-    tickers = cik[cik["canonical_ticker"].notna()]
-    windows = cik[cik["role"].eq(ROLE_WINDOW)]
-    return CikHistory(
-        rows=cik[list(TABLE_COLUMNS[:-1])].reset_index(drop=True),
-        entity_of=entity_of,
-        ticker_by_entity=dict(zip(tickers["company_id"].astype(str), tickers["canonical_ticker"].astype(str), strict=True)),
-        window_end={c: (None if pd.isna(end) else pd.Timestamp(end)) for c, end in zip(windows["cik"], windows["valid_to"], strict=True)},
-        oracle_of=dict(zip(cik["cik"], cik["oracle"].astype(str), strict=True)),
-        backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)),
-        blocked=pd.DataFrame(columns=list(BLOCKED_COLUMNS)),
-        evidence=evidence,
-        activity=activity,
-    )

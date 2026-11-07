@@ -208,8 +208,6 @@ class Identity:
     merger_boundaries: Mapping[str, tuple[MergerBoundary, ...]] = field(default_factory=dict)
     #: universe ticker -> `(first_price_date, ended_on)`, None where open (`Universe.bounds`): every fetch window's clamp.
     bounds: Mapping[str, tuple[pd.Timestamp | None, pd.Timestamp | None]] = field(default_factory=dict)
-    #: universe ticker -> the symbol it trades under today (`Universe.trading_symbols`; PSKY -> SKYD).
-    trading_symbols: Mapping[str, str] = field(default_factory=dict)
 
     # universe_cik_symbol
 
@@ -348,15 +346,6 @@ class Identity:
         if owner is None:
             return ACQUIRED_CONSTITUENT
         return CANONICAL_CURRENT if owner == roster else CANONICAL_PREDECESSOR
-
-    def trading_symbol(self, ticker: str) -> str:
-        """The symbol a ticker-keyed source is queried under: identity's current trading symbol, else the ticker."""
-        key = normalise_ticker(ticker)
-        return self.trading_symbols.get(key, key)
-
-    def ended_on(self, ticker: str) -> pd.Timestamp | None:
-        """The last day the ticker's shares traded, None while it trades."""
-        return self.bounds.get(normalise_ticker(ticker), (None, None))[1]
 
     @property
     def cusip_lines(self) -> pd.DataFrame:
@@ -522,10 +511,10 @@ def build_identity(
 
 
 def bind_identity(context: Context, identity: Identity) -> Identity:
-    """`identity` with the universe's alias symbols, fetch bounds and trading symbols, cached on `context` for the run."""
+    """`identity` with the universe's alias symbols and fetch bounds, cached on `context` for the run."""
     # compute: the universe's columns on the resolver, cached for every later reader of this run
     universe = context.universe
-    bound = replace(identity, redundant_symbols=frozenset(universe.alias_symbols), bounds=universe.bounds, trading_symbols=universe.trading_symbols)
+    bound = replace(identity, redundant_symbols=frozenset(universe.alias_symbols), bounds=universe.bounds)
     context._identity_resolver = bound
     _log_identity(bound)
     return bound

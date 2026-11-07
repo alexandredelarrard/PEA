@@ -17,7 +17,7 @@ from src.data_aggregate.utils.sec_thirteen import value_basis as values
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_store.schema import Tables
-from src.utils.identity_tables import CusipTags
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 
 
 def _payload() -> pd.DataFrame:
@@ -371,9 +371,11 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     source = inputs.iter_filing_vintages(sqlite_store, grid.max(), chunksize=chunksize)
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
-        expected = clean_public_holdings(attach_tickers(raw, CusipTags.of_map(mapping)), close, None)
+        expected = clean_public_holdings(attach_tickers(raw, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping)), close, None)
         expected_register = registers.pop()
-        with closing(holdings_clean.clean_public_batches(source, CusipTags.of_map(mapping), None, close, None)) as batches:
+        with closing(
+            holdings_clean.clean_public_batches(source, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), None, close, None)
+        ) as batches:
             result = list(batches)
     # Empty books retain their manifests and contribute no position rows to the union.
     actual = pd.concat([packet[1] for packet in result if not packet[1].empty], ignore_index=True)
@@ -402,9 +404,11 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
 def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
     mapping = pd.DataFrame({"cusip": ["000000001"], "ticker": ["OUT"]})
     raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].drop(columns="ticker").reset_index(drop=True))
-    expected = clean_public_holdings(attach_tickers(raw, CusipTags.of_map(mapping), ("ABC",)), None, None)
+    expected = clean_public_holdings(attach_tickers(raw, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), ("ABC",)), None, None)
     packets = ((pd.DataFrame(), raw) for _ in range(1))
-    with closing(holdings_clean.clean_public_batches(packets, CusipTags.of_map(mapping), ("ABC",), None, None)) as batches:
+    with closing(
+        holdings_clean.clean_public_batches(packets, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), ("ABC",), None, None)
+    ) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
     print("SANITY: a universe-filtered mapping retains every raw row with the existing unknown ticker dtype and null mask.")

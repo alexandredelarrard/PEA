@@ -171,22 +171,10 @@ class CusipTags:
         """Both tables from the store (empty frames when absent)."""
         return cls(load_cusip_lines(store), load_cusip_map(store))
 
-    @classmethod
-    def of_map(cls, cmap: pd.DataFrame | None) -> CusipTags:
-        """A market-wide map alone, no company lines."""
-        return cls(pd.DataFrame(columns=LINE_COLUMNS), cmap if cmap is not None else pd.DataFrame(columns=["cusip", "ticker"]))
-
     def tag(self, holdings: pd.DataFrame, universe: Collection[str] | None = None) -> pd.Series:
         """`tag_cusips` of `holdings` (dated by `period`); only the tickers of `universe` when given."""
         tickers = tag_cusips(holdings, self.lines, self.cmap)
         return tickers if universe is None else tickers.where(tickers.isin(set(universe)), None)
-
-
-def tag_layers(holdings: pd.DataFrame, lines: pd.DataFrame) -> pd.Series:
-    """`universe_cusip` (a CUSIP with a line) or `cusip_ticker_map`: the table a row's CUSIP is known to."""
-    known = set(lines["cusip"].dropna().astype(str))
-    cusips = holdings["cusip"].astype("string").str.strip().str.upper()
-    return pd.Series(cusips.isin(known).map({True: Tables.universe_cusip.name, False: Tables.cusip_ticker_map.name}), index=holdings.index)
 
 
 def universe_cusips(lines: pd.DataFrame, tickers: Collection[str]) -> frozenset[str]:

@@ -159,7 +159,7 @@ def stamp_legacy_publication(
 def _repair_legacy_values(df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.DataFrame:
     """Preserve legacy whole-row exclusions and its as-filed repair summary."""
     value_before = float(df_holdings["value_usd"].sum())
-    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, **dict(value_basis or {}))
+    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, value_basis)
     log_register(df_register, value_before)
     if "value_basis_excluded" in df_holdings:
         df_holdings = df_holdings.loc[~df_holdings["value_basis_excluded"]]

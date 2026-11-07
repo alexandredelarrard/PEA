@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 
-def to_day(s) -> pd.Series:
+def to_day(s: pd.Series) -> pd.Series:
     """Coerce to a midnight-normalized `datetime64` Series.
 
     ⚠ NOT `to_datetime(..., format="%Y-%m-%d")`. On the

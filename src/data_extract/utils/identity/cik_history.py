@@ -6,8 +6,9 @@ Membership oracles, highest priority first: `register` (`registrant_cutover.json
 (shared Form 3/4/5 reporting owners) and `roster`. No merge joins two universe tickers.
 
 Windows: the register's segments; else the SEC succession chain; else the automatic chain both filed sources agree on;
-else the roster CIK alone, the other CIKs event-only. `company_id` is the ticker's anchored id, else `E` + the oldest CIK
-of its group, and is never re-keyed. Rows are the `cik_window` / `cik_event` rows of `universe_cik_symbol`.
+else the roster CIK alone, the other CIKs event-only. `company_id` is the ticker's anchored id, else `E` + the CIK current
+at `MINT_CUTOFF` (the newest `cik_window` starting on or before it), and is never re-keyed. Rows are the `cik_window` /
+`cik_event` rows of `universe_cik_symbol`.
 """
 
 from __future__ import annotations
@@ -45,6 +46,9 @@ SOURCE_PRIORITY = ("register", "manual", "sec_succession", "symbol_handoff", "ow
 
 #: Stored value of an open start: `valid_from` is a PK column and cannot be NULL.
 SENTINEL_START = pd.Timestamp("1900-01-01")
+#: A minted `company_id` is `E` + the group's CIK current on this date, so neither a curated predecessor nor a later
+#: successor changes it (D-5); a group whose windows all start later takes its oldest window CIK.
+MINT_CUTOFF = pd.Timestamp("2026-10-01")
 
 ROLE_WINDOW = "cik_window"
 ROLE_EVENT = "cik_event"
@@ -581,26 +585,39 @@ def _chain_windows(order: list[str], switches: list[Switch], note: str) -> tuple
 
 
 # Companies
-def company_ids(membership: Membership, anchors: Mapping[str, str], roster_cik: Mapping[str, str]) -> Entities:
-    """Each group's `company_id`: its universe ticker's anchored id, else `E` + its oldest CIK; never re-keyed."""
+def company_groups(membership: Membership, roster_cik: Mapping[str, str]) -> Entities:
+    """The union-find groups, each keyed `E` + its root CIK until `company_ids` names it."""
     # the groups of the union-find
     groups: dict[str, set[str]] = {}
     for cik in list(membership.parent):
         groups.setdefault(_root(membership.parent, cik), set()).add(cik)
-    ticker_of_root = {_root(membership.parent, cik): ticker for ticker, cik in roster_cik.items()}
 
+    # every member CIK, the members of each group and its universe ticker
+    entity_of = {cik: f"E{root}" for root, members in groups.items() for cik in members}
+    ticker_by_entity = {entity_of[cik]: ticker for ticker, cik in roster_cik.items()}
+    return Entities(entity_of=entity_of, groups={f"E{root}": members for root, members in groups.items()}, ticker_by_entity=ticker_by_entity)
+
+
+def company_ids(groups: Entities, anchors: Mapping[str, str], windows: Mapping[str, Window]) -> Entities:
+    """Each group's `company_id`: its universe ticker's anchored id, else `E` + its CIK current at `MINT_CUTOFF`; never re-keyed."""
     # the frozen id of an anchored ticker, the minted id of every other group
-    ids = {root: anchors.get(ticker_of_root.get(root, ""), "E" + min(members)) for root, members in groups.items()}
+    ids = {key: anchors.get(groups.ticker_by_entity.get(key, ""), "E" + _minted_cik(members, windows)) for key, members in groups.groups.items()}
     taken = Counter(ids.values())
     clashes = sorted(entity for entity, n in taken.items() if n > 1)
     if clashes:
         raise CompanyIdCollisionError(f"identity: company id(s) {clashes} name two groups; a frozen id collides with a minted one")
 
-    # every member CIK, the members of each company and its universe ticker
-    entity_of = {cik: ids[root] for root, members in groups.items() for cik in members}
-    by_entity = {ids[root]: members for root, members in groups.items()}
-    ticker_by_entity = {entity_of.get(cik, f"E{cik}"): ticker for ticker, cik in roster_cik.items()}
-    return Entities(entity_of=entity_of, groups=by_entity, ticker_by_entity=ticker_by_entity)
+    # every member CIK, the members of each company and its universe ticker, under the company's id
+    entity_of = {cik: ids[key] for key, members in groups.groups.items() for cik in members}
+    by_entity = {ids[key]: members for key, members in groups.groups.items()}
+    return Entities(entity_of=entity_of, groups=by_entity, ticker_by_entity={ids[key]: t for key, t in groups.ticker_by_entity.items()})
+
+
+def _minted_cik(members: set[str], windows: Mapping[str, Window]) -> str:
+    """The member whose `cik_window` is the newest starting on or before `MINT_CUTOFF`, else the oldest window, else the lowest CIK."""
+    dated = sorted((windows[cik][0], cik) for cik in members if cik in windows)
+    current = [cik for start, cik in dated if start <= MINT_CUTOFF]
+    return current[-1] if current else dated[0][1] if dated else min(members)
 
 
 def check_d19(tenure: pd.DataFrame, roster_cik: Mapping[str, str], entity_of: Mapping[str, str], allowlist: Mapping[str, str]) -> None:
@@ -853,28 +870,3 @@ def log_cik_history(history: CikHistory, membership: Membership, n_candidates: i
 def _plain_counts(values: pd.Series) -> dict[str, int]:
     """`{value: count}` sorted by value, plain integers."""
     return {str(value): int(count) for value, count in values.value_counts().sort_index().items()}
-
-
-def cik_history_from_rows(rows: pd.DataFrame, evidence: pd.DataFrame, activity: pd.DataFrame) -> CikHistory:
-    """The CIK history as stored in `universe_cik_symbol` (its CIK rows), for a symbol history run on its own."""
-    # the stored CIK rows, typed
-    cik = rows[rows["role"].ne(ROLE_SYMBOL)].copy()
-    cik["cik"] = pad_cik_series(cik["cik"])
-    cik["valid_from"] = pd.to_datetime(cik["valid_from"])
-    cik["valid_to"] = pd.to_datetime(cik["valid_to"])
-
-    # what the symbol history reads: companies, tickers, window ends and oracles
-    entity_of = dict(zip(cik["cik"], cik["company_id"].astype(str), strict=True))
-    tickers = cik[cik["canonical_ticker"].notna()]
-    windows = cik[cik["role"].eq(ROLE_WINDOW)]
-    return CikHistory(
-        rows=cik[list(TABLE_COLUMNS[:-1])].reset_index(drop=True),
-        entity_of=entity_of,
-        ticker_by_entity=dict(zip(tickers["company_id"].astype(str), tickers["canonical_ticker"].astype(str), strict=True)),
-        window_end={c: (None if pd.isna(end) else pd.Timestamp(end)) for c, end in zip(windows["cik"], windows["valid_to"], strict=True)},
-        oracle_of=dict(zip(cik["cik"], cik["oracle"].astype(str), strict=True)),
-        backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)),
-        blocked=pd.DataFrame(columns=list(BLOCKED_COLUMNS)),
-        evidence=evidence,
-        activity=activity,
-    )

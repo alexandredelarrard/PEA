@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags, tag_cusips, tag_layers
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags, tag_cusips
 
 ROOT = Path(__file__).resolve().parents[3]
 RUN = Path("reports") / "validate" / "2026-11-03-identity-security-master" / "_cache"
@@ -48,11 +48,11 @@ def _holders(store: DataStore, where: str) -> pd.DataFrame:
 def test_universe_cusips_take_their_dated_company_line(fixture: tuple[DataStore, CusipTags]) -> None:
     store, tags = fixture
     rows = _holders(store, "cusip in ({})".format(",".join(f"'{c}'" for c in ["29476L107", *SECOND_CLASSES])))
-    rows = rows.assign(after=tag_cusips(rows, tags.lines, tags.cmap), layer=tag_layers(rows, tags.lines))
+    rows = rows.assign(after=tag_cusips(rows, tags.lines, tags.cmap), on_line=rows["cusip"].isin(set(tags.lines["cusip"])))
     recent = rows[pd.to_datetime(rows["period"]) >= "2016-01-01"]
 
     eqr = recent[recent["cusip"].eq("29476L107")]
-    assert set(eqr["after"]) == {"VMRK"} and set(eqr["layer"]) == {Tables.universe_cusip.name}
+    assert set(eqr["after"]) == {"VMRK"} and eqr["on_line"].all(), "EQR's CUSIP is tagged through its universe_cusip line"
     for cusip, company in SECOND_CLASSES.items():
         assert set(recent.loc[recent["cusip"].eq(cusip), "after"].dropna()) == {company}, cusip
     moved = rows.groupby(["cusip", "ticker", "after"], dropna=False)["n_rows"].sum()

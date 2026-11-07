@@ -104,13 +104,47 @@ def test_a_forced_older_predecessor_keeps_the_frozen_id(tmp_path: Path) -> None:
 
     assert frozen.entity_of["0000000100"] == frozen.entity_of["0000000200"] == "E0000000200"
     assert set(frozen.rows["company_id"]) == {"E0000000200"} and frozen.backlog.empty
-    assert cold.entity_of["0000000200"] == "E0000000100", "a first build mints E + the oldest CIK, as before"
+    assert cold.entity_of["0000000200"] == "E0000000200", "a first build mints E + the window CIK; the event-only 100 is not read"
     print("\n=== SANITY CHECK: frozen company_id (AC-006) ===")
     print(
         f"  stored AAA = E0000000200; manual joins the older 0000000100 -> {frozen.entity_of['0000000100']} for both CIKs, backlog {len(frozen.backlog)}"
     )
     print(f"  cold build (no stored id) -> {cold.entity_of['0000000200']}")
     print("  OK: later evidence adds CIKs to a company and never re-keys it")
+
+
+#: WBD's register entry (configs/sec/registrant_cutover.json): Discovery Holding to 2008-09-18, then Discovery Communications.
+WBD_SEGMENTS = [
+    {"cik": "0001320482", "valid_to": "2008-09-18", "evidence": "Discovery Holding"},
+    {"cik": "0001437107", "valid_from": "2008-09-18", "evidence": "Discovery"},
+]
+
+
+def _register(tmp_path: Path, segments: list[dict]) -> str:
+    """A config dir holding only a WBD `registrant_cutover.json` entry with these segments."""
+    sec = tmp_path / "configs" / "sec"
+    sec.mkdir(parents=True, exist_ok=True)
+    (sec / "registrant_cutover.json").write_text(json.dumps({"WBD": {"kind": "reorganisation", "segments": segments}}), encoding="utf-8")
+    return str(tmp_path / "configs")
+
+
+def test_a_cold_build_mints_the_cik_current_at_the_cutoff(tmp_path: Path) -> None:
+    """D-5 / X23: with no stored id, WBD mints E + the CIK whose window is current at MINT_CUTOFF (0001437107), not its
+    curated older predecessor 0001320482; a successor whose window starts after the cutoff does not move it either."""
+    tenure = _tenure([("WBD", "0001320482", "2005-07-21", "2008-09-18", 300), ("WBD", "0001437107", "2008-09-18", None, 900)])
+    owners = pd.DataFrame(columns=["issuer_cik", "owner_cik_raw"])
+    successor = {"cik": "0009999999", "valid_from": "2027-03-01", "evidence": "a later holdco"}
+    later = [{**WBD_SEGMENTS[0]}, {**WBD_SEGMENTS[1], "valid_to": "2027-03-01"}, successor]
+
+    cold = cik_history_of(tenure, {"WBD": "0001437107"}, owners, _register(tmp_path / "a", WBD_SEGMENTS))
+    moved = cik_history_of(tenure, {"WBD": "0009999999"}, owners, _register(tmp_path / "b", later))
+
+    assert set(cold.rows["company_id"]) == {"E0001437107"}, sorted(set(cold.rows["company_id"]))
+    assert set(moved.rows["company_id"]) == {"E0001437107"} and len(moved.rows) == 3, moved.rows[["cik", "company_id"]]
+    print("\n=== SANITY CHECK: cold-build company_id (D-5, F-001) ===")
+    print(f"  WBD windows 1320482 ..2008-09-18, 1437107 2008-09-18.. -> {sorted(set(cold.rows['company_id']))}")
+    print(f"  plus a successor 9999999 from 2027-03-01 (roster) -> {sorted(set(moved.rows['company_id']))}")
+    print("  OK: neither the curated predecessor nor a later successor changes the minted id")
 
 
 def test_every_stored_company_keeps_its_id_on_the_fixture_store() -> None:

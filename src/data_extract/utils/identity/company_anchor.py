@@ -1,7 +1,7 @@
 """Company anchor: the frozen `company_id` of each universe ticker and the CIKs its CIK history starts from.
 
 The id is the one stored on the ticker's `universe_tickers` row, else the one its stored `universe_cik_symbol` rows carry. A
-ticker with neither is new: the CIK history mints its id (`E` + the oldest CIK of its group), anchored from the next build.
+ticker with neither is new: the CIK history mints its id (`E` + its CIK current at `MINT_CUTOFF`), anchored from the next build.
 Seeds: the roster CIK (U-49: the newest stored CIK window, else the SEC `company_tickers` list, else Sharadar; never the
 `universe_tickers.cik` that identity itself publishes) and the CIK of Sharadar's `secfilings` link, read from the newest row of
 the ticker's permaticker.

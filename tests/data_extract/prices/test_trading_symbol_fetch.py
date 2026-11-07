@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import logging
 import types
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar as fetch_mod
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_extract.utils.prices import fetch_prices as fp
@@ -45,20 +43,13 @@ def _universe(store: DataStore) -> Any:
     return seed_universe(store, TICKERS, rows={t: {"trading_symbol": symbols[t]} for t in TICKERS})
 
 
-def test_universe_and_identity_expose_the_trading_symbol(sqlite_store: DataStore) -> None:
+def test_the_universe_exposes_the_trading_symbol_and_the_end_date(sqlite_store: DataStore) -> None:
+    """Fetchers read `context.universe`: PSKY trades as SKYD, AAPL under its key, and neither has an end date."""
     universe = _universe(sqlite_store)
-    identity = build_identity(
-        lineage=pd.DataFrame(
-            {"cik": ["0000000001"], "company_id": ["E0000000001"], "role": ["cik_window"], "symbol": [""], "valid_from": ["2000-01-01"]}
-        ),
-        tenure=pd.DataFrame({"symbol": ["AAPL"], "issuer_cik": ["0000000001"], "valid_from": ["2000-01-01"], "valid_to": [None], "n_filings": [1]}),
-        roster_cik=universe.cik_by_ticker,
-    )
-    identity = replace(identity, trading_symbols=universe.trading_symbols, bounds=universe.bounds)
     assert universe.trading_symbols == {"AAPL": "AAPL", "PSKY": "SKYD"}
-    assert identity.trading_symbol("psky") == "SKYD" and identity.trading_symbol("AAPL") == "AAPL" and identity.ended_on("PSKY") is None
+    assert universe.bounds["PSKY"][1] is None and universe.bounds["AAPL"][1] is None
     print("\n=== SANITY CHECK: trading-symbol API ===")
-    print(f"  Universe.trading_symbols {universe.trading_symbols}; Identity.trading_symbol('PSKY') = {identity.trading_symbol('PSKY')}")
+    print(f"  Universe.trading_symbols {universe.trading_symbols}; PSKY ended_on {universe.bounds['PSKY'][1]}")
     print("  Validated.")
 
 

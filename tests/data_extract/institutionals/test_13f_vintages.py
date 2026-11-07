@@ -1237,7 +1237,9 @@ def normal_resources(step: StepCubeSecThirteen, frames: PriceFrames) -> SecThirt
     splits = pd.DataFrame(columns=["date", "ticker", "value"])
     basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(frames, None, basis, frames.close_split, CusipTags.of_map(cusip_map), {"": cohort, "topk": cohort})
+    return SecThirteenResources(
+        frames, None, basis, frames.close_split, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": cohort, "topk": cohort}
+    )
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1257,7 +1259,7 @@ def test_raw_broad_builder_keeps_verified_filing_adapter() -> None:
     frames = PriceFrames(GRID, ("AAA", "BBB"), {}, close_split=close, level_factor=close / 10)
     panel = build_institutional_feature_panel(
         frames,
-        attach_tickers(holdings, CusipTags.of_map(mapping), frames.universe),
+        attach_tickers(holdings, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), frames.universe),
         filings=filings,
         min_prior_holders=0,
         settle_trading_days=0,

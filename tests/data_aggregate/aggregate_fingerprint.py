@@ -845,7 +845,7 @@ def compute() -> dict:
         cross_sectional_rank,
         cross_sectional_zscore,
     )
-    from src.utils.identity_tables import CusipTags
+    from src.utils.identity_tables import LINE_COLUMNS, CusipTags
     from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price_adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
@@ -982,7 +982,7 @@ def compute() -> dict:
             accepted_at=pd.NaT,
         )
     )
-    df_books = clean_public_holdings(attach_tickers(df_books, CusipTags.of_map(cusip_map)), valuation_close, None)
+    df_books = clean_public_holdings(attach_tickers(df_books, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map)), valuation_close, None)
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
     book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None

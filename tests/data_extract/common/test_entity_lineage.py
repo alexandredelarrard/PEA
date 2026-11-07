@@ -129,7 +129,7 @@ def test_a_merge_joining_two_universe_tickers_is_refused():
         "NTRS/sub": {"same_entity": ["0000073124", "0001063537"], "own_entity": [], "evidence": "test"},
     }
     membership: Membership = cik_module.curated_membership(frozenset(roster.values()), roster, {}, manual)
-    entities = cik_module.company_ids(membership, {}, roster)
+    entities = cik_module.company_ids(cik_module.company_groups(membership, roster), {}, {})
     assert entities.entity_of["0000049826"] != entities.entity_of["0000073124"]
     assert len(membership.blocked) == 1 and membership.blocked[0][2] == "manual[NTRS/itw]"
     assert entities.entity_of["0001063537"] == entities.entity_of["0000073124"]
@@ -272,8 +272,8 @@ def test_a_symbol_handoff_seen_in_both_sources_joins_the_predecessor(tmp_path):
     config = _config(tmp_path)
     build = derive_lineage(tenure, as_roster(_roster([("ABC", "0000000200")])), _owner_pairs({}), config, dei=dei)
     predecessor = _rows(build, cik="0000000100")
-    assert set(predecessor["company_id"]) == {"E0000000100"} and set(predecessor["oracle"]) == {"symbol_handoff"}
-    assert set(_rows(build, cik="0000000200")["company_id"]) == {"E0000000100"}
+    assert set(predecessor["company_id"]) == {"E0000000200"} and set(predecessor["oracle"]) == {"symbol_handoff"}
+    assert set(_rows(build, cik="0000000200")["company_id"]) == {"E0000000200"}, "minted from the window current at MINT_CUTOFF"
 
     one_source = derive_lineage(
         tenure, as_roster(_roster([("ABC", "0000000200")])), _owner_pairs({}), config, dei=dei[dei["issuer_cik"].eq("0000000200")]

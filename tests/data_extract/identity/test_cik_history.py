@@ -80,7 +80,7 @@ def test_an_8k12b_paired_with_a_form_25_joins_and_dates_an_unregistered_holdco(t
     joined = cik_history_of(tenure, {"XYZ": "0000000200"}, NO_OWNERS, _config(tmp_path), profile=profile)
     alone = cik_history_of(tenure, {"XYZ": "0000000200"}, NO_OWNERS, _config(tmp_path))
 
-    assert joined.entity_of["0000000100"] == joined.entity_of["0000000200"] == "E0000000100"
+    assert joined.entity_of["0000000100"] == joined.entity_of["0000000200"] == "E0000000200", "minted from the CIK current at MINT_CUTOFF"
     assert joined.oracle_of["0000000100"] == "sec_succession"
     assert _windows(joined) == {
         "0000000100": (SENTINEL_START, pd.Timestamp("2026-07-01"), "sec_profile"),

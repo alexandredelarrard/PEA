@@ -12,7 +12,7 @@ import pandas as pd
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.quotes import lookup_asof
+from src.data_aggregate.utils.common.quotes import lookup_asof, period_bases
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
@@ -222,9 +222,8 @@ def _quarter_basis_ratio(df_basis: pd.DataFrame | None, tickers: pd.Index, perio
     """`F_period / F_prior` per ticker: the factor carrying prior-quarter shares onto the current quarter's basis."""
     if df_basis is None:
         return pd.Series(1.0, index=tickers)
-    names = pd.Series(tickers, index=tickers)
-    prior = lookup_asof(df_basis, names, pd.Series(prior_period, index=tickers))
-    return convert_quantities(1.0, prior, lookup_asof(df_basis, names, pd.Series(period, index=tickers)))
+    prior, now = period_bases(df_basis, pd.Series(tickers, index=tickers), prior_period, period)
+    return convert_quantities(1.0, prior, now)
 
 
 def compute_institutional_feature_history(

@@ -19,6 +19,7 @@ import pytest
 import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
+from src.data_aggregate.utils.common import quotes
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.class_lines import cusip_windows
 from src.data_aggregate.utils.common.data_utils import to_day
@@ -1188,8 +1189,8 @@ def test_active_reductions_preserve_unknowns_and_reuse_ticker_split_pairs(monkey
         ]
     )
     snapshots = [(pd.Timestamp(day), df_compact, df_states) for day in ("2024-08-15", "2024-08-16")]
-    lookup = Mock(wraps=_features.lookup_asof)
-    monkeypatch.setattr(_features, "lookup_asof", lookup)
+    lookup = Mock(wraps=quotes.lookup_asof)
+    monkeypatch.setattr(quotes, "lookup_asof", lookup)
     df_basis = pd.DataFrame(1.0, index=pd.bdate_range("2024-03-29", "2024-08-16"), columns=["AAA", "UNK"])
     result = _features.compute_institutional_feature_history(iter(snapshots), df_basis=df_basis, min_prior_holders=1)
     assert (lookup.call_count, [len(call.args[1]) for call in lookup.call_args_list]) == (2, [2, 2])

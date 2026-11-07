@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import _daily_positions
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
@@ -17,7 +18,7 @@ def _management(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Seri
         [df_clean, diagnostics.get("unpriced_events", pd.DataFrame()), diagnostics.get("unsupported_events", pd.DataFrame())],
         ignore_index=True,
     )
-    df_trades = position_units(df_trades, basis_frame(_NO_SPLIT_FIXTURE, df_trades["ticker"], idx.max()))
+    df_trades = position_units(df_trades, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_trades["ticker"], idx.max())))
     df_flows = diagnostics.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_trades, df_flows)
     result = cumulative_positions(df_trades, df_positions, df_flows, idx, 60)

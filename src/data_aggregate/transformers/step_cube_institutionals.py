@@ -16,7 +16,7 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_RE
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.quotes import lookup_asof, terminal_basis_factor
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
@@ -118,18 +118,19 @@ class StepCubeInstitutionals(Step):
         # Load shared price and class inputs once.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         df_lines = load_class_lines(self._store)
+        df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(self._insider_panel(frames, df_lines), "insider-trading")
-        merger.add(self._short_flow_panel(frames, df_lines), "short-flow")
+        merger.add(self._insider_panel(frames, df_lines, df_factor), "insider-trading")
+        merger.add(self._short_flow_panel(frames, df_lines, df_factor), "short-flow")
         merger.add(self._ownership_panel(frames), "beneficial-ownership")
 
         # Keep declared inputs even when a source has no qualifying observations.
         fields = [*INSIDER_EMISSION, *short_flow.EMISSION, *OWNERSHIP_EMISSION]
         return merger.to_long().reindex(columns=["date", "ticker", *(f"f_{name}" for name in fields)])
 
-    def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None) -> pd.DataFrame | None:
+    def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
@@ -147,13 +148,13 @@ class StepCubeInstitutionals(Step):
         # Put unclassed positions in terminal units through the saved basis; report source-day trades against the saved count.
         diagnostics["source_first"] = source.first_filed
         df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
-        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), frames.security_basis)
+        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), df_factor)
         report_oversized_positions(df_trades, frames.shares_outstanding_pit)
 
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)
 
-    def _short_flow_panel(self, frames: PriceFrames, lines: pd.DataFrame | None) -> pd.DataFrame | None:
+    def _short_flow_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
         # Load observed fallback only for companies without any adjudicated master evidence; clean the raw class tape once.
         known = set(lines["canonical_company"].dropna()) if lines is not None else set()
         df_classes = (
@@ -168,10 +169,8 @@ class StepCubeInstitutionals(Step):
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
         columns = pd.Index(frames.universe, name="ticker")
         df_tenure = short_flow._proven_tenure_mask(idx, columns, lines, df_finra)
-        df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
         if df_short is not None:
-            factor = lookup_asof(df_factor, df_short["ticker"], df_short["date"])
-            df_short = df_short.assign(short_volume=df_short["short_volume"] * factor, total_volume=df_short["total_volume"] * factor)
+            df_short = terminal_rows(df_short, ("short_volume", "total_volume"), df_factor)
         df_shares_out = cast(pd.DataFrame, frames.shares_outstanding_pit) * df_factor
 
         # Yahoo/class tape is already vendor-restated to the last bar; apply its terminal class ratio once.
@@ -187,7 +186,7 @@ class StepCubeInstitutionals(Step):
         if df_coverage is not None or df_fails is not None:
             df_source = df_fails if df_fails is not None else pd.DataFrame(columns=["date", "ticker", "fails_quantity", "period"])
             df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
-            df_source = df_source.assign(fails_quantity=df_source["fails_quantity"] * lookup_asof(df_factor, df_source["ticker"], df_source["date"]))
+            df_source = terminal_rows(df_source, ("fails_quantity",), df_factor)
             settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure)
             available = short_flow._ftd_available_dates(df_coverage, self._cfg.institutionals.ftd_availability_calendar_days)
             publication = FtdPublication(df_coverage, available)

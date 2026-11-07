@@ -13,6 +13,7 @@ import pytest
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.price.capitalization import project_security_shares
 from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
@@ -130,7 +131,7 @@ def test_actual_quantity_normalization_does_not_borrow_vendor_factor(source_case
         }
     )
     days = pd.DatetimeIndex(sorted(pd.to_datetime(shares["date"]).unique()))
-    normalized = position_units(trades, security_basis_frame(basis, days, pd.Index(["HBAN"])))
+    normalized = position_units(trades, terminal_basis_factor(security_basis_frame(basis, days, pd.Index(["HBAN"]))))
     assert normalized["units_known"].all()
     assert normalized["shares_n"].iloc[0] == pytest.approx(100.0 * 1.1**5)
     assert normalized["shares_owned_after"].iloc[0] == pytest.approx(1000.0 * 1.1**5)

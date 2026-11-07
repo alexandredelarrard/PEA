@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
     build_insider_feature_panel,
@@ -64,7 +65,7 @@ def build_prepared_insider_panel(
     if frames.security_basis is None and share_basis is not None:
         end = pd.DatetimeIndex(frames.trading_index).max()
         frames = replace(frames, security_basis=basis_frame(share_basis, [*frames.universe, *df_events["ticker"]], end))
-    df_positions = position_units(df_events, frames.security_basis)
+    df_positions = position_units(df_events, None if frames.security_basis is None else terminal_basis_factor(frames.security_basis))
     report_oversized_positions(df_trades, frames.shares_outstanding_pit)
     return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, observation)
 

@@ -20,6 +20,7 @@ from src.data_aggregate.transformers import step_cube_institutionals as institut
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.incremental import PartWindow
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
@@ -432,7 +433,7 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), terminal_basis_factor(frames.security_basis))
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
@@ -603,7 +604,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
         return {"202401a": pd.Timestamp("2024-02-05")}
 
     monkeypatch.setattr("src.data_aggregate.utils.institutionals.short_flow_features._ftd_available_dates", fixed_clock)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), terminal_basis_factor(frames.security_basis))
     assert result is not None and len(calls) == 1
     values = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
     assert pd.isna(values.loc[(pd.Timestamp("2024-02-02"), "AAA")])

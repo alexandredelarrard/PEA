@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.quotes import lookup_asof
+from src.data_aggregate.utils.common.quotes import period_bases
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBook, PublicBookSnapshot
 from src.utils.price.levels import convert_quantities
 
@@ -229,8 +229,7 @@ def _join_positions(current: BookSummary, prior: BookSummary) -> pd.DataFrame:
 
 def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prior_period: pd.Timestamp, period: pd.Timestamp) -> pd.DataFrame:
     """Carry prior shares onto the current basis (`F_period / F_prior`) and the pre-comparison quote inversely."""
-    prior_basis = lookup_asof(market.basis, df_pair.ticker, pd.Series(prior_period, index=df_pair.index))
-    basis_now = lookup_asof(market.basis, df_pair.ticker, pd.Series(period, index=df_pair.index))
+    prior_basis, basis_now = period_bases(market.basis, df_pair.ticker, prior_period, period)
     df_pair["prior"] = convert_quantities(df_pair.prior, prior_basis, basis_now)
 
     # Exact reference-session quotes only; missing securities are never dropped or filled.

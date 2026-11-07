@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.inputs import load_insider_transactions
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
@@ -282,7 +283,7 @@ def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsuppor
     _, df_close, df_history = _action_cap_inputs()
     source = row(filing_date="2024-03-05", transaction_date="2024-03-20", officer_title="CEO", is_officer=1.0)
     df_clean, _ = clean_transactions(source_frame([source]))
-    df_positions = position_units(df_clean, basis_frame(_NO_SPLIT_FIXTURE, df_clean["ticker"], df_close.index.max()))
+    df_positions = position_units(df_clean, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_clean["ticker"], df_close.index.max())))
     df_panel = _build_action_cap([source], df_close, df_history)
     unknown = [
         "f_ic_insider_buy_value_mcap_60d",

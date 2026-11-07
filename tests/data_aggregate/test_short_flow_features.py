@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.quotes import lookup_asof, terminal_basis_factor
+from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     EMISSION,
@@ -54,12 +54,6 @@ def split_factor(splits: pd.DataFrame | None, idx: pd.DatetimeIndex, tickers: An
     """`terminal_factor` for Yahoo-style split rows (`ticker`, `date`, `ratio`)."""
     df_splits = splits if splits is not None else pd.DataFrame(columns=["ticker", "date", "ratio"])
     return terminal_factor(resolve_share_events(None, df_splits, {}), idx, tickers)
-
-
-def terminal_rows(df_rows: pd.DataFrame, columns: tuple[str, ...], df_factor: pd.DataFrame) -> pd.DataFrame:
-    """The step's dated-row conversion `q * F_T / F_d`."""
-    factor = lookup_asof(df_factor, df_rows["ticker"], df_rows["date"])
-    return df_rows.assign(**{column: df_rows[column] * factor for column in columns})
 
 
 def build_short_flow_feature_panel(

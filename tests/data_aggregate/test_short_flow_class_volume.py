@@ -23,13 +23,14 @@ from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.class_lines import CLASS_LINE_COLUMNS
+from src.data_aggregate.utils.common.quotes import terminal_rows
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from tests.conftest import make_frames
-from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel, split_factor, terminal_rows
+from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel, split_factor
 
 
 def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:

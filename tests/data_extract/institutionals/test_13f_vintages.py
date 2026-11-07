@@ -1391,6 +1391,7 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
+    step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
     def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
@@ -1430,6 +1431,7 @@ def ordinary_step(
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
+    step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
     def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:

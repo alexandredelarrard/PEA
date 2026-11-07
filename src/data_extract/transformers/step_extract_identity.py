@@ -29,6 +29,7 @@ from src.data_extract.utils.identity.cik_history import (
     cik_evidence,
     cik_rows,
     cik_windows,
+    company_groups,
     company_ids,
     curated_membership,
     d19_allowlist,
@@ -276,11 +277,11 @@ class StepExtractIdentity(Step):
         join_symbol_handoffs(membership, evidence, index, roster_cik)
         join_owner_overlaps(membership, by_ticker, roster_cik, owners)
 
-        # post-process: frozen ids, then the windows and rows of each company
-        entities = company_ids(membership, anchor.company_id, roster_cik)
-        windows, multi = cik_windows(
-            entities, roster_cik, registrants, automatic_chains(index, entities, roster_cik), successions, membership.curated
-        )
+        # post-process: the windows of each company, then its frozen or minted id and its rows
+        groups = company_groups(membership, roster_cik)
+        windows, multi = cik_windows(groups, roster_cik, registrants, automatic_chains(index, groups, roster_cik), successions, membership.curated)
+        entities = company_ids(groups, anchor.company_id, windows)
+        multi = [{**row, "company_id": entities.entity_of[roster_cik[row["canonical_ticker"]]]} for row in multi]
         history = CikHistory(
             rows=cik_rows(entities, membership, windows, evidence),
             entity_of=entities.entity_of,

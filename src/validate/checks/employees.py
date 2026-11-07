@@ -411,7 +411,7 @@ def _component_findings(
             )
         )
     spec = PURGE_TABLES_BY_NAME[Tables.fundamentals_employees.name]
-    removals = pd.DataFrame(_foreign_in_table(context, spec, scope, _entity_ciks(lineage), {}))
+    removals = pd.DataFrame(_foreign_in_table(context, spec, scope, _entity_ciks(lineage), {}, context.universe.bounds))
     metrics["foreign_rows"] = int(removals["rows"].sum()) if not removals.empty else 0
     for record in removals.to_dict("records"):
         findings.append(

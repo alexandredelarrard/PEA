@@ -304,7 +304,7 @@ Deferred from the identity manual-review run (local run dir `reports/validate/20
 - **Live apply.** The merged configs take effect at the next `identity` DAG run (`identity --only propagate --full` re-stamps the FINRA seam rows of FOXA, DOC, TT, VTRS and COHR).
 - **PEAK on 2024-03-01.** Healthpeak's last PEAK session (2.19M shares on FINRA) stays unattributed: the 42250P103 line from 2024-03-01 is keyed on DOC, and a second boundary on the CUSIP would overlap it. Needs a per-symbol boundary on one CUSIP.
 - **Remaining tape-mix actions.** FITBP (an open `form345` tenure while the master's FITBP lines stop at 2026-06-09 and gap 2013–2019) and HUBA (the overlap runs to 2016-08-18, the master's HUBA line ends 2015-12-24) stay ACTION items for a tenure curation.
-- **Tape-mix flag reads the previous master.** `build_entity_lineage` judges tape-mix overlaps against the stored `security_master`, rebuilt after the lineage; a new acquired line is information only from the following run.
+- **Tape-mix flag reads the previous master.** The identity build judges tape-mix overlaps against the stored `universe_cusip`, rebuilt after the lineage; a new acquired line is information only from the following run.
 
 ## Governance cube — potential leadership features (deferred)
 

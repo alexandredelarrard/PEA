@@ -68,8 +68,9 @@ def pit_fields(
         df_shares[ticker] = df_shares[ticker].where(canonical_source_support(names, pd.Series(index, index=index), inputs.predecessors))
     if unknown:
         logger.warning("PIT share units unsupported for %s; source observations remain unchanged", ", ".join(unknown))
-    df_shares = df_shares.where(df_close.notna())
-    df_cap = df_quote * df_shares * df_scale
+    # The vendor class coefficient puts the count in canonical-class equivalents (BRK-B, V), so mcap = close x count.
+    df_shares = df_shares.where(df_close.notna()) * df_scale
+    df_cap = df_quote * df_shares
 
     # Saved F is 1 on each ticker's first bar; consumers use only its ratios, which this leaves unchanged.
     df_basis = df_basis / df_basis.where(df_close.notna()).bfill().iloc[0]

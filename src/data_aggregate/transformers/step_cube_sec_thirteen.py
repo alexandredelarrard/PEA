@@ -147,13 +147,13 @@ class StepCubeSecThirteen(Step):
         return df_panel.reindex(columns=saved_columns)
 
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until=resources.frames.trading_index.max())
+        packets = thirteen_inputs.iter_filing_vintages(self._store, until=resources.frames.trading_index.max(), universe=resources.frames.universe)
         cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
 
         # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        # `sec13f_hr` rows keep the ticker stored at extraction (no tags).
+        # `sec13f_hr` rows keep the ticker stored at extraction (no tags); amended books arrive whole.
         with closing(clean_public_batches(packets, None, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:

@@ -204,6 +204,21 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     assert history is not None
     actual = list(books.iter_institutional_books(*history))
 
+    # The universe-scoped read (universe positions + whole amended books) replays the same books.
+    scoped = inputs.iter_filing_vintages(sqlite_store, grid.max(), universe=universe)
+    assert scoped is not None
+    with closing(holdings_clean.clean_public_batches(scoped, None, universe, close, None)) as batches:
+        scoped_history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
+    assert scoped_history is not None
+    for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(
+        actual, books.iter_institutional_books(*scoped_history), strict=True
+    ):
+        assert day == scoped_day
+        pd.testing.assert_frame_equal(df_compact.sort_index(), df_scoped.sort_index())
+        pd.testing.assert_frame_equal(
+            states.sort_values(["cik", "period"]).reset_index(drop=True), scoped_states.sort_values(["cik", "period"]).reset_index(drop=True)
+        )
+
     assert [day for day, _, _ in actual] == [day for day, _, _ in expected]
     for (_, df_compact, states), (_, raw_books, expected_states) in zip(actual, expected, strict=True):
         expected_compact = books.compact_institutional_books(raw_books)
@@ -262,6 +277,42 @@ def test_compact_history_keeps_global_floor_stale_days_and_empty_replacements(sq
     )
 
 
+def test_universe_read_keeps_every_marker_universe_rows_and_whole_amended_books(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [{"cusip": "111111111", "ticker": "AAA", "shares": 1.0}, {"cusip": "999999999", "ticker": "OUT", "shares": 2.0}]
+    payload = pd.concat(
+        [
+            _version("0000000001", "2024-03-31", "single", "2024-05-14", rows),
+            _version("0000000002", "2024-03-31", "amended", "2024-05-14", rows),
+            _version("0000000002", "2024-03-31", "addition", "2024-06-14", rows[1:], "additions"),
+            _version("0000000003", "2024-03-31", "off-universe", "2024-05-14", rows[1:]),
+        ],
+        ignore_index=True,
+    )
+    sqlite_store.save(Tables.sec13f_hr, payload)
+    original = sqlite_store.load
+    keyed: list[dict[str, Any]] = []
+
+    def capture(table: Any, *args: Any, **kwargs: Any) -> Any:
+        keyed.append(kwargs["where"])
+        return original(table, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "load", capture)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-06-30"), universe=("AAA",))
+    assert packets is not None
+    with closing(packets):
+        result = list(packets)
+    filings = pd.concat([packet[0] for packet in result], ignore_index=True)
+    holdings = pd.concat([packet[1] for packet in result], ignore_index=True)
+
+    read = sorted(zip(holdings.accession_number, holdings.cusip, strict=True))
+    assert sorted(filings.accession_number) == ["addition", "amended", "off-universe", "single"]
+    assert read == [("addition", "999999999"), ("amended", "111111111"), ("amended", "999999999"), ("single", "111111111")]
+    assert len(keyed) == 1 and keyed[0]["accession_number"] == ["addition", "amended"]
+    print(
+        "SANITY: the universe read keeps all 4 markers, drops the 2 off-universe rows of single books and reads the amended book whole in one keyed load."
+    )
+
+
 def test_unmapped_positions_still_establish_copied_majority(sqlite_store: Any) -> None:
     original = [{"cusip": f"{number:09d}", "shares": float(number), "value_usd": float(10 * number)} for number in range(1, 7)]
     amendment = [{**row, "shares": 20.0, "value_usd": 200.0} if row["cusip"] == "000000001" else row for row in original[:5]]
@@ -308,9 +359,7 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
-        batches = holdings_clean.clean_public_batches(
-            packets, None, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None
-        )
+        batches = holdings_clean.clean_public_batches(packets, None, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None)
         with closing(batches):
             history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
     assert history is not None
@@ -427,5 +476,5 @@ def test_compact_books_refuse_two_rows_of_one_manager_and_company() -> None:
     with pytest.raises(ValueError, match="duplicate manager x company"):
         books.compact_institutional_books(rows)
     one = books.compact_institutional_books(rows.iloc[1:])
-    assert one["shares"].tolist() == [100.0] and one["_cusips"].tolist() == [frozenset({"084670702"})]
+    assert one["shares"].tolist() == [100.0] and one["_cusips"].tolist() == ["084670702"]
     print("SANITY: a pre-U-67 BRK-A + BRK-B pair is refused; one company row passes through as stored with its CUSIP identity.")

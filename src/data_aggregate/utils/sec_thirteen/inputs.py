@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import closing
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 def _filing_layout(
-    store: DataStore, table: Table, until: object, ciks: Sequence[str] | None
+    store: DataStore, table: Table, until: object, ciks: Sequence[str] | None, universe: Sequence[str] | None
 ) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any]] | None:
-    """Validate the source layout and build its projected public-prefix query."""
+    """Validate the source layout and build its projected public-prefix query: whole books, or with `universe`
+    every completion marker OR'd with the positions stored under a universe ticker."""
     actual = store.columns(table)
     manifests = (
         "accession_number",
@@ -52,9 +53,11 @@ def _filing_layout(
     if not set(manifests) <= set(actual):
         logger.warning("%s has no completed accession schema; replay original sources before building PIT features.", table.name)
         return None
-    where: dict[str, Any] = {"parse_status": ["complete", "position"]}
-    if ciks is not None:
-        where["cik"] = sorted({pad_cik(cik) for cik in ciks})
+    scope: dict[str, Any] = {} if ciks is None else {"cik": sorted({pad_cik(cik) for cik in ciks})}
+    where: dict[str, Any] | list[dict[str, Any]] = {"parse_status": ["complete", "position"], **scope}
+    if universe is not None:
+        markers = {"parse_status": "complete", "cusip": cast(tuple[str, str], table.empty_marker)[1], **scope}
+        where = [markers, {"parse_status": "position", "ticker": sorted(set(universe)), **scope}]
     query = {
         "columns": list(dict.fromkeys((*manifests, *positions))),
         "where": where,
@@ -80,14 +83,17 @@ def iter_filing_vintages(
     until: object,
     ciks: Sequence[str] | None = None,
     *,
+    universe: Sequence[str] | None = None,
     table: Table = Tables.sec13f_hr,
     chunksize: int = 500_000,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]] | None:
-    """Open one projected source stream of many complete CIK-quarter groups."""
+    """Open one projected source stream of many complete CIK-quarter groups. With `universe`, a single-version book
+    carries only its universe positions (the extraction writes positions and marker atomically, so it is complete)
+    and an amended book carries all its positions, so the resolver's stored-row count check still holds."""
     if not isinstance(chunksize, int) or isinstance(chunksize, bool) or chunksize <= 0:
         raise ValueError("13F chunksize must be a positive integer")
 
-    layout = _filing_layout(store, table, until, ciks)
+    layout = _filing_layout(store, table, until, ciks, universe)
     if layout is None:
         return None
     manifest_columns, position_columns, query = layout
@@ -100,8 +106,35 @@ def _iter_filing_packets(
     """Partition verified markers and positions while owning the source cursor."""
     with closing(store.iter_load(table, chunksize=chunksize, order_by=("cik", "period", "accession_number"), **query)) as stream:
         for df_packet in _iter_whole_quarters(stream):
+            df_packet = _complete_amended_books(store, table, query, df_packet)
             yield clean_filing_dates(*_partition_packet(df_packet, table, manifest_columns, position_columns))
             del df_packet
+
+
+def _complete_amended_books(store: DataStore, table: Table, query: dict[str, Any], df_packet: pd.DataFrame) -> pd.DataFrame:
+    """On a universe-scoped (OR) read, replace the positions of every amended book (any book that is not exactly one
+    complete original/restatement) by all its stored positions: one keyed read per batch, index-backed on `cik`."""
+    if not isinstance(query["where"], list):
+        return df_packet
+
+    # Amended books from the batch's completion markers (the read's only complete rows); whole quarters never span batches.
+    df_markers = df_packet.loc[df_packet["parse_status"].eq("complete")]
+    versions = df_markers.groupby(["cik", "period"])["accession_number"].transform("size")
+    single = versions.eq(1) & df_markers["amendment_type"].isin(["original", "restatement"])
+    df_amended = df_markers.loc[~single]
+    if df_amended.empty:
+        return df_packet
+
+    # Every stored position of those accessions replaces their universe slice.
+    where = {
+        "cik": sorted(set(df_amended["cik"])),
+        "period": sorted(set(df_amended["period"])),
+        "accession_number": sorted(df_amended["accession_number"]),
+        "parse_status": "position",
+    }
+    df_full = store.load(table, columns=query["columns"], where=where, optional=True, markers=True)
+    amended_positions = df_packet["accession_number"].isin(set(df_amended["accession_number"])) & df_packet["parse_status"].eq("position")
+    return pd.concat([df_packet.loc[~amended_positions], df_full], ignore_index=True)
 
 
 def _iter_whole_quarters(stream: Iterator[pd.DataFrame]) -> Generator[pd.DataFrame]:

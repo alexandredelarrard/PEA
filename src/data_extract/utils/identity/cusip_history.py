@@ -526,7 +526,8 @@ def save_ftd_lines(context: Context, rows: pd.DataFrame, periods: Sequence[str])
             context.store,
             {Tables.sec_fails_to_deliver_security: payload, Tables.sec_fails_to_deliver: retained},
             {Tables.sec_fails_to_deliver_security: {"period": period}, Tables.sec_fails_to_deliver: {"period": period}},
-            expected_source={Tables.sec_fails_to_deliver: expected},
+            # an absent table (first build) holds no source to guard
+            expected_source={Tables.sec_fails_to_deliver: expected} if previous is not None else None,
         )
         written += counts[Tables.sec_fails_to_deliver_security]
     return written

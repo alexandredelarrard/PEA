@@ -73,7 +73,8 @@ def load_tape_cohorts(store: DataStore, queries: dict[Table, Where | None]) -> d
     """Load each complete projected candidate cohort once on the guarded store."""
     cohorts = {}
     for table, where in queries.items():
-        columns = store.columns(table)
+        # an absent table (first build) is an empty cohort with its declared key and read columns
+        columns = store.columns(table) or list(dict.fromkeys([*table.pk, *table.read_columns]))
         df_rows = store.load(table, columns=columns, where=where, markers=True, optional=True)
         cohorts[table] = df_rows if df_rows is not None else pd.DataFrame(columns=columns)
     return cohorts

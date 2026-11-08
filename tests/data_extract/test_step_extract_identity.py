@@ -10,7 +10,6 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from click.testing import CliRunner
 
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_identity as module
@@ -26,8 +25,11 @@ from tests.support.universe import seed_universe, universe_of
 
 #: an empty published lineage, as the stubbed resolver inputs carry
 _NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
+#: a stored lineage: the daily flow (no cold start)
+_STORED_LINEAGE = pd.DataFrame({"canonical_ticker": ["AAA"], "cik": ["0000000001"], "role": ["cik_window"]})
 
 FLOW = (
+    "run_cold_start",
     "run_capture_evidence",
     "run_company_anchor",
     "run_cik_history",
@@ -96,7 +98,7 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
     inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     monkeypatch.setattr(module, "identity_inputs", mark("refresh", inputs))
     monkeypatch.setattr(module, "recheck_tickers", mark("propagate", []))
-    monkeypatch.setattr(module, "load_stored_lineage", lambda context: pd.DataFrame())
+    monkeypatch.setattr(module, "load_stored_lineage", lambda context: _STORED_LINEAGE)
 
 
 def test_run_is_the_flow_of_eight_named_stages(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,6 +144,53 @@ def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch
     print("  OK: the captures land before the builders read their evidence, and propagation runs on the rebuilt tables")
 
 
+@pytest.mark.parametrize("stored", [None, _NO_LINEAGE, _STORED_LINEAGE])
+def test_the_cold_start_builds_a_lineage_only_when_none_is_stored(monkeypatch: pytest.MonkeyPatch, stored: pd.DataFrame | None) -> None:
+    """`run_cold_start` builds and saves the lineage when `universe_cik_symbol` is absent or empty, and does nothing otherwise."""
+    order: list[str] = []
+    _stub_operations(monkeypatch, order)
+    monkeypatch.setattr(module, "load_stored_lineage", lambda context: stored)
+    step = StepExtractIdentity(_context(), _config())  # type: ignore[arg-type]
+
+    step.run_cold_start()
+
+    cold = stored is None or stored.empty
+    assert order == (
+        ["dei_periods", "dei", "ftd", "scan", "tenure", "anchor", "cik_history", "symbols", "cusips", "lifecycle", "publish"] if cold else []
+    ), order
+    state = "absent" if stored is None else "empty" if stored.empty else "stored"
+    print(f"\nSANITY: {state} lineage -> run_cold_start ran {' -> '.join(order) or 'nothing'}")
+
+
+def test_the_cold_start_saves_the_lineage_before_the_daily_ftd_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run()` on a cold store: the cold pass builds and publishes the lineage before the daily capture reads its FTD scope."""
+    order: list[str] = []
+    _stub_operations(monkeypatch, order)
+    monkeypatch.setattr(module, "load_stored_lineage", lambda context: None)
+    step = StepExtractIdentity(_context(), _config())  # type: ignore[arg-type]
+
+    step.run()
+
+    cold = ["dei_periods", "dei", "ftd", "scan", "tenure", "anchor", "cik_history", "symbols", "cusips", "lifecycle", "publish"]
+    daily = [
+        "dei_periods",
+        "dei",
+        "ftd",
+        "scan",
+        "tenure",
+        "anchor",
+        "cik_history",
+        "symbols",
+        "cusips",
+        "lifecycle",
+        "publish",
+        "refresh",
+        "propagate",
+    ]
+    assert order == cold + daily, order
+    print("\nSANITY: cold pass " + " -> ".join(cold) + "; then the daily flow")
+
+
 @pytest.mark.parametrize("boom", ["ftd", "symbols", "cusips", "propagate"])
 def test_a_failing_stage_raises_from_its_own_method_only(monkeypatch: pytest.MonkeyPatch, boom: str) -> None:
     owner = {"ftd": "run_capture_evidence", "symbols": "run_symbol_history", "cusips": "run_cusip_history", "propagate": "run_propagate"}
@@ -181,9 +230,9 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
     print("  --full reaches the capture; -t, --full, --dry-run and --as-of reach the propagation")
 
 
-def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """D-15: `identity` (no lineage: the FTD capture is a no-op) -> `identity --only capture-evidence -F` -> `--only publish`
-    (`--only cusip-history` alone computes from the stored lineage and saves nothing)."""
+def test_a_cold_start_fills_universe_cusip_in_one_run(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """D-15: one `identity` run on a cold store saves the lineage first (`run_cold_start`), so its FTD capture reads the
+    in-scope line and the publish saves `universe_cusip`."""
     tables = [
         Tables.universe_cik_symbol,
         Tables.universe_cusip,
@@ -208,13 +257,10 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", activity) or activity)
 
     def symbol_history(self: StepExtractIdentity) -> SimpleNamespace:
-        sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
         self._symbols = SimpleNamespace(rows=_scope_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)), blocked=pd.DataFrame())  # type: ignore[assignment]
         return self._symbols  # type: ignore[return-value]
 
     monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbol_history)
-    publish = StepExtractIdentity.run_publish
-    monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: None)
     lines_seen: list[int] = []
     lineages: list[pd.DataFrame] = []
     prepare, view = module.prepare_observations, module.lineage_view
@@ -223,29 +269,16 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     stub_propagation(monkeypatch, module)
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
 
-    StepExtractIdentity(context, config).run()  # type: ignore[arg-type]
-    assert read == [] and lines_seen == [], "without a lineage the FTD capture reads nothing and the CUSIP stage sees no line"
+    step = StepExtractIdentity(context, config)  # type: ignore[arg-type]
+    step.run()
 
-    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-evidence", "-F"]).exit_code == 0
     stored = sqlite_store.load(Tables.sec_fails_to_deliver_security)
-    assert stored["cusip"].tolist() == ["000111AAA"] and set(read) == {"cnsfails201501b.zip"}
-
-    result = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "cusip-history"])
-    assert result.exit_code == 0, result.output
-    lineage = lineages[-1]
-    assert lines_seen == [1] and set(lineage["company_id"]) == {"E0000000777"}
-    assert pd.api.types.is_datetime64_any_dtype(lineage["valid_from"]), "a lone CUSIP stage reads the stored lineage with dates parsed"
-    assert sqlite_store.load(Tables.universe_cusip, optional=True) is None, "the CUSIP stage computes only; run_publish saves"
-
-    monkeypatch.setattr(StepExtractIdentity, "run_publish", publish)
-    result = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "publish"])
-    assert result.exit_code == 0, result.output
     master = sqlite_store.load(Tables.universe_cusip)
+    assert set(read) == {"cnsfails201501b.zip"} and stored["cusip"].tolist() == ["000111AAA"], (read, stored)
+    assert lines_seen == [1] and set(lineages[-1]["company_id"]) == {"E0000000777"}
     assert master[["cusip", "canonical_company", "lineage_role"]].values.tolist() == [["000111AAA", "ABC", "canonical_current"]], master
+    assert step._first_build, "the daily publish after a cold start keeps the first build: propagation re-checks every ticker"
 
-    print("\n=== SANITY CHECK: D-15 cold start ===")
-    print("  identity: lineage built, FTD capture read 0 zip(s), the CUSIP stage saw no line (table left unchanged)")
-    print(f"  identity --only capture-evidence -F: read {read}, stored {stored['cusip'].tolist()} (ZZZ out of scope)")
-    print(f"  identity --only cusip-history: built from the stored lineage ({len(lineage)} row(s)) and 1 FTD line, saved nothing")
-    print(f"  identity --only publish: saved {master['cusip'].tolist()} canonical for ABC (company_id {master['company_id'].tolist()})")
-    print("  OK: the documented three-command sequence fills universe_cusip on a cold store")
+    print("\n=== SANITY CHECK: D-15 cold start in one run ===")
+    print(f"  run_cold_start saved the lineage; the daily capture read {sorted(set(read))}, stored {stored['cusip'].tolist()} (ZZZ out of scope)")
+    print(f"  publish saved {master['cusip'].tolist()} canonical for ABC (company_id {master['company_id'].tolist()})")

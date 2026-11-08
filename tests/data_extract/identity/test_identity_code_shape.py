@@ -22,6 +22,7 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml"
 STEP_MODULE = "src.data_extract.transformers.step_extract_identity"
 STEP_CLASS = "StepExtractIdentity"
 FLOW = (
+    "run_cold_start",
     "run_capture_evidence",
     "run_company_anchor",
     "run_cik_history",

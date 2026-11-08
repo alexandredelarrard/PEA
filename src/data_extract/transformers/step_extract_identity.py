@@ -445,7 +445,8 @@ class StepExtractIdentity(Step):
 
         # post-process: the CUSIP lines carry their company's id; the identity columns that changed; a first build (PD-13)
         published = cusip_company_ids(lines, symbols.rows)
-        self._first_build = stored_lineage is None or stored_lineage.empty
+        if stored_lineage is None or stored_lineage.empty:
+            self._first_build = True  # kept through the daily publish that follows a cold start
         changed = changed_identity(lifecycle.rows, stored_tickers)
 
         # save each table unless unchanged
@@ -493,9 +494,29 @@ class StepExtractIdentity(Step):
         log_propagation(self._context, changed, result, dry_run)
         return result
 
-    def run(self) -> None:
-        """The identity flow (REQ-009): each stage by name, in order."""
+    def run_cold_start(self) -> int:
+        """Nothing once a lineage is stored (the daily run). On a cold start the FTD capture has no scope, as it reads
+        `universe_cik_symbol`: the build stages and the publish run once without FTD lines, so the daily stages that
+        follow capture them and build `universe_cusip` in the same run (this pass's item block is superseded by theirs).
+        Returns the rows written."""
+        # load the stored lineage: a daily run has one
+        stored = load_stored_lineage(self._context)
+        if stored is not None and not stored.empty:
+            return 0
 
+        # compute and publish the first lineage; propagation then re-checks every ticker
+        self.run_capture_evidence()
+        self.run_company_anchor()
+        self.run_cik_history()
+        self.run_symbol_history()
+        self.run_cusip_history()
+        self.run_lifecycle()
+        return self.run_publish()
+
+    def run(self) -> None:
+        """The identity flow (REQ-009): each stage by name, in order; the cold start does nothing on a daily run."""
+
+        self.run_cold_start()
         self.run_capture_evidence()
         self.run_company_anchor()
         self.run_cik_history()

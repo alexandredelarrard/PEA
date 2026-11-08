@@ -113,6 +113,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
+    # a stored lineage: the daily identity flow, no cold start
+    monkeypatch.setattr(identity_module, "load_stored_lineage", lambda context: pd.DataFrame({"cik": ["0000000001"]}))
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)

@@ -1396,8 +1396,8 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
-    def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
-        return compute_institutional_feature_history(snapshots, min_prior_holders=0, **kw)
+    def arithmetic(*args: Any, **kw: Any) -> pd.DataFrame:
+        return compute_institutional_feature_history(*args, min_prior_holders=0, **kw)
 
     monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
     frames = PriceFrames(
@@ -1437,8 +1437,8 @@ def ordinary_step(
     step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
-    def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
-        return compute_institutional_feature_history(snapshots, min_prior_holders=0, **kw)
+    def arithmetic(*args: Any, **kw: Any) -> pd.DataFrame:
+        return compute_institutional_feature_history(*args, min_prior_holders=0, **kw)
 
     monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
     frames = PriceFrames(
@@ -1456,7 +1456,9 @@ def normal_resources(step: StepCubeSecThirteen, frames: PriceFrames) -> SecThirt
     cusip_map = step._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"])
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(replace(frames, security_basis=basis), CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": cohort, "topk": cohort})
+    return SecThirteenResources(
+        replace(frames, security_basis=basis), CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": cohort, "topk": cohort}
+    )
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:

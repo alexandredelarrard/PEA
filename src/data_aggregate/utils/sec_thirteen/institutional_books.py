@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _history_floor
 from src.utils.institutional_vintages import full_13f_report, prepare_book_vintages, resolve_prepared_books
 
 logger = logging.getLogger(__name__)
@@ -168,31 +166,3 @@ def prepare_institutional_book_history(
         len(df_states),
     )
     return df_compact, df_states
-
-
-def iter_institutional_books(df_compact: pd.DataFrame, df_states: pd.DataFrame) -> Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]]:
-    """Replay compact replacements against the existing global active-quarter floor."""
-    cache: dict[tuple[str, pd.Timestamp], int] = {}
-    active: Any = pd.NaT
-    if df_states.empty:
-        return
-
-    publications = df_states.groupby("_day", sort=True).indices
-    days = pd.DatetimeIndex(df_states["_day"].unique()).sort_values()
-    for day in days:
-        df_events = df_states.iloc[publications[day]]
-        floor = _history_floor(active, 1)
-        for event in df_events.loc[df_events.period.ge(floor)].itertuples():
-            cache[(cast(str, event.cik), cast(pd.Timestamp, event.period))] = cast(int, event.Index)
-        df_current = df_states.iloc[list(cache.values())]
-        known = df_current.loc[df_current.book_known, "period"]
-        if not known.empty:
-            active = known.max()
-        floor = _history_floor(active, 1)
-        cache = {key: index for key, index in cache.items() if key[1] >= floor}
-        if not cache:
-            continue
-        df_current = df_states.iloc[list(cache.values())]
-        bounds = df_current[["_start", "_stop"]].to_numpy(dtype=np.intp)
-        indices = np.concatenate([np.arange(start, stop, dtype=np.intp) for start, stop in bounds])
-        yield pd.Timestamp(day), df_compact.iloc[indices], df_current.drop(columns=["_day", "_start", "_stop"]).reset_index(drop=True)

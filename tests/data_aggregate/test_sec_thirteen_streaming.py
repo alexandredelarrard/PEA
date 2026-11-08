@@ -15,9 +15,11 @@ from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_store.schema import Tables
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
+from tests.data_aggregate.sec_thirteen_legacy_reference import iter_snapshot_books, snapshot_feature_history
 
 
 def _payload() -> pd.DataFrame:
@@ -202,7 +204,17 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     with closing(holdings_clean.clean_public_batches(stream, None, universe, close, None)) as batches:
         history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
-    actual = list(books.iter_institutional_books(*history))
+    actual = list(iter_snapshot_books(*history))
+
+    # The production engine on the compact versions equals the snapshot engine on their daily replay.
+    features = compute_institutional_feature_history(*history, df_basis=None, min_prior_holders=0)
+    expected_features = snapshot_feature_history(iter(actual), df_basis=None, min_prior_holders=0)
+    pd.testing.assert_frame_equal(
+        features.sort_values(["as_of", "ticker"]).reset_index(drop=True),
+        expected_features.sort_values(["as_of", "ticker"]).reset_index(drop=True).astype({"ticker": features.ticker.dtype}),
+        check_exact=False,
+        rtol=1e-9,
+    )
 
     # The universe-scoped read (universe positions + whole amended books) replays the same books.
     scoped = inputs.iter_filing_vintages(sqlite_store, grid.max(), universe=universe)
@@ -210,9 +222,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     with closing(holdings_clean.clean_public_batches(scoped, None, universe, close, None)) as batches:
         scoped_history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert scoped_history is not None
-    for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(
-        actual, books.iter_institutional_books(*scoped_history), strict=True
-    ):
+    for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(actual, iter_snapshot_books(*scoped_history), strict=True):
         assert day == scoped_day
         pd.testing.assert_frame_equal(df_compact.sort_index(), df_scoped.sort_index())
         pd.testing.assert_frame_equal(

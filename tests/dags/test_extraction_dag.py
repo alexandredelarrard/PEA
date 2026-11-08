@@ -108,6 +108,8 @@ IDENTITY_CONSUMERS = {
     *ZIP_INGESTS,
     "insider_edgar",
     "short_interest",
+    "thirteen_f",
+    "extract_earnings_calls",
     "fundamentals",
     "fundamentals_employees",
     "def14a",
@@ -121,16 +123,11 @@ IDENTITY_CONSUMERS = {
 DERIVED_PARENTS = {
     "sec_8k_votes": {"sec_8k_items", "def14a"},
     "fundamentals_sharadar": {"fundamentals"},
+    "thirteen_f_backfill": {"thirteen_f"},
+    "superinvestors": {"thirteen_f"},
+    "thirteen_f_managers": {"superinvestors"},
 }
-IDENTITY_INDEPENDENT = {
-    "thirteen_f",
-    "superinvestors",
-    "thirteen_f_managers",
-    "macro",
-    "earnings_surprises",
-    "thirteen_f_backfill",
-    "extract_earnings_calls",
-}
+IDENTITY_INDEPENDENT = {"macro", "earnings_surprises"}
 
 
 class _StubTask:

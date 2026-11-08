@@ -24,7 +24,8 @@ has finished, failed or not. The aggregation trigger runs only when `identity_ch
 hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `universe_tickers`
 differs from `configs/universe.yml`. Identity stage: zips_download -> identity
 (captures, symbol_tenure + universe_cik_symbol + universe_cusip, propagation; offline) -> every task that reads
-the lineage, the two zip ingests included (price_history waits for identity: it reads the master's current
+the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_cusip`, and the backfill, superinvestors and
+manager books follow it) and the earnings calls included (price_history waits for identity: it reads the master's current
 secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
 stored master. edgar_index refreshes the EDGAR filing index once after identity; the six EDGAR document walks
@@ -198,6 +199,8 @@ identity_consumers = [
     zips_ingest_insider,
     zips_ingest_datasets,
     short_interest,
+    thirteen_f,  # tags universe CUSIPs by `universe_cusip`; the backfill, superinvestors and manager books follow it
+    extract_earnings_calls,  # resolves each call's symbol through the published lineage
     fundamentals,
     fundamentals_employees,
     def14a,

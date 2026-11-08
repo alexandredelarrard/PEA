@@ -19,17 +19,13 @@ build_cube:
       cube_part_governance: null
       cube_part_institutionals: null
       cube_part_sec_thirteen: null
-      # To restrict a part, replace null with a block list, for example:
-      # cube_part_fundamentals:
-      #   - f_earnings_yield
-      #   - f_ocf_yield
 
   betas:                       # rolling multi-factor loadings epsilon is residualized on
-    window: 126                # trailing estimation window (trading days). Was 63: at that
+    window: 105                # trailing estimation window (trading days). Was 63: at that
                                # length the cross-sectional slope of the REALIZED in-window
                                # beta on the ex-ante one is only 0.43, i.e. 57% of the beta's
                                # dispersion is noise and the hedge over-shoots by that much.
-    min_obs: 80                # observations needed before a beta is emitted (scaled with window)
+    min_obs: 68                # observations needed before a beta is emitted (scaled with window)
     ridge_alpha: 1.5           # shrinkage RATIO: lambda = ridge_alpha * N, so an orthogonal
                                # factor is shrunk by 1/(1+alpha) at EVERY window length.
     ridge_alpha_market: 0.48   # market's OWN ratio: it shrinks toward 1.0 rather than 0.0 and

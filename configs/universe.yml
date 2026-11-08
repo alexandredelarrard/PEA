@@ -10,7 +10,7 @@ universe:
     FOXA: [FOX]
     GOOGL: [GOOG]
     NWSA: [NWS]
-  tickers:
+  tickers: #491
     "A": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
     "AAPL": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
     "ABBV": {sector: "Health Care", industry: "Biotechnology"}

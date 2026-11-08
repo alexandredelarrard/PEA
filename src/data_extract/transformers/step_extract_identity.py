@@ -495,6 +495,7 @@ class StepExtractIdentity(Step):
 
     def run(self) -> None:
         """The identity flow (REQ-009): each stage by name, in order."""
+
         self.run_capture_evidence()
         self.run_company_anchor()
         self.run_cik_history()

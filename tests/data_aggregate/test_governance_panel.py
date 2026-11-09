@@ -335,7 +335,7 @@ def test_governance_panel_encoding_and_empty_guard():
     idx = pd.date_range("2023-01-02", "2026-07-01", freq="B")
     peers = {t: {p: 1.0 for p in ("AAA", "BBB", "CCC", "DDD") if p != t} for t in ("AAA", "BBB", "CCC", "DDD")}
     panel, _ = build_governance_feature_panel(
-        _def14a(), peers, idx, fundamentals_history=_fundamentals(), votes=_votes(), directors=_directors(), director_comp=_director_comp()
+        _def14a(), peers, idx, fundamentals=_fundamentals(), votes=_votes(), directors=_directors(), director_comp=_director_comp()
     )
     cols = [c for c in panel.columns if c not in ("date", "ticker")]
     assert not panel.empty
@@ -432,7 +432,7 @@ def test_governance_panel_encoding_and_empty_guard():
     # vanish while every DEF 14A family still builds. Worth pinning because vote history begins
     # 2010-03, so "no votes" is not an error case -- it is fifteen years of this archive.
     no_votes, _ = build_governance_feature_panel(
-        _def14a(), peers, idx, fundamentals_history=_fundamentals(), votes=None, directors=_directors(), director_comp=_director_comp()
+        _def14a(), peers, idx, fundamentals=_fundamentals(), votes=None, directors=_directors(), director_comp=_director_comp()
     )
     nv_cols = [c for c in no_votes.columns if c not in ("date", "ticker")]
     assert "f_board_size" in nv_cols and "f_ceo_pay_ratio" in nv_cols
@@ -441,7 +441,7 @@ def test_governance_panel_encoding_and_empty_guard():
     )
     # ...and the two phase-6 children are OPTIONAL in the same way: an archive with no director
     # rows must still build every other family rather than raise.
-    no_kids, _ = build_governance_feature_panel(_def14a(), peers, idx, fundamentals_history=_fundamentals())
+    no_kids, _ = build_governance_feature_panel(_def14a(), peers, idx, fundamentals=_fundamentals())
     kid_cols = [c for c in no_kids.columns if c not in ("date", "ticker")]
     assert "f_board_size" in kid_cols and "f_board_turnover" not in kid_cols
 

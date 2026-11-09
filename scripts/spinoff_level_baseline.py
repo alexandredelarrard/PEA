@@ -6,7 +6,7 @@ fix, so every claim in the plan is checkable rather than asserted.
 
 ## The gap this measures
 
-`scripts/basis_baseline.py` put price and share count on one basis for SPLITS. It could not
+The split basis puts price and share count on one basis for SPLITS. It cannot
 do so for SPINOFFS, and the residual has a closed form:
 
     S(d)  =  PROD{ prices_splits.ratio    : date > d }
@@ -124,8 +124,7 @@ def level_factor(tickers: pd.Series, dates: pd.Series, yf_splits: pd.DataFrame, 
 
 def _digest(series: pd.Series) -> str:
     """Order-independent SHA-256 over a float series, rounded to 6 significant figures so an
-    unrelated pandas last-ulp change does not read as a basis change. Same recipe as
-    `scripts/basis_baseline.py`, so the two scripts' digests are comparable."""
+    unrelated pandas last-ulp change does not read as a basis change."""
     s = pd.to_numeric(series, errors="coerce").dropna().sort_values()
     return hashlib.sha256(",".join(f"{v:.6g}" for v in s).encode()).hexdigest()[:16]
 

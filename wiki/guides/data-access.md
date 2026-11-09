@@ -127,7 +127,7 @@ The source grain, not the destination primary key alone, determines the correct 
 5. Do not forward-fill across a period where the source was not observable.
 6. Preserve the difference between unavailable, missing, and observed zero.
 
-The fundamentals path demonstrates the pattern: accession-grain facts retain amendments, the SEC replay emits complete filing-date snapshots, and the merged consumer history joins declared SEC fields backward without switching field ownership mid-series. See [point-in-time data](../concepts/point-in-time-data.md).
+The fundamentals path demonstrates the pattern: accession-grain facts keep original filings, the SEC replay emits complete filing-date snapshots, the Sharadar history reads only Sharadar, and the cube joins three SEC columns on the exact `(ticker, as_of)` key. See [point-in-time data](../concepts/point-in-time-data.md).
 
 ## Incremental cube parts
 

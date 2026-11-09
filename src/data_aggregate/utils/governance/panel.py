@@ -344,7 +344,7 @@ def build_governance_feature_panel(
     def14a_history: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
-    fundamentals_history: pd.DataFrame | None = None,
+    fundamentals: pd.DataFrame | None = None,
     votes: pd.DataFrame | None = None,
     exec_comp: pd.DataFrame | None = None,
     directors: pd.DataFrame | None = None,
@@ -362,7 +362,7 @@ def build_governance_feature_panel(
     legacy_hist: dict[str, pd.DataFrame] = {}
     raw: dict[str, pd.DataFrame] = {}
     if def14a_history is not None and not def14a_history.empty and "as_of" in def14a_history.columns:
-        computed = _governance_fields(def14a_history, trading_index, fundamentals_history, tally)
+        computed = _governance_fields(def14a_history, trading_index, fundamentals, tally)
         computed.update(_def14a_raw_fields(def14a_history, trading_index, tally))
         # Raw is canonical; selected encodings are additive.
         raw.update(computed)
@@ -370,7 +370,7 @@ def build_governance_feature_panel(
         legacy_hist = {k: v for k, v in computed.items() if k in _VS_HIST_LEGACY}
 
     # Executive-pay families own their child-table and return-series inputs.
-    pay_frames, pay_tally = pay_fields(def14a_history, exec_comp, fundamentals_history, close_total, peer_dict, trading_index, availability)
+    pay_frames, pay_tally = pay_fields(def14a_history, exec_comp, fundamentals, close_total, peer_dict, trading_index, availability)
     raw.update(pay_frames)
     pay_peers = {k: v for k, v in pay_frames.items() if k in PAY_PEER_FIELDS}
 

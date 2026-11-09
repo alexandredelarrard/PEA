@@ -808,7 +808,7 @@ def governance_panel(
         inputs.def14a,
         peers,
         idx,
-        fundamentals_history=fund,
+        fundamentals=fund,
         votes=inputs.votes,
         exec_comp=inputs.exec_comp,
         directors=inputs.directors,

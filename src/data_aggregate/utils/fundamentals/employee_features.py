@@ -204,7 +204,7 @@ def _employee_fields(
 
 
 def build_employee_feature_panel(
-    fundamentals_history: pd.DataFrame | None,
+    fundamentals: pd.DataFrame | None,
     employees: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
@@ -216,13 +216,13 @@ def build_employee_feature_panel(
     """Long-format workforce panel using the approved raw/self-history view contract.
     Empty when either the fundamentals history or the employee table is unavailable."""
     empty = pd.DataFrame(columns=["date", "ticker"])
-    if fundamentals_history is None or fundamentals_history.empty or "as_of" not in fundamentals_history.columns:
+    if fundamentals is None or fundamentals.empty or "as_of" not in fundamentals.columns:
         return empty
     if employees is None or employees.empty:
         return empty
 
     proxy = headcount_proxy(employees, part_time_weight)
-    fields = _employee_fields(attach_headcount(fundamentals_history, proxy), trading_index)
+    fields = _employee_fields(attach_headcount(fundamentals, proxy), trading_index)
     return build_fundamental_views(
         fields,
         peer_dict,

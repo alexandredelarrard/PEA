@@ -208,7 +208,7 @@ _REAL = [("AAPL", "2012-12-31"), ("JPM", "2012-12-31"), ("GOOGL", "2016-03-31")]
 def _real_facts(ticker: str, until: str) -> pd.DataFrame:
     path = SWEEP / f"{ticker}.parquet"
     if not path.exists():
-        pytest.skip(f"{path} not present -- run scripts/sweep_fundamentals_resolution.py")
+        pytest.skip(f"{path} not present (real `sec_fundamentals_facts` ledger, main checkout only)")
     facts = pd.read_parquet(path)
     if "prefer_structure" in facts:
         facts = facts[facts["prefer_structure"].astype(bool)]

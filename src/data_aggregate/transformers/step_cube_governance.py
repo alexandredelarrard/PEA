@@ -193,7 +193,7 @@ class StepCubeGovernance(Step):
             inputs.def14a,
             frames.peers,
             frames.trading_index,
-            fundamentals_history=fundamentals,
+            fundamentals=fundamentals,
             votes=inputs.votes,
             exec_comp=inputs.exec_comp,
             directors=inputs.directors,

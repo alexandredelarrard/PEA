@@ -197,7 +197,7 @@ class StepCubeTarget(Step):
         chars = build_characteristics(
             stock_close_total=frames.close_total,
             stock_ret=frames.ret,
-            fundamentals_history=fundamentals,
+            fundamentals=fundamentals,
             resvol_window=63,
             mcap_pit=frames.mcap_pit,
             seams=seams,

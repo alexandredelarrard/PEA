@@ -45,7 +45,7 @@ MCAP_TOLERANCE = 0.01
 #: Invariant 2's band. Tighter than invariant 1 because it compares two PRICES with no share
 #: count in between, so only vendor rounding and the as-of join separate them.
 PRICE_TOLERANCE = 0.005
-#: Invariant 3, matching `scripts/basis_baseline.py`: a >50% jump whose level returns to
+#: Invariant 3: a >50% jump whose level returns to
 #: within 10% of the pre-jump close inside 7 bars. A vintage seam is a PLATEAU, not a one-day
 #: tick -- MNST held the new basis for six bars before flipping back, so a strict next-day
 #: test finds nothing while the table is visibly corrupt.

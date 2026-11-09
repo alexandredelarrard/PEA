@@ -6,7 +6,7 @@ The repo-named DISCRETE-QUARTER frame -> the repo's TTM/instant contract (D17).
 Two rules, and they are the SEC path's, not new ones:
 
   * a DURATION field is the SUM OF FOUR DISCRETE QUARTERS -- never a carried-forward annual.
-    Fewer than four and the value is NULL, which is `periods.INSUFFICIENT_QUARTERS`. That
+    Fewer than four and the value is NULL, as on the SEC path. That
     fallback is what froze 1,622 of 26,242 consecutive `totalRevenue` pairs in the legacy
     table (6.2%; APA 100%, XOM 36%) and made `revenueGrowth` exactly 0 for three quarters in
     four. Coverage drops here on purpose.

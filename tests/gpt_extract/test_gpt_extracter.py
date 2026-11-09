@@ -17,8 +17,10 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.gpt_extract.transformers import step_gpt_extracter as step_mod
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter, with_provider
 from src.gpt_extract.utils.providers import OpenAIProvider
+from src.gpt_extract.utils.schemas_gpt import LlmTask
 from src.gpt_extract.utils.usage import UsageTracker
 from tests.gpt_extract.fakes import Answer, StubProvider, fake_context, gpt_config
 
@@ -271,16 +273,16 @@ def test_spend_estimate_treats_cached_tokens_as_a_subset():
     print(f"  1M input tokens: ${fresh.spend_estimate():.3f} fresh vs ${all_cached:.3f} fully cached -- the 10x the budget assumes. Validated.")
 
 
-def test_extract_records_usage_through_a_stub_provider(monkeypatch):
-    ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a_governance")
-    parsed = ext.extract(Answer, "some filing text", provider=StubProvider())
+def test_run_records_usage_through_a_stub_provider(monkeypatch):
+    ext = LLMExtractor(fake_context(), gpt_config(), action="def14a_governance", threads=1)
+    monkeypatch.setattr(ext, "initialize_client", lambda methode=None, key_index=None: StubProvider())
+    parsed = ext.run([LlmTask(seq=0, payload="some filing text", schema=Answer)])[0].parsed
 
     assert isinstance(parsed, Answer)
     assert ext.usage.totals["calls"] == 1
     assert ext.usage.totals["cached_input_tokens"] == 40
 
-    print("\n=== SANITY: single-shot extract ===")
+    print("\n=== SANITY: one task through LLMExtractor.run ===")
     print(f"  filled {type(parsed).__name__} and recorded {ext.usage.totals}. Validated.")
 
 

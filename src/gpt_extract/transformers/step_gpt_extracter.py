@@ -15,7 +15,7 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from threading import Lock
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -31,8 +31,6 @@ from src.gpt_extract.utils.embeddings import (
 from src.gpt_extract.utils.providers import GeminiProvider, OpenAIProvider, _Provider
 from src.gpt_extract.utils.usage import UsageTracker
 from src.utils.step import Step
-
-T = TypeVar("T", bound=BaseModel)
 
 #: Environment-variable fragments that identify a provider's key. A FRAGMENT, not an exact
 #: name, so several keys for one provider (`OPENAI_API_KEY_2`) are all found and rotated.
@@ -215,16 +213,6 @@ class GptExtracter(Step):
         )
         self._log.info("initialized client=%s model=%s key=%d/%d", methode, model, key_index + 1, max(len(keys), 1))
         return provider
-
-    # ----------------------------------------------------------------- extract --- #
-
-    def extract(self, schema: type[T], payload: str, provider: _Provider | None = None) -> T:
-        """Fill `schema` from `payload`, sent whole (the caller cuts it). The single-shot path -- no queues, no threads."""
-        provider = provider or self.initialize_client()
-        system, user = self.build_prompt(payload, schema)
-        parsed, usage = provider.parse(schema, system, user)
-        self.usage.record(usage)
-        return parsed
 
     def embed(self, texts: Sequence[str], client: Any | None = None) -> np.ndarray:
         """`embed_texts` with this run's `config.gpt.embedding` defaults applied.

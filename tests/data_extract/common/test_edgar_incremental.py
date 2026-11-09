@@ -57,11 +57,11 @@ def test_list_filings_since_filters_to_after_d(monkeypatch):
 
     # an early `since`: every 10-K (10-Q excluded by form filter)
     allf = ef.list_filings(cast(Any, None), "320193", ["10-K"], "2000-01-01")
-    assert list(allf["filing_date"].dt.strftime("%Y-%m-%d")) == ["2020-02-15", "2021-02-15", "2022-02-15"]
+    assert sorted(allf["accession_number"]) == ["0000-0", "0000-1", "0000-2"]  # filed 2020/2021/2022-02-15
 
     # incremental: since D=2021-02-15 -> only filings STRICTLY after D
     inc = ef.list_filings(cast(Any, None), "320193", ["10-K"], "2021-02-15")
-    assert list(inc["filing_date"].dt.strftime("%Y-%m-%d")) == ["2022-02-15"]
+    assert list(inc["accession_number"]) == ["0000-2"] and list(inc["primary_document"]) == ["doc2.htm"]
 
     print("\n=== SANITY CHECK: list_filings incremental `since` ===")
     print(f"  full window -> {len(allf)} 10-Ks;  since 2021-02-15 -> {len(inc)} (only 2022-02-15, strictly after D). Validated.")

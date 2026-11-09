@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from omegaconf import OmegaConf
@@ -17,7 +17,7 @@ from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payload
 from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.config import read_config
+from src.gpt_extract.utils.schemas_gpt import LlmTask
 
 
 def test_director_pay_schema_has_no_calendar_cutoff() -> None:
@@ -35,7 +35,7 @@ def test_historical_named_director_pay_reaches_the_payload() -> None:
 
 
 @pytest.mark.parametrize("section", SECTIONS, ids=lambda section: section.key)
-def test_each_section_resolves_its_own_prompt_schema_and_budget(section: Section) -> None:
+def test_each_section_resolves_its_own_prompt_and_schema(section: Section) -> None:
     class CaptureProvider:
         name, model, structured = "stub", "stub", True
         seen: tuple[type[BaseModel], str, str] | None = None
@@ -47,22 +47,19 @@ def test_each_section_resolves_its_own_prompt_schema_and_budget(section: Section
 
     config = OmegaConf.load(Path(__file__).resolve().parents[3] / "configs/gpt.yml")
     context = cast(Context, SimpleNamespace(store=None, log=logging.getLogger("section-test"), config_dir=Path(".")))
-    extractor = LLMExtractor(context, config, action=section.action)
+    extractor = LLMExtractor(context, config, action=section.action, threads=1)
     provider = CaptureProvider()
-    # The DEF 14A step cuts the stored payload at `data_extract.llm_text_budget.def14a`; the extractor itself cuts nothing.
-    budget = int(read_config("configs").data_extract.llm_text_budget.def14a)
-    extractor.extract(section.schema, ("SOURCE " * 100_000)[:budget], provider=provider)
-    assert provider.seen is not None
+    cast(Any, extractor).initialize_client = lambda methode=None, key_index=None: provider
+    payload = "SOURCE " * 10_000
+    results = extractor.run([LlmTask(seq=0, payload=payload, schema=section.schema)])
+    assert results[0].ok and provider.seen is not None
     schema, system, user = provider.seen
     assert schema is section.schema and schema is not Def14AExtract
     assert section.key.replace("_", " ") in system
     assert section.schema.__name__ in system
     assert "{_format}" not in system and "{query}" not in user
-    assert ("SOURCE " * 100_000)[:budget] in user and len(user) < budget + 5_000
-    print(
-        f"SANITY: {section.action} resolves its own focused prompt and enforced {schema.__name__}; the {budget}-character cut is the step's "
-        "(configs.yml), the extractor sends it whole; zero real calls."
-    )
+    assert payload in user and len(user) < len(payload) + 5_000
+    print(f"SANITY: {section.action} resolves its own focused prompt and enforced {schema.__name__}; the payload is sent whole; zero real calls.")
 
 
 def test_domain_payloads_keep_unrelated_tables_out(monkeypatch: pytest.MonkeyPatch) -> None:

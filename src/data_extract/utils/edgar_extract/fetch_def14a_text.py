@@ -100,14 +100,14 @@ def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScop
 
 def proxy_filings(context: Context, ticker: str, df_units: pd.DataFrame) -> dict[str, ProxyFiling]:
     """The pending proxies by accession, with their submissions primary document and report date: one listing per
-    filer CIK, from its oldest pending filing. A listing that cannot be read raises `TransientReadError`, so the
-    key's proxies are listed again; a programming error propagates."""
+    filer CIK, from 31 days before its oldest pending index date (SEC's `filingDate` can precede it). A listing that
+    cannot be read raises `TransientReadError`, so the key's proxies are listed again; a programming error propagates."""
     forms = cast(Resume, Tables.sec_def14a_text.resume).forms
     listed: list[pd.DataFrame] = []
     for cik, units in df_units.groupby(df_units["cik"].astype(str), sort=False):
         first = pd.Timestamp(units["filed"].min()).normalize()
         try:
-            listed.append(list_filings(context, cik, forms, first - pd.Timedelta(days=1)))
+            listed.append(list_filings(context, cik, forms, first - pd.Timedelta(days=32)))
         except (TransientReadError, *PROGRAMMING_ERRORS):
             raise
         except Exception as exc:  # noqa: BLE001 -- an unreadable listing is retried, never stored

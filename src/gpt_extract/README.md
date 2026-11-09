@@ -8,7 +8,7 @@ lands in — stays with the caller.
 gpt_extract/
   prompt_templates/           <action>_system_prompt.md + <action>_prompt.md
   transformers/
-    step_gpt_extracter.py     GptExtracter(Step)  — config, keys, prompts, extract(), embed()
+    step_gpt_extracter.py     GptExtracter(Step)  — config, keys, prompts, embed()
     gpt_getter.py             LLMExtractor(GptExtracter) — two queues, ordered results
   utils/
     providers.py              _Provider protocol + OpenAIProvider + GeminiProvider stub

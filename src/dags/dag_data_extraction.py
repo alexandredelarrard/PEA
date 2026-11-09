@@ -130,7 +130,7 @@ thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster boo
 edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per night, before the EDGAR walks
 fundamentals = fetch("fundamentals", pool="sec_api")
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
-fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
+fundamentals_employees = fetch("sec-employees-llm", pool="sec_api", task_id="fundamentals_employees")  # reads sec_employees_text
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 def14a = fetch("def14a", pool="sec_api")  # + LLM
 def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL

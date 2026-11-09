@@ -37,7 +37,6 @@ gpt:
     def14a_ownership: 130000
     def14a_governance: 130000
     sec8k_votes: 40000
-    employees: 60000
 
   embedding:
     model: text-embedding-3-small

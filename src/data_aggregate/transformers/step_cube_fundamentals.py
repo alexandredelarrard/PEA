@@ -250,7 +250,7 @@ class StepCubeFundamentals(Step):
             since=None if since is None else pd.Timestamp(since) - pd.DateOffset(years=_EMPLOYEE_LOOKBACK_YEARS),
         )
         if df_employees is None:
-            self._log.warning("No %s -> related features skipped (run %s).", "employee headcount", "fundamentals-employees")
+            self._log.warning("No %s -> related features skipped (run %s).", "employee headcount", "sec-employees-llm")
         return df_employees
 
     @staticmethod

@@ -46,7 +46,7 @@ REQUIRED_COMMANDS = {
     "superinvestors",
     "thirteen-f-managers",
     "fundamentals",
-    "fundamentals-employees",
+    "sec-employees-llm",
     "fundamentals-sharadar",
     "def14a",
     "def14a-edgar",

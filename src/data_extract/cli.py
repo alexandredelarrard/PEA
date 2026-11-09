@@ -380,19 +380,6 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of:
 
 
 @cli.command(
-    name="fundamentals-employees",
-    help="SEC 10-K prose -> fundamentals_employees: total, full-time and part-time counts with basis, status, filer CIK, accession "
-    "and source quotes, one row per filing date over the registrant lineage. Dates that already have a row (NULL-status rows included) "
-    "are skipped unless --full. A failed LLM call or ticker is logged and retried next run; the task exits 0.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
-    _llm_step(config_path, tickers, full).run_employees()
-
-
-@cli.command(
     name="fundamentals-history-sec",
     help="fundamentals_facts -> fundamentals_history_sec + _reason_codes, on the "
     "publication-event grain. No network. Append-only: refuses to overwrite "
@@ -668,6 +655,20 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
     _llm_step(config_path, tickers).run_8k_votes()
+
+
+@cli.command(
+    name="sec-employees-llm",
+    help="Stored sec_employees_text -> fundamentals_employees (LLM): total, full-time and part-time counts with basis, status, "
+    "filer CIK, accession and source quotes, one row per filing date. No download. Dates that already have a row (NULL-status "
+    "rows included) are skipped unless --full; dates after a filing the text walk has not stored yet wait for it. A failed LLM "
+    "call or ticker is logged and retried next run; the task exits 0.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def sec_employees_llm(config_path: str, tickers: str | None, full: bool) -> None:
+    _llm_step(config_path, tickers, full).run_employees_llm()
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")

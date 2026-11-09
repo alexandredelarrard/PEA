@@ -7,7 +7,7 @@ symbol_tenure + universe_cik_symbol + universe_cusip -> propagation) -> zip inge
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
 Sharadar -> fundamentals -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD) -> LLM (DEF 14A, 8-K votes)
 -> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step
-has run, so a missing API key fails from there on; employees stay on their own command (`fundamentals-employees`).
+has run, so a missing API key fails from there on; employees stay on their own command (`sec-employees-llm`).
 """
 
 from omegaconf import DictConfig

@@ -15,11 +15,11 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.sec_io import TransientReadError
-from src.data_extract.utils.common.workforce import merge_spans
+from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, run_edgar_fetch
-from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
-from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, employee_excerpt
+from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH, candidate_windows
+from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, stored_excerpt
 from src.data_store.schema import Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, roster_run, seed_index
@@ -62,19 +62,15 @@ class TenK:
         return ""
 
 
-def rebuild(windows: list[list[int]], pieces: list[list[Any]], limit: int) -> str:
-    """Today's greedy over the stored windows, each chosen span sliced from the stored piece that holds it."""
+def old_excerpt(text: str, limit: int) -> str:
+    """The base code's `employee_excerpt`: the same greedy over the windows of the whole document text."""
     separator = f"\n\n{_GAP}\n\n"
     chosen: list[tuple[int, int]] = []
-    for start, end in windows:
-        trial = merge_spans([*chosen, (start, end)])
+    for window in candidate_windows(text, workforce_number_spans(text)):
+        trial = merge_spans([*chosen, window])
         if sum(e - s for s, e in trial) + len(separator) * (len(trial) - 1) <= limit:
             chosen = trial
-    texts = []
-    for start, end in chosen:
-        offset, text = next((offset, text) for offset, text in pieces if offset <= start and end <= offset + len(text))
-        texts.append(text[start - offset : end - offset])
-    return separator.join(texts)
+    return separator.join(text[start:end] for start, end in chosen)
 
 
 def _accession(i: int, cik: int = 1) -> str:
@@ -107,11 +103,13 @@ def test_stored_windows_rebuild_the_old_excerpt_on_real_10k_text(tmp_path: Path,
         assert row["source_document"] == "primary" and int(row["n_chars"]) == len(filing.body) and filing._sgml is None
         assert [[s, filing.body[s : s + len(t)]] for s, t in pieces] == pieces, "every piece is the document text at its offset"
         for limit in LIMITS:
-            diffs += rebuild(windows, pieces, limit) != employee_excerpt(filing.body, limit)
+            diffs += stored_excerpt(windows, pieces, limit) != old_excerpt(filing.body, limit)
     sizes = sorted(sum(len(t) for _, t in json.loads(p)) for p in df["pieces"])
     assert diffs == 0 and len(df) == len(REAL) == 3
     print("\n=== SANITY CHECK: stored windows -> old excerpt ===")
-    print(f"  {len(df)} real 10-K documents x {len(LIMITS)} limits: {diffs} diff(s) between the greedy over stored rows and employee_excerpt;")
+    print(
+        f"  {len(df)} real 10-K documents x {len(LIMITS)} limits: {diffs} diff(s) between stored_excerpt over stored rows and the old full-text greedy;"
+    )
     print(f"  pieces chars {sizes} of documents {sorted(len(t) for t in texts)}; each filing's cached submission dropped after its read.")
 
 

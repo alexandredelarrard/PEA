@@ -1,30 +1,28 @@
-"""Source-backed SEC annual employee counts, dated by the filing's public date."""
+"""Source-backed SEC annual employee counts, dated by the filing's public date, read from `sec_employees_text`."""
 
 from __future__ import annotations
 
 import json
-import queue
 import re
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import pandas as pd
-from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.sec_io import configure, forget_sgml
+from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.resume import document_floor
 from src.data_extract.utils.common.workforce import MONTH_RE, merge_spans, workforce_number_spans
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, universe_rows
-from src.data_extract.utils.edgar_extract.fetch_employees_text import EmployeeText, candidate_windows, employee_text
+from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, universe_rows
 from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import run_date
 
@@ -45,6 +43,8 @@ FRAME_COLUMNS = [
     "measurement_period",
 ]
 _COUNT_COLUMNS = ("employees_total", "employees_full_time", "employees_part_time")
+# The `sec_employees_text` columns the worklist reads; `windows` and `pieces` are read per ticker, for its undecided filings.
+_TEXT_COLUMNS = ["ticker", "accession_number", "cik", "form", "filing_date", "period_of_report", "source_document"]
 _GAP = "[... filing gap ...]"
 _FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
 _FAILED_SHOWN = 20  # failed tickers named in the coverage log
@@ -186,17 +186,24 @@ class _Decision:
     decided: EmployeeDecision
 
 
-def employee_excerpt(text: str, limit: int, spans: Sequence[tuple[int, int]] | None = None) -> str:
-    """The walk's candidate windows of `text`, each kept in priority order while the gap-joined excerpt stays
-    within `limit` characters. `spans` are the text's `workforce_number_spans` when the caller already has them."""
-    windows = candidate_windows(text, workforce_number_spans(text) if spans is None else spans)
+def stored_excerpt(windows: Sequence[Sequence[int]], pieces: Sequence[Sequence[Any]], limit: int) -> str:
+    """The stored candidate `windows`, each kept in priority order while the gap-joined excerpt stays within `limit`
+    characters; each kept span is sliced from the stored `[offset, text]` piece that holds it."""
+    # compute: the greedy choice of windows within the limit
     separator = f"\n\n{_GAP}\n\n"
     chosen: list[tuple[int, int]] = []
-    for window in windows:
-        trial = merge_spans([*chosen, window])
-        if sum(end - start for start, end in trial) + len(separator) * (len(trial) - 1) <= limit:
+    for start, end in windows:
+        trial = merge_spans([*chosen, (start, end)])
+        if sum(stop - begin for begin, stop in trial) + len(separator) * (len(trial) - 1) <= limit:
             chosen = trial
-    return separator.join(text[start:end] for start, end in chosen)
+
+    # post-process: the text of each chosen span, from the last piece starting at or before it
+    offsets = [int(offset) for offset, _ in pieces]
+    texts = []
+    for start, end in chosen:
+        offset, text = pieces[bisect_right(offsets, start) - 1]
+        texts.append(str(text)[start - int(offset) : end - int(offset)])
+    return separator.join(texts)
 
 
 @dataclass(frozen=True)
@@ -442,102 +449,42 @@ def _task_stamp(result: LlmResult) -> FilingStamp:
     return cast(FilingStamp, result.task.meta["stamp"])
 
 
-def employee_task(
-    sequence: int,
-    ticker: str,
-    document: EmployeeText,
-    max_chars: int,
-    *,
-    filed: pd.Timestamp,
-    accession: str,
-    report_date: pd.Timestamp | None,
-    meta: dict[str, object] | None = None,
-) -> LlmTask:
-    """One LLM task for a filing's document text, within `max_chars`; needs no Filing or network.
+def employee_task(sequence: int, ticker: str, row: Any, budget: int) -> LlmTask:
+    """One LLM task for a stored `sec_employees_text` row, the filing prefix plus the excerpt within `budget` characters.
 
-    `meta` carries the caller's keys plus `report_date`, `source_text` (the excerpt sent, which the guard
-    checks quotes against) and `source_document`.
-    """
-    if not document.text.strip():
-        raise ValueError(f"{ticker} {accession}: filing text unavailable")
+    `meta` carries the row's `stamp`, `report_date`, `source_text` (the excerpt sent, which the guard checks quotes
+    against) and `source_document`."""
+    # clean: the filing stamp and the prefix from the stored filing columns
+    form = str(row.form)
+    filed = pd.Timestamp(row.filing_date)
+    report_date = None if pd.isna(row.period_of_report) else pd.Timestamp(row.period_of_report).normalize()
+    accession = str(row.accession_number)
+    stamp = FilingStamp(accession, form, str(row.cik), filed, form.upper().endswith("/A"), None, None)
     prefix = (
         f"Ticker: {ticker}\nFiscal period end: {report_date.date() if report_date is not None else 'unknown'}\n"
-        f"SEC filing date: {filed.date()}\nAccession: {accession}\nSource document: {document.source_document}\n"
+        f"SEC filing date: {filed.date()}\nAccession: {accession}\nSource document: {row.source_document}\n"
         "The following is an excerpt, not necessarily the complete 10-K:\n\n"
     )
-    if max_chars <= len(prefix):
-        raise ValueError("gpt.max_chars.employees is too small for filing metadata")
-    source_text = employee_excerpt(document.text, max_chars - len(prefix), document.spans)
+    if budget <= len(prefix):
+        raise ValueError("data_extract.llm_text_budget.employees is too small for filing metadata")
+
+    # compute: the excerpt rebuilt from the stored windows
+    source_text = stored_excerpt(json.loads(row.windows), json.loads(row.pieces), budget - len(prefix))
     return LlmTask(
         seq=sequence,
         payload=prefix + source_text,
         schema=EmployeeAnswer,
-        meta={**(meta or {}), "report_date": report_date, "source_text": source_text, "source_document": document.source_document},
+        meta={"stamp": stamp, "report_date": report_date, "source_text": source_text, "source_document": str(row.source_document)},
     )
 
 
-def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: int) -> LlmTask:
-    """Read one owned filing's employee text and package it as one LLM task carrying its stamp.
-
-    The filing's cached submission is then dropped: the stamp outlives the read, and an edgartools
-    Filing otherwise keeps every document of its submission in memory.
-    """
-    report = stamp.period_of_report
-    document = employee_text(stamp.filing)
-    forget_sgml(stamp.filing)
-    return employee_task(
-        sequence,
-        ticker,
-        document,
-        max_chars,
-        filed=stamp.filed,
-        accession=str(stamp.accession_number),
-        report_date=pd.Timestamp(report).normalize() if report is not None else None,
-        meta={"stamp": stamp},
-    )
-
-
-def _extract_answers(
-    context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp], extractors: queue.SimpleQueue[LLMExtractor]
-) -> list[LlmResult]:
-    """One LLM result per filing, in filing order; a failed call is a result with its error, not a raise.
-
-    Filings are read as the calls run, so reading the next filing overlaps the call on the previous one. The
-    extractor is borrowed from `extractors` (built on first need, so at most one per concurrent ticker worker) and
-    returned after the run; `LLMExtractor.run` resets its per-run state, so one thread at a time reuses it safely.
-    """
-    try:
-        extractor = extractors.get_nowait()
-    except queue.Empty:
-        extractor = LLMExtractor(context, config, action="employees", threads=1)
-    max_chars = int(config.gpt.max_chars.employees)
-    try:
-        results = extractor.run(_employee_task(sequence, ticker, stamp, max_chars) for sequence, stamp in enumerate(stamps))
-    finally:
-        extractors.put(extractor)
-    if len(results) != len(stamps):
-        raise RuntimeError(f"{ticker}: {len(results)} employee LLM result(s) for {len(stamps)} filing(s)")
-    return results
-
-
-def _llm_decisions(
-    context: Context, ticker: str, stamps: list[FilingStamp], extractors: queue.SimpleQueue[LLMExtractor]
-) -> tuple[list[_Decision], list[FilingStamp]]:
-    """`(decisions, failed)`: one guarded decision per answered filing, and the filings whose call failed.
-
-    A failed call (invalid JSON included) is not a property of the filing, so it gets no row and
-    is listed again next run; only a parsed answer is decided.
-    """
-    config = with_gpt_overrides(context.config, "employees", provider=EMPLOYEES_PROVIDER)
-    columns = ["as_of", *_COUNT_COLUMNS]
-    stored = context.store.load(
-        Tables.fundamentals_employees, columns=columns, where={"ticker": ticker}, until=max(stamp.filed for stamp in stamps), optional=True
-    )
-    history = pd.DataFrame(columns=columns) if stored is None else stored.loc[:, columns].copy()
-    history["as_of"] = pd.to_datetime(history["as_of"])
+def _llm_decisions(context: Context, ticker: str, results: list[LlmResult], history: pd.DataFrame) -> tuple[list[_Decision], list[FilingStamp]]:
+    """`(decisions, failed)`: one guarded decision per answered filing, and the filings whose call failed (no row, listed
+    again next run). `history` holds the ticker's stored counts (`as_of` and the count columns), extended with each new
+    decision; quote recovery reads its earlier dates."""
     decisions: list[_Decision] = []
     failed: list[FilingStamp] = []
-    for result in _extract_answers(context, config, ticker, stamps, extractors):
+    for result in results:
         stamp = _task_stamp(result)
         if not result.ok:
             context.log.warning(
@@ -638,148 +585,120 @@ def _row(ticker: str, filed: pd.Timestamp, outcome: dict) -> dict:
     }
 
 
-@dataclass(frozen=True)
-class EmployeeRun:
-    """What every ticker of one employee run shares: the listing floor `since` (None: no floor), the identity-aware
-    `scope` and the queue of employee `extractors` lent to one ticker at a time."""
+def _undecided(df_text: pd.DataFrame | None, df_done: pd.DataFrame | None, pending: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, int]:
+    """The text rows to decide: a filing date with no stored row (`df_done` None: every date) that precedes the ticker's
+    earliest filing the text walk has not stored yet; plus the number of undecided (ticker, date) pairs held back."""
+    # clean: the filing day and the amendment flag of each text row
+    df = (pd.DataFrame(columns=_TEXT_COLUMNS) if df_text is None else df_text).copy()
+    df["filed"] = pd.to_datetime(df["filing_date"]).dt.normalize()
+    df["is_amendment"] = df["form"].astype(str).str.upper().str.endswith("/A")
+    keys = pd.MultiIndex.from_arrays([df["ticker"].astype(str), df["filed"]])
 
-    since: pd.Timestamp | None
-    scope: EdgarScope
-    extractors: queue.SimpleQueue[LLMExtractor]
+    # compute: drop the decided dates, hold back every date from the ticker's first pending filing on
+    if df_done is None or df_done.empty:
+        decided = pd.Series(False, index=df.index)
+    else:
+        done = pd.MultiIndex.from_arrays([df_done["ticker"].astype(str), pd.to_datetime(df_done["as_of"]).dt.normalize()])
+        decided = pd.Series(keys.isin(done), index=df.index)
+    first_pending = {ticker: pd.Timestamp(df_units["filed"].min()).normalize() for ticker, df_units in pending.items() if not df_units.empty}
+    held = df["filed"].ge(pd.to_datetime(df["ticker"].map(first_pending)))
+    n_held = keys[(~decided & held).to_numpy()].nunique()
+    return df[~decided & ~held].reset_index(drop=True), int(n_held)
 
 
-def build_ticker_employees(context: Context, ticker: str, cik: str, *, done_dates: frozenset[pd.Timestamp], run: EmployeeRun) -> EmployeeTickerResult:
-    """Decide every annual filing whose date has no row yet, through the LLM (an extractor of `run.extractors`) and the source guard.
+def _ticker_employees(
+    ticker: str, *, context: Context, extractor: LLMExtractor, df_todo: pd.DataFrame, df_history: pd.DataFrame
+) -> EmployeeTickerResult:
+    """Decide one ticker's undecided filings through the LLM and the source guard, and save its rows; the per-ticker worker.
 
-    A listed filing whose filer the identity layer does not tie to `ticker` is skipped and counted in `scope.guard`.
-    A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing
-    cannot mark that date done; the ticker's other dates are kept.
-    """
-    scope = run.scope
-    identity = scope.identity
-    if identity is None:
-        raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
-    listed = scope.list_filings(ticker, cik, cast(Resume, Tables.fundamentals_employees.resume).forms, since=run.since, done_accessions=frozenset())
-    owned = [filing for filing in listed if _owned(context, identity, ticker, filing)]
-    scope.guard.add(len(listed) - len(owned))
-    stamps = sorted(
-        (stamp for stamp in (FilingStamp.of(filing, cik) for filing in owned) if stamp.filed.normalize() not in done_dates),
-        key=_filing_key,
+    A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing cannot mark that
+    date done; the ticker's other dates are kept."""
+    # load: the stored windows and pieces of the ticker's undecided filings
+    df_mine = df_todo[df_todo["ticker"].eq(ticker)]
+    df_text = context.store.load(
+        Tables.sec_employees_text,
+        columns=["accession_number", "windows", "pieces"],
+        where={"ticker": ticker, "accession_number": list(df_mine["accession_number"])},
     )
-    by_llm, failed = _llm_decisions(context, ticker, stamps, run.extractors) if stamps else ([], [])
+    budget = int(context.config.data_extract.llm_text_budget.employees)
+
+    # merge: one row per filing in filing order (date, original before amendment, accession)
+    df_rows = df_mine.merge(df_text, on="accession_number", how="inner").sort_values(["filed", "is_amendment", "accession_number"], kind="stable")
+    history = df_history.loc[df_history["ticker"].astype(str).eq(ticker), ["as_of", *_COUNT_COLUMNS]].reset_index(drop=True)
+    history["as_of"] = pd.to_datetime(history["as_of"])
+
+    # compute: the answers, then the guarded decisions; a failed call withholds its date
+    tasks = [employee_task(sequence, ticker, row, budget) for sequence, row in enumerate(df_rows.itertuples(index=False))]
+    results = extractor.run(tasks)
+    if len(results) != len(tasks):
+        raise RuntimeError(f"{ticker}: {len(results)} employee LLM result(s) for {len(tasks)} filing(s)")
+    by_llm, failed = _llm_decisions(context, ticker, results, history)
     withheld = {stamp.filed.normalize() for stamp in failed}
-    decisions = [decision for decision in by_llm if decision.stamp.filed.normalize() not in withheld]
-    result = _decide_ticker(context, ticker, decisions)
+    result = _decide_ticker(context, ticker, [decision for decision in by_llm if decision.stamp.filed.normalize() not in withheld])
+
+    # save: the decided dates
+    if not result.frame.empty:
+        context.store.save(Tables.fundamentals_employees, result.frame)
     return EmployeeTickerResult(result.frame, result.outcomes, tuple(str(stamp.accession_number) for stamp in failed))
 
 
-def _owned(context: Context, identity: Identity, ticker: str, filing: object) -> bool:
-    """Whether the filing's own CIK belongs to `ticker`'s entity; a filing without a CIK is skipped (warned)."""
-    actual_cik = getattr(filing, "cik", None)
-    if actual_cik and identity.owns(ticker, actual_cik):
-        return True
-    context.log.warning("%s %s: filing CIK %r is outside the issuer lineage; skipped", ticker, getattr(filing, "accession_number", "?"), actual_cik)
-    return False
-
-
-def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> dict[str, frozenset[pd.Timestamp]]:
-    """Filing dates that already have a row, counted or NULL with a status: the table alone says what is decided."""
-    stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of"], where={"ticker": tickers}, since=since, optional=True)
-    done: dict[str, set[pd.Timestamp]] = {}
-    for row in [] if stored is None else stored.itertuples(index=False):
-        done.setdefault(str(row.ticker), set()).add(pd.Timestamp(cast("str", row.as_of)).normalize())
-    return {ticker: frozenset(dates) for ticker, dates in done.items()}
-
-
-def _fetch_ticker_employees(
-    ticker: str,
-    cik: str,
-    *,
-    context: Context,
-    done: dict[str, frozenset[pd.Timestamp]],
-    run: EmployeeRun,
-) -> EmployeeTickerResult:
-    """Decide one ticker's undecided filings and save its rows; the per-ticker worker."""
-    result = build_ticker_employees(context, ticker, cik, done_dates=done.get(ticker, frozenset()), run=run)
-    if not result.frame.empty:
-        context.store.save(Tables.fundamentals_employees, result.frame)
-    return result
-
-
-def fetch_fundamentals_employees(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    *,
-    full: bool = False,
-) -> None:
-    """Decide every annual filing in the window whose date has no row; `--full` re-decides them all.
-
-    Each run lists the whole `years_history` window and skips filing dates already in
-    `fundamentals_employees`. A filing with no supported count is stored as a row with NULL components
-    and its status, so it is decided once and never sent to the LLM again. A failed LLM call fails only its own filing
-    date, which gets no row and is retried on the next run; the ticker's other dates are saved. A
-    ticker that fails otherwise saves nothing. Both are named in the coverage log; the run never raises.
-    """
-    context.ensure_edgar_identity()
-    configure(context)
-    cik_map = universe_rows(context, tickers)
-    since = run_date(None) - pd.DateOffset(years=years_history)
-
-    # get lineage and key dates
-    scope = EdgarScope(load_identity(context))
-
-    # get what has been done so far per ticker as dates
-    done = {} if full else _done_dates(context, tickers, since)
-    context.log.info("fundamentals employees: %d dates * ticker already done (skipped)", sum(map(len, done.values())))
-
-    run = EmployeeRun(since=since, scope=scope, extractors=queue.SimpleQueue())  # extractors: bounded by the worker count
-    worker = partial(_fetch_ticker_employees, context=context, done=done, run=run)
-    results = run_per_ticker(
-        cik_map,
-        worker,
-        desc="fundamentals employees",
-        log=context.log,
-        max_workers=int(context.config.data_extract.fundamentals_workers),
-    )
+def _log_run(context: Context, df_keys: pd.DataFrame, results: list[EmployeeTickerResult | None], n_held: int) -> None:
+    """The run's coverage: decided filings and rows, held-back dates, failed filings and failed tickers."""
+    # compute: the run's totals
+    tickers = df_keys["ticker"].astype(str).tolist()
     successful = [result for result in results if result is not None]
-    failed_tickers = [str(ticker) for ticker, result in zip(cik_map["ticker"], results, strict=True) if result is None]
-    failed = len(failed_tickers)
     outcomes = [outcome for result in successful for outcome in result.outcomes]
     rows = sum(len(result.frame) for result in successful)
     counted = sum(int(result.frame["status"].eq("found").sum()) for result in successful)
+    failed_filings = [
+        f"{ticker} {accession}" for ticker, result in zip(tickers, results, strict=True) if result is not None for accession in result.failed
+    ]
+    failed_tickers = [ticker for ticker, result in zip(tickers, results, strict=True) if result is None]
+
+    # log: the summary, then each list of what is listed again next run
     context.log.info(
-        "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d ambiguous or unsupported) "
-        "-> %d count row(s), %d NULL row(s); guard skipped %d filing(s) outside a filing scope for 'fundamentals_employees'",
+        "fundamentals employees: %d/%d ticker(s) decided, %d failed; %d filing(s) decided (%d ambiguous or unsupported) "
+        "-> %d count row(s), %d NULL row(s); %d date(s) held back behind a filing sec_employees_text has not stored yet",
         len(successful),
-        len(cik_map),
-        failed,
+        len(tickers),
+        len(failed_tickers),
         len(outcomes),
         sum(outcome["status"] in {"ambiguous", "unsupported"} for outcome in outcomes),
         counted,
         rows - counted,
-        scope.guard.skipped,
+        n_held,
     )
-    failed_filings = [
-        f"{ticker} {accession}"
-        for ticker, result in zip(cik_map["ticker"], results, strict=True)
-        if result is not None
-        for accession in result.failed
-    ]
-    if failed_filings:
-        more = f" (+{len(failed_filings) - _FAILED_SHOWN} more)" if len(failed_filings) > _FAILED_SHOWN else ""
-        context.log.warning(
-            "fundamentals employees: %d filing(s) not decided (LLM call failed), listed again next run: %s%s",
-            len(failed_filings),
-            ", ".join(failed_filings[:_FAILED_SHOWN]),
-            more,
-        )
-    if failed_tickers:
-        more = f" (+{failed - _FAILED_SHOWN} more)" if failed > _FAILED_SHOWN else ""
-        context.log.warning(
-            "fundamentals employees: %d/%d ticker(s) not read, listed again next run: %s%s",
-            failed,
-            len(cik_map),
-            ", ".join(failed_tickers[:_FAILED_SHOWN]),
-            more,
-        )
+    for what, names in (("filing(s) not decided (LLM call failed)", failed_filings), ("ticker(s) not decided", failed_tickers)):
+        if names:
+            more = f" (+{len(names) - _FAILED_SHOWN} more)" if len(names) > _FAILED_SHOWN else ""
+            context.log.warning(
+                "fundamentals employees: %d %s, listed again next run: %s%s", len(names), what, ", ".join(names[:_FAILED_SHOWN]), more
+            )
+
+
+def fetch_employees_llm(context: Context, tickers: list[str], years_history: int, extractor: LLMExtractor, *, full: bool = False) -> None:
+    """Decide every stored employees text in the window whose filing date has no row (a NULL row with its status when no
+    count is supported); `full` re-decides them all. Reads `sec_employees_text` (markers: no call) and the local index (no
+    SEC): a ticker's dates from its earliest filing the text walk lacks on wait. One `extractor` serves the tickers in
+    turn; a failed call or ticker is logged and listed again next run."""
+    # load: the window's text rows (no windows or pieces), the stored rows, the text walk's pending filings
+    start_date = run_date(None)
+    since = document_floor(Tables.sec_employees_text, start_date, years_history)
+    cik_map = universe_rows(context, tickers)
+    df_text = context.store.load(Tables.sec_employees_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=since, optional=True)
+    stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of", *_COUNT_COLUMNS], where={"ticker": tickers}, optional=True)
+    forms = cast(Resume, Tables.sec_employees_text.resume).forms
+    request = WorklistRequest(
+        keys=cik_map[["ticker", "cik"]], as_of=start_date, forms=forms, identity=load_identity(context), years_history=years_history
+    )
+    pending = document_worklist(context, Tables.sec_employees_text, request).units
+
+    # compute: the undecided dates, then each ticker's decisions (saved per ticker)
+    df_history = pd.DataFrame(columns=["ticker", "as_of", *_COUNT_COLUMNS]) if stored is None else stored
+    df_todo, n_held = _undecided(df_text, None if full else df_history, pending)
+    df_keys = cik_map[cik_map["ticker"].isin(df_todo["ticker"])].reset_index(drop=True)
+    worker = partial(_ticker_employees, context=context, extractor=extractor, df_todo=df_todo, df_history=df_history)
+    results = run_per_ticker(df_keys, worker, desc="fundamentals employees", log=context.log, max_workers=1, key_cols=("ticker",))
+
+    # log: the run's coverage
+    _log_run(context, df_keys, results, n_held)

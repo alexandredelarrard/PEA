@@ -33,6 +33,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
+from src.data_aggregate.utils.fundamentals.source_join import SEC_CARRIED_COLUMNS, join_sec_columns
 from src.data_aggregate.utils.price.frames import (
     PriceFrames,
     load_price_frames,
@@ -195,17 +196,23 @@ class StepCubeFundamentals(Step):
         return fields
 
     def _load_fundamentals(self, universe: tuple[str, ...], since: pd.Timestamp | None = None) -> pd.DataFrame:
-        """`sharadar_fundamentals_history` with GICS attached, loaded ONCE for five builders.
+        """`sharadar_fundamentals_history` + three `sec_` columns + GICS, loaded ONCE for five builders.
 
-        The GICS join happens HERE, after the load, and returns a new frame rather than
-        projecting the two columns out of the store: `universe_tickers` is the authority for
-        sector membership and `sharadar_fundamentals_history` has never carried it, so this is a
-        lookup, not a column the read could have asked for. Without it every sector KPI is
-        gated off (`sector_gates.row_gate` fails closed on the absent column)."""
+        The Sharadar history is the spine; `sec_fundamentals_history` joins on the exact
+        `(ticker, as_of)` key and is optional. The GICS join happens HERE, after the load:
+        `universe_tickers` is the authority for sector membership, and without it every sector
+        KPI is gated off (`sector_gates.row_gate` fails closed on the absent column)."""
         df = self._context.store.load(
             Tables.sharadar_fundamentals_history,
             optional=True,
             project=True,
+            where={"ticker": list(universe)},
+            since=since,
+        )
+        sec = self._context.store.load(
+            Tables.sec_fundamentals_history,
+            columns=["ticker", "as_of", *SEC_CARRIED_COLUMNS],
+            optional=True,
             where={"ticker": list(universe)},
             since=since,
         )
@@ -218,8 +225,17 @@ class StepCubeFundamentals(Step):
             df["ticker"].nunique(),
             f" since {pd.Timestamp(since).date()}" if since is not None else "",
         )
-        df = add_cube_time_growth(df)
-        return self._universe.attach_gics(df)
+        if sec is None:
+            self._log.warning("No %s -> the %s columns stay empty.", Tables.sec_fundamentals_history, ", ".join(SEC_CARRIED_COLUMNS))
+        joined = join_sec_columns(df, sec)
+        self._log.info(
+            "Joined %s on exact (ticker, as_of): %s matched, %s Sharadar rows without SEC, %s SEC rows without Sharadar (not added)",
+            Tables.sec_fundamentals_history,
+            joined.matched,
+            joined.sharadar_unmatched,
+            joined.sec_unmatched,
+        )
+        return self._universe.attach_gics(add_cube_time_growth(joined.frame))
 
     def _load_optional(
         self,

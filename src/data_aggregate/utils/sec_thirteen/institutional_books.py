@@ -66,32 +66,30 @@ def _single_version_events(df_single: pd.DataFrame, full_report: pd.Series, df_c
     return df_compact, df_states
 
 
-def _book_codes(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.MultiIndex, NDArray[np.intp], NDArray[np.intp]]:
-    """Number manager-quarters in first-appearance order; a position takes its quarter's code only under its own accession."""
+def _book_codes(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.MultiIndex, NDArray[np.intp], NDArray[np.bool_]]:
+    """Number manager-quarters in first-appearance order; a position belongs to its quarter only under its own accession."""
     books = pd.MultiIndex.from_frame(df_manifest[["cik", "period"]]).unique()
     codes = books.get_indexer(pd.MultiIndex.from_frame(df_manifest[["cik", "period"]]))
     holding_codes = books.get_indexer(pd.MultiIndex.from_frame(df_holdings[["cik", "period"]]))
     accession_codes = df_holdings["accession_number"].map(pd.Series(codes, index=df_manifest["accession_number"].to_numpy()))
-    holding_codes = np.where(accession_codes.to_numpy(dtype=float) == holding_codes, holding_codes, -1)
-    return books, codes, holding_codes
+    return books, codes, accession_codes.to_numpy(dtype=float) == holding_codes
 
 
 def _resolve_public_days(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[list[pd.DataFrame], list[pd.DataFrame], pd.MultiIndex]:
-    """Resolve and compact, once per public day, every manager-quarter published that day."""
-    books, codes, holding_codes = _book_codes(df_manifest, df_holdings)
-    df_events = pd.DataFrame({"_book": codes, "_day": df_manifest["public_at"].to_numpy()}).dropna().drop_duplicates()
-    df_positions = df_holdings.drop(columns=[column for column in df_holdings if column.startswith("value_basis_") or column == "filing_date"])
+    """Resolve and compact every manager-quarter at each of its public days, one resolver call per day rank."""
+    books, codes, owned = _book_codes(df_manifest, df_holdings)
+    df_events = pd.DataFrame({"_book": codes, "_day": df_manifest["public_at"].to_numpy()}).dropna().drop_duplicates().sort_values("_day")
+    df_positions = df_holdings.loc[owned, ~df_holdings.columns.str.match("value_basis_|filing_date|class_evidence")]
     frames: list[pd.DataFrame] = []
     states: list[pd.DataFrame] = []
 
-    # A quarter's book at a day depends only on its own versions, so one resolver call serves all quarters of that day;
-    # provenance columns never reach the compact amounts, so they stay out of the per-accession resolver copies.
-    for day, published in df_events.groupby("_day", sort=True)["_book"]:
-        member = np.zeros(len(books) + 1, dtype=bool)  # the last slot is the unowned code -1
-        member[published.to_numpy()] = True
-        df_book, df_state = resolve_prepared_books(df_manifest.loc[member[codes]], df_positions.loc[member[holding_codes]], day)
+    # A quarter's book at a day depends only on its own versions, so one resolver call serves the n-th public day of
+    # every quarter, each cut to its own day; provenance columns never reach the compact amounts.
+    for _, df_round in df_events.groupby(df_events.groupby("_book").cumcount(), sort=True):
+        cutoff = df_round.set_index("_book")["_day"].reindex(range(len(books))).to_numpy()
+        df_book, df_state = resolve_prepared_books(df_manifest.loc[df_manifest["public_at"].le(cutoff[codes])], df_positions, df_round["_day"].max())
         frames.append(compact_institutional_books(df_book))
-        states.append(df_state.assign(_day=day))
+        states.append(df_state.assign(_day=cutoff[books.get_indexer(pd.MultiIndex.from_frame(df_state[["cik", "period"]]))]))
     return frames, states, books
 
 

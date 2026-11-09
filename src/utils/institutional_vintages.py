@@ -201,9 +201,8 @@ def resolve_prepared_books(manifests: pd.DataFrame, holdings: pd.DataFrame, as_o
     """Resolve a public prefix from already validated publication facts."""
     cutoff = pd.Timestamp(cast(Any, as_of))
     df_manifest = manifests.loc[manifests["public_at"].le(cutoff) & manifests["parse_status"].eq("complete")].copy()
-    df_manifest["_accepted_order"] = df_manifest["_accepted_at"]
-    complete_clocks = df_manifest.groupby(["cik", "period", "filing_date"])["_accepted_order"].transform(lambda clocks: clocks.notna().all())
-    df_manifest["_accepted_order"] = df_manifest["_accepted_order"].where(complete_clocks)
+    complete_clocks = df_manifest["_accepted_at"].notna().groupby([df_manifest[key] for key in ("cik", "period", "filing_date")]).transform("all")
+    df_manifest["_accepted_order"] = df_manifest["_accepted_at"].where(complete_clocks)
     df_manifest = df_manifest.sort_values(
         ["public_at", "filing_date", "_accepted_order", "_amended", "amendment_number", "accession_number"], kind="stable", na_position="first"
     )
@@ -247,7 +246,7 @@ def _resolve_quarter(
     amounts: list[str],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Replay one report quarter, keeping effective-book and observation clocks distinct."""
-    df_book = df_holdings.iloc[:0].copy()
+    df_book = df_empty = df_holdings.iloc[:0]
     known = False
     restricted = False
     uncertain_absence = False
@@ -256,7 +255,7 @@ def _resolve_quarter(
     resolution_status = "missing_original"
 
     for version in df_versions.itertuples():
-        df_incoming = holdings_by_accession.get(version.accession_number, df_holdings.iloc[:0]).copy()
+        df_incoming = holdings_by_accession.get(version.accession_number, df_empty)
         if len(df_incoming) != int(cast(int, version.parsed_row_count)):
             raise ValueError(f"Incomplete stored 13F book: {version.accession_number}")
         if version.amendment_type in {"original", "restatement"}:
@@ -329,15 +328,16 @@ def _apply_additions(df_book: pd.DataFrame, df_incoming: pd.DataFrame, amounts: 
     df_metadata = df_joined.drop(columns=amounts).drop_duplicates("cusip", keep="last").set_index("cusip")
     common_present = df_joined["position_type"].eq("common").groupby(df_joined["cusip"]).any()
     df_metadata.loc[common_present, "position_type"] = "common"
-    df_metadata["class_evidence"] = df_joined.groupby("cusip")["class_evidence"].agg(
-        lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
-    )
     _merge_addition_evidence(df_metadata, df_joined)
     return df_metadata.join(df_numeric).reset_index().reindex(columns=df_book.columns), False, False
 
 
 def _merge_addition_evidence(df_metadata: pd.DataFrame, df_rows: pd.DataFrame) -> None:
-    """A summed amount inherits the least certain contributing source and every repair flag."""
+    """A summed amount inherits every class name, the least certain contributing source and every repair flag."""
+    if "class_evidence" in df_rows:
+        df_metadata["class_evidence"] = df_rows.groupby("cusip")["class_evidence"].agg(
+            lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
+        )
     for column, estimate in (
         ("value_basis_shares_source", "value_estimated"),
         ("value_basis_value_source", "market_estimated"),

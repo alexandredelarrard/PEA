@@ -523,5 +523,5 @@ class StepExtractIdentity(Step):
         self.run_symbol_history()
         self.run_cusip_history()
         self.run_lifecycle()
-        self.run_publish()
+        self.run_publish()      
         self.run_propagate()

@@ -14,7 +14,7 @@ model:
   models_dir: output/models    # fitted members (model_h<h>_<family>.pkl) + metadata.json, under the
                                # data store (absolute paths are used as-is)
   weight_decay:
-    enabled: true             # OFF: time-decay up-weighted recent folds
+    enabled: false             # OFF: time-decay up-weighted recent folds
     half_life_years: 4
   cv:
     n_splits: 5

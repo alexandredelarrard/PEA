@@ -29,7 +29,6 @@ from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     compute_institutional_feature_history,
 )
-from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing, save_hr_filing
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
@@ -39,6 +38,7 @@ from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import reconcile_13f_source
 from src.utils.price.levels import split_cum_product
+from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")

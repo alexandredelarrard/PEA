@@ -13,12 +13,15 @@ from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBookSnapshot
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import (
     BehaviorMarket,
-    BookSummaries,
+    comparable_pairs,
+    holding_duration,
+    join_pairs,
     level_metrics,
     prepare_level_sample,
     prepare_pair_sample,
     prepare_whole_book_sample,
     quantity_metrics,
+    summarize_books,
     whole_book_metrics,
 )
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
@@ -56,27 +59,28 @@ class SuperinvestorFeatureHistory:
 def compute_superinvestor_feature_history(
     snapshots: Sequence[PublicBookSnapshot], cohorts: Mapping[str, frozenset[str]], universe: tuple[str, ...], market: BehaviorMarket
 ) -> SuperinvestorFeatureHistory:
-    """Prepare matched endpoint facts once and reduce both masks with identical equations."""
-    rows: dict[str, list[pd.Series]] = {name: [] for name in EMISSION}
+    """Summarize every revision and join every compared pair once, then reduce both masks per event with identical equations."""
+    index = pd.Index(universe, dtype=object)
+    event_rows: list[dict[str, pd.Series]] = []
     diagnostics = []
-    summaries = BookSummaries()
-    days = []
-    for snapshot in snapshots:
-        quarter = prepare_pair_sample(snapshot, 1, summaries, market)
-        year = prepare_pair_sample(snapshot, 4, summaries, market)
-        summaries.prune_pairs()
-        level = prepare_level_sample(snapshot, universe, summaries)
+    books = dict.fromkeys(book for snapshot in snapshots for book in (*snapshot.archive.values(), *snapshot.level_books.values()))
+    table = summarize_books(list(books), index)
+    selections = [{lag: comparable_pairs(snapshot, lag) for lag in (1, 4)} for snapshot in snapshots]
+    compared = dict.fromkeys((current, prior) for selected in selections for lag in (1, 4) for _, current, prior in selected[lag])
+    pairs = join_pairs(list(compared), table)
+    for snapshot, selected in zip(snapshots, selections, strict=True):
+        durations = {cik: holding_duration(book, snapshot.archive, table) for cik, book in snapshot.level_books.items() if book.support.comparable}
+        level = prepare_level_sample(snapshot, table, durations, index)
+        quarter, year = prepare_pair_sample(selected[1], pairs, market), prepare_pair_sample(selected[4], pairs, market)
         whole_sample = prepare_whole_book_sample(quarter)
-        days.append(snapshot.day)
         for name, cohort in cohorts.items():
-            levels, coverage = level_metrics(level, cohort, universe)
-            changes = quantity_metrics(quarter, cohort, universe)
-            annual = quantity_metrics(year, cohort, universe)
-            whole, priced = whole_book_metrics(whole_sample, cohort, universe)
+            levels, coverage = level_metrics(level, cohort, index)
+            changes = quantity_metrics(quarter, cohort, index)
+            annual = quantity_metrics(year, cohort, index)
+            whole, priced = whole_book_metrics(whole_sample, cohort, index)
             metrics = {**levels, **changes, **whole, "holders_yoy": annual["breadth_chg"], "shares_chg_yoy": annual["shares_chg"]}
             prefix = f"ic_super_{name}_" if name else "ic_super_"
-            for metric, values in metrics.items():
-                rows[prefix + metric].append(values.replace([np.inf, -np.inf], np.nan))
+            event_rows.append({prefix + metric: values.replace([np.inf, -np.inf], np.nan) for metric, values in metrics.items()})
             diagnostics.append(
                 {
                     "date": snapshot.day,
@@ -90,9 +94,9 @@ def compute_superinvestor_feature_history(
                 }
             )
 
-    levels = {
-        name: pd.DataFrame(values, index=pd.DatetimeIndex(days, name="as_of"), columns=universe, dtype="float32") for name, values in rows.items()
-    }
+    days = pd.DatetimeIndex([snapshot.day for snapshot in snapshots], name="as_of")
+    series = {name: [row[name] for row in event_rows if name in row] for name in EMISSION}
+    levels = {name: pd.DataFrame(values, index=days, columns=universe, dtype="float32") for name, values in series.items()}
     return SuperinvestorFeatureHistory(levels, pd.DataFrame(diagnostics))
 
 

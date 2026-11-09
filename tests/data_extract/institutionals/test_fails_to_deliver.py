@@ -14,24 +14,17 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.bulk_cache import read_zip_text
+from src.data_extract.utils.common.security_lines import SecurityManual
 from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-from src.utils.string import run_date
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
-from tests.support.cusip_build import capture_ftd
+from tests.support.cusip_build import write_ftd_zips
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
-
-
-def download_and_capture(context: Any, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
-    """`zips-download --only ftd` then the identity step's FTD capture: cache the ZIPs, then the raw capture; returns the rows captured."""
-    ftd.download_fails_to_deliver(context, years_history=years_history, full=full, as_of=as_of)
-    cache = ftd.cache_dir(context, context.config.local.paths.fails_deliver)
-    return capture_ftd(context, cache, years_history, full=full, as_of=run_date(as_of))
 
 
 @pytest.fixture
@@ -348,9 +341,8 @@ def test_full_rebuild_refuses_when_a_stored_period_left_the_cache(sqlite_store, 
     print("  a stored period missing from the cache aborts the rebuild before any read or write")
 
 
-def test_ftd_download_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
+def test_ftd_download_first_successful_http_response_caches_the_zip_once(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
     requested: list[str] = []
 
     class _Response:
@@ -366,20 +358,14 @@ def test_ftd_download_first_successful_http_response_stores_source_period(sqlite
 
     ctx.sec_session = SimpleNamespace(get=_get)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *a, **k: ["202609a"])
-    monkeypatch.setattr(
-        ftd,
-        "read_zip_text",
-        lambda path, log=None: "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260902|000111AAA|ABC|100|ABC CORP|190.00\n",
-    )
 
-    assert download_and_capture(ctx, years_history=1) == 1
-    assert download_and_capture(ctx, years_history=1) == 0
-    stored = sqlite_store.load(Tables.sec_fails_to_deliver_security).iloc[0]
-    assert len(requested) == 1
-    assert stored["period"] == "202609a"
+    assert ftd.download_fails_to_deliver(ctx, years_history=1) == 1
+    assert ftd.download_fails_to_deliver(ctx, years_history=1) == 1
+    assert len(requested) == 1, "a cached ZIP is never downloaded again"
     assert (ftd.cache_dir(ctx, "sec_fails_to_deliver") / "cnsfails202609a.zip").is_file()
+    assert sqlite_store.row_count(Tables.sec_fails_to_deliver_security) == 0, "the download writes no table"
     print("\n=== SANITY CHECK: first successful FTD HTTP response ===")
-    print("  SEC HTTP 200 stored the source period and ZIP once; rerun skipped the stored period.")
+    print("  SEC HTTP 200 cached the period ZIP once; the rerun found it cached and sent no request; no table written.")
 
 
 def test_ftd_feature_ranks_high_fails_and_is_leak_free():
@@ -418,36 +404,7 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     )
 
 
-def test_pending_source_replacement_withdraws_only_certified_quiet_zeros(sqlite_store: Any, tmp_path: Any) -> None:
-    """A new raw archive invalidates inferred absence until reconciliation succeeds."""
-    context = _context(sqlite_store, tmp_path)
-    seeded = pd.DataFrame(
-        {
-            "ticker": ["CHECKED", "LEGACY", "POSITIVE"],
-            "date": pd.to_datetime(["2024-01-02"] * 3),
-            "period": ["202401a"] * 3,
-            "fails_quantity": [0.0, 0.0, 7.0],
-            "fails_value": [0.0, 0.0, 70.0],
-            "source_checked_at": pd.to_datetime(["2024-02-01", None, "2024-02-01"]),
-        }
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver, seeded)
-    raw = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240102|037833100|AAPL|10|APPLE INC|10\n").assign(
-        period="202401a", security_id=None, ticker=None, lineage_role=None, security_class=None
-    )
-
-    assert sm.save_ftd_lines(context, raw, ["202401a"]) == 1
-
-    stored = sqlite_store.load(Tables.sec_fails_to_deliver).set_index("ticker")
-    assert stored.loc["CHECKED", ["fails_quantity", "fails_value"]].isna().all()
-    assert stored.loc["LEGACY", ["fails_quantity", "fails_value"]].tolist() == [0.0, 0.0]
-    assert stored.loc["POSITIVE", ["fails_quantity", "fails_value"]].tolist() == [7.0, 70.0]
-    assert stored["source_checked_at"].isna().all()
-    assert ftd.fails_source_periods(sqlite_store) == ({"202401a"}, {"202401a"})
-    print("\nSANITY: pending raw replacement withdraws checked quiet zeros; legacy zeros and positive observations survive; period retries.")
-
-
-# --------------------------------------------------------------------------- Q2a: FTD raw capture
+# --------------------------------------------------------------------------- Q2a: FTD evidence of the CUSIP history
 
 _HEADER = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
 
@@ -489,35 +446,27 @@ def _scope_lineage() -> pd.DataFrame:
     return frame
 
 
-def test_ftd_download_ingests_symbols_then_the_voted_cusip6_from_cache(sqlite_store, monkeypatch, tmp_path):
+def test_ftd_evidence_reads_symbols_then_the_voted_cusip6_from_cache_and_stores_nothing(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.universe_cik_symbol, _scope_lineage())
-    raw_by_period = {
-        "201501a": _HEADER + "20150105|000111CCC|ABCWS|7|ABC CORP WT|1.0\n20150105|999999ZZZ|ZZZ|9|OTHER CO|3.0\n",
-        "201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|000111BBB|ABCPRA|5|ABC CORP PFD|25.0\n",
-    }
+    cache = write_ftd_zips(
+        tmp_path / "ftd",
+        {
+            "201501a": _HEADER + "20150105|000111CCC|ABCWS|7|ABC CORP WT|1.0\n20150105|999999ZZZ|ZZZ|9|OTHER CO|3.0\n",
+            "201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|000111BBB|ABCPRA|5|ABC CORP PFD|25.0\n",
+        },
+    )
     calls: list[str] = []
-    monkeypatch.setattr(ftd, "ftd_periods", lambda *a, **k: ["201501a", "201501b"])
-    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(raw_by_period))
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
+    read = ftd.read_zip_text
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: calls.append(path.stem.removeprefix("cnsfails")) or read(path, log=log))
+    scope = sm.ftd_scope(_scope_lineage(), {}, SecurityManual.empty())
+    assert scope.symbols == frozenset({"ABC"}) and not scope.prefixes
 
-    def read(path, log=None):
-        period = path.stem.removeprefix("cnsfails")
-        calls.append(period)
-        return raw_by_period[period]
-
-    monkeypatch.setattr(ftd, "read_zip_text", read)
-
-    saved = download_and_capture(ctx, years_history=1)
-    stored = sqlite_store.load(Tables.sec_fails_to_deliver_security).sort_values("cusip").reset_index(drop=True)
-    assert stored["cusip"].tolist() == ["000111AAA", "000111BBB", "000111CCC"], stored
-    assert saved == 3 and stored["lineage_role"].isna().all() and stored["ticker"].isna().all()
-    assert not stored.duplicated(["cusip", "date"]).any()
-    assert calls.count("201501a") == 2, "the period read before the CUSIP-6 was voted is re-read from cache"
-
-    calls.clear()
-    assert download_and_capture(ctx, years_history=1) == 0
-    assert calls == [], "a converged scope re-reads nothing"
-    print("\n=== SANITY CHECK: FTD raw in-scope capture ===")
-    print("  pass 1 keeps the lineage symbol ABC; its vote adds CUSIP-6 000111, so the earlier warrant row is re-read from cache")
-    print("  unrelated ZZZ never stored; stamp columns NULL until the master; a converged re-run reads no zip")
+    lines = sm.read_ftd_evidence(ctx, cache, scope).sort_values("cusip").reset_index(drop=True)
+    assert lines["cusip"].tolist() == ["000111AAA", "000111BBB", "000111CCC"], lines
+    assert lines.columns.tolist() == list(sm.OBSERVATION_COLUMNS)
+    assert not lines.duplicated(["cusip", "date"]).any()
+    assert calls.count("201501a") == 2 and calls.count("201501b") == 2, "both periods hold the voted CUSIP-6 000111: each is read again"
+    assert sqlite_store.row_count(Tables.sec_fails_to_deliver_security) == 0 and sqlite_store.row_count(Tables.sec_fails_to_deliver) == 0
+    print("\n=== SANITY CHECK: FTD evidence of the CUSIP history ===")
+    print("  pass 1 keeps the lineage symbol ABC; its vote adds CUSIP-6 000111, so the warrant and preferred lines are re-read from cache")
+    print(f"  {len(lines)} line(s), observation columns only; unrelated ZZZ never kept; nothing written to either FTD table")

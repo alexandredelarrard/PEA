@@ -24,7 +24,7 @@ from src.utils.cutover_continuity import load_vendor_exceptions
 from src.utils.predecessor_series import load_vendor_series
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
-from tests.support.cusip_build import derive_cusip_history, run_cusip_stage
+from tests.support.cusip_build import derive_cusip_history, ftd_texts, run_cusip_stage, write_ftd_zips
 from tests.support.universe import as_roster, seed_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -1051,11 +1051,7 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
             Tables.insider_footnotes,
         ],
     )
-    obs = STZ_OBS.assign(trade_date=sl.trade_dates(STZ_OBS["date"]), fails_quantity=1000.0)
-    sqlite_store.save(
-        Tables.sec_fails_to_deliver_security,
-        obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
-    )
+    cache = write_ftd_zips(tmp_path / "ftd", ftd_texts(STZ_OBS))
     universe = seed_universe(sqlite_store, ["STZ"], rows={"STZ": {"cik": "0000016918"}})
     finra = _finra("STZ/B", "2020-02-07", "2022-10-14").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
     sqlite_store.save(Tables.sec_short_volume_security, finra)
@@ -1067,7 +1063,7 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
         config=extract_config(),
         universe=universe,
     )
-    rows = run_cusip_stage(context, STZ)
+    rows = run_cusip_stage(context, STZ, cache)
     stzb = rows[rows["cusip"].eq("21036P207")]
     assert stzb["valid_to"].max() == pd.Timestamp("2022-10-15"), stzb
     print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of STZ/B reach the derivation: the class line runs to 2022-10-14")
@@ -1258,11 +1254,7 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
             Tables.insider_footnotes,
         ],
     )
-    obs = EG_OBS.assign(trade_date=sl.trade_dates(EG_OBS["date"]), fails_quantity=1000.0)
-    sqlite_store.save(
-        Tables.sec_fails_to_deliver_security,
-        obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
-    )
+    cache = write_ftd_zips(tmp_path / "ftd", ftd_texts(EG_OBS))
     universe = seed_universe(sqlite_store, ["EG"], rows={"EG": {"cik": "0001095073"}})
     finra = _finra("EG", "2023-07-10", "2024-06-28", freq="B").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
     sqlite_store.save(Tables.sec_short_volume_security, finra)
@@ -1274,7 +1266,7 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
         config=extract_config(),
         universe=universe,
     )
-    rows = run_cusip_stage(context, EG)
+    rows = run_cusip_stage(context, EG, cache)
     assert rows[rows["source_symbol"].eq("EG")]["valid_from"].min() == pd.Timestamp("2023-07-10")
     print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of a common symbol (EG) reach the derivation: the line starts at 2023-07-10")
 

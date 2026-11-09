@@ -20,7 +20,3 @@ import `src/data_extract/`, and a second copy would let the write side and the r
 the same human differently. `gender.py` and `validate.py` re-export them, so nothing here or in
 `votes/` had to change.
 """
-
-from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
-
-__all__ = ["prepare_def14a_sections"]

@@ -1,4 +1,4 @@
-"""Scoped reads, free replay and durable saves for the five proxy domains."""
+"""Scoped reads and durable saves for the five proxy domains."""
 
 from __future__ import annotations
 
@@ -10,9 +10,7 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.structure.def14a.def14a_schema import OwnershipExtract
-from src.data_extract.utils.structure.def14a.holders import holders_need_reconciliation
-from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers, source_for_answer
+from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
 from src.gpt_extract.utils.schemas_gpt import LlmTask
@@ -23,7 +21,6 @@ class FilingWork:
     """One walked proxy; counters belong to the saved domain, not this working copy. `payloads` holds the stored
     uncut `sec_def14a_text` payload per section (a section the proxy lacks is absent: that domain is empty)."""
 
-    filing: pd.Series
     stamp: dict[str, Any]
     saved: dict[Table, pd.DataFrame]
     parent: dict[str, Any]
@@ -97,10 +94,10 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
             "accession_number": accession,
             "as_of": pd.Timestamp(filing["filing_date"]),
             "cik": filing.get("cik"),
-            "period": filing.get("period_of_report"),
+            "period": filing.get("period"),
             "company_name": filing.get("company_name"),
         }
-        work = FilingWork(filing, stamp, saved, parent, attempts)
+        work = FilingWork(stamp, saved, parent, attempts)
         work.pending = {section.key for section in SECTIONS if has_gaps(section, saved[section.table], parent)}
         works.append(work)
     return works
@@ -136,29 +133,6 @@ def load_archives(context: Context, works: list[FilingWork]) -> None:
         legacy = metadata.get("legacy_json") if isinstance(metadata, dict) else work.raw
         if legacy:
             work.attempts = {key: max(attempt, 1) for key, attempt in work.attempts.items()}
-
-
-def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Section, Any]]:
-    """Yield already-paid domain answers; no source read or provider is involved."""
-    for work in works:
-        answers = archived_answers(work.raw) if work.pending else {}
-        for section in SECTIONS:
-            # Normalizing saved holders is free, including complete retry=2 rows without JSON.
-            if section.key == "ownership" and holders_need_reconciliation(work.saved[section.table]):
-                yield work, section, OwnershipExtract.model_validate({"percent_unit": "fraction", "shares_scale": "units"})
-
-            # Filter lazily because a yielded repair can complete the section.
-            section_answers = (
-                answer
-                for answer in answers.get(section.key, [])
-                if section.key in work.pending
-                or (
-                    section.key in ("executive_pay", "director_pay", "ownership")
-                    and bool(source_for_answer(work.raw, section, answer, work.payloads.get(section.key, "")))
-                )
-            )
-            for answer in section_answers:
-                yield work, section, answer
 
 
 def open_sections(work: FilingWork) -> list[Section]:

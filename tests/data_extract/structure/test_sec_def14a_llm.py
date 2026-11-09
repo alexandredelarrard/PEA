@@ -22,9 +22,6 @@ from sqlalchemy import create_engine
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import _section_rows
 from src.data_extract.utils.structure.def14a import fetch
-from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, ExecutivePayExtract
-from src.data_extract.utils.structure.def14a.postprocess import append_answer, archived_answers, source_for_answer
-from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -37,7 +34,6 @@ from tests.support.universe import universe_of
 BUDGET = int(read_config("configs").data_extract.llm_text_budget.def14a)
 YESTERDAY = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
 _FACT_TABLES = (Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors)
-EXECUTIVE_PAY = next(section for section in SECTIONS if section.key == "executive_pay")
 
 
 class Run:
@@ -83,9 +79,9 @@ class Run:
         }
         self.context.store.save(Tables.sec_def14a_text, pd.DataFrame(_section_rows("ZZ", stamped, payloads)))
 
-    def __call__(self, replay: bool = False) -> None:
+    def __call__(self) -> None:
         context = self.context
-        fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config), replay_stored_json=replay)
+        fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
 
     def attempts(self) -> dict[str, list[int]]:
         out = {}
@@ -182,51 +178,6 @@ def test_new_archive_has_no_source(run: Run) -> None:
     assert len(entries) == 5 and all(set(entry) == {"response"} for entry in entries)
     print("\n=== SANITY: new archive ===")
     print(f"  {len(entries)} focused responses archived, none carries a `source`. Validated.")
-
-
-def _old_archive(answer: Any, sources: list[str]) -> str:
-    """A pre-split-change archive: one focused response per source, each with its embedded `source`."""
-    entries = [{"response": json.loads(answer.model_dump_json()), "source": source} for source in sources]
-    return json.dumps({"_def14a_split": {"version": 1, "legacy_json": None, "responses": {EXECUTIVE_PAY.key: entries}}})
-
-
-def test_source_for_answer_keeps_its_gate() -> None:
-    """D-07 amended: one matching focused response -> its embedded source, else the stored payload; otherwise ''."""
-    answer = ExecutivePayExtract(currency="USD", amount_scale="units", compensation=[{"name": "Jane Roe", "fiscal_year": 2024, "salary": 1}])
-    other = ExecutivePayExtract(currency="USD", amount_scale="units")
-    legacy = Def14AExtract(ceo_name="Jane Roe").model_dump_json()
-    legacy_answer = archived_answers(legacy)[EXECUTIVE_PAY.key][0]
-
-    assert source_for_answer(legacy, EXECUTIVE_PAY, legacy_answer, "stored") == ""
-    assert source_for_answer(_old_archive(answer, ["embedded"]), EXECUTIVE_PAY, answer, "stored") == "embedded"
-    assert source_for_answer(append_answer(None, EXECUTIVE_PAY, answer), EXECUTIVE_PAY, answer, "stored") == "stored"
-    assert source_for_answer(_old_archive(answer, ["one", "two"]), EXECUTIVE_PAY, answer, "stored") == ""
-    assert source_for_answer(append_answer(None, EXECUTIVE_PAY, answer), EXECUTIVE_PAY, other, "stored") == ""
-    print("\n=== SANITY: source_for_answer gate ===")
-    print("  legacy whole-proxy -> ''; embedded source -> it; new answer -> stored payload; two sources or no match -> ''. Validated.")
-
-
-def test_replay_over_an_old_archive_matches_the_new_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC-009: the free replay of an archive with an embedded `source` and of one without give the same rows."""
-    source = "Name\tYear\tSalary ($)\tBonus ($)\tOther Annual Compensation ($)\nJane Roe\t1995\t570,000\t\t69,721"
-    answer = ExecutivePayExtract(currency="USD", amount_scale="units", compensation=[{"name": "Jane Roe", "fiscal_year": 1995, "salary": 570000}])
-    stored = {}
-    for label, raw in (("old", _old_archive(answer, [source])), ("new", append_answer(None, EXECUTIVE_PAY, answer))):
-        run = Run(tmp_path / f"{label}.db", monkeypatch)
-        stamp = {"ticker": "ZZ", "accession_number": "replayed", "as_of": YESTERDAY}
-        run.context.store.save(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
-        run.context.store.save(
-            Tables.def14a_executive_comp,
-            pd.DataFrame([{**stamp, "cik": "1", "name": "Jane Roe", "fiscal_year": 1995, "salary": 570000, "bonus": 69721, "retry": 2}]),
-        )
-        run.seed("replayed", YESTERDAY, {EXECUTIVE_PAY.key: source})
-        run(replay=True)
-        assert run.calls == []
-        stored[label] = run.context.store.load(Tables.def14a_executive_comp).drop(columns=["updated_at"], errors="ignore")
-    pd.testing.assert_frame_equal(stored["old"], stored["new"])
-    assert pd.isna(stored["new"].iloc[0].bonus) and stored["new"].iloc[0].retry == 2
-    print("\n=== SANITY: replay over old vs new archive (AC-009) ===")
-    print("  embedded-source archive and source-free archive replay to identical executive rows (bonus cleared, retry 2), 0 calls. Validated.")
 
 
 def test_proxies_before_the_floor_are_not_sent(run: Run) -> None:

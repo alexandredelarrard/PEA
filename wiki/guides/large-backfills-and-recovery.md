@@ -157,7 +157,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 ## Document backlogs and markers
 
-A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. The first fill of `sec_employees_text` and `sec_def14a_text` is one: `sec-employees-text --no-cap`, then `sec-def14a-text --no-cap`, then `sec-employees-llm` and `sec-def14a-llm`. Before it, read the work list without touching SEC:
+A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. The first fill of `sec_employees_text` and `sec_def14a_text` is one. First create both tables from their `CREATE TABLE` blocks in `sql/schema.sql` (a table created from the first saved frame takes that frame's dtypes), and run `edgar-index` once on the merged code so the index holds every listed form (`10-K405/A` is new). Then `sec-employees-text --no-cap`, then `sec-def14a-text --no-cap`, then `sec-employees-llm` and `sec-def14a-llm`. Before it, read the work list without touching SEC:
 
 ~~~bash
 rtk "$PY" -m src data_extract edgar-index
@@ -165,6 +165,8 @@ rtk "$PY" -m src data_extract resume-plan --table sec_13g --timings
 ~~~
 
 `edgar-index --full` downloads every quarter of the index again. A filing that was read and holds no data for its key is stored once as an empty-filing marker. `markers --count` counts them per table; `markers --delete` removes every marker by its sentinel and is a rollback tool only, because the next run lists those filings again.
+
+A text-walk `-F` re-read saves over the stored rows but never deletes one. After a DEF 14A carve change, or a lineage edit that changes which proxies a multi-window ticker accepts, delete the affected accessions' `sec_def14a_text` rows (sections, `_none` and `_empty` markers) and let the next walk read them again; then delete their LLM rows to re-decide. The same applies to `sec_employees_text` after a candidate-window change.
 
 ## 13F holes and new tickers
 

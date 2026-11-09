@@ -1,5 +1,4 @@
-"""Daily five-domain DEF 14A extraction from the stored `sec_def14a_text` payloads, with free replay and one durable
-section retry.
+"""Daily five-domain DEF 14A extraction from the stored `sec_def14a_text` payloads, with one durable section retry.
 
 Reads only `sec_def14a_text` and the five DEF 14A tables; no SEC read. A proxy the walk's subject guard rejected is a
 hidden marker, so it is never reserved; a walked proxy missing a section (or holding only the `_none` row) has that
@@ -26,7 +25,7 @@ from src.data_extract.utils.structure.def14a.gender import (
     log_consensus,
     recompute_parent_gender,
 )
-from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive, source_for_answer
+from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section
 from src.data_extract.utils.structure.def14a.work import (
     FilingWork,
@@ -34,7 +33,6 @@ from src.data_extract.utils.structure.def14a.work import (
     load_work,
     matched_batches,
     open_sections,
-    replay_candidates,
     requests_for,
     reserve,
     save_archive,
@@ -101,47 +99,28 @@ def _walked_proxies(df_text: pd.DataFrame | None, names: Mapping[str, str]) -> p
     a NULL period reads back as '' (Postgres COPY stores the walk's '' as NULL)."""
     df = (pd.DataFrame(columns=_TEXT_COLUMNS) if df_text is None else df_text).drop_duplicates(["ticker", "accession_number"])
     df = df.assign(filing_date=pd.to_datetime(df["filing_date"]).dt.normalize(), ticker=df["ticker"].astype(str))
-    df = df.assign(period_of_report=df["period"].fillna(""), company_name=df["ticker"].map(names).fillna(""))
+    df = df.assign(period=df["period"].fillna(""), company_name=df["ticker"].map(names).fillna(""))
     return df.sort_values(["ticker", "filing_date", "accession_number"], kind="stable").reset_index(drop=True)
 
 
-def _ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp, replay: bool) -> list[FilingWork]:
-    """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those worth one: an
-    open section, or (replay) any key gap."""
+def _ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
+    """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those with an open
+    section."""
     # load: the saved facts and archives, then the payloads of the proxies that need them
     works = load_work(context, ticker, df_filings, floor)
-    if not works:
-        return works
     load_archives(context, works)
-    wanted = [work.stamp["accession_number"] for work in works if (work.pending if replay else open_sections(work))]
-    df_payloads = (
-        context.store.load(
-            Tables.sec_def14a_text, columns=["accession_number", "section", "payload"], where={"ticker": ticker, "accession_number": wanted}
-        )
-        if wanted
-        else None
+    wanted = [work.stamp["accession_number"] for work in works if open_sections(work)]
+    if not wanted:
+        return works
+    df_payloads = context.store.load(
+        Tables.sec_def14a_text, columns=["accession_number", "section", "payload"], where={"ticker": ticker, "accession_number": wanted}
     )
 
     # merge: each section's payload onto its proxy (the `_none` row carries no domain)
-    if df_payloads is not None:
-        payloads = {str(acc): dict(zip(df.section, df.payload.fillna(""), strict=True)) for acc, df in df_payloads.groupby("accession_number")}
-        for work in works:
-            work.payloads = payloads.get(str(work.stamp["accession_number"]), {})
+    payloads = {str(acc): dict(zip(df.section, df.payload.fillna(""), strict=True)) for acc, df in df_payloads.groupby("accession_number")}
+    for work in works:
+        work.payloads = payloads.get(str(work.stamp["accession_number"]), {})
     return works
-
-
-def _replay(context: Context, works: list[FilingWork]) -> int:
-    """Re-run the postprocessing on the already-paid answers; no provider call. Returns the sections replayed."""
-    replayed = 0
-    for work, section, answer in replay_candidates(works):
-        reserve(context, work, section, work.attempts[section.key] or 1)
-        source = source_for_answer(work.raw, section, answer, work.payloads.get(section.key, ""))
-        processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, source)
-        save_section(context, work, processed)
-        work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
-        save_archive(context, work)
-        replayed += 1
-    return replayed
 
 
 def _requests(context: Context, works: list[FilingWork], budget: int) -> list[tuple[Section, LlmTask]]:
@@ -187,12 +166,10 @@ def fetch_def14a_llm(
     config: DictConfig,
     tickers: list[str],
     extractors: Mapping[str, LLMExtractor],
-    replay_stored_json: bool = False,
 ) -> None:
     """Extract every section of a walked proxy filed by its ticker's end (plus the grace) that has a key gap and fewer
-    than two attempts (`retry=1`, then one more call and `retry=2`), from the stored tables alone. `replay_stored_json`
-    re-runs the postprocessing on the paid answers in `def14a_json` with no call. `extractors` (`section_extractors`)
-    holds one extractor per section; their worker count bounds the answers in flight."""
+    than two attempts (`retry=1`, then one more call and `retry=2`), from the stored tables alone. `extractors`
+    (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight."""
     # load: the walked proxies in the window (no payloads), the ticker names and end bounds
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, run_date(None), years)
@@ -206,15 +183,13 @@ def fetch_def14a_llm(
     df_proxies = df_proxies[before_end(df_proxies["ticker"], df_proxies["filing_date"], bounds)].reset_index(drop=True)
     batch_size = max((extractor.threads for extractor in extractors.values()), default=1)
 
-    # compute: each ticker's replay, then its open sections, saved per section
+    # compute: each ticker's open sections, saved per section
     updated = 0
     for ticker, df_filings in tqdm(df_proxies.groupby("ticker", sort=False), desc="DEF 14A LLM"):
-        works = _ticker_works(context, str(ticker), df_filings, floor, replay_stored_json)
-        if replay_stored_json:
-            updated += _replay(context, works)
+        works = _ticker_works(context, str(ticker), df_filings, floor)
         updated += _call_sections(context, str(ticker), _requests(context, works, budget), extractors, batch_size)
 
     # save: the cross-ticker gender reconciliation after saved updates
     if updated:
         _finalise_gender(context)
-    context.log.info("DEF 14A: %d section answer(s) extracted or replayed; sections at retry=2 skipped", updated)
+    context.log.info("DEF 14A: %d section answer(s) extracted; sections at retry=2 skipped", updated)

@@ -40,6 +40,11 @@ _EDGAR = "src.data_extract.utils.edgar_extract."
 _EMPLOYEES = "src.data_extract.utils.fundamentals.fundamentals_employees"
 _DEF14A = "src.data_extract.utils.structure.def14a."
 _CARRIED_DEF14A = "carried-over DEF 14A {} code, unchanged by this run (D-16; follow-up harness run in wiki/TODO.md)"
+_TRIMMED_DEF14A = (
+    "carried-over DEF 14A {} code: this run moved the prompt and postprocess source to the stored `sec_def14a_text` "
+    "payloads (no archived `source`) and deleted the test-only free-replay path; the rest is carried over (D-16; "
+    "follow-up harness run in wiki/TODO.md)"
+)
 
 
 @dataclass(frozen=True)
@@ -126,12 +131,16 @@ LLM_TEXT = Flow(
     # retry/basis/holders/tables/flatten/carve modules sit below `_llm_decisions`, `work`, `postprocess` and `gender`.
     allowlist={
         f"{_EMPLOYEES}._decide_ticker": "carried-over per-date decision rule, unchanged by this run (D-16)",
-        f"{_EMPLOYEES}._llm_decisions": "carried-over answer-to-decision loop and employee guard with quote recovery, unchanged by this run (D-16)",
+        f"{_EMPLOYEES}._llm_decisions": (
+            "signature changed by this run (results and history passed in, the read and the calls moved out); the "
+            "answer-to-decision loop and employee guard with quote recovery are carried over (D-16 follow-up)"
+        ),
         f"{_EMPLOYEES}.employee_task -> src.data_extract.utils.common.workforce.merge_spans": (
             "the stdlib span union the walk's stored pieces and the excerpt greedy must apply identically (D-12, touch rule "
             "pinned by AC-001); a private copy in the greedy would be the duplicate the helper rule forbids"
         ),
-        **{f"{_DEF14A}{name}.": _CARRIED_DEF14A.format(name) for name in ("work", "postprocess", "gender")},
+        **{f"{_DEF14A}{name}.": _TRIMMED_DEF14A.format(name) for name in ("work", "postprocess")},
+        f"{_DEF14A}gender.": _CARRIED_DEF14A.format("gender"),
     },
     workers=(f"{_EMPLOYEES}._ticker_employees",),
     run_order=("run_def14a_llm", "run_8k_votes", "run_employees_llm"),

@@ -10,7 +10,7 @@ from dataclasses import field as dataclass_field
 from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from src.data_extract.utils.edgar_extract.empty_markers import marker_mask
 from src.data_extract.utils.structure.def14a.basis import complete_director_years, correct_basis
@@ -357,53 +357,6 @@ def append_answer(raw: str | None, section: Section, answer: BaseModel) -> str:
     responses.setdefault(section.key, []).append({"response": json.loads(answer.model_dump_json())})
     document["_def14a_split"] = metadata
     return json.dumps(document, ensure_ascii=False, allow_nan=False)
-
-
-def archived_answers(raw: str | None) -> dict[str, list[BaseModel]]:
-    """Reuse all already-paid legacy/split partial answers without another submission."""
-    try:
-        document = json.loads(raw) if raw and raw != "_empty" else {}
-    except (ValueError, TypeError):
-        document = {}
-    if not isinstance(document, dict):
-        document = {}
-    metadata = document.get("_def14a_split")
-    legacy_raw = metadata.get("legacy_json") if isinstance(metadata, dict) else raw
-    result: dict[str, list[BaseModel]] = {section.key: [] for section in SECTIONS}
-
-    # Replay the original legacy request before appended domain repairs.
-    if legacy_raw and legacy_raw != "_empty":
-        try:
-            legacy = Def14AExtract.model_validate_json(legacy_raw)
-        except (ValueError, ValidationError):
-            legacy = None
-        if legacy is not None:
-            for section in SECTIONS:
-                result[section.key].append(legacy)
-
-    # An empty/failed newer answer cannot hide useful facts in an older answer.
-    responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
-    for section in SECTIONS:
-        for entry in responses.get(section.key, []):
-            try:
-                result[section.key].append(section.schema.model_validate(entry["response"]))
-            except (ValueError, TypeError, KeyError, ValidationError):
-                continue
-    return result
-
-
-def source_for_answer(raw: str | None, section: Section, answer: BaseModel, stored: str) -> str:
-    """The source of this exact focused response: the one `source` its older archive entries embed, else `stored`
-    (the section's `sec_def14a_text` payload); "" for a legacy whole-proxy answer or two different embedded sources."""
-    document = _archive_document(raw)
-    metadata = document.get("_def14a_split", {})
-    responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
-    payload = json.loads(answer.model_dump_json())
-    matches = [entry.get("source") for entry in responses.get(section.key, []) if entry.get("response") == payload]
-    sources = {source for source in matches if isinstance(source, str) and source.strip()}
-    if not matches or len(sources) > 1:
-        return ""
-    return next(iter(sources)) if sources else stored
 
 
 def refresh_archive(

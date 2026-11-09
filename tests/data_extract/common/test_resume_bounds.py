@@ -145,7 +145,7 @@ def _def14a_worklist(context: Any, walked: pd.DataFrame, monkeypatch: pytest.Mon
     seen: list[pd.DataFrame] = []
     monkeypatch.setattr(def14a_fetch, "planner_bounds", lambda ctx: planner_bounds(context))
     monkeypatch.setattr(def14a_fetch, "universe_rows", lambda ctx, tickers: pd.DataFrame({"ticker": SAMPLE, "name": SAMPLE}))
-    monkeypatch.setattr(def14a_fetch, "_ticker_works", lambda ctx, ticker, df_filings, floor, replay: seen.append(df_filings) or [])
+    monkeypatch.setattr(def14a_fetch, "_ticker_works", lambda ctx, ticker, df_filings, floor: seen.append(df_filings) or [])
     config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=40, llm_text_budget=types.SimpleNamespace(def14a=130_000)))
     run = types.SimpleNamespace(store=types.SimpleNamespace(load=lambda table, **kwargs: walked), log=logging.getLogger(__name__))
     def14a_fetch.fetch_def14a_llm(run, config, SAMPLE, {})  # type: ignore[arg-type]

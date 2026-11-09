@@ -3,10 +3,10 @@
 Writes `sec_def14a_text`, one row per non-empty section (`executive_pay`, `director_pay`, `audit`, `ownership`,
 `governance`) with its `payload`, `n_chars`, the submissions `primary_document` and `period` (`reportDate`), and the
 filing stamp. The filer's submissions listing is read once per CIK holding pending proxies; the document is its
-primary document, else the `<accession>.txt` full submission, read with `sec_get` as the LLM step did. A walked
-proxy with no payload in any section is one visible `section = "_none"` row. A multi-window ticker's proxy whose
-SGML subject names none of its entity CIKs becomes an empty-filing marker; a transient SEC failure raises and the
-filing is listed again.
+primary document, else the `<accession>.txt` full submission, read with `sec_get`. A walked proxy with no payload
+in any section is one visible `section = "_none"` row. A multi-window ticker's proxy whose SGML subject names none
+of its entity CIKs becomes an empty-filing marker; a transient SEC failure or an unreadable listing stores nothing
+and the filing is listed again.
 """
 
 from __future__ import annotations
@@ -22,12 +22,13 @@ import pandas as pd
 from edgar import Filing
 
 from src.context import Context
-from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import header_subject_ciks
+from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, parse_filing_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url, list_filings
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_store.schema import Resume, Tables
 
@@ -60,11 +61,6 @@ class ProxyFiling:
         return archive_url(self.cik, self.accession_number, f"{self.accession_number}.txt")
 
 
-def accepted_subjects(scope: FilingScope) -> frozenset[str]:
-    """Subject CIKs a multi-window ticker's proxy may name (its event CIKs); empty, i.e. no header check, otherwise."""
-    return frozenset(scope.event_ciks) if len(scope.windows) > 1 else frozenset()
-
-
 def subject_accepted(ticker: str, filer_cik: str, accession: str, subjects: frozenset[str], accepted: frozenset[str]) -> bool:
     """Reject only a known subject that is outside the accepted registrant entity."""
     if not subjects or not subjects.isdisjoint(accepted):
@@ -84,8 +80,9 @@ def subject_accepted(ticker: str, filer_cik: str, accession: str, subjects: froz
 def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool:
     """The subject guard of a multi-window ticker: False (a marker) when the proxy's SGML subject names none of its
     event CIKs. A transient header failure raises (listed again); any other unreadable header accepts the proxy."""
-    # read: the accepted subjects, then (multi-window tickers only) the proxy's SGML subject CIKs
-    accepted = accepted_subjects(scope.filing_scope(ticker, cik))
+    # read: the accepted subjects (a multi-window ticker's event CIKs), then the proxy's SGML subject CIKs
+    filing_scope = scope.filing_scope(ticker, cik)
+    accepted = frozenset(filing_scope.event_ciks) if len(filing_scope.windows) > 1 else frozenset()
     if not accepted:
         return True
     company = str(getattr(stamp.filing, "company", ""))
@@ -103,19 +100,18 @@ def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScop
 
 def proxy_filings(context: Context, ticker: str, df_units: pd.DataFrame) -> dict[str, ProxyFiling]:
     """The pending proxies by accession, with their submissions primary document and report date: one listing per
-    filer CIK, from its oldest pending filing. A CIK SEC cannot list (not transiently) leaves its proxies on the
-    `.txt` submission with no period; a transient SEC failure raises."""
+    filer CIK, from its oldest pending filing. A listing that cannot be read raises `TransientReadError`, so the
+    key's proxies are listed again; a programming error propagates."""
     forms = cast(Resume, Tables.sec_def14a_text.resume).forms
     listed: list[pd.DataFrame] = []
     for cik, units in df_units.groupby(df_units["cik"].astype(str), sort=False):
         first = pd.Timestamp(units["filed"].min()).normalize()
-        years = pd.Timestamp.today().year - first.year + 1
         try:
-            listed.append(list_filings(context, cik, forms, years, since=first - pd.Timedelta(days=1)))
-        except TransientReadError:
+            listed.append(list_filings(context, cik, forms, first - pd.Timedelta(days=1)))
+        except (TransientReadError, *PROGRAMMING_ERRORS):
             raise
-        except Exception as exc:  # noqa: BLE001 -- a dead CIK, not a bug
-            logger.warning("DEF 14A text: %s CIK %s submissions not listed (%s); read from the full submission", ticker, cik, exc)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable listing is retried, never stored
+            raise TransientReadError(f"{ticker} CIK {cik} submissions not listed ({type(exc).__name__}: {exc})") from exc
     return _by_accession(df_units, listed)
 
 
@@ -181,5 +177,6 @@ def _def14a_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Timest
 DEF14A_TEXT_FETCH = EdgarFetch(
     tables=(Tables.sec_def14a_text,),
     is_subject=proxy_is_subject,
+    done_scope=DONE_PER_KEY,
     run_scope=_def14a_run_scope,
 )

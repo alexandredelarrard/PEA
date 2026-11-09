@@ -16,15 +16,15 @@ from typing import Any, cast
 
 import pandas as pd
 import pytest
+import requests
 
-from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract import fetch_def14a_text as def14a_text
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
-from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH, NO_PAYLOAD, accepted_subjects
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH, NO_PAYLOAD
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH, candidate_windows
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP
@@ -182,6 +182,21 @@ def test_multi_window_ticker_keeps_only_its_own_windows(tmp_path: Path, sqlite_s
     print("  the old CIK's later 10-K and the new CIK's earlier one are not read.")
 
 
+def test_a_filing_shared_by_two_tickers_is_stored_for_each(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], ciks=["1", "1"])
+    shared = TenK(_accession(1), "2021-03-01", "As of December 31, 2020, we had 41,000 employees.")
+    seed_index(ctx, [(1, "AAA Inc", "10-K", shared.filing_date, shared.accession_number)])
+    patch_index_filings(monkeypatch, {shared.accession_number: shared})
+
+    _walk(ctx, ["AAA"])
+    second = _walk(ctx, ["AAA", "BBB"])
+
+    df = _stored(sqlite_store)
+    assert second.work.size == 1 and sorted(df["ticker"]) == ["AAA", "BBB"] and set(df["accession_number"]) == {shared.accession_number}
+    print("\n=== SANITY CHECK: one 10-K, two tickers (per-key done set) ===")
+    print(f"  AAA stored the shared 10-K first; adding BBB lists it {second.work.size} more time and stores it for BBB too.")
+
+
 def test_parse_drops_the_submission_and_stamps_the_listed_period(monkeypatch: pytest.MonkeyPatch) -> None:
     filing = TenK("acc-1", "2021-03-01", "We had 41,000 employees.", report="2020-12-31")
     stamp = edgar_driver.FilingStamp.of(filing, "0000000001")
@@ -210,11 +225,13 @@ FOREIGN = "0001437107"
 class ProxyWorld:
     """SEC stand-ins for the DEF 14A walk: the submissions listing, the document reads and the SGML subject headers.
 
-    `listing[cik]` holds `(accession, primaryDocument, reportDate)`; `html[url]` (else `PROXY`) is the document, a
-    `BaseException` value raises; `subjects[accession]` is the header's subject CIKs, a `BaseException` raises."""
+    `listing[cik]` holds `(accession, primaryDocument, reportDate)`; a `listing_error` raises from the listing;
+    `html[url]` (else `PROXY`) is the document, a `BaseException` value raises; `subjects[accession]` is the header's
+    subject CIKs, a `BaseException` raises."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, listing: dict[str, list[tuple[str, str, str]]]) -> None:
         self.listing = listing
+        self.listing_error: BaseException | None = None
         self.html: dict[str, object] = {}
         self.subjects: dict[str, object] = {}
         self.listed: list[str] = []
@@ -224,8 +241,10 @@ class ProxyWorld:
         monkeypatch.setattr(def14a_text, "sec_get", self.sec_get)
         monkeypatch.setattr(def14a_text, "header_subject_ciks", self.header)
 
-    def list_filings(self, context: Any, cik: str, forms: Any, years: int, since: pd.Timestamp | None = None) -> pd.DataFrame:
+    def list_filings(self, context: Any, cik: str, forms: Any, since: pd.Timestamp) -> pd.DataFrame:
         self.listed.append(pad_cik(cik))
+        if self.listing_error is not None:
+            raise self.listing_error
         rows = [{"accession_number": a, "primary_document": p, "period_of_report": r} for a, p, r in self.listing.get(pad_cik(cik), [])]
         return pd.DataFrame(rows, columns=["accession_number", "primary_document", "period_of_report"])
 
@@ -355,6 +374,43 @@ def test_def14a_cold_fill_then_nothing_new(tmp_path: Path, sqlite_store: Any, wa
     print(f"  submissions reads per run: 1, 1, 0 ({len(world.listed)} in all).")
 
 
+def test_failed_listing_stores_nothing_and_lists_again(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world.listing_error = requests.HTTPError("403 Client Error: Forbidden")
+
+    first = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+    stored_after_failure, read_after_failure = len(_proxies(sqlite_store, markers=True)), list(world.urls)
+    world.listing_error = KeyError("filings")
+    with pytest.raises(KeyError):
+        _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+    world.listing_error = None
+    second = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+
+    assert stored_after_failure == 0 and read_after_failure == [] and first.missing == {"AAA": [accession]}
+    assert second.work.size == 1 and _proxies(sqlite_store)["primary_document"].tolist() == ["proxy.htm"]
+    print("\n=== SANITY CHECK: failed submissions listing (R-C02) ===")
+    print(f"  a 403 listing stores nothing ({stored_after_failure} rows) and reads no document; a KeyError propagates;")
+    print("  the next run lists the proxy again and stores it from its primary document, not the .txt.")
+
+
+def test_a_proxy_shared_by_two_tickers_is_stored_for_each(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], ciks=["1", "1"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+
+    _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+    second = _proxy_walk(ctx, roster_run(ctx, ["AAA", "BBB"], as_of=AS_OF))
+
+    df = _proxies(sqlite_store)
+    assert second.work.size == 1 and sorted(df["ticker"]) == ["AAA", "BBB"] and set(df["accession_number"]) == {accession}
+    print("\n=== SANITY CHECK: one proxy, two tickers (per-key done set) ===")
+    print(f"  AAA stored the shared proxy first; adding BBB lists it {second.work.size} more time and stores it for BBB too.")
+
+
 def test_single_window_ticker_reads_no_header(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accession = _accession(1)
@@ -364,16 +420,9 @@ def test_single_window_ticker_reads_no_header(tmp_path: Path, sqlite_store: Any,
 
     _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
 
-    scope = dated_identity(
-        [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
-        {"PSKY": "0002041610"},
-    ).filing_scope("PSKY")
     assert world.headers == [] and _proxies(sqlite_store)["section"].tolist() == ["governance"]
-    assert accepted_subjects(scope) == frozenset({"0000813828", "0002041610"})
-    assert accepted_subjects(FilingScope.roster_only("AAPL", "0000320193")) == frozenset()
     print("\n=== SANITY CHECK: single-window ticker ===")
-    print("  a one-CIK scope stores its proxy with no SGML header read (no guard), even when the header would name another")
-    print("  subject; a two-CIK scope accepts its event CIKs.")
+    print("  a one-CIK scope stores its proxy with no SGML header read (no guard), even when the header would name another subject.")
 
 
 def test_parse_reads_the_listed_document_and_stamps_period(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:

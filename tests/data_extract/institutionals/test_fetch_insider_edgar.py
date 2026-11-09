@@ -34,7 +34,7 @@ class _Filing:
 
 
 def _parse(ticker: str, cik: str, universe: list[str], excluded: list[pd.DataFrame]) -> dict:
-    scope = module.EdgarScope(identity_for({"AAA": "1", "BBB": "2"}), {})
+    scope = module.EdgarScope(identity_for({"AAA": "1", "BBB": "2"}))
     return module.parse_insider(ticker, cik, module.FilingStamp.of(_Filing(), cik), scope, universe=universe, excluded=excluded)
 
 

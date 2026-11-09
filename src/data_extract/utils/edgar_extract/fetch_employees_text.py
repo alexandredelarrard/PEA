@@ -17,6 +17,7 @@ from functools import partial
 
 from edgar import Filing
 
+from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import filing_attachments, forget_sgml, sec_call
 from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
@@ -130,7 +131,7 @@ def candidate_windows(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple
 
 def _employee_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
     """One row for the filing's chosen document; none when it has no usable text."""
-    # read: the stamp (period of report first, as the listing did), then the document; the submission is dropped after
+    # read: the stamp (period of report first), then the document; the submission is dropped after
     stamped = stamp.columns(Tables.sec_employees_text)
     document = employee_text(stamp.filing)
     forget_sgml(stamp.filing)
@@ -155,4 +156,5 @@ def _employee_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
 EMPLOYEES_TEXT_FETCH = EdgarFetch(
     tables=(Tables.sec_employees_text,),
     parse=partial(parse_filing_rows, table=Tables.sec_employees_text, row_fn=_employee_rows),
+    done_scope=DONE_PER_KEY,
 )

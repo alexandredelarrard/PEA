@@ -23,6 +23,7 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
@@ -132,6 +133,9 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
         out[key] = winner
     return out
 
+
+#: Facts columns whose NULL must not demote the column to TEXT/DOUBLE on a cold table.
+_FACT_NULLABLE_DTYPES = {"fiscal_year": "Int64", "period_days": "Int64", "is_extension": "boolean"}
 
 #: Forms whose statement periods are all annual, so any quarterly fact in them comes from a note. Matched exactly.
 _ANNUAL_FORMS = tuple(form for form in cast(Resume, Tables.sec_fundamentals_facts.resume).forms if form.startswith("10-K"))
@@ -543,9 +547,14 @@ def parse_fundamentals(
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
 ) -> dict[Table, pd.DataFrame]:
-    """One filing's `sec_fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice)."""
-    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=Tables.sec_fundamentals_facts.retrieval_columns)
-    return {Tables.sec_fundamentals_facts: df.drop_duplicates(subset=list(Tables.sec_fundamentals_facts.pk), keep="last")}
+    """One filing's `sec_fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice).
+
+    Dtypes are pinned on every frame, an empty filing's too: the first write creates the table from them.
+    """
+    table = Tables.sec_fundamentals_facts
+    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=table.retrieval_columns)
+    df = pin_dtypes(df, dates=table.date_type_cols, floats=("value",)).astype(_FACT_NULLABLE_DTYPES)
+    return {table: df.drop_duplicates(subset=list(table.pk), keep="last")}
 
 
 @contextmanager

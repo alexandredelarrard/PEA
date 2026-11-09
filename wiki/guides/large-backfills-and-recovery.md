@@ -118,7 +118,7 @@ The component-shape `fundamentals_employees` (components, basis, status, provena
 
 ## Applying a fundamentals schema change
 
-PostgreSQL initialization DDL runs only for a new volume. On a live volume, inferred creation from an all-null first frame can produce the wrong physical type, so a changed fundamentals table is created from its committed `CREATE TABLE` block in [schema.sql](../../sql/schema.sql) before the first write. Rename the old table and its indexes to `_old_*` first (index names are schema-global in PostgreSQL), apply the block, then rerun facts and history and drop `_old_*` once validated.
+The four fundamentals tables have no `CREATE TABLE` block in [schema.sql](../../sql/schema.sql): their producers create them on the first write, typed from frames whose dtypes the producers pin, so an all-null column keeps its float, integer or boolean type. A new column is added by the next write. For a change a new column cannot absorb (a type, a key or a removed column), rename the old table and its indexes to `_old_*` first (index names are schema-global in PostgreSQL); the next producer run creates the new table. Then rerun facts and history and drop `_old_*` once validated.
 
 This is destructive. Request approval, take backups, and be prepared to rerun facts and history. Do not substitute an ad-hoc `DELETE`.
 

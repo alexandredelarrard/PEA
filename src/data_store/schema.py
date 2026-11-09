@@ -86,9 +86,11 @@ class Table:
     vector_col: str | None = None
     vector_prefix: str | None = None
 
-    # False -> the owning step creates the table from its own frame's dtypes, and it is
-    # EXCLUDED from sql/schema.sql. Also selects DROP-and-recreate over DELETE in
-    # `replace` (see the warning on `is_unmanaged` below).
+    # False -> the owning step creates the table from its own frame's dtypes on its first
+    # write (every night run can start from an empty database), it is EXCLUDED from
+    # sql/schema.sql, and a new frame column is added to it rather than refused. Also selects
+    # DROP-and-recreate over DELETE in `replace` (see the warning on `is_unmanaged` below).
+    # The cube parts and the four fundamentals tables.
     managed: bool = True
 
     # Freshness cadence key (see constants.DATA_FRESHNESS_MAX_AGE_DAYS). None -> the table
@@ -406,6 +408,7 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
         freshness="quarterly",
+        managed=False,
     )
     # The Sharadar producer's output, built from Sharadar's own inputs only (no SEC table).
     # There is no `publication_form` (Sharadar ships no form) and no `source` column.
@@ -423,6 +426,7 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
         freshness="quarterly",
+        managed=False,
         read_columns=(
             "ticker",
             "as_of",
@@ -559,6 +563,7 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
         freshness="quarterly",
+        managed=False,
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-Q"), source_start="2009-04-15"),
         empty_marker=("field", _EMPTY),
         desc="fundamentals (linkbase)",
@@ -655,6 +660,7 @@ class Tables:
         date_col="date",
         date_type_cols=("date", "reportperiod", "calendardate", "lastupdated"),
         freshness="quarterly",
+        managed=False,
         read_columns=(
             "ticker",
             "dimension",
@@ -1550,7 +1556,7 @@ def _collect() -> tuple[Table, ...]:
 ALL: tuple[Table, ...] = _collect()
 BY_NAME: dict[str, Table] = {t.name: t for t in ALL}
 
-# `ddl.py` iterates this: the parts own their own DDL and must not reach sql/schema.sql.
+# `ddl.py` iterates this: `managed=False` tables own their own DDL and must not reach sql/schema.sql.
 MANAGED: tuple[Table, ...] = tuple(t for t in ALL if t.managed)
 PARTS: tuple[Table, ...] = tuple(t for t in ALL if t.kind == KIND_PART)
 

@@ -26,6 +26,7 @@ from operator import attrgetter, itemgetter
 from typing import Any, Protocol, cast
 
 import pandas as pd
+from pandas.api.types import is_object_dtype
 
 from src.context import Context
 from src.data_extract.utils.common import sec_io
@@ -475,6 +476,16 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     return marker_frame(table, row, dict(table.marker_key_fill))
 
 
+def _marker_in_layout(marker: pd.DataFrame, parsed: pd.DataFrame | None) -> pd.DataFrame:
+    """`marker` in the parser's empty frame's columns and typed dtypes; a marker-only first write then creates the whole table."""
+    if parsed is None or parsed.columns.empty:
+        return marker
+    columns = [*parsed.columns, *(c for c in marker.columns if c not in parsed.columns)]
+    # the parser's dtype for every column the marker leaves NULL; a stamp column keeps its own unless the parser typed it
+    typed = {column: dtype for column, dtype in parsed.dtypes.items() if column not in marker.columns or not is_object_dtype(dtype)}
+    return marker.reindex(columns=columns).astype(typed)
+
+
 def _has_key_rows(df: pd.DataFrame, table: Table, ticker: str) -> bool:
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
     return key_col in df.columns and bool(df[key_col].astype(str).eq(ticker).any())
@@ -500,7 +511,7 @@ def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stam
         return None, False
     done = frames.get(fetch.done)
     if done is None or done.empty:
-        return {**frames, fetch.done: pd.concat([marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True
+        return {**frames, fetch.done: _marker_in_layout(marker_row(fetch.done, ticker, stamp), done)}, True
     if _has_key_rows(done, fetch.done, ticker):
         return frames, False
     return {**frames, fetch.done: pd.concat([done, marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True

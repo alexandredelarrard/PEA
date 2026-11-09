@@ -1532,8 +1532,10 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     for name in ("conviction_weight", "max_conviction", "pooled_weight"):
         value = row[prefix + name]
         assert pd.isna(value) if unknown_value and cohort else value == 0.5
-    for name in ("relative_position_chg", "pooled_weight_chg", "trade_balance"):
-        assert pd.isna(row[prefix + name])
+    # The unquoted leg is priced at its prior implied price, so flat books compare at 0 even when current dollars are unknown.
+    for name in ("relative_position_chg", "pooled_weight_chg"):
+        assert row[prefix + name] == 0
+    assert pd.isna(row[prefix + "trade_balance"])
     assert resources.cohorts is not None
     empty_resources = replace(resources, cohorts={"": resources.cohorts[""], "topk": frozenset()})
     empty_history = step._superinvestor_history(empty_resources)
@@ -1544,7 +1546,7 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     assert empty_row.filter(like="f_ic_super_topk_").isna().all()
     assert empty_row.f_ic_super_holders == 2
     print(
-        f"SANITY: fixed cohort={cohort or 'full'}, unknown dollars={unknown_value}; genuine quarterly/annual shares stay flat, missing whole-book quotes and empty pools stay unknown."
+        f"SANITY: fixed cohort={cohort or 'full'}, unknown dollars={unknown_value}; genuine quarterly/annual shares and the implied-price whole book stay flat, the empty trade pool and empty cohort stay unknown."
     )
 
 

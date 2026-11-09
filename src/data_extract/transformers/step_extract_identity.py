@@ -15,17 +15,16 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.identity import bind_identity, build_identity, identity_inputs
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE, FORM345_SOURCE, check_one_entity_per_cik, entity_by_cik_map
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.security_lines import co_registrant_ciks, load_security_manual, tape_intervals
 from src.data_extract.utils.identity.cik_history import (
     BACKLOG_COLUMNS,
-    FORM345_SOURCE,
     CikHistory,
     automatic_chains,
     blocked_frame,
     candidate_ciks,
     check_d19,
-    check_one_entity_per_cik,
     cik_evidence,
     cik_rows,
     cik_windows,
@@ -33,7 +32,6 @@ from src.data_extract.utils.identity.cik_history import (
     company_ids,
     curated_membership,
     d19_allowlist,
-    entity_by_cik_map,
     evidence_index,
     grey_backlog,
     join_owner_overlaps,
@@ -132,7 +130,6 @@ from src.data_extract.utils.identity.symbol_history import (
     validate_manual_tenure_entities,
 )
 from src.data_extract.utils.identity.symbol_tenure import (
-    DEI_SOURCE,
     Form345Scan,
     build_symbol_tenure,
     collapse_dei_periods,

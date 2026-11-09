@@ -47,7 +47,7 @@ _SYMBOLS = "configs/sec/symbol_tenure_manual.json"
 _ACTIVITY_SOURCES = ("dei", "form345")
 _TAPE_SOURCES = ("form345", "manual")
 _FAR = pd.Timestamp("2262-01-01")
-#: The stored open start of a window (`identity.cik_history.SENTINEL_START`).
+#: The stored open start of a window (`common.identity_contract.SENTINEL_START`).
 _SENTINEL = pd.Timestamp("1900-01-01")
 #: The `universe_cusip` columns the tape-mix rule reads.
 MASTER_COLUMNS = ("canonical_company", "source_symbol", "lineage_role", "lineage_reason", "valid_from", "valid_to")

@@ -22,15 +22,16 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import cached_property, partial
-from operator import attrgetter
+from operator import attrgetter, itemgetter
 from typing import Any, Protocol, cast
 
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
-from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
+from src.data_extract.utils.common.identity import CikWindow, FilingScope, Identity, load_identity
+from src.data_extract.utils.common.registrant import Combine, combine_for
 from src.data_extract.utils.common.resume import DONE_TABLE
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.edgar_extract import edgar_index
@@ -59,6 +60,133 @@ class GuardTally:
         if n:
             with self._lock:
                 self.skipped += n
+
+
+def header_subject_ciks(filing: object) -> frozenset[str]:
+    """Read schedule subject CIKs from the SGML header, before ``filing.obj()``.
+
+    An unreadable header raises (`sec_io.TransientReadError` when SEC served an error page)."""
+    header = sec_io.filing_header(filing)
+    companies = getattr(header, "subject_companies", ()) or ()
+    raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
+    return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
+
+
+def _company_or_none(cik: str, ticker: str) -> Any | None:
+    """`Company` for one scope CIK; an unresolvable CIK is warned and skipped, a transient SEC failure raises."""
+    try:
+        return sec_io.company(int(cik))
+    except sec_io.TransientReadError:
+        raise
+    except Exception:  # noqa: BLE001 -- a dead CIK, not a bug
+        logger.warning("%s: CIK %s could not be resolved", ticker, cik)
+        return None
+
+
+@dataclass
+class _FilingWindow:
+    """The filter shared by every walk: the scope guard, `since` and `done_accessions`.
+
+    A filing whose CIK is outside the listed CIKs is skipped and counted in `stats["foreign_skipped"]`,
+    never raised; a stored accession is counted in `stats["skipped_existing"]`.
+    """
+
+    ticker: str
+    since: pd.Timestamp | None
+    done_accessions: frozenset[str]
+    stats: dict[str, int] | None
+    scope_ciks: frozenset[str]
+    skipped_existing: set[str] = field(default_factory=set)
+    foreign: set[str] = field(default_factory=set)
+    foreign_ciks: set[str] = field(default_factory=set)
+
+    def filed(self, filing: Any) -> pd.Timestamp | None:
+        """The filing date when `filing` is kept, else None."""
+        filer = getattr(filing, "cik", None)
+        if filer is not None and (cik := pad_cik(filer)) not in self.scope_ciks:
+            self.foreign.add(str(filing.accession_number))
+            if self.stats is not None:
+                self.stats["foreign_skipped"] = len(self.foreign)
+            if cik not in self.foreign_ciks:
+                self.foreign_ciks.add(cik)
+                logger.warning("%s: skipped filing(s) from CIK %s, outside the filing scope (first: %s)", self.ticker, cik, filing.accession_number)
+            return None
+        if filing.accession_number in self.done_accessions:
+            if self.stats is not None:
+                self.skipped_existing.add(filing.accession_number)
+                self.stats["skipped_existing"] = len(self.skipped_existing)
+            return None
+        filed = pd.Timestamp(filing.filing_date)
+        return None if self.since is not None and filed < self.since else filed
+
+
+def resolve_registrant_filings(
+    scope: FilingScope,
+    forms: Sequence[str],
+    *,
+    since: pd.Timestamp | None,
+    done_accessions: frozenset[str],
+    stats: dict[str, int] | None = None,
+) -> list:
+    """Every filing of `forms` in `scope`, oldest first, listed by CIK only.
+
+    UNION (`FORM_POLICY`) lists every event CIK; SPLIT lists each CIK window and keeps its filings
+    inside the seam-widened dates, so an event-only CIK contributes nothing. A filing from a CIK outside the listed CIKs is skipped and counted
+    (`stats["foreign_skipped"]`). `since` and `done_accessions` filter before the sort.
+    """
+    policy = combine_for(forms)
+    forms = list(forms)
+    if stats is not None:
+        stats.setdefault("skipped_existing", 0)
+        stats.setdefault("foreign_skipped", 0)
+    walks: list[tuple[str, CikWindow | None]]
+    if policy is Combine.UNION:
+        walks = [(cik, None) for cik in scope.event_ciks]
+    else:
+        walks = [(window.cik, window) for window in scope.windows]
+    keep = _FilingWindow(scope.ticker, since, done_accessions, stats, frozenset(cik for cik, _ in walks))
+    filings, contributions = _walk(scope.ticker, walks, forms, keep.filed, scope.windows)
+    if len(contributions) > 1:
+        logger.info(
+            "%s: %s listed by %s across %s",
+            scope.ticker,
+            ",".join(forms),
+            policy.value,
+            ", ".join(f"{n} from {cik}" for cik, n in contributions.items()),
+        )
+    return filings
+
+
+def _walk(
+    ticker: str,
+    walks: list[tuple[str, CikWindow | None]],
+    forms: list[str],
+    keep: Callable[[Any], pd.Timestamp | None],
+    windows: Sequence[CikWindow] = (),
+) -> tuple[list, dict[str, int]]:
+    """Kept filings of every walk sorted by filing date, one per accession, and the count per CIK.
+
+    A windowed walk keeps only filings its widened window admits. An accession two walks list (a joint
+    filing, or a successor listing its predecessor's history) goes to the CIK whose stated window owns
+    its date, else the first walk, so the stamp is the window owner's CIK.
+    """
+    by_accession: dict[str, tuple[pd.Timestamp, Any, str, bool]] = {}
+    for cik, window in walks:
+        company = _company_or_none(cik, ticker)
+        for filing in [] if company is None else sec_io.company_filings(company, forms):
+            prior = by_accession.get(filing.accession_number)
+            if prior is not None and prior[3]:
+                continue
+            filed = keep(filing)
+            if filed is None or (window is not None and not window.admits(filed)):
+                continue
+            owned = window.owns(filed) if window is not None else any(w.cik == cik and w.owns(filed) for w in windows)
+            if prior is None or owned:
+                by_accession[filing.accession_number] = (filed, filing, cik, owned)
+    contributions: dict[str, int] = {}
+    for _, _, cik, _ in by_accession.values():
+        contributions[cik] = contributions.get(cik, 0) + 1
+    return [filing for _, filing, _, _ in sorted(by_accession.values(), key=itemgetter(0))], contributions
 
 
 @dataclass(frozen=True)

@@ -13,10 +13,9 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
-from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.resume import document_floor, planner_bounds
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
-from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import header_subject_ciks, universe_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads

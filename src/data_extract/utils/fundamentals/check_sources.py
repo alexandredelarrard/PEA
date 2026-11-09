@@ -19,8 +19,8 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.identity import load_entity_by_cik
+from src.data_extract.utils.common.identity_contract import entity_or_singleton
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
-from src.data_extract.utils.identity.cik_history import entity_or_singleton
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import secfilings_cik
 from src.utils.string import pad_cik, yahoo_symbol

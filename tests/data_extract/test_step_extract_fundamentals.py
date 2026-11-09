@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 import logging
 import socket
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -77,6 +79,21 @@ def test_the_history_step_imports_no_network_module() -> None:
     for path, names in found.items():
         print(f"  {path}: {names or 'none'}")
     print("  Validated.")
+
+
+def test_importing_the_history_step_loads_no_edgar_or_sec_io() -> None:
+    """A fresh interpreter importing the step loads neither `edgar` nor `sec_io` through any transitive import."""
+    probe = (
+        "import sys, src.data_extract.transformers.step_extract_fundamentals\n"
+        "print(sorted(m for m in sys.modules if m == 'edgar' or m.startswith('edgar.') or m == 'src.data_extract.utils.common.sec_io'))"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], cwd=_ROOT, capture_output=True, text=True, check=True)
+    loaded = result.stdout.strip().splitlines()[-1]
+
+    assert loaded == "[]", loaded
+    print("\n=== SANITY CHECK: transitive imports of step_extract_fundamentals ===")
+    print(f"  edgar / sec_io modules loaded by a fresh import: {loaded}")
+    print("  Validated: the offline history step pulls in no EDGAR network code.")
 
 
 def test_run_history_builds_with_every_socket_refused(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:

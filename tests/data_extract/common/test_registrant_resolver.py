@@ -19,14 +19,14 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, combine_for, resolve_registrant_filings
-from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, combine_for
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, resolve_registrant_filings
 from src.data_extract.utils.identity import cik_history as cik_module
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity, filing, patch_company
 from tests.support.lineage_build import derive_lineage
 from tests.support.universe import as_roster
 
-LOGGER = "src.data_extract.utils.common.registrant"
+LOGGER = "src.data_extract.utils.edgar_extract.edgar_driver"
 REPO = Path(__file__).resolve().parents[3]
 
 #: XOM's register shape: 34088 to the 2026-07-01 seam, 2115436 after it.

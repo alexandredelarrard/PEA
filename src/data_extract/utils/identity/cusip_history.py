@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
+from src.data_extract.utils.common.identity_contract import ROLE_SYMBOL, ROLE_WINDOW, SENTINEL_START, entity_or_singleton
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.common.security_lines import (
     ACQUIRED_CONSTITUENT,
@@ -34,7 +35,6 @@ from src.data_extract.utils.common.security_lines import (
     tape_intervals,
     trade_dates,
 )
-from src.data_extract.utils.identity.cik_history import ROLE_SYMBOL, ROLE_WINDOW, SENTINEL_START, entity_or_singleton
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd_zip
 from src.data_store.schema import Tables
 from src.utils.identity_flags import FLAG_COLUMNS

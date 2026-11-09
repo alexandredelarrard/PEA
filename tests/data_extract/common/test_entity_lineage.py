@@ -25,6 +25,7 @@ import pytest
 
 from src.data_extract.transformers import step_extract_identity as identity_module
 from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
+from src.data_extract.utils.common import identity_contract
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.identity import cik_history as cik_module
 from src.data_extract.utils.identity import symbol_history as lineage_module
@@ -51,7 +52,7 @@ from tests.support.universe import as_roster, seed_universe, universe_of
 CONFIG_DIR = "./configs"
 CACHE = Path("data/sec_insider_transactions")
 L: Any = lineage_module  # P3 names are read off the module so a missing one fails its test, not collection
-SENTINEL = cik_module.SENTINEL_START
+SENTINEL = identity_contract.SENTINEL_START
 
 
 def _tenure(rows: list[tuple[str, str, str, str | None, int]], source: str = "form345") -> pd.DataFrame:
@@ -215,9 +216,9 @@ def test_manual_tenure_cik_must_resolve_to_its_canonical_entity():
     roster = _roster([("AAA", "0000000001")])
     manual = pd.DataFrame([{"canonical_ticker": "AAA", "symbol": "OLD", "issuer_cik": "0000000002"}])
     with pytest.raises(ManualTenureEntityError, match="AAA/OLD/0000000002"):
-        validate_manual_tenure_entities(manual, cik_module.entity_by_cik_map(lineage), as_roster(roster))
+        validate_manual_tenure_entities(manual, identity_contract.entity_by_cik_map(lineage), as_roster(roster))
     manual.loc[0, "issuer_cik"] = "0000000001"
-    validate_manual_tenure_entities(manual, cik_module.entity_by_cik_map(lineage), as_roster(roster))
+    validate_manual_tenure_entities(manual, identity_contract.entity_by_cik_map(lineage), as_roster(roster))
     print("\n=== SANITY CHECK: manual CIK/entity cross-check ===")
     print("  unrelated OLD CIK raises; the roster entity CIK passes")
 
@@ -260,9 +261,9 @@ def test_open_starts_are_the_sentinel_and_register_segments_become_windows(tmp_p
 
 def test_a_cik_in_two_entities_raises():
     frame = pd.DataFrame({"cik": ["0000000100", "0000000100", "0000000200"], "company_id": ["E0000000100", "E0000000050", "E0000000100"]})
-    with pytest.raises(cik_module.CikInTwoEntitiesError, match="0000000100"):
-        cik_module.check_one_entity_per_cik(frame)
-    cik_module.check_one_entity_per_cik(frame.iloc[[0, 2]])
+    with pytest.raises(identity_contract.CikInTwoEntitiesError, match="0000000100"):
+        identity_contract.check_one_entity_per_cik(frame)
+    identity_contract.check_one_entity_per_cik(frame.iloc[[0, 2]])
     print("\n=== SANITY CHECK: one entity per CIK ===")
     print("  CIK 0000000100 under E0000000100 and E0000000050 raises CikInTwoEntitiesError; one entity passes")
 

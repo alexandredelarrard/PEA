@@ -13,13 +13,13 @@ import logging
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.identity_contract import entity_by_cik_map
 from src.data_extract.utils.fundamentals.check_sources import (
     SHARADAR_GAP_EXPECTED_FIELDS,
     SourceCheck,
     check_sources,
     log_source_check,
 )
-from src.data_extract.utils.identity.cik_history import entity_by_cik_map
 
 _UNIVERSE = ["AAA", "BBB", "BF-B", "CCC", "DDD"]
 _ROSTER = {"AAA": "1", "BBB": "0000000002", "BF-B": "0000000005", "CCC": "0000000003", "DDD": "0000000004"}

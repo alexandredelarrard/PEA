@@ -17,8 +17,7 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.identity.cik_history import ROLE_SYMBOL
-from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE, ROLE_SYMBOL
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import cik_activity, identity_flags
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE

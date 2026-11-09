@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pandas as pd
 
 from src.data_extract.utils.common.identity import Identity, build_identity
@@ -64,61 +62,3 @@ def dated_identity(
         ]
     )
     return build_identity(lineage=lineage, tenure=tenure, roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()])))
-
-
-#: (ticker, filer cik, symbol, valid_from, valid_to, status); the row's entity is the ticker's.
-SymbolRow = tuple[str, str, str, str, str | None, str]
-
-
-def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant: frozenset[str] = frozenset()) -> Identity:
-    """A real `Identity` whose dated `symbol` rows answer `tape_interval`; each roster ticker gets one open window."""
-    entity_of = {ticker: f"E{cik}" for ticker, cik in roster.items()}
-    base = {"sources": "form345", "oracle": "roster", "confidence": None, "n_observations": 1, "evidence": "fixture", "scope_changed_at": CHANGED_AT}
-    windows = [
-        {
-            **base,
-            "company_id": entity_of[t],
-            "canonical_ticker": t,
-            "cik": c,
-            "role": "cik_window",
-            "symbol": "",
-            "valid_from": SENTINEL,
-            "valid_to": None,
-            "status": "curated",
-        }
-        for t, c in roster.items()
-    ]
-    symbols = [
-        {
-            **base,
-            "company_id": entity_of[t],
-            "canonical_ticker": t,
-            "cik": c,
-            "role": "symbol",
-            "symbol": s,
-            "valid_from": start,
-            "valid_to": end,
-            "status": status,
-        }
-        for t, c, s, start, end, status in rows
-    ]
-    tenure = pd.DataFrame(
-        [
-            {
-                "symbol": t,
-                "issuer_cik": c,
-                "valid_from": pd.Timestamp("2000-01-01"),
-                "valid_to": None,
-                "n_filings": 5,
-                "source": "form345",
-                "evidence": "",
-            }
-            for t, c in roster.items()
-        ]
-    )
-    identity = build_identity(
-        lineage=pd.DataFrame(windows + symbols),
-        tenure=tenure,
-        roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()])),
-    )
-    return replace(identity, redundant_symbols=frozenset(redundant))

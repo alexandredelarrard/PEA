@@ -58,32 +58,9 @@ _PROVIDER_CLASSES: dict[str, type] = {
 }
 
 
-def with_gpt_overrides(
-    config: DictConfig,
-    action: str,
-    model: str | None = None,
-    max_chars: int | None = None,
-    cache: bool | None = None,
-    provider: str | None = None,
-) -> DictConfig:
-    """`config` with per-call overrides folded into its `gpt` branch.
-
-    A caller pins a model or a budget for research without editing `configs/gpt.yml`, and
-    the extracter still reads everything from ONE place. `None` means "leave the config
-    alone", so the default path is exactly the configured one.
-    """
-    overrides: dict[str, Any] = {}
-    if provider is not None:
-        overrides["default_api"] = provider
-    if model is not None:
-        overrides["llm_model"] = {provider or config.gpt.default_api: model}
-    if max_chars is not None:
-        overrides["max_chars"] = {action: max_chars}
-    if cache is not None:
-        overrides["cache"] = cache
-    if not overrides:
-        return config
-    return cast(DictConfig, OmegaConf.merge(config, OmegaConf.create({"gpt": overrides})))
+def with_provider(config: DictConfig, provider: str) -> DictConfig:
+    """`config` with `gpt.default_api` set to `provider`, so an extracter built from it calls that provider."""
+    return cast(DictConfig, OmegaConf.merge(config, OmegaConf.create({"gpt": {"default_api": provider}})))
 
 
 class GptExtracter(Step):
@@ -104,7 +81,6 @@ class GptExtracter(Step):
         self.reasoning_models = set(cast(Sequence[str], reasoning_models))
         self.reasoning_effort: Mapping[str, str] = gpt.get("reasoning_effort") or {}
         self.prices_per_million: Mapping[str, Mapping[str, float]] = gpt.get("prices_per_million") or {}
-        self.max_chars: Mapping[str, int] = gpt.get("max_chars") or {}
         self.embedding: Mapping[str, Any] = gpt.get("embedding") or {}
 
         self.action = action
@@ -158,11 +134,6 @@ class GptExtracter(Step):
         system = self.system_prompt.replace("{_format}", schema_note)
         user = self.user_prompt.replace("{query}", payload)
         return system, user
-
-    def truncate(self, payload: str, action: str | None = None) -> str:
-        """Cut the payload to this action's `config.gpt.max_chars` budget."""
-        limit = self.max_chars.get(action or self.action or "")
-        return payload[: int(limit)] if limit else payload
 
     # -------------------------------------------------------------------- keys --- #
 
@@ -247,10 +218,10 @@ class GptExtracter(Step):
 
     # ----------------------------------------------------------------- extract --- #
 
-    def extract(self, schema: type[T], payload: str, provider: _Provider | None = None, action: str | None = None) -> T:
-        """Fill `schema` from `payload`. The single-shot path -- no queues, no threads."""
+    def extract(self, schema: type[T], payload: str, provider: _Provider | None = None) -> T:
+        """Fill `schema` from `payload`, sent whole (the caller cuts it). The single-shot path -- no queues, no threads."""
         provider = provider or self.initialize_client()
-        system, user = self.build_prompt(self.truncate(payload, action), schema)
+        system, user = self.build_prompt(payload, schema)
         parsed, usage = provider.parse(schema, system, user)
         self.usage.record(usage)
         return parsed

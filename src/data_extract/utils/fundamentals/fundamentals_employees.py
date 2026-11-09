@@ -89,10 +89,8 @@ _COMPONENT_SHIFT = {"total": None, "full_time": "full", "part_time": "part"}  # 
 # (no count stated), `image_only` (only in an image), `incorporated` (in a document the filing incorporates by
 # reference but does not include), `ambiguous` (contradictory, a range, or no count claimed), `unsupported`
 # (a component was claimed and the guard rejected it).
-DECIDED_STATUSES = ("found", "not_disclosed", "image_only", "incorporated", "ambiguous", "unsupported")
-# The proxy formula a decided row supports: `total_incl_contractors` and `fte` qualify the total; `full_part` is
-# full-time with part-time or with a stated total; `total` alone; `full_time_only`.
-BASES = ("total", "full_part", "full_time_only", "fte", "total_incl_contractors")
+# The proxy formula (`basis`) a decided row supports: `total_incl_contractors` and `fte` qualify the total; `full_part`
+# is full-time with part-time or with a stated total; `total` alone; `full_time_only`.
 _NULL_STATUS = {"not_disclosed": "not_disclosed", "image_only": "image_only", "incorporated_by_reference": "incorporated", "ambiguous": "ambiguous"}
 
 
@@ -363,7 +361,7 @@ def _settle_total(supported: dict[str, list[_Quantity]], quotes: dict[str, str],
 
 
 def _basis(values: dict[str, int], is_fte: bool, includes_contractors: bool) -> str | None:
-    """The proxy formula the supported components allow (one of `BASES`), or None when none does."""
+    """The proxy formula (`basis`) the supported components allow, or None when none does."""
     if "total" in values and includes_contractors:
         return "total_incl_contractors"
     if "total" in values and is_fte:
@@ -676,9 +674,9 @@ def _log_run(context: Context, df_keys: pd.DataFrame, results: list[EmployeeTick
 
 def fetch_employees_llm(context: Context, tickers: list[str], years_history: int, extractors: Sequence[LLMExtractor], *, full: bool = False) -> None:
     """Decide every stored employees text in the window whose filing date has no row (a NULL row with its status when no
-    count is supported); `full` re-decides them all. Reads `sec_employees_text` (markers: no call) and the local index (no
-    SEC): dates from a ticker's earliest filing the walk has not stored yet wait. `len(extractors)` tickers run at once,
-    one extractor each; a failed call or ticker is logged and listed again next run."""
+    count is supported); `full` re-decides them all. Dates from a ticker's earliest filing the walk has not stored yet wait.
+    Each worker reads its own ticker's `windows`/`pieces`, which bounds memory. `len(extractors)` tickers run at once, one
+    extractor each; a failed call or ticker is logged and listed again next run."""
     # load: the window's text rows (no windows or pieces), the stored rows, the text walk's pending filings
     start_date = run_date(None)
     since = document_floor(Tables.sec_employees_text, start_date, years_history)
@@ -704,7 +702,7 @@ def fetch_employees_llm(context: Context, tickers: list[str], years_history: int
     for extractor in extractors:
         lent.put(extractor)
     worker = partial(_ticker_employees, context=context, extractors=lent, df_todo=df_todo, df_history=df_history)
-    results = run_per_ticker(df_keys, worker, desc="fundamentals employees", log=context.log, max_workers=len(extractors), key_cols=("ticker",))
+    results = run_per_ticker(df_keys, worker, desc="fundamentals employees", max_workers=len(extractors), key_cols=("ticker",))
 
     # log: the run's coverage
     _log_run(context, df_keys, results, n_held)

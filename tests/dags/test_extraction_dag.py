@@ -314,7 +314,6 @@ def test_the_llm_passes_run_in_the_default_pool_after_the_walk_storing_their_tex
     assert graph["sec_employees_text"] == {"sec_employees_llm", "extraction_status"}
     assert graph["sec_def14a_text"] == {"sec_def14a_llm", "extraction_status"}
     assert graph["sec_def14a_llm"] == {"sec_8k_votes", "extraction_status"} and upstream["sec_8k_votes"] == {"universe_sync", "sec_def14a_llm"}
-    assert not {"fundamentals_employees", "def14a"} & set(graph), "the old LLM task ids are gone"
     assert {str(kwargs.get("pool")) for kwargs in params.values() if "pool" in kwargs} == {"default_pool", "sec_api", "sec_bulk"}, "no new pool"
     print("\n=== SANITY CHECK: text walks -> LLM passes (D-05, M4) ===")
     print("  sec_employees_text, sec_def14a_text: sec_api (2 slots); sec_employees_llm, sec_def14a_llm: default_pool (1 slot)")

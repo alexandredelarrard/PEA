@@ -10,14 +10,9 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from click.testing import CliRunner
 
-import src.data_extract.cli as cli_mod
-import src.data_extract.transformers.step_extract_llm as llm_step_mod
 import src.data_extract.utils.edgar_extract.fetch_employees_text as text_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
-from src.data_extract.utils.common.registrant import Combine, combine_for
-from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, lent, sent_excerpt
@@ -69,21 +64,9 @@ def build(
     return mod._ticker_employees("AAA", context=context, extractors=lent(FakeEmployeesLLM(answers)), df_todo=df_todo, df_history=history)  # type: ignore[arg-type]
 
 
-def excerpt(text: str, limit: int) -> str:
-    """The excerpt the LLM step rebuilds at `limit` from the windows and pieces the walk stores for `text`."""
-    windows = text_mod.candidate_windows(text, workforce_number_spans(text))
-    pieces = [[start, text[start:end]] for start, end in merge_spans(windows)]
-    row = SimpleNamespace(
-        form="10-K",
-        filing_date="2025-03-01",
-        period_of_report=None,
-        accession_number="x",
-        cik="1",
-        source_document="primary",
-        windows=json.dumps(windows),
-        pieces=json.dumps(pieces),
-    )
-    return sent_excerpt(row, limit)
+def excerpt(filing: Filing, limit: int) -> str:
+    """The excerpt the LLM step rebuilds at `limit` from the row the walk stores for `filing`."""
+    return sent_excerpt(next(text_rows([filing]).itertuples(index=False)), limit)
 
 
 STORED_COLUMNS = [
@@ -221,8 +204,6 @@ def test_statuses_without_a_count():
     assert components(mod.decide_employee_answer(answer(None, None, status="incorporated_by_reference"), text))[4] == "incorporated"
     assert components(mod.decide_employee_answer(answer(None, None, status="ambiguous"), text))[4] == "ambiguous"
     assert components(mod.decide_employee_answer(answer(None, None, status="found"), text))[4] == "ambiguous"
-    assert set(mod.DECIDED_STATUSES) == {"found", "not_disclosed", "image_only", "incorporated", "ambiguous", "unsupported"}
-    assert set(mod.BASES) == {"total", "full_part", "full_time_only", "fte", "total_incl_contractors"}
     print("\nSANITY: image-only, not-disclosed, incorporated-by-reference and ambiguous filings decide to NULL components with their own status.")
 
 
@@ -618,7 +599,7 @@ def test_ix_header_is_stripped_and_the_workforce_sentence_survives(sqlite_store:
     filing.html = lambda: f"<html><body>{header}<p>{FILLER * 150}</p><p>{statement}</p></body></html>"
     text = text_mod.filing_body_text(filing)
     assert len(junk) > 20_000 and "us-gaap" not in text and "0001090872" not in text
-    assert statement in excerpt(text, 10_000)
+    assert statement in excerpt(filing, 10_000)
     result = build(sqlite_store, [filing], {"a-2019": answer(16300, statement)})
     assert result.frame["employees_total"].tolist() == [16300.0]
     print("\nSANITY: >20k chars of hidden ix:header values are dropped before excerpting; Agilent's 16,300 people sentence is sent and saved.")
@@ -627,15 +608,15 @@ def test_ix_header_is_stripped_and_the_workforce_sentence_survives(sqlite_store:
 def test_workforce_number_windows_come_before_generic_context():
     persons = "As of December 31, 2019, 502 persons were employed by the Company."
     kim = f"{FILLER * 120}{persons} {FILLER * 20}"
-    assert persons in excerpt(kim, 12_000)
+    assert persons in excerpt(Filing("kim", "2020-03-01", kim), 12_000)
     noise = "".join(f"Our employees value safety and training, item {i}. {FILLER * 15}" for i in range(130))
     workforce = "At December 31, 2020, we had 41,000 employees worldwide."
     many_hits = f"{noise}{workforce} {FILLER * 10}"
-    sent = excerpt(many_hits, 60_000)
+    sent = excerpt(Filing("many", "2021-03-01", many_hits), 60_000)
     assert workforce in sent and len(sent) <= 60_000
     assert len(text_mod._CONTEXT_RE.findall(many_hits)) > 120
     for headcount in ("Headcount 256,981 at year end.", "Our workforce of more than 10,000 people.", "We employ more than 25,000 people."):
-        assert headcount in excerpt(f"{FILLER * 120}{headcount} {FILLER * 10}", 9_000)
+        assert headcount in excerpt(Filing("one", "2021-03-01", f"{FILLER * 120}{headcount} {FILLER * 10}"), 9_000)
     print(
         "\nSANITY: '502 persons were employed', 'Headcount 256,981' and 'employ more than 25,000' are excerpted, and a 41,000-employee "
         "sentence after 130 generic workforce mentions stays inside the 60,000-char budget."
@@ -717,12 +698,6 @@ def test_prompt_states_the_component_rules():
     for rule in ("verbatim", "respectively", "held for sale", "contractors", "has no employees", " ... ", "full_time", "part_time", "is_fte"):
         assert rule in prompt, rule
     print("\nSANITY: the employee prompt carries the verbatim, row, respectively, held-for-sale, contractor, subsidiary-sum and ` ... ` rules.")
-
-
-def test_legacy_annual_form_uses_dated_registrant_scope():
-    assert Tables.fundamentals_employees.resume is not None
-    assert combine_for(Tables.fundamentals_employees.resume.forms) is Combine.SPLIT
-    print("\nSANITY: 10-K405 joins the dated annual registrant scope used with entity lineage and symbol tenure.")
 
 
 # AAPL FY2002 10-K 0001047469-02-007674; CSCO FY2014 10-K 0000858877-14-000029.
@@ -818,29 +793,6 @@ def test_missing_report_period_keeps_filing_date(sqlite_store: Any) -> None:
     assert pd.to_datetime(result.frame["as_of"]).tolist() == [pd.Timestamp("2024-03-01")]
     assert "Fiscal period end: unknown\n" in llm.tasks[0].payload
     print("\nSANITY: a filing with no report period is stored at its filing date, its prompt saying 'Fiscal period end: unknown'.")
-
-
-def test_cli_dispatches_explicit_full_replay(monkeypatch):
-    calls = []
-    context = SimpleNamespace(config_dir="configs")
-    config = extract_config(data_extract={"years_history": 31, "fundamentals_workers": 2})
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
-    monkeypatch.setattr(llm_step_mod, "section_extractors", lambda ctx, cfg: {})
-    monkeypatch.setattr(
-        llm_step_mod,
-        "LLMExtractor",
-        lambda ctx, cfg, action, threads=None: SimpleNamespace(default_api="open_ai", _require_key=lambda provider: None, threads=threads),
-    )
-    monkeypatch.setattr(
-        llm_step_mod,
-        "fetch_employees_llm",
-        lambda ctx, tickers, years_history, extractors, full=False: calls.append((tickers, years_history, [e.threads for e in extractors], full)),
-    )
-    result = CliRunner().invoke(cli_mod.cli, ["sec-employees-llm", "-t", "AAA", "--full"])
-    assert result.exit_code == 0, result.output
-    assert calls == [(["AAA"], 31, [1, 1], True)]
-    print("\nSANITY: `sec-employees-llm -t AAA --full` runs a ticker-scoped full employee replay (2 tickers at a time, one call each).")
 
 
 def test_the_walk_scans_a_document_for_workforce_numbers_once(monkeypatch):

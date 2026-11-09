@@ -27,10 +27,7 @@ gpt:
   threads: 12          # measured: 12-wide gives 9.1-10.6 s/filing with zero 429s
   cache: true          # send prompt_cache_key -> cached input tokens are ~10x cheaper
 
-  # Input truncation, per action: an Item 5.07 narrative is one already-carved item (longest measured:
-  # 17,032 chars). The DEF 14A and employees text budgets are `data_extract.llm_text_budget` (configs.yml).
-  max_chars:
-    sec8k_votes: 40000
+  # Input text budgets are the caller's: `data_extract.llm_text_budget` (configs.yml).
 
   embedding:
     model: text-embedding-3-small

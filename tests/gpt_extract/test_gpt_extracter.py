@@ -17,7 +17,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.gpt_extract.transformers import step_gpt_extracter as step_mod
-from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter, with_gpt_overrides
+from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter, with_provider
 from src.gpt_extract.utils.providers import OpenAIProvider
 from src.gpt_extract.utils.usage import UsageTracker
 from tests.gpt_extract.fakes import Answer, StubProvider, fake_context, gpt_config
@@ -58,7 +58,7 @@ def test_employee_cheap_variant_selects_luna_without_reasoning(monkeypatch: pyte
     config.gpt.llm_model.open_ai = base_model
     original_config = OmegaConf.to_container(config, resolve=True)
     assert config.gpt.llm_model.open_ai_cheap == "gpt-6-luna"
-    employee_config = with_gpt_overrides(config, "employees", provider="open_ai_cheap")
+    employee_config = with_provider(config, "open_ai_cheap")
     assert employee_config.gpt.default_api == "open_ai_cheap"
     extractor = GptExtracter(fake_context(), employee_config, action="employees")
     request = extractor.initialize_client().request_kwargs(Answer, "system", "filing text")
@@ -171,17 +171,6 @@ def test_prompt_files_are_read_as_utf8(monkeypatch, tmp_path):
     print(f"  round-tripped {ascii(text)} through read_prompt_file. Validated.")
 
 
-def test_truncate_uses_the_action_budget(monkeypatch):
-    ext = _extracter(monkeypatch)
-    long_payload = "x" * 200_000
-
-    assert len(ext.truncate(long_payload, "sec8k_votes")) == 40_000
-    assert len(ext.truncate(long_payload, "def14a_governance")) == 200_000  # its step cuts it (data_extract.llm_text_budget)
-
-    print("\n=== SANITY: per-action truncation ===")
-    print("  sec8k_votes 40,000 chars from config; an action without a max_chars entry (def14a_governance) is sent whole. Validated.")
-
-
 # --------------------------------------------------------------------------- #
 # API keys                                                                     #
 # --------------------------------------------------------------------------- #
@@ -285,7 +274,7 @@ def test_spend_estimate_treats_cached_tokens_as_a_subset():
 def test_extract_records_usage_through_a_stub_provider(monkeypatch):
     ext = _extracter(monkeypatch)
     ext.read_prompts("def14a_governance")
-    parsed = ext.extract(Answer, "some filing text", provider=StubProvider(), action="def14a_governance")
+    parsed = ext.extract(Answer, "some filing text", provider=StubProvider())
 
     assert isinstance(parsed, Answer)
     assert ext.usage.totals["calls"] == 1

@@ -26,7 +26,8 @@ Three things, no code in this package:
 1. **Two prompt files** in `prompt_templates/`, named for the action:
    `myaction_system_prompt.md` (may contain `{_format}`) and `myaction_prompt.md` (must end
    with `{query}` — see "the payload goes last" below).
-2. **A budget** in `configs/gpt.yml` under `gpt.max_chars.myaction`.
+2. **A text budget** under `data_extract.llm_text_budget.myaction` in `configs/configs.yml`: the caller
+   cuts each payload to it; the extracter sends the payload whole.
 3. **A schema class and a table** at the call site:
 
 ```python

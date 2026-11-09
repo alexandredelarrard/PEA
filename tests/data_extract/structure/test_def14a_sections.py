@@ -51,14 +51,13 @@ def test_each_section_resolves_its_own_prompt_schema_and_budget(section: Section
     provider = CaptureProvider()
     # The DEF 14A step cuts the stored payload at `data_extract.llm_text_budget.def14a`; the extractor itself cuts nothing.
     budget = int(read_config("configs").data_extract.llm_text_budget.def14a)
-    extractor.extract(section.schema, ("SOURCE " * 100_000)[:budget], provider=provider, action=section.action)
+    extractor.extract(section.schema, ("SOURCE " * 100_000)[:budget], provider=provider)
     assert provider.seen is not None
     schema, system, user = provider.seen
     assert schema is section.schema and schema is not Def14AExtract
     assert section.key.replace("_", " ") in system
     assert section.schema.__name__ in system
     assert "{_format}" not in system and "{query}" not in user
-    assert section.action not in extractor.max_chars
     assert ("SOURCE " * 100_000)[:budget] in user and len(user) < budget + 5_000
     print(
         f"SANITY: {section.action} resolves its own focused prompt and enforced {schema.__name__}; the {budget}-character cut is the step's "

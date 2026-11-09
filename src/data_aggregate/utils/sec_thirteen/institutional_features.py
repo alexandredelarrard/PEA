@@ -112,7 +112,8 @@ def _mask_daily_institutional_fields(fields: dict[str, pd.DataFrame], floors: pd
     """Apply the publication-dated level and delta floors (the filing deadline before the calendar starts) to every
     daily field; drop empty fields."""
     level_floor, delta_floor = (
-        pd.Timestamp(floor) if pd.notna(floor) else period + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS) for period, floor in floors.items()
+        pd.Timestamp(floor) if pd.notna(floor) else period + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+        for period, floor in zip(pd.DatetimeIndex(floors.index), floors, strict=True)
     )
     masked = {
         name: df_field.where(pd.Series(df_field.index >= (delta_floor if name in DELTA_FEATURES else level_floor), index=df_field.index), axis=0)

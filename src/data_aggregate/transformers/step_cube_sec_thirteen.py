@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from typing import cast
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -160,7 +161,7 @@ class StepCubeSecThirteen(Step):
 
         # Quantities count only where the saved basis F supports the ticker on the report date.
         keys = compact.index.to_frame(index=False)
-        df_basis = resources.frames.security_basis
+        df_basis = cast(pd.DataFrame, resources.frames.security_basis)
         if not compact.empty:
             compact = compact.assign(shares=compact["shares"].where(lookup_asof(df_basis, keys["ticker"], keys["period"]).notna().to_numpy()))
         return compute_institutional_feature_history(compact, states, df_basis=df_basis)
@@ -240,6 +241,6 @@ class StepCubeSecThirteen(Step):
         fields.update(
             name
             for df_denominator, source, name in denominators
-            if df_denominator.gt(0).any().any() and source in broad and broad[source].notna().any()
+            if cast(pd.DataFrame, df_denominator).gt(0).any().any() and source in broad and broad[source].notna().any()
         )
         return {"f_" + name for name in fields}

@@ -1435,7 +1435,7 @@ def ordinary_step(
 def normal_resources(frames: PriceFrames) -> SecThirteenResources:
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
     cohort = frozenset({"0000000001"})
-    capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": frames.close_pit * 1e9}
+    capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": cast(pd.DataFrame, frames.close_pit) * 1e9}
     return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort})
 
 

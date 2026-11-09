@@ -66,7 +66,7 @@ class StepExtractZips(Step):
         return download_notes_periods(self._context, self._notes_cache, self._notes_period_list())
 
     def run_download_fails_to_deliver(self) -> int:
-        return download_fails_to_deliver(self._context, self._years_history, self._options.full, self._run_date)
+        return download_fails_to_deliver(self._context, self._years_history, self._run_date)
 
     def run_download(self) -> None:
         self.run_download_insider()

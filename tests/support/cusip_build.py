@@ -12,12 +12,13 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from zipfile import ZipFile
 
 import pandas as pd
 
+from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
-from src.data_extract.utils.common.security_lines import SecurityManual, load_security_manual, tape_intervals
-from src.data_extract.utils.identity import cusip_history as ch
+from src.data_extract.utils.common.security_lines import SecurityManual, tape_intervals
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.identity.cusip_history import (
     CusipFlags,
@@ -44,7 +45,6 @@ from src.data_extract.utils.identity.cusip_history import (
     sec_listing,
     thirteenf_starts,
 )
-from src.data_store.schema import Tables
 from src.utils.string import pad_cik, run_date
 
 NAME_COLUMNS = ["company", "name", "valid_from", "valid_to", "tokens"]
@@ -90,23 +90,36 @@ def derive_cusip_history(
     return CusipHistory(rows=rows, flags=detail, items=items, thirteenf=thirteenf)
 
 
-def capture_ftd(context: Any, cache: Path, years_history: int, *, full: bool, as_of: pd.Timestamp) -> int:
-    """The FTD block of `run_capture_evidence` over `context`'s store: scope, pending (and rescanned) lines, save; 0
-    before the first `universe_cik_symbol` build."""
-    lineage = context.store.load(Tables.universe_cik_symbol, columns=list(ch.FTD_LINEAGE_COLUMNS), optional=True)
-    sharadar = context.store.load(Tables.sharadar_tickers, columns=list(ch.SHARADAR_CUSIP_COLUMNS), optional=True)
-    stored = context.store.load(Tables.sec_fails_to_deliver_security, columns=list(ch.VOTE_COLUMNS), optional=True)
-    cusips = ch.sharadar_cusips(context.universe.frame, sharadar)
-    scope = ch.ftd_scope(lineage, cusips, stored, load_security_manual(getattr(context, "config_dir", None)))
-    changed = ch.FtdScope() if full or lineage is None else ch.changed_ftd_scope(lineage, cusips, as_of)
-    rows, periods = ch.capture_ftd_lines(context, ch.FtdCapture(cache, years_history, full, as_of), scope, changed)
-    return ch.save_ftd_lines(context, rows, periods)
+#: The header line of an SEC FTD file.
+FTD_HEADER = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
 
 
-def run_cusip_stage(context: Any, lineage: pd.DataFrame, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
-    """`StepExtractIdentity.run_cusip_history` itself over `context`'s store, with `lineage` as this run's symbol history."""
+def write_ftd_zips(cache: Path, texts: Mapping[str, str]) -> Path:
+    """Each period's FTD file text cached as the SEC ships it (`cnsfails<period>.zip`, one text member); returns `cache`."""
+    cache.mkdir(parents=True, exist_ok=True)
+    for period, text in texts.items():
+        with ZipFile(cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), "w") as archive:
+            archive.writestr(f"cnsfails{period}.txt", text)
+    return cache
+
+
+def ftd_texts(observations: pd.DataFrame) -> dict[str, str]:
+    """The SEC FTD file text of each period of `observations` (`[date, cusip, source_symbol, description, price,
+    fails_quantity, period]`)."""
+    texts: dict[str, str] = {}
+    for period, group in observations.groupby("period"):
+        lines = [
+            f"{row.date:%Y%m%d}|{row.cusip}|{row.source_symbol}|{int(row.fails_quantity)}|{row.description}|{row.price}" for row in group.itertuples()
+        ]
+        texts[str(period)] = FTD_HEADER + "\n".join(lines) + "\n"
+    return texts
+
+
+def run_cusip_stage(context: Any, lineage: pd.DataFrame, ftd_cache: Path, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+    """`StepExtractIdentity.run_cusip_history` itself over `context`'s store and the FTD zips cached in `ftd_cache`, with
+    `lineage` as this run's symbol history."""
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, str(context.config_dir), logging.getLogger("tests.cusip_build")
-    step._symbols, step._run_date = SimpleNamespace(rows=lineage), run_date(as_of)
+    step._symbols, step._run_date, step._ftd_cache = SimpleNamespace(rows=lineage), run_date(as_of), ftd_cache
     step._anchor = CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik=dict(context.universe.cik_by_ticker))
     return step.run_cusip_history()

@@ -201,7 +201,6 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     stub_identity_step(monkeypatch, config, context)
     monkeypatch.setattr(step_identity, "pending_dei_periods", lambda ctx, cache, full: calls.append(("dei", {"full": full})) or [])
-    monkeypatch.setattr(step_identity, "capture_ftd_lines", lambda *args, **kwargs: (pd.DataFrame(), []))
     monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(step_identity, "build_symbol_tenure", lambda *args: pd.DataFrame())
     monkeypatch.setattr(step_identity, "recheck_tickers", lambda scopes, as_of, every: calls.append(("propagate", {"every": every})) or [])

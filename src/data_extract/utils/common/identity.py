@@ -715,11 +715,6 @@ def _log_identity(identity: Identity) -> None:
     )
 
 
-def identity_published(context: Context) -> bool:
-    """Whether the identity step has published `universe_cik_symbol` (False before the first build)."""
-    return context.store.load(Tables.universe_cik_symbol, columns=["company_id"], limit=1, optional=True) is not None
-
-
 def load_identity(context: Context, refresh: bool = False) -> Identity:
     """The resolver for this run, built once per context from the published tables and cached on it (`refresh` rebuilds)."""
     cached = getattr(context, "_identity_resolver", None)

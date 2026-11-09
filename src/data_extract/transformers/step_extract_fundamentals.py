@@ -39,5 +39,5 @@ class StepExtractFundamentals(Step):
         # filing invisible to every consumer. Refuses to overwrite an already-published row
         # (see `diff_against_stored`), so a resolution change surfaces here rather than in a
         # cube six months later.
-        #     build_fundamentals_history(self._context, tickers=tickers, rebuild_history=full)
+        # build_fundamentals_history(self._context, tickers=tickers, rebuild_history=full)
         self._log.info("fundamentals: facts walk and history replay dormant in this step (%d ticker(s)); run `fundamentals`", len(tickers))

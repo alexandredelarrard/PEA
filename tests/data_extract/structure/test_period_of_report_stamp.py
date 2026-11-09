@@ -1,4 +1,4 @@
-"""A filing whose `period_of_report` raises must not abort a DEF 14A or filing-text walk.
+"""A filing whose `period_of_report` raises must not abort a filing-text walk.
 
 edgartools implements `Filing.period_of_report` as a property that can raise `TypeError` from
 inside itself on old submissions. `TypeError` is in `PROGRAMMING_ERRORS`, which `run_per_ticker`
@@ -7,18 +7,14 @@ re-raises, so each builder must read the value through the guarded filing stamp 
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
 
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_MIN_CHARS
 from src.data_store.schema import Tables
-
-FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class _RaisingPeriodFiling:
@@ -40,21 +36,6 @@ class _RaisingPeriodFiling:
 
 def _stamp(filing: object, cik: str) -> FilingStamp:
     return FilingStamp.of(filing, cik)
-
-
-def test_def14a_parse_stores_none_when_period_of_report_raises() -> None:
-    facts = pd.read_parquet(FIXTURES / "ecd_ba_2025.parquet")
-    filing = _RaisingPeriodFiling(form="DEF 14A", accession="0000012927-25-000001", filing_date="2025-03-07", cik="12927")
-    filing.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: facts))  # type: ignore[attr-defined]
-    df = DEF14A_EDGAR_FETCH.parse("BA", "0000012927", _stamp(filing, "0000012927"), EdgarScope())[Tables.def14a_edgar]
-
-    assert len(df) == 1
-    row = df.iloc[0]
-    assert row["period_of_report"] is None
-    assert row["cik"] == "0000012927"
-    assert row["filing_date"] == pd.Timestamp("2025-03-07")
-    print("\n=== SANITY: DEF 14A period_of_report guard ===")
-    print(f"  1 ECD row kept, period_of_report={row['period_of_report']!r}, cik={row['cik']}: a raising property no longer aborts the walk.")
 
 
 def test_filing_text_parse_stores_none_when_period_of_report_raises() -> None:

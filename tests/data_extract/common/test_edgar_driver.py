@@ -1,5 +1,4 @@
-"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/edgar_extract/edgar_driver.py`) and the
-`Company`-based registrant listing (`resolve_registrant_filings`) the LLM fetchers still use.
+"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/edgar_extract/edgar_driver.py`).
 
 The driver tests run offline on a real `DataStore` (SQLite), a seeded local EDGAR index and fake
 filings: per-filing units, empty-filing markers, in-task retry rounds and exit 0 (AC-011 check 4,
@@ -10,7 +9,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import types
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,8 +18,6 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import frame_sanitize
-from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
@@ -55,10 +51,6 @@ def waits(monkeypatch) -> list[float]:
     recorded: list[float] = []
     monkeypatch.setattr(edgar_driver, "_sleep", recorded.append)
     return recorded
-
-
-def _filing(accession: str, filing_date: str):
-    return types.SimpleNamespace(accession_number=accession, filing_date=filing_date)
 
 
 def _accession(i: int) -> str:
@@ -178,36 +170,6 @@ def test_marker_stamps_follow_table_metadata() -> None:
     assert row["source"] == "edgar"
     assert "cik" not in row.index
     print("SANITY: insider marker stamps follow the table contract, including after a table rename; the owner's CIK is never stamped as issuer.")
-
-
-# --------------------------------------------------------------------------- #
-# resolve_registrant_filings over a roster-only scope                          #
-# --------------------------------------------------------------------------- #
-def test_registrant_filings_drops_done_accessions_filters_since_and_sorts_oldest_first(monkeypatch):
-    listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01"), _filing("d", "2024-03-01"), _filing("b", "2021-05-01")]
-    monkeypatch.setattr("edgar.Company", lambda cik: types.SimpleNamespace(get_filings=lambda form: listed))
-
-    out = resolve_registrant_filings(
-        FilingScope.roster_only("AAPL", "0000320193"), ["8-K"], since=pd.Timestamp("2021-01-01"), done_accessions=frozenset({"c"})
-    )
-
-    # "a" is pre-since, "c" is already stored -> only b, d survive, oldest first
-    assert [f.accession_number for f in out] == ["b", "d"]
-
-    print("\n=== SANITY CHECK: registrant filings dedup + since + order ===")
-    print("  4 listed, 1 stored, 1 pre-since -> ['b', 'd'] oldest-first. Validated.")
-
-
-def test_registrant_filings_without_since_returns_everything_sorted(monkeypatch):
-    listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01")]
-    monkeypatch.setattr("edgar.Company", lambda cik: types.SimpleNamespace(get_filings=lambda form: listed))
-
-    got = resolve_registrant_filings(FilingScope.roster_only("AAPL", "0000320193"), ["8-K"], since=None, done_accessions=frozenset())
-
-    assert [f.accession_number for f in got] == ["a", "c"]
-
-    print("\n=== SANITY CHECK: registrant filings with since=None ===")
-    print("  no cutoff -> both filings kept, still oldest-first. Validated.")
 
 
 def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():

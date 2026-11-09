@@ -24,7 +24,6 @@ STRICT_EDGAR_FILES = (
     "src/data_extract/utils/edgar_extract/fetch_13d_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_13g_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_insider_edgar.py",
-    "src/data_extract/utils/edgar_extract/fetch_def14a_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_filing_text.py",
 )
 #: the universe step: the two ticker lists and the two identity evidence refreshes, then the sync (AC-020).
@@ -49,7 +48,6 @@ REQUIRED_COMMANDS = {
     "sec-employees-llm",
     "fundamentals-sharadar",
     "sec-def14a-llm",
-    "def14a-edgar",
     "sec-8k-items",
     "sec-8k-votes",
     "sec-13d",
@@ -101,8 +99,8 @@ def test_freshness_inventory_comes_only_from_schema():
 IDENTITY_DOWNLOADS = {"zips_download"}
 #: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
 ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
-#: the six EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
-EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text", "def14a_edgar"}
+#: the five EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
+EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text"}
 #: every task that reads the lineage; each must start after `identity`.
 IDENTITY_CONSUMERS = {
     *ZIP_INGESTS,
@@ -113,7 +111,6 @@ IDENTITY_CONSUMERS = {
     "fundamentals",
     "fundamentals_employees",
     "def14a",
-    "def14a_edgar",
     "sec_8k_items",
     "sec_13d",
     "sec_13g",

@@ -1,12 +1,11 @@
-"""`resolve_registrant_filings` -- which CIKs a ticker's filings are listed from, and how they combine.
+"""`FORM_POLICY` -- which CIKs a ticker's filings are listed from, and how they combine.
 
 Listing reads only the ticker's `FilingScope` (`universe_cik_symbol`): insider forms UNION every event CIK,
 every other form (8-Ks and schedules too, P35) SPLITs by the CIK windows, widened 31 days at a seam. No symbol, current or
 historical, ever reaches `edgar.Company`: a reused symbol resolves to whoever holds it TODAY, which is
-how ~1,750 foreign 8-Ks reached `sec_8k`. A filing whose CIK is outside the listed CIKs is skipped and
-counted, never raised.
+how ~1,750 foreign 8-Ks reached `sec_8k`.
 
-Offline: a stub `Company`, no network.
+Offline, no network.
 """
 
 from __future__ import annotations
@@ -19,27 +18,12 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, combine_for, resolve_registrant_filings
-from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, combine_for, resolve_registrant_entries
 from src.data_extract.utils.identity import cik_history as cik_module
-from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity, filing, patch_company
 from tests.support.lineage_build import derive_lineage
 from tests.support.universe import as_roster
 
-LOGGER = "src.data_extract.utils.common.registrant"
 REPO = Path(__file__).resolve().parents[3]
-
-#: XOM's register shape: 34088 to the 2026-07-01 seam, 2115436 after it.
-_XOM = dated_identity(
-    [("XOM", "0000034088", "cik_window", SENTINEL, "2026-07-01"), ("XOM", "0002115436", "cik_window", "2026-07-01", None)],
-    {"XOM": "0002115436"},
-)
-
-
-def _list(identity, ticker: str, forms: list[str], **kwargs) -> list[str]:
-    kwargs.setdefault("since", None)
-    kwargs.setdefault("done_accessions", frozenset())
-    return [f.accession_number for f in resolve_registrant_filings(identity.filing_scope(ticker), forms, **kwargs)]
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +69,7 @@ def test_both_spellings_of_the_renamed_schedules_are_declared():
 
 
 # --------------------------------------------------------------------------- #
-# AC-001 / AC-002 / AC-004: CIK only, never a symbol                           #
+# AC-001: CIK only, never a symbol                                             #
 # --------------------------------------------------------------------------- #
 #: Non-issuer `Company(...)` call sites allowed a string: 13F managers are listed by their own CIK, not a symbol (00-run N1).
 _COMPANY_ALLOWLIST = {"src/data_extract/utils/institutionals/fetch_13f_managers.py"}
@@ -109,175 +93,6 @@ def test_no_issuer_listing_builds_company_from_anything_but_an_int_cik():
     assert offenders == [], f"Company() built from a non-int argument: {offenders}"
     print("\n=== SANITY CHECK: AC-001 source search ===")
     print(f"  every Company() call under src/data_extract takes int(cik); allowlisted (manager CIKs): {sorted(_COMPANY_ALLOWLIST)}. Validated.")
-
-
-def test_an_alias_held_by_a_foreign_cik_yields_no_accession(monkeypatch):
-    """AC-002: ALB's old Form 4 typo `AB` is AllianceBernstein today. Listing never asks for `AB`,
-    so none of its filings can arrive, whatever CIK they carry."""
-    identity = dated_identity(
-        [("ALB", "0000915913", "cik_window", SENTINEL, None)],
-        {"ALB": "0000915913"},
-        symbols=(("ALB", "0000915913", "2000-01-01"), ("AB", "0000915913", "2003-01-01")),
-    )
-    built = patch_company(
-        monkeypatch,
-        {
-            915913: [filing("albemarle-8k", "2024-02-15", 915913)],
-            "AB": [filing("alliancebernstein-8k", "2024-02-12", 825313), filing("ab-no-cik", "2024-03-01")],
-            "ALB": [filing("albemarle-8k", "2024-02-15", 915913)],
-        },
-    )
-    for forms in (["8-K"], ["10-K"]):
-        assert _list(identity, "ALB", forms) == ["albemarle-8k"]
-    assert built == [915913, 915913], f"Company() built for {built}"
-    print("\n=== SANITY CHECK: AC-002 alias held by a foreign CIK ===")
-    print(f"  Company() built for {built} only; 0 accessions from AB (AllianceBernstein), with or without a CIK on the filing")
-
-
-@pytest.mark.parametrize(("ticker", "cik", "old_era"), [("ZBH", "0001136869", "2005-03-01"), ("META", "0001326801", "2013-02-01")])
-def test_a_renamed_issuer_keeps_its_old_symbol_era_through_its_cik(monkeypatch, ticker, cik, old_era):
-    """AC-004: ZMH-era ZBH and FB-era META filings sit under the same CIK, so CIK listing finds them with no alias."""
-    identity = dated_identity([(ticker, cik, "cik_window", SENTINEL, None)], {ticker: cik})
-    built = patch_company(monkeypatch, {int(cik): [filing("old-era", old_era, int(cik)), filing("today", "2025-02-01", int(cik))]})
-    assert _list(identity, ticker, ["10-K"]) == ["old-era", "today"]
-    assert _list(identity, ticker, ["8-K"]) == ["old-era", "today"]
-    assert all(isinstance(key, int) for key in built)
-    print(f"\n=== SANITY CHECK: AC-004 {ticker} ===")
-    print(f"  old-symbol era ({old_era}) and today listed from CIK {int(cik)} alone; no symbol walked")
-
-
-# --------------------------------------------------------------------------- #
-# AC-009 as amended by P35: sibling CIKs                                       #
-# --------------------------------------------------------------------------- #
-def test_a_co_registrant_sibling_is_never_listed_and_a_joint_8k_comes_through_the_parent(monkeypatch):
-    """AC-009 (TMUS) under P35: T-Mobile USA is an event-only CIK, so neither its own 8-Ks nor its 10-Ks are
-    listed; an 8-K it co-files with T-Mobile US comes through the parent's window."""
-    identity = dated_identity(
-        [("TMUS", "0001283699", "cik_window", SENTINEL, None), ("TMUS", "0001330849", "cik_event", SENTINEL, None)],
-        {"TMUS": "0001283699"},
-    )
-    shared = filing("joint-8k", "2024-05-01", 1283699)
-    built = patch_company(
-        monkeypatch,
-        {
-            1283699: [filing("parent-8k", "2023-01-05", 1283699), shared, filing("parent-10k", "2024-02-01", 1283699)],
-            1330849: [shared, filing("sub-8k", "2024-09-01", 1330849), filing("sub-10k", "2024-02-02", 1330849)],
-        },
-    )
-    assert _list(identity, "TMUS", ["8-K"]) == ["parent-8k", "parent-10k", "joint-8k"]
-    assert built == [1283699]
-    built.clear()
-    assert _list(identity, "TMUS", ["10-K"]) == ["parent-8k", "parent-10k", "joint-8k"]
-    assert built == [1283699]
-    print("\n=== SANITY CHECK: AC-009 TMUS sibling (P35) ===")
-    print("  8-K and 10-K: the parent's window only, the joint 8-K through it; the sibling CIK is never walked (stub returns every form)")
-
-
-def test_a_predecessor_keeps_neither_its_events_nor_its_accounts_after_the_seam(monkeypatch):
-    """AC-009 (APA) under P35: Apache files 8-Ks and 10-Ks for years after APA Corp became the parent; beyond
-    the 31-day margin they are a subsidiary's, for events as for accounts."""
-    identity = dated_identity(
-        [("APA", "0000006769", "cik_window", SENTINEL, "2021-03-01"), ("APA", "0001841666", "cik_window", "2021-03-01", None)],
-        {"APA": "0001841666"},
-    )
-    patch_company(
-        monkeypatch,
-        {
-            6769: [filing("apache-2020", "2020-02-27", 6769), filing("apache-sub-2023", "2023-02-22", 6769)],
-            1841666: [filing("apa-2022", "2022-02-23", 1841666)],
-        },
-    )
-    assert _list(identity, "APA", ["8-K"]) == ["apache-2020", "apa-2022"]
-    assert _list(identity, "APA", ["10-K"]) == ["apache-2020", "apa-2022"]
-    print("\n=== SANITY CHECK: AC-009 APA (P35) ===")
-    print("  8-K and 10-K both drop Apache's 2023 filing (a subsidiary two years past the seam)")
-
-
-# --------------------------------------------------------------------------- #
-# AC-005 (amended): register windows plus the listed margin filings            #
-# --------------------------------------------------------------------------- #
-def test_register_windows_list_todays_set_plus_the_margin_filings(monkeypatch):
-    """XOM: today's split set, plus each side's filings within 31 days of the seam (P6 margin)."""
-    patch_company(
-        monkeypatch,
-        {
-            34088: [
-                filing("pre-eve", "2026-06-30", 34088),
-                filing("pre-margin", "2026-07-20", 34088),
-                filing("pre-late", "2026-08-07", 34088),
-            ],
-            2115436: [
-                filing("suc-early", "2026-06-15", 2115436),
-                filing("suc-day", "2026-07-01", 2115436),
-                filing("suc-too-early", "2026-05-01", 2115436),
-            ],
-        },
-    )
-    out = _list(_XOM, "XOM", ["10-Q"])
-    today = ["pre-eve", "suc-day"]
-    assert out == ["suc-early", "pre-eve", "suc-day", "pre-margin"]
-    assert set(today) < set(out) and "pre-late" not in out and "suc-too-early" not in out
-    print("\n=== SANITY CHECK: AC-005 register windows + margin ===")
-    print(f"  today's {today} plus margin filings {sorted(set(out) - set(today))}; 'pre-late' (37 days after) and 'suc-too-early' excluded")
-
-
-def test_a_joint_filing_inside_the_margin_goes_to_the_window_that_owns_its_date(monkeypatch):
-    shared_after = filing("joint-after", "2026-07-10", None)
-    shared_before = filing("joint-before", "2026-06-20", None)
-    patch_company(monkeypatch, {34088: [shared_after, shared_before], 2115436: [shared_after, shared_before]})
-    stats: dict[str, int] = {}
-    out = resolve_registrant_filings(_XOM.filing_scope("XOM"), ["10-Q"], since=None, done_accessions=frozenset(), stats=stats)
-    assert [f.accession_number for f in out] == ["joint-before", "joint-after"]
-    print("\n=== SANITY CHECK: a joint filing inside the margin is listed once ===")
-
-
-def test_an_event_filing_listed_by_two_ciks_is_stamped_with_the_cik_whose_window_owns_its_date(monkeypatch):
-    """F-006 (XOM shape): a holdco's listing also returns its predecessor's history under the holdco CIK.
-    When the holdco CIK sorts first, each 8-K must still be stamped with its window owner."""
-    holdco, predecessor = "0000000001", "0000000002"
-    identity = dated_identity(
-        [("HC", predecessor, "cik_window", SENTINEL, "2026-07-01"), ("HC", holdco, "cik_window", "2026-07-01", None)], {"HC": holdco}
-    )
-    patch_company(
-        monkeypatch,
-        {
-            1: [filing("old-8k", "1996-05-01", 1), filing("new-8k", "2026-08-01", 1)],
-            2: [filing("old-8k", "1996-05-01", 2)],
-        },
-    )
-    out = resolve_registrant_filings(identity.filing_scope("HC"), ["8-K"], since=None, done_accessions=frozenset())
-    stamps = {f.accession_number: FilingStamp.of(f, holdco).cik for f in out}
-    assert stamps == {"old-8k": predecessor, "new-8k": holdco}, stamps
-    print("\n=== SANITY CHECK: F-006 event stamp follows the window owner ===")
-    print(f"  {stamps}: the 1996 8-K carries the predecessor CIK although the holdco CIK is walked first")
-
-
-def test_split_over_a_five_window_chain_assigns_each_filing_once(monkeypatch):
-    """PSKY-like: five registrants, four seams; a year-old filing of the first CIK stays out of later windows."""
-    identity = dated_identity(
-        [
-            ("PSKY", "0000000001", "cik_window", SENTINEL, "2000-01-01"),
-            ("PSKY", "0000000002", "cik_window", "2000-01-01", "2006-01-01"),
-            ("PSKY", "0000000003", "cik_window", "2006-01-01", "2019-12-04"),
-            ("PSKY", "0000000004", "cik_window", "2019-12-04", "2025-08-07"),
-            ("PSKY", "0000000005", "cik_window", "2025-08-07", None),
-        ],
-        {"PSKY": "0000000005"},
-    )
-    patch_company(
-        monkeypatch,
-        {
-            1: [filing("s1", "1995-06-01", 1), filing("s1-late", "2010-01-01", 1)],
-            2: [filing("s2", "2003-06-01", 2)],
-            3: [filing("s3", "2010-06-01", 3)],
-            4: [filing("s4", "2021-06-01", 4)],
-            5: [filing("s5", "2026-01-01", 5)],
-        },
-    )
-    kept = _list(identity, "PSKY", ["10-K"])
-    assert kept == ["s1", "s2", "s3", "s4", "s5"]
-    print("\n=== SANITY CHECK: a 5-window chain, split ===")
-    print(f"  {kept}; the oldest registrant's 2010 filing is outside its window and its margin. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -312,52 +127,20 @@ def test_an_uncurated_extra_cik_warns_lists_the_roster_cik_and_is_backlogged(tmp
     assert len(backlog) == 1 and backlog["cik"].iloc[0] == "0000000100"
     assert "curation backlog" in caplog.text and "multi_cik_no_window" in caplog.text
 
-    identity = build_identity(lineage=build.rows, tenure=tenure, roster_cik=as_roster(roster))
-    built = patch_company(monkeypatch, {100: [filing("pred", "2012-02-01", 100)], 200: [filing("succ", "2020-02-01", 200)]})
-    assert _list(identity, "ABC", ["10-K"]) == ["succ"]
-    assert built == [200]
-    assert _list(identity, "ABC", ["8-K"]) == ["succ"]
-    assert _list(identity, "ABC", ["4"]) == ["pred", "succ"]
-    print("\n=== SANITY CHECK: AC-006 uncurated multi-CIK ===")
-    print(f"  build WARNING + backlog row ({backlog['detail'].iloc[0][:70]}...); 10-K and 8-K list roster CIK 200 only; Form 4 lists both")
-
-
-# --------------------------------------------------------------------------- #
-# The guard, dead CIKs, since / done                                           #
-# --------------------------------------------------------------------------- #
-def test_a_filing_from_outside_the_scope_is_skipped_and_counted_never_raised(monkeypatch, caplog):
-    """AC-008 at the resolver: a listing that returns another filer's accession drops it, counts it, warns once."""
-    identity = dated_identity([("ALB", "0000915913", "cik_window", SENTINEL, None)], {"ALB": "0000915913"})
-    patch_company(
-        monkeypatch,
-        {915913: [filing("own", "2024-02-15", 915913), filing("foreign-1", "2024-02-12", 825313), filing("foreign-2", "2024-03-12", 825313)]},
+    scope = build_identity(lineage=build.rows, tenure=tenure, roster_cik=as_roster(roster)).filing_scope("ABC")
+    rows = pd.DataFrame(
+        [
+            {"cik": cik, "company": "Fixture", "form": form, "filed": pd.Timestamp(filed), "accession": f"{name}-{form}"}
+            for cik, name, filed in (("0000000100", "pred", "2012-02-01"), ("0000000200", "succ", "2020-02-01"))
+            for form in ("10-K", "8-K", "4")
+        ]
     )
-    stats: dict[str, int] = {}
-    with caplog.at_level(logging.WARNING, logger=LOGGER):
-        out = _list(identity, "ALB", ["8-K"], stats=stats)
-    assert out == ["own"]
-    assert stats == {"skipped_existing": 0, "foreign_skipped": 2}
-    assert [r.getMessage() for r in caplog.records if r.name == LOGGER] == [
-        "ALB: skipped filing(s) from CIK 0000825313, outside the filing scope (first: foreign-1)"
-    ]
-    print("\n=== SANITY CHECK: guard skip-and-count ===")
-    print(f"  2 foreign accessions skipped and counted {stats}; one warning; nothing raised")
 
+    def listed(form: str) -> list[str]:
+        return resolve_registrant_entries(scope, rows, [form])["accession"].tolist()
 
-def test_a_dead_scope_cik_costs_only_its_own_filings(monkeypatch, caplog):
-    patch_company(monkeypatch, {34088: [filing("pred", "2026-05-01", 34088)]}, dead=frozenset({2115436}))
-    with caplog.at_level(logging.WARNING, logger=LOGGER):
-        assert _list(_XOM, "XOM", ["8-K"]) == ["pred"]
-    assert "XOM: CIK 0002115436 could not be resolved" in caplog.text
-    print("\n=== SANITY CHECK: a dead CIK does not kill the walk ===")
-
-
-@pytest.mark.parametrize("forms", [["8-K"], ["10-K"]])
-def test_since_and_done_accessions_apply_under_both_policies(monkeypatch, forms):
-    listed = [filing("old", "2020-01-01", 34088), filing("stored", "2026-05-01", 34088), filing("new", "2026-06-01", 34088)]
-    patch_company(monkeypatch, {34088: listed, 2115436: []})
-    stats: dict[str, int] = {}
-    assert _list(_XOM, "XOM", forms, since=pd.Timestamp("2026-01-01"), done_accessions=frozenset({"stored"}), stats=stats) == ["new"]
-    assert stats["skipped_existing"] == 1
-    print(f"\n=== SANITY CHECK: since + done_accessions under {combine_for(forms).value} ===")
-    print("  'old' before `since`, 'stored' already held -> only 'new'. Validated.")
+    assert listed("10-K") == ["succ-10-K"]
+    assert listed("8-K") == ["succ-8-K"]
+    assert listed("4") == ["pred-4", "succ-4"]
+    print("\n=== SANITY CHECK: AC-006 uncurated multi-CIK ===")
+    print(f"  build WARNING + backlog row ({backlog['detail'].iloc[0][:70]}...); 10-K and 8-K index rows of roster CIK 200 only; Form 4 both")

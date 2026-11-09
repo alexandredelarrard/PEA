@@ -870,8 +870,7 @@ def test_cli_dispatches_explicit_full_replay(monkeypatch):
     result = CliRunner().invoke(cli_mod.cli, ["sec-employees-llm", "-t", "AAA", "--full"])
     assert result.exit_code == 0, result.output
     assert calls == [(["AAA"], 31, 2, True)]
-    assert "fundamentals-employees" not in cli_mod.cli.commands
-    print("\nSANITY: `sec-employees-llm -t AAA --full` runs a ticker-scoped full employee replay (2 concurrent calls); the old command is gone.")
+    print("\nSANITY: `sec-employees-llm -t AAA --full` runs a ticker-scoped full employee replay (2 concurrent calls).")
 
 
 def test_the_walk_scans_a_document_for_workforce_numbers_once(monkeypatch):

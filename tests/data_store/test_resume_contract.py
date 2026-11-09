@@ -19,7 +19,8 @@ from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
@@ -101,7 +102,7 @@ def test_every_resumed_extract_table_has_a_cadence() -> None:
     ):
         assert table.freshness == "daily", table.name
     assert Tables.filing_risk_text.freshness == "quarterly"
-    assert Tables.def14a_edgar.freshness == "yearly"
+    assert Tables.sec_def14a_text.freshness == "yearly"
 
     print("\n=== SANITY CHECK: cadences ===")
     print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")
@@ -182,7 +183,8 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         SEC_13D_FETCH,
         SEC_13G_FETCH,
         INSIDER_EDGAR_FETCH,
-        DEF14A_EDGAR_FETCH,
+        DEF14A_TEXT_FETCH,
+        EMPLOYEES_TEXT_FETCH,
         FILING_TEXT_FETCH,
         fundamentals_fetch(context),
     )

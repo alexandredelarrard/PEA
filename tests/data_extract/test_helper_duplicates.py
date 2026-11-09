@@ -79,8 +79,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         _TAPE,
     ),
     "src.data_extract.utils.structure.def14a.carve": (frozenset({"prepare_def14a_payloads"}), _DEF14A),
-    "src.data_extract.utils.structure.def14a.ecd": (frozenset({"ecd_facts", "ecd_row", "has_ecd_block"}), _DEF14A),
-    "src.data_extract.utils.structure.def14a.validate": (frozenset({"repair_main_row"}), _DEF14A),
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),
     "src.data_extract.utils.zips.fetch_fails_to_deliver": (frozenset({"restamp_fails"}), _PROPAGATE),
     "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods", "reparse_financial_notes"}), _PROPAGATE),

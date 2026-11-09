@@ -15,7 +15,6 @@ tables are saved after its pass, the done table last. Only a programming error f
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -30,7 +29,6 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.resume import DONE_TABLE
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.edgar_extract import edgar_index
@@ -48,49 +46,19 @@ _MISSING_SHOWN = 20
 _UNIT_COLUMNS = ["cik", "company", "form", "filed", "accession"]
 
 
-@dataclass
-class GuardTally:
-    """Thread-safe count of filings the scope guard skipped during one run."""
-
-    skipped: int = 0
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-
-    def add(self, n: int) -> None:
-        if n:
-            with self._lock:
-                self.skipped += n
-
-
 @dataclass(frozen=True)
 class EdgarScope:
-    """What every per-ticker EDGAR walk of one run lists filings against.
+    """What every per-ticker EDGAR walk of one run checks filings against.
 
     `identity` gives each ticker's `FilingScope` (event CIKs and seam-widened CIK windows); without it
-    a ticker's scope is its roster CIK alone. `guard` counts the `Company` filings skipped as outside a scope.
+    a ticker's scope is its roster CIK alone.
     """
 
     identity: Identity | None = None
-    guard: GuardTally = field(default_factory=GuardTally)
 
     def filing_scope(self, ticker: str, cik: str) -> FilingScope:
         """`ticker`'s filing scope from the identity layer, else its roster CIK alone."""
         return self.identity.filing_scope(ticker) if self.identity is not None else FilingScope.roster_only(ticker, cik)
-
-    def list_filings(
-        self,
-        ticker: str,
-        cik: str,
-        forms: Sequence[str],
-        *,
-        since: pd.Timestamp | None,
-        done_accessions: frozenset[str],
-        stats: dict[str, int] | None = None,
-    ) -> list:
-        """`resolve_registrant_filings` over `ticker`'s scope (live `Company` listings); guard skips are added to `guard`."""
-        counts: dict[str, int] = {} if stats is None else stats
-        filings = resolve_registrant_filings(self.filing_scope(ticker, cik), forms, since=since, done_accessions=done_accessions, stats=counts)
-        self.guard.add(counts.get("foreign_skipped", 0))
-        return filings
 
 
 @dataclass(frozen=True)

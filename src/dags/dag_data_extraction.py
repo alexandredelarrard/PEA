@@ -133,13 +133,12 @@ insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk,
 fundamentals_employees = fetch("sec-employees-llm", pool="sec_api", task_id="fundamentals_employees")  # reads sec_employees_text
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 def14a = fetch("sec-def14a-llm", pool="sec_api", task_id="def14a")  # reads sec_def14a_text
-def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
 sec_8k_votes = fetch("sec-8k-votes", pool="sec_api")  # parses stored Item 5.07 narratives
 sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
-#   ^ EDGAR step: insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar;
+#   ^ EDGAR step: insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text;
 #     LLM step: def14a, sec_8k_votes, fundamentals_employees
 
 # 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
@@ -184,7 +183,6 @@ all_fetchers = [
     fundamentals_employees,
     fundamentals_sharadar,
     def14a,
-    def14a_edgar,
     sec_8k_items,
     sec_8k_votes,
     sec_13d,
@@ -204,14 +202,13 @@ identity_consumers = [
     fundamentals,
     fundamentals_employees,
     def14a,
-    def14a_edgar,
     sec_8k_items,
     sec_13d,
     sec_13g,
     filing_text,
     insider_edgar,
 ]
-edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar]
+edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text]
 
 universe_evidence >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes

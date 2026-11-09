@@ -83,7 +83,6 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
@@ -739,17 +738,6 @@ def sec_def14a_text(config_path: str, tickers: str | None, years: int | None, fu
     _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_text()
 
 
-@cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def def14a_edgar(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_ecd()
-
-
 def _edgar_step(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> StepExtractEdgar:
     """The EDGAR step over the --tickers subset (or the universe), the -y window (or the configured one) and the run options."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
@@ -792,7 +780,6 @@ def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
         FILING_TEXT_FETCH,
         EMPLOYEES_TEXT_FETCH,
         DEF14A_TEXT_FETCH,
-        DEF14A_EDGAR_FETCH,
         fundamentals_fetch(context),
         INSIDER_EDGAR_FETCH,
     )

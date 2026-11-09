@@ -121,7 +121,7 @@ def test_prompt_cache_key_is_stable_per_model_and_schema():
 def test_the_payload_is_the_last_thing_in_the_prompt(monkeypatch):
     """The cached prefix is only stable while the payload stays LAST."""
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
+    ext.read_prompts("def14a_governance")
     _, user = ext.build_prompt("THE-PAYLOAD-MARKER", Answer)
 
     assert user.rstrip().endswith("THE-PAYLOAD-MARKER")
@@ -133,7 +133,7 @@ def test_the_payload_is_the_last_thing_in_the_prompt(monkeypatch):
 def test_a_brace_in_the_payload_does_not_raise(monkeypatch):
     """Filing text contains braces; `str.format` would raise on them mid-run."""
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
+    ext.read_prompts("def14a_governance")
     payload = 'a {brace} and a {"json": "fragment"} and a lone {'
     _, user = ext.build_prompt(payload, Answer)
 
@@ -147,7 +147,7 @@ def test_the_format_placeholder_names_the_schema_not_its_json(monkeypatch):
     """Structured output means the schema is enforced at decode time, so restating a
     16,861-char JSON Schema in the prompt would buy nothing and cost ~4,215 tokens/call."""
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
+    ext.read_prompts("def14a_governance")
     system, _ = ext.build_prompt("payload", Answer)
 
     assert "{_format}" not in system
@@ -284,8 +284,8 @@ def test_spend_estimate_treats_cached_tokens_as_a_subset():
 
 def test_extract_records_usage_through_a_stub_provider(monkeypatch):
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
-    parsed = ext.extract(Answer, "some filing text", provider=StubProvider(), action="def14a")
+    ext.read_prompts("def14a_governance")
+    parsed = ext.extract(Answer, "some filing text", provider=StubProvider(), action="def14a_governance")
 
     assert isinstance(parsed, Answer)
     assert ext.usage.totals["calls"] == 1

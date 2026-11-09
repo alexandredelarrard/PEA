@@ -97,7 +97,7 @@ def test_edgar_text_tables_are_registered_and_spliced() -> None:
     for table in (Tables.sec_employees_text, Tables.sec_def14a_text):
         df = pd.DataFrame({c: [1] if c == "n_chars" else ["x"] for c in table.retrieval_columns})
         assert blocks[table.name] == ddl.table_ddl_from_frame(table, df), table.name
-    assert {"sec_filing_text", "sec_def14a", "sec_8k"} <= set(blocks)
+    assert {"sec_filing_text", "sec_8k"} <= set(blocks)
     print("\n=== SANITY CHECK: EDGAR text table DDL ===")
     print(
         "  sec_employees_text and sec_def14a_text blocks equal the generator's output (DATE stamps, BIGINT n_chars, filing_date index); neighbours kept"

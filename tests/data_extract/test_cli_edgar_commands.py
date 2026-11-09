@@ -26,7 +26,6 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, Filing
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
@@ -44,7 +43,6 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
     "sec-13d": (SEC_13D_FETCH, True),
     "sec-13g": (SEC_13G_FETCH, True),
     "filing-text": (FILING_TEXT_FETCH, True),
-    "def14a-edgar": (DEF14A_EDGAR_FETCH, True),
     "insider-edgar": (INSIDER_EDGAR_FETCH, True),
 }
 

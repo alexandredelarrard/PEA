@@ -41,7 +41,6 @@ def test_document_forms_are_in_the_form_policy() -> None:
         Tables.def14a_executive_comp.name: proxy_forms,
         Tables.def14a_director_comp.name: proxy_forms,
         Tables.def14a_ownership.name: proxy_forms,
-        Tables.def14a_edgar.name: proxy_forms,
         Tables.sec_8k.name: {"8-K", "8-K/A"},
         Tables.filing_risk_text.name: {"10-K", "10-Q"},
     }
@@ -88,7 +87,6 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
         (Tables.sec_fails_to_deliver_security, "2009-07-01"),
         (Tables.earnings_call_sections, "2005-01-01"),
         (Tables.earnings_surprises, "2002-10-01"),
-        (Tables.def14a_edgar, "2022-12-16"),
         (Tables.sharadar_sp500, "1990-01-01"),
         (Tables.superinvestor_roster, "2012-01-01"),
         (Tables.sec13f_hr, "1999-07-01"),

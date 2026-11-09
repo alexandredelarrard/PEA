@@ -1,6 +1,6 @@
 """Never mark over data: an empty-filing marker whose key already holds a real row is dropped before
-any save, for every table whose marker shares the real row's primary key (`sec_def14a`,
-`def14a_llm`, `sec_employees_text`). A `-F` re-fetch that now parses to nothing leaves the stored row untouched, while a
+any save, for every table whose marker shares the real row's primary key (`def14a_llm`,
+`sec_employees_text`). A `-F` re-fetch that now parses to nothing leaves the stored row untouched, while a
 filing with no stored row still gets its marker."""
 
 from __future__ import annotations
@@ -24,24 +24,25 @@ class _NoReadStore:
         raise AssertionError("a table whose marker has its own key must not be read")
 
 
-def _real_proxy() -> pd.DataFrame:
+def _real_text() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
                 "ticker": "AAA",
                 "accession_number": _KEPT,
-                "filing_date": pd.Timestamp("2026-04-01"),
-                "form": "DEF 14A",
+                "filing_date": pd.Timestamp("2026-03-01"),
+                "form": "10-K",
                 "cik": "0000000001",
-                "peo_total_comp": 12.5,
+                "source_document": "primary",
+                "n_chars": 12,
             }
         ]
     )
 
 
-def test_the_shared_key_tables_are_the_two_proxy_tables_and_employees_text() -> None:
+def test_the_shared_key_tables_are_def14a_llm_and_employees_text() -> None:
     shared = sorted(t.name for t in marker_tables() if marker_shares_data_key(t))
-    assert shared == ["def14a_llm", "sec_def14a", "sec_employees_text"]
+    assert shared == ["def14a_llm", "sec_employees_text"]
     assert not marker_shares_data_key(Tables.sec_def14a_text)
     print("\n=== SANITY CHECK: tables whose marker shares the real row's key ===")
     print(f"  {shared}; every other marker table (sec_def14a_text included) carries its sentinel inside the primary key.")
@@ -65,35 +66,18 @@ def test_an_employees_text_marker_over_a_stored_filing_is_dropped(sqlite_store) 
     print(f"  2 markers built, the one over the stored filing dropped; kept {kept['accession_number'].tolist()} as source_document '_empty'.")
 
 
-def test_a_marker_over_a_stored_row_is_dropped_and_a_new_one_kept(sqlite_store) -> None:
-    sqlite_store.save(Tables.def14a_edgar, _real_proxy())
-    markers = pd.concat(
-        [
-            marker_row(Tables.def14a_edgar, "AAA", FilingStamp.of(fake_filing(accession, 1, "2026-04-01", form="DEF 14A"), "0000000001"))
-            for accession in (_KEPT, _NEW)
-        ],
-        ignore_index=True,
-    )
-
-    kept = drop_markers_over_data(sqlite_store, Tables.def14a_edgar, markers)
-
-    assert kept["accession_number"].tolist() == [_NEW]
-    print("\n=== SANITY CHECK: marker over a stored real row ===")
-    print(f"  2 markers built, 1 over stored data dropped; kept {kept['accession_number'].tolist()}.")
-
-
 def test_a_marker_beside_its_real_row_in_the_same_frame_is_dropped(sqlite_store) -> None:
-    marker = marker_row(Tables.def14a_edgar, "AAA", FilingStamp.of(fake_filing(_KEPT, 1, "2026-04-01", form="DEF 14A"), "0000000001"))
-    frame = pd.concat([_real_proxy(), marker], ignore_index=True)
+    marker = marker_row(Tables.sec_employees_text, "AAA", FilingStamp.of(fake_filing(_KEPT, 1, "2026-03-01", form="10-K"), "0000000001"))
+    frame = pd.concat([_real_text(), marker], ignore_index=True)
 
-    kept = drop_markers_over_data(sqlite_store, Tables.def14a_edgar, frame)
+    kept = drop_markers_over_data(sqlite_store, Tables.sec_employees_text, frame)
 
-    assert kept["form"].tolist() == ["DEF 14A"]
+    assert kept["source_document"].tolist() == ["primary"]
     print("\n=== SANITY CHECK: marker and real row in one frame ===")
     print("  the real row survives; the marker with its key is dropped before the upsert can merge them.")
 
 
-_SENTINEL = str(Tables.def14a_edgar.empty_marker[1]) if Tables.def14a_edgar.empty_marker else ""
+_SENTINEL = str(Tables.sec_employees_text.empty_marker[1]) if Tables.sec_employees_text.empty_marker else ""
 _DATED = Table(
     "dated_marker_fixture", ("ticker", "as_of", "accession_number"), date_col="as_of", date_type_cols=("as_of",), empty_marker=("form", _SENTINEL)
 )
@@ -143,19 +127,19 @@ def test_a_table_whose_sentinel_is_in_the_key_is_returned_unread() -> None:
 
 
 def _parse_nothing(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]:
-    return {Tables.def14a_edgar: pd.DataFrame(columns=["ticker", "accession_number", "filing_date", "form"])}
+    return {Tables.sec_employees_text: pd.DataFrame(columns=["ticker", "accession_number", "filing_date", "form"])}
 
 
-def test_a_full_refetch_that_parses_nothing_leaves_the_stored_proxy_untouched(tmp_path, sqlite_store) -> None:
+def test_a_full_refetch_that_parses_nothing_leaves_the_stored_text_untouched(tmp_path, sqlite_store) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"], ["1"])
-    seed_index(ctx, [(1, "Fixture Co", "DEF 14A", "2026-04-01", _KEPT), (1, "Fixture Co", "DEF 14A", "2026-04-02", _NEW)])
-    sqlite_store.save(Tables.def14a_edgar, _real_proxy())
-    fetch = EdgarFetch(tables=(Tables.def14a_edgar,), parse=_parse_nothing)
+    seed_index(ctx, [(1, "Fixture Co", "10-K", "2026-03-01", _KEPT), (1, "Fixture Co", "10-K", "2026-03-02", _NEW)])
+    sqlite_store.save(Tables.sec_employees_text, _real_text())
+    fetch = EdgarFetch(tables=(Tables.sec_employees_text,), parse=_parse_nothing)
 
     run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], full=True, as_of=_AS_OF), max_workers=1)
 
-    stored = sqlite_store.load(Tables.def14a_edgar, markers=True).set_index("accession_number")
-    assert stored.loc[_KEPT, "form"] == "DEF 14A" and stored.loc[_KEPT, "peo_total_comp"] == 12.5
-    assert stored.loc[_NEW, "form"] == "_empty"
-    print("\n=== SANITY CHECK: -F re-fetch losing the ECD facts ===")
-    print(f"  {_KEPT}: form={stored.loc[_KEPT, 'form']!r}, peo_total_comp={stored.loc[_KEPT, 'peo_total_comp']} (untouched); {_NEW}: marker.")
+    stored = sqlite_store.load(Tables.sec_employees_text, markers=True).set_index("accession_number")
+    assert stored.loc[_KEPT, "source_document"] == "primary" and stored.loc[_KEPT, "n_chars"] == 12
+    assert stored.loc[_NEW, "source_document"] == "_empty"
+    print("\n=== SANITY CHECK: -F re-fetch that parses nothing ===")
+    print(f"  {_KEPT}: source_document={stored.loc[_KEPT, 'source_document']!r}, n_chars={stored.loc[_KEPT, 'n_chars']} (untouched); {_NEW}: marker.")

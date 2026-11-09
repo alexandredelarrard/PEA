@@ -51,14 +51,13 @@ OUT_ROOT = ROOT / "reports/validate/registrant/_out"
 #: faked. `def14a_llm` genuinely carries no `cik` -- the provenance lives on its four child
 #: tables -- and `insider_footnotes` is keyed by accession alone, so it is a row count only.
 IMPACTED: dict[str, tuple[str | None, str | None, str | None]] = {
-    # tier A -- `resolve_registrant_filings` consumers, resolved by ticker, union with the register
+    # tier A -- EDGAR walk tables, resolved by ticker, union with the register
     "sec_8k": ("ticker", "filing_date", "cik"),
     "sec_8k_votes": ("ticker", "filing_date", "cik"),
     "sec_13d": ("ticker", "filing_date", "cik"),
     "sec_13d_transactions": ("ticker", "filing_date", "cik"),
     "sec_13g": ("ticker", "filing_date", "cik"),
     "sec_filing_text": ("ticker", "filed", "cik"),
-    "sec_def14a": ("ticker", "filing_date", "cik"),
     # tier B -- dated-split consumers
     "fundamentals_facts": ("ticker", "filing_date", "cik"),
     "fundamentals_history_sec": ("ticker", "as_of", None),

@@ -11,13 +11,11 @@ triplets completed from an identity, ownership rows re-typed from the comp table
 HTML block was DELETED, so those tests went with it -- keeping them would have asserted the
 behaviour of code that no longer runs, which is worse than having no test at all.
 
-What is kept is what both DEF 14A paths still use:
+What is kept is what the DEF 14A LLM path still uses:
 
 - the name / holder PRIMARY KEYS, whose footnote strip is load-bearing (a director keyed as
   "Emma N. Walmsley11" one year and "...10" the next is two rows and one person);
-- `rescale_block`, now the safety net behind the LLM's own unit conversion;
-- `repair_main_row`, now only the ECD row: text cleaning, the net-income plausibility drop, and
-  the belt-and-braces zero guard behind `def14a_ecd`'s selection-time zero drop.
+- `rescale_block`, now the safety net behind the LLM's own unit conversion.
 
 The pay-ratio identity is NOT untested -- it moved to `def14a_impute._reconcile_rows` and is
 covered by `tests/data_aggregate/test_def14a_impute.py`.
@@ -25,43 +23,21 @@ covered by `tests/data_aggregate/test_def14a_impute.py`.
 
 from __future__ import annotations
 
-import math
-
 from src.data_extract.utils.structure.def14a.validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE,
     clean_holder_name,
     clean_person_name,
     clean_text,
     is_subtotal_holder,
-    repair_main_row,
     rescale_block,
     sum_fee_total,
 )
-
-_NAN = float("nan")
 
 #: The LLM path's fee columns -- the block `rescale_block` now guards.
 _FEE_COLS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other", "auditor_fees", "auditor_fees_prior"]
 
 
-def _ecd(**over) -> dict:
-    """A `sec_def14a` (ECD) row as `fetch_def14a_edgar` now builds it."""
-    base = {
-        "company_name": "COCA COLA CO",
-        "peo_name": "James Quincey",
-        "peo_names_all": "James Quincey",
-        "company_selected_measure_name": "Organic revenue growth",
-        "net_income": 13_137_000_000.0,
-        "peo_total_comp": 31_208_165.0,
-        "peo_actually_paid_comp": 61_649_669.0,
-        "neo_avg_total_comp": 9_524_407.0,
-        "neo_avg_actually_paid_comp": 12_000_000.0,
-    }
-    base.update(over)
-    return base
-
-
-# ── text / key normalisation (used by BOTH paths) ───────────────────────────
+# ── text / key normalisation ────────────────────────────────────────────────
 
 
 def test_clean_text_collapses_source_html_whitespace_runs():
@@ -142,49 +118,6 @@ def test_dollar_fee_block_is_left_alone():
     rescale_block(row, _FEE_COLS, DEF14A_AUDIT_FEE_MIN_PLAUSIBLE)
     assert row["audit_fees_audit"] == 32_104_000.0
     assert row["auditor_fees"] == 45_568_000.0
-
-
-# ── the ECD row ─────────────────────────────────────────────────────────────
-
-
-def test_implausible_net_income_is_nulled_not_guessed():
-    """SBUX FY2025 arrives as 1856.4 (raw value '1856.4', decimals='1', unit_ref='usd' -- tagged
-    in $ millions). That is equally consistent with millions and billions and NOTHING in the fact
-    disambiguates them, unlike a fee block whose factor a sibling filing's overlapping year
-    confirms. So it is dropped rather than rescaled into a confidently wrong number;
-    `fundamentals_history` has the trustworthy figure."""
-    assert math.isnan(repair_main_row(_ecd(net_income=1856.4))["net_income"])
-    assert math.isnan(repair_main_row(_ecd(net_income=16.1))["net_income"])
-    assert repair_main_row(_ecd(net_income=93_736_000_000.0))["net_income"] == 93_736_000_000.0
-    assert repair_main_row(_ecd(net_income=6_556_000_000.0))["net_income"] == 6_556_000_000.0
-
-
-def test_negative_net_income_is_kept():
-    """A loss is a disclosure, and the plausibility floor is on the MAGNITUDE."""
-    assert repair_main_row(_ecd(net_income=-2_400_000_000.0))["net_income"] == -2_400_000_000.0
-
-
-def test_zero_peo_comp_is_nulled():
-    """Belt-and-braces behind `def14a_ecd`'s selection-time zero drop, which recovers the CORRECT
-    value from SBUX's individual x year matrix instead of leaving this NULL. If a zero still
-    reaches here, the selection missed something."""
-    out = repair_main_row(_ecd(peo_total_comp=0.0, peo_actually_paid_comp=0.0))
-    assert math.isnan(out["peo_total_comp"])
-    assert math.isnan(out["peo_actually_paid_comp"])
-
-
-def test_negative_actually_paid_comp_is_never_touched():
-    """NKE 2025's retained PEO has a CAP of -10,924,243. Compensation Actually Paid subtracts
-    prior-year unvested fair value, so a share-price fall makes it negative -- 28.5% of 2023 and
-    33.7% of 2025 S&P 500 proxies report at least one."""
-    out = repair_main_row(_ecd(peo_actually_paid_comp=-10_924_243.0))
-    assert out["peo_actually_paid_comp"] == -10_924_243.0
-
-
-def test_repairs_are_pure_and_do_not_mutate_the_input():
-    src = _ecd(net_income=16.1)
-    repair_main_row(src)
-    assert src["net_income"] == 16.1
 
 
 #: The four Item 9(e) fee categories, in the order `_FEE_CATEGORY_COLS` uses.

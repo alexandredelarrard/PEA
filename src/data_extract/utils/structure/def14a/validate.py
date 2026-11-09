@@ -1,9 +1,8 @@
 """
 validate.py (src/data_extract/utils/structure/def14a/validate.py)
 --------------------------------------------------------------------------------
-Row cleaner shared by the two DEF 14A paths: text normalisation, the name and
-holder primary keys, the auditor-fee unit rescale, and the `sec_def14a` (ECD)
-row repair.
+Row cleaner for the DEF 14A LLM rows: text normalisation, the name and
+holder primary keys, and the auditor-fee unit rescale.
 
 Guiding rule: NEVER fabricate. A value is written only when it is
 deterministically recoverable (a unit rescale a sibling filing confirms).
@@ -22,7 +21,7 @@ deleted -- a parser that returns values which are silently WRONG rather than
 absent cannot be repaired into a source, only replaced -- so the repairs went
 with it.
 
-What survives is what BOTH paths still need:
+What survives:
 
 - `clean_person_name` / `clean_holder_name` are the primary keys. The footnote
   strip is the load-bearing part: without it the same director keys as
@@ -40,7 +39,6 @@ What survives is what BOTH paths still need:
 - `rescale_block` is the safety net behind the LLM's own unit conversion, and
   fires on the whole fee block at once -- rescaling cell by cell would invent a
   table whose components no longer sum to its total.
-- `repair_main_row` now handles only the ECD row (see its docstring).
 
 The pay-ratio identity did NOT disappear: it lives on the LLM side in
 `def14a_impute._reconcile_rows`, where it holds on 95.0% of 3,838 rows.
@@ -64,7 +62,6 @@ from src.utils.string import clean_text  # noqa: F401
 # Sanity bounds separating "implausible for an S&P 500 issuer, therefore mis-scaled or
 # fabricated by the parser" from "small but real" -- the repair layer only fires on the former.
 DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5  # a sub-$100k TOTAL auditor fee => block is in thousands
-DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4  # a sub-$10k net income => figure is in millions/billions
 #: Dollars of slack when comparing a fee total against its categories. Fee tables are printed to
 #: the dollar or to $0.1M, so $10 is below any real rounding step while still absorbing float
 #: error -- the two real defects miss by $4.5M and $4.7M, not by cents.
@@ -78,9 +75,7 @@ __all__ = [
     "rescale_block",
     "sum_fee_total",
     "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE",
-    "DEF14A_NET_INCOME_MIN_PLAUSIBLE",
     "DEF14A_FEE_SUM_TOL",
-    "repair_main_row",
     "repair_pay_ratio",
     "sct_reference",
     "sanity_check_exec_comp",
@@ -193,37 +188,6 @@ def sum_fee_total(row: dict, total_col: str, part_cols: list[str], tol: float = 
         return False
     row[total_col] = sum(parts_f)
     return True
-
-
-def repair_main_row(row: dict) -> dict:
-    """Repair one `sec_def14a` (ECD) row. Mutates and returns a COPY.
-
-    Only three things are left to do here. The fee-block rescale, the fee-table year labels and
-    the pay-ratio identity went with the HTML block they existed for; the pay-ratio identity is
-    NOT lost -- it lives on the LLM side in `def14a_impute._reconcile_rows`, where it holds on
-    95.0% of 3,838 rows, and duplicating it here would give two places to edit.
-    """
-    row = dict(row)
-    for col in ("company_name", "peo_name", "company_selected_measure_name", "peo_names_all"):
-        if col in row:
-            row[col] = clean_text(row.get(col))
-
-    # net_income cannot be rescaled the way a fee block can. SBUX FY2025 arrives as `1856.4`
-    # (raw value '1856.4', decimals='1', unit_ref='usd' -- tagged in $ millions), and that is
-    # equally consistent with millions and billions: NOTHING in the fact disambiguates them,
-    # unlike a fee block whose factor a sibling filing's overlapping year confirms. So an
-    # implausible figure is dropped rather than guessed; `fundamentals_history` has the real one.
-    if _isnum(row.get("net_income")) and 0 < abs(float(row["net_income"])) < DEF14A_NET_INCOME_MIN_PLAUSIBLE:
-        row["net_income"] = _NAN
-
-    # Belt-and-braces behind `def14a_ecd`'s selection-time zero drop: a PEO is never paid exactly
-    # $0. On the ECD path that value is SBUX's individual x year matrix marking a year the person
-    # was not PEO, and dropping it at selection time recovers the CORRECT value instead of this
-    # NULL -- so if a zero still reaches here, the selection missed something.
-    for col in ("peo_total_comp", "peo_actually_paid_comp", "neo_avg_total_comp", "neo_avg_actually_paid_comp"):
-        if _isnum(row.get(col)) and float(row[col]) == 0.0:
-            row[col] = _NAN
-    return row
 
 
 # --------------------------------------------------------------------------------------------

@@ -132,8 +132,6 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
             for a, c, f in rows
             for tag in ("T1", "T2")
         ]
-    elif table == Tables.def14a_edgar:
-        out = [{"ticker": ticker, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f)} for a, c, f in rows]
     elif table == Tables.sec_employees_text:
         out = [
             {"ticker": ticker, "accession_number": a, "form": "10-K", "cik": c, "filing_date": pd.Timestamp(f), "source_document": "primary"}
@@ -338,18 +336,18 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     )
     identity = build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": "PLD", "cik": prologis}])))
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
-    for table in (Tables.fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
+    for table in (Tables.fundamentals_facts, Tables.sec_def14a_text, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
     resolver = identity
     context = _context(sqlite_store, tmp_path)
 
     result = run_propagation(context, resolver, monkeypatch, ["PLD"], as_of=RUN_DATE)
 
-    for table in (Tables.fundamentals_facts, Tables.def14a_edgar):
+    for table in (Tables.fundamentals_facts, Tables.sec_def14a_text):
         assert _keys(sqlite_store, table) == {("PLD", "new-1")}, table.name
     assert _keys(sqlite_store, Tables.insider_transactions) == {("PLD", "old-1"), ("PLD", "old-2"), ("PLD", "new-1")}
     got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], strict=True))
-    assert got == [(Tables.fundamentals_facts.name, old_prologis, 2), (Tables.def14a_edgar.name, old_prologis, 2)], got
+    assert got == [(Tables.fundamentals_facts.name, old_prologis, 2), (Tables.sec_def14a_text.name, old_prologis, 2)], got
     assert stubs["history"] == [(["PLD"], True)]
     print("\n=== SANITY CHECK: H1 purge, single-window ticker ===")
     print("  PLD: old ProLogis's 2 facts filings and 2 proxies purged (before and after the 2011 seam); Prologis Inc's kept;")

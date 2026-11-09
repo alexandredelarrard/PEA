@@ -43,7 +43,7 @@ def _runner(monkeypatch, n_threads=4, keys=("k1",), provider_factory=None, store
     for i, key in enumerate(keys):
         monkeypatch.setenv(f"OPENAI_API_KEY{'' if i == 0 else f'_{i}'}", key)
 
-    runner = LLMExtractor(fake_context(store), gpt_config(), action="def14a", threads=n_threads)
+    runner = LLMExtractor(fake_context(store), gpt_config(), action="def14a_governance", threads=n_threads)
     factory = provider_factory or (lambda methode=None, key_index=None: StubProvider())
     monkeypatch.setattr(runner, "initialize_client", factory)
     return runner

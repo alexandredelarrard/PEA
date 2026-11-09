@@ -1,8 +1,8 @@
 """EDGAR step: the per-filing EDGAR walks, one `EdgarFetch` each, through the shared driver.
 
 Order: insider Forms 3/4/5 (EDGAR rows after the last stored zip quarter, then the zip reconcile; the insider run
-enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, 10-K employees text, DEF 14A text,
-DEF 14A ECD XBRL. The window, run date, ticker scope and CIK mapping are declared once and shared by every walk. Consumes the identity built and propagated
+enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, 10-K employees text, DEF 14A text.
+The window, run date, ticker scope and CIK mapping are declared once and shared by every walk. Consumes the identity built and propagated
 upstream; the identity scope, document cap and retry policy are read once too. The local EDGAR index is refreshed
 once per step: `run()` refreshes it over the widest window of the walks before them (`run_index`); a walk run
 alone refreshes its own window, unless the step already did or today's refresh (the nightly `edgar-index` task,
@@ -24,7 +24,6 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
@@ -54,7 +53,6 @@ _WALKS: tuple[EdgarFetch, ...] = (
     FILING_TEXT_FETCH,
     EMPLOYEES_TEXT_FETCH,
     DEF14A_TEXT_FETCH,
-    DEF14A_EDGAR_FETCH,
 )
 
 
@@ -118,9 +116,6 @@ class StepExtractEdgar(Step):
     def run_def14a_text(self) -> FetchSummary:
         return self._run_fetch(DEF14A_TEXT_FETCH)
 
-    def run_def14a_ecd(self) -> FetchSummary:
-        return self._run_fetch(DEF14A_EDGAR_FETCH)
-
     def run(self) -> None:
         self.run_index()
         self.run_insider()
@@ -130,4 +125,3 @@ class StepExtractEdgar(Step):
         self.run_filing_text()
         self.run_employees_text()
         self.run_def14a_text()
-        self.run_def14a_ecd()

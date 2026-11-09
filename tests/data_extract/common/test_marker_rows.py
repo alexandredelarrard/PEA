@@ -48,11 +48,6 @@ _CASES: dict[str, tuple[Table, dict[str, object], tuple[str, str, str]]] = {
         {"source_document": "primary", "n_chars": 9.0, "period_of_report": pd.Timestamp("2025-12-31"), "windows": "[[0, 9]]"},
         ("n_chars", "period_of_report", "windows"),
     ),
-    "sec_def14a": (
-        Tables.def14a_edgar,
-        {"form": "DEF 14A", "peo_total_comp": 1.0, "ecd_period_end": pd.Timestamp("2025-12-31"), "peo_name": "X"},
-        ("peo_total_comp", "ecd_period_end", "peo_name"),
-    ),
     "sec_13d": (
         Tables.sec_13d,
         {"rp_seq": 0, "percent_of_class": 5.5, "date_of_event": pd.Timestamp("2026-09-01"), "cusip": "000000AA1"},
@@ -137,12 +132,13 @@ def test_marker_key_fill_for_the_composite_keys() -> None:
     stamp = FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="10-Q"), "0000000001")
     facts = marker_row(Tables.fundamentals_facts, "AAA", stamp).iloc[0]
     insider = marker_row(Tables.insider_transactions, "AAA", stamp).iloc[0]
-    proxy = marker_row(Tables.def14a_edgar, "AAA", stamp).iloc[0]
+    employees = marker_row(Tables.sec_employees_text, "AAA", stamp).iloc[0]
 
     assert (facts["field"], facts["duration_type"], facts["period_end"]) == ("_empty", "_empty", pd.Timestamp(_FILED))
     assert (insider["security_type"], insider["row_sequence"], insider["source"]) == ("_empty", 0, "edgar") and "issuer_cik" not in insider.index
-    assert proxy["form"] == "_empty" and proxy["cik"] == "0000000001"
+    assert employees["source_document"] == "_empty" and employees["cik"] == "0000000001"
     print("\n=== SANITY CHECK: marker key fill ===")
     print(
-        "  fundamentals: field/duration_type '_empty', period_end = filing date; insider: ('_empty', 0, source 'edgar'), no issuer CIK; DEF 14A: form '_empty'."
+        "  fundamentals: field/duration_type '_empty', period_end = filing date; insider: ('_empty', 0, source 'edgar'), no issuer CIK; "
+        "employees text: source_document '_empty'."
     )

@@ -10,7 +10,6 @@ test_def14a_sections_extraction     — prepare_def14a_sections() isolates the r
 test_llm_extractor_mock             — LLMExtractor.extract() with a mocked OpenAI call
 test_flatten_surfaces_all_signals   — _flatten emits every governance / comp / ownership column
 test_flatten_ceo_age_fallback       — ceo_age recovered from the directors list
-test_llm_extractor_real_apple       — live EDGAR + OpenAI (skips without OPENAI_API_KEY)
 """
 
 from __future__ import annotations
@@ -379,8 +378,8 @@ def test_llm_extractor_mock():
             mock_cls.return_value = mock_client
 
             config = gpt_config()
-            extractor = LLMExtractor(fake_context(), config, action="def14a")
-            result = extractor.extract(Def14AExtract, _SYNTHETIC, action="def14a")
+            extractor = LLMExtractor(fake_context(), config, action="def14a_executive_pay")
+            result = extractor.extract(Def14AExtract, _SYNTHETIC, action="def14a_executive_pay")
 
     assert isinstance(result, Def14AExtract)
     assert result.company_name == "ACME Corporation"
@@ -388,9 +387,8 @@ def test_llm_extractor_mock():
     expected_model = str(config.gpt.llm_model[config.gpt.default_api])
     assert call_kw["model"] == expected_model
     assert call_kw["text_format"] is Def14AExtract
-    # the tailored prompt now lives in prompt_templates/def14a_system_prompt.md
-    assert "=== LABEL ===" in call_kw["instructions"]
-    assert "SUMMARY COMPENSATION TABLE" in call_kw["instructions"]
+    # the section prompt lives in prompt_templates/def14a_executive_pay_system_prompt.md
+    assert "Summary Compensation Table" in call_kw["instructions"]
     assert call_kw["input"].rstrip().endswith(_SYNTHETIC.rstrip()[-60:])  # payload LAST
     assert call_kw["prompt_cache_key"] == f"{expected_model}:Def14AExtract"
     assert "seed" not in call_kw
@@ -472,46 +470,3 @@ def test_flatten_ceo_age_fallback():
     assert row["ceo_age"] == 61
     print("\n=== SANITY CHECK: ceo_age fallback ===")
     print(f"  ceo_age omitted top-level -> recovered {row['ceo_age']} from directors. Validated.")
-
-
-# --------------------------------------------------------------------------- #
-# Live integration (skips without OPENAI_API_KEY)                              #
-# --------------------------------------------------------------------------- #
-@pytest.mark.skipif(
-    not (os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_AI_API_KEY")),
-    reason="OPENAI_API_KEY not set — skipping live Apple DEF 14A extraction",
-)
-@pytest.mark.live  # live EDGAR + OpenAI
-def test_llm_extractor_real_apple():
-    """Live: fetch Apple's latest DEF 14A, extract with the tailored prompt, sanity-check."""
-    from src.context import get_config_context
-    from src.data_extract.utils.common.sec_io import sec_get
-    from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
-    from src.data_extract.utils.edgar_extract.html_text import html_to_text
-    from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-
-    config, ctx = get_config_context("./configs", use_cache=True, save=False)
-    ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
-
-    filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
-    if filings.empty:
-        pytest.skip("No DEF 14A filings found for AAPL via EDGAR")
-
-    latest = filings.sort_values("filing_date").iloc[-1]
-    raw_html = sec_get(ctx, latest["doc_url"]).text
-    focused = prepare_def14a_sections(raw_html, html_to_text(raw_html))
-    result = LLMExtractor(ctx, config, action="def14a").extract(Def14AExtract, focused, action="def14a")
-    row = _flatten("AAPL", latest, result)
-
-    assert len(result.directors) >= 5
-    ceo = next((c for c in result.compensation if "chief executive" in (c.title or "").lower()), None)
-    assert ceo is not None and (ceo.stock_awards_usd or 0) > 0, "CEO SCT breakdown not extracted"
-    assert row["ceo_total_comp"] and row["ceo_pay_ratio"]
-
-    print("\n=== SANITY CHECK: Real DEF 14A extraction (Apple) ===")
-    print(f"  {result.company_name} FY{result.fiscal_year}; focused={len(focused):,} chars")
-    print(
-        f"  CEO {ceo.name}: salary=${(ceo.salary_usd or 0):,.0f} stock=${(ceo.stock_awards_usd or 0):,.0f} "
-        f"total=${row['ceo_total_comp']:,.0f}; pay_ratio={row['ceo_pay_ratio']:.0f}:1"
-    )
-    print(f"  board size={row['board_size']} %indep={row['pct_independent_directors']} say_on_pay={row['say_on_pay_support_pct']}. Validated.")

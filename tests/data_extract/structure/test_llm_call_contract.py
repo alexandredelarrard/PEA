@@ -67,8 +67,8 @@ def _extractor(action: str, calls: list, fail_on: str | None = None, store=None)
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "action, schema, budget, marker",
-    # `def14a` has no `gpt.max_chars` entry (the DEF 14A step cuts its own payload), so the whole payload is sent.
-    [("def14a", Def14AExtract, 500_000, "SUMMARY COMPENSATION TABLE"), ("sec8k_votes", Item507Extract, 40_000, "Item 5.07")],
+    # `def14a_executive_pay` has no `gpt.max_chars` entry (the DEF 14A step cuts its own payload), so the whole payload is sent.
+    [("def14a_executive_pay", Def14AExtract, 500_000, "Summary Compensation Table"), ("sec8k_votes", Item507Extract, 40_000, "Item 5.07")],
 )
 def test_each_action_resolves_its_prompt_schema_and_budget(action, schema, budget, marker):
     calls: list = []
@@ -98,7 +98,7 @@ def test_a_failed_filing_does_not_abort_its_ticker():
 
     store = _Store()
     calls: list = []
-    ext = _extractor("def14a", calls, fail_on="FILING-2", store=store)
+    ext = _extractor("def14a_executive_pay", calls, fail_on="FILING-2", store=store)
 
     from src.gpt_extract.utils.schemas_gpt import LlmTask
 

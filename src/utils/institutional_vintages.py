@@ -329,9 +329,11 @@ def _apply_additions(df_book: pd.DataFrame, df_incoming: pd.DataFrame, amounts: 
 
 def _merge_addition_evidence(df_metadata: pd.DataFrame, df_rows: pd.DataFrame) -> None:
     """A summed amount inherits every class name, the least certain contributing source and every repair flag."""
-    df_metadata["class_evidence"] = df_rows.groupby("cusip")["class_evidence"].agg(
-        lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
-    )
+    # The broad path resolves without class evidence (it never reaches compact amounts).
+    if "class_evidence" in df_rows:
+        df_metadata["class_evidence"] = df_rows.groupby("cusip")["class_evidence"].agg(
+            lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
+        )
     for column, estimate in (
         ("value_basis_shares_source", "value_estimated"),
         ("value_basis_value_source", "market_estimated"),

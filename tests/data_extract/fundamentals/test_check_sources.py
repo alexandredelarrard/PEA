@@ -2,7 +2,8 @@
 `check_sources`: the read-only SEC vs Sharadar check on known-truth frames. One fixture, built so each finding has
 one cause: `totalRevenue` is 5% high on every SEC row, `netIncome` is 10% off on exactly 1 of 100 matched rows, `cash`
 (an expected fork) is 10% high on AAA only, `goodwill` exists in the SEC frame only, `totalAssets` agrees. CCC is in
-Sharadar only, DDD in SEC only, ZZZ is outside the universe, and BBB's Sharadar `secfilings` link names a foreign CIK.
+Sharadar only, DDD in SEC only, ZZZ is outside the universe, BBB's Sharadar `secfilings` link names a foreign CIK, and
+BF-B's vendor row is spelled `BF.B` and links a predecessor CIK its company owns.
 """
 
 from __future__ import annotations
@@ -18,9 +19,17 @@ from src.data_extract.utils.fundamentals.check_sources import (
     check_sources,
     log_source_check,
 )
-from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+from src.data_extract.utils.identity.cik_history import entity_by_cik_map
 
-_UNIVERSE = ["AAA", "BBB", "CCC", "DDD"]
+_UNIVERSE = ["AAA", "BBB", "BF-B", "CCC", "DDD"]
+_ROSTER = {"AAA": "1", "BBB": "0000000002", "BF-B": "0000000005", "CCC": "0000000003", "DDD": "0000000004"}
+#: the published lineage rows: BF-B's company also holds its predecessor CIK 0000000055
+_LINEAGE = pd.DataFrame(
+    {
+        "company_id": ["E1", "E2", "E5", "E5", "E3", "E4"],
+        "cik": ["0000000001", "0000000002", "0000000005", "0000000055", "0000000003", "0000000004"],
+    }
+)
 _QUARTERS = pd.date_range("2010-02-15", periods=50, freq="QS-FEB")
 _LINK = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-K"
 
@@ -52,8 +61,14 @@ def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
 def _vendor() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "ticker": ["AAA", "AAA", "BBB", "CCC"],
-            "secfilings": [_LINK.format(cik="0000000001"), _LINK.format(cik="0000000001"), _LINK.format(cik="0000000099"), "N/A"],
+            "ticker": ["AAA", "AAA", "BBB", "BF.B", "CCC"],
+            "secfilings": [
+                _LINK.format(cik="0000000001"),
+                _LINK.format(cik="0000000001"),
+                _LINK.format(cik="0000000099"),
+                _LINK.format(cik="55"),
+                "N/A",
+            ],
         }
     )
 
@@ -61,9 +76,8 @@ def _vendor() -> pd.DataFrame:
 @pytest.fixture(scope="module")
 def check() -> SourceCheck:
     sec, sharadar = _frames()
-    rows = [(t, f"000000000{i}", "cik_window", SENTINEL, None) for i, t in enumerate(_UNIVERSE, start=1)]
-    identity = dated_identity(rows, {t: f"000000000{i}" for i, t in enumerate(_UNIVERSE, start=1)})
-    return check_sources(sec, sharadar, _vendor(), identity, _UNIVERSE, gap_pct=0.03, field_share=0.05, top_tickers=3)
+    entities = entity_by_cik_map(_LINEAGE)
+    return check_sources(sec, sharadar, _vendor(), entities, _ROSTER, _UNIVERSE, gap_pct=0.03, field_share=0.05, top_tickers=3)
 
 
 def test_a_field_shifted_5pct_on_every_row_is_listed_worst_first(check: SourceCheck) -> None:
@@ -111,7 +125,8 @@ def test_a_foreign_cik_and_a_missing_link_are_listed(check: SourceCheck) -> None
     assert check.cik_mismatches == [("BBB", "0000000099", "0000000002")], check.cik_mismatches
     assert check.no_cik == ["CCC", "DDD"], check.no_cik
     print("\n=== SANITY CHECK: CIK alignment ===")
-    print(f"  mismatches (ticker, Sharadar CIK, identity CIK) {check.cik_mismatches}; AAA's two vendor rows agree;")
+    print(f"  mismatches (ticker, Sharadar CIK, roster CIK) {check.cik_mismatches}; AAA's two vendor rows agree (roster '1' padded);")
+    print("  vendor 'BF.B' matched as BF-B; its CIK 55 is its company's predecessor CIK -> not a mismatch, not missing;")
     print(f"  no parseable Sharadar CIK {check.no_cik} ('N/A' link, no vendor row). Validated.")
 
 

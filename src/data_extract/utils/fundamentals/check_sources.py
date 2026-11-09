@@ -2,7 +2,7 @@
 check_sources.py  (src/data_extract/utils/fundamentals/check_sources.py)
 ------------------------------------------------------------------------
 The read-only SEC vs Sharadar fundamentals check: a short log that says where to look, not a diagnosis. It reads the two
-stored histories, Sharadar's `secfilings` links and the identity lineage, and logs the tickers held by one history only,
+stored histories, Sharadar's `secfilings` links and the CIK lineage (`universe_cik_symbol`), and logs the tickers held by one history only,
 the Sharadar CIKs outside their company, the exact `(ticker, as_of)` match share, and the shared fields where enough
 matched rows differ. It writes nothing and never raises on a finding.
 """
@@ -11,17 +11,18 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
+from src.data_extract.utils.identity.cik_history import entity_by_cik_map, entity_or_singleton
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import secfilings_cik
+from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +56,15 @@ class SourceCheck:
 
 
 def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_pct: float, field_share: float, top_tickers: int) -> SourceCheck:
-    """Read the two histories, the Sharadar links and the identity once each, check them and log the result with its wall time."""
-    # the two histories on their shared statement fields, the vendor links, the identity
+    """Read the two histories, the Sharadar links and the CIK lineage once each, check them and log the result with its wall time."""
+    # the two histories on their shared statement fields, every vendor link (vendor spelling), the CIK -> company rows
     started = time.perf_counter()
     scope = {"ticker": list(tickers)}
     shared = [f for f in HISTORY_STATEMENT_ORDER if f in Tables.sharadar_fundamentals_history.read_columns]
     sec = context.store.load(Tables.sec_fundamentals_history, columns=[*_KEYS, *shared], where=scope, optional=True)
     sharadar = context.store.load(Tables.sharadar_fundamentals_history, columns=[*_KEYS, *shared], where=scope, optional=True)
-    vendor = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings"], where=scope, optional=True)
-    identity = load_identity(context)
+    vendor = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings"], optional=True)
+    lineage = context.store.load(Tables.universe_cik_symbol, columns=["company_id", "cik"], optional=True)
 
     # an absent table is an empty one: the check reports it instead of stopping
     empty = pd.DataFrame(columns=_KEYS)
@@ -71,7 +72,8 @@ def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_
         empty if sec is None else sec,
         empty if sharadar is None else sharadar,
         pd.DataFrame(columns=["ticker", "secfilings"]) if vendor is None else vendor,
-        identity,
+        {} if lineage is None else entity_by_cik_map(lineage),
+        context.universe.cik_by_ticker,
         tickers,
         gap_pct=gap_pct,
         field_share=field_share,
@@ -90,15 +92,17 @@ def check_sources(
     sec: pd.DataFrame,
     sharadar: pd.DataFrame,
     vendor: pd.DataFrame,
-    identity: Identity,
+    entity_by_cik: Mapping[str, str],
+    roster_cik: Mapping[str, str],
     universe: Sequence[str],
     *,
     gap_pct: float,
     field_share: float,
     top_tickers: int,
 ) -> SourceCheck:
-    """The pure check over frames: universe coverage, CIK alignment, and the shared float fields where at least
-    `field_share` of the exactly matched rows (both values present) differ by more than `gap_pct` of |Sharadar|."""
+    """The pure check over frames: universe coverage, CIK alignment (`entity_by_cik`: the lineage's `{padded CIK:
+    company_id}`; `roster_cik`: each universe ticker's CIK), and the shared float fields where at least `field_share` of
+    the exactly matched rows (both values present) differ by more than `gap_pct` of |Sharadar|."""
     # universe coverage
     members = set(universe)
     sec_tickers = set(sec["ticker"]) & members
@@ -109,7 +113,7 @@ def check_sources(
     sec_only = [c for c in sec.columns if c not in sharadar.columns and c not in _KEYS and pd.api.types.is_numeric_dtype(sec[c])]
     sec_in, sharadar_in = sec[sec["ticker"].isin(members)], sharadar[sharadar["ticker"].isin(members)]
     matched = sharadar_in[[*_KEYS, *fields]].merge(sec_in[[*_KEYS, *fields]], on=_KEYS, suffixes=("", "_sec"))
-    mismatches, no_cik = _cik_findings(vendor, identity, sorted(members))
+    mismatches, no_cik = _cik_findings(vendor, entity_by_cik, roster_cik, sorted(members))
 
     return SourceCheck(
         in_both=sorted(sec_tickers & sharadar_tickers),
@@ -141,8 +145,8 @@ def log_source_check(check: SourceCheck, seconds: float) -> None:
     if check.only_sharadar:
         logger.warning("fundamentals check: %d ticker(s) only in sharadar_fundamentals_history: %s", len(check.only_sharadar), check.only_sharadar)
     if check.cik_mismatches:
-        pairs = ", ".join(f"{t} sharadar={s} identity={i}" for t, s, i in check.cik_mismatches)
-        logger.warning("fundamentals check: %d Sharadar secfilings CIK(s) outside the identity lineage: %s", len(check.cik_mismatches), pairs)
+        pairs = ", ".join(f"{t} sharadar={s} roster={r}" for t, s, r in check.cik_mismatches)
+        logger.warning("fundamentals check: %d Sharadar secfilings CIK(s) outside their company's CIK lineage: %s", len(check.cik_mismatches), pairs)
     if check.no_cik:
         logger.warning("fundamentals check: %d ticker(s) with no parseable Sharadar CIK: %s", len(check.no_cik), check.no_cik)
 
@@ -168,16 +172,21 @@ def log_source_check(check: SourceCheck, seconds: float) -> None:
     logger.info("fundamentals check: done in %.1f s (read-only)", seconds)
 
 
-def _cik_findings(vendor: pd.DataFrame, identity: Identity, universe: list[str]) -> tuple[list[tuple[str, str, str]], list[str]]:
-    """`[(ticker, Sharadar CIK, identity roster CIK)]` for each vendor CIK its company does not own, and the universe
-    tickers with no parseable Sharadar CIK (no vendor row, or a link without one)."""
-    links = vendor[vendor["ticker"].isin(universe)]
-    ciks = pd.DataFrame({"ticker": links["ticker"].astype(str), "cik": [secfilings_cik(url) for url in links["secfilings"]]})
+def _cik_findings(
+    vendor: pd.DataFrame, entity_by_cik: Mapping[str, str], roster_cik: Mapping[str, str], universe: list[str]
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """`[(ticker, Sharadar CIK, roster CIK)]` for each vendor CIK whose company is not the ticker's, and the universe
+    tickers with no parseable Sharadar CIK (no vendor row, or a link without one). Vendor tickers are matched in the
+    repo's spelling (`BF.B` -> `BF-B`)."""
+    names = vendor["ticker"].map(yahoo_symbol)
+    keep = names.isin(universe)
+    ciks = pd.DataFrame({"ticker": names[keep], "cik": [secfilings_cik(url) for url in vendor.loc[keep, "secfilings"]]})
     ciks = ciks[ciks["cik"] != ""].drop_duplicates()
+    roster = {t: pad_cik(c) for t, c in roster_cik.items()}
     mismatches = [
-        (t, c, identity.roster_cik.get(t, ""))
+        (t, c, roster.get(t, ""))
         for t, c in zip(ciks["ticker"], ciks["cik"], strict=True)
-        if t not in identity.roster_cik or not identity.owns(t, c)
+        if not roster.get(t) or entity_or_singleton(entity_by_cik, c) != entity_or_singleton(entity_by_cik, roster[t])
     ]
     return sorted(mismatches), sorted(set(universe) - set(ciks["ticker"]))
 

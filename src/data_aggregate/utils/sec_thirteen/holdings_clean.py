@@ -1,4 +1,4 @@
-"""Shared 13F normalization, stored-ticker attachment, publication preparation and value repair."""
+"""Shared 13F date normalization, stored-ticker attachment and per-batch value repair."""
 
 from __future__ import annotations
 
@@ -16,10 +16,7 @@ from src.data_store.schema import Tables
 logger = logging.getLogger(__name__)
 
 
-#: Coerced to a midnight `datetime64` when present. `filing_date` is OPTIONAL on both tables
-#: (it is in `sec13f_hr.optional_columns`), which is why this is a membership test and not a
-#: bare list comprehension -- reading `h["filing_date"]` on a frame that lacks it raises
-#: `KeyError` before the assignment can create it.
+#: Coerced to a midnight `datetime64` when present; `filing_date` is optional on `sec13f_hr`.
 _DATES = ("period", "filing_date")
 
 
@@ -39,18 +36,8 @@ def attach_tickers(holdings: pd.DataFrame, universe: Sequence[str] | None = None
     return holdings.assign(ticker=stored.where(keep, None))
 
 
-def clean_public_holdings(
-    df_holdings: pd.DataFrame,
-    valuation_close: pd.DataFrame | None,
-    value_basis: Mapping[str, Any] | None,
-    *,
-    period_quotes: pd.Series | None = None,
-) -> pd.DataFrame:
-    """Repair raw accession values before reconciliation, retaining unsupported rows."""
-    if df_holdings.empty:
-        return df_holdings
-    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
-    log_register(df_register, float(df_holdings.value_usd.sum()))
+def _null_excluded_amounts(df_holdings: pd.DataFrame) -> pd.DataFrame:
+    """Null the shares and dollars of rows the value repair excluded; the rows stay in the book."""
     if "value_basis_excluded" in df_holdings:
         df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     return df_holdings
@@ -62,12 +49,22 @@ def clean_public_batches(
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
-    """Prepare shared quotes once, attach stored tickers and repair all completed books per batch."""
+    """Prepare shared quotes once, then per batch attach stored tickers and repair raw accession values before
+    reconciliation, retaining unsupported rows."""
     period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
     with closing(packets):
         for df_filings, df_raw in packets:
+            # Stored tickers, then one vector repair per non-empty batch; an empty batch passes through.
             df_holdings = attach_tickers(df_raw, universe)
-            df_holdings = clean_public_holdings(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
             del df_raw
+            df_holdings, df_register = (
+                (df_holdings, pd.DataFrame())
+                if df_holdings.empty
+                else repair_value_basis(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
+            )
+
+            # Report the unit decisions, then drop the excluded amounts.
+            log_register(df_register, float(df_holdings.value_usd.sum()) if not df_register.empty else 0.0)
+            df_holdings = _null_excluded_amounts(df_holdings)
             yield df_filings, df_holdings
             del df_filings, df_holdings

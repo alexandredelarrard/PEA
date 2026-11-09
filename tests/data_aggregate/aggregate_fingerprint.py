@@ -830,7 +830,7 @@ def compute() -> dict:
         momentum_characteristic,
         trailing_vol,
     )
-    from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
+    from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
     from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
     from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
     from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
@@ -1028,7 +1028,7 @@ def compute() -> dict:
             accepted_at=pd.NaT,
         )
     )
-    df_books = clean_public_holdings(attach_tickers(df_books), valuation_close, None)
+    df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), None, valuation_close, None))[1]
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
     book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None

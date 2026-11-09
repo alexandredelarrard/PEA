@@ -54,7 +54,9 @@ def repair_value_basis(
     keys = ["cik", "period", *(column for column in ("filing_date", "accession", "accession_number") if column in df_out)]
     value = pd.to_numeric(df_out["value_usd"], errors="coerce").astype("float64")
     shares = pd.to_numeric(df_out["shares"], errors="coerce").astype("float64")
-    quote = _row_quotes(df_out, close, period_quotes, max_age_days)
+    if period_quotes is None and "ticker" in df_out and close is not None and not close.empty:
+        period_quotes = period_close(close, df_out["period"], max_age_days)
+    quote = _row_quotes(df_out, period_quotes)
     common = df_out["position_type"].astype(str).str.lower().eq("common") if "position_type" in df_out else pd.Series(True, index=df_out.index)
     swapped = common & value.eq(shares) & shares.gt(0)
     ratio = (value / shares.where(shares.gt(0)) / quote).where(value.gt(0) & ~swapped & common)
@@ -91,13 +93,11 @@ def _repair_policy(policy: Mapping[str, Any] | None) -> tuple[int, float, float,
     return min_securities, min_agreement, price_tolerance, max_age_days
 
 
-def _row_quotes(df_out: pd.DataFrame, close: pd.DataFrame | None, period_quotes: pd.Series | None, max_age_days: int) -> pd.Series:
+def _row_quotes(df_out: pd.DataFrame, period_quotes: pd.Series | None) -> pd.Series:
     """The age-bounded report-period close of each row's ticker; NaN without a ticker or quote."""
     quote = pd.Series(np.nan, index=df_out.index, dtype=float)
     if "ticker" not in df_out:
         return quote
-    if period_quotes is None and close is not None and not close.empty:
-        period_quotes = period_close(close, df_out["period"], max_age_days)
     if period_quotes is not None:
         quote[:] = period_quotes.reindex(pd.MultiIndex.from_frame(df_out[["period", "ticker"]])).to_numpy()
     return quote
@@ -171,7 +171,13 @@ def _estimate_legs(
             eligible = common if is_common else pd.Series(True, index=df_out.index)
             uncertain = unverified & (raw.ne(0) | quantity.gt(0))
             uncertain |= swapped | df_out["value_basis_price_mismatch"] if is_common else raw.eq(quantity) & quantity.gt(0)
-            estimates[column] = _market_estimate(df_out, column, quantity, quote, eligible, uncertain)
+
+            # An eligible uncertain leg (also invalid, or zero with a quantity) becomes quantity x quote.
+            uncertain = uncertain | ~np.isfinite(df_out[column]) | df_out[column].lt(0) | (df_out[column].eq(0) & quantity.gt(0))
+            market_value = quantity * quote
+            market_value = market_value.where(eligible & quantity.gt(0) & np.isfinite(quantity) & np.isfinite(market_value))
+            df_out[column] = df_out[column].mask(eligible & uncertain, market_value)
+            estimates[column] = eligible & uncertain & market_value.notna()
         else:
             df_out[column] = df_out[column].mask(unverified & raw.ne(0))
         df_out[f"value_basis_{label}reconstructed"] = estimates[column]
@@ -179,17 +185,6 @@ def _estimate_legs(
             estimates[column], "market_estimated", np.where(df_out[column].notna(), "filed", "unknown")
         )
     return estimates
-
-
-def _market_estimate(
-    df_out: pd.DataFrame, column: str, quantity: pd.Series, quote: pd.Series, eligible: pd.Series, uncertain: pd.Series
-) -> pd.Series:
-    """Replace an eligible uncertain leg (also invalid or zero-with-quantity) by quantity x quote; return the estimated mask."""
-    uncertain = uncertain | ~np.isfinite(df_out[column]) | df_out[column].lt(0) | (df_out[column].eq(0) & quantity.gt(0))
-    market_value = quantity * quote
-    market_value = market_value.where(eligible & quantity.gt(0) & np.isfinite(quantity) & np.isfinite(market_value))
-    df_out[column] = df_out[column].mask(eligible & uncertain, market_value)
-    return eligible & uncertain & market_value.notna()
 
 
 def _keep_sibling_exposures(df_out: pd.DataFrame) -> None:

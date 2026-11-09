@@ -19,7 +19,7 @@ from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import _DATES, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import _DATES
 from src.data_aggregate.utils.sec_thirteen.institutional_books import compact_institutional_books
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     DELTA_FEATURES,
@@ -743,8 +743,14 @@ def _prepare_institutional_holdings(
     settle_trading_days: int,
 ) -> pd.DataFrame:
     """Preserve distinct immutable-vintage and legacy holdings preparation policies."""
+    if filings is not None and df_holdings.empty:
+        return df_holdings
     if filings is not None:
-        return clean_public_holdings(df_holdings, valuation_close, value_basis)
+        df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, value_basis)
+        log_register(df_register, float(df_holdings.value_usd.sum()))
+        if "value_basis_excluded" in df_holdings:
+            df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
+        return df_holdings
     df_holdings = clean_legacy_institutional_holdings(df_holdings, valuation_close, value_basis)
     if df_holdings.empty:
         return df_holdings

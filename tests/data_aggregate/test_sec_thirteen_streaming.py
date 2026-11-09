@@ -8,13 +8,14 @@ from contextlib import closing
 from typing import Any, cast
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
 from src.data_store.schema import Tables
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books, iter_snapshot_books, snapshot_feature_history
@@ -147,17 +148,23 @@ def test_streamed_value_repair_reuses_exact_age_bounded_quotes() -> None:
     raw = _payload().loc[lambda frame: frame.parse_status.eq("position")].iloc[:1].copy()
     raw["shares"], raw["value_usd"] = 2.0, 20.0
     periods = pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-12", "2024-05-18", "2024-05-25", "2024-05-28"])
-    expected = [clean_public_holdings(raw.assign(period=period), close, policy) for period in periods]
+    expected = [values.repair_value_basis(raw.assign(period=period), close, policy)[0] for period in periods]
 
     with patch.object(values, "period_close", wraps=values.period_close) as lookup:
         quotes = values.prepare_public_value_quotes(close, policy)
         assert lookup.call_count == 1
     with patch.object(values, "period_close", side_effect=AssertionError("quote history was rebuilt per book")):
-        actual = [clean_public_holdings(raw.assign(period=period), close, policy, period_quotes=quotes) for period in periods]
+        actual = [values.repair_value_basis(raw.assign(period=period), close, policy, period_quotes=quotes)[0] for period in periods]
 
     for before, after in zip(expected, actual, strict=True):
         pd.testing.assert_frame_equal(before, after)
     print("SANITY: one quote preparation preserves repair values/provenance before prices, on weekends, at expiry and after the final quote.")
+
+
+def _clean_union(raw: pd.DataFrame, universe: tuple[str, ...] | None, close: pd.DataFrame | None) -> pd.DataFrame:
+    """The whole position union cleaned as one batch."""
+    with closing(clean_public_batches(((pd.DataFrame(), raw) for _ in range(1)), universe, close, None)) as batches:
+        return next(batches)[1]
 
 
 def _version(cik: str, period: str, accession: str, filed: str, rows: list[dict[str, Any]], kind: str = "original") -> pd.DataFrame:
@@ -195,7 +202,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
         expected_packets = list(packets)
     manifests = pd.concat([packet[0] for packet in expected_packets], ignore_index=True)
     raw = pd.concat([packet[1] for packet in expected_packets], ignore_index=True)
-    prepared = clean_public_holdings(attach_tickers(raw, universe), close, None)
+    prepared = _clean_union(raw, universe, close)
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
@@ -441,7 +448,7 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     source = inputs.iter_filing_vintages(sqlite_store, grid.max(), chunksize=chunksize)
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
-        expected = clean_public_holdings(attach_tickers(raw), close, None)
+        expected = _clean_union(raw, None, close)
         expected_register = registers.pop()
         with closing(holdings_clean.clean_public_batches(source, None, close, None)) as batches:
             result = list(batches)
@@ -474,7 +481,8 @@ def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
     raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].reset_index(drop=True))
     raw.loc[raw.cusip.eq("000000001"), "ticker"] = "OUT"
     raw.loc[raw.cusip.eq("000000002"), "ticker"] = "_empty"
-    expected = clean_public_holdings(attach_tickers(raw, ("ABC",)), None, None)
+    expected, _ = values.repair_value_basis(attach_tickers(raw, ("ABC",)), None, None)
+    expected.loc[expected.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     packets = ((pd.DataFrame(), raw) for _ in range(1))
     with closing(holdings_clean.clean_public_batches(packets, ("ABC",), None, None)) as batches:
         [(_, actual)] = list(batches)

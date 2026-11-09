@@ -861,7 +861,6 @@ def compute() -> dict:
         cross_sectional_rank,
         cross_sectional_zscore,
     )
-    from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
     from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
@@ -1051,8 +1050,7 @@ def compute() -> dict:
         )
     )
     df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), None, valuation_close, None))[1]
-    df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
-    book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
+    book_history = prepare_superinvestor_book_history(((df_filings, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
     basis_grid = idx.union(pd.DatetimeIndex(df_books["period"].unique()))

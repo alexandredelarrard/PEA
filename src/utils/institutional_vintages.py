@@ -29,6 +29,20 @@ def full_13f_report(value: Any) -> bool:
     return str(value) in {"13F HOLDINGS REPORT", SEC_13F_INFERRED_HOLDINGS_REPORT}
 
 
+def single_version_books(manifests: pd.DataFrame) -> pd.Series:
+    """Manifest rows that are their report quarter's only version, an original or a restatement."""
+    versions = manifests.groupby(["cik", "period"])["accession_number"].transform("size")
+    return versions.eq(1) & manifests["amendment_type"].isin(["original", "restatement"])
+
+
+def single_version_support(df_single: pd.DataFrame) -> dict[str, Any]:
+    """The resolver's support columns for lone complete originals/restatements, without a replay: known, and
+    zero/comparison eligible unless restricted or not a full holdings report."""
+    restricted = df_single["restricted"].astype(bool).to_numpy()
+    eligible = ~restricted & df_single["report_type"].map(full_13f_report).to_numpy(dtype=bool)
+    return {"book_known": True, "zero_eligible": eligible, "comparison_eligible": eligible, "restricted": restricted, "resolution_status": "resolved"}
+
+
 def reconcile_13f_source(
     source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None, *, source_accounted: bool = False
 ) -> float | None:
@@ -94,32 +108,14 @@ def availability_date(
     *,
     settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
 ) -> pd.Series:
-    """The date each 13F `period` becomes public: deadline, snapped forward, plus the settle.
+    """The date each 13F `period` becomes public: the filing deadline snapped forward onto the trading calendar, plus
+    the settle, on `periods`' own index (a `DatetimeIndex` is its own index: a period -> date lookup).
 
-    Returns a `datetime64` Series on `periods`' own index (a `DatetimeIndex` input gets itself
-    as the index, so the result is a period -> date lookup).
-
-    ⚠ `NaT` PAST THE END OF THE GRID, NEVER THE LAST SESSION. A period whose availability date
-    the calendar has not reached yet is NOT available, and clamping it onto the last trading
-    day would publish the newest quarter days-to-weeks early -- the exact look-ahead the snap
-    direction is chosen to avoid. `fundamentals_to_daily` reindexes such a stamp away anyway,
-    so the honest value costs nothing and the clamped one is a trap.
-
-    ⚠ AND THE FIRST SESSION, WITH NO SETTLE, BEFORE THE START OF THE GRID -- which is the
-    opposite case and takes the opposite treatment. `sec13f_hr` carries periods back to
-    1987-03-31 while the trading grid starts in 1995, so those deadlines fall off the front.
-    They are not "unavailable": they were public years before the panel begins, and the first
-    session is the earliest date the panel can carry them. Adding the settle there would say
-    the 1987 filing season was still settling on the panel's fourth day, which is how the
-    L1/L9 floor came out four sessions later than the panel's own start.
-
-    `settle_trading_days=0` gives the snapped deadline with no buffer. That is the setting the
-    ISOLATION TEST uses, not a production option.
+    A deadline past the end of the calendar is NaT, never the last session (that would publish early); a deadline
+    before its start is the first session, without the settle (those books were public before the panel begins).
     """
     if settle_trading_days < 0:
         raise ValueError(f"settle_trading_days must be >= 0, got {settle_trading_days!r}")
-    # A `DatetimeIndex` input gets ITSELF as the index, which is what makes the result a
-    # `period -> availability date` lookup a caller can `.map()` with.
     values = pd.to_datetime(
         periods if isinstance(periods, pd.Series) else pd.Series(pd.DatetimeIndex(periods), index=pd.DatetimeIndex(periods)), errors="coerce"
     ).dt.normalize()
@@ -130,8 +126,7 @@ def availability_date(
 
     deadline = values + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
     snap = grid.searchsorted(deadline.to_numpy(), side="left")
-    # The settle applies only where the deadline is IN the grid's span. Before the start it
-    # would push a long-settled 1987 season into the panel's first week (see the docstring).
+    # The settle applies only where the deadline is inside the calendar.
     pos = np.where(deadline.to_numpy() < grid[0].to_datetime64(), snap, snap + settle_trading_days)
     return pd.Series(
         np.where(
@@ -334,10 +329,9 @@ def _apply_additions(df_book: pd.DataFrame, df_incoming: pd.DataFrame, amounts: 
 
 def _merge_addition_evidence(df_metadata: pd.DataFrame, df_rows: pd.DataFrame) -> None:
     """A summed amount inherits every class name, the least certain contributing source and every repair flag."""
-    if "class_evidence" in df_rows:
-        df_metadata["class_evidence"] = df_rows.groupby("cusip")["class_evidence"].agg(
-            lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
-        )
+    df_metadata["class_evidence"] = df_rows.groupby("cusip")["class_evidence"].agg(
+        lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
+    )
     for column, estimate in (
         ("value_basis_shares_source", "value_estimated"),
         ("value_basis_value_source", "market_estimated"),

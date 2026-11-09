@@ -3,7 +3,8 @@
 `document_worklist`: the local EDGAR index rows of the table's forms for
 each key's filing scope (event CIKs and CIK windows), from the floor on and filed on or before the key's `ended_on`
 (`Universe.bounds`), minus the accessions already
-stored (empty-filing markers included; optionally only on the rows of one source); newest first and capped per run.
+stored (empty-filing markers included; optionally only on the rows of one source); newest first and capped per run
+(a `fill_cold` request lists a key with no stored row in full, outside the cap).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
 from src.data_extract.utils.common.resume import (
     DONE_TABLE,
@@ -90,7 +92,8 @@ class WorklistRequest:
     """One walk's planning inputs: the `keys` (`ticker`, `cik`) on the `as_of` run date, the table's `forms`, the
     `identity` (None: roster CIKs only), the `years_history` window, the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped).
     `listing_floor` replaces the window floor (a source-history fetch lists from its source start); `done_accessions`
-    replaces the scope/filter read with the fetch's own stored-set rule."""
+    replaces the scope/filter read with the fetch's own stored-set rule. `fill_cold` lists every key with no stored
+    row (absent table or never fetched) in full, outside the cap."""
 
     keys: pd.DataFrame
     as_of: pd.Timestamp
@@ -104,6 +107,13 @@ class WorklistRequest:
     cap: int | None = None
     listing_floor: pd.Timestamp | None = None
     done_accessions: DoneFn | None = None
+    fill_cold: bool = False
+
+
+def _cold_keys(context: Context, table: Table, keys: Sequence[str]) -> frozenset[str]:
+    """The `keys` with no row in `table` (markers included); all of them when the table is absent."""
+    key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
+    return frozenset(keys) - stored_values(context, table, key_col, where={key_col: list(keys)})
 
 
 def document_worklist(context: Context, table: Table, request: WorklistRequest) -> DocumentWork:
@@ -135,6 +145,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         done = request.done_accessions(context, list(roster), runtime_floor)
     else:
         done = stored_accessions(context, table, list(roster), request.done_scope, request.done_where)
+    cold = _cold_keys(context, table, list(roster)) if request.fill_cold else frozenset()
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = context.universe.new_since(overlap, as_of) if overlap else set()
@@ -150,6 +161,16 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
             counts[name] = counts.get(name, 0) + n
         if not df_units.empty:
             units[ticker] = df_units
-    units, uncapped = _cap(units, request.cap, table.name)
+    capped, uncapped = _cap({key: df for key, df in units.items() if key not in cold}, request.cap, table.name)
+    n_cold = sum(len(df) for key, df in units.items() if key in cold)
+    if n_cold:
+        logger.info(
+            "%s: %d cold key(s) with no stored row list all %d of their document(s), outside the per-run cap",
+            table.name,
+            len(cold & set(units)),
+            n_cold,
+        )
+    units = {key: df if key in cold else capped[key] for key, df in units.items() if key in cold or key in capped}
+    uncapped += n_cold
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
     return DocumentWork(units=units, counts=counts, uncapped=uncapped, timings=timings)

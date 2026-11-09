@@ -79,7 +79,7 @@ The SEC history build sorts each ticker before any replay:
 
 Full replays run in a process pool of `fundamentals_workers` and take seconds per ticker. Facts and history are separate commands with no hand-off between them: the triage reads only stored facts and stored rows, so a `sec-fundamentals-facts -F` re-read of already-stored filings must be followed by `sec-fundamentals-history --full` (or `--verify-history`, as above) on the same tickers.
 
-Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings. A chunk larger than `max_documents_per_run` drains over several runs unless `--no-cap` is given.
+Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings. A ticker with no `sec_fundamentals_facts` row is listed in full outside `max_documents_per_run`, so its first history is never built from a newest-only suffix. For tickers that already hold facts, a gap larger than the cap drains over several runs unless `--no-cap` is given. Older filings back-filled under an already-published history trip the append-only guard; run `sec-fundamentals-history --full -t ...` on those tickers once the gap has drained.
 
 Choose the narrowest repair:
 
@@ -137,7 +137,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 ## Document backlogs and markers
 
-A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. Before it, read the work list without touching SEC:
+A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. `sec_fundamentals_facts` is the exception: its walk never caps a ticker with no stored row, so a cleared table refills on the nightly run. Before it, read the work list without touching SEC:
 
 ~~~bash
 rtk "$PY" -m src data_extract edgar-index

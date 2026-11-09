@@ -331,8 +331,8 @@ class EdgarFetch:
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
     `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
     `save` replaces the per-table key save. `source_history` lists filings, and refreshes the index, from the done
-    table's source start rather than the run's window (gap filings). The done table owns the description, forms
-    and marker stamps.
+    table's source start rather than the run's window (gap filings). `fill_cold` lists a key with no stored row in
+    full, outside the per-run cap. The done table owns the description, forms and marker stamps.
     """
 
     tables: tuple[Table, ...]
@@ -347,6 +347,7 @@ class EdgarFetch:
     save: SaveFn | None = None
     source_history: bool = False
     done_accessions: DoneFn | None = None
+    fill_cold: bool = False
 
     @property
     def done(self) -> Table:
@@ -701,6 +702,7 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
         cap=run.cap,
         listing_floor=_source_start(fetch) if fetch.source_history else None,
         done_accessions=fetch.done_accessions,
+        fill_cold=fetch.fill_cold,
     )
     return document_worklist(context, fetch.done, request)
 

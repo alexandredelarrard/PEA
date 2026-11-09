@@ -324,3 +324,88 @@ def test_an_empty_database_gets_both_sharadar_tables_from_the_nightly_writers(
     print(
         f"  -> {Tables.sharadar_fundamentals_history}: {len(columns)} columns (DATE keys, DOUBLE values), PK (ticker, as_of), indexes {history_indexes}; 6 rows. Validated."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Cold tickers fill in full on the nightly run (per-run cap)                  #
+# --------------------------------------------------------------------------- #
+def _nightly_walk(ctx: Any, tickers: list[str], monkeypatch: pytest.MonkeyPatch, accessions: dict[str, list[int]]) -> Any:
+    """One nightly facts walk (default `-F`-less, capped run) over an index holding `accessions[ticker]`'s quarters,
+    CIKs as `fake_context` seeded them (universe position + 1)."""
+    universe = ctx.universe.frame.set_index("ticker")["cik"].astype(int).to_dict()
+    rows: list[tuple[int | str, str, str, str, str]] = []
+    quarter_of: dict[str, int] = {}
+    for ticker, quarters in accessions.items():
+        for i in quarters:
+            _start, _end, label, filed = _QUARTERS[i]
+            accession = _accession(universe[ticker], i)
+            rows.append((universe[ticker], f"{ticker} Co", "10-K" if label == "Q4" else "10-Q", filed, accession))
+            quarter_of[accession] = i
+    seed_index(ctx, rows)
+    monkeypatch.setattr(facts_mod, "filing_rows", _filing_rows(set(), quarter_of))
+    fetch = dataclasses.replace(SEC_FUNDAMENTALS_FETCH, run_scope=None, parse=partial(parse_fundamentals, catalogue=None, gics_by_ticker={}))
+    return run_edgar_fetch(ctx, fetch, roster_run(ctx, tickers, as_of=_AS_OF), max_workers=1)
+
+
+def _stored_filings(store: DataStore) -> dict[str, int]:
+    stored = store.load(Tables.sec_fundamentals_facts, columns=["ticker", "accession_number"], markers=True)
+    return stored.groupby("ticker")["accession_number"].nunique().to_dict()
+
+
+def test_cold_tickers_fill_in_full_and_the_next_night_is_a_no_op(tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty database, per-run cap 2, two tickers of 4 filings, nightly walk + history build until the walk lists
+    nothing: the first night reads every filing of both cold tickers and the history replays them in full; the
+    second night lists nothing. A capped first night instead back-fills older quarters on later nights, and the
+    night the Q4 row's TTM becomes computable the drift guard raises."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], max_documents_per_run=2)
+    history_ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.cold"), config_dir=str(CONFIG_DIR))
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+
+    listed: list[int] = []
+    for night in range(1, 6):
+        summary = _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every)
+        listed.append(summary.work.size)
+        print(f"\n  night {night}: listed {summary.work.size} of {summary.work.uncapped}; stored filings {_stored_filings(sqlite_store)}")
+        if night == 1:
+            night_one = _stored_filings(sqlite_store)
+        build_history.build_fundamentals_history(history_ctx, ["AAA", "BBB"])
+        if summary.work.size == 0:
+            break
+    history = sqlite_store.load(Tables.sec_fundamentals_history)
+
+    assert night_one == {"AAA": 4, "BBB": 4}, night_one
+    assert listed == [8, 0], listed
+    assert not ctx.errors, ctx.errors
+    assert history.groupby("ticker").size().to_dict() == {"AAA": 4, "BBB": 4}
+    # the Q4 event's TTM revenue is the four quarters 100 + 101 + 102 + 103
+    assert history.sort_values("as_of").groupby("ticker")["totalRevenue"].last().eq(406.0).all(), history[["ticker", "as_of", "totalRevenue"]]
+
+    print("=== SANITY CHECK: cold tickers on a capped nightly run ===")
+    print("  cap 2, 8 cold filings: night 1 read all 8 (no cap ERROR), the history replayed 4 events per ticker in full (Q4 TTM revenue 406);")
+    print(f"  night 2 listed 0 documents (nights {listed}) and the history build skipped both tickers: no back-fill, no drift. Validated.")
+
+
+def test_a_warm_ticker_keeps_the_cap_while_a_cold_one_fills(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """BBB already holds its newest filing (warm, 3 older ones missing); AAA holds nothing (cold). Under cap 2,
+    AAA lists all 4 filings outside the cap, BBB only its 2 newest missing ones."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], max_documents_per_run=2)
+    _nightly_walk(ctx, ["BBB"], monkeypatch, {"BBB": [3]})
+    assert _stored_filings(sqlite_store) == {"BBB": 1}
+    caplog.clear()
+
+    summary = _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]})
+    stored = sqlite_store.load(Tables.sec_fundamentals_facts, columns=["ticker", "accession_number"])
+    bbb = sorted(int(a[-1]) for a in stored.loc[stored["ticker"] == "BBB", "accession_number"].unique())
+
+    assert len(summary.work.units["AAA"]) == 4 and len(summary.work.units["BBB"]) == 2, {k: len(v) for k, v in summary.work.units.items()}
+    assert summary.work.uncapped == 7
+    assert bbb == [1, 2, 3], bbb
+    capped = [r.getMessage() for r in caplog.records if "exceeds the per-run cap" in r.getMessage()]
+    assert capped == [
+        "sec_fundamentals_facts: work list of 3 document(s) exceeds the per-run cap of 2; the newest 2 run tonight, the rest on later runs"
+    ], capped
+    print("\n=== SANITY CHECK: warm ticker capped, cold ticker uncapped ===")
+    print(f"  7 missing filings, cap 2: cold AAA read 4/4 outside the cap; warm BBB read its 2 newest (quarters {bbb[:2]}), Q1 left for")
+    print("  a later night, with the cap ERROR naming the warm list's 3 documents only. Validated.")

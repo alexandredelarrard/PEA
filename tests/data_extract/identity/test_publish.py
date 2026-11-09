@@ -111,7 +111,7 @@ def _step(store: DataStore) -> Any:
     life = pd.DataFrame([("AAA", "E0000000100", "0000000100", "AAA", pd.Timestamp("2000-01-03"), pd.NaT, "active")], columns=list(LIFE_COLUMNS))
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, context.config_dir, log
-    step._started, step._first_build = pd.Timestamp("2026-11-05 10:00:00"), False
+    step._started = pd.Timestamp("2026-11-05 10:00:00")
     step._symbols = SimpleNamespace(
         rows=_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)), blocked=pd.DataFrame(columns=list(BLOCKED_COLUMNS))
     )

@@ -32,7 +32,6 @@ IDENTITY_STAGE = (
     "notes_download",
     "ftd_download",
     "dei_capture",
-    "ftd_capture",
     "form345_scan",
     "symbol_tenure",
     "company_anchor",
@@ -74,7 +73,6 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(identity_module, "pending_dei_periods", lambda context, cache, full: mark("dei_capture", [])())
-    monkeypatch.setattr(identity_module, "capture_ftd_lines", lambda context, plan, scope, changed: mark("ftd_capture", (pd.DataFrame(), []))())
 
     def form345_scan(cache):
         assert cache == Path("cache") / "sec_insider_transactions"
@@ -113,8 +111,6 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
-    # a stored lineage: the daily identity flow, no cold start
-    monkeypatch.setattr(identity_module, "load_stored_lineage", lambda context: pd.DataFrame({"cik": ["0000000001"]}))
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)

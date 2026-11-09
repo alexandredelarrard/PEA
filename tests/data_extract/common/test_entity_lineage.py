@@ -98,6 +98,7 @@ def _symbol_step(context: Any, history: Any, symbols: Any = None) -> Any:
     step._context, step._config_dir, step._log = context, getattr(context, "config_dir", CONFIG_DIR), logging.getLogger("test.symbol_history")
     step._cik_history, step._symbols, step._cusips, step._lifecycle = history, symbols, None, None
     step._anchor = CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik=dict(context.universe.cik_by_ticker))
+    step._ftd_cache = Path("no-ftd-zip-cache")  # an FTD cache holding no zip: the CUSIP history leaves universe_cusip unchanged
     return step
 
 

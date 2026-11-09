@@ -520,10 +520,10 @@ _IDENTITY_STAGES = (
 
 @cli.command(
     name="identity",
-    help="Identity layer, OFFLINE (cached zips + DB): capture the evidence (Notes cover-page symbols, FTD lines, Form 3/4/5 "
-    "tenure), anchor each company, build its CIK, symbol and CUSIP history, then propagate the changes. --only runs one stage "
-    f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
-    "`identity`, then `identity --only capture-evidence -F`, then `identity --only publish` (the only stage that saves).",
+    help="Identity layer, OFFLINE (cached zips + DB): capture the evidence (Notes cover-page symbols, Form 3/4/5 tenure), "
+    "anchor each company, build its CIK and symbol history, its CUSIP history from the cached FTD zips, then propagate the "
+    f"changes. --only runs one stage ({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every "
+    "ticker. `publish` is the only stage that saves; one `identity` run also builds a cold store.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

@@ -1,8 +1,8 @@
 """CUSIP history of `universe_cusip`: which security a market-tape line is, its issuer CIK, class and role, dated from the
 first evidence of its CUSIP.
 
-FTD capture: the cached FTD lines of the universe companies' lineage symbols and CUSIP-6 prefixes (their Sharadar CUSIPs,
-the curated CUSIPs and the prefixes the lineage votes for on the FTD lines), recomputed every run; nothing else is kept.
+FTD evidence: the cached FTD lines of the universe companies' lineage symbols and CUSIP-6 prefixes (their Sharadar CUSIPs,
+the curated CUSIPs and the prefixes the lineage votes for on the FTD lines), read from the zips every run and never stored.
 Lines: one per (CUSIP, FTD symbol). The issuer of each CUSIP-9 comes from lineage symbol-interval votes (inherited across a
 CUSIP-6 within the voters' era); a line runs over the FINRA days of its symbol and back to its CUSIP's first 13F period
 when the company's Sharadar CUSIPs or its dated names confirm it (a name never confirms a foreign CUSIP-6). The class needs
@@ -26,7 +26,6 @@ from tqdm import tqdm
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.identity_contract import ROLE_SYMBOL, ROLE_WINDOW, SENTINEL_START, entity_or_singleton
-from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.common.security_lines import (
     ACQUIRED_CONSTITUENT,
     EXCLUDED,
@@ -36,18 +35,14 @@ from src.data_extract.utils.common.security_lines import (
     trade_dates,
 )
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd_zip
-from src.data_store.schema import Tables
 from src.utils.identity_flags import FLAG_COLUMNS
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
 from src.utils.string import normalise_ticker, pad_cik_series, squash
 
 logger = logging.getLogger(__name__)
 
-#: The stored FTD line columns the lines derive from, and those the capture votes with.
+#: The FTD line columns the CUSIP lines derive from: the only ones kept from each zip.
 OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
-VOTE_COLUMNS = ("trade_date", "cusip", "source_symbol")
-#: The stored lineage columns the FTD capture scope reads.
-FTD_LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "scope_changed_at")
 #: The Sharadar ticker columns read for a company's CUSIPs and names; the SEC profile columns read for its dated names.
 SHARADAR_CUSIP_COLUMNS = ("permaticker", "name", "cusips")
 PROFILE_NAME_COLUMNS = ("cik", "name", "former_names")
@@ -176,23 +171,11 @@ Bound = tuple[pd.Timestamp, pd.Timestamp, str, str, str, str]
 # The build's records
 @dataclass(frozen=True)
 class FtdScope:
-    """What the FTD capture keeps: the squashed lineage symbols, the CUSIP-6 prefixes, the tape intervals that vote, and
-    whether a lineage set it (`ready`)."""
+    """What the FTD evidence keeps: the squashed lineage symbols, the CUSIP-6 prefixes and the tape intervals that vote."""
 
-    symbols: frozenset[str] = frozenset()
-    prefixes: frozenset[str] = frozenset()
-    tape: pd.DataFrame = field(default_factory=pd.DataFrame)
-    ready: bool = False
-
-
-@dataclass(frozen=True)
-class FtdCapture:
-    """Where and over which periods the FTD capture reads: the cache, the history in years, `full` and the run date."""
-
-    cache: Path
-    years_history: int
-    full: bool
-    as_of: pd.Timestamp
+    symbols: frozenset[str]
+    prefixes: frozenset[str]
+    tape: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -408,132 +391,50 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
     return float(sum((min(b, horizon) - a).days for a, b in spans if min(b, horizon) > a))
 
 
-# The FTD capture
-def ftd_scope(lineage: pd.DataFrame | None, cusips: Mapping[str, frozenset[str]], stored: pd.DataFrame | None, manual: SecurityManual) -> FtdScope:
-    """The capture scope: the lineage's non-noise symbols, and the CUSIP-6 of the universe companies' Sharadar CUSIPs, of
-    the curated CUSIPs and of the captured FTD lines the lineage tape votes for (recomputed each run); unset without a lineage."""
-    # nothing is in scope before the first lineage build
-    if lineage is None:
-        return FtdScope()
-
-    # the lineage symbols and the curated and Sharadar prefixes
+# The FTD evidence
+def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manual: SecurityManual) -> FtdScope:
+    """The evidence scope: the lineage's non-noise symbols, the CUSIP-6 of the universe companies' Sharadar CUSIPs and of
+    the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
     rows = lineage[lineage["role"].eq(ROLE_SYMBOL) & lineage["status"].ne("noise")]
     symbols = frozenset(key for key in rows["symbol"].map(squash) if key)
     curated = set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna()) | {c for group in cusips.values() for c in group}
-
-    # the prefixes the lineage votes for on the captured lines
-    tape = tape_intervals(lineage)
-    keyed = pd.DataFrame(columns=["cusip", "key", "trade_date"])
-    if stored is not None and not stored.empty:
-        keyed = pd.DataFrame(
-            {
-                "cusip": stored["cusip"].astype(str).str.upper(),
-                "key": stored["source_symbol"].map(squash),
-                "trade_date": pd.to_datetime(stored["trade_date"]),
-            }
-        )
-    voted = set(_votes(keyed.drop_duplicates(ignore_index=True), tape)["cusip"])
-    return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated | voted if c), tape=tape, ready=True)
+    return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated if c), tape=tape_intervals(lineage))
 
 
-def changed_ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], as_of: pd.Timestamp) -> FtdScope:
-    """The symbols and Sharadar CUSIP-6 of the companies whose lineage changed recently: every cached period is re-read for them."""
-    # the companies whose latest scope stamp falls in the re-check window
-    stamps = pd.to_datetime(lineage["scope_changed_at"], errors="coerce").groupby(lineage["company_id"].astype(str)).max()
-    entities = set(recently_changed({str(k): v for k, v in stamps.items()}, as_of))
-    changed = lineage[lineage["company_id"].astype(str).isin(entities)]
+def read_ftd_evidence(context: Context, cache: Path, scope: FtdScope) -> pd.DataFrame:
+    """The in-scope lines of every cached FTD period, observation columns only, read from the zips and never stored; a
+    CUSIP-6 the lineage tape votes for on them is read again from the periods that hold it."""
+    # every period, filtered as it is read (one raw period in memory at a time), with the CUSIP-6 prefixes it holds
+    periods = sorted(ftd_zip.cached_ftd_periods(cache))
+    kept, held, keys = [], {}, {}
+    for period in tqdm(periods, desc="FTD evidence"):
+        if (raw := ftd_zip.read_ftd_period(context, cache, period, download=False)) is not None:
+            keys.update({value: squash(value) for value in raw["source_symbol"].unique() if value not in keys})
+            held[period] = frozenset(raw["cusip"].str[:6].unique())
+            kept.append(_in_scope(raw, keys, scope.symbols, scope.prefixes))
+    lines = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
 
-    # their non-noise symbols and their tickers' Sharadar prefixes
-    rows = changed[changed["role"].eq(ROLE_SYMBOL) & changed["status"].ne("noise")]
-    symbols = frozenset(key for key in rows["symbol"].map(squash) if key)
-    tickers = set(changed["canonical_ticker"].dropna().astype(str))
-    return FtdScope(symbols=symbols, prefixes=frozenset(c[:6] for ticker in tickers for c in cusips.get(ticker, ())))
-
-
-def capture_ftd_lines(context: Context, plan: FtdCapture, scope: FtdScope, changed: FtdScope) -> tuple[pd.DataFrame, list[str]]:
-    """The in-scope lines of the pending cached periods, then of every cached period for a CUSIP-6 newly voted for or a
-    changed scope; returns the unique lines and the periods they reconcile (none before the first lineage build)."""
-    # nothing to capture before the first lineage build
-    if not scope.ready:
-        logger.info("FTD capture: no universe_cik_symbol yet (cold start); nothing captured until the lineage is built")
-        return pd.DataFrame(columns=list(ftd_zip.SECURITY_COLUMNS)), []
-
-    # the pending periods, read with the scope
-    pending = ftd_zip.pending_ftd_periods(context, plan.cache, plan.years_history, full=plan.full, as_of=plan.as_of)
-    cached = ftd_zip.cached_ftd_periods(plan.cache)
-    first = {
-        p: f
-        for p in tqdm([p for p in pending if p in cached], desc="FTD capture")
-        if (f := ftd_zip.read_ftd_period(context, plan.cache, p, download=False)) is not None
-    }
-    first = {p: f[f["source_symbol"].map(squash).isin(scope.symbols) | f["cusip"].str[:6].isin(scope.prefixes)] for p, f in first.items()}
-    kept = pd.concat(first.values(), ignore_index=True) if first else pd.DataFrame(columns=list(ftd_zip.SECURITY_COLUMNS[:9]))
-
-    # a CUSIP-6 the lineage votes for in these lines, or a changed scope, re-reads every cached period
-    keyed = pd.DataFrame(
-        {"cusip": kept["cusip"].astype(str).str.upper(), "key": kept["source_symbol"].map(squash), "trade_date": pd.to_datetime(kept["trade_date"])}
-    )
+    # the prefixes the tape votes for, re-read from the periods holding one
+    keyed = pd.DataFrame({"cusip": lines["cusip"], "key": lines["source_symbol"].map(keys), "trade_date": pd.to_datetime(lines["trade_date"])})
     added = frozenset(str(c)[:6] for c in _votes(keyed.drop_duplicates(ignore_index=True), scope.tape)["cusip"]) - scope.prefixes
-    rescan = added | changed.prefixes
-    again: dict[str, pd.DataFrame] = {}
-    if rescan or changed.symbols:
-        logger.info(
-            "FTD capture: re-reading every cached period for %d changed symbol(s) and %d CUSIP-6 prefix(es) (%s)",
-            len(changed.symbols),
-            len(rescan),
-            ", ".join(sorted(rescan)),
-        )
-        frames = {
-            p: f
-            for p in tqdm(sorted(cached), desc="FTD capture")
-            if (f := ftd_zip.read_ftd_period(context, plan.cache, p, download=False)) is not None
-        }
-        again = {
-            p: f[f["source_symbol"].map(squash).isin(scope.symbols) | f["cusip"].str[:6].isin(scope.prefixes | rescan)] for p, f in frames.items()
-        }
+    again = [period for period, prefixes in held.items() if added & prefixes]
+    if again:
+        logger.info("FTD evidence: %d voted CUSIP-6 prefix(es) re-read from %d period(s)", len(added), len(again))
+    for period in again:
+        kept.append(_in_scope(ftd_zip.read_ftd_period(context, cache, period, download=False), keys, frozenset(), added))
 
-    # the unique lines, stamp columns empty until the master stamps them
-    kept = ftd_zip.unique_ftd_keys(pd.concat([kept, *again.values()], ignore_index=True), "FTD capture")
-    rows = kept.assign(security_id=None, ticker=None, lineage_role=None, security_class=None)[list(ftd_zip.SECURITY_COLUMNS)]
+    # the unique lines
+    lines = ftd_zip.unique_ftd_keys(pd.concat(kept, ignore_index=True) if kept else lines, "FTD evidence")
     logger.info(
-        "FTD capture: %d period(s) read, %d in-scope line(s) (%d symbol(s), %d CUSIP-6 prefix(es) in scope)",
-        len(pending),
-        len(rows),
+        "FTD evidence: %d period(s), %d in-scope line(s) (%d symbol(s), %d CUSIP-6 prefix(es))",
+        len(periods),
+        len(lines),
         len(scope.symbols),
         len(scope.prefixes | added),
     )
-    return rows, sorted(set(first) | set(again))
+    return lines
 
 
-def save_ftd_lines(context: Context, rows: pd.DataFrame, periods: Sequence[str]) -> int:
-    """New raw units and retained, explicitly unverified derived rows commit as one source pair per period."""
-    # the derived rows the periods already hold
-    columns = context.store.columns(Tables.sec_fails_to_deliver)
-    previous = context.store.load(Tables.sec_fails_to_deliver, columns=columns, where={"period": list(periods)}, optional=True) if periods else None
-
-    # each period: its raw lines replace the stored ones, its derived rows stay but lose their checked quiet zeros
-    observed = previous if previous is not None else ftd_zip.empty_fails_grain()
-    if "source_checked_at" not in observed:
-        observed = observed.assign(source_checked_at=pd.Series(pd.NaT, index=observed.index, dtype="datetime64[ns]"))
-    written = 0
-    for period in periods:
-        payload = rows.loc[rows["period"].eq(period)]
-        expected = observed.loc[observed["period"].eq(period)]
-        retained = expected.assign(source_checked_at=pd.Series(pd.NaT, index=expected.index, dtype="datetime64[ns]"))
-        quiet = expected["source_checked_at"].notna() & expected["fails_quantity"].eq(0)
-        retained.loc[quiet, ["fails_quantity", "fails_value"]] = float("nan")
-        counts = ftd_zip.replace_fails_source(
-            context.store,
-            {Tables.sec_fails_to_deliver_security: payload, Tables.sec_fails_to_deliver: retained},
-            {Tables.sec_fails_to_deliver_security: {"period": period}, Tables.sec_fails_to_deliver: {"period": period}},
-            # an absent table (first build) holds no source to guard
-            expected_source={Tables.sec_fails_to_deliver: expected} if previous is not None else None,
-        )
-        written += counts[Tables.sec_fails_to_deliver_security]
-    return written
-
-
-# The observations, the lineage view and the listings
 def prepare_observations(observations: pd.DataFrame) -> pd.DataFrame:
     """The FTD lines typed: settlement and trade dates, upper-case CUSIP, normalised symbol and its key, price, period."""
     obs = observations.copy()
@@ -634,6 +535,12 @@ def ftd_lines(obs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         )
     )
     return lines, spans
+
+
+def _in_scope(raw: pd.DataFrame, keys: Mapping[str, str], symbols: frozenset[str], prefixes: frozenset[str]) -> pd.DataFrame:
+    """The observation columns of the raw lines whose squashed symbol is in `symbols` or whose CUSIP-6 is in `prefixes`."""
+    in_scope = raw["source_symbol"].map(keys).isin(symbols) | raw["cusip"].str[:6].isin(prefixes)
+    return raw.loc[in_scope, list(OBSERVATION_COLUMNS)]
 
 
 def _votes(keyed: pd.DataFrame, tape: pd.DataFrame) -> pd.DataFrame:

@@ -432,7 +432,6 @@ After this migration is reviewed:
 
 - **Placement exceptions.** Move `insider_common`, `security_tape`, `empty_markers`, `html_text` and `parallel_fetch` into `src/data_extract/utils/common/`; they are 63 of the `PLACEMENT_EXCEPTIONS` of [test_helper_duplicates.py](../tests/data_extract/test_helper_duplicates.py) (deferred, user decision).
 - **Earnings-call attribution off `symbol_tenure` (X70, deferred; user kept the tenure 2026-11-06).** Moving `Identity.entity_for` and the cube's call-issuer check to the published identity misattributes calls under symbols reused outside the universe (VC to VTR, AA to HWM, CG to L, CEG 2008-2011): the published tables hold universe companies only. Options: publish the outside holders of universe symbols, or keep the tenure as the attribution source. Until then the 20 `rejected` tenure entries stay.
-- **Accepted (X113).** The FTD capture keeps its 7-day recheck window; no capture-stamp column.
 - **Accepted (X109a).** A conversion-ratio change hidden inside an already collapsed 13F company row is not detected.
 
 ## SEC 13F feature science follow-ups 2026-10-25

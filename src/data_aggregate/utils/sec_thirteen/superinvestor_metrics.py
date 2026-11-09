@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.quotes import period_bases
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import BookKey, PublicBook, PublicBookSnapshot
 from src.utils.price.levels import convert_quantities
 
@@ -119,7 +119,9 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     levels["held"][rows, cols] = grouped.held.any().astype(float).where(grouped.held_known.all()).to_numpy()[inside]
     levels["top"][rows, cols] = grouped.top10.any().astype(float).to_numpy()[inside]
     levels["value"][rows, cols] = df_tickers.value_usd.to_numpy()[inside]
-    comparison = df_positions[["_book", "_cusip", "ticker", "shares", "quantity_known", "class_evidence"]].sort_values("_book", kind="stable")
+    df_positions["value"] = df_positions.value_usd.where(df_positions.value_known)
+    kept = ["_book", "_cusip", "ticker", "shares", "value", "quantity_known", "class_evidence"]
+    comparison = df_positions[kept].sort_values("_book", kind="stable")
     codes = {book: code for code, book in enumerate(books)}
     previous = {period: (period.to_period("Q") - 1).end_time.normalize() for period in {book.period for book in books}}
     return BookTable(codes, previous, comparison.reset_index(drop=True), starts, has_class, levels["held"], levels["top"], levels["value"], total)
@@ -208,7 +210,7 @@ def join_pairs(pairs: Sequence[tuple[PublicBook, PublicBook]], table: BookTable)
     # A changed identity/class is not an evidenced split or a verified round trip.
     both = df_pair._merge.eq("both")
     classed = np.array([table.has_class[table.codes[current]] and table.has_class[table.codes[prior]] for current, prior in pairs], dtype=bool)
-    df_pair["known"] &= ~both | df_pair.ticker_current.eq(df_pair.ticker_prior)
+    df_pair["known"] &= ~both | df_pair.ticker_current.fillna("").eq(df_pair.ticker_prior.fillna(""))
     df_pair["known"] &= ~both | ~classed[df_pair["_pair"].to_numpy()] | df_pair.class_evidence_current.eq(df_pair.class_evidence_prior)
     keys = [df_pair["_pair"], df_pair["ticker"]]
     grouped = df_pair.groupby(keys, sort=False)
@@ -216,23 +218,21 @@ def join_pairs(pairs: Sequence[tuple[PublicBook, PublicBook]], table: BookTable)
     moved = changed & grouped.current.max().gt(0) & grouped.prior.max().gt(0) & grouped["_cusip"].nunique().gt(1)
     df_pair["known"] &= ~pd.MultiIndex.from_arrays(keys).isin(moved.index[moved])
     starts = np.searchsorted(df_pair["_pair"].to_numpy(), np.arange(len(pairs) + 1))
-    return PairTable({pair: code for code, pair in enumerate(pairs)}, df_pair[["ticker", "current", "prior", "known"]], starts)
+    columns = ["ticker", "current", "prior", "value_current", "value_prior", "known"]
+    return PairTable({pair: code for code, pair in enumerate(pairs)}, df_pair[columns], starts)
 
 
-def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prior_period: pd.Timestamp, period: pd.Timestamp) -> pd.DataFrame:
-    """Carry prior shares onto the current basis (`F_period / F_prior`) and the pre-comparison quote inversely."""
-    prior_basis, basis_now = period_bases(market.basis, df_pair.ticker, prior_period, period)
-    df_pair["prior"] = convert_quantities(df_pair.prior, prior_basis, basis_now)
+def _implied_prices(df_pair: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Each position's prior value per share (else current) and its apparent split factor (else 1)."""
+    current, prior = (df_pair[f"value_{side}"] / df_pair[side] for side in ("current", "prior"))
+    current, prior = (price.where(np.isfinite(price) & price.gt(0)) for price in (current, prior))
 
-    # Exact reference-session quotes only; missing securities are never dropped or filled.
-    position = int(market.trading_index.searchsorted(prior_period, side="right")) - 1
-    prices = pd.Series(dtype="float64")
-    if position >= 0 and market.close_pit is not None:
-        reference = market.trading_index[position]
-        prices = market.close_pit.reindex(index=[reference]).iloc[0]
-    df_pair["price"] = convert_quantities(df_pair.ticker.map(prices), basis_now, prior_basis)
-    df_pair["known"] &= np.isfinite(df_pair.prior) & df_pair.prior.ge(0)
-    return df_pair
+    # A share ratio within 2% of a split factor whose value moves under 10% is a split, not a trade.
+    ratio = df_pair.current / df_pair.prior
+    factor = pd.Series(1.0, index=df_pair.index)
+    for split in (2, 3, 4, 5, 10, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10):
+        factor = factor.mask(np.abs(ratio / split - 1) <= 0.02, split)
+    return prior.fillna(current), factor.where(np.abs(ratio * current / prior - 1) <= 0.10, 1.0)
 
 
 def prepare_pair_sample(selected: list[BookPair], pairs: PairTable, market: BehaviorMarket) -> PairSample:
@@ -244,7 +244,21 @@ def prepare_pair_sample(selected: list[BookPair], pairs: PairTable, market: Beha
     ciks = np.repeat(np.array([cik for cik, _, _ in selected], dtype=object), np.diff(pairs.starts)[codes])
     df_positions = pairs.df_rows.iloc[rows].reset_index(drop=True).assign(cik=ciks)
     _, current, prior = selected[0]
-    df_positions = _attach_reference_prices(df_positions, market, prior.period, current.period)
+
+    # Prior shares move onto the current basis (`F_period / F_prior`) and the reference price inversely: universe tickers
+    # use F and the exact reference-session quote, other positions their implied price and apparent split. No quote is filled.
+    tickers = df_positions.ticker
+    quoted = tickers.isin(market.close_pit.columns if market.close_pit is not None else [])
+    implied, factor = _implied_prices(df_positions)
+    prior_basis = lookup_asof(market.basis, tickers, pd.Series(prior.period, index=tickers.index)).where(quoted, 1.0)
+    basis_now = lookup_asof(market.basis, tickers, pd.Series(current.period, index=tickers.index)).where(quoted, factor)
+    df_positions["prior"] = convert_quantities(df_positions.prior, prior_basis, basis_now)
+    position = int(market.trading_index.searchsorted(prior.period, side="right")) - 1
+    prices = pd.Series(dtype="float64")
+    if position >= 0 and market.close_pit is not None:
+        prices = market.close_pit.reindex(index=[market.trading_index[position]]).iloc[0]
+    df_positions["price"] = convert_quantities(tickers.map(prices).where(quoted, implied), basis_now, prior_basis)
+    df_positions["known"] &= np.isfinite(df_positions.prior) & df_positions.prior.ge(0)
     grouped = df_positions.groupby(["cik", "ticker"], sort=False)
     df_tickers = grouped[["current", "prior"]].sum(min_count=1)
     df_tickers["known"] = grouped.known.all()

@@ -15,9 +15,10 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     _daily_owned_shares,
     project_institutional_features,
 )
-from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket, _attach_reference_prices
+from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket, PairTable, prepare_pair_sample
 from src.utils.price.adjustments import ShareBasis
 from tests.conftest import make_frames
+from tests.data_aggregate.test_superinvestor_features import _book
 
 
 def _basis_frame(basis: ShareBasis, end: str = "2024-06-28") -> pd.DataFrame:
@@ -143,8 +144,9 @@ def test_elite_inverse_units_preserve_reference_money(units_before: float, units
     policy = {"TEST": {"quote_units": {"date": "2024-06-01", "before": units_before, "after": units_after}}}
     basis = ShareBasis(empty, empty, empty, policy)
     market = BehaviorMarket(index, pd.DataFrame(50.0, index=index, columns=["TEST"]), _basis_frame(basis))
-    pairs = pd.DataFrame({"ticker": ["TEST"], "current": [10.0], "prior": [10.0], "known": [True]})
-    result = _attach_reference_prices(pairs, market, pd.Timestamp("2024-03-31"), pd.Timestamp("2024-06-30"))
+    prior, current = _book("1", "2024-03-31", {}), _book("1", "2024-06-30", {})
+    rows = pd.DataFrame({"ticker": ["TEST"], "current": [10.0], "prior": [10.0], "value_current": [np.nan], "value_prior": [np.nan], "known": [True]})
+    result = prepare_pair_sample([("1", current, prior)], PairTable({(current, prior): 0}, rows, np.array([0, 1])), market).df_positions
     assert result.prior.iloc[0] * result.price.iloc[0] == pytest.approx(500)
     assert result.prior.iloc[0] == pytest.approx(10.0 * units_before / units_after)
     assert result.known.iloc[0]

@@ -126,9 +126,10 @@ def test_summary_retains_only_owned_comparison_evidence(include_class: bool, emp
     table = metrics.summarize_books([book], pd.Index(["AAA", "BBB"], dtype=object))
 
     rows = table.df_positions
-    assert list(rows.columns) == ["_book", "_cusip", "ticker", "shares", "quantity_known", "class_evidence"]
+    assert list(rows.columns) == ["_book", "_cusip", "ticker", "shares", "value", "quantity_known", "class_evidence"]
     assert rows.ticker.tolist() == ([] if empty else ["AAA", "OUT", "BBB"])
     assert rows.shares.tolist() == ([] if empty else [10.0, 30.0, 20.0]) and rows.shares.dtype == "float64"
+    assert rows.value.tolist() == ([] if empty else [300.0, 300.0, 200.0])
     assert rows.quantity_known.all() and rows.quantity_known.dtype == bool
     assert rows.class_evidence.notna().all() if include_class else rows.class_evidence.isna().all()
     assert table.has_class.tolist() == [include_class] and table.starts.tolist() == [0, len(rows)]

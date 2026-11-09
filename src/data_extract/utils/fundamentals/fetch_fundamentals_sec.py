@@ -204,7 +204,7 @@ def _drop_note_only_quarter(
     Such a value is a discrete item from a note, never the quarter's total. Gated on `_ANNUAL_FORMS`: every
     quarter in a 10-Q is "lone", so an ungated rule would delete the quarterly grain. Each dropped quarter is
     recorded as `note_quarter_rejected` on its covering annual period when that period survives. Complements,
-    and does not replace, the value-based check in `periods._drop_annual_masquerading_as_quarter`.
+    and does not replace, the value-based check in `periods._masquerading_quarters`.
     """
     if str(form or "").upper() not in _ANNUAL_FORMS:
         return periods

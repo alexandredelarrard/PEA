@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 #: The 8-K item code this module reads.
 _ITEM = "5.07"
 
-#: The extraction action: its prompts, `max_chars` budget and schema (`config.gpt` model, `threads` concurrent calls).
+#: The extraction action: its prompts and schema (`config.gpt` model, `threads` concurrent calls).
+#: Each prompt holds `item_text[:data_extract.llm_text_budget.votes]`; the guard and grounding see the whole text.
 VOTES_ACTION = "sec8k_votes"
 
 #: Columns read out of `sec_8k` (a narrow projection: `item_text` is its widest column).
@@ -100,6 +101,7 @@ def _ticker_tasks(context: Context, ticker: str, df_filings: pd.DataFrame, skips
     The proxy roles are read once per ticker on this thread, so a worker never needs the database to categorise a nominee.
     """
     role_source = _role_source(context, ticker)
+    budget = int(context.config.data_extract.llm_text_budget.votes)
     tasks: list[LlmTask] = []
     refused: list[pd.DataFrame] = []
     for _, f in df_filings.iterrows():
@@ -114,7 +116,7 @@ def _ticker_tasks(context: Context, ticker: str, df_filings: pd.DataFrame, skips
         tasks.append(
             LlmTask(
                 seq=len(tasks),
-                payload=cast(str, text),
+                payload=cast(str, text)[:budget],
                 schema=Item507Extract,
                 table=Tables.sec_8k_votes,
                 meta={"ticker": ticker, "filing": f, "text": text, "roles": roles, "titles": titles},

@@ -67,21 +67,21 @@ def _extractor(action: str, calls: list, fail_on: str | None = None, store=None)
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "action, schema, budget, marker",
-    # `def14a_executive_pay` has no `gpt.max_chars` entry (the DEF 14A step cuts its own payload), so the whole payload is sent.
-    [("def14a_executive_pay", Def14AExtract, 500_000, "Summary Compensation Table"), ("sec8k_votes", Item507Extract, 40_000, "Item 5.07")],
+    # The extractor cuts nothing: each step cuts its own payload (`data_extract.llm_text_budget`), so the whole payload is sent.
+    [("def14a_executive_pay", Def14AExtract, 500_000, "Summary Compensation Table"), ("sec8k_votes", Item507Extract, 500_000, "Item 5.07")],
 )
 def test_each_action_resolves_its_prompt_schema_and_budget(action, schema, budget, marker):
     calls: list = []
     ext = _extractor(action, calls)
-    ext.extract(schema, "x" * 500_000, provider=_RecordingProvider(calls), action=action)
+    ext.extract(schema, "x" * 500_000, provider=_RecordingProvider(calls))
 
     call = calls[-1]
     assert call["schema"] is schema
     assert marker in call["system"], f"{action} did not load its own system prompt"
-    assert budget <= len(call["user"]) < budget + 5_000  # template + the payload, cut at the action budget if any
+    assert budget <= len(call["user"]) < budget + 5_000  # template + the whole payload
 
     print(f"\n=== SANITY: {action} call contract ===")
-    print(f"  schema={schema.__name__}, prompt marker {marker!r} present, payload sent up to the {budget:,}-char budget. Validated.")
+    print(f"  schema={schema.__name__}, prompt marker {marker!r} present, the whole {budget:,}-char payload sent. Validated.")
 
 
 # --------------------------------------------------------------------------- #

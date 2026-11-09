@@ -2,9 +2,9 @@
 
 Order: DEF 14A sections (reads the stored `sec_def14a_text`), 8-K Item 5.07 votes (reads the stored `sec_8k`
 narratives and the DEF 14A tables, so it runs after DEF 14A), employee counts (reads the stored `sec_employees_text`).
-The DEF 14A section extractors, the votes extractor and the employees extractors (their cheaper provider, one per
-`data_extract.fundamentals_workers` concurrent ticker, one call at a time each) are built once here and reused by every
-run; the init raises `OSError` when a provider these runs use has no API key.
+The DEF 14A section extractors and the votes extractor are built once here, the employees extractors (their cheaper
+provider, one per `data_extract.fundamentals_workers` concurrent ticker, one call at a time each) on the first employees
+run; each is reused by every later run. The init raises `OSError` when a provider these runs use has no API key.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from src.data_extract.utils.structure.votes import VOTES_ACTION, fetch_8k_votes_
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
+from src.gpt_extract.transformers.step_gpt_extracter import with_provider
 from src.utils.step import Step
 
 
@@ -42,9 +42,6 @@ class StepExtractLlm(Step):
         self._years_history = int(config.data_extract.years_history)
         self._def14a = section_extractors(context, config)
         self._votes = LLMExtractor(context, config, action=VOTES_ACTION)
-        employees_config = with_gpt_overrides(config, "employees", provider=EMPLOYEES_PROVIDER)
-        workers = int(config.data_extract.fundamentals_workers)
-        self._employees = [LLMExtractor(context, employees_config, action="employees", threads=1) for _ in range(workers)]
         for provider in (self._votes.default_api, EMPLOYEES_PROVIDER):
             self._votes._require_key(provider)
 
@@ -52,6 +49,13 @@ class StepExtractLlm(Step):
     def _tickers(self) -> list[str]:
         """The `-t` subset, else the universe (read once, on first use)."""
         return self._requested or self._universe.tickers
+
+    @cached_property
+    def _employees(self) -> list[LLMExtractor]:
+        """One employees extractor per concurrent ticker (built on first use)."""
+        config = with_provider(self._config, EMPLOYEES_PROVIDER)
+        workers = int(self._config.data_extract.fundamentals_workers)
+        return [LLMExtractor(self._context, config, action="employees", threads=1) for _ in range(workers)]
 
     def run_def14a_llm(self) -> None:
         """Extract the open DEF 14A sections from the stored `sec_def14a_text` payloads."""

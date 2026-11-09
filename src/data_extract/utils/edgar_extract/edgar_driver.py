@@ -245,7 +245,7 @@ class EdgarRun:
         return cls(
             tickers=tickers,
             cik_map=universe_rows(context, tickers),
-            scope=load_edgar_scope(context),
+            scope=EdgarScope(load_identity(context)),
             run_date=day,
             years_history=int(years_history if years_history is not None else context.config.data_extract.years_history),
             full=full,
@@ -434,7 +434,7 @@ def _run_pass(
 ) -> dict[str, KeyOutcome]:
     """One pool pass over `cik_map`'s keys; a key whose worker failed outright keeps all its documents failed."""
     worker = partial(_walk_key, context, fetch, scope, units)
-    results = run_per_ticker(cik_map, worker, desc=fetch.done.desc, log=context.log, max_workers=max_workers)
+    results = run_per_ticker(cik_map, worker, desc=fetch.done.desc, max_workers=max_workers)
     outcomes: dict[str, KeyOutcome] = {}
     for ticker, result in zip(cik_map["ticker"].astype(str), results, strict=True):
         df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
@@ -503,11 +503,6 @@ def universe_rows(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
     """The `context.universe` rows (ticker, 10-digit CIK, name, GICS) of `tickers`."""
     frame = context.universe.frame
     return frame[frame["ticker"].isin(tickers)].reset_index(drop=True)
-
-
-def load_edgar_scope(context: Context) -> EdgarScope:
-    """The run's `EdgarScope` over the identity layer of `context`."""
-    return EdgarScope(load_identity(context))
 
 
 def _document_cap(context: Context, no_cap: bool) -> int | None:

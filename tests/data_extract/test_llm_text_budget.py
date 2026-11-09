@@ -19,15 +19,10 @@ def test_llm_text_budget_is_declared_in_the_extract_config() -> None:
 
     budget = config.data_extract.llm_text_budget
 
-    assert dict(budget) == {"employees": 60000, "def14a": 130000}
+    assert dict(budget) == {"employees": 60000, "def14a": 130000, "votes": 40000}
     assert all(isinstance(value, int) and value > 0 for value in budget.values())
-    assert "employees" not in config.gpt.max_chars
-    assert not [key for key in config.gpt.max_chars if key.startswith("def14a")], dict(config.gpt.max_chars)
     print("\n=== SANITY CHECK: data_extract.llm_text_budget ===")
-    print(
-        f"  employees {budget.employees} chars, def14a {budget.def14a} chars: today's cuts, read from configs.yml; "
-        f"gpt.max_chars keeps only {sorted(config.gpt.max_chars)} (no employees, no def14a*). Validated."
-    )
+    print(f"  employees {budget.employees}, def14a {budget.def14a}, votes {budget.votes} chars: today's cuts, read from configs.yml. Validated.")
 
 
 def test_a_larger_employees_budget_changes_the_excerpt_from_stored_rows() -> None:

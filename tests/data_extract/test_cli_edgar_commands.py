@@ -61,8 +61,9 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("command", sorted(COMMANDS))
-def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: list[dict[str, Any]]) -> None:
+def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
     fetch, takes_full = COMMANDS[command]
+    monkeypatch.setattr(cli_mod, "fundamentals_fetch", lambda ctx: EdgarFetch(tables=(Tables.fundamentals_facts,)))
     years = 15 if command == "insider-edgar" else 7
     args = [command, "-t", "aapl,msft", *([] if command == "insider-edgar" else ["-y", "7"]), *(["-F"] if takes_full else [])]
 
@@ -75,8 +76,10 @@ def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: 
     assert call["tickers"] == ["AAPL", "MSFT"]
     assert call["years_history"] == years
     assert call.get("full", False) is takes_full
+    assert cli_mod._document_fetches(SimpleNamespace(config=None))[fetch.done.name] is fetch
     print(f"\n=== SANITY: `{command}` dispatch ===")
-    print(f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, years={years}, full={call.get('full', False)}).")
+    print(f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, years={years}, full={call.get('full', False)});")
+    print(f"  resume-plan lists {fetch.done.name}.")
 
 
 def test_edgar_command_without_years_uses_the_configured_window(recorded: list[dict[str, Any]]) -> None:
@@ -89,44 +92,14 @@ def test_edgar_command_without_years_uses_the_configured_window(recorded: list[d
     print("  no -y -> data_extract.years_history (15) reaches the driver; no -F -> full=False.")
 
 
-@pytest.mark.parametrize("command", ["sec-8k-items", "insider-edgar"])
+@pytest.mark.parametrize("command", ["sec-8k-items", "insider-edgar", "sec-employees-text", "sec-def14a-text"])
 def test_as_of_and_no_cap_reach_the_driver(command: str, recorded: list[dict[str, Any]]) -> None:
     result = CliRunner().invoke(cli_mod.cli, [command, "-t", "AAPL", "--as-of", "2026-09-30", "--no-cap"])
 
     assert result.exit_code == 0, result.output
     assert recorded[0]["as_of"] == pd.Timestamp("2026-09-30") and recorded[0]["no_cap"] is True
     print("\n=== SANITY: --as-of / --no-cap ===")
-    print("  the injected run date and the lifted cap reach run_edgar_fetch.")
-
-
-def test_sec_employees_text_takes_every_edgar_walk_option(recorded: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
-    args = ["sec-employees-text", "-t", "aapl", "-y", "7", "-F", "--as-of", "2026-09-30", "--no-cap"]
-    monkeypatch.setattr(cli_mod, "fundamentals_fetch", lambda ctx: EdgarFetch(tables=(Tables.fundamentals_facts,)))
-
-    result = CliRunner().invoke(cli_mod.cli, args)
-
-    assert result.exit_code == 0, result.output
-    call = recorded[0]
-    assert call["fetch"] is EMPLOYEES_TEXT_FETCH and call["tickers"] == ["AAPL"] and call["years_history"] == 7
-    assert call["full"] is True and call["no_cap"] is True and call["as_of"] == pd.Timestamp("2026-09-30")
-    assert "sec_employees_text" in cli_mod._document_fetches(SimpleNamespace(config=None))
-    print("\n=== SANITY: `sec-employees-text` dispatch ===")
-    print("  -t -y -F --as-of --no-cap reach run_edgar_fetch(sec_employees_text); resume-plan lists the table.")
-
-
-def test_sec_def14a_text_takes_every_edgar_walk_option(recorded: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
-    args = ["sec-def14a-text", "-t", "aapl", "-y", "7", "-F", "--as-of", "2026-09-30", "--no-cap"]
-    monkeypatch.setattr(cli_mod, "fundamentals_fetch", lambda ctx: EdgarFetch(tables=(Tables.fundamentals_facts,)))
-
-    result = CliRunner().invoke(cli_mod.cli, args)
-
-    assert result.exit_code == 0, result.output
-    call = recorded[0]
-    assert call["fetch"] is DEF14A_TEXT_FETCH and call["tickers"] == ["AAPL"] and call["years_history"] == 7
-    assert call["full"] is True and call["no_cap"] is True and call["as_of"] == pd.Timestamp("2026-09-30")
-    assert cli_mod._document_fetches(SimpleNamespace(config=None))["sec_def14a_text"] is DEF14A_TEXT_FETCH
-    print("\n=== SANITY: `sec-def14a-text` dispatch ===")
-    print("  -t -y -F --as-of --no-cap reach run_edgar_fetch(sec_def14a_text); resume-plan lists the table.")
+    print(f"  `{command}`: the injected run date and the lifted cap reach run_edgar_fetch.")
 
 
 def test_markers_counts_and_deletes_by_sentinel(monkeypatch: pytest.MonkeyPatch, sqlite_store: Any) -> None:

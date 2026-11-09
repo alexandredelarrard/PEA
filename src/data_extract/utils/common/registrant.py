@@ -222,11 +222,9 @@ FORM_POLICY: dict[str, Combine] = {
         (Tables.sec_13g, Combine.SPLIT),
         (Tables.insider_transactions, Combine.UNION),
         (Tables.fundamentals_facts, Combine.SPLIT),
-        (Tables.fundamentals_employees, Combine.SPLIT),
         (Tables.filing_risk_text, Combine.SPLIT),
         (Tables.sec_employees_text, Combine.SPLIT),
         (Tables.sec_def14a_text, Combine.SPLIT),
-        (Tables.def14a_llm, Combine.SPLIT),
     )
     for form in cast(Resume, table.resume).forms
 }

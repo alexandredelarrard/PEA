@@ -10,7 +10,7 @@ or level-2 function may call it, a level-3 helper may call no repository functio
 (a qualified name, a `prefix.`, or a `caller -> callee` edge) to the reason it is not walked.
 
 Each reached function: at most 6 inputs, 90 lines and control-flow nesting 2; no pass-through; full annotations; no
-logger parameter; no `print`; no import inside the body; a docstring of at most 4 lines; every blank-line-separated
+logger parameter and no `log=` / `logger=` argument; no `print`; no import inside the body; a docstring of at most 4 lines; every blank-line-separated
 block of a multi-block body opens with a comment; every table read (`.store.load`) in the first block, each table
 once; store calls name `Tables.<x>`.
 """
@@ -354,6 +354,8 @@ def _shape(module: _Module, qualname: str, function: ast.FunctionDef) -> list[st
         problems.append(f"{where}: incomplete annotations")
     if any(a.arg in ("log", "logger") or "Logger" in ast.unparse(a.annotation or ast.Constant(None)) for a in inputs):
         problems.append(f"{where}: logger parameter")
+    if any(isinstance(n, ast.Call) and any(k.arg in ("log", "logger") for k in n.keywords) for n in ast.walk(function)):
+        problems.append(f"{where}: logger passed as an argument")
     if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "print" for n in ast.walk(function)):
         problems.append(f"{where}: print")
     if any(isinstance(n, ast.Import | ast.ImportFrom) for n in ast.walk(function)):

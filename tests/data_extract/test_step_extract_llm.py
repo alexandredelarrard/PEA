@@ -1,4 +1,5 @@
-"""`StepExtractLlm` builds its DEF 14A, votes and employees extractors once, raises in its init when a provider key is missing,
+"""`StepExtractLlm` builds its DEF 14A and votes extractors once in its init and its employees extractors once on the first
+employees run, raises in its init when a provider key is missing,
 runs DEF 14A, votes and employees in that order, and each `run_*` fails alone. Offline: the three fetchers are stubbed
 and no provider client is ever built."""
 
@@ -108,15 +109,19 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     step = StepExtractLlm(_context(config, fetchers), config)
     built = dict(counted)
     assert "universe" not in fetchers.order, "constructing the step reads no universe (REQ-014)"
+    step.run_def14a_llm()
+    step.run_8k_votes()
+    before_employees = dict(counted)
     for _ in range(2):
         step.run_def14a_llm()
         step.run_8k_votes()
         step.run_employees_llm()
 
-    # One extractor per action (the five DEF 14A sections, the Item 5.07 votes), and one employees extractor per concurrent
-    # ticker (fundamentals_workers = 8); each reads its prompts and scans the keys once.
-    assert built == {"LLMExtractor.__init__": 14, "GptExtracter.read_prompts": 14, "GptExtracter.get_api_keys": 14}, built
-    assert dict(counted) == built, "a run_* call builds nothing"
+    # The init builds one extractor per action (the five DEF 14A sections, the Item 5.07 votes); the first employees run
+    # builds one employees extractor per concurrent ticker (fundamentals_workers = 8); each reads its prompts and keys once.
+    assert built == {"LLMExtractor.__init__": 6, "GptExtracter.read_prompts": 6, "GptExtracter.get_api_keys": 6}, built
+    assert before_employees == built, "a DEF 14A or votes run builds nothing"
+    assert dict(counted) == {"LLMExtractor.__init__": 14, "GptExtracter.read_prompts": 14, "GptExtracter.get_api_keys": 14}, dict(counted)
     def14a = [call["extractors"] for call in fetchers.calls if call["name"] == "run_def14a_llm"]
     votes = [call["extractor"] for call in fetchers.calls if call["name"] == "run_8k_votes"]
     employees = [call["extractors"] for call in fetchers.calls if call["name"] == "run_employees_llm"]
@@ -127,8 +132,8 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     assert fetchers.order.count("universe") == 1
     print("\n=== SANITY: StepExtractLlm setup (AC-010) ===")
     print(
-        f"  init: {built}; 2x run_def14a_llm + 2x run_8k_votes + 2x run_employees_llm added nothing and reused the same 14 extractors "
-        "(employees: 8 distinct open_ai_cheap extractors, one call at a time each = 8 concurrent tickers); no provider built; "
+        f"  init: {built}; DEF 14A and votes runs built nothing; the first employees run built 8 distinct open_ai_cheap "
+        "extractors (one call at a time each = 8 concurrent tickers), the second reused them; no provider built; "
         "universe read once, on first use."
     )
 
@@ -201,15 +206,18 @@ def test_a_failing_run_raises_from_its_own_run_only(monkeypatch: pytest.MonkeyPa
     print(f"  {boom} raised alone; the 2 other run_* methods ran alone; run() stopped after {len(fetchers.order)} extraction(s).")
 
 
-@pytest.mark.parametrize("command", sorted(COMMANDS))
-def test_llm_commands_call_their_step_operation(monkeypatch: pytest.MonkeyPatch, counted: Counter, command: str) -> None:
+@pytest.mark.parametrize("command, extra", [(command, ["--full"] if command == "sec-employees-llm" else []) for command in sorted(COMMANDS)])
+def test_llm_commands_call_their_step_operation(monkeypatch: pytest.MonkeyPatch, counted: Counter, command: str, extra: list[str]) -> None:
     fetchers = Fetchers(monkeypatch)
     config = _config()
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, _context(config)))
 
-    result = CliRunner().invoke(cli_mod.cli, [command, "-t", "bbb"])
+    result = CliRunner().invoke(cli_mod.cli, [command, "-t", "bbb", *extra])
 
     assert result.exit_code == 0, result.output
     assert fetchers.order == [COMMANDS[command]] and fetchers.calls[0]["tickers"] == ["BBB"]
-    print(f"\n=== SANITY: `{command}` -> StepExtractLlm.{COMMANDS[command]} ===")
-    print(f"  one call over ['BBB'], extractors built once ({counted['LLMExtractor.__init__']}).")
+    assert fetchers.calls[0].get("full", False) is bool(extra)
+    if command == "sec-employees-llm":
+        assert [extractor.threads for extractor in fetchers.calls[0]["extractors"]] == [1] * 8  # one call at a time per ticker
+    print(f"\n=== SANITY: `{command} {' '.join(extra)}` -> StepExtractLlm.{COMMANDS[command]} ===")
+    print(f"  one call over ['BBB'], full={bool(extra)}, extractors built once ({counted['LLMExtractor.__init__']}).")

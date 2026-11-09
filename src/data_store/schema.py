@@ -42,6 +42,8 @@ RESUME_SNAPSHOT = "snapshot"
 
 # The sentinel a child-sequence or label column takes on an empty-filing marker row.
 _EMPTY = "_empty"
+#: The 10-K family the employees text walk reads and its LLM pass decides.
+_ANNUAL_REPORT_FORMS = ("10-K", "10-K/A", "10-K405", "10-K405/A")
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,7 +583,7 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405", "10-K405/A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
     )
     # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
@@ -1513,7 +1515,7 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report"),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-K/A", "10-K405", "10-K405/A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
         empty_marker=("source_document", _EMPTY),
         desc="10-K employees text (EDGAR)",
         retrieval_columns=(

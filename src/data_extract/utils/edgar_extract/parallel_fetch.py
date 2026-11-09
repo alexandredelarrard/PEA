@@ -15,6 +15,8 @@ from typing import Any
 import pandas as pd
 from tqdm import tqdm
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_WORKERS = 8  # network-bound; the shared rate limiter caps throughput
 
 #: Exceptions meaning the pipeline is broken, not the source record; per-entity and per-filing
@@ -27,7 +29,6 @@ def run_per_ticker[R](
     worker: Callable[..., R],
     desc: str,
     *,
-    log: logging.Logger,
     max_workers: int | None = None,
     key_cols: Sequence[str] = ("ticker", "cik"),
 ) -> list[R | None]:
@@ -42,7 +43,7 @@ def run_per_ticker[R](
         except PROGRAMMING_ERRORS:
             raise
         except Exception as exc:  # noqa: BLE001 -- one entity must not abort the walk
-            log.warning("%s: %s failed (%s)", desc, key, exc)
+            logger.warning("%s: %s failed (%s)", desc, key, exc)
             return None
 
     rows = list(df_scope[list(key_cols)].itertuples(index=False, name=None))

@@ -180,21 +180,20 @@ def four_quarters(ticker: str, values: dict[str, list[float]], *, n: int = 4, st
 # the contract                                                                 #
 # --------------------------------------------------------------------------- #
 def test_every_history_column_is_mapped(field_map):
-    """All 60 `HISTORY_STATEMENT_ORDER` names resolve to direct / derived / sec / null.
+    """The 47 `HISTORY_STATEMENT_ORDER` names Sharadar serves resolve to direct / derived / null; the 13 others are SEC-only.
 
-    The loader already refuses a gap; this asserts the resolved kinds and prints the census,
-    because the failure mode is not a crash -- the merged table's contract asserts by LIST
-    EQUALITY, so an unfilled column would pass it while carrying nothing.
+    Asserts the resolved kinds and prints the census, because the failure mode is not a crash -- the history
+    contract asserts by LIST EQUALITY, so an unfilled column would pass it while carrying nothing.
     """
-    unmapped = [n for n in HISTORY_STATEMENT_ORDER if n not in field_map.columns]
+    sec_only = [n for n in HISTORY_STATEMENT_ORDER if n not in field_map.columns]
     kinds = pd.Series([field_map.columns[n].kind for n in HISTORY_STATEMENT_ORDER if n in field_map.columns]).value_counts().to_dict()
     print(f"\ncontract columns : {len(HISTORY_STATEMENT_ORDER)}")
-    print(f"unmapped         : {unmapped or 'none'}")
+    print(f"SEC-only (absent): {len(sec_only)} -> {sec_only}")
     print(f"by kind          : {kinds}")
-    print(f"SEC-owned (D18)  : {len(field_map.sec_owned)} -> {field_map.sec_owned}")
     print(f"permanently NULL : {sorted(n for n, s in field_map.columns.items() if s.kind == 'null')}")
-    assert not unmapped
-    assert len(field_map.sec_owned) == 14, "The current merged contract declares 14 SEC-owned columns"
+    assert len(field_map.columns) == 47 and len(sec_only) == 13
+    assert set(kinds) <= {"direct", "derived", "null"}
+    assert "stockholdersEquityInclNci" not in field_map.outputs and "regime" not in field_map.outputs
     assert field_map.outputs["sharesOutstanding"].source == "sharesbas"
     assert field_map.outputs["sharesOutstanding"].split_basis is None
     assert field_map.outputs["sharesOutstandingPit"].split_basis == "count"
@@ -742,18 +741,15 @@ def test_a_zero_denominator_is_null_not_infinity(field_map):
             # the repo name the extra is EMITTED under, not `cashneq`
             "cashAndEquivalents": [1.0],
             "shortTermInvestments": [2.0],
-            "minorityInterest": [np.nan],
         }
     )
     out = apply_derived(frame, field_map)
     ratios = {n: out[n].iloc[0] for n in ("profitMargins", "returnOnEquity", "grossMargins", "effectiveTaxRate", "optionOverhang", "epsDiluted")}
     print(f"\nzero-denominator ratios: {ratios}")
     print(f"cash (a SUM, both legs present): {out['cash'].iloc[0]} (expected 3.0)")
-    print(f"stockholdersEquityInclNci with a NaN NCI leg: {out['stockholdersEquityInclNci'].iloc[0]} (expected NaN, not 0.0)")
     assert all(pd.isna(v) for v in ratios.values())
     assert not np.isinf(out[list(ratios)].to_numpy(dtype="float64")).any()
     assert out["cash"].iloc[0] == 3.0
-    assert pd.isna(out["stockholdersEquityInclNci"].iloc[0])
 
 
 def test_sum_optional_widens_cash_without_being_able_to_destroy_it(field_map):
@@ -787,7 +783,6 @@ def test_sum_optional_widens_cash_without_being_able_to_destroy_it(field_map):
             "incomeTaxExpense": [1.0] * 4,
             "dilutedShares": [1.0] * 4,
             "basicShares": [1.0] * 4,
-            "minorityInterest": [1.0] * 4,
         }
     )
     out = apply_derived(frame, field_map)
@@ -847,7 +842,6 @@ def test_coverage_of_the_built_frame(ttm, field_map, translated):
     print(coverage[coverage["basis"].isin([DURATION, INSTANT, MEAN])].nsmallest(8, "pct_non_null").to_string(index=False))
     print(f"totalRevenue non-null: {int(ttm['totalRevenue'].notna().sum())}")
     print(f"totalAssets  non-null: {int(ttm['totalAssets'].notna().sum())} (an instant needs no window)")
-    print(f"SEC-owned columns are all NULL until phase 4 merges them: {all(ttm[n].isna().all() for n in field_map.sec_owned)}")
     # The load-bearing direction: a FILLED duration cell must have had a whole window. The
     # converse is not an equality -- a whole window whose four quarters include one NaN
     # `revenue` (zero-ruled, corrected, or never delivered) legitimately sums to NaN, which is
@@ -862,7 +856,6 @@ def test_coverage_of_the_built_frame(ttm, field_map, translated):
     assert int(ttm["totalRevenue"].notna().sum()) <= len(ttm) - cold_start, (
         "more windows than the cold start allows -- a ticker's first three quarters were filled from another issuer's rows"
     )
-    assert all(ttm[n].isna().all() for n in field_map.sec_owned)
     assert census.get(MEAN) == 2, "only the two weighted-average share counts are averaged"
 
 

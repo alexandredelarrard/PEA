@@ -168,7 +168,7 @@ def build_ttm(
     The output carries every column the map declares, on the repo's contract: duration fields
     summed over four consecutive quarters, weighted-average counts averaged over the same
     four, instants read off the period end, and the derived formulas evaluated LAST on the
-    result. `sec` and `null` columns pass through as NaN.
+    result. `null` columns pass through as NaN.
 
     `quarter_columns` are the two slices that expose the single quarter beside the TTM line it
     was cut from; they are read off the map's `op == "quarter"` entries by default.
@@ -229,7 +229,7 @@ def build_ttm(
     for name, spec in field_map.outputs.items():
         if spec.kind == "derived":
             continue
-        if spec.kind in ("sec", "null"):
+        if spec.kind == "null":
             basis_of[name] = "null"
             continue
         if spec.basis not in (DURATION, INSTANT, MEAN):

@@ -221,7 +221,7 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_logs_once_per_
     removed = result.removals
     assert set(removed["table"]) == {t.name for t in PURGED_FAMILIES} and set(removed["cik"]) == {AB} and set(removed["rows"]) == {4}
     assert stubs["history"] == [(["ALB"], True)]
-    assert not hasattr(prop, "build_merged_history"), "the propagation rebuilds the SEC history only"
+    assert not hasattr(prop, "build_sharadar_history"), "the propagation rebuilds the SEC history only"
     print("\n=== SANITY CHECK: contraction purge ===")
     print(
         f"  4 families: AB's 2 filings (4 rows each) purged under ALB; ALB's own and MSFT's (scope unchanged) rows kept; {len(warnings)} INFO lines (PD-14)"

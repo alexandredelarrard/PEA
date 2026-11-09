@@ -95,11 +95,6 @@ VERIFY_HISTORY_KWARGS: dict[str, Any] = dict(
     help="Replay every ticker's SEC history and refuse if a published row would change. Writes only new events. Use after `sec-fundamentals-facts -F`.",
 )
 
-PROPOSE_ARGS = ("--propose",)
-PROPOSE_KWARGS: dict[str, Any] = dict(
-    is_flag=True, default=False, help="Merge inert override candidates with approved: null; existing entries are never touched."
-)
-
 REPAIR_AVAILABILITY_ARGS = ("--repair-availability",)
 REPAIR_AVAILABILITY_KWARGS: dict[str, Any] = dict(
     is_flag=True,
@@ -115,10 +110,3 @@ COUNT_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Count onl
 
 DELETE_ARGS = ("--delete",)
 DELETE_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Delete the marker rows (rollback only).")
-
-# ---- reporting ---- #
-# A `validate` command prints its findings and writes a dated markdown report; these shape that
-# output. Shared by `prices` and `institutionals`.
-#
-REPORT_PATH_ARGS = ("--report", "report_path")
-REPORT_PATH_KWARGS: dict[str, Any] = dict(default=None, help="Where to write the markdown report (default: the command's report path).")

@@ -196,18 +196,6 @@ def test_full_reaches_the_existing_source_operation(
     print(f"SANITY: {command} resumes by default; -F and --full select the complete source operation; supported run dates reach the source.")
 
 
-def test_gap_check_uses_the_shared_report_option_and_keeps_its_default(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
-    report = Mock()
-    monkeypatch.setattr(cli_mod, "run_gap_check", report)
-    runner = CliRunner()
-    for flags, expected in (([], cli_mod.GAP_REPORT_PATH), (["--report", "custom.md"], "custom.md")):
-        result = runner.invoke(cli_mod.cli, ["sharadar-gap-check", *flags])
-        assert result.exit_code == 0, result.output
-        assert report.call_args.kwargs["report_path"] == expected
-        assert report.call_args.kwargs["tickers"] is None
-    print("SANITY: --report selects the gap-check output path; an omitted path retains the existing report destination.")
-
-
 @pytest.mark.parametrize(
     "command,exit_code,called",
     [

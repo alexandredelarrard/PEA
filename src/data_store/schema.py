@@ -398,8 +398,8 @@ class Tables:
     # numbers forever, which is where the no-leakage property lives. Exactly 66 columns,
     # enumerated by `Catalogue.history_columns`. See fundamentals/build_history.py.
     #
-    # This entry is the SEC half of the merge into `sharadar_fundamentals_history` below and
-    # nothing else: it is what `build_history.py` writes and what `src/validate/` reads.
+    # It is what `build_history.py` writes and what `src/validate/` reads; nothing here joins it to
+    # `sharadar_fundamentals_history` below.
     sec_fundamentals_history = Table(
         "sec_fundamentals_history",
         ("ticker", "as_of"),
@@ -407,29 +407,16 @@ class Tables:
         date_type_cols=("as_of", "fiscal_end"),
         freshness="quarterly",
     )
-    # THE MERGED TABLE, and the one every consumer should read: Sharadar owns a declared
-    # block of columns for all history, the SEC table above owns the rest, and no column ever
-    # switches source mid-series (D14/D15).
-    #
-    # ⚠ DECLARED HERE, BUILT IN PHASE 4. Nothing writes it yet, so every read returns empty
-    # until then -- that is deliberate and visible rather than silent. It is declared now so
-    # that `src/data_aggregate/` (all 12 files) is ALREADY pointed at the right name: phase 4
-    # then only has to populate it, instead of re-pointing every consumer a second time.
-    #
-    # NOT carried over from the SEC table: `publication_form`. There is no `source` column
-    # either -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
+    # The Sharadar producer's output, built from Sharadar's own inputs only (no SEC table).
+    # There is no `publication_form` (Sharadar ships no form) and no `source` column.
     #
     # `read_columns` IS the column contract, declared here rather than only in the builder:
-    # 3 keys + the 60 `HISTORY_STATEMENT_ORDER` names + `stockholdersEquityInclNci` +
-    # `regime` + `sharesOutstandingPit` + the 26 Sharadar extras = 92 (headcount is read from
-    # `fundamentals_employees` directly, not merged here). `merge_history` asserts its own
-    # frame against this tuple, so a drift on either side fails the build instead of
-    # surfacing as an empty feature -- `pit.fundamentals_to_daily` returns an EMPTY FRAME for
-    # a column it cannot find rather than raising, which makes silent column loss invisible
-    # all the way to the model.
-    #
-    # ⚠ `regime` is the ONE non-float column among the 89 values (a label). Anything casting
-    # "the value columns" must exclude it by NAME, never by a looks-numeric heuristic.
+    # 3 keys + the 47 `HISTORY_STATEMENT_ORDER` names Sharadar serves + `sharesOutstandingPit`
+    # + the 26 Sharadar extras = 77 (headcount is read from `fundamentals_employees` directly).
+    # `sharadar_history` asserts its own frame against this tuple, so a drift on either side
+    # fails the build instead of surfacing as an empty feature -- `pit.fundamentals_to_daily`
+    # returns an EMPTY FRAME for a column it cannot find rather than raising, which makes
+    # silent column loss invisible all the way to the model. Every value column is float.
     sharadar_fundamentals_history = Table(
         "sharadar_fundamentals_history",
         ("ticker", "as_of"),
@@ -440,14 +427,8 @@ class Tables:
             "ticker",
             "as_of",
             "fiscal_end",
-            # -- the 60 contract columns, in HISTORY_STATEMENT_ORDER
+            # -- the HISTORY_STATEMENT_ORDER columns Sharadar serves, in that order
             "totalRevenue",
-            "premiumsEarned_sec",
-            "netInterestIncome_sec",
-            "noninterestIncome_sec",
-            "netInvestmentIncome_sec",
-            "realizedInvestmentGains_sec",
-            "rentalIncome_sec",
             "costOfRevenue",
             "grossProfit",
             "grossMargins",
@@ -476,11 +457,7 @@ class Tables:
             "accountsReceivable",
             "inventory",
             "currentAssets",
-            "ppeGross_sec",
-            "accumulatedDepreciation_sec",
             "ppeNet",
-            "goodwill_sec",
-            "intangiblesExGoodwill_sec",
             "totalAssets",
             "accountsPayable",
             "currentLiabilities",
@@ -488,12 +465,9 @@ class Tables:
             "shortTermBorrowingsOnly",
             "longTermDebt",
             "longTermDebtCurrentOnly",
-            "operatingLeaseLiability_sec",
-            "financeLeaseLiability_sec",
             "totalDebt",
             "totalLiabilities",
             "retainedEarnings",
-            "minorityInterest_sec",
             "stockholdersEquity",
             "returnOnEquity",
             "debtToEquity",
@@ -501,18 +475,14 @@ class Tables:
             "dilutedShares",
             "sharesOutstanding",
             "optionOverhang",
-            # -- the roll-up that needs BOTH sources, then the SEC-owned added column,
-            #    then the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
+            # -- the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
             #    sharadar_field_map.json -- it is the ONLY de-adjusted column, and only
             #    `ic_inst_ownership_pct` and the insider %-of-shares leg may read it)
-            "stockholdersEquityInclNci",
-            "regime_sec",
             "sharesOutstandingPit",
             # -- the 26 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
             #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents).
             #    `intangibles` is goodwill AND other intangibles COMBINED -- the only basis
-            #    Sharadar delivers, and the substrate for the ex-goodwill ROIC pair, whose
-            #    SEC-owned split legs are too thin (10.2% / 7.1%) to subtract.
+            #    Sharadar delivers, and the substrate for the ex-goodwill ROIC pair.
             "cashAndEquivalents",
             "accumulatedOtherComprehensiveIncome",
             "intangibles",

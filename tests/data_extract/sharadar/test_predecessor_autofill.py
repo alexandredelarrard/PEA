@@ -1,5 +1,5 @@
 """Predecessor vendor series (D-Q2-8, AC-115): the Sharadar fetch list adds the vendor tickers that carry a register
-predecessor CIK's own series, and the merged-history build replaces the canonical ARQ rows inside that CIK's window
+predecessor CIK's own series, and the Sharadar history build replaces the canonical ARQ rows inside that CIK's window
 with them before `build_ttm`. PLD follows its traded security (AMB's CIK is its only window), so it derives no
 predecessor vendor ticker; STE (STERIS Corp, STE1) is the worked window. Offline: `FakeStore`, no network, no database.
 """
@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.transformers import step_extract_fundamentals_sharadar as step_module
-from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, merge_history
+from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, sharadar_history
 from src.data_store.schema import Tables
 from tests.conftest import FakeStore
 
@@ -83,11 +83,10 @@ def _arq(ticker: str, labels: list[str], revenue: float) -> pd.DataFrame:
 
 
 def _empties() -> dict[Any, pd.DataFrame]:
-    """The merge's other inputs, present and empty."""
+    """The build's other inputs, present and empty."""
     return {
         Tables.sharadar_actions: pd.DataFrame(columns=["ticker", "action"]),
         Tables.prices_splits: pd.DataFrame(columns=["ticker", "date", "ratio"]),
-        Tables.sec_fundamentals_history: pd.DataFrame(columns=["ticker", "as_of"]),
     }
 
 
@@ -109,7 +108,7 @@ def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:
 
 def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], bool]] = []
-    for name in ("fetch_sharadar_sp500", "build_merged_history"):
+    for name in ("fetch_sharadar_sp500", "build_sharadar_history"):
         monkeypatch.setattr(step_module, name, lambda *a, **k: None)
     monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers, **k: calls.append((list(tickers), k["full"])))
     monkeypatch.setattr(step_module, "predecessor_vendor_tickers", lambda context, tickers: ["STE1"])
@@ -125,7 +124,7 @@ def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.M
     print("  OK: the universe resumes; the delisted predecessor series are read over the whole window (a rowless key's resume window is recent).")
 
 
-def test_the_merge_replaces_inside_the_window_before_ttm(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_the_build_replaces_inside_the_window_before_ttm(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     canonical = _arq("STE", ["2015Q1", "2015Q2", "2015Q4", "2016Q1"], 600.0e6)  # another series before the seam; 2015Q3 missing
     owner = _arq("STE1", ["2015Q1", "2015Q2", "2015Q3"], 500.0e6)  # STERIS Corp, the window owner
     store = FakeStore(
@@ -142,13 +141,13 @@ def test_the_merge_replaces_inside_the_window_before_ttm(monkeypatch: pytest.Mon
         seen["arq"] = sharadar_arq
         return pd.DataFrame()
 
-    monkeypatch.setattr(merge_history, "build_frame", capture)
+    monkeypatch.setattr(sharadar_history, "build_frame", capture)
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        merge_history.build_merged_history(_context(store), ["STE"])
+        sharadar_history.build_sharadar_history(_context(store), ["STE"])
     arq = (
         seen["arq"].assign(quarter=lambda f: [str(pd.Period(pd.Timestamp(d), freq="Q")) for d in f["calendardate"]]).set_index("quarter").sort_index()
     )
-    print("\n=== SANITY CHECK: merge-time replacement (D-Q2-8) ===")
+    print("\n=== SANITY CHECK: build-time replacement (D-Q2-8) ===")
     print(arq[["ticker", "revenue"]].to_string())
     assert arq["ticker"].eq("STE").all() and arq.index.is_unique
     assert arq.loc[["2015Q1", "2015Q2", "2015Q3"], "revenue"].eq(500.0e6).all()
@@ -169,9 +168,9 @@ def test_a_missing_owner_series_leaves_the_canonical_rows_and_warns(monkeypatch:
         }
     )
     seen: dict[str, pd.DataFrame] = {}
-    monkeypatch.setattr(merge_history, "build_frame", lambda arq, *a, **k: seen.setdefault("arq", arq).iloc[:0])
+    monkeypatch.setattr(sharadar_history, "build_frame", lambda arq, *a, **k: seen.setdefault("arq", arq).iloc[:0])
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        merge_history.build_merged_history(_context(store), ["STE"])
+        sharadar_history.build_sharadar_history(_context(store), ["STE"])
     assert seen["arq"]["revenue"].eq(600.0e6).all() and len(seen["arq"]) == 2
     assert any("STE1" in r.getMessage() and "not stored" in r.getMessage() for r in caplog.records)
     print("\n=== SANITY CHECK: owner series not stored ===")
@@ -192,9 +191,9 @@ def test_a_traded_view_ticker_keeps_the_vendors_own_rows(monkeypatch: pytest.Mon
         }
     )
     seen: dict[str, pd.DataFrame] = {}
-    monkeypatch.setattr(merge_history, "build_frame", lambda arq, *a, **k: seen.setdefault("arq", arq).iloc[:0])
+    monkeypatch.setattr(sharadar_history, "build_frame", lambda arq, *a, **k: seen.setdefault("arq", arq).iloc[:0])
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        merge_history.build_merged_history(_context(store), ["PLD"])
+        sharadar_history.build_sharadar_history(_context(store), ["PLD"])
     arq = seen["arq"]
     print("\n=== SANITY CHECK: traded-view ticker keeps its vendor rows ===")
     print(arq[["ticker", "calendardate", "revenue"]].to_string(index=False))

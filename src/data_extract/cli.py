@@ -44,12 +44,8 @@ from src.constants.command_line_interface import (
     PERIOD_END_KWARGS,
     PERIOD_START_ARGS,
     PERIOD_START_KWARGS,
-    PROPOSE_ARGS,
-    PROPOSE_KWARGS,
     REPAIR_AVAILABILITY_ARGS,
     REPAIR_AVAILABILITY_KWARGS,
-    REPORT_PATH_ARGS,
-    REPORT_PATH_KWARGS,
     TABLE_ARGS,
     TABLE_KWARGS,
     TICKERS_ARGS,
@@ -89,13 +85,6 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDA
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
 )
-from src.data_extract.utils.fundamentals_sharadar.gap_check import (
-    DEFAULT_REPORT_PATH as GAP_REPORT_PATH,
-)
-from src.data_extract.utils.fundamentals_sharadar.gap_check import (
-    run_gap_check,
-)
-from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
@@ -404,14 +393,14 @@ def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, 
 # History depth is `data_extract.sharadar_years_history`, not `years_history`.
 @cli.command(
     name="fundamentals-sharadar",
-    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> the MERGED sharadar_fundamentals_history (tickers and actions: `universe`).",
+    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> sharadar_fundamentals_history (tickers and actions: `universe`).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
+    """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the history build, lives in one place."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractFundamentalsSharadar(context=context, config=config)
     step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
@@ -426,45 +415,6 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
 def sharadar_sp500(config_path: str, full: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_sp500(context, full=full)
-
-
-# --- Fundamentals: the merged table, its gap check, and the remaining SEC sources ---
-@cli.command(
-    name="fundamentals-history-merged",
-    help="sharadar_fundamentals_facts + sec_fundamentals_history -> sharadar_fundamentals_history, "
-    "the MERGED table every consumer reads. Build only, no network. Both "
-    "inputs are read-only, so the rollback is a drop-and-rebuild.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals_history_merged(config_path: str, tickers: str | None, full: bool) -> None:
-    """Field-block precedence: each column has one declared source for all history and never switches mid-series.
-
-    `--full` deletes these tickers' rows before rebuilding; the default upsert cannot remove a row that no longer exists.
-    """
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    build_merged_history(context, tickers=_tickers(context, tickers), full=full, config_dir=config_path)
-
-
-@cli.command(
-    name="sharadar-gap-check",
-    help="READ-ONLY: where Sharadar and the SEC layer disagree on their SHARED "
-    "dates, and which gaps are SYSTEMATIC enough to be a basis conflict. "
-    "Writes a markdown report and, with --propose, INERT override candidates.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*REPORT_PATH_ARGS, **REPORT_PATH_KWARGS)
-@click.option(*PROPOSE_ARGS, **PROPOSE_KWARGS)
-def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str | None, propose: bool) -> None:
-    """Read-only Sharadar-vs-SEC disagreement report; reason codes stay with the SEC table and do not gate `sharadar_fundamentals_history`.
-
-    `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
-    """
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers) if tickers else None
-    run_gap_check(context, tickers=names, report_path=report_path or GAP_REPORT_PATH, propose_overrides=propose, config_dir=config_path)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E (the prices step's `run_earnings_surprises`).")

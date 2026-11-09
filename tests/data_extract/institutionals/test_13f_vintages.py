@@ -1696,7 +1696,9 @@ def test_normal_broad_retains_option_only_names(
     resources = normal_resources(frames)
     features = step._institutional_features(resources)
     assert features is not None
-    broad = step._project_institutional_panel(features, frames, resources).set_index(["date", "ticker"])
+    broad = cast(pd.DataFrame, step._project_panels(resources, PreparedSecThirteen(features, None), frames.trading_index)[0]).set_index(
+        ["date", "ticker"]
+    )
     row = cast("pd.Series[float]", broad.loc[(pd.Timestamp("2024-08-21"), "AAA")])
     assert row.f_ic_inst_net_options_ratio == 1
     assert row.f_ic_inst_holders == 0

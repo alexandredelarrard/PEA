@@ -69,8 +69,8 @@ def _prepare(
 
 
 def _projections(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock]:
-    broad, elite = Mock(wraps=step._project_institutional_panel), Mock(wraps=step_module.project_superinvestor_features)
-    monkeypatch.setattr(step, "_project_institutional_panel", broad)
+    broad, elite = Mock(wraps=step_module.project_institutional_features), Mock(wraps=step_module.project_superinvestor_features)
+    monkeypatch.setattr(step_module, "project_institutional_features", broad)
     monkeypatch.setattr(step_module, "project_superinvestor_features", elite)
     return broad, elite
 
@@ -112,7 +112,7 @@ def _bounded(projections: tuple[Mock, Mock], days: pd.DatetimeIndex, maximum: in
                 pd.testing.assert_index_equal(getattr(frames, field).index, frames.trading_index)
             assert frames.universe == ("AAA",)
             if family == 0:
-                pd.testing.assert_index_equal(call.args[2].frames.trading_index, days)
+                pd.testing.assert_index_equal(call.kwargs["trading_calendar"], days)
 
 
 def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

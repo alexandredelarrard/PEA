@@ -17,7 +17,7 @@ import pytest
 
 import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
-from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
+from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
@@ -1107,7 +1107,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)
-        return None if features is None else step._project_institutional_panel(features, frames, resources)
+        return None if features is None else step._project_panels(resources, PreparedSecThirteen(features, None), frames.trading_index)[0]
 
     assert panel() is None
 

@@ -55,6 +55,8 @@ class PreparedSecThirteen:
 
 class StepCubeSecThirteen(Step):
     _FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis")
+    # Output-date frames; the saved basis F stays whole for quarter-end lookups before the output window.
+    _OUTPUT_FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
@@ -113,36 +115,6 @@ class StepCubeSecThirteen(Step):
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
         return SecThirteenResources(frames, cohorts)
 
-    def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
-
-        resources = self._load_resources()
-        saved_columns = list(existing_columns)
-
-        # Keep sparse full history for genuine lag comparisons and bounded daily projection.
-        df_institutionals = self._institutional_features(resources)
-        super_investors = self._superinvestor_history(resources)
-        prepared = PreparedSecThirteen(df_institutionals, super_investors)
-        self._require_saved_families(prepared, saved_columns)
-
-        dates = resources.frames.trading_index
-        output_dates = dates if window.since is None else dates[dates >= window.since]
-        panels = self._project_panels(resources, prepared, output_dates)
-        if window.is_full:
-            return self._merge_panels(resources.frames, panels)
-
-        # A schema change reprojects the same facts, never reloads or rebuilds books.
-        supported = self._supported_columns(resources, prepared, output_dates, panels)
-        if supported != set(saved_columns) - {"date", "ticker"}:
-            panels = self._project_panels(resources, prepared, dates)
-            return self._merge_panels(resources.frames, panels)
-        output_frames = self._output_frames(resources.frames, output_dates)
-        df_panel = self._merge_panels(output_frames, panels)
-        if df_panel.empty:
-            df_panel = output_frames.skeleton()
-        for column in supported - set(df_panel.columns):
-            df_panel[column] = pd.Series(index=df_panel.index, dtype="float32")
-        return df_panel.reindex(columns=saved_columns)
-
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
         packets = thirteen_inputs.iter_filing_vintages(self._store, until=resources.frames.trading_index.max(), universe=resources.frames.universe)
         cfg = self._cfg.get("institutionals", {})
@@ -187,39 +159,72 @@ class StepCubeSecThirteen(Step):
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
     @staticmethod
-    def _output_frames(frames: PriceFrames, dates: pd.DatetimeIndex) -> PriceFrames:
-        """Output-date frames; the saved basis F stays whole for quarter-end lookups before the output window."""
-        return frames.on(dates, "close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
-
-    @staticmethod
     def _require_saved_families(prepared: PreparedSecThirteen, saved_columns: Sequence[str]) -> None:
         failed = (("f_ic_inst_", prepared.institutional is None), ("f_ic_super_", prepared.superinvestor is None))
         for prefix, missing in failed:
             if missing and any(column.startswith(prefix) for column in saved_columns):
                 raise RuntimeError(f"SEC13F source preparation failed for {prefix}; saved output is preserved.")
 
+    def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
+        """Both families on the output window, without saving. Older windows are probed for columns the window cannot
+        show; a column set other than the saved one reprojects the whole history."""
+        # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
+        saved_columns = list(existing_columns)
+        resources = self._load_resources()
+        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
+        self._require_saved_families(prepared, saved_columns)
+
+        # The output window; a full window is the whole history.
+        dates = resources.frames.trading_index
+        output_dates = dates if window.since is None else dates[dates >= window.since]
+        panels = self._project_panels(resources, prepared, output_dates)
+        if window.is_full:
+            return self._merge_panels(resources.frames, panels)
+
+        # Probe historical support with the same prepared facts and projectors, newest window first.
+        supported = self._feature_columns(panels)
+        unresolved = self._possible_columns(resources, prepared) - supported
+        end = int(dates.searchsorted(output_dates[0])) if len(output_dates) else len(dates)
+        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
+        while unresolved and end:
+            start = max(0, end - span)
+            broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
+            elite = prepared.superinvestor if any(column.startswith("f_ic_super_") for column in unresolved) else None
+            supported.update(self._feature_columns(self._project_panels(resources, PreparedSecThirteen(broad, elite), dates[start:end])))
+            unresolved.difference_update(supported)
+            end = start
+
+        # A schema change reprojects the whole history; otherwise the window keeps the saved columns and their order.
+        if supported != set(saved_columns) - {"date", "ticker"}:
+            return self._merge_panels(resources.frames, self._project_panels(resources, prepared, dates))
+        output_frames = resources.frames.on(output_dates, *self._OUTPUT_FIELDS)
+        df_panel = self._merge_panels(output_frames, panels)
+        if df_panel.empty:
+            df_panel = output_frames.skeleton()
+        for column in supported - set(df_panel.columns):
+            df_panel[column] = pd.Series(index=df_panel.index, dtype="float32")
+        return df_panel.reindex(columns=saved_columns)
+
     def _project_panels(
         self, resources: SecThirteenResources, prepared: PreparedSecThirteen, dates: pd.DatetimeIndex
     ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-        frames = self._output_frames(resources.frames, dates)
-        broad = self._project_institutional_panel(prepared.institutional, frames, resources) if prepared.institutional is not None else None
+        """Each prepared family's daily panel on `dates`."""
+        # Broad levels and changes, emitted raw through the peer-relative panel.
+        frames = resources.frames.on(dates, *self._OUTPUT_FIELDS)
+        broad = None if prepared.institutional is None else pd.DataFrame(columns=["date", "ticker"])
+        if prepared.institutional is not None and not prepared.institutional.empty:
+            fields = project_institutional_features(
+                prepared.institutional, frames, self._settle_days, trading_calendar=resources.frames.trading_index
+            )
+            emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
+            broad = build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
+
+        # Superinvestor levels from the source's availability start.
         elite = None
         if prepared.superinvestor is not None:
             start = self._availability.source_date(Tables.sec13f_hr) if self._availability is not None else resources.frames.trading_index.min()
             elite = project_superinvestor_features(prepared.superinvestor, frames, start)
         return broad, elite
-
-    def _project_institutional_panel(self, features: pd.DataFrame, frames: PriceFrames, resources: SecThirteenResources) -> pd.DataFrame:
-        if features.empty:
-            return pd.DataFrame(columns=["date", "ticker"])
-        fields = project_institutional_features(
-            features,
-            frames,
-            self._settle_days,
-            trading_calendar=resources.frames.trading_index,
-        )
-        emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
-        return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 
     @staticmethod
     def _merge_panels(frames: PriceFrames, panels: tuple[pd.DataFrame | None, pd.DataFrame | None]) -> pd.DataFrame:
@@ -234,41 +239,21 @@ class StepCubeSecThirteen(Step):
 
     @staticmethod
     def _possible_columns(resources: SecThirteenResources, prepared: PreparedSecThirteen) -> set[str]:
-        fields: set[str] = set()
+        """Feature columns the prepared facts could support on some date."""
+        fields: set[str] = set(SUPERINVESTOR_EMISSION) if prepared.superinvestor is not None else set()
         broad = prepared.institutional
-        if broad is not None and not broad.empty:
-            fields.update(name for name in INSTITUTIONAL_EMISSION if name in broad and broad[name].notna().any())
-            denominators = (
-                (resources.frames.shares_outstanding_pit, "inst_shares", "ic_inst_ownership_pct"),
-                (resources.frames.mcap_pit, "inst_value", "ic_inst_value_to_mcap"),
-            )
-            for df_denominator, source, name in denominators:
-                if df_denominator is not None and df_denominator.gt(0).any().any() and source in broad and broad[source].notna().any():
-                    fields.add(name)
-        if prepared.superinvestor is not None:
-            fields.update(SUPERINVESTOR_EMISSION)
+        if broad is None or broad.empty:
+            return {"f_" + name for name in fields}
+
+        # Broad features with a value, and the ratios whose saved denominator and source amount both exist.
+        fields.update(name for name in INSTITUTIONAL_EMISSION if name in broad and broad[name].notna().any())
+        denominators = (
+            (resources.frames.shares_outstanding_pit, "inst_shares", "ic_inst_ownership_pct"),
+            (resources.frames.mcap_pit, "inst_value", "ic_inst_value_to_mcap"),
+        )
+        fields.update(
+            name
+            for df_denominator, source, name in denominators
+            if df_denominator is not None and df_denominator.gt(0).any().any() and source in broad and broad[source].notna().any()
+        )
         return {"f_" + name for name in fields}
-
-    def _supported_columns(
-        self,
-        resources: SecThirteenResources,
-        prepared: PreparedSecThirteen,
-        output_dates: pd.DatetimeIndex,
-        panels: tuple[pd.DataFrame | None, pd.DataFrame | None],
-    ) -> set[str]:
-        supported = self._feature_columns(panels)
-        unresolved = self._possible_columns(resources, prepared) - supported
-        end = int(resources.frames.trading_index.searchsorted(output_dates[0])) if len(output_dates) else len(resources.frames.trading_index)
-        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
-
-        # Probe historical support using the same prepared facts and family projectors.
-        while unresolved and end:
-            start = max(0, end - span)
-            broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
-            elite = prepared.superinvestor if any(column.startswith("f_ic_super_") for column in unresolved) else None
-            probe = PreparedSecThirteen(broad, elite)
-            probe_panels = self._project_panels(resources, probe, resources.frames.trading_index[start:end])
-            supported.update(self._feature_columns(probe_panels))
-            unresolved.difference_update(supported)
-            end = start
-        return supported

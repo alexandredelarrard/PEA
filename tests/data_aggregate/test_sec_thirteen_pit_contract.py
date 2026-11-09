@@ -67,7 +67,7 @@ def test_sec_thirteen_requests_and_slices_all_saved_pit_inputs() -> None:
     quote = pd.DataFrame(40.0, index=index, columns=["TEST"])
     frames = make_frames(index, close_pit=quote, shares_outstanding_pit=quote * 100, mcap_pit=quote * 10000)
     assert {"close_pit", "shares_outstanding_pit", "mcap_pit"}.issubset(StepCubeSecThirteen._FIELDS)
-    sliced = StepCubeSecThirteen._output_frames(frames, index[-1:])
+    sliced = frames.on(index[-1:], *StepCubeSecThirteen._OUTPUT_FIELDS)
     for field in ("close_pit", "shares_outstanding_pit", "mcap_pit"):
         pd.testing.assert_frame_equal(getattr(sliced, field), getattr(frames, field).iloc[-1:])
     print("SANITY: 13F explicitly requests the three saved PIT inputs and projects their exact effective output dates.")

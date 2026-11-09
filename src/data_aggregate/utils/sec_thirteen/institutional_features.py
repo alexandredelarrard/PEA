@@ -124,13 +124,8 @@ def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFr
     return df_weight if df_weight.notna().any().any() else None
 
 
-def _mask_daily_institutional_fields(
-    fields: dict[str, pd.DataFrame], trading_index: pd.DatetimeIndex, settle_trading_days: int
-) -> dict[str, pd.DataFrame]:
-    """Apply publication-based level and delta floors to every daily field."""
-    floors = availability_date(
-        pd.DatetimeIndex([INST_LEVEL_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD]), trading_index, settle_trading_days=settle_trading_days
-    )
+def _mask_daily_institutional_fields(fields: dict[str, pd.DataFrame], floors: pd.Series) -> dict[str, pd.DataFrame]:
+    """Apply the publication-dated level and delta floors to every daily field; drop empty fields."""
     level_floor = pd.Timestamp(cast(Any, floors.get(INST_LEVEL_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))))
     delta_floor = pd.Timestamp(cast(Any, floors.get(INST_DELTA_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))))
     if pd.isna(level_floor):
@@ -165,7 +160,12 @@ def project_institutional_features(
     df_weight = _daily_institutional_value_weight(df_features, frames)
     if df_weight is not None:
         fields["ic_inst_value_to_mcap"] = df_weight
-    return _mask_daily_institutional_fields(fields, trading_calendar, settle_trading_days)
+
+    # Level and delta floors at their publication dates.
+    floors = availability_date(
+        pd.DatetimeIndex([INST_LEVEL_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD]), trading_calendar, settle_trading_days=settle_trading_days
+    )
+    return _mask_daily_institutional_fields(fields, floors)
 
 
 def _book_versions(df_states: pd.DataFrame) -> tuple[pd.DataFrame, pd.DatetimeIndex, list[tuple[pd.Timestamp, int, int]]]:

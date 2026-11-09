@@ -333,20 +333,6 @@ def test_unquoted_position_is_valued_at_its_prior_implied_price(unmapped: bool) 
     print("SANITY: an unquoted holding is fixed at its prior value per share (10, not the current 30), so the book grows 25%.")
 
 
-@pytest.mark.parametrize(
-    ("current_off", "relative", "pooled"),
-    [((200, 1000), 0.25, 0.10), ((200, 2000), -0.25, 1500 / 3500 - 0.5), ((210, 1000), -0.30, 1500 / 3600 - 0.5)],
-    ids=["split_2_for_1", "bought_double", "ratio_outside_band"],
-)
-def test_unmapped_apparent_split_rebases_prior_shares_only_inside_both_bands(current_off: tuple[int, int], relative: float, pooled: float) -> None:
-    prior = _unmapped(_book("1", "2024-03-31", {"AAA": (100, 1000), "OFF": (100, 1000)}))
-    current = _unmapped(_book("1", "2024-06-30", {"AAA": (150, 1500), "OFF": current_off}))
-    history = _compute(_snapshot([prior, current]))
-    assert _value(history, "relative_position_chg") == pytest.approx(relative)
-    assert _value(history, "pooled_weight_chg") == pytest.approx(pooled)
-    print(f"SANITY: unquoted OFF 100 -> {current_off}: relative {relative:.4f}, pooled {pooled:.4f}; only a value-neutral 2x share ratio rebases.")
-
-
 def test_missing_reference_excludes_whole_book_only_and_never_fills() -> None:
     prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "OUT": (100, 1000)})
     current = _book("1", "2024-06-30", {"AAA": (150, 1500), "OUT": (100, 1000)})

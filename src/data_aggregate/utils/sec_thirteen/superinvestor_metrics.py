@@ -222,17 +222,11 @@ def join_pairs(pairs: Sequence[tuple[PublicBook, PublicBook]], table: BookTable)
     return PairTable({pair: code for code, pair in enumerate(pairs)}, df_pair[columns], starts)
 
 
-def _implied_prices(df_pair: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Each position's prior value per share (else current) and its apparent split factor (else 1)."""
+def _implied_price(df_pair: pd.DataFrame) -> pd.Series:
+    """Each position's prior value per share, else its current value per share."""
     current, prior = (df_pair[f"value_{side}"] / df_pair[side] for side in ("current", "prior"))
     current, prior = (price.where(np.isfinite(price) & price.gt(0)) for price in (current, prior))
-
-    # A share ratio within 2% of a split factor whose value moves under 10% is a split, not a trade.
-    ratio = df_pair.current / df_pair.prior
-    factor = pd.Series(1.0, index=df_pair.index)
-    for split in (2, 3, 4, 5, 10, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10):
-        factor = factor.mask(np.abs(ratio / split - 1) <= 0.02, split)
-    return prior.fillna(current), factor.where(np.abs(ratio * current / prior - 1) <= 0.10, 1.0)
+    return prior.fillna(current)
 
 
 def prepare_pair_sample(selected: list[BookPair], pairs: PairTable, market: BehaviorMarket) -> PairSample:
@@ -246,18 +240,17 @@ def prepare_pair_sample(selected: list[BookPair], pairs: PairTable, market: Beha
     _, current, prior = selected[0]
 
     # Prior shares move onto the current basis (`F_period / F_prior`) and the reference price inversely: universe tickers
-    # use F and the exact reference-session quote, other positions their implied price and apparent split. No quote is filled.
+    # use F and the exact reference-session quote, other positions their implied price at F = 1. No quote is filled.
     tickers = df_positions.ticker
     quoted = tickers.isin(market.close_pit.columns if market.close_pit is not None else [])
-    implied, factor = _implied_prices(df_positions)
     prior_basis = lookup_asof(market.basis, tickers, pd.Series(prior.period, index=tickers.index)).where(quoted, 1.0)
-    basis_now = lookup_asof(market.basis, tickers, pd.Series(current.period, index=tickers.index)).where(quoted, factor)
+    basis_now = lookup_asof(market.basis, tickers, pd.Series(current.period, index=tickers.index)).where(quoted, 1.0)
     df_positions["prior"] = convert_quantities(df_positions.prior, prior_basis, basis_now)
     position = int(market.trading_index.searchsorted(prior.period, side="right")) - 1
     prices = pd.Series(dtype="float64")
     if position >= 0 and market.close_pit is not None:
         prices = market.close_pit.reindex(index=[market.trading_index[position]]).iloc[0]
-    df_positions["price"] = convert_quantities(tickers.map(prices).where(quoted, implied), basis_now, prior_basis)
+    df_positions["price"] = convert_quantities(tickers.map(prices).where(quoted, _implied_price(df_positions)), basis_now, prior_basis)
     df_positions["known"] &= np.isfinite(df_positions.prior) & df_positions.prior.ge(0)
     grouped = df_positions.groupby(["cik", "ticker"], sort=False)
     df_tickers = grouped[["current", "prior"]].sum(min_count=1)

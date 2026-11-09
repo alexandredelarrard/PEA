@@ -75,27 +75,9 @@ def _book_codes(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[p
     return books, codes, accession_codes.to_numpy(dtype=float) == holding_codes
 
 
-def _resolve_public_days(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[list[pd.DataFrame], list[pd.DataFrame], pd.MultiIndex]:
-    """Resolve and compact every manager-quarter at each of its public days, one resolver call per day rank."""
-    books, codes, owned = _book_codes(df_manifest, df_holdings)
-    df_events = pd.DataFrame({"_book": codes, "_day": df_manifest["public_at"].to_numpy()}).dropna().drop_duplicates().sort_values("_day")
-    df_positions = df_holdings.loc[owned, ~df_holdings.columns.str.match("value_basis_|filing_date|class_evidence")]
-    frames: list[pd.DataFrame] = []
-    states: list[pd.DataFrame] = []
-
-    # A quarter's book at a day depends only on its own versions, so one resolver call serves the n-th public day of
-    # every quarter, each cut to its own day; provenance columns never reach the compact amounts.
-    for _, df_round in df_events.groupby(df_events.groupby("_book").cumcount(), sort=True):
-        cutoff = df_round.set_index("_book")["_day"].reindex(range(len(books))).to_numpy()
-        df_book, df_state = resolve_prepared_books(df_manifest.loc[df_manifest["public_at"].le(cutoff[codes])], df_positions, df_round["_day"].max())
-        frames.append(compact_institutional_books(df_book))
-        states.append(df_state.assign(_day=cutoff[books.get_indexer(pd.MultiIndex.from_frame(df_state[["cik", "period"]]))]))
-    return frames, states, books
-
-
-def _compact_batch_events(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Order compact public replacements by manager-quarter, then public day, with each state's row span."""
-    frames, states, books = _resolve_public_days(df_manifest, df_holdings)
+def _order_batch_events(frames: list[pd.DataFrame], states: list[pd.DataFrame], books: pd.MultiIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Order the amended books' compact public replacements by manager-quarter, then public day, with each state's
+    row span."""
     if not states or all(state.empty for state in states):
         return pd.DataFrame(), pd.DataFrame({"_start": pd.Series(dtype="int64"), "_stop": pd.Series(dtype="int64")})
 
@@ -120,18 +102,31 @@ def _compact_batch_events(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) 
     return df_compact, df_states
 
 
+def _concat_events(parts: list[tuple[pd.DataFrame, pd.DataFrame]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Concatenate the batches' compact rows and states, shifting each state's row span to the global frame."""
+    offsets = np.cumsum([0, *(len(df_compact) for df_compact, _ in parts)])
+    frames = [df_compact for df_compact, df_states in parts if not df_states.empty]
+    states = [
+        df_states.assign(_start=df_states["_start"] + offset, _stop=df_states["_stop"] + offset)
+        for (_, df_states), offset in zip(parts, offsets[:-1].tolist(), strict=True)
+        if not df_states.empty
+    ]
+    df_compact = pd.concat(frames) if frames else pd.DataFrame()
+    df_states = pd.concat(states, ignore_index=True) if states else pd.DataFrame()
+    return df_compact, df_states
+
+
 def prepare_institutional_book_history(
     batches: Iterator[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, *, settle_days: int
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """Retain only compact public events of the cleaned complete-book batches: single-version books in one pass,
     amended books through the shared resolver."""
-    frames: list[pd.DataFrame] = []
-    states: list[pd.DataFrame] = []
-    offset = 0
+    parts: list[tuple[pd.DataFrame, pd.DataFrame]] = []
     filings_count = 0
     raw_rows = 0
 
     for df_filings, df_holdings in batches:
+        # Publication facts; a single-version book is its own resolved state on its public day.
         filings_count += len(df_filings)
         raw_rows += len(df_holdings)
         df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days)
@@ -139,23 +134,31 @@ def prepare_institutional_book_history(
         df_single = df_manifest.loc[single]
         single_rows = df_holdings["accession_number"].isin(set(df_single["accession_number"]))
         df_single_compact = compact_institutional_books(df_holdings.loc[single_rows])
-        parts = (
-            _single_version_events(df_single, df_single["report_type"].map(full_13f_report), df_single_compact),
-            _compact_batch_events(df_manifest.loc[~single], df_holdings.loc[~single_rows]),
-        )
-        del df_filings, df_holdings, df_manifest, df_single, df_single_compact
-        for df_compact, df_states in parts:
-            frames.append(df_compact)
-            states.append(df_states.assign(_start=df_states["_start"] + offset, _stop=df_states["_stop"] + offset))
-            offset += len(df_compact)
+        parts.append(_single_version_events(df_single, df_single["report_type"].map(full_13f_report), df_single_compact))
 
+        # Amended books: a quarter's book at a day depends only on its own versions, so one resolver call serves the
+        # n-th public day of every quarter, each cut to its own day; provenance columns never reach the compact amounts.
+        df_amended, df_amended_rows = df_manifest.loc[~single], df_holdings.loc[~single_rows]
+        books, codes, owned = _book_codes(df_amended, df_amended_rows)
+        df_positions = df_amended_rows.loc[owned, ~df_amended_rows.columns.str.match("value_basis_|filing_date|class_evidence")]
+        df_events = pd.DataFrame({"_book": codes, "_day": df_amended["public_at"].to_numpy()}).dropna().drop_duplicates().sort_values("_day")
+        frames: list[pd.DataFrame] = []
+        states: list[pd.DataFrame] = []
+        for _, df_round in df_events.groupby(df_events.groupby("_book").cumcount(), sort=True):
+            cutoff = df_round.set_index("_book")["_day"].reindex(range(len(books))).to_numpy()
+            df_book, df_state = resolve_prepared_books(
+                df_amended.loc[df_amended["public_at"].le(cutoff[codes])], df_positions, df_round["_day"].max()
+            )
+            frames.append(compact_institutional_books(df_book))
+            states.append(df_state.assign(_day=cutoff[books.get_indexer(pd.MultiIndex.from_frame(df_state[["cik", "period"]]))]))
+        parts.append(_order_batch_events(frames, states, books))
+        del df_filings, df_holdings, df_manifest, df_single, df_single_compact, df_amended_rows, df_positions
+
+    # One frame of compact rows with global row spans.
     if not filings_count:
         logger.warning("No complete immutable 13F filings in scope; recover originals/amendments. Latest-only rows cannot supply PIT books.")
         return None
-    frames = [frame for frame, state in zip(frames, states, strict=True) if not state.empty]
-    states = [state for state in states if not state.empty]
-    df_compact = pd.concat(frames) if frames else pd.DataFrame()
-    df_states = pd.concat(states, ignore_index=True) if states else pd.DataFrame()
+    df_compact, df_states = _concat_events(parts)
     logger.info(
         "Immutable broad 13F: %s accessions / %s raw rows reduced to %s mapped rows / %s dated book states.",
         filings_count,

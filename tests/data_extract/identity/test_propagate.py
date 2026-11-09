@@ -29,10 +29,11 @@ from src.data_extract.transformers.step_extract_identity import IdentityOptions
 from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, purge_rows, rebuilt_since, retag_13f, thirteenf_moves
 from src.data_extract.utils.identity.lifecycle import Lifecycle
 from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_13f_filing, save_hr_filing
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_hr_filing
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
+from src.utils.identity_tables import LINE_COLUMNS
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
 from tests.data_extract.institutionals.test_13f_one_walk import _line as _info_line
 from tests.support.propagation import stub_propagation
@@ -90,8 +91,9 @@ def _seed(store: DataStore) -> None:
     over 29476L107 and BRK-B's two classes."""
     store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": [EQR_CUSIP, OTHER_CUSIP, BRK_A, BRK_B], "ticker": ["EQR", "ZZZ", "BRK-A", "BRK-B"]}))
     old = {EQR_CUSIP: "EQR", OTHER_CUSIP: "ZZZ", BRK_A: "BRK-B", BRK_B: "BRK-B"}
+    old_map = pd.DataFrame({"cusip": list(old), "ticker": list(old.values())})
     for manifest, book in PACKETS:
-        save_13f_filing(store, manifest, book, table=Tables.sec13f_hr, rows=book.assign(ticker=book["cusip"].map(old)))
+        save_hr_filing(store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), old_map)
     lines = [
         _line(EQR_CUSIP, "VMRK", "canonical_current", "EQR", 1.0, "1995-01-01"),
         _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31"),

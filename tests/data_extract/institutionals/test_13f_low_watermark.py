@@ -129,7 +129,7 @@ def test_first_pass_keeps_saving_every_100_after_failures(tmp_path: Path, filing
     filings = [transient, malformed, *[_filing(n, "2026-09-29") for n in range(3, 204)]]
     ctx = _ctx(tmp_path, filing_store)
     _patch(monkeypatch, filings)
-    saver = f13._Saver(ctx, set(_UNIVERSE), set(), save_every=100)
+    saver = f13._Saver(ctx, set(_UNIVERSE), save_every=100)
     read_filing = f13.read_filing_vintage
     saved_during_walk: list[int] = []
 
@@ -179,7 +179,6 @@ def test_retry_saves_recovered_filings_while_another_failure_persists(
         end_period="2026-06-30",
         filed_through="2026-10-01",
         trading_index=pd.bdate_range("2026-06-01", "2026-10-01"),
-        table=Tables.sec13f_hr,
     )
     assert validation.status == "pass", validation.summary()
     assert validation.metrics["accessions"] == 2 and validation.metrics["holding_rows"] == 2

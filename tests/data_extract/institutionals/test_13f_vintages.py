@@ -30,7 +30,7 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     compute_institutional_feature_history,
 )
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing, save_hr_filing
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_hr_filing
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
@@ -42,6 +42,12 @@ from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
+_NO_LINES = pd.DataFrame(columns=LINE_COLUMNS)
+
+
+def _save_book(store: DataStore, manifest: pd.DataFrame, rows: pd.DataFrame) -> int:
+    """Save one accession to `sec13f_hr`, every CUSIP on the unmapped sentinel."""
+    return save_hr_filing(store, manifest, rows, _NO_LINES, None)
 
 
 def vintage_changes(
@@ -264,44 +270,42 @@ def vintage_cohort_publications(
 
 
 def completed(store: DataStore) -> pd.DataFrame:
-    return store.load(Tables.sec13f_manager_holdings, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
+    return store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
 
 
-def test_only_existing_tables_store_complete_versions(filing_store: DataStore) -> None:
+def test_only_sec13f_hr_stores_complete_versions(filing_store: DataStore) -> None:
     original = packet("same-day-original", "2024-08-14", {"111111111": 100, "222222222": 200})
     amended = packet("same-day-amendment", "2024-08-14", {"111111111": 90}, kind="restatement")
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        for manifest, holdings in (original, amended):
-            rows = holdings.assign(ticker="_empty") if table == Tables.sec13f_hr else holdings
-            save_13f_filing(filing_store, manifest, rows, table=table)
-        completed = filing_store.load(
-            table,
-            columns=["accession_number", "filing_date", "parsed_row_count"],
-            where={"cusip": "_empty", "parse_status": "complete"},
-            markers=True,
-        )
-        assert set(completed.accession_number) == {"same-day-original", "same-day-amendment"}
-        assert len(filing_store.load(table)) == 3
-        assert "accession_number" in table.pk
+    for manifest, holdings in (original, amended):
+        _save_book(filing_store, manifest, holdings)
+    stored = filing_store.load(
+        Tables.sec13f_hr,
+        columns=["accession_number", "filing_date", "parsed_row_count"],
+        where={"cusip": "_empty", "parse_status": "complete"},
+        markers=True,
+    )
+    assert set(stored.accession_number) == {"same-day-original", "same-day-amendment"}
+    assert len(filing_store.load(Tables.sec13f_hr)) == 3
+    assert "accession_number" in Tables.sec13f_hr.pk
     assert not hasattr(Tables, "sec13f_filings")
     assert not hasattr(Tables, "sec13f_holdings_vintages")
-    print("SANITY: only the two existing tables retain original and same-day amendment plus hidden completion markers.")
+    print("SANITY: sec13f_hr alone retains original and same-day amendment plus hidden completion markers.")
 
 
 def test_equivalent_transport_replay_keeps_original_clock(filing_store: DataStore) -> None:
     manifest, rows = packet("transport", "2024-08-14", {"111111111": 100})
-    save_13f_filing(filing_store, manifest, rows)
+    _save_book(filing_store, manifest, rows)
     replay = manifest.copy()
     replay.loc[0, "source"] = "edgar"
     replay.loc[0, "source_checksum"] = "different-byte-layout"
     replay.loc[0, "accepted_at"] = pd.Timestamp("2024-08-14 20:00:00")
-    assert save_13f_filing(filing_store, replay, rows) == 0
-    clock = filing_store.load(Tables.sec13f_manager_holdings, columns=["accepted_at"], where={"cusip": "_empty"}, markers=True)
+    assert _save_book(filing_store, replay, rows) == 0
+    clock = filing_store.load(Tables.sec13f_hr, columns=["accepted_at"], where={"cusip": "_empty"}, markers=True)
     assert clock.accepted_at.isna().all()
     changed = rows.copy()
     changed.loc[0, "shares"] = 99
     with pytest.raises(ValueError, match="checksum"):
-        save_13f_filing(filing_store, replay, changed)
+        _save_book(filing_store, replay, changed)
     print("SANITY: equivalent ZIP/EDGAR content replays once, cannot retroactively improve a clock, and changed positions conflict.")
 
 
@@ -360,16 +364,14 @@ def test_source_row_coverage_boundary_and_idempotent_save(
         else:
             manifest, rows = filing_vintage(info, **kwargs)
             assert manifest.source_row_count.iloc[0] == received and manifest.declared_row_count.iloc[0] == declared
-            for table in (Tables.sec13f_manager_holdings, Tables.sec13f_hr):
-                positions = rows.assign(ticker="AAA") if table == Tables.sec13f_hr else rows
-                assert save_13f_filing(filing_store, manifest, positions, table=table) == received
-                assert save_13f_filing(filing_store, manifest, positions, table=table) == 0
+            assert _save_book(filing_store, manifest, rows) == received
+            assert _save_book(filing_store, manifest, rows) == 0
             _, state = public_books(manifest, rows, "2024-08-21", GRID)
             assert state.iloc[0].book_known and state.iloc[0].comparison_eligible and state.iloc[0].zero_eligible
     if accepted and declared != received:
         assert any(f"accepted {received}/{declared}" in record.getMessage() for record in caplog.records)
     print(
-        f"SANITY: received{received}/declared{declared}, accepted={accepted};85?110% bounds, both destinations and normal exit eligibility validated."
+        f"SANITY: received{received}/declared{declared}, accepted={accepted};85?110% bounds, idempotent save and normal exit eligibility validated."
     )
 
 
@@ -406,8 +408,8 @@ def test_cover_unit_mismatch_preserves_raw_rows_and_own_unit_basis(
     assert rows.raw_value_usd.iloc[0] == 1000 and rows.shares.iloc[0] == 100
     assert rows.value_usd.iloc[0] == 1000 * usd_factor
     assert manifest.declared_value_total.iloc[0] == 1000 / cover_factor and manifest.source_value_total.iloc[0] == 1000
-    assert save_13f_filing(filing_store, manifest, rows) == 1
-    assert save_13f_filing(filing_store, manifest, rows) == 0
+    assert _save_book(filing_store, manifest, rows) == 1
+    assert _save_book(filing_store, manifest, rows) == 0
     assert any("cover-to-row factor" in record.getMessage() for record in caplog.records)
     print(
         f"SANITY: cover-to-row{cover_factor:g} aligns the source summary without another multiplication of row dollars; raw values, shares and replay preserved."
@@ -525,12 +527,12 @@ def test_tolerated_count_discrepancy_participates_in_normal_exits() -> None:
 @pytest.mark.parametrize("column,new_value", [("declared_row_count", 21), ("declared_value_total", 20)])
 def test_replay_rejects_changed_cover_metadata(filing_store: DataStore, column: str, new_value: float) -> None:
     manifest, rows = packet("fixed-cover", "2024-08-14", {f"{number:09d}": 100 for number in range(1, 21)})
-    assert save_13f_filing(filing_store, manifest, rows) == 20
+    assert _save_book(filing_store, manifest, rows) == 20
     changed = manifest.copy()
     changed.loc[0, column] = new_value
     with pytest.raises(ValueError, match="checksum conflict"):
-        save_13f_filing(filing_store, changed, rows)
-    assert save_13f_filing(filing_store, manifest, rows) == 0
+        _save_book(filing_store, changed, rows)
+    assert _save_book(filing_store, manifest, rows) == 0
     print(
         f"SANITY: changing accepted{column} cannot silently replay an immutable accession; original compatible checksum and repeat save remain valid."
     )
@@ -745,27 +747,23 @@ def test_restriction_blocks_exit_inference() -> None:
 
 def test_atomic_save_replay_conflict_and_accession_resume(filing_store: DataStore) -> None:
     manifest, rows = packet("original", "2024-08-14", {"111111111": 100})
-    assert save_13f_filing(filing_store, manifest, rows) == 1
-    assert save_13f_filing(filing_store, manifest, rows) == 0
+    assert _save_book(filing_store, manifest, rows) == 1
+    assert _save_book(filing_store, manifest, rows) == 0
     changed, changed_rows = packet("original", "2024-08-14", {"111111111": 99})
     with pytest.raises(ValueError, match="checksum"):
-        save_13f_filing(filing_store, changed, changed_rows)
+        _save_book(filing_store, changed, changed_rows)
     amendment, amended_rows = packet("amendment", "2025-05-14", {"111111111": 90}, kind="restatement")
 
     def crash(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
-        if (
-            statement.startswith("INSERT")
-            and Tables.sec13f_manager_holdings.name in statement
-            and context.compiled_parameters[0].get("parse_status") == "complete"
-        ):
+        if statement.startswith("INSERT") and Tables.sec13f_hr.name in statement and context.compiled_parameters[0].get("parse_status") == "complete":
             raise RuntimeError("injected crash after holdings")
 
     event.listen(filing_store.engine, "before_cursor_execute", crash)
     with pytest.raises(RuntimeError, match="injected"):
-        save_13f_filing(filing_store, amendment, amended_rows)
+        _save_book(filing_store, amendment, amended_rows)
     event.remove(filing_store.engine, "before_cursor_execute", crash)
     assert len(completed(filing_store)) == 1
-    assert len(filing_store.load(Tables.sec13f_manager_holdings)) == 1
+    assert len(filing_store.load(Tables.sec13f_hr)) == 1
     context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__), _identity_resolver=store_identity(filing_store))
     assert pending_vintages(context, "0000000001", ["amendment", "original", "missing_original"]) == ["amendment", "missing_original"]
     print("SANITY: atomic rollback, identical replay, visible payload conflict, and accession gaps all enforced.")
@@ -776,7 +774,7 @@ def test_source_completion_and_amendment_identity_are_validated(filing_store: Da
     bad = manifest.copy()
     bad.loc[0, "source_row_count"] = 0
     with pytest.raises(ValueError, match="source row count"):
-        save_13f_filing(filing_store, bad, rows)
+        _save_book(filing_store, bad, rows)
     with pytest.raises(ValueError, match="amendment"):
         packet("bad", "2024-08-14", {"111111111": 1}, kind="ambiguous")
     print("SANITY: unknown amendment semantics are rejected rather than interpreted as a full replacement.")
@@ -853,7 +851,7 @@ def test_save_reconciles_actual_raw_legs(filing_store: DataStore) -> None:
     manifest, rows = packet("original", "2024-08-14", {"111111111": 100})
     rows.loc[0, "raw_value_usd"] = 0
     with pytest.raises(ValueError, match="raw value total"):
-        save_13f_filing(filing_store, manifest, rows)
+        _save_book(filing_store, manifest, rows)
     print("SANITY: altered book rows cannot pass by copying valid manifest totals.")
 
 
@@ -875,34 +873,30 @@ def test_disposable_postgres_atomicity() -> None:
     assert parsed.host == "127.0.0.1" and parsed.port == 55433 and parsed.database == "p3" and parsed.username == "p3"
     store = DataStore(create_engine(url))
     m, h = packet("pg-original", "2024-08-14", {"111111111": 100})
-    assert save_13f_filing(store, m, h) == 1
-    assert save_13f_filing(store, m, h) == 0
+    assert _save_book(store, m, h) == 1
+    assert _save_book(store, m, h) == 0
     m2, h2 = packet("pg-amend", "2025-05-14", {"111111111": 90}, kind="restatement")
 
     def crash(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
-        if (
-            statement.startswith("INSERT")
-            and Tables.sec13f_manager_holdings.name in statement
-            and context.compiled_parameters[0].get("parse_status") == "complete"
-        ):
+        if statement.startswith("INSERT") and Tables.sec13f_hr.name in statement and context.compiled_parameters[0].get("parse_status") == "complete":
             raise RuntimeError("injected PostgreSQL failure")
 
     event.listen(store.engine, "before_cursor_execute", crash)
     with pytest.raises(RuntimeError, match="injected PostgreSQL"):
-        save_13f_filing(store, m2, h2)
+        _save_book(store, m2, h2)
     event.remove(store.engine, "before_cursor_execute", crash)
-    assert len(completed(store)) == len(store.load(Tables.sec13f_manager_holdings)) == 1
-    assert save_13f_filing(store, m2, h2) == 1
+    assert len(completed(store)) == len(store.load(Tables.sec13f_hr)) == 1
+    assert _save_book(store, m2, h2) == 1
     empty, no_rows = packet("pg-empty", "2025-06-01", {}, kind="restatement")
-    assert save_13f_filing(store, empty, no_rows) == 0
+    assert _save_book(store, empty, no_rows) == 0
     assert len(completed(store)) == 3
     concurrent, concurrent_rows = packet("pg-concurrent", "2025-06-02", {"111111111": 80}, kind="restatement")
     with ThreadPoolExecutor(max_workers=2) as workers:
-        outcomes = list(workers.map(lambda _: save_13f_filing(store, concurrent, concurrent_rows), range(2)))
+        outcomes = list(workers.map(lambda _: _save_book(store, concurrent, concurrent_rows), range(2)))
     assert sorted(outcomes) == [0, 1] and len(completed(store)) == 4
     changed, changed_rows = packet("pg-original", "2024-08-14", {"111111111": 99})
     with pytest.raises(ValueError, match="checksum"):
-        save_13f_filing(store, changed, changed_rows)
+        _save_book(store, changed, changed_rows)
     store.engine.dispose()
     print("SANITY: real disposable PostgreSQL rollback, retry, empty completion, immutable replay/conflict passed; production untouched.")
 
@@ -927,10 +921,10 @@ def test_bounded_recovery_dry_run_cap_and_original_gap(filing_store: DataStore, 
         max_filings=2,
     )
     preview = managers.recover_13f_vintages(context, **args)
-    assert preview["pending_accessions"] == 2 and filing_store.row_count(Tables.sec13f_manager_holdings) == 0
+    assert preview["pending_accessions"] == 2 and filing_store.row_count(Tables.sec13f_hr) == 0
     with pytest.raises(ValueError, match="exceeding cap"):
         managers.recover_13f_vintages(context, **{**args, "max_filings": 1}, dry_run=False)
-    save_13f_filing(filing_store, *packets["amend"])
+    _save_book(filing_store, *packets["amend"])
     assert managers.recover_13f_vintages(context, **args, dry_run=False)["saved_rows"] == 1
     assert len(completed(filing_store)) == 2
     assert managers.recover_13f_vintages(context, **args, dry_run=False)["saved_rows"] == 0
@@ -939,8 +933,8 @@ def test_bounded_recovery_dry_run_cap_and_original_gap(filing_store: DataStore, 
 
 
 def test_completed_empty_book_can_create_schema_first(filing_store: DataStore) -> None:
-    assert save_13f_filing(filing_store, *packet("empty-first", "2024-08-14", {})) == 0
-    assert save_13f_filing(filing_store, *packet("populated-second", "2024-11-14", {"111111111": 100}, period="2024-09-30")) == 1
+    assert _save_book(filing_store, *packet("empty-first", "2024-08-14", {})) == 0
+    assert _save_book(filing_store, *packet("populated-second", "2024-11-14", {"111111111": 100}, period="2024-09-30")) == 1
     assert len(completed(filing_store)) == 2
     print("SANITY: empty-first source completion creates a stable schema that accepts later holdings.")
 
@@ -997,7 +991,7 @@ def test_recovered_real_amendments_and_active_prior_are_causal() -> None:
     if os.getenv("PEA_LIVE_TESTS") != "1":
         pytest.skip("real-source proof requires explicit PEA_LIVE_TESTS=1")
     _, context = get_config_context(str(Path(__file__).resolve().parents[3] / "configs"), use_cache=False, save=False)
-    if "parse_status" not in context.store.columns(Tables.sec13f_manager_holdings):
+    if "parse_status" not in context.store.columns(Tables.sec13f_hr):
         pytest.skip("source versions have not been replayed into the existing holdings table")
     ciks = ["0000093751", "0000102909", "0000895421", "0001067983"]
     mc = [
@@ -1037,7 +1031,7 @@ def test_recovered_real_amendments_and_active_prior_are_causal() -> None:
         "raw_other_value",
     ]
     m = context.store.load(
-        Tables.sec13f_manager_holdings,
+        Tables.sec13f_hr,
         columns=mc,
         where={"cik": ciks, "cusip": "_empty", "parse_status": "complete"},
         markers=True,
@@ -1048,7 +1042,7 @@ def test_recovered_real_amendments_and_active_prior_are_causal() -> None:
     h = pd.concat(
         list(
             context.store.iter_load(
-                Tables.sec13f_manager_holdings,
+                Tables.sec13f_hr,
                 columns=hc,
                 where={"cik": ciks, "accession_number": m.accession_number.tolist()},
                 since="2023-01-01",
@@ -1387,7 +1381,6 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     revised = packet("amend", "2024-12-01", {"111111111": 90, "222222222": 100}, kind="restatement")
     cmap = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
     for m, h in (original, new, revised):
-        save_13f_filing(filing_store, m, h)
         save_hr_filing(filing_store, m, h, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
@@ -1427,7 +1420,6 @@ def ordinary_step(
 ) -> tuple[StepCubeSecThirteen, PriceFrames]:
     cmap = pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]})
     for manifest, holdings in packets:
-        save_13f_filing(filing_store, manifest, holdings)
         save_hr_filing(filing_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
@@ -1567,8 +1559,7 @@ def test_normal_removed_position_clears_carry_without_inventing_exit(
     revised = packet("revised", "2024-12-01", {"222222222": 100}, kind="restatement", period="2024-09-30", restricted=restricted)
     step, frames = ordinary_step(filing_store, monkeypatch, (prior, original))
     before = normal_panels(step, frames)
-    save_13f_filing(filing_store, *revised)
-    save_13f_filing(filing_store, revised[0], revised[1].assign(ticker="_empty"), table=Tables.sec13f_hr)
+    _save_book(filing_store, *revised)
     after = normal_panels(step, frames)
     for old, new, family in zip(before, after, ("inst", "super"), strict=True):
         cutoff = pd.Timestamp("2024-12-01")

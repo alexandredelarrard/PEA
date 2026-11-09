@@ -27,10 +27,11 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     INST_LEVEL_FLOOR_PERIOD,
     MIN_PRIOR_HOLDERS,
 )
-from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage, save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage, save_hr_filing
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import LINE_COLUMNS
 from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
@@ -1084,7 +1085,9 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
             declared_rows=len(info),
             declared_value=float(info.VALUE.sum()),
         )
-        save_13f_filing(sqlite_store, manifest, holdings.assign(ticker="AAA"), table=Tables.sec13f_hr)
+        save_hr_filing(
+            sqlite_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
+        )
 
     compute_history = step_module.compute_institutional_feature_history
 

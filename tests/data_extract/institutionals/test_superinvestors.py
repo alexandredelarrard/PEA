@@ -220,20 +220,14 @@ def test_unresolved_manager_raises_unless_recorded():
     )
 
 
-def _seed_13f(store: Any, hr: list[tuple[str, str]] | None = None, books: list[tuple[str, str]] | None = None) -> None:
-    """Seed (cik, period) 13F activity: `hr` into `sec13f_hr` (the S&P slice), `books` into `sec13f_manager_holdings`."""
-    if hr:
-        store.save(
-            si.Tables.sec13f_hr,
-            pd.DataFrame(
-                [{"accession_number": "_legacy", "cik": c, "period": p, "ticker": "AAPL", "cusip": "037833100", "shares": 1.0} for c, p in hr]
-            ),
-        )
-    if books:
-        store.save(
-            si.Tables.sec13f_manager_holdings,
-            pd.DataFrame([{"accession_number": "_legacy", "cik": c, "period": p, "cusip": "037833100", "shares": 1.0} for c, p in books]),
-        )
+def _seed_13f(store: Any, activity: list[tuple[str, str]]) -> None:
+    """Seed (cik, period) 13F activity into `sec13f_hr`."""
+    store.save(
+        si.Tables.sec13f_hr,
+        pd.DataFrame(
+            [{"accession_number": "_legacy", "cik": c, "period": p, "ticker": "AAPL", "cusip": "037833100", "shares": 1.0} for c, p in activity]
+        ),
+    )
 
 
 def _gate_row(code: str, cik: str | None, snapshot: str) -> dict[str, Any]:
@@ -262,7 +256,7 @@ def _refresh_fixture(monkeypatch, sqlite_store, tmp_path) -> Any:
     both with 13F activity at the quarter before today."""
     monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text=_ROSTER_HTML))
     q = str(si.snapshot_quarter(datetime.now(UTC).date()))
-    _seed_13f(sqlite_store, hr=[("1079114", q)], books=[("0001067983", q)])
+    _seed_13f(sqlite_store, [("1079114", q), ("0001067983", q)])
     config_dir = write_roster_config(tmp_path, {"cik_overrides": {c: {"cik": k} for c, k in FIXTURE_CIK_OVERRIDES.items()}})
     return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
 
@@ -307,7 +301,7 @@ def test_live_refresh_writes_on_change(monkeypatch, sqlite_store, tmp_path):
     assert si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing).empty
 
     corrected = "0000000007"
-    _seed_13f(sqlite_store, books=[(corrected, str(si.snapshot_quarter(today)))])
+    _seed_13f(sqlite_store, [(corrected, str(si.snapshot_quarter(today)))])
     ctx.config_dir = write_roster_config(tmp_path / "corrected", {"cik_overrides": {"BRK": {"cik": "0001067983"}, "GLRE": {"cik": corrected}}})
     moved = si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
     assert dict(zip(moved["dataroma_code"], moved["cik"], strict=True)) == {"GLRE": corrected, "BRK": "0001067983"}
@@ -355,7 +349,7 @@ def test_gate_raises_on_inactive_cik(sqlite_store):
     """The RC -> TRAC Intermodal shape: a CIK with no 13F-HR near the snapshot raises, naming code, snapshot,
     CIK and the nearest known period; a CIK with local activity passes without an EDGAR listing call."""
     trac, lapsed, brk = "0001570775", "0000099999", "0001067983"
-    _seed_13f(sqlite_store, hr=[("99999", "2019-12-31")], books=[(brk, "2026-06-30")])
+    _seed_13f(sqlite_store, [("99999", "2019-12-31"), (brk, "2026-06-30")])
     ctx = cast(Any, SimpleNamespace(store=sqlite_store))
     evidence = si.activity_evidence(ctx, {trac, lapsed, brk})
     assert evidence == {(lapsed, date(2019, 12, 31)), (brk, date(2026, 6, 30))}  # unpadded hr row normalised
@@ -417,7 +411,7 @@ def test_gate_uses_listing_on_local_miss(sqlite_store):
     """A 2012-only filer with no local rows passes through the EDGAR listing, asked once per CIK; a CIK with
     local evidence never triggers the listing."""
     old, brk = "0000846222", "0001067983"
-    _seed_13f(sqlite_store, books=[(brk, "2012-03-31")])
+    _seed_13f(sqlite_store, [(brk, "2012-03-31")])
     evidence = si.activity_evidence(cast(Any, SimpleNamespace(store=sqlite_store)), {old, brk})
     calls: list[str] = []
 
@@ -501,7 +495,7 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
         queried.append(url)
         return SimpleNamespace(text="no company-info")
 
-    _seed_13f(sqlite_store, books=[("0000001234", "2015-06-30")])
+    _seed_13f(sqlite_store, [("0000001234", "2015-06-30")])
     ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir, paths={"DATA_STORE": data_store}))
     df = si.rebuild_roster(ctx, get_fn=empty_edgar, listing_fn=_no_listing)
     got = {(str(r.snapshot_date), r.dataroma_code, None if pd.isna(r.cik) else r.cik, r.resolution) for r in df.itertuples(index=False)}
@@ -533,7 +527,7 @@ def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
         [{"captured_at": t, "source_url": f"wb-{t}", "managers": {"AM": "Tepper", "BRK": "Buffett"}} for t in stamps],
     )
 
-    _seed_13f(sqlite_store, hr=[(old, "2015-09-30"), (new, "2016-03-31"), ("0001067983", "2015-12-31")])
+    _seed_13f(sqlite_store, [(old, "2015-09-30"), (new, "2016-03-31"), ("0001067983", "2015-12-31")])
     ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
     df = si.rebuild_roster(ctx, get_fn=lambda url: pytest.fail(f"no EDGAR call expected: {url}"), listing_fn=_no_listing)
     am = {str(r.snapshot_date): r.cik for r in df.itertuples(index=False) if r.dataroma_code == "AM"}
@@ -582,9 +576,7 @@ def _rebuild_fixture(sqlite_store, tmp_path, extra_history: list[dict[str, Any]]
         )
     ]
     sqlite_store.save(si.Tables.superinvestor_roster, pd.DataFrame(stale + live))
-    _seed_13f(
-        sqlite_store, hr=[(_BRK, "2015-03-31"), (_GLRE, "2015-03-31"), (_GLRE, "2026-06-30")], books=[(_BRK, "2026-06-30"), (_PSC, "2026-06-30")]
-    )
+    _seed_13f(sqlite_store, [(_BRK, "2015-03-31"), (_GLRE, "2015-03-31"), (_GLRE, "2026-06-30"), (_BRK, "2026-06-30"), (_PSC, "2026-06-30")])
     queried: list[str] = []
 
     def edgar(url: str) -> Any:
@@ -675,7 +667,7 @@ def test_rebuild_roster_refuses_to_write(sqlite_store, tmp_path, failure):
     overlap = [{"captured_at": "2026-09-08T01:00:00Z", "source_url": "https://web.archive.org/web/c", "managers": {"BRK": "Warren Buffett"}}]
     ctx, _ = _rebuild_fixture(sqlite_store, tmp_path, extra_history=overlap if failure == "pk" else None)
     if failure == "gate":
-        sqlite_store.delete(si.Tables.sec13f_manager_holdings, where={"cik": [_PSC]})
+        sqlite_store.delete(si.Tables.sec13f_hr, where={"cik": [_PSC]})
     before = _table_hash(sqlite_store)
     expected = (si.SuperinvestorResolutionError, "no 13F-HR activity") if failure == "gate" else (ValueError, "duplicate")
     with pytest.raises(expected[0], match=expected[1]):

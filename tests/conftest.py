@@ -536,7 +536,6 @@ def filing_store(sqlite_store):
         sqlite_store.engine,
         [
             Tables.sec13f_hr,
-            Tables.sec13f_manager_holdings,
             Tables.def14a_llm,
             Tables.def14a_executive_comp,
             Tables.def14a_director_comp,

@@ -16,7 +16,7 @@ import pytest
 from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_extract.utils.institutionals.fetch_13f import _book_frame, save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame, save_hr_filing
 from src.data_extract.utils.institutionals.legacy_13f_fallback import parse_legacy_information_table
 from src.data_extract.utils.institutionals.value_units import (
     FEW_ROWS_PRICE,
@@ -24,6 +24,7 @@ from src.data_extract.utils.institutionals.value_units import (
     NO_EVIDENCE,
     caption_factor,
 )
+from src.utils.identity_tables import LINE_COLUMNS
 
 
 def test_cover_billion_does_not_set_information_table_units() -> None:
@@ -365,7 +366,7 @@ def test_value_total_mismatch_is_saved_with_a_warning(filing_store: Any, caplog:
         )
     assert "the cover is a reference only, filing kept" in _messages(caplog)
     assert manifest.iloc[0].declared_value_total == 777.0 and manifest.iloc[0].source_value_total == 1_050_000
-    assert save_13f_filing(filing_store, manifest, book) == len(cells)
+    assert save_hr_filing(filing_store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), None) == len(cells)
     print("SANITY: XML cover total 777 against a 1,050,000 VALUE column -> WARNING, filing kept and saved, cover stored as filed.")
 
 

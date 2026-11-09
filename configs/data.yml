@@ -10,9 +10,6 @@ data_availability:
     sec13f_hr:
       __all__: "2013-06-30"  # First all-filer quarter with market-representative coverage.
 
-    sec13f_manager_holdings:
-      __all__: "2013-01-01"  # First point-in-time Dataroma roster snapshot.
-
     insider_transactions:
       __all__: "2006-01-03"  # First SEC insider bulk-data quarter, on filing date.
       is_10b5_1: "2023-04-01"  # First fully populated quarter for the structured flag.

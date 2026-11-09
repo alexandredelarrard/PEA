@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from src.context import Context
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.resume import document_floor
+from src.data_extract.utils.common.resume import DONE_PER_KEY, document_floor
 from src.data_extract.utils.common.workforce import MONTH_RE, merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, universe_rows
@@ -687,7 +687,12 @@ def fetch_employees_llm(context: Context, tickers: list[str], years_history: int
     stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of", *_COUNT_COLUMNS], where={"ticker": tickers}, optional=True)
     forms = cast(Resume, Tables.sec_employees_text.resume).forms
     request = WorklistRequest(
-        keys=cik_map[["ticker", "cik"]], as_of=start_date, forms=forms, identity=load_identity(context), years_history=years_history
+        keys=cik_map[["ticker", "cik"]],
+        as_of=start_date,
+        forms=forms,
+        identity=load_identity(context),
+        years_history=years_history,
+        done_scope=DONE_PER_KEY,
     )
     pending = document_worklist(context, Tables.sec_employees_text, request).units
 

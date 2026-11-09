@@ -31,16 +31,13 @@ Run expensive or destructive historical repairs without defeating resume logic, 
 
 ## Fundamentals resolution sweep
 
-The committed [resolution sweep](../../scripts/sweep_fundamentals_resolution.py) pays the EDGAR/XBRL cost once per filing and writes two resolution variants into one Parquet ledger per ticker. The offline [sweep report](../../scripts/report_fundamentals_sweep.py) then measures route mix, before/after agreement, duplicate facts, regime coverage, debt basis, form coverage, and annual footing.
+The offline [sweep report](../../scripts/report_fundamentals_sweep.py) reads the existing per-ticker Parquet ledgers under `data/fundamentals_sweep` (two resolution variants per filing) and measures route mix, before/after agreement, duplicate facts, regime coverage, debt basis, form coverage, and annual footing.
 
 ~~~bash
-rtk "$PY" scripts/sweep_fundamentals_resolution.py --roster both --workers 4 --limit 4
 rtk "$PY" scripts/report_fundamentals_sweep.py --roster both
 ~~~
 
-Repeat the first command until every roster ticker has a ledger. Existing ticker files are skipped; use `--refresh` only when deliberately replacing one. Keep `--limit 4` or another small batch: a single 52-ticker process has previously reached roughly 14.7 GB RSS. Run one driver only because concurrent `to_parquet` writes to the same ticker are not atomic.
-
-The sweep honors the registrant chain and resolves each filing both with and without the statement-role guard. Do not compare runs that used different roster, catalogue, GICS, or registrant inputs.
+No script in the repository writes new ledgers. Each ledger resolves every filing both with and without the statement-role guard. Do not compare ledgers that used different roster, catalogue, GICS, or registrant inputs.
 
 ## Registrant-boundary recovery
 
@@ -56,9 +53,11 @@ Then apply the approved register change and recover each source according to its
 rtk "$PY" -m src data_extract zips-ingest --only insider -F
 rtk "$PY" -m src data_extract zips-ingest --only notes --full
 rtk "$PY" -m src data_extract fundamentals-facts -t TICKER1,TICKER2
-rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
+rtk "$PY" -m src data_extract sec-employees-text -t TICKER1,TICKER2
+rtk "$PY" -m src data_extract sec-employees-llm -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2
-rtk "$PY" -m src data_extract def14a -t TICKER1,TICKER2 -F
+rtk "$PY" -m src data_extract sec-def14a-text -t TICKER1,TICKER2
+rtk "$PY" -m src data_extract sec-def14a-llm -t TICKER1,TICKER2
 ~~~
 
 The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers list each ticker's filings from the local filing index over its current registrant lineage on every run, so a newly declared CIK's filings enter the work list with no flag. Run those walks serially because SEC rate limiting is process-local; use `-F` only to re-read filings already stored.
@@ -99,12 +98,12 @@ Choose the narrowest repair:
 | --- | --- |
 | Stored facts are correct; replay/history logic changed | `fundamentals-history-sec --full -t ...` |
 | Fact resolution itself is wrong | `fundamentals --rebuild -t ...` |
-| Employee parser missed or rejected headcount | `fundamentals-employees -F -t ...` |
+| Employee parser missed or rejected headcount | `sec-employees-llm -F -t ...` (after a text-selection change, `sec-employees-text -F -t ...` first) |
 | Vendor inputs changed; rebuild merged consumer history | `fundamentals-history-merged -F -t ...` |
 
 A ticker with no stored accession lists its whole window on the next ordinary run. A filing that was read and has no XBRL facts is stored as a marker and is not listed again.
 
-Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (counted or status-only) and let the next run read them. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run; a failed LLM call writes no row for its own filing date only, and the ticker's other dates are kept.
+Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (counted or status-only) and let the next run read them. Full employee mode re-decides every filing in the window. A filing the text walk cannot read stores nothing and is listed again by the next walk; until it is stored, the ticker's dates from it on are held back. A failed LLM call writes no row for its own filing date only, and the ticker's other dates are kept.
 
 ## Employee headcount universe run
 
@@ -114,11 +113,12 @@ The component-shape `fundamentals_employees` (components, basis, status, provena
 > Until `harness/employee-headcount-coverage` merges into `dev`, `dev`'s merged build (`fundamentals-sharadar`, `fundamentals-history-merged`) and the cube's fundamentals part fail loudly: that code still reads the old `employees` column and the dropped `employees_sec`. Do not run them from `dev` in that window.
 
 1. **Backups and rollback.** `_cache/fundamentals_employees_2026-10-07.parquet` holds the old table (11,735 rows) and `_cache/fundamentals_history_employees_sec_2026-10-07.parquet` the dropped column (`ticker`, `as_of`, `fiscal_end`, `employees_sec`; 51,856 rows). `_scripts/p8_restore.py` prints the rollback plan; `--execute` runs it in one `psql -1` transaction (drop the new table, recreate the old one, copy the rows back), and `--history` also re-adds and refills `employees_sec`. Roll back only together with the pre-merge code.
-2. **Run the universe without `-F`.** Decided dates are skipped before any text is read, so only undecided filings reach the LLM. Expect about $0.0014 per filing, roughly $17 for the about 12,600 undecided owned filing dates, and 4 to 8 minutes per ticker with 8 tickers in flight, so 40 to 90 seconds per ticker overall.
-3. **One process, the configured workers.** Memory follows the tickers in flight, not the tickers done: each worker holds one filing at a time, so the 8 `fundamentals_workers` peak near 2–3 GB and memory falls back between tickers. Keep one EDGAR walk at a time. A ticker that fails leaves its dates undecided; the rerun in step 4 picks them up:
+2. **Run the universe without `-F`.** Decided dates make no call, so only undecided filings reach the LLM. Expect about $0.0014 per filing, roughly $17 for the about 12,600 undecided owned filing dates.
+3. **Fill the text, then decide.** `sec-employees-text --no-cap` reads every pending owned 10-K-family filing into `sec_employees_text` (SEC only; keep one EDGAR walk at a time); `sec-employees-llm` then decides every stored filing date with no row, `fundamentals_workers` tickers at once. A ticker that fails leaves its dates undecided; the rerun in step 4 picks them up:
 
    ~~~bash
-   rtk "$PY" -m src data_extract fundamentals-employees
+   rtk "$PY" -m src data_extract sec-employees-text --no-cap
+   rtk "$PY" -m src data_extract sec-employees-llm
    ~~~
 
 4. **Rerun once, still without `-F`.** It reads the filings whose LLM call failed (an invalid-JSON answer, about 0.2 % of calls) and any ticker a network error skipped, and makes no call for a decided date.
@@ -157,7 +157,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 ## Document backlogs and markers
 
-A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. Before it, read the work list without touching SEC:
+A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. The first fill of `sec_employees_text` and `sec_def14a_text` is one: `sec-employees-text --no-cap`, then `sec-def14a-text --no-cap`, then `sec-employees-llm` and `sec-def14a-llm`. Before it, read the work list without touching SEC:
 
 ~~~bash
 rtk "$PY" -m src data_extract edgar-index

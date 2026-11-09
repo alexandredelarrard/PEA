@@ -375,8 +375,9 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
 @cli.command(
     name="sec-fundamentals-history",
     help="sec_fundamentals_facts -> sec_fundamentals_history, on the publication-event grain of original 10-K and 10-Q "
-    "filings. No network. Append-only: refuses to overwrite an already-published row unless --full deletes the requested "
-    "tickers' history first. Stored facts are unchanged; after a `sec-fundamentals-facts -F` re-read run this with --full "
+    "filings. No network. A late original (filed on or before the newest stored row) rewrites that ticker's rows from its "
+    "filing date; any other change to an already-published row is refused unless --full deletes the requested tickers' "
+    "history first. Stored facts are unchanged; after a `sec-fundamentals-facts -F` re-read run this with --full "
     "(or --verify-history).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)

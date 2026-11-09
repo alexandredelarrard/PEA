@@ -343,7 +343,8 @@ def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: li
     backfilled = len(snapshots)
     assert backfilled == 5 and sqlite_store.row_count(Tables.sec_fundamentals_history) == 5, backfilled
 
-    # (c) A back-dated original that restates a published quarter: the full replay's drift guard refuses.
+    # (c) A late original while a stored row before it no longer recomputes: the drift guard on rows before it refuses.
+    _tamper(sqlite_store, "TST", "2023-05-01", totalAssets=999.0)
     sqlite_store.save(Tables.sec_fundamentals_facts, late.assign(accession_number="TST-later", filing_date=pd.Timestamp("2023-09-15"), value=1.0))
     with pytest.raises(ValueError, match="append-only"):
         mod.build_fundamentals_history(context, ["TST"])
@@ -351,7 +352,7 @@ def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: li
     print("\n=== SANITY CHECK: event-list mismatch ===")
     print(f"  tampered stored publication_form (lineage-recent): {provenance} snapshots, row rebuilt to {form!r}")
     print(f"  back-dated original 2023-06-15, no hand-off: {backfilled} snapshots, its row added (5 rows)")
-    print("  back-dated original that moves a published row: drift error (append-only). Validated.")
+    print("  late original 2023-09-15 with a changed stored row before it: drift error (append-only). Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -369,16 +370,17 @@ def test_triage_classifies_tickers(sqlite_store: Any, snapshots: list[str], monk
 
     seen = _spy_loads(monkeypatch, sqlite_store)
     context = _context(sqlite_store)
-    work = mod._history_work(context, list(names), recent=frozenset({"RECENT"}))
+    work = mod._history_work(context, list(names), seams={}, recent=frozenset({"RECENT"}))
     paths = {ticker: item.path for ticker, item in work.items()}
-    verify = {ticker: item.path for ticker, item in mod._history_work(context, list(names), verify=True).items()}
+    verify = {ticker: item.path for ticker, item in mod._history_work(context, list(names), seams={}, verify=True).items()}
 
-    assert paths == {"NEW": "full", "GROW": "incremental", "CUR": "skip", "RECENT": "check", "MOVED": "check", "AMENDED": "skip"}, paths
+    assert paths == {"NEW": "full", "GROW": "incremental", "CUR": "skip", "RECENT": "check", "MOVED": "late", "AMENDED": "skip"}, paths
     assert set(verify.values()) == {"full"}
     assert work["GROW"].newest == pd.Timestamp("2023-11-01") and work["NEW"].newest is None
+    assert work["MOVED"].rewrite_from == pd.Timestamp("2023-06-15") and work["GROW"].rewrite_from is None
     assert _full_facts_reads(seen) == 0, "the triage read a ticker's full facts"
     narrow = {columns for table, columns in seen if table == Tables.sec_fundamentals_facts.name}
-    assert narrow == {("ticker", "filing_date", "form")}, narrow
+    assert narrow == {mod._TRIAGE_COLUMNS}, narrow
 
     print("\n=== SANITY CHECK: triage ===")
     for ticker, path in paths.items():
@@ -499,3 +501,83 @@ def test_pool_build_equals_in_process_build(sqlite_store: Any, monkeypatch: pyte
     print("\n=== SANITY CHECK: replay pool == in-process ===")
     print(f"  workers=2 submitted {_CountingPool.submitted} to a real process pool (BBB stayed incremental in the parent);")
     print(f"  {len(pooled_history)} history rows identical to workers=1. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# S1b a late filing rewrites only its ticker's rows from its date              #
+# --------------------------------------------------------------------------- #
+def test_a_late_10q_rewrites_only_its_tickers_rows_from_its_date(sqlite_store: Any, snapshots: list[str], caplog: pytest.LogCaptureFixture) -> None:
+    """Q2 is stored after Q3 and the 10-K were published: rows from its date are recomputed (the 10-K's TTM needs
+    it), rows before it and the other ticker stay byte-identical, and the next night skips."""
+    q2, base = _quarters(windows=_WINDOWS[1:2]), _quarters(windows=[_WINDOWS[0], *_WINDOWS[2:]])
+    sqlite_store.save(Tables.sec_fundamentals_facts, base)
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters("OTH"))
+    mod.build_fundamentals_history(_context(sqlite_store), ["OTH", "TST"])
+    before, other = _stored(sqlite_store, "TST"), _stored(sqlite_store, "OTH")
+    late = pd.Timestamp(q2["filing_date"].iloc[0])
+
+    sqlite_store.save(Tables.sec_fundamentals_facts, q2)
+    snapshots.clear()
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        mod.build_fundamentals_history(_context(sqlite_store), ["OTH", "TST"])
+    after = _stored(sqlite_store, "TST")
+    rewritten = snapshots.copy()
+
+    kept = pd.to_datetime(before["as_of"]) < late
+    # An all-NULL column reads back as object (None) on SQLite, so the before-frame is compared cell by cell, exactly.
+    earlier = after[pd.to_datetime(after["as_of"]) < late].reset_index(drop=True)
+    assert list(earlier.columns) == list(before.columns) and len(earlier) == int(kept.sum()) == 1
+    assert mod.diff_against_stored(before[kept], earlier).empty
+    pd.testing.assert_frame_equal(_stored(sqlite_store, "OTH"), other)
+    _assert_stored_equals(sqlite_store, pd.concat([base, q2]))
+    assert late in set(pd.to_datetime(after["as_of"])), "the late filing's own row is missing"
+    assert f"TST late filing {late.date()}" in caplog.text, caplog.text
+    ttm = after["totalRevenue"].iloc[-1], before["totalRevenue"].iloc[-1]
+
+    snapshots.clear()
+    mod.build_fundamentals_history(_context(sqlite_store), ["OTH", "TST"])
+    assert snapshots == [], f"the night after the rewrite recomputed {snapshots}"
+    pd.testing.assert_frame_equal(_stored(sqlite_store, "TST"), after)
+
+    print("\n=== SANITY CHECK: late 10-Q (S1b) ===")
+    print(
+        f"  late Q2 filed {late.date()} under a history ending {pd.Timestamp(before['as_of'].max()).date()}: {len(rewritten)} snapshots (full replay)"
+    )
+    print(
+        f"  rows before it byte-identical ({int(kept.sum())}), OTH byte-identical ({len(other)}), {len(after) - int(kept.sum())} row(s) from it rewritten"
+    )
+    print(f"  10-K TTM revenue {ttm[1]} -> {ttm[0]}; the next night: 0 snapshots. Validated.")
+
+
+PROLOGIS, OLD_PROLOGIS = "0001045609", "0000899881"
+
+
+def test_a_ticker_whose_seam_rule_sets_filings_aside_is_skipped_when_nothing_is_new(
+    sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PLD shape: an event-only CIK's filings (one inside the history, one after its newest row) are stored but
+    never feed the history, so on a night with nothing new the triage skips PLD without reading its facts."""
+    identity = dated_identity(
+        [("PLD", PROLOGIS, "cik_window", SENTINEL, None), ("PLD", OLD_PROLOGIS, "cik_event", SENTINEL, None)], {"PLD": PROLOGIS}
+    )
+    monkeypatch.setattr(mod, "load_identity", lambda context: identity)
+    own = _quarters("PLD").assign(cik=PROLOGIS)
+    aside = _quarters("PLD", [_WINDOWS[0][:3] + ("2023-06-15",), _WINDOWS[3][:3] + ("2024-03-01",)]).assign(cik=OLD_PROLOGIS)
+    sqlite_store.save(Tables.sec_fundamentals_facts, pd.concat([own, aside.assign(accession_number=lambda d: "old-" + d["accession_number"])]))
+    mod.build_fundamentals_history(_context(sqlite_store), ["PLD"])
+    stored = _stored(sqlite_store, "PLD")
+    assert len(stored) == 4, stored["as_of"].tolist()
+
+    snapshots.clear()
+    caplog.clear()
+    seen = _spy_loads(monkeypatch, sqlite_store)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        mod.build_fundamentals_history(_context(sqlite_store), ["PLD"])
+    triage = next(line for line in caplog.messages if line.startswith("history: triage"))
+
+    assert "1 current (skipped" in triage, triage
+    assert snapshots == [] and _full_facts_reads(seen) == 0, (snapshots, _full_facts_reads(seen))
+    pd.testing.assert_frame_equal(_stored(sqlite_store, "PLD"), stored)
+    print("\n=== SANITY CHECK: seam-rule ticker on a night with nothing new (R-C-004) ===")
+    print(f"  PLD: 4 own events stored, 2 event-only-CIK filings set aside (2023-06-15, 2024-03-01); {triage},")
+    print("  0 snapshots, 0 full facts reads, history unchanged. Validated.")

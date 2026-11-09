@@ -436,22 +436,6 @@ SHARADAR_SEC_ASOF_TOLERANCE_DAYS = 370
 SHARADAR_COLLAPSE_KEY: tuple[str, ...] = ("ticker", "as_of")
 SHARADAR_COLLAPSE_ORDER = "fiscal_end"
 
-#: The basis forks phase 3 DESIGNED IN. Each of these SEC/Sharadar gaps is expected and
-#: explained in `sharadar_field_map.json`; a comparison names them so they do not drown the
-#: real finding, which is anything gapping that is not on this list.
-SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
-    {
-        "stockholdersEquity",
-        "ppeNet",
-        "shortTermDebt",
-        "longTermDebt",
-        "accountsReceivable",
-        "accountsPayable",
-        "cash",
-        "ebitda",
-    }
-)
-
 # Earnings-call output contract shared by the builder and read-only validator.
 EARNINGS_CALL_SIGNAL_SESSIONS = 66
 EARNINGS_CALL_FEATURES = (

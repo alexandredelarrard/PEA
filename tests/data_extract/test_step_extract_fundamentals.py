@@ -35,7 +35,8 @@ _HISTORY_MODULES = (
 
 
 def _step(context: Any) -> StepExtractFundamentals:
-    return StepExtractFundamentals(context, OmegaConf.create({"data_extract": {"years_history": 15}}))
+    limits = {"gap_pct": 0.03, "field_share": 0.05, "top_tickers": 3}
+    return StepExtractFundamentals(context, OmegaConf.create({"data_extract": {"years_history": 15, "fundamentals_check": limits}}))
 
 
 def _imports(path: str) -> set[str]:
@@ -44,23 +45,27 @@ def _imports(path: str) -> set[str]:
     return names | {str(node.module) for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
 
 
-def test_run_history_and_run_reach_the_history_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[list[str], dict]] = []
-    monkeypatch.setattr(mod, "build_fundamentals_history", lambda context, tickers, **kwargs: calls.append((tickers, kwargs)))
+def test_run_history_run_check_and_run_reach_their_builds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str], dict]] = []
+    monkeypatch.setattr(mod, "build_fundamentals_history", lambda context, tickers, **kwargs: calls.append(("history", tickers, kwargs)))
+    monkeypatch.setattr(mod, "check_fundamentals_sources", lambda context, tickers, **kwargs: calls.append(("check", tickers, kwargs)))
     step = _step(SimpleNamespace(config_dir="./configs"))
 
     step.run_history(["AAPL"], full=True)
     step.run_history(["AAPL"], verify=True)
     step.run(tickers=["MSFT"])
 
+    limits = {"gap_pct": 0.03, "field_share": 0.05, "top_tickers": 3}
     assert calls == [
-        (["AAPL"], {"rebuild_history": True, "verify_history": False}),
-        (["AAPL"], {"rebuild_history": False, "verify_history": True}),
-        (["MSFT"], {"rebuild_history": False, "verify_history": False}),
+        ("history", ["AAPL"], {"rebuild_history": True, "verify_history": False}),
+        ("history", ["AAPL"], {"rebuild_history": False, "verify_history": True}),
+        ("history", ["MSFT"], {"rebuild_history": False, "verify_history": False}),
+        ("check", ["MSFT"], limits),
     ], calls
     assert not hasattr(mod, "fetch_fundamentals_sec") and not hasattr(mod, "fetch_earnings_surprises")
     print("\n=== SANITY CHECK: StepExtractFundamentals ===")
-    print(f"  run_history(full) / run_history(verify) / run() -> {[kw for _, kw in calls]}; no fetcher in the step. Validated.")
+    print(f"  run_history(full) / run_history(verify) / run() -> {[(name, kw) for name, _, kw in calls]};")
+    print("  run() = history then check with the configured thresholds; no fetcher in the step. Validated.")
 
 
 def test_the_history_step_imports_no_network_module() -> None:

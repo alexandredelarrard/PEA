@@ -196,6 +196,22 @@ def test_full_reaches_the_existing_source_operation(
     print(f"SANITY: {command} resumes by default; -F and --full select the complete source operation; supported run dates reach the source.")
 
 
+def test_fundamentals_check_runs_the_check_on_the_ticker_subset(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    context.config.data_extract.fundamentals_check = SimpleNamespace(gap_pct=0.03, field_share=0.05, top_tickers=3)
+    context.config_dir = "configs"
+    monkeypatch.setattr(step_fundamentals, "check_fundamentals_sources", lambda ctx, tickers, **kwargs: calls.append((tickers, kwargs)))
+    monkeypatch.setattr(step_fundamentals, "build_fundamentals_history", Mock(side_effect=AssertionError("the check builds no history")))
+
+    result = CliRunner().invoke(cli_mod.cli, ["fundamentals-check", "-t", "AAA"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(["AAA"], {"gap_pct": 0.03, "field_share": 0.05, "top_tickers": 3})], calls
+    context.store.save.assert_not_called()
+    context.store.delete.assert_not_called()
+    print(f"SANITY: fundamentals-check -> check only, tickers {calls[0][0]}, thresholds {calls[0][1]}; no history build, no store write.")
+
+
 @pytest.mark.parametrize(
     "command,exit_code,called",
     [

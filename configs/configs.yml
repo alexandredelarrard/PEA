@@ -34,6 +34,13 @@ data_extract:
   # 1.4-5.8s each). edgartools' shared client already caps ~9 req/sec globally, so raising
   # this past ~8 buys nothing; lower it when running alongside another EDGAR pull.
   fundamentals_workers: 8
+  # The read-only SEC vs Sharadar check (`fundamentals/check_sources.py`, `fundamentals-check`): a
+  # shared field is listed when at least `field_share` of the exactly matched (ticker, as_of) rows
+  # differ by more than `gap_pct` of |Sharadar|, with its `top_tickers` worst tickers. It only logs.
+  fundamentals_check:
+    gap_pct: 0.03
+    field_share: 0.05
+    top_tickers: 3
   # Guards on a DERIVED discrete quarter (`fundamentals/periods.py`). Both are calibrated
   # against confirmed as-filed quarters, not preference -- loosening either lets a wrong
   # number through, tightening either nulls a real one.

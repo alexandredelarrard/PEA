@@ -388,6 +388,19 @@ def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, 
     StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), full=full, verify=verify_history)
 
 
+@cli.command(
+    name="fundamentals-check",
+    help="Read-only SEC vs Sharadar check: logs the tickers held by one history only, the Sharadar CIKs outside their company, "
+    "the exact (ticker, as_of) match share and the shared fields where enough rows differ (`data_extract.fundamentals_check`). "
+    "Writes nothing; a finding never fails the task.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def fundamentals_check(config_path: str, tickers: str | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    StepExtractFundamentals(context, config).run_check(_tickers(context, tickers))
+
+
 # --- Fundamentals: Sharadar (SF1) ---
 # Single-table commands are for a manual targeted refresh; `-F/--full` re-pulls the whole window and makes the merge DELETE first.
 # History depth is `data_extract.sharadar_years_history`, not `years_history`.

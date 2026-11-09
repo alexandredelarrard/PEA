@@ -149,6 +149,31 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
     print("  rp_seq -> -1 (sequence starts at 0), proposal_seq -> 0 (starts at 1): no marker can overwrite a real row. Validated.")
 
 
+def test_edgar_text_tables_declare_their_layout_markers_and_ddl() -> None:
+    types = _column_types()
+    expected = {
+        Tables.sec_employees_text: (("ticker", "accession_number"), ("source_document", "_empty"), {"windows": "TEXT", "pieces": "TEXT"}),
+        Tables.sec_def14a_text: (("ticker", "accession_number", "section"), ("section", "_empty"), {"period": "TEXT", "payload": "TEXT"}),
+    }
+    for table, (pk, marker, data_types) in expected.items():
+        resume = cast(Resume, table.resume)
+        assert table.pk == pk and table.empty_marker == marker and table.desc, table.name
+        assert (resume.mode, table.date_col, table.freshness) == (
+            RESUME_DOCUMENTS,
+            "filing_date",
+            "yearly" if "def14a" in table.name else "quarterly",
+        )
+        assert list(types[table.name]) == list(table.retrieval_columns), table.name
+        assert types[table.name]["filing_date"] == "DATE" and types[table.name]["n_chars"] == "BIGINT"
+        assert {col: types[table.name][col] for col in data_types} == data_types
+    assert "period_of_report" in Tables.sec_employees_text.date_type_cols and "period" not in Tables.sec_def14a_text.date_type_cols
+
+    print("\n=== SANITY CHECK: EDGAR text tables ===")
+    for table in expected:
+        print(f"  {table.name}: pk {table.pk}, marker {table.empty_marker}, {len(table.retrieval_columns)} columns = sql/schema.sql block")
+    print("  DEF 14A `period` stays TEXT ('' allowed); employees period_of_report is a DATE. Validated.")
+
+
 def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
     context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"])))
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})

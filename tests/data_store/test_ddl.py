@@ -91,6 +91,19 @@ def test_q2c_short_volume_security_table_is_registered_and_spliced() -> None:
     print("  sec_short_volume_security registered with PK (source_symbol, date) and hand-spliced; sec_short_interest's block kept")
 
 
+def test_edgar_text_tables_are_registered_and_spliced() -> None:
+    schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_sql)
+    for table in (Tables.sec_employees_text, Tables.sec_def14a_text):
+        df = pd.DataFrame({c: [1] if c == "n_chars" else ["x"] for c in table.retrieval_columns})
+        assert blocks[table.name] == ddl.table_ddl_from_frame(table, df), table.name
+    assert {"sec_filing_text", "sec_def14a", "sec_8k"} <= set(blocks)
+    print("\n=== SANITY CHECK: EDGAR text table DDL ===")
+    print(
+        "  sec_employees_text and sec_def14a_text blocks equal the generator's output (DATE stamps, BIGINT n_chars, filing_date index); neighbours kept"
+    )
+
+
 def test_price_owner_windows_is_registered_and_spliced() -> None:
     schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
     blocks = ddl.existing_blocks(schema_sql)

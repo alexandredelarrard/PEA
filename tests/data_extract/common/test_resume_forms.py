@@ -8,7 +8,7 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.registrant import FORM_POLICY
+from src.data_extract.utils.common.registrant import FORM_POLICY, Combine
 from src.data_extract.utils.institutionals import fetch_superinvestors as roster
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables, resume_tables
@@ -27,8 +27,11 @@ def test_document_forms_are_in_the_form_policy() -> None:
     assert not unknown, f"document forms missing from registrant.FORM_POLICY: {unknown}"
     index_diffed = {t.name: set(t.resume.forms) for t in documents if t.resume is not None and t.resume.forms}
     proxy_forms = {"DEF 14A", "DEF 14C", "DEFC14A"}
+    employee_forms = {"10-K", "10-K/A", "10-K405", "10-K405/A"}
     assert index_diffed == {
-        Tables.fundamentals_employees.name: {"10-K", "10-K/A", "10-K405"},
+        Tables.fundamentals_employees.name: employee_forms,
+        Tables.sec_employees_text.name: employee_forms,
+        Tables.sec_def14a_text.name: proxy_forms,
         Tables.fundamentals_facts.name: {"10-K", "10-K/A", "10-Q", "10-Q/A"},
         Tables.insider_transactions.name: {"3", "4", "5", "3/A", "4/A", "5/A"},
         Tables.sec_13d.name: {"SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"},
@@ -43,10 +46,16 @@ def test_document_forms_are_in_the_form_policy() -> None:
         Tables.filing_risk_text.name: {"10-K", "10-Q"},
     }
 
+    for table in (Tables.sec_employees_text, Tables.sec_def14a_text):
+        resume = cast(Resume, table.resume)
+        assert (resume.key, resume.frontier_col, resume.overlap_days, resume.source_start) == ("ticker", "filing_date", 95, "1993-01-01")
+        assert all(FORM_POLICY[form] is Combine.SPLIT for form in resume.forms), table.name
+
     print("\n=== SANITY CHECK: document forms ===")
     print(
         f"  {len(index_diffed)} index-diffed tables retain their exact forms, including all four proxy children: {sorted(index_diffed)}. Validated."
     )
+    print("  both EDGAR text tables: key ticker, frontier filing_date, 95-day overlap, 1993 start, SPLIT; employees include 10-K405/A.")
 
 
 def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,6 @@
 """Never mark over data: an empty-filing marker whose key already holds a real row is dropped before
 any save, for every table whose marker shares the real row's primary key (`sec_def14a`,
-`def14a_llm`). A `-F` re-fetch that now parses to nothing leaves the stored row untouched, while a
+`def14a_llm`, `sec_employees_text`). A `-F` re-fetch that now parses to nothing leaves the stored row untouched, while a
 filing with no stored row still gets its marker."""
 
 from __future__ import annotations
@@ -39,11 +39,30 @@ def _real_proxy() -> pd.DataFrame:
     )
 
 
-def test_the_shared_key_tables_are_exactly_the_two_proxy_tables() -> None:
+def test_the_shared_key_tables_are_the_two_proxy_tables_and_employees_text() -> None:
     shared = sorted(t.name for t in marker_tables() if marker_shares_data_key(t))
-    assert shared == ["def14a_llm", "sec_def14a"]
+    assert shared == ["def14a_llm", "sec_def14a", "sec_employees_text"]
+    assert not marker_shares_data_key(Tables.sec_def14a_text)
     print("\n=== SANITY CHECK: tables whose marker shares the real row's key ===")
-    print(f"  {shared}; every other marker table carries its sentinel inside the primary key.")
+    print(f"  {shared}; every other marker table (sec_def14a_text included) carries its sentinel inside the primary key.")
+
+
+def test_an_employees_text_marker_over_a_stored_filing_is_dropped(sqlite_store) -> None:
+    table = Tables.sec_employees_text
+    stored = pd.DataFrame(
+        [{"ticker": "AAA", "accession_number": _KEPT, "filing_date": pd.Timestamp("2026-03-01"), "form": "10-K", "source_document": "primary"}]
+    )
+    sqlite_store.save(table, stored)
+    markers = pd.concat(
+        [marker_row(table, "AAA", FilingStamp.of(fake_filing(accession, 1, "2026-03-01", form="10-K"), "0000000001")) for accession in (_KEPT, _NEW)],
+        ignore_index=True,
+    )
+
+    kept = drop_markers_over_data(sqlite_store, table, markers)
+
+    assert kept["accession_number"].tolist() == [_NEW] and kept["source_document"].tolist() == ["_empty"]
+    print("\n=== SANITY CHECK: sec_employees_text marker over stored text ===")
+    print(f"  2 markers built, the one over the stored filing dropped; kept {kept['accession_number'].tolist()} as source_document '_empty'.")
 
 
 def test_a_marker_over_a_stored_row_is_dropped_and_a_new_one_kept(sqlite_store) -> None:

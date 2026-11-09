@@ -1594,6 +1594,47 @@ CREATE TABLE IF NOT EXISTS "sec_filing_text" (
 );
 CREATE INDEX IF NOT EXISTS ix_sec_filing_text_filed ON "sec_filing_text" ("filed");
 
+-- [extract] sec_employees_text  (pk: ticker, accession_number)
+-- 10-K-family headcount text for the employees LLM step. `source_document` is the main
+-- document or the EX-13 read; `windows` is a JSON list of candidate [start, end] offsets in
+-- selection order; `pieces` a JSON list of [offset, text] covering their union. A filing with
+-- no usable text is a marker row (`source_document` = '_empty').
+
+CREATE TABLE IF NOT EXISTS "sec_employees_text" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "source_document" TEXT,
+    "windows" TEXT,
+    "pieces" TEXT,
+    "n_chars" BIGINT,
+    PRIMARY KEY ("ticker", "accession_number")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_employees_text_filing_date ON "sec_employees_text" ("filing_date");
+
+-- [extract] sec_def14a_text  (pk: ticker, accession_number, section)
+-- Proxy text for the DEF 14A LLM step: one row per carved section with its untruncated
+-- `payload`. `period` is SEC's reportDate string ('' when SEC gives none). `section` = '_empty'
+-- is a subject-guard rejection marker; `section` = '_none' a walked filing with no payload.
+
+CREATE TABLE IF NOT EXISTS "sec_def14a_text" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "period" TEXT,
+    "primary_document" TEXT,
+    "section" TEXT NOT NULL,
+    "payload" TEXT,
+    "n_chars" BIGINT,
+    PRIMARY KEY ("ticker", "accession_number", "section")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_text_filing_date ON "sec_def14a_text" ("filing_date");
+
 -- [extract] earnings_call_sections  (pk: ticker, quarter, paragraph)
 -- Raw defeatbeta transcript paragraphs, one row per source paragraph. The prepared-remarks /
 -- Q&A split happens in data_aggregate (src/utils/earnings_call_split.py), not here.

@@ -581,7 +581,7 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405", "10-K405/A"), source_start="1993-01-01"),
     )
     # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
@@ -1539,6 +1539,58 @@ class Tables:
             "section",
             "text",
             "n_words",
+        ),
+    )
+    # 10-K-family headcount text read by the EDGAR walk for `StepExtractLlm`'s employees step: one
+    # row per filing; `source_document` (main or EX-13 name), `windows` (JSON candidate `[start, end]`
+    # offsets in selection order) and `pieces` (JSON `[offset, text]` covering their union).
+    # Marker: `source_document` = '_empty' for a filing with no usable text.
+    sec_employees_text = Table(
+        "sec_employees_text",
+        ("ticker", "accession_number"),
+        date_col="filing_date",
+        date_type_cols=("filing_date", "period_of_report"),
+        freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-K/A", "10-K405", "10-K405/A"), source_start="1993-01-01"),
+        empty_marker=("source_document", _EMPTY),
+        desc="10-K employees text (EDGAR)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "period_of_report",
+            "source_document",
+            "windows",
+            "pieces",
+            "n_chars",
+        ),
+    )
+    # Proxy text read by the EDGAR walk for `StepExtractLlm`'s DEF 14A step: one row per carved
+    # section with its untruncated `payload`; `period` is SEC's `reportDate` string ('' when absent).
+    # Marker `section` = '_empty' marks a subject-guard rejection; `section` = '_none' is a visible
+    # row for a walked filing with no payload.
+    sec_def14a_text = Table(
+        "sec_def14a_text",
+        ("ticker", "accession_number", "section"),
+        date_col="filing_date",
+        date_type_cols=("filing_date",),
+        freshness="yearly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="1993-01-01"),
+        empty_marker=("section", _EMPTY),
+        desc="DEF 14A text (EDGAR)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "period",
+            "primary_document",
+            "section",
+            "payload",
+            "n_chars",
         ),
     )
 

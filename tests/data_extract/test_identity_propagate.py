@@ -134,6 +134,17 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
         ]
     elif table == Tables.def14a_edgar:
         out = [{"ticker": ticker, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f)} for a, c, f in rows]
+    elif table == Tables.sec_employees_text:
+        out = [
+            {"ticker": ticker, "accession_number": a, "form": "10-K", "cik": c, "filing_date": pd.Timestamp(f), "source_document": "primary"}
+            for a, c, f in rows
+        ]
+    elif table == Tables.sec_def14a_text:
+        out = [
+            {"ticker": ticker, "accession_number": a, "section": section, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f), "period": ""}
+            for a, c, f in rows
+            for section in ("audit", "governance")
+        ]
     elif table == Tables.insider_transactions:
         out = [
             {
@@ -272,6 +283,25 @@ def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, t
     assert removed[["ticker", "cik", "first_filed", "last_filed", "rows"]].values.tolist() == [["ALB", AB, "2019-03-01", "2021-03-01", 2]]
     print("\n=== SANITY CHECK: employee rows purged by filer CIK (AC-005) ===")
     print("  AB's two employee rows under ALB (one count, one NULL-status) purged; ALB's own row and MSFT's (scope unchanged) kept. Validated.")
+
+
+def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_store, tmp_path, monkeypatch, stubs):
+    """AC-006: ALB's scope changed; AB's text rows under ALB go in both tables, ALB's own and MSFT's stay."""
+    context = _context(sqlite_store, tmp_path)
+    text_tables = (Tables.sec_employees_text, Tables.sec_def14a_text)
+    for table in text_tables:
+        sqlite_store.save(table, _filings(table, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2019-03-01"), ("ab-2", AB, "2021-08-01")]))
+        sqlite_store.save(table, _filings(table, "MSFT", [("msft-x", MSFT_FOREIGN, "2024-03-01")]))
+
+    result = run_propagation(context, _identity({"ALB": AFTER}), monkeypatch, list(ROSTER), as_of=RUN_DATE)
+
+    for table in text_tables:
+        assert _keys(sqlite_store, table) == {("ALB", "alb-1"), ("MSFT", "msft-x")}, table.name
+    got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], result.removals["rows"], strict=True))
+    assert got == [(Tables.sec_def14a_text.name, AB, 2, 4), (Tables.sec_employees_text.name, AB, 2, 2)], got
+    print("\n=== SANITY CHECK: EDGAR text tables purged by filer CIK ===")
+    print("  AB's 2 filings under ALB purged from sec_employees_text (2 rows) and sec_def14a_text (4 section rows);")
+    print("  ALB's own filing and MSFT's (scope unchanged) kept. Validated.")
 
 
 def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch, stubs):

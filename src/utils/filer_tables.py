@@ -54,6 +54,8 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.insider_transactions, "issuer_cik", "filing_date", "accession_number"),
     FilerTable(Tables.fundamentals_facts, "cik", "filing_date", "accession_number", windowed=True),
     FilerTable(Tables.filing_risk_text, "cik", "filed", "accession_number", windowed=True),
+    FilerTable(Tables.sec_employees_text, "cik", "filing_date", "accession_number", windowed=True),
+    FilerTable(Tables.sec_def14a_text, "cik", "filing_date", "accession_number", windowed=True),
     FilerTable(Tables.def14a_edgar, "cik", "filing_date", "accession_number", windowed=True),
     FilerTable(Tables.def14a_directors, "cik", "as_of", "accession_number", windowed=True),
     FilerTable(Tables.def14a_executive_comp, "cik", "as_of", "accession_number", windowed=True),

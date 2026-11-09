@@ -43,6 +43,11 @@ _CASES: dict[str, tuple[Table, dict[str, object], tuple[str, str, str]]] = {
         {"section": "mda", "n_words": 3.0, "period_of_report": pd.Timestamp("2026-06-30"), "text": "body"},
         ("n_words", "period_of_report", "text"),
     ),
+    "sec_employees_text": (
+        Tables.sec_employees_text,
+        {"source_document": "primary", "n_chars": 9.0, "period_of_report": pd.Timestamp("2025-12-31"), "windows": "[[0, 9]]"},
+        ("n_chars", "period_of_report", "windows"),
+    ),
     "sec_def14a": (
         Tables.def14a_edgar,
         {"form": "DEF 14A", "peo_total_comp": 1.0, "ecd_period_end": pd.Timestamp("2025-12-31"), "peo_name": "X"},
@@ -108,6 +113,24 @@ def test_a_marker_is_one_typed_null_row_with_ddl_columns_only(name: str, sqlite_
     print(
         f"  {column}={sentinel!r}; {float_col}={row[float_col]!r}, {date_col}={row[date_col]!r}, {text_col}={row[text_col]!r}; hidden from load; DDL columns only."
     )
+
+
+def test_a_def14a_text_rejection_marker_is_hidden_beside_a_real_section(sqlite_store) -> None:
+    table = Tables.sec_def14a_text
+    create_canonical(sqlite_store.engine, [table])
+    marker = marker_row(table, "AAA", FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="DEF 14A"), "0000000001"))
+    real = _real_row(table, {"section": "audit", "period": "", "payload": "fees", "n_chars": 4})
+
+    assert set(marker.columns) <= _ddl_columns(table.name), set(marker.columns) - _ddl_columns(table.name)
+    sqlite_store.save(table, real)
+    sqlite_store.save(table, marker)
+
+    shown = sqlite_store.load(table, markers=True).set_index("section")
+    assert sorted(shown.index) == ["_empty", "audit"] and shown.loc["_empty", "form"] == "DEF 14A"
+    assert pd.isna(shown.loc["_empty", "payload"]) and pd.isna(shown.loc["_empty", "n_chars"])
+    assert shown.loc["audit", "period"] == "" and sqlite_store.load(table)["section"].tolist() == ["audit"]
+    print("\n=== SANITY CHECK: sec_def14a_text marker ===")
+    print("  section='_empty' with NULL payload/n_chars beside a real 'audit' row; '' period survives; load hides the marker. Validated.")
 
 
 def test_marker_key_fill_for_the_composite_keys() -> None:

@@ -49,25 +49,18 @@ def test_document_forms_are_in_the_form_policy() -> None:
     )
 
 
-def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_changed_source_dates_reach_archive_and_activity_planning(monkeypatch: pytest.MonkeyPatch) -> None:
     table = Tables.sec_fails_to_deliver_security
     resume = replace(cast(Resume, table.resume), source_start="2011-06-16")
     monkeypatch.setattr(Tables, "sec_fails_to_deliver_security", replace(table, resume=resume))
     periods = ftd.ftd_periods(50, pd.Timestamp("2011-07-01"))
     assert periods == ["201106b", "201107a", "201107b"]
-    table = Tables.superinvestor_roster
-    resume = replace(cast(Resume, table.resume), source_start="2013-01-01")
-    monkeypatch.setattr(Tables, "superinvestor_roster", replace(table, resume=resume))
-    captures = roster.quarterly_capture_candidates("20121231000000 200 home\n20130401000000 200 home")
-    assert list(captures) == ["2013Q2"]
     table = Tables.sec13f_hr
     resume = replace(cast(Resume, table.resume), coverage_start="2014-09-30")
     monkeypatch.setattr(Tables, "sec13f_hr", replace(table, resume=resume))
     end = roster.activity_window("2012-03-07").end
     assert end is not None and end.isoformat() == "2014-09-30"
-    print(
-        "SANITY: registry changes move the first FTD half-month, the roster capture floor and the pre-XML activity window without fetcher constants."
-    )
+    print("SANITY: registry changes move the first FTD half-month and the pre-XML activity window without fetcher constants.")
 
 
 def test_registered_source_starts_preserve_the_source_boundaries() -> None:

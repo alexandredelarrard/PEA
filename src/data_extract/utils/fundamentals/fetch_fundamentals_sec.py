@@ -5,14 +5,17 @@ Strictly as-filed: every value is a number the filer tagged, on the period shape
 and YTD decumulation happen later, in memory, in the history build. `xbrl_linkbase` picks the concept(s) for a
 field, `entity_scope` picks the consolidated-registrant facts, and this module turns both into rows. A field or
 period with no usable value is emitted as a value-less row carrying a `dc_code`, so every null has a reason.
-`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL or no consolidated facts becomes
-an empty-filing marker, an unreadable one (`ParseFailureError`) is listed again next run.
+`SEC_FUNDAMENTALS_FETCH` is a `StepExtractEdgar` walk like the others: the shared driver lists the index filings
+not yet stored; a filing with no XBRL or no consolidated facts becomes an empty-filing marker, an unreadable one
+(`ParseFailureError`) is listed again next run.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
 from typing import Any, cast
@@ -21,16 +24,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
-from src.data_extract.utils.edgar_extract.edgar_driver import (
-    EdgarFetch,
-    EdgarRun,
-    EdgarScope,
-    FetchSummary,
-    FilingStamp,
-    index_years,
-    refresh_index,
-    run_edgar_fetch,
-)
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -597,36 +591,14 @@ def parse_fundamentals(
     return {Tables.sec_fundamentals_facts: df.drop_duplicates(subset=list(Tables.sec_fundamentals_facts.pk), keep="last")}
 
 
-def fundamentals_fetch(context: Context) -> EdgarFetch:
-    """The `sec_fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
+@contextmanager
+def _facts_run_scope(context: Context, _tickers: Sequence[str], _as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
+    """Bind the run's parser: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
     catalogue = load_catalogue(str(context.config_dir))
     df_gics = context.universe.frame.set_index("ticker")[["sector", "industry_group", "sub_industry"]]
     gics = cast(dict[str, dict], df_gics.to_dict("index"))
-    return EdgarFetch(
-        tables=(Tables.sec_fundamentals_facts,),
-        parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
-    )
+    yield replace(SEC_FUNDAMENTALS_FETCH, parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics))
 
 
-def fetched_filing_dates(summary: FetchSummary) -> dict[str, list[pd.Timestamp]]:
-    """Per ticker, the filing dates of the documents the fetch read (listed minus still missing), oldest first.
-
-    A ticker that read nothing is left out, so the history build treats it as not fetched.
-    """
-    missing = summary.missing
-    out: dict[str, list[pd.Timestamp]] = {}
-    for ticker, df_units in summary.work.units.items():
-        read = df_units[~df_units["accession"].astype(str).isin(missing.get(ticker, []))]
-        if not read.empty:
-            out[ticker] = sorted(pd.Timestamp(day).normalize() for day in read["filed"])
-    return out
-
-
-def fetch_fundamentals_sec(
-    context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
-) -> FetchSummary:
-    """Fetch the `sec_fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
-    run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
-    fetch = fundamentals_fetch(context)
-    refresh_index(context, run, index_years(fetch, run.years_history, run.run_date))
-    return run_edgar_fetch(context, fetch, run, max_workers=int(context.config.data_extract.fundamentals_workers))
+#: The `sec_fundamentals_facts` walk of `StepExtractEdgar`; its parser is bound per run by `_facts_run_scope`.
+SEC_FUNDAMENTALS_FETCH = EdgarFetch(tables=(Tables.sec_fundamentals_facts,), run_scope=_facts_run_scope)

@@ -128,7 +128,7 @@ thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster boo
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per night, before the EDGAR walks
-fundamentals = fetch("fundamentals", pool="sec_api")
+fundamentals = fetch("sec-fundamentals-facts", pool="sec_api", task_id="fundamentals")  # SEC XBRL facts walk
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
 fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history

@@ -22,7 +22,7 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_store import ddl
 from src.data_store.schema import (
     ALL,
@@ -159,7 +159,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         INSIDER_EDGAR_FETCH,
         DEF14A_EDGAR_FETCH,
         FILING_TEXT_FETCH,
-        fundamentals_fetch(context),
+        SEC_FUNDAMENTALS_FETCH,
     )
     planned: list[tuple[Table, Sequence[str]]] = []
 

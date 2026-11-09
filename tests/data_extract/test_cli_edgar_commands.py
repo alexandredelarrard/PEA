@@ -1,4 +1,4 @@
-"""The five per-ticker EDGAR CLI commands dispatch their `EdgarFetch` declaration to the shared
+"""The per-ticker EDGAR CLI commands dispatch their `EdgarFetch` declaration to the shared
 driver with the requested tickers, window, `--full`, `--as-of` and `--no-cap`; `resume-plan` and
 `markers` report per table; the steps and the Airflow DAG that call them still import and parse.
 Offline: `run_edgar_fetch` (called by `StepExtractEdgar`) is replaced by a recorder, `markers` runs on SQLite.
@@ -29,6 +29,7 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_filing, stub_edgar_step
 from tests.data_extract.test_cli_options import stub_identity_step, stub_zips_step
@@ -44,6 +45,7 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
     "filing-text": (FILING_TEXT_FETCH, True),
     "def14a-edgar": (DEF14A_EDGAR_FETCH, True),
     "insider-edgar": (INSIDER_EDGAR_FETCH, True),
+    "sec-fundamentals-facts": (SEC_FUNDAMENTALS_FETCH, True),
 }
 
 
@@ -119,7 +121,7 @@ def test_resume_plan_prints_one_line_per_document_table(monkeypatch: pytest.Monk
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     monkeypatch.setattr(edgar_driver, "universe_rows", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
-    monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
+    monkeypatch.setattr(cli_mod, "_document_fetches", lambda: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
     work = DocumentWork(units={"AAA": pd.DataFrame({"accession": ["x"]})}, counts={"forward": 1}, uncapped=1)
     work.timings = {"index_read": 0.1, "done_read": 0.2, "total": 0.3}
     monkeypatch.setattr(cli_mod, "plan_fetch", lambda *args, **kwargs: work)

@@ -590,8 +590,8 @@ class Tables:
     # decumulation happen in memory during the history build, so this table stays a
     # faithful record of what was published -- which is what makes the publication-event
     # grain and the no-leakage property of `sec_fundamentals_history` provable rather than
-    # asserted. ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows and
-    # are never overwritten, so "what was knowable on date D" is answerable by filtering
+    # asserted. Only the ORIGINAL 10-K and 10-Q are read (no amendment); rows are never
+    # overwritten, so "what was knowable on date D" is answerable by filtering
     # `filing_date <= D`.
     #
     # THE PK IS THE CALENDAR WINDOW, not the filer's fiscal LABEL. edgartools tags a 10-K's
@@ -613,7 +613,7 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-K/A", "10-Q", "10-Q/A"), source_start="2009-04-15"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-Q"), source_start="2009-04-15"),
         empty_marker=("field", _EMPTY),
         desc="fundamentals (linkbase)",
         retrieval_columns=(

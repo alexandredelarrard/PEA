@@ -46,8 +46,6 @@ from src.constants.command_line_interface import (
     PERIOD_START_KWARGS,
     PROPOSE_ARGS,
     PROPOSE_KWARGS,
-    REBUILD_ARGS,
-    REBUILD_KWARGS,
     REPAIR_AVAILABILITY_ARGS,
     REPAIR_AVAILABILITY_KWARGS,
     REPORT_PATH_ARGS,
@@ -87,7 +85,7 @@ from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
 )
@@ -105,7 +103,7 @@ from src.data_extract.utils.institutionals.fetch_short_interest import fetch_sho
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
-from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
+from src.data_store.schema import Table, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.string import run_date
@@ -353,29 +351,23 @@ def superinvestors(config_path: str, full: bool) -> None:
 
 
 # --- Fundamentals: SEC ---
-# Facts (network walk) and history (pure replay) are separate commands so a history-layer bug never costs a re-download.
-# `-F/--full` re-reads every listed filing, stored ones included (see `run_edgar_fetch`).
+# Facts (the EDGAR step's network walk) and history (pure replay) are separate commands so a history-layer bug never
+# costs a re-download. `-F/--full` re-reads every listed filing, stored ones included (see `run_edgar_fetch`).
 
 
 @cli.command(
-    name="fundamentals-facts",
-    help="SEC per-filing XBRL -> sec_fundamentals_facts, resolved from each filer's own calculation linkbase. As-filed only; append-only.",
+    name="sec-fundamentals-facts",
+    help="SEC per-filing XBRL (original 10-K and 10-Q) -> sec_fundamentals_facts, resolved from each filer's own calculation "
+    "linkbase. As-filed only; append-only. The EDGAR step's facts walk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fundamentals_sec(
-        context,
-        tickers=_tickers(context, tickers),
-        full=full,
-        years_history=int(config.data_extract.years_history),
-        as_of=run_date(as_of),
-        no_cap=no_cap,
-    )
+def sec_fundamentals_facts(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_fundamentals_facts()
 
 
 @cli.command(
@@ -395,7 +387,7 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
     name="fundamentals-history-sec",
     help="sec_fundamentals_facts -> sec_fundamentals_history + _reason_codes, on the "
     "publication-event grain. No network. Append-only: refuses to overwrite "
-    "an already-published row unless --full deletes the requested tickers' history and reason codes first. Stored facts are unchanged; use `fundamentals --rebuild` for a facts-resolution bug.",
+    "an already-published row unless --full deletes the requested tickers' history and reason codes first. Stored facts are unchanged; after a `sec-fundamentals-facts -F` re-read run this with --full.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -404,47 +396,6 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
 def fundamentals_history_sec(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=full, verify_history=verify_history)
-
-
-def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
-    """Delete each ticker's facts, history and reason-code rows, so the next fetch refetches every filing."""
-    for ticker in names:
-        for table in (
-            Tables.sec_fundamentals_facts,
-            Tables.sec_fundamentals_history,
-            Tables.fundamentals_reason_codes,
-        ):
-            context.store.delete(table, {"ticker": ticker})
-    context.log.warning("fundamentals: --rebuild deleted the facts/history tables for %d ticker(s); every XBRL filing will be refetched", len(names))
-
-
-@cli.command(help="Both fundamentals layers in order: facts (network) then history (replay).")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*REBUILD_ARGS, **REBUILD_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def fundamentals(
-    config_path: str, tickers: str | None, rebuild: bool, full: bool, verify_history: bool, as_of: datetime | None, no_cap: bool
-) -> None:
-    """The fetch hands the filing dates it read to the history triage, so a back-dated read replays that ticker in full."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers)
-    if rebuild:
-        _delete_fundamentals_layers(context, names)
-    summary = fetch_fundamentals_sec(
-        context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=run_date(as_of), no_cap=no_cap
-    )
-    build_fundamentals_history(
-        context,
-        tickers=names,
-        rebuild_history=rebuild,
-        verify_history=verify_history,
-        fetched=fetched_filing_dates(summary),
-        full_fetch=full or rebuild,
-    )
 
 
 # --- Fundamentals: Sharadar (SF1) ---
@@ -747,7 +698,7 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
         click.echo(f"{quarter}\t{n_rows}")
 
 
-def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
+def _document_fetches() -> dict[str, EdgarFetch]:
     """Every EDGAR document fetch, keyed by its done table's name."""
     fetches = (
         SEC_8K_FETCH,
@@ -755,7 +706,7 @@ def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
         SEC_13G_FETCH,
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
-        fundamentals_fetch(context),
+        SEC_FUNDAMENTALS_FETCH,
         INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
@@ -770,7 +721,7 @@ def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
-    fetches = _document_fetches(context)
+    fetches = _document_fetches()
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
     for name, fetch in fetches.items():

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock, call
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
@@ -14,7 +14,6 @@ from click.testing import CliRunner
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
-from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import stub_edgar_step
 from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe
@@ -192,34 +191,6 @@ def test_full_reaches_the_existing_source_operation(
             assert calls[0]["as_of"] == pd.Timestamp("2026-09-29")
     context.store.delete.assert_not_called()
     print(f"SANITY: {command} resumes by default; -F and --full select the complete source operation; supported run dates reach the source.")
-
-
-@pytest.mark.parametrize(("flags", "deletes"), [([], False), (["--full"], False), (["--rebuild"], True)])
-def test_full_and_destructive_fundamentals_rebuild_remain_distinct(
-    flags: list[str], deletes: bool, context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fetch = Mock(return_value=SimpleNamespace())
-    history = Mock()
-    monkeypatch.setattr(cli_mod, "fetch_fundamentals_sec", fetch)
-    monkeypatch.setattr(cli_mod, "fetched_filing_dates", lambda summary: {"AAA": [pd.Timestamp("2026-09-29")]})
-    monkeypatch.setattr(cli_mod, "build_fundamentals_history", history)
-
-    result = CliRunner().invoke(cli_mod.cli, ["fundamentals", "-t", "AAA", *flags])
-
-    assert result.exit_code == 0, result.output
-    assert fetch.call_args.kwargs["full"] is bool(flags)
-    assert history.call_args.kwargs["full_fetch"] is bool(flags)
-    assert history.call_args.kwargs["rebuild_history"] is deletes
-    assert history.call_args.kwargs["fetched"] == {"AAA": [pd.Timestamp("2026-09-29")]}
-    assert context.store.delete.call_args_list == (
-        [
-            call(table, {"ticker": "AAA"})
-            for table in (Tables.sec_fundamentals_facts, Tables.sec_fundamentals_history, Tables.fundamentals_reason_codes)
-        ]
-        if deletes
-        else []
-    )
-    print(f"SANITY: fundamentals {flags or 'default'} reaches the expected replay mode; only --rebuild deletes the three SEC layers.")
 
 
 def test_gap_check_uses_the_shared_report_option_and_keeps_its_default(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:

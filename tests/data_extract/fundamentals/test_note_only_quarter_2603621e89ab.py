@@ -60,7 +60,6 @@ thing standing between this fallback and four filers' quarterly `grossProfit`.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import (
     _drop_note_only_quarter,
@@ -151,13 +150,9 @@ def test_orcl_full_years_in_quarterly_contexts_survived_the_field_local_rule():
     print("field-local rule: all 3 mislabelled years kept -- 0 of 9 rows caught, which is the defect the docstring's 'ORCL 9' claimed to have fixed")
 
 
-@pytest.mark.parametrize("form", ["10-K", "10-K/A"])
-def test_the_filings_own_calendar_refuses_all_three(form):
-    """With the FILING's annual windows, each mislabelled year is a lone quarter and goes.
-
-    Parametrised over `10-K/A` because an amendment restates the same statements and so
-    carries the same broken contexts.
-    """
+def test_the_filings_own_calendar_refuses_all_three():
+    """With the FILING's annual windows, each mislabelled year is a lone quarter and goes."""
+    form = "10-K"
     values = _orcl_filing()
     windows = _filing_annual_windows(values)
 

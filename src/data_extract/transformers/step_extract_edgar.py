@@ -1,10 +1,11 @@
 """EDGAR step: the per-filing EDGAR walks, one `EdgarFetch` each, through the shared driver.
 
 Order: insider Forms 3/4/5 (EDGAR rows after the last stored zip quarter, then the zip reconcile; the insider run
-enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, DEF 14A ECD XBRL. The window, run date,
+enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, DEF 14A ECD XBRL, 10-K/10-Q XBRL facts (the
+facts run binds its catalogue and GICS parser on entry). The window, run date,
 ticker scope and CIK mapping are declared once and shared by every walk. Consumes the identity built and propagated
 upstream; the identity scope, document cap and retry policy are read once too. The local EDGAR index is refreshed
-once per step: `run()` refreshes it over the widest window of the six walks before them (`run_index`); a walk run
+once per step: `run()` refreshes it over the widest window of the seven walks before them (`run_index`); a walk run
 alone refreshes its own window, unless the step already did or today's refresh (the nightly `edgar-index` task,
 over the same widest window) already covered it. The insider walk certifies from the quarter files' footers, so it
 needs no refresh of its own. The DEF 14A LLM pass and the 8-K vote parser read what this step stores, so they run after it.
@@ -27,6 +28,7 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.utils.step import Step
 from src.utils.string import run_date
 
@@ -43,8 +45,16 @@ class EdgarOptions:
     no_cap: bool = False
 
 
-#: The six walks, in `run()` order.
-_WALKS: tuple[EdgarFetch, ...] = (INSIDER_EDGAR_FETCH, SEC_13D_FETCH, SEC_13G_FETCH, SEC_8K_FETCH, FILING_TEXT_FETCH, DEF14A_EDGAR_FETCH)
+#: The seven walks, in `run()` order.
+_WALKS: tuple[EdgarFetch, ...] = (
+    INSIDER_EDGAR_FETCH,
+    SEC_13D_FETCH,
+    SEC_13G_FETCH,
+    SEC_8K_FETCH,
+    FILING_TEXT_FETCH,
+    DEF14A_EDGAR_FETCH,
+    SEC_FUNDAMENTALS_FETCH,
+)
 
 
 def widest_index_years(years_history: int, run_date: pd.Timestamp) -> int:
@@ -83,7 +93,7 @@ class StepExtractEdgar(Step):
         return run_edgar_fetch(self._context, fetch, self._run)
 
     def run_index(self) -> None:
-        """Refresh the local EDGAR index once over the widest window of the six walks."""
+        """Refresh the local EDGAR index once over the widest window of the seven walks."""
         self._refresh(widest_index_years(self._run.years_history, self._run.run_date))
 
     def run_insider(self) -> FetchSummary:
@@ -104,6 +114,9 @@ class StepExtractEdgar(Step):
     def run_def14a_ecd(self) -> FetchSummary:
         return self._run_fetch(DEF14A_EDGAR_FETCH)
 
+    def run_fundamentals_facts(self) -> FetchSummary:
+        return self._run_fetch(SEC_FUNDAMENTALS_FETCH)
+
     def run(self) -> None:
         self.run_index()
         self.run_insider()
@@ -112,3 +125,4 @@ class StepExtractEdgar(Step):
         self.run_8k()
         self.run_filing_text()
         self.run_def14a_ecd()
+        self.run_fundamentals_facts()

@@ -43,7 +43,6 @@ from __future__ import annotations
 import json
 
 import pandas as pd
-import pytest
 
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _adjustment_json, _drop_note_only_quarter, _period_frame, _values_by_period
 from src.data_extract.utils.fundamentals.periods import ANNUAL, QUARTERLY
@@ -113,14 +112,13 @@ def _quarter_ends(periods: dict[tuple, dict]) -> set[str]:
 # --------------------------------------------------------------------------- #
 # The defect                                                                   #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("form", ["10-K", "10-K/A"])
-def test_ba_shape_a_lone_quarter_in_a_10k_is_refused(form):
+def test_ba_shape_a_lone_quarter_in_a_10k_is_refused():
     """BA: a fourth quarter with no sibling quarter in its own fiscal year is a sentence.
 
     Both years are refused, and every annual window survives untouched -- the guard must
-    never cost the filing the numbers it actually came for. Parametrised over `10-K/A`
-    because an amendment restates the same notes and so carries the same defect.
+    never cost the filing the numbers it actually came for.
     """
+    form = "10-K"
     before = _periods(_BA_TAX, TAX)
     assert _quarter_ends(before) == {"2010-12-31", "2011-12-31"}
 

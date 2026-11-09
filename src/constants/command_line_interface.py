@@ -88,19 +88,11 @@ ARCHIVE_KWARGS: dict[str, Any] = dict(
     multiple=True, type=click.Path(exists=True, path_type=Path), help="Cached source archive (repeat for several archives)."
 )
 
-# Destructive facts recovery is distinct from a full, append-only filing replay.
-REBUILD_ARGS = ("--rebuild",)
-REBUILD_KWARGS: dict[str, Any] = dict(
-    is_flag=True,
-    default=False,
-    help="Delete the requested tickers' SEC facts, history and reason codes, then refetch every filing. Use for a facts-resolution bug.",
-)
-
 VERIFY_HISTORY_ARGS = ("--verify-history",)
 VERIFY_HISTORY_KWARGS: dict[str, Any] = dict(
     is_flag=True,
     default=False,
-    help="Replay every ticker's SEC history and refuse if a published row would change. Writes only new events. Use after `fundamentals-facts -F`.",
+    help="Replay every ticker's SEC history and refuse if a published row would change. Writes only new events. Use after `sec-fundamentals-facts -F`.",
 )
 
 PROPOSE_ARGS = ("--propose",)

@@ -16,7 +16,7 @@ from src.data_store.schema import Tables
 logger = logging.getLogger(__name__)
 
 
-#: Coerced to a midnight `datetime64` when present; `filing_date` is optional on `sec13f_hr`.
+#: Coerced to a midnight `datetime64` on both manifests and positions.
 _DATES = ("period", "filing_date")
 
 
@@ -36,13 +36,6 @@ def attach_tickers(holdings: pd.DataFrame, universe: Sequence[str] | None = None
     return holdings.assign(ticker=stored.where(keep, None))
 
 
-def _null_excluded_amounts(df_holdings: pd.DataFrame) -> pd.DataFrame:
-    """Null the shares and dollars of rows the value repair excluded; the rows stay in the book."""
-    if "value_basis_excluded" in df_holdings:
-        df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
-    return df_holdings
-
-
 def clean_public_batches(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
     universe: Sequence[str] | None,
@@ -54,17 +47,13 @@ def clean_public_batches(
     period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
     with closing(packets):
         for df_filings, df_raw in packets:
-            # Stored tickers, then one vector repair per non-empty batch; an empty batch passes through.
-            df_holdings = attach_tickers(df_raw, universe)
+            # Stored tickers, then one vector repair per batch; an empty batch passes through unrepaired.
+            df_holdings, df_register = repair_value_basis(attach_tickers(df_raw, universe), valuation_close, value_basis, period_quotes=period_quotes)
             del df_raw
-            df_holdings, df_register = (
-                (df_holdings, pd.DataFrame())
-                if df_holdings.empty
-                else repair_value_basis(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
-            )
 
-            # Report the unit decisions, then drop the excluded amounts.
-            log_register(df_register, float(df_holdings.value_usd.sum()) if not df_register.empty else 0.0)
-            df_holdings = _null_excluded_amounts(df_holdings)
+            # Report the unit decisions, then null the excluded amounts; the rows stay in the book.
+            log_register(df_register, float(df_holdings.value_usd.sum()))
+            excluded = df_holdings.get("value_basis_excluded", pd.Series(False, index=df_holdings.index))
+            df_holdings.loc[excluded, ["shares", "value_usd"]] = np.nan
             yield df_filings, df_holdings
             del df_filings, df_holdings

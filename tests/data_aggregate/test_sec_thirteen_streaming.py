@@ -14,6 +14,7 @@ import pytest
 
 from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
+from src.data_aggregate.utils.sec_thirteen import institutional_features as features_module
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
@@ -59,6 +60,7 @@ def _payload() -> pd.DataFrame:
 
 @pytest.mark.parametrize("chunksize", [1, 2, 200_000])
 def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, chunksize: int) -> None:
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", chunksize)
     payload = _payload()
     sqlite_store.save(Tables.sec13f_hr, payload)
     original = sqlite_store.iter_load
@@ -70,7 +72,7 @@ def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_stor
         yield from original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=chunksize)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"))
     assert packets is not None
     with closing(packets):
         result = list(packets)
@@ -99,9 +101,10 @@ def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_stor
     )
 
 
-def test_completed_packet_frames_are_released(sqlite_store: Any) -> None:
+def test_completed_packet_frames_are_released(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", 2)
     sqlite_store.save(Tables.sec13f_hr, _payload())
-    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=2)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"))
     assert packets is not None
     references: list[weakref.ReferenceType[pd.DataFrame]] = []
     alive: list[int] = []
@@ -131,9 +134,10 @@ def test_packet_stream_closes_on_processing_failure(sqlite_store: Any, monkeypat
         raise RuntimeError("packet processing failed")
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", 2)
     if not consumer_fails:
         monkeypatch.setattr(inputs, "_partition_packet", fail_partition)
-    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=2)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"))
     assert packets is not None
     with pytest.raises(RuntimeError, match="packet processing failed"), closing(packets):
         next(packets)
@@ -211,8 +215,10 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     assert history is not None
     actual = list(iter_snapshot_books(*history))
 
-    # The production engine on the compact versions equals the snapshot engine on their daily replay.
-    features = compute_institutional_feature_history(*history, df_basis=None, min_prior_holders=0)
+    # The production engine on the compact versions (unit basis F = 1) equals the snapshot engine on their daily replay.
+    unit_basis = pd.DataFrame(1.0, index=pd.DatetimeIndex(["1990-01-01"]), columns=list(universe))
+    with patch.object(features_module, "MIN_PRIOR_HOLDERS", 0):
+        features = compute_institutional_feature_history(*history, df_basis=unit_basis)
     expected_features = snapshot_feature_history(iter(actual), df_basis=None, min_prior_holders=0)
     pd.testing.assert_frame_equal(
         features.sort_values(["as_of", "ticker"]).reset_index(drop=True),
@@ -382,13 +388,6 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     print("SANITY: four complete manager-quarters use two batch repairs; empty books and multiple accessions retain their evidence.")
 
 
-@pytest.mark.parametrize("chunksize", [0, -1, 1.5, True])
-def test_chunk_budget_must_be_a_positive_integer(sqlite_store: Any, chunksize: Any) -> None:
-    with pytest.raises(ValueError, match="positive integer"):
-        inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=chunksize)
-    print(f"SANITY: unusable row budget{chunksize!r} is rejected before source access.")
-
-
 def test_empty_public_prefix_closes_the_stream(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     sqlite_store.save(Tables.sec13f_hr, _payload())
     original = sqlite_store.iter_load
@@ -410,7 +409,9 @@ def test_empty_public_prefix_closes_the_stream(sqlite_store: Any, monkeypatch: p
 
 
 @pytest.mark.parametrize("chunksize", [1, 31, 500_000])
-def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlite_store: Any, chunksize: int) -> None:
+def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, chunksize: int
+) -> None:
     mapping = pd.DataFrame({"cusip": [f"{number:09d}" for number in range(15)], "ticker": [f"T{number:02d}" for number in range(15)]})
     rows = [
         {"cusip": cusip, "ticker": ticker, "shares": 100.0, "value_usd": 1000.0} for cusip, ticker in zip(mapping.cusip, mapping.ticker, strict=True)
@@ -445,7 +446,8 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
         registers.append(df_register)
         return df_holdings, df_register
 
-    source = inputs.iter_filing_vintages(sqlite_store, grid.max(), chunksize=chunksize)
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", chunksize)
+    source = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
         expected = _clean_union(raw, None, close)
@@ -459,7 +461,8 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
         actual.sort_values(keys).reset_index(drop=True), expected.sort_values(keys).reset_index(drop=True), check_exact=True
     )
     keys.remove("cusip")
-    actual_register = pd.concat(registers, ignore_index=True)
+    # An empty batch passes through the repair with an empty register.
+    actual_register = pd.concat([register for register in registers if not register.empty], ignore_index=True)
     pd.testing.assert_frame_equal(
         actual_register.sort_values(keys).reset_index(drop=True), expected_register.sort_values(keys).reset_index(drop=True), check_exact=True
     )

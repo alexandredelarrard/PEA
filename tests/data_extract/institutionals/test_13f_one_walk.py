@@ -23,13 +23,13 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from src.data_aggregate.utils.common.availability import public_books
 from src.data_extract.utils.edgar_extract import parallel_fetch
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_managers as f13m
 from src.data_store.schema import Tables
 from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.institutional_vintages import public_books
 from src.utils.string import pad_cik
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe

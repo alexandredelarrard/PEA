@@ -41,6 +41,11 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         _DRIVER,
     ),
     "src.data_extract.utils.edgar_extract.edgar_fillings": (frozenset({"list_filings"}), _DRIVER),
+    "src.data_extract.utils.edgar_extract.fetch_employees_text": (
+        frozenset({"EmployeeText", "candidate_windows", "employee_text"}),
+        "the employees text walk's document reader, still called by the listing path of fundamentals_employees until "
+        "the employees LLM step reads sec_employees_text (edgar-text-llm-split phase 3 removes this entry)",
+    ),
     "src.data_extract.utils.edgar_extract.edgar_index": (frozenset({"index_filing"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.empty_markers": (frozenset({"marker_frame", "marker_mask"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.html_text": (frozenset({"html_to_text"}), _DRIVER),

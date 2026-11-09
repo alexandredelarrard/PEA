@@ -5,22 +5,22 @@ from __future__ import annotations
 import json
 import queue
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
 from typing import Literal, cast
 
 import pandas as pd
-from edgar import Filing
 from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.sec_io import configure, filing_attachments, forget_sgml, sec_call
+from src.data_extract.utils.common.sec_io import configure, forget_sgml
+from src.data_extract.utils.common.workforce import MONTH_RE, merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, universe_rows
-from src.data_extract.utils.edgar_extract.html_text import html_to_text
+from src.data_extract.utils.edgar_extract.fetch_employees_text import EmployeeText, candidate_windows, employee_text
 from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -48,31 +48,7 @@ _COUNT_COLUMNS = ("employees_total", "employees_full_time", "employees_part_time
 _GAP = "[... filing gap ...]"
 _FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
 _FAILED_SHOWN = 20  # failed tickers named in the coverage log
-_OPENING = 8_000  # chars of the filing's opening text sent after the workforce-number windows
-_WINDOW = (550, 850)  # chars kept before and after a workforce mention
-_BY_REFERENCE_REACH = 1_000  # max chars between "incorporated by reference" and a workforce topic
 
-_IX_HEADER_RE = re.compile(r"<ix:header\b.*?</ix:header\s*>", re.I | re.S)
-
-_CONTEXT_RE = re.compile(
-    r"\b(?:employees?|workforce|associates?|team\s+members?|human\s+capital|"
-    r"personnel|staff|colleagues?|full[- ]time|part[- ]time)\b",
-    re.I,
-)
-_NUMBER = r"(?P<n>(?<![\d,.])(?!(?:19|20)\d\d\b)(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?\s*(?:thousand|million)\b|\d{2,}))"
-_NOUN = r"(?:employees|people|persons|associates|team\s+members|workforce|headcount|full[\s-]*time|part[\s-]*time)"
-# A workforce number: a number a few words from a workforce noun or `employ(s/ed)`, or after a headcount label.
-_WORKFORCE_NUMBER_RES = tuple(
-    re.compile(pattern, re.I)
-    for pattern in (
-        rf"{_NUMBER}(?:[\s-]+[^\s\d-]+){{0,4}}?[\s-]+(?:{_NOUN}|employ(?:s|ed)?)\b",
-        rf"\b(?:{_NOUN}|employ(?:s|ed)?)(?:[\s:,-]+[^\s\d:,-]+){{0,4}}?[\s:,-]+{_NUMBER}",
-        rf"\b(?:headcount|number\s+of\s+(?:[a-z]+\s+){{0,2}}?employees)\b[^.\d]{{0,60}}{_NUMBER}",
-    )
-)
-_BY_REFERENCE_RE = re.compile(r"\bincorporated\s+(?:herein\s+)?by\s+reference\b", re.I)
-# A workforce topic pointed at a page of another document: "Human Capital—page 15".
-_WORKFORCE_PAGE_RE = re.compile(r"\b(?:human\s+capital|employees|(?:persons|people)\s+employed)\b[^.]{0,80}?\bpages?\s+[a-z]?-?\d", re.I)
 _ELLIPSIS_RE = re.compile(r"\s*(?:\.\s*\.\s*\.|…)\s*")
 _QUANTITY_RE = re.compile(r"(?<![\d,.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(thousand|million)\b)?", re.I)
 _SCALES = {"thousand": 1_000, "million": 1_000_000}
@@ -96,7 +72,6 @@ _ROW_LABEL_RE = re.compile(
 _SHIFT_BEFORE_RE = re.compile(r"\bnumber\s+of\s+(full|part)[\s-]*time\s+(?:employees|associates|staff|workers|team\s+members|people|persons)\b")
 _FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
 _FTE_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,2}?full[\s-]*time[\s-]*equivalent", re.I)
-_MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*$", re.I)
 # Non-employees folded into a number: prose after it is lower case (a capitalised word there is the next table
 # row's label); a label or subject before it may be capitalised. "an additional" / "excluding" state them apart.
 _CONTRACTOR_RE = re.compile(r"\b(?:contractors?|contingent|temporar(?:y|ies)|complementary)\b")
@@ -211,123 +186,17 @@ class _Decision:
     decided: EmployeeDecision
 
 
-def filing_body_text(filing: Filing) -> str:
-    """Primary-document text (visible HTML table cells included, no OCR), else the full submission; "" if none.
-
-    edgartools raises AttributeError for a filing with no primary document; that is absorbed as a filing property.
-    Each read runs under the `sec_io` retry policy; a transient failure raises.
-    """
-    readers: tuple[tuple[str, Callable[[str], str]], ...] = (
-        ("html", _visible_text),
-        ("text", str),
-        ("full_text_submission", _visible_text),
-    )
-    for method, to_text in readers:
-        try:
-            raw = sec_call(getattr(filing, method), label=f"{getattr(filing, 'accession_number', '?')} {method}")
-        except AttributeError:  # edgartools dereferences a missing primary document
-            continue
-        if raw and (text := to_text(raw)).strip():
-            return text
-    return ""
-
-
-def _visible_text(raw: str) -> str:
-    """`html_to_text` without the hidden inline-XBRL header, whose fact values are not filing prose."""
-    return html_to_text(_IX_HEADER_RE.sub(" ", raw))
-
-
-def _workforce_number_spans(text: str) -> list[tuple[int, int]]:
-    """Matches of a workforce number in document order; a day after a month name is not one."""
-    spans = {
-        (match.start(), match.end())
-        for pattern in _WORKFORCE_NUMBER_RES
-        for match in pattern.finditer(text)
-        if not _MONTH_RE.search(text[max(0, match.start("n") - 12) : match.start("n")])
-    }
-    return sorted(spans)
-
-
-def _merge(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
-    merged: list[tuple[int, int]] = []
-    for start, end in sorted(spans):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return merged
-
-
 def employee_excerpt(text: str, limit: int, spans: Sequence[tuple[int, int]] | None = None) -> str:
-    """Windows around workforce numbers, then the filing's opening, then windows around other workforce
-    mentions, each kept while the gap-joined excerpt stays within `limit` characters. `spans` are the
-    text's `_workforce_number_spans` when the caller already has them."""
-    before, after = _WINDOW
-    spans = _workforce_number_spans(text) if spans is None else spans
-    windows = [(max(0, start - before), min(len(text), end + after)) for start, end in spans]
-    windows.append((0, min(_OPENING, len(text))))
-    windows += [(max(0, match.start() - before), min(len(text), match.end() + after)) for match in _CONTEXT_RE.finditer(text)]
+    """The walk's candidate windows of `text`, each kept in priority order while the gap-joined excerpt stays
+    within `limit` characters. `spans` are the text's `workforce_number_spans` when the caller already has them."""
+    windows = candidate_windows(text, workforce_number_spans(text) if spans is None else spans)
     separator = f"\n\n{_GAP}\n\n"
     chosen: list[tuple[int, int]] = []
     for window in windows:
-        trial = _merge([*chosen, window])
+        trial = merge_spans([*chosen, window])
         if sum(end - start for start, end in trial) + len(separator) * (len(trial) - 1) <= limit:
             chosen = trial
     return separator.join(text[start:end] for start, end in chosen)
-
-
-@dataclass(frozen=True)
-class EmployeeText:
-    """The document text the employee excerpt is cut from, which document it is ("primary" or an exhibit type),
-    and its workforce-number spans when already scanned."""
-
-    text: str
-    source_document: str
-    spans: tuple[tuple[int, int], ...] | None = None
-
-
-def is_annual_report_exhibit(document_type: str, description: str) -> bool:
-    """An EX-13 (annual report to security holders) or an EX-99 its filer describes as an annual report."""
-    kind = document_type.strip().upper()
-    return kind.startswith("EX-13") or (kind.startswith("EX-99") and "annual report" in description.casefold())
-
-
-def _incorporates_workforce(text: str) -> bool:
-    """Whether the text points its workforce disclosure at a page of a document it incorporates by reference."""
-    reach = _BY_REFERENCE_REACH
-    return any(_WORKFORCE_PAGE_RE.search(text, max(0, match.start() - reach), match.end() + reach) for match in _BY_REFERENCE_RE.finditer(text))
-
-
-def choose_employee_text(primary: str, exhibits: Iterable[tuple[str, Callable[[], str]]]) -> EmployeeText:
-    """The primary document, unless it states no workforce number or incorporates its workforce disclosure
-    by reference; then the first annual-report exhibit (read lazily, in order) that states one."""
-    primary_spans = tuple(_workforce_number_spans(primary))
-    if primary_spans and not _incorporates_workforce(primary):
-        return EmployeeText(primary, "primary", primary_spans)
-    for document_type, read in exhibits:
-        if spans := tuple(_workforce_number_spans(text := read())):
-            return EmployeeText(text, document_type, spans)
-    return EmployeeText(primary, "primary", primary_spans)
-
-
-def _annual_report_exhibits(filing: Filing) -> Iterator[tuple[str, Callable[[], str]]]:
-    """The filing's annual-report exhibits as (document type, text reader); attachments are listed on first use."""
-    for attachment in filing_attachments(filing) or []:
-        document_type = str(attachment.document_type or "").strip().upper()
-        if attachment.is_binary() or not is_annual_report_exhibit(document_type, str(attachment.description or "")):
-            continue
-        label = f"{getattr(filing, 'accession_number', '?')} {document_type}"
-        yield document_type, partial(_attachment_text, attachment, label)
-
-
-def _attachment_text(attachment: object, label: str) -> str:
-    raw = sec_call(getattr, attachment, "content", label=label)
-    return _visible_text(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or ""))
-
-
-def employee_text(filing: Filing) -> EmployeeText:
-    """The text the employee excerpt is cut from: the primary document, or its annual-report exhibit fallback."""
-    return choose_employee_text(filing_body_text(filing), _annual_report_exhibits(filing))
 
 
 @dataclass(frozen=True)
@@ -420,7 +289,7 @@ def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
             before = " ".join(source[max(0, match.start() - 120) : match.start()].split())
             after = " ".join(source[match.end() : match.end() + 60].split())
             digits, fraction, scale = match.groups()
-            is_date = (not scale and not fraction and "," not in digits and 1900 <= int(digits) <= 2100) or bool(_MONTH_RE.search(before))
+            is_date = (not scale and not fraction and "," not in digits and 1900 <= int(digits) <= 2100) or bool(MONTH_RE.search(before))
             multiplier = _SCALES[scale.casefold()] if scale else 1_000 if in_thousands and not is_date else 1
             quantities.append(
                 _Quantity(
@@ -474,7 +343,7 @@ def _support(component: str, value: int, quote: str | None, source_text: str) ->
 
 def _recover_employee_quote(component: str, value: int, source_text: str) -> tuple[str, list[_Quantity]] | None:
     """Recover a verbatim workforce-number span that passes the component's existing numeric guard."""
-    for start, end in _workforce_number_spans(source_text):
+    for start, end in workforce_number_spans(source_text):
         quote = source_text[start:end]
         if re.search(r";|\.(?!\d)", quote) or _GAP in quote:
             continue

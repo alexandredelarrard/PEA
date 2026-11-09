@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 
 import src.data_extract.cli as cli_mod
 import src.data_extract.transformers.step_extract_llm as llm_step_mod
+import src.data_extract.utils.edgar_extract.fetch_employees_text as text_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
@@ -650,7 +651,7 @@ class NoPrimaryDocumentFiling(Filing):
 def test_missing_primary_document_reads_full_submission(monkeypatch):
     submission = "<SEC-DOCUMENT><TEXT>As of December 31, 1999, we had 1,234 employees.</TEXT></SEC-DOCUMENT>"
     filing = NoPrimaryDocumentFiling("no-primary", "2000-03-01", submission)
-    assert mod.filing_body_text(filing) == "As of December 31, 1999, we had 1,234 employees."
+    assert text_mod.filing_body_text(filing) == "As of December 31, 1999, we had 1,234 employees."
     result = build(monkeypatch, [filing], {"no-primary": answer(1234, "we had 1,234 employees.")})
     assert result.frame["employees_total"].tolist() == [1234.0]
     unreadable = NoPrimaryDocumentFiling("unreadable", "2000-03-01", "")
@@ -672,7 +673,7 @@ def test_ix_header_is_stripped_and_the_workforce_sentence_survives(monkeypatch):
     statement = "As of October 31, 2019, we employed approximately 16,300 people worldwide."
     filing = Filing("a-2019", "2019-12-19", "")
     filing.html = lambda: f"<html><body>{header}<p>{FILLER * 150}</p><p>{statement}</p></body></html>"
-    text = mod.filing_body_text(filing)
+    text = text_mod.filing_body_text(filing)
     assert len(junk) > 20_000 and "us-gaap" not in text and "0001090872" not in text
     assert statement in mod.employee_excerpt(text, 10_000)
     result = build(monkeypatch, [filing], {"a-2019": answer(16300, statement)})
@@ -689,7 +690,7 @@ def test_workforce_number_windows_come_before_generic_context():
     many_hits = f"{noise}{workforce} {FILLER * 10}"
     excerpt = mod.employee_excerpt(many_hits, 60_000)
     assert workforce in excerpt and len(excerpt) <= 60_000
-    assert len(mod._CONTEXT_RE.findall(many_hits)) > 120
+    assert len(text_mod._CONTEXT_RE.findall(many_hits)) > 120
     for headcount in ("Headcount 256,981 at year end.", "Our workforce of more than 10,000 people.", "We employ more than 25,000 people."):
         assert headcount in mod.employee_excerpt(f"{FILLER * 120}{headcount} {FILLER * 10}", 9_000)
     print(
@@ -735,7 +736,9 @@ def test_exhibit_fallback_reads_the_annual_report_exhibit(monkeypatch):
     assert task.meta["source_document"] == "EX-13" and wy in str(task.meta["source_text"])
     result = build(monkeypatch, [filing], {"wy-2000": answer(44800, "The company has 44,800 employees")})
     assert result.frame["employees_total"].tolist() == [44800.0]
-    assert mod.is_annual_report_exhibit("EX-99", "Annual Report to Shareholders") and not mod.is_annual_report_exhibit("EX-99.1", "Press release")
+    assert text_mod.is_annual_report_exhibit("EX-99", "Annual Report to Shareholders") and not text_mod.is_annual_report_exhibit(
+        "EX-99.1", "Press release"
+    )
     stated = Filing("own", "2025-03-01", "We had 41,000 employees.")
     stated.attachments = [UnreadAttachment("EX-13", "")]
     assert mod.employee_text(stated).source_document == "primary"
@@ -1098,8 +1101,8 @@ def test_a_read_filing_drops_its_cached_submission(monkeypatch):
     result = build(monkeypatch, [Filing("big", "2025-03-01", "We had 41,000 employees.")], {"big": answer(41000, "We had 41,000 employees.")})
     assert result.frame["employees_total"].tolist() == [41000]
     scans: list[int] = []
-    spans = mod._workforce_number_spans
-    monkeypatch.setattr(mod, "_workforce_number_spans", lambda text: scans.append(len(text)) or spans(text))
+    spans = text_mod.workforce_number_spans
+    monkeypatch.setattr(text_mod, "workforce_number_spans", lambda text: scans.append(len(text)) or spans(text))
     one = edgar_driver.FilingStamp.of(Filing("one", "2025-03-01", "We had 41,000 employees."), "0000000001")
     assert "41,000 employees" in str(mod._employee_task(1, "AAA", one, 60_000).meta["source_text"]) and len(scans) == 1
     print(

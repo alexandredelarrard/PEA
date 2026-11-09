@@ -22,8 +22,8 @@ from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter
 from tests.data_extract.fake_context import extract_config
 from tests.support.universe import universe_of
 
-RUNS = ("run_def14a", "run_8k_votes", "run_employees_llm")
-COMMANDS = {"def14a": "run_def14a", "sec-8k-votes": "run_8k_votes", "sec-employees-llm": "run_employees_llm"}
+RUNS = ("run_def14a_llm", "run_8k_votes", "run_employees_llm")
+COMMANDS = {"sec-def14a-llm": "run_def14a_llm", "sec-8k-votes": "run_8k_votes", "sec-employees-llm": "run_employees_llm"}
 #: The fragments `GptExtracter.get_api_keys` matches for the OpenAI providers this step uses.
 KEY_FRAGMENTS = ("OPENAI_API_KEY", "OPEN_AI_API_KEY")
 
@@ -59,7 +59,9 @@ class Fetchers:
         self.calls: list[dict[str, Any]] = []
         self.boom = boom
         monkeypatch.setattr(
-            step_mod, "fetch_def14a_llm", lambda context, config, tickers, extractors: self.call("run_def14a", tickers=tickers, extractors=extractors)
+            step_mod,
+            "fetch_def14a_llm",
+            lambda context, config, tickers, extractors: self.call("run_def14a_llm", tickers=tickers, extractors=extractors),
         )
         monkeypatch.setattr(
             step_mod, "fetch_8k_votes_llm", lambda context, tickers, extractor: self.call("run_8k_votes", tickers=tickers, extractor=extractor)
@@ -107,14 +109,14 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     built = dict(counted)
     assert "universe" not in fetchers.order, "constructing the step reads no universe (REQ-014)"
     for _ in range(2):
-        step.run_def14a()
+        step.run_def14a_llm()
         step.run_8k_votes()
         step.run_employees_llm()
 
     # One extractor per action: the five DEF 14A sections, the Item 5.07 votes and the employees; each reads its prompts and scans the keys once.
     assert built == {"LLMExtractor.__init__": 7, "GptExtracter.read_prompts": 7, "GptExtracter.get_api_keys": 7}, built
     assert dict(counted) == built, "a run_* call builds nothing"
-    def14a = [call["extractors"] for call in fetchers.calls if call["name"] == "run_def14a"]
+    def14a = [call["extractors"] for call in fetchers.calls if call["name"] == "run_def14a_llm"]
     votes = [call["extractor"] for call in fetchers.calls if call["name"] == "run_8k_votes"]
     employees = [call["extractor"] for call in fetchers.calls if call["name"] == "run_employees_llm"]
     assert def14a[0] is def14a[1] and votes[0] is votes[1] and employees[0] is employees[1] and len(def14a[0]) == 5
@@ -123,7 +125,7 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     assert fetchers.order.count("universe") == 1
     print("\n=== SANITY: StepExtractLlm setup (AC-010) ===")
     print(
-        f"  init: {built}; 2x run_def14a + 2x run_8k_votes + 2x run_employees_llm added nothing and reused the same 7 extractors "
+        f"  init: {built}; 2x run_def14a_llm + 2x run_8k_votes + 2x run_employees_llm added nothing and reused the same 7 extractors "
         "(employees: open_ai_cheap, 8 threads = fundamentals_workers); no provider built; universe read once, on first use."
     )
 

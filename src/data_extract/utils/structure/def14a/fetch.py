@@ -1,4 +1,11 @@
-"""Daily five-domain DEF 14A extraction with free replay and one durable section retry."""
+"""Daily five-domain DEF 14A extraction from the stored `sec_def14a_text` payloads, with free replay and one durable
+section retry.
+
+Reads only `sec_def14a_text` and the five DEF 14A tables; no SEC read. A proxy the walk's subject guard rejected is a
+hidden marker, so it is never reserved; a walked proxy missing a section (or holding only the `_none` row) has that
+domain empty, and an open empty domain consumes its attempt. The prompt gets the first
+`data_extract.llm_text_budget.def14a` characters of a payload; postprocessing gets the stored uncut payload.
+"""
 
 from __future__ import annotations
 
@@ -11,14 +18,8 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.resume import document_floor, planner_bounds
-from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
-from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
-from src.data_extract.utils.edgar_extract.fetch_def14a_text import accepted_subjects, proxy_html, proxy_subject_ciks, subject_accepted
-from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_extract.utils.structure.def14a.gender import (
     basis_distribution,
     consensus,
@@ -26,7 +27,7 @@ from src.data_extract.utils.structure.def14a.gender import (
     recompute_parent_gender,
 )
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive, source_for_answer
-from src.data_extract.utils.structure.def14a.retry import SECTIONS
+from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section
 from src.data_extract.utils.structure.def14a.work import (
     FilingWork,
     load_archives,
@@ -39,78 +40,17 @@ from src.data_extract.utils.structure.def14a.work import (
     save_archive,
     save_section,
 )
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.tickers_universe.universe import before_end
+from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.utils.tickers_universe.universe import Bounds, before_end
 
 logger = logging.getLogger(__name__)
 
-
-def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
-    """The filing's raw markup through the DEF 14A text walk's reader (primary document, else the `.txt` submission)."""
-    return proxy_html(context, filing["doc_url"], filing.get("txt_url"), str(filing.get("accession_number", "")))
-
-
-def _filing_subject_ciks(filing: pd.Series) -> frozenset[str]:
-    """Read a listed filing's SGML subject CIKs through the shared header reader."""
-    filed = filing["filing_date"]
-    return proxy_subject_ciks(str(filing["cik"]), str(filing.get("company_name", "")), str(filing["form"]), filed, str(filing["accession_number"]))
-
-
-def _subject_is_accepted(
-    context: Context,
-    ticker: str,
-    filing: pd.Series,
-    accepted_subject_ciks: frozenset[str],
-) -> bool:
-    """Reject only a known subject that is outside the accepted registrant entity. A header SEC could
-    not serve skips the filing this run (it is not queued, so a later run reads it again)."""
-    accession = str(filing["accession_number"])
-    try:
-        context.ensure_edgar_identity()
-        subjects = _filing_subject_ciks(filing)
-    except TransientReadError as exc:
-        context.log.warning("%s: DEF 14A accession %s subject header unreadable (%s); skipped this run", ticker, accession, exc)
-        return False
-    except Exception as exc:  # noqa: BLE001 -- an unknown header follows the existing path
-        context.log.info(
-            "%s: DEF 14A accession %s subject header unavailable (%s); continuing",
-            ticker,
-            accession,
-            exc,
-        )
-        return True
-    return subject_accepted(ticker, str(filing["cik"]), accession, subjects, accepted_subject_ciks)
-
-
-def _list_scope_windows(
-    context: Context,
-    scope: FilingScope,
-    company: str,
-    years: int,
-    since: pd.Timestamp | None,
-) -> pd.DataFrame:
-    """That ticker's DEF 14A filings, listed by CIK for each window of its filing scope.
-
-    A dated SPLIT (the table's registered proxy forms use SPLIT in `registrant.FORM_POLICY`): each CIK contributes only
-    filings its seam-widened window admits, so a company-year never blends two registrants' boards.
-    Each row's `cik` is the CIK that filed it.
-    """
-    frames = []
-    for window in scope.windows:
-        part = list_filings(context, window.cik, cast(Resume, Tables.def14a_llm.resume).forms, years, company, since=since)
-        if part is None or part.empty:
-            continue
-        part = part[pd.to_datetime(part["filing_date"]).map(window.admits)]
-        if not part.empty:
-            frames.append(part)
-    if not frames:
-        return pd.DataFrame(columns=["ticker", "cik", "accession_number", "filing_date"])
-    if len(frames) > 1:
-        context.log.info("%s: DEF 14A listed across %s", scope.ticker, ", ".join(f"{len(part)} from {part['cik'].iloc[0]}" for part in frames))
-    return pd.concat(frames, ignore_index=True).drop_duplicates("accession_number", keep="first")
+#: The `sec_def14a_text` columns the worklist reads; `payload` is read per ticker, for its proxies worth a payload.
+_TEXT_COLUMNS = ["ticker", "accession_number", "cik", "filing_date", "period"]
 
 
 def _finalise_gender(context: Context) -> None:
@@ -146,25 +86,6 @@ def _finalise_gender(context: Context) -> None:
         context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
 
 
-def _accepted_filings(context: Context, ticker: str, filings: pd.DataFrame, subjects: frozenset[str]) -> pd.DataFrame:
-    """Apply the existing multi-entity subject guard before any counter or fact write."""
-    if not subjects or filings.empty:
-        return filings
-    accepted = [index for index, filing in filings.iterrows() if _subject_is_accepted(context, ticker, filing, subjects)]
-    return filings.loc[accepted]
-
-
-def _read_proxy(context: Context, ticker: str, filing: pd.Series) -> str | None:
-    """Read once; unavailable documents do not consume a domain attempt."""
-    try:
-        return _fetch_filing_html(context, filing)
-    except (NameError, TypeError, KeyError, AttributeError, AssertionError):
-        raise
-    except Exception as exc:
-        context.log.warning("%s %s: DEF 14A source unavailable (%s)", ticker, filing["accession_number"], exc)
-        return None
-
-
 def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExtractor]:
     """One extractor per section, bound to its own action, prompt and schema; two concurrent calls each, which also
     bounds the answers in flight."""
@@ -172,19 +93,92 @@ def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExt
     return {section.key: LLMExtractor(context, config, action=section.action, threads=workers) for section in SECTIONS}
 
 
-def _listed_proxies(context: Context, ticker: str, scope: FilingScope, company: str, years: int, floor: pd.Timestamp) -> pd.DataFrame | None:
-    """Preserve source-failure handling and registrant guards over the full rolling window, inside the ticker's
-    end date (`planner_bounds`: filed on or before `ended_on` plus the U-65 grace)."""
-    try:
-        filings = _list_scope_windows(context, scope, company, years, floor)
-    except (NameError, TypeError, KeyError, AttributeError, AssertionError):
-        raise
-    except Exception as exc:
-        context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, exc)
-        return None
-    if not filings.empty:
-        filings = filings[before_end(pd.Series(ticker, index=filings.index), filings["filing_date"], planner_bounds(context))]
-    return _accepted_filings(context, ticker, filings, accepted_subjects(scope))
+def _walked_proxies(df_text: pd.DataFrame | None, names: Mapping[str, str], bounds: Bounds) -> pd.DataFrame:
+    """One row per walked proxy filed on or before its ticker's end (plus the grace), in filing order: the filings
+    frame `load_work` reads, with the universe company name; a NULL period reads back as '' (Postgres COPY stores
+    the walk's '' as NULL)."""
+    df = (pd.DataFrame(columns=_TEXT_COLUMNS) if df_text is None else df_text).drop_duplicates(["ticker", "accession_number"])
+    df = df.assign(filing_date=pd.to_datetime(df["filing_date"]).dt.normalize(), ticker=df["ticker"].astype(str))
+    df = df[before_end(df["ticker"], df["filing_date"], bounds)]
+    df = df.assign(period_of_report=df["period"].fillna(""), company_name=df["ticker"].map(names).fillna(""))
+    return df.sort_values(["ticker", "filing_date", "accession_number"], kind="stable").reset_index(drop=True)
+
+
+def _ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp, replay: bool) -> list[FilingWork]:
+    """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those worth one: an
+    open section, or (replay) any key gap."""
+    # load: the saved facts and archives, then the payloads of the proxies that need them
+    works = load_work(context, ticker, df_filings, floor)
+    if not works:
+        return works
+    load_archives(context, works)
+    wanted = [work.stamp["accession_number"] for work in works if (work.pending if replay else open_sections(work))]
+    df_payloads = (
+        context.store.load(
+            Tables.sec_def14a_text, columns=["accession_number", "section", "payload"], where={"ticker": ticker, "accession_number": wanted}
+        )
+        if wanted
+        else None
+    )
+
+    # merge: each section's payload onto its proxy (the `_none` row carries no domain)
+    if df_payloads is not None:
+        payloads = {str(acc): dict(zip(df.section, df.payload.fillna(""), strict=True)) for acc, df in df_payloads.groupby("accession_number")}
+        for work in works:
+            work.payloads = payloads.get(str(work.stamp["accession_number"]), {})
+    return works
+
+
+def _replay(context: Context, works: list[FilingWork]) -> int:
+    """Re-run the postprocessing on the already-paid answers; no provider call. Returns the sections replayed."""
+    replayed = 0
+    for work, section, answer in replay_candidates(works):
+        reserve(context, work, section, work.attempts[section.key] or 1)
+        source = source_for_answer(work.raw, section, answer, work.payloads.get(section.key, ""))
+        processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, source)
+        save_section(context, work, processed)
+        work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
+        save_archive(context, work)
+        replayed += 1
+    return replayed
+
+
+def _requests(context: Context, works: list[FilingWork], budget: int) -> list[tuple[Section, LlmTask]]:
+    """The prompt task of every open section with a payload, cut to `budget`; an open section the proxy lacks consumes
+    its attempt."""
+    requests = []
+    for work in works:
+        requests.extend(requests_for(work, budget))
+        for section in (item for item in open_sections(work) if not work.payloads.get(item.key, "").strip()):
+            reserve(context, work, section, work.attempts[section.key] + 1)
+    return requests
+
+
+def _call_sections(
+    context: Context, ticker: str, requests: list[tuple[Section, LlmTask]], extractors: Mapping[str, LLMExtractor], batch_size: int
+) -> int:
+    """Reserve each owned attempt, call its section's prompt/schema, archive the answer, then postprocess the stored
+    uncut payload and save that section only. Returns the sections answered."""
+    answered = 0
+    for section, tasks in matched_batches(requests, batch_size):
+        for task in tasks:
+            work = cast(FilingWork, task.meta["work"])
+            reserve(context, work, section, min(2, work.attempts[section.key] + 1))
+        results = extractors[section.key].run(tasks)
+        failed = {cast(FilingWork, r.task.meta["work"]).stamp["accession_number"]: r.error for r in results if not r.ok}
+        if failed:
+            context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
+        for result in (r for r in results if r.ok):
+            work = cast(FilingWork, result.task.meta["work"])
+            assert result.parsed is not None
+            work.raw = append_answer(work.raw, section, result.parsed)
+            save_archive(context, work)
+            processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent, work.payloads.get(section.key, ""))
+            save_section(context, work, processed)
+            work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
+            save_archive(context, work)
+            answered += 1
+    return answered
 
 
 def fetch_def14a_llm(
@@ -194,77 +188,31 @@ def fetch_def14a_llm(
     extractors: Mapping[str, LLMExtractor],
     replay_stored_json: bool = False,
 ) -> None:
-    """Extract every section that has a key gap and fewer than two attempts, then stamp the attempt.
+    """Extract every section of a walked proxy that has a key gap and fewer than two attempts, then stamp the attempt.
 
-    A new filing gets `retry=1`; a filing still gapped at `retry=1` gets one more call and `retry=2`;
-    the rest is skipped from the stored tables alone. `replay_stored_json` re-runs the postprocessing on
-    already-paid answers stored in `def14a_json`, with no source read and no provider call. `extractors`
-    (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight.
+    A new proxy gets `retry=1`; a proxy still gapped at `retry=1` gets one more call and `retry=2`; the rest is
+    skipped from the stored tables alone. `replay_stored_json` re-runs the postprocessing on already-paid answers
+    stored in `def14a_json`, with no provider call. `extractors` (`section_extractors`) holds one extractor per
+    section; their worker count bounds the answers in flight.
     """
-    # Read the ticker map and preserve each registrant's filing windows.
-    cik_map = universe_rows(context, tickers)
-    identity = load_identity(context)
+    # load: the walked proxies in the window (no payloads), the ticker names and end bounds
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
-
+    df_text = context.store.load(Tables.sec_def14a_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=floor, optional=True)
+    df_names = universe_rows(context, tickers)
+    df_proxies = _walked_proxies(df_text, dict(zip(df_names["ticker"], df_names["name"], strict=True)), planner_bounds(context))
+    budget = int(config.data_extract.llm_text_budget.def14a)
     batch_size = max((extractor.threads for extractor in extractors.values()), default=1)
+
+    # compute: each ticker's replay, then its open sections, saved per section
     updated = 0
-
-    for _, company in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
-        ticker = str(company["ticker"])
-        scope = identity.filing_scope(ticker)
-        filings = _listed_proxies(context, ticker, scope, str(company.get("name", "")), years, floor)
-        if filings is None:
-            continue
-        works = load_work(context, ticker, filings, floor)
-        load_archives(context, works)
-
+    for ticker, df_filings in tqdm(df_proxies.groupby("ticker", sort=False), desc="DEF 14A LLM"):
+        works = _ticker_works(context, str(ticker), df_filings, floor, replay_stored_json)
         if replay_stored_json:
-            for work, section, answer in replay_candidates(works):
-                reserve(context, work, section, work.attempts[section.key] or 1)
-                processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, source_for_answer(work.raw, section, answer))
-                save_section(context, work, processed)
-                work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
-                save_archive(context, work)
-                updated += 1
+            updated += _replay(context, works)
+        updated += _call_sections(context, str(ticker), _requests(context, works, budget), extractors, batch_size)
 
-        # Read the source only for filings with an open section; an open section the source lacks consumes its attempt.
-        requests = []
-        for work in works:
-            if not open_sections(work):
-                continue
-            html = _read_proxy(context, ticker, work.filing)
-            if html is None:
-                continue
-            payloads = prepare_def14a_payloads(html, html_to_text(html))
-            requests.extend(requests_for(work, payloads))
-            for section in open_sections(work):
-                if not payloads.get(section.key, "").strip():
-                    reserve(context, work, section, work.attempts[section.key] + 1)
-
-        # Reserve the owned attempt, call its matching prompt/schema, and get the answer.
-        for section, tasks in matched_batches(requests, batch_size):
-            for task in tasks:
-                work = cast(FilingWork, task.meta["work"])
-                reserve(context, work, section, min(2, work.attempts[section.key] + 1))
-            results = extractors[section.key].run(tasks)
-            failed = {cast(FilingWork, r.task.meta["work"]).stamp["accession_number"]: r.error for r in results if not r.ok}
-            if failed:
-                context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
-            for result in (r for r in results if r.ok):
-                work = cast(FilingWork, result.task.meta["work"])
-                assert result.parsed is not None
-                work.raw = append_answer(work.raw, section, result.parsed, result.task.payload)
-                save_archive(context, work)
-
-                # Postprocess source units and retained facts, then save this section only.
-                processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent, result.task.payload)
-                save_section(context, work, processed)
-                work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
-                save_archive(context, work)
-                updated += 1
-
-    # Preserve the existing cross-ticker gender reconciliation after saved updates.
+    # save: the cross-ticker gender reconciliation after saved updates
     if updated:
         _finalise_gender(context)
     context.log.info("DEF 14A: %d section answer(s) extracted or replayed; sections at retry=2 skipped", updated)

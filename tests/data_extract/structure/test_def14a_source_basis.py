@@ -10,7 +10,6 @@ import pytest
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, ExecutivePayExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.postprocess import (
-    append_answer,
     archived_answers,
     postprocess_section,
     refresh_archive,
@@ -177,21 +176,24 @@ def test_exact_archived_source_replay_persists_a_null_category(sqlite_store: Dat
     stamp = {"ticker": "X", "accession_number": "a", "as_of": pd.Timestamp("2025-04-01"), "cik": "1"}
     source = "Name\tYear\tSalary ($)\tBonus ($)\tOther Annual Compensation ($)\nJane Roe\t1995\t570,000\t\t69,721"
     answer = ExecutivePayExtract(currency="USD", amount_scale="units", compensation=[{"name": "Jane Roe", "fiscal_year": 1995, "salary": 570000}])
-    raw = append_answer(None, section, answer, source)
+    # An archive written before `source` left it: the focused response embeds the payload it was read from.
+    entry = {"response": json.loads(answer.model_dump_json()), "source": source}
+    raw = json.dumps({"_def14a_split": {"version": 1, "legacy_json": None, "responses": {section.key: [entry]}}})
     original = raw
     saved = pd.DataFrame([{**stamp, "name": "Jane Roe", "fiscal_year": 1995, "salary": 570000, "bonus": 69721, "retry": 2}])
     sqlite_store.save(section.table, saved)
     for _ in range(2):
         replay = archived_answers(raw)[section.key][0]
-        assert source_for_answer(raw, section, replay) == source
+        assert source_for_answer(raw, section, replay, "stored payload") == source
         saved = sqlite_store.load(section.table, where={"ticker": "X", "accession_number": "a"})
-        result = postprocess_section(section, replay, stamp, {section.table: saved}, {}, source_for_answer(raw, section, replay))
+        result = postprocess_section(section, replay, stamp, {section.table: saved}, {}, source_for_answer(raw, section, replay, "stored payload"))
         sqlite_store.save(section.table, result.frames[section.table])
         stored = sqlite_store.load(section.table, where={"ticker": "X", "accession_number": "a"})
         assert stored is not None and pd.isna(stored.iloc[0].bonus) and stored.iloc[0].retry == 2
     assert raw == original
-    conflicting = append_answer(raw, section, answer, "a different source")
-    assert source_for_answer(conflicting, section, answer) == ""
+    conflicting = json.loads(raw)
+    conflicting["_def14a_split"]["responses"][section.key].append({**entry, "source": "a different source"})
+    assert source_for_answer(json.dumps(conflicting), section, answer, "stored payload") == ""
     print("SANITY: free exact-source replay clears and persists only the wrong category, is idempotent at retry2, and retains original raw bytes.")
 
 

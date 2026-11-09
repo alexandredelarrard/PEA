@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from src.context import Context
-from src.data_extract.utils.common.identity import FilingScope
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import _section_rows
 from src.data_extract.utils.structure.def14a import fetch
 from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.holders import reconcile_holders
@@ -21,7 +21,9 @@ from src.data_extract.utils.structure.def14a.retry import SECTIONS, reservation_
 from src.data_extract.utils.structure.def14a.work import load_archives, load_work, replay_candidates, reserve, save_archive, save_section
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import universe_of
 
 
 @pytest.fixture
@@ -49,7 +51,7 @@ def test_recorded_ge_repair_reconciles_four_aliases_before_persisting(sqlite_sto
     ).model_dump_json()
 
     original_raw = raw
-    raw = append_answer(raw, section, OwnershipExtract(percent_unit="fraction", shares_scale="units"), "recorded ownership source")
+    raw = append_answer(raw, section, OwnershipExtract(percent_unit="fraction", shares_scale="units"))
     original_responses = json.loads(raw)["_def14a_split"]["responses"]
 
     # Replay the real previously paid labels twice through actual SQLite upserts and deletes.
@@ -197,15 +199,13 @@ def test_public_replay_cleans_ge_aliases_without_source_or_provider(
     ).model_dump_json()
     sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
-    context = cast(Context, SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.def14a.holders")))
-    config = extract_config(data_extract={"years_history": 31})
-    filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
-    identity = SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("GE", "0000040545"))
-    monkeypatch.setattr(fetch, "universe_rows", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
-    monkeypatch.setattr(fetch, "load_identity", lambda *_: identity)
-    monkeypatch.setattr(fetch, "_listed_proxies", lambda *_: filings.copy())
+    # The walked proxy, as the DEF 14A text walk stores it (its payloads are never needed: every section is at retry=2).
+    walked = {"cik": stamp["cik"], "accession_number": stamp["accession_number"], "form": "DEF 14A", "filing_date": stamp["as_of"]}
+    sqlite_store.save(Tables.sec_def14a_text, pd.DataFrame(_section_rows("GE", {**walked, "period": "", "primary_document": ""}, {})))
+    budget = read_config("configs").data_extract.llm_text_budget
+    config = extract_config(data_extract={"years_history": 31, "llm_text_budget": {"def14a": int(budget.def14a)}})
+    context = cast(Context, SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.def14a.holders"), universe=universe_of(["GE"])))
     monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)
-    monkeypatch.setattr(fetch, "_read_proxy", lambda *_: pytest.fail("exhausted cleanup must not fetch SEC source"))
 
     # Exercise the public replay entry point twice (it must be idempotent); an empty extractor map forbids calls.
     for _ in range(2):

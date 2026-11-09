@@ -20,7 +20,8 @@ from src.gpt_extract.utils.schemas_gpt import LlmTask
 
 @dataclass
 class FilingWork:
-    """One listed proxy; counters belong to the saved domain, not this working copy."""
+    """One walked proxy; counters belong to the saved domain, not this working copy. `payloads` holds the stored
+    uncut `sec_def14a_text` payload per section (a section the proxy lacks is absent: that domain is empty)."""
 
     filing: pd.Series
     stamp: dict[str, Any]
@@ -29,6 +30,7 @@ class FilingWork:
     attempts: dict[str, int]
     raw: str | None = None
     pending: set[str] = field(default_factory=set)
+    payloads: dict[str, str] = field(default_factory=dict)
 
 
 def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> bool:
@@ -77,7 +79,7 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
         loaded = context.store.load(table, columns=columns, where={"ticker": ticker}, since=floor, markers=True, optional=True)
         frames[table] = loaded if loaded is not None else pd.DataFrame(columns=columns)
 
-    # Keep the listing's entity, filing date and report period separate from its fiscal-year rows.
+    # Keep the walked proxy's entity, filing date and report period separate from its fiscal-year rows.
     works: list[FilingWork] = []
     for _, filing in filings.drop_duplicates("accession_number").iterrows():
         accession = str(filing["accession_number"])
@@ -150,7 +152,10 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
                 answer
                 for answer in answers.get(section.key, [])
                 if section.key in work.pending
-                or (section.key in ("executive_pay", "director_pay", "ownership") and bool(source_for_answer(work.raw, section, answer)))
+                or (
+                    section.key in ("executive_pay", "director_pay", "ownership")
+                    and bool(source_for_answer(work.raw, section, answer, work.payloads.get(section.key, "")))
+                )
             )
             for answer in section_answers:
                 yield work, section, answer
@@ -161,12 +166,12 @@ def open_sections(work: FilingWork) -> list[Section]:
     return [section for section in SECTIONS if section.key in work.pending and work.attempts[section.key] < 2]
 
 
-def requests_for(work: FilingWork, payloads: dict[str, str]) -> list[tuple[Section, LlmTask]]:
-    """One task per open section whose carved payload is not empty."""
+def requests_for(work: FilingWork, budget: int) -> list[tuple[Section, LlmTask]]:
+    """One task per open section whose stored payload is not empty; the prompt gets its first `budget` characters."""
     return [
-        (section, LlmTask(seq=0, payload=payloads[section.key], schema=section.schema, table=section.table, meta={"work": work}))
+        (section, LlmTask(seq=0, payload=work.payloads[section.key][:budget], schema=section.schema, table=section.table, meta={"work": work}))
         for section in open_sections(work)
-        if payloads.get(section.key, "").strip()
+        if work.payloads.get(section.key, "").strip()
     ]
 
 

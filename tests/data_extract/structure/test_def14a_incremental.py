@@ -1,20 +1,19 @@
-"""Legacy evidence/flatten compatibility and unchanged identity, listing and worker contracts.
+"""Legacy evidence/flatten compatibility and the unchanged worker contract.
 
-Daily section retry integration lives in test_def14a_retry_daily.py.
+Daily section retry integration lives in test_def14a_retry_daily.py and test_sec_def14a_llm.py; the proxy listing and
+the subject guard belong to the DEF 14A text walk (test_edgar_text_walks.py).
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
 
-from src.data_extract.utils.common.identity import FilingScope
+from src.context import Context
 from src.data_extract.utils.structure.def14a import flatten as flatten_mod
 from src.data_extract.utils.structure.def14a.def14a_schema import BeneficialOwner as _BeneficialOwner
 from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
@@ -22,18 +21,11 @@ from src.data_extract.utils.structure.def14a.def14a_schema import DirectorCompen
 from src.data_extract.utils.structure.def14a.def14a_schema import DirectorInfo as _DirectorInfo
 from src.data_extract.utils.structure.def14a.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
 from src.data_extract.utils.structure.def14a.def14a_schema import GovernanceProfile as _GovernanceProfile
-from src.data_extract.utils.structure.def14a.fetch import _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
-from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.fake_context import extract_config
-from tests.support.universe import universe_of
-
-#: A stand-in identity whose every ticker is listed from its roster CIK alone.
-_ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"))
 
 BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
@@ -41,12 +33,6 @@ DirectorCompensation: Any = _DirectorCompensation
 DirectorInfo: Any = _DirectorInfo
 ExecutiveCompensation: Any = _ExecutiveCompensation
 GovernanceProfile: Any = _GovernanceProfile
-
-
-def _completed_parent_row(ticker: str, accession: str, as_of: str) -> dict[str, object]:
-    row: dict[str, object] = {column: None for column in flatten_mod._DEF14A_EVIDENCE_COLUMNS}
-    row.update({"ticker": ticker, "accession_number": accession, "as_of": as_of, "ceo_name_proxy": "Already extracted"})
-    return row
 
 
 @pytest.mark.parametrize(
@@ -123,147 +109,6 @@ def test_evidence_gate_parsed_stored_and_persistence_agree(label, extract, expec
     print(f"  parsed={expected}, stored={expected}, {'parent row' if expected else 'empty-filing marker, no child row'}. Validated.")
 
 
-def _daily_context(tmp_path: Path) -> Any:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    return SimpleNamespace(
-        store=DataStore(create_engine(f"sqlite:///{tmp_path / 'daily.db'}")),
-        log=logging.getLogger("test.def14a.daily"),
-        paths={"DATA_STORE": tmp_path},
-        config_dir="configs",
-        config=extract_config(data_extract={"years_history": 15}),
-        universe=universe_of(["PSKY"]),
-    )
-
-
-def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
-    class _Extractor:
-        threads = 2
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def run(self, tasks):
-            results = []
-            for task in tasks:
-                tasked.append(str(task.meta["filing"]["accession_number"]))
-                answer = responses.pop(0)
-                if isinstance(answer, BaseException):
-                    results.append(LlmResult(seq=task.seq, task=task, error=str(answer)))
-                else:
-                    results.append(LlmResult(seq=task.seq, task=task, parsed=answer))
-            return results
-
-    return _Extractor
-
-
-def test_subject_guard_rejects_only_known_disjoint_subjects(monkeypatch, caplog):
-    """A dissident filer is valid when the proxy subject is the intended issuer."""
-    import logging
-
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    filing = pd.Series(
-        {
-            "cik": "0002041610",
-            "company_name": "Paramount Skydance Corp",
-            "form": "DEFC14A",
-            "filing_date": pd.Timestamp("2026-02-17"),
-            "accession_number": "0001104659-26-016573",
-        }
-    )
-    identity_calls: list[bool] = []
-    context = SimpleNamespace(
-        log=logging.getLogger("test.def14a.subject"),
-        ensure_edgar_identity=lambda: identity_calls.append(True),
-    )
-    accepted = frozenset({"0000813828", "0002041610"})
-    caplog.set_level(logging.INFO, logger="test.def14a.subject")
-
-    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
-    assert _subject_is_accepted(context, "PSKY", filing, accepted) is False
-    assert all(value in caplog.text for value in ("PSKY", filing["accession_number"], filing["cik"], "0001437107", "subject_cik_disjoint"))
-
-    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0000813828"}))
-    assert _subject_is_accepted(context, "PSKY", filing, accepted) is True
-
-    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset())
-    assert _subject_is_accepted(context, "PSKY", filing, accepted) is True
-
-    def _unreadable(_):
-        raise ValueError("no SGML header")
-
-    monkeypatch.setattr(mod, "_filing_subject_ciks", _unreadable)
-    assert _subject_is_accepted(context, "PSKY", filing, accepted) is True
-    assert len(identity_calls) == 4
-
-    print("\n=== SANITY: DEF 14A subject guard ===")
-    print("  WBD subject rejected; intended-issuer dissident and unknown headers retained")
-    print("  OK: only known disjoint subjects are blocked before paid extraction")
-
-
-def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
-    import logging
-
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
-    context: Any = SimpleNamespace(
-        store=store,
-        log=logging.getLogger("test.def14a.subject.loop"),
-        paths={"DATA_STORE": tmp_path},
-        config_dir="configs",
-        config=extract_config(data_extract={"years_history": 15}),
-        ensure_edgar_identity=lambda: None,
-        universe=universe_of(["PSKY"]),
-    )
-    filing = pd.DataFrame(
-        [
-            {
-                "cik": "0002041610",
-                "company_name": "Paramount Skydance Corp",
-                "form": "DEFC14A",
-                "filing_date": pd.Timestamp("2026-02-17"),
-                "period_of_report": "2026-02-17",
-                "accession_number": "0001104659-26-016573",
-                "doc_url": "unused",
-                "txt_url": "unused",
-            }
-        ]
-    )
-    llm_tasks: list[object] = []
-    payload_calls: list[str] = []
-
-    class FakeLLM:
-        threads = 2
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def run(self, tasks, **kwargs):
-            del kwargs
-            llm_tasks.extend(tasks)
-            return []
-
-    monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
-    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}]))
-    # PSKY's register chain makes it a multi-window scope, so its proxies' subject headers are checked.
-    psky = dated_identity(
-        [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
-        {"PSKY": "0002041610"},
-    )
-    monkeypatch.setattr(mod, "load_identity", lambda context: psky)
-    monkeypatch.setattr(mod, "_list_scope_windows", lambda *_: filing)
-    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
-    monkeypatch.setattr(mod, "_read_proxy", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
-
-    mod.fetch_def14a_llm(context, context.config, ["PSKY"], mod.section_extractors(context, context.config))
-
-    assert payload_calls == [] and llm_tasks == []
-    print("\n=== SANITY: wrong-subject filing stops before the LLM ===")
-    print("  WBD accession produced zero payload fetches and zero LLM tasks")
-    print("  OK: rejection precedes document carving and paid extraction")
-
-
 def test_flatten_surfaces_the_auditor_block():
     """`n_technology_directors` / `technology_committee` were REMOVED -- they were an opinion,
     not an extraction (mean |delta| of 1.06 directors between consecutive filings of the same
@@ -310,73 +155,11 @@ def test_flatten_surfaces_the_auditor_block():
     print("  absent from the flatten -- they were an opinion, not an extraction. Validated.")
 
 
-def _stub_proxy_listing(monkeypatch, mod, listed: dict[str, Any]) -> None:
-    """Record each ticker's listing `since` (None = the whole `years_history` window); no proxy is listed."""
-
-    def _list(context, scope, company, years, since):
-        del context, company, years
-        listed[scope.ticker] = since
-        return pd.DataFrame()
-
-    monkeypatch.setattr(mod, "_list_scope_windows", _list)
-    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
-
-
-def test_every_ticker_is_listed_over_the_full_window_on_every_run(tmp_path, monkeypatch):
+def test_section_extractors_run_two_wide_whatever_config_gpt_threads(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.data_extract.utils.structure.def14a import fetch as mod
 
-    context = _daily_context(tmp_path)
-    context.store.save(Tables.def14a_llm, pd.DataFrame([_completed_parent_row("AA", "acc-AA", "2024-04-01")]))
-    listed: dict[str, Any] = {}
-    _stub_proxy_listing(monkeypatch, mod, listed)
-    monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
-
-    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], mod.section_extractors(context, context.config))
-    first = dict(listed)
-    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], mod.section_extractors(context, context.config))
-
-    floor = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
-    assert first == listed == {"AA": floor, "CC": floor}, (first, listed)
-    print("\n=== SANITY: DEF 14A lists every ticker's whole window ===")
-    print(f"  AA (stored) and CC (new): listed with since={listed} on two consecutive runs; no gate skips a ticker. Validated.")
-
-
-def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_state(tmp_path, monkeypatch):
-    """F-005: a ticker that gains a predecessor window lists that CIK's proxies on the next run. Every run
-    lists every window over the whole `years_history`, and the done set is the stored rows, so no record of a
-    previous run is read."""
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    identity = dated_identity(
-        [("CC", "0000000009", "cik_window", SENTINEL, "2020-01-01"), ("CC", "0000000002", "cik_window", "2020-01-01", None)],
-        {"CC": "0000000002"},
-    )
-    listed: list[tuple[str, Any]] = []
-
-    def fake_list(context, cik, forms, years, company, since=None):
-        listed.append((cik, since))
-        return pd.DataFrame()
-
-    monkeypatch.setattr(mod, "list_filings", fake_list)
-    monkeypatch.setattr(mod, "load_identity", lambda context: identity)
-    monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
-
-    mod.fetch_def14a_llm(context, context.config, ["CC"], mod.section_extractors(context, context.config))
-
-    floor = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
-    assert listed == [("0000000009", floor), ("0000000002", floor)], listed
-    print("\n=== SANITY: DEF 14A lists a newly added predecessor window ===")
-    print(f"  CC's scope holds a predecessor window -> both CIKs listed over the whole window: {listed}. Validated.")
-
-
-def test_section_extractors_run_two_wide_whatever_config_gpt_threads(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    context.config = extract_config(data_extract={"years_history": 15}, gpt={"threads": 7})
+    config = extract_config(data_extract={"years_history": 15}, gpt={"threads": 7})
+    context = cast(Context, SimpleNamespace(store=None, log=logging.getLogger("test.def14a.workers"), config_dir="configs", config=config))
     built: list[int] = []
 
     class _RecordingExtractor(LLMExtractor):
@@ -384,45 +167,9 @@ def test_section_extractors_run_two_wide_whatever_config_gpt_threads(tmp_path, m
             super().__init__(*args, **kwargs)
             built.append(self.threads)
 
-        def run_extraction(self, tasks, flatten=None, group_key=None):
-            return []
-
-    _stub_proxy_listing(monkeypatch, mod, {})
     monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
-    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
+    extractors = mod.section_extractors(context, config)
 
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], mod.section_extractors(context, context.config))
-
-    assert built == [2] * 5
+    assert built == [2] * 5 and sorted(extractors) == sorted(section.key for section in mod.SECTIONS)
     print("\n=== SANITY: DEF 14A LLM workers ===")
     print(f"  each of the 5 section extractors runs {built[0]}-wide although config.gpt.threads is 7. Validated.")
-
-
-def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatch):
-    """AC-008 (DEF 14A LLM): proxies are listed by CIK for each window of the scope, never by roster CIK alone;
-    each CIK keeps only what its widened window admits (the subject-guard scope rule is tested with the text walk)."""
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    identity = dated_identity(
-        [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
-        {"PSKY": "0002041610"},
-    )
-    scope = identity.filing_scope("PSKY")
-    listings = {
-        "0000813828": ["2024-04-01", "2025-08-20", "2026-04-01"],
-        "0002041610": ["2025-07-20", "2026-04-02"],
-    }
-    listed: list[str] = []
-
-    def fake_list(context, cik, forms, years, company, since=None):
-        listed.append(cik)
-        return pd.DataFrame([{"cik": cik, "accession_number": f"{cik[-4:]}-{day}", "filing_date": pd.Timestamp(day)} for day in listings[cik]])
-
-    monkeypatch.setattr(mod, "list_filings", fake_list)
-    context: Any = SimpleNamespace(log=logging.getLogger("test.def14a.windows"))
-    out = mod._list_scope_windows(context, scope, "Paramount", 15, None)
-
-    assert listed == ["0000813828", "0002041610"]
-    assert sorted(out["accession_number"]) == ["1610-2025-07-20", "1610-2026-04-02", "3828-2024-04-01", "3828-2025-08-20"]
-    print("\n=== SANITY: DEF 14A LLM per-window listing ===")
-    print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")

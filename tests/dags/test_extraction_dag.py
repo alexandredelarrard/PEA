@@ -48,7 +48,7 @@ REQUIRED_COMMANDS = {
     "fundamentals",
     "sec-employees-llm",
     "fundamentals-sharadar",
-    "def14a",
+    "sec-def14a-llm",
     "def14a-edgar",
     "sec-8k-items",
     "sec-8k-votes",

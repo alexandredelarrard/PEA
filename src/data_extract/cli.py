@@ -631,13 +631,16 @@ def identity(config_path: str, tickers: str | None, full: bool, as_of: datetime 
 
 
 # --- Structure (governance) ---
-@cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
+@cli.command(
+    name="sec-def14a-llm",
+    help="Stored sec_def14a_text -> def14a_llm and its four child tables (LLM): one call per section with a key gap and "
+    "fewer than two attempts, its payload cut at data_extract.llm_text_budget.def14a. No download. A section the walked proxy "
+    "lacks consumes its attempt; a proxy the subject guard rejected is never sent.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def def14a(config_path: str, tickers: str | None) -> None:
-    """Every run lists each ticker's whole `years_history`; `--full` also re-sends the saved proxies without
-    evidence, markers included (a proxy with stored evidence is never re-sent)."""
-    _llm_step(config_path, tickers).run_def14a()
+def sec_def14a_llm(config_path: str, tickers: str | None) -> None:
+    _llm_step(config_path, tickers).run_def14a_llm()
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")

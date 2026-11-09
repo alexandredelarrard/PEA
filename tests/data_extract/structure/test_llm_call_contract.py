@@ -67,7 +67,8 @@ def _extractor(action: str, calls: list, fail_on: str | None = None, store=None)
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "action, schema, budget, marker",
-    [("def14a", Def14AExtract, 130_000, "SUMMARY COMPENSATION TABLE"), ("sec8k_votes", Item507Extract, 40_000, "Item 5.07")],
+    # `def14a` has no `gpt.max_chars` entry (the DEF 14A step cuts its own payload), so the whole payload is sent.
+    [("def14a", Def14AExtract, 500_000, "SUMMARY COMPENSATION TABLE"), ("sec8k_votes", Item507Extract, 40_000, "Item 5.07")],
 )
 def test_each_action_resolves_its_prompt_schema_and_budget(action, schema, budget, marker):
     calls: list = []
@@ -77,10 +78,10 @@ def test_each_action_resolves_its_prompt_schema_and_budget(action, schema, budge
     call = calls[-1]
     assert call["schema"] is schema
     assert marker in call["system"], f"{action} did not load its own system prompt"
-    assert len(call["user"]) < budget + 5_000  # template + the truncated payload
+    assert budget <= len(call["user"]) < budget + 5_000  # template + the payload, cut at the action budget if any
 
     print(f"\n=== SANITY: {action} call contract ===")
-    print(f"  schema={schema.__name__}, prompt marker {marker!r} present, payload truncated to the {budget:,}-char budget. Validated.")
+    print(f"  schema={schema.__name__}, prompt marker {marker!r} present, payload sent up to the {budget:,}-char budget. Validated.")
 
 
 # --------------------------------------------------------------------------- #

@@ -175,11 +175,11 @@ def test_truncate_uses_the_action_budget(monkeypatch):
     ext = _extracter(monkeypatch)
     long_payload = "x" * 200_000
 
-    assert len(ext.truncate(long_payload, "def14a")) == 130_000
     assert len(ext.truncate(long_payload, "sec8k_votes")) == 40_000
+    assert len(ext.truncate(long_payload, "def14a_governance")) == 200_000  # its step cuts it (data_extract.llm_text_budget)
 
     print("\n=== SANITY: per-action truncation ===")
-    print("  def14a 130,000 chars / sec8k_votes 40,000 chars, from config. Validated.")
+    print("  sec8k_votes 40,000 chars from config; an action without a max_chars entry (def14a_governance) is sent whole. Validated.")
 
 
 # --------------------------------------------------------------------------- #

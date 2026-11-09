@@ -345,8 +345,8 @@ def _archive_document(raw: str | None) -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def append_answer(raw: str | None, section: Section, answer: BaseModel, payload: str) -> str:
-    """Durably append a paid raw answer before derived processing can fail."""
+def append_answer(raw: str | None, section: Section, answer: BaseModel) -> str:
+    """Durably append a paid raw answer before derived processing can fail; its source stays in `sec_def14a_text`."""
     document = _archive_document(raw)
     metadata = document.get("_def14a_split")
 
@@ -354,7 +354,7 @@ def append_answer(raw: str | None, section: Section, answer: BaseModel, payload:
     if not isinstance(metadata, dict):
         metadata = {"version": 1, "legacy_json": raw, "responses": {}}
     responses = metadata.setdefault("responses", {})
-    responses.setdefault(section.key, []).append({"response": json.loads(answer.model_dump_json()), "source": payload})
+    responses.setdefault(section.key, []).append({"response": json.loads(answer.model_dump_json())})
     document["_def14a_split"] = metadata
     return json.dumps(document, ensure_ascii=False, allow_nan=False)
 
@@ -392,15 +392,18 @@ def archived_answers(raw: str | None) -> dict[str, list[BaseModel]]:
     return result
 
 
-def source_for_answer(raw: str | None, section: Section, answer: BaseModel) -> str:
-    """Reuse only the source archived with this exact focused response."""
+def source_for_answer(raw: str | None, section: Section, answer: BaseModel, stored: str) -> str:
+    """The source of this exact focused response: the one `source` its older archive entries embed, else `stored`
+    (the section's `sec_def14a_text` payload); "" for a legacy whole-proxy answer or two different embedded sources."""
     document = _archive_document(raw)
     metadata = document.get("_def14a_split", {})
     responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
     payload = json.loads(answer.model_dump_json())
     matches = [entry.get("source") for entry in responses.get(section.key, []) if entry.get("response") == payload]
     sources = {source for source in matches if isinstance(source, str) and source.strip()}
-    return next(iter(sources)) if len(sources) == 1 else ""
+    if not matches or len(sources) > 1:
+        return ""
+    return next(iter(sources)) if sources else stored
 
 
 def refresh_archive(

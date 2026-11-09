@@ -61,6 +61,6 @@ class StepExtractAllData(Step):
         # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a
         # missing API key fails only from this point on.
         llm = StepExtractLlm(self._context, self._config, LlmOptions(tickers=tickers))
-        llm.run_def14a()
+        llm.run_def14a_llm()
         llm.run_8k_votes()
         self._behavioral.run(tickers=tickers)

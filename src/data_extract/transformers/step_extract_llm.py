@@ -1,6 +1,6 @@
 """LLM step: the three extractions that send filing text to a provider.
 
-Order: DEF 14A sections (lists and reads each ticker's proxies itself), 8-K Item 5.07 votes (reads the stored `sec_8k`
+Order: DEF 14A sections (reads the stored `sec_def14a_text`), 8-K Item 5.07 votes (reads the stored `sec_8k`
 narratives and the DEF 14A tables, so it runs after DEF 14A), employee counts (reads the stored `sec_employees_text`).
 The DEF 14A section extractors, the votes extractor and the employees extractor (its cheaper provider,
 `data_extract.fundamentals_workers` concurrent calls) are built once here and reused by every run; the init raises
@@ -52,7 +52,7 @@ class StepExtractLlm(Step):
         """The `-t` subset, else the universe (read once, on first use)."""
         return self._requested or self._universe.tickers
 
-    def run_def14a(self) -> None:
+    def run_def14a_llm(self) -> None:
         fetch_def14a_llm(self._context, self._config, self._tickers, self._def14a)
 
     def run_8k_votes(self) -> None:
@@ -62,6 +62,6 @@ class StepExtractLlm(Step):
         fetch_employees_llm(self._context, self._tickers, self._years_history, self._employees, full=self._full)
 
     def run(self) -> None:
-        self.run_def14a()
+        self.run_def14a_llm()
         self.run_8k_votes()
         self.run_employees_llm()

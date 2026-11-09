@@ -40,19 +40,12 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         ),
         _DRIVER,
     ),
-    "src.data_extract.utils.edgar_extract.edgar_fillings": (frozenset({"list_filings"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.document_resume": (
         frozenset({"WorklistRequest", "document_worklist"}),
         "the EDGAR driver's read-only planner; the employees LLM step reads the text walk's pending filings from it to hold back later dates",
     ),
     "src.data_extract.utils.edgar_extract.edgar_index": (frozenset({"index_filing"}), _DRIVER),
-    "src.data_extract.utils.edgar_extract.fetch_def14a_text": (
-        frozenset({"accepted_subjects", "proxy_html", "proxy_subject_ciks", "subject_accepted"}),
-        "the DEF 14A text walk's document and subject-header readers, moved there; the old DEF 14A LLM listing reads them "
-        "until its listing is deleted (P5 removes this entry)",
-    ),
     "src.data_extract.utils.edgar_extract.empty_markers": (frozenset({"marker_frame", "marker_mask"}), _DRIVER),
-    "src.data_extract.utils.edgar_extract.html_text": (frozenset({"html_to_text"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.parallel_fetch": (frozenset({"run_per_ticker"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.insider_common": (
         frozenset(

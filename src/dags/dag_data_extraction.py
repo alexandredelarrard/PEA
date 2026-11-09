@@ -132,7 +132,7 @@ fundamentals = fetch("fundamentals", pool="sec_api")
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
 fundamentals_employees = fetch("sec-employees-llm", pool="sec_api", task_id="fundamentals_employees")  # reads sec_employees_text
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
-def14a = fetch("def14a", pool="sec_api")  # + LLM
+def14a = fetch("sec-def14a-llm", pool="sec_api", task_id="def14a")  # reads sec_def14a_text
 def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
 sec_8k_votes = fetch("sec-8k-votes", pool="sec_api")  # parses stored Item 5.07 narratives

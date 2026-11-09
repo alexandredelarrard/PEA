@@ -79,7 +79,7 @@ def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.Data
     the two repairs above: a smooth back-adjustment leaves returns CORRECT and only the level
     short, so moving the returns would break what is currently right.
 
-    THE VERIFICATION IS THE POINT. `vendor_price` (`fundamentals_sharadar.price`) is the only
+    THE VERIFICATION IS THE POINT. `vendor_price` (`sharadar_fundamentals_facts.price`) is the only
     independent statement of what a stock actually traded at, so the observed wedge is
     `median(price / close_split)` over the segment's own rows. An entry whose wedge has moved
     outside `BUGFIX_WEDGE_TOL` is REFUSED rather than applied: a moved wedge means the repair

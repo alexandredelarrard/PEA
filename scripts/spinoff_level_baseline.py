@@ -310,7 +310,7 @@ def dividend_leg_question(store, panel: pd.DataFrame) -> dict:
     means they do not.
     """
     div = store.load(Tables.dividends, columns=["ticker", "date", "dividends"], optional=True)
-    vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "dps", "price"], where={"dimension": "ART"})
+    vendor = store.load(Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "dimension", "dps", "price"], where={"dimension": "ART"})
     if div is None or div.empty or vendor is None or vendor.empty:
         return {"skipped": "prices_dividends or the ART dimension is empty"}
     div = _as_ns(div, "date")
@@ -359,7 +359,7 @@ def earnings_leg_question(store, panel: pd.DataFrame) -> dict:
     than an agreement rate.
     """
     earn = store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date", "eps_actual"], optional=True)
-    vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "epsdil"], where={"dimension": "ARQ"})
+    vendor = store.load(Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "dimension", "epsdil"], where={"dimension": "ARQ"})
     if earn is None or earn.empty:
         return {"skipped": "earnings_surprises is empty"}
     earn = _as_ns(earn, "earnings_date").rename(columns={"earnings_date": "date"})

@@ -29,7 +29,7 @@ and the name already in the tree -- and already measured, at 1 row in 144,131 --
 `no_usable_period`, so that is the name kept. `unresolved` is a `resolution_method`
 VALUE, and a reason code spelled the same as a method value would carry no information
 the row does not already have: every unresolved resolution reaches
-`fundamentals_facts` with a more specific code than "no route" already attached.
+`sec_fundamentals_facts` with a more specific code than "no route" already attached.
 """
 
 from __future__ import annotations

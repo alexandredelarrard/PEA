@@ -195,15 +195,15 @@ class StepCubeFundamentals(Step):
         return fields
 
     def _load_fundamentals(self, universe: tuple[str, ...], since: pd.Timestamp | None = None) -> pd.DataFrame:
-        """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
+        """`sharadar_fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
         projecting the two columns out of the store: `universe_tickers` is the authority for
-        sector membership and `fundamentals_history` has never carried it, so this is a
+        sector membership and `sharadar_fundamentals_history` has never carried it, so this is a
         lookup, not a column the read could have asked for. Without it every sector KPI is
         gated off (`sector_gates.row_gate` fails closed on the absent column)."""
         df = self._context.store.load(
-            Tables.fundamentals_history,
+            Tables.sharadar_fundamentals_history,
             optional=True,
             project=True,
             where={"ticker": list(universe)},
@@ -213,7 +213,7 @@ class StepCubeFundamentals(Step):
             raise Exception("No fundamentals history -> the fundamental, sector, workforce and dividend-payout features will be skipped.")
         self._log.info(
             "Loaded %s: %s rows, %s tickers%s (ONCE for five builders)",
-            Tables.fundamentals_history,
+            Tables.sharadar_fundamentals_history,
             len(df),
             df["ticker"].nunique(),
             f" since {pd.Timestamp(since).date()}" if since is not None else "",
@@ -317,7 +317,7 @@ class StepCubeFundamentals(Step):
         output_since: pd.Timestamp | None,
     ) -> pd.DataFrame | None:
         """Revenue per employee, headcount growth and elasticity: `fundamentals_employees` joined
-        point-in-time onto `fundamentals_history`, on the `FT + α·PT` headcount proxy."""
+        point-in-time onto `sharadar_fundamentals_history`, on the `FT + α·PT` headcount proxy."""
         if fundamentals is None or employees is None:
             return None
         return build_employee_feature_panel(

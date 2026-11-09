@@ -1,5 +1,5 @@
 """
-Per-filing SEC XBRL walk -> `fundamentals_facts`: one row per catalogue field per period per filing.
+Per-filing SEC XBRL walk -> `sec_fundamentals_facts`: one row per catalogue field per period per filing.
 
 Strictly as-filed: every value is a number the filer tagged, on the period shape it tagged it with; Q4 = FY - YTD9
 and YTD decumulation happen later, in memory, in the history build. `xbrl_linkbase` picks the concept(s) for a
@@ -140,7 +140,7 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
 
 
 #: Forms whose statement periods are all annual, so any quarterly fact in them comes from a note. Matched exactly.
-_ANNUAL_FORMS = tuple(form for form in cast(Resume, Tables.fundamentals_facts.resume).forms if form.startswith("10-K"))
+_ANNUAL_FORMS = tuple(form for form in cast(Resume, Tables.sec_fundamentals_facts.resume).forms if form.startswith("10-K"))
 
 
 _Window = tuple[tuple, pd.Timestamp, pd.Timestamp]
@@ -414,7 +414,7 @@ def _row(
     *,
     dc_code: str | None = None,
 ) -> dict:
-    """One `fundamentals_facts` row; `period=None` gives a value-less reason-coded row.
+    """One `sec_fundamentals_facts` row; `period=None` gives a value-less reason-coded row.
 
     `reported` is the filing's `period_of_report` (NaT when absent). `dc_code` overrides the resolution's own,
     for a refused period on a field that otherwise resolved.
@@ -592,18 +592,18 @@ def parse_fundamentals(
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
 ) -> dict[Table, pd.DataFrame]:
-    """One filing's `fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice)."""
-    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=Tables.fundamentals_facts.retrieval_columns)
-    return {Tables.fundamentals_facts: df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")}
+    """One filing's `sec_fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice)."""
+    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=Tables.sec_fundamentals_facts.retrieval_columns)
+    return {Tables.sec_fundamentals_facts: df.drop_duplicates(subset=list(Tables.sec_fundamentals_facts.pk), keep="last")}
 
 
 def fundamentals_fetch(context: Context) -> EdgarFetch:
-    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
+    """The `sec_fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
     catalogue = load_catalogue(str(context.config_dir))
     df_gics = context.universe.frame.set_index("ticker")[["sector", "industry_group", "sub_industry"]]
     gics = cast(dict[str, dict], df_gics.to_dict("index"))
     return EdgarFetch(
-        tables=(Tables.fundamentals_facts,),
+        tables=(Tables.sec_fundamentals_facts,),
         parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
     )
 
@@ -625,7 +625,7 @@ def fetched_filing_dates(summary: FetchSummary) -> dict[str, list[pd.Timestamp]]
 def fetch_fundamentals_sec(
     context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
 ) -> FetchSummary:
-    """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
+    """Fetch the `sec_fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
     run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
     fetch = fundamentals_fetch(context)
     refresh_index(context, run, index_years(fetch, run.years_history, run.run_date))

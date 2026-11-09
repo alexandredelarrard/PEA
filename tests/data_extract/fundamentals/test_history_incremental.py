@@ -1,8 +1,8 @@
-"""Incremental `fundamentals_history_sec`: triage before replay, new events only, full replay when the past moved.
+"""Incremental `sec_fundamentals_history`: triage before replay, new events only, full replay when the past moved.
 
 Synthetic where the question is which path a ticker takes (a known-truth fixture names the expected path), real
 where the question is whether incremental rows equal a full replay (the sweep ledgers in `data/fundamentals_sweep/`
-are genuine `fundamentals_facts` rows). The store is the in-memory SQLite double, never the live tables.
+are genuine `sec_fundamentals_facts` rows). The store is the in-memory SQLite double, never the live tables.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ CATALOGUE_DIR = "./configs"
 
 
 def _fact(**kwargs: Any) -> dict:
-    """One `fundamentals_facts` row with every replay column defaulted."""
+    """One `sec_fundamentals_facts` row with every replay column defaulted."""
     row = {
         "ticker": "TST",
         "cik": "0000000001",
@@ -141,18 +141,18 @@ def _spy_loads(monkeypatch: pytest.MonkeyPatch, store: Any) -> list[tuple[str, t
 
 def _full_facts_reads(seen: list[tuple[str, tuple[str, ...]]]) -> int:
     """Reads of a ticker's whole replay projection (the cost a skipped ticker must not pay)."""
-    return sum(1 for table, columns in seen if table == Tables.fundamentals_facts.name and columns == tuple(FACT_COLUMNS))
+    return sum(1 for table, columns in seen if table == Tables.sec_fundamentals_facts.name and columns == tuple(FACT_COLUMNS))
 
 
 # --------------------------------------------------------------------------- #
 # T1 (AC-001) an unchanged ticker costs no snapshot                            #
 # --------------------------------------------------------------------------- #
 def test_unchanged_ticker_computes_no_snapshot(sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    sqlite_store.save(Tables.fundamentals_facts, _quarters())
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
     context = _context(sqlite_store)
     mod.build_fundamentals_history(context, ["TST"])
     first = len(snapshots)
-    stored = sqlite_store.row_count(Tables.fundamentals_history_sec)
+    stored = sqlite_store.row_count(Tables.sec_fundamentals_history)
     assert first == 4 and stored == 4, (first, stored)
 
     snapshots.clear()
@@ -160,7 +160,7 @@ def test_unchanged_ticker_computes_no_snapshot(sqlite_store: Any, snapshots: lis
     mod.build_fundamentals_history(context, ["TST"])
 
     assert snapshots == [], f"{len(snapshots)} snapshot(s) recomputed for a ticker with no new filing: {snapshots}"
-    assert sqlite_store.row_count(Tables.fundamentals_history_sec) == stored
+    assert sqlite_store.row_count(Tables.sec_fundamentals_history) == stored
     assert _full_facts_reads(seen) == 0, "a skipped ticker read its full facts"
     print("\n=== SANITY CHECK: unchanged ticker ===")
     print(f"  first build: {first} snapshots, {stored} rows; re-run with no new filing: 0 snapshots, 0 rows, 0 full facts reads. Validated.")
@@ -171,7 +171,7 @@ def test_unchanged_ticker_computes_no_snapshot(sqlite_store: Any, snapshots: lis
 # --------------------------------------------------------------------------- #
 def _stored(store: Any, ticker: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The ticker's stored history and reason codes, in a deterministic order."""
-    history = store.load(Tables.fundamentals_history_sec, where={"ticker": ticker}, optional=True)
+    history = store.load(Tables.sec_fundamentals_history, where={"ticker": ticker}, optional=True)
     codes = store.load(Tables.fundamentals_reason_codes, where={"ticker": ticker}, optional=True)
     history = pd.DataFrame() if history is None else history.sort_values("as_of").reset_index(drop=True)
     codes = pd.DataFrame() if codes is None else codes.sort_values(["as_of", "field", "dc_code"]).reset_index(drop=True)
@@ -180,11 +180,11 @@ def _stored(store: Any, ticker: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def _keep_first(store: Any, ticker: str, history: pd.DataFrame, codes: pd.DataFrame, n_rows: int) -> pd.Timestamp:
     """Rewrite the ticker's stored rows as the first `n_rows` events of `history`; returns the newest kept `as_of`."""
-    store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
+    store.delete(Tables.sec_fundamentals_history, {"ticker": ticker})
     store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
     kept = history.iloc[:n_rows]
     newest = pd.Timestamp(kept["as_of"].max())
-    store.save(Tables.fundamentals_history_sec, kept)
+    store.save(Tables.sec_fundamentals_history, kept)
     store.save(Tables.fundamentals_reason_codes, codes[pd.to_datetime(codes["as_of"]) <= newest])
     return newest
 
@@ -194,7 +194,7 @@ def _tamper(store: Any, ticker: str, as_of: str, **cells: Any) -> None:
     history, _ = _stored(store, ticker)
     row = history[pd.to_datetime(history["as_of"]) == pd.Timestamp(as_of)].copy()
     assert len(row) == 1, as_of
-    store.save(Tables.fundamentals_history_sec, row.assign(**cells))
+    store.save(Tables.sec_fundamentals_history, row.assign(**cells))
 
 
 def _built(store: Any, snapshots: list[str], ticker: str = "TST") -> int:
@@ -236,7 +236,7 @@ def test_incremental_rows_equal_full_replay(
     )
     monkeypatch.setattr(mod, "load_identity", lambda context: identity)
     facts = _real_facts(ticker, until)
-    sqlite_store.save(Tables.fundamentals_facts, facts)
+    sqlite_store.save(Tables.sec_fundamentals_facts, facts)
     _built(sqlite_store, snapshots, ticker)
     full_history, full_codes = _stored(sqlite_store, ticker)
     events = len(full_history)
@@ -266,7 +266,7 @@ def test_incremental_rows_equal_full_replay(
 # --------------------------------------------------------------------------- #
 def test_backdated_fetch_forces_full_replay(sqlite_store: Any, snapshots: list[str]) -> None:
     facts = _quarters()
-    sqlite_store.save(Tables.fundamentals_facts, facts)
+    sqlite_store.save(Tables.sec_fundamentals_facts, facts)
     stored = _built(sqlite_store, snapshots)
     context = _context(sqlite_store)
 
@@ -279,11 +279,11 @@ def test_backdated_fetch_forces_full_replay(sqlite_store: Any, snapshots: list[s
     mod.build_fundamentals_history(context, ["TST"], fetched={"TST": [pd.Timestamp("2024-05-01")]})
     later = len(snapshots)
     assert backdated == forced == stored == 4 and later == 0, (backdated, forced, later)
-    assert sqlite_store.row_count(Tables.fundamentals_history_sec) == 4
+    assert sqlite_store.row_count(Tables.sec_fundamentals_history) == 4
 
     # A re-read filing that now carries another value for an already-published row: the drift guard refuses.
     q2 = facts[(facts["filing_date"] == pd.Timestamp("2023-08-01")) & (facts["field"] == "totalAssets")].assign(value=5000.0)
-    sqlite_store.save(Tables.fundamentals_facts, q2)
+    sqlite_store.save(Tables.sec_fundamentals_facts, q2)
     snapshots.clear()
     mod.build_fundamentals_history(context, ["TST"])
     silent = len(snapshots)
@@ -301,7 +301,7 @@ def test_backdated_fetch_forces_full_replay(sqlite_store: Any, snapshots: list[s
 # T4 (AC-004) an event-list mismatch forces the full replay                    #
 # --------------------------------------------------------------------------- #
 def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    sqlite_store.save(Tables.fundamentals_facts, _quarters())
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
     _built(sqlite_store, snapshots)
     context = _context(sqlite_store)
 
@@ -317,14 +317,14 @@ def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: li
     # (b) A back-dated original with no fetch hand-off: its date is not stored -> check -> full; it adds its own row.
     monkeypatch.setattr(mod, "_scope_changed_recently", lambda context, tickers, as_of=None: frozenset())
     late = _quarters(windows=[("2023-01-01", "2023-03-31", "Q1", "2023-06-15")]).assign(accession_number="TST-late")
-    sqlite_store.save(Tables.fundamentals_facts, late)
+    sqlite_store.save(Tables.sec_fundamentals_facts, late)
     snapshots.clear()
     mod.build_fundamentals_history(context, ["TST"])
     backfilled = len(snapshots)
-    assert backfilled == 5 and sqlite_store.row_count(Tables.fundamentals_history_sec) == 5, backfilled
+    assert backfilled == 5 and sqlite_store.row_count(Tables.sec_fundamentals_history) == 5, backfilled
 
     # (c) A back-dated original that restates a published quarter: the full replay's drift guard refuses.
-    sqlite_store.save(Tables.fundamentals_facts, late.assign(accession_number="TST-later", filing_date=pd.Timestamp("2023-09-15"), value=1.0))
+    sqlite_store.save(Tables.sec_fundamentals_facts, late.assign(accession_number="TST-later", filing_date=pd.Timestamp("2023-09-15"), value=1.0))
     with pytest.raises(ValueError, match="append-only"):
         mod.build_fundamentals_history(context, ["TST"])
 
@@ -340,10 +340,10 @@ def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: li
 def test_triage_classifies_tickers(sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
     names = ("NEW", "GROW", "CUR", "RECENT", "FETCH", "MOVED")
     for name in names:
-        sqlite_store.save(Tables.fundamentals_facts, _quarters(name, _WINDOWS[:3]))
+        sqlite_store.save(Tables.sec_fundamentals_facts, _quarters(name, _WINDOWS[:3]))
     mod.build_fundamentals_history(_context(sqlite_store), [n for n in names if n != "NEW"])
-    sqlite_store.save(Tables.fundamentals_facts, _quarters("GROW", _WINDOWS[3:]))
-    sqlite_store.save(Tables.fundamentals_facts, _quarters("MOVED", [("2023-01-01", "2023-03-31", "Q1", "2023-06-15")]))
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters("GROW", _WINDOWS[3:]))
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters("MOVED", [("2023-01-01", "2023-03-31", "Q1", "2023-06-15")]))
 
     seen = _spy_loads(monkeypatch, sqlite_store)
     context = _context(sqlite_store)
@@ -355,7 +355,7 @@ def test_triage_classifies_tickers(sqlite_store: Any, snapshots: list[str], monk
     assert set(verify.values()) == {"full"}
     assert work["GROW"].newest == pd.Timestamp("2023-11-01") and work["NEW"].newest is None
     assert _full_facts_reads(seen) == 0, "the triage read a ticker's full facts"
-    narrow = {columns for table, columns in seen if table == Tables.fundamentals_facts.name}
+    narrow = {columns for table, columns in seen if table == Tables.sec_fundamentals_facts.name}
     assert narrow == {("ticker", "filing_date", "is_amendment")}, narrow
 
     print("\n=== SANITY CHECK: triage ===")
@@ -368,13 +368,13 @@ def test_triage_classifies_tickers(sqlite_store: Any, snapshots: list[str], monk
 # T6 (AC-006) verify and rebuild keep today's full-replay semantics            #
 # --------------------------------------------------------------------------- #
 def test_verify_history_replays_in_full_under_the_drift_guard(sqlite_store: Any, snapshots: list[str]) -> None:
-    sqlite_store.save(Tables.fundamentals_facts, _quarters())
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
     _built(sqlite_store, snapshots)
     context = _context(sqlite_store)
 
     mod.build_fundamentals_history(context, ["TST"], verify_history=True)
     verified = len(snapshots)
-    assert verified == 4 and sqlite_store.row_count(Tables.fundamentals_history_sec) == 4
+    assert verified == 4 and sqlite_store.row_count(Tables.sec_fundamentals_history) == 4
 
     _tamper(sqlite_store, "TST", "2023-08-01", totalAssets=999.0)
     snapshots.clear()
@@ -388,7 +388,7 @@ def test_verify_history_replays_in_full_under_the_drift_guard(sqlite_store: Any,
 
 
 def test_rebuild_history_deletes_and_replays_in_full(sqlite_store: Any, snapshots: list[str], caplog: pytest.LogCaptureFixture) -> None:
-    sqlite_store.save(Tables.fundamentals_facts, _quarters())
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
     _built(sqlite_store, snapshots)
     _tamper(sqlite_store, "TST", "2023-08-01", totalAssets=999.0)
 
@@ -449,7 +449,7 @@ def _cli(monkeypatch: pytest.MonkeyPatch, store: Any, summary: FetchSummary | No
 
 
 def test_cli_backdated_fetch_reaches_the_history_as_a_full_replay(sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    sqlite_store.save(Tables.fundamentals_facts, _quarters())
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
     stored = _built(sqlite_store, snapshots)
     runner = CliRunner()
     report = []
@@ -467,12 +467,12 @@ def test_cli_backdated_fetch_reaches_the_history_as_a_full_replay(sqlite_store: 
         assert len(snapshots) == expected, (label, snapshots)
         assert fetches[0]["full"] is bool(extra), fetches
         report.append(f"{label}: {len(snapshots)} snapshot(s)")
-    assert sqlite_store.row_count(Tables.fundamentals_history_sec) == stored
+    assert sqlite_store.row_count(Tables.sec_fundamentals_history) == stored
 
     # A re-read that changed a published row: through the CLI hand-off the drift guard refuses.
     facts = _quarters()
     q2 = facts[(facts["filing_date"] == pd.Timestamp("2023-08-01")) & (facts["field"] == "totalAssets")].assign(value=5000.0)
-    sqlite_store.save(Tables.fundamentals_facts, q2)
+    sqlite_store.save(Tables.sec_fundamentals_facts, q2)
     _cli(monkeypatch, sqlite_store, _summary({"TST": [("TST-acc-2023-08-01", "2023-08-01")]}, {}))
     with pytest.raises(ValueError, match="append-only"):
         runner.invoke(cli_mod.cli, ["fundamentals", "-t", "TST"], catch_exceptions=False)
@@ -524,7 +524,7 @@ class _CountingPool(ProcessPoolExecutor):
 def _pool_run(store: Any, workers: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Three first builds and one incremental ticker (BBB, 3 of 4 events stored) with `workers`; the saved tables."""
     tickers = ["AAA", "BBB", "CCC", "DDD"]
-    store.delete(Tables.fundamentals_history_sec, {"ticker": tickers})
+    store.delete(Tables.sec_fundamentals_history, {"ticker": tickers})
     store.delete(Tables.fundamentals_reason_codes, {"ticker": tickers})
     serial = _context(store)
     mod.build_fundamentals_history(serial, ["BBB"])
@@ -532,7 +532,7 @@ def _pool_run(store: Any, workers: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     _keep_first(store, "BBB", history, codes, 3)
     context = SimpleNamespace(**vars(serial), config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=workers)))
     mod.build_fundamentals_history(context, tickers)
-    history = store.load(Tables.fundamentals_history_sec).sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    history = store.load(Tables.sec_fundamentals_history).sort_values(["ticker", "as_of"]).reset_index(drop=True)
     codes = store.load(Tables.fundamentals_reason_codes).sort_values(["ticker", "as_of", "field", "dc_code"]).reset_index(drop=True)
     return history, codes
 
@@ -542,7 +542,7 @@ def test_pool_build_equals_in_process_build(sqlite_store: Any, monkeypatch: pyte
     monkeypatch.setattr(mod, "ProcessPoolExecutor", _CountingPool)
     for k, ticker in enumerate(("AAA", "BBB", "CCC", "DDD")):
         facts = _quarters(ticker)
-        sqlite_store.save(Tables.fundamentals_facts, facts.assign(value=facts["value"] * (k + 1)))
+        sqlite_store.save(Tables.sec_fundamentals_facts, facts.assign(value=facts["value"] * (k + 1)))
 
     _CountingPool.submitted = []
     serial_history, serial_codes = _pool_run(sqlite_store, workers=1)

@@ -1,4 +1,4 @@
-"""Measure where Sharadar and `fundamentals_history_sec` disagree on shared `(ticker, as_of)` dates.
+"""Measure where Sharadar and `sec_fundamentals_history` disagree on shared `(ticker, as_of)` dates.
 
 One row per `(ticker, field)`. A gap is `is_systematic` when it holds on most shared dates (a basis fork, not a
 restatement); `is_expected` marks the designed-in forks in `SHARADAR_GAP_EXPECTED_FIELDS`. Systematic and
@@ -102,7 +102,7 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     floors = {klass: float(value) for klass, value in context.config.data_extract.sharadar_gap_floor.items()}
 
     where = {"ticker": sorted(tickers)} if tickers else {}
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={**where, "dimension": ARQ}, optional=True)
+    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={**where, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
         raise RuntimeError("gap check: no stored Sharadar ARQ rows to measure")
     # market-wide table: scope to these tickers and the two actions `split_events` reads
@@ -115,9 +115,9 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits), config_dir=config_dir)
     splits = vendor_share_basis(context, vendor, names, yf_splits, splits, config_dir).vendor
     fields = comparable_fields(field_map)
-    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *fields], where=where or None, optional=True)
+    sec = context.store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", *fields], where=where or None, optional=True)
     if sec is None:
-        raise RuntimeError("gap check: fundamentals_history_sec has no rows for this scope")
+        raise RuntimeError("gap check: sec_fundamentals_history has no rows for this scope")
     sec["as_of"] = pd.to_datetime(sec["as_of"]).astype("datetime64[ns]")
 
     shar = sharadar_history(vendor, field_map, actions, splits=splits)
@@ -215,7 +215,7 @@ def propose(gaps: pd.DataFrame, *, config_dir: str = DEFAULT_CONFIG_DIR) -> tupl
 
 
 _README: list[str] = [
-    "PER-(TICKER, FIELD) SOURCE OVERRIDES for the merged `fundamentals_history` (D22).",
+    "PER-(TICKER, FIELD) SOURCE OVERRIDES for the merged `sharadar_fundamentals_history` (D22).",
     "",
     "MACHINE-PROPOSED, HUMAN-APPROVED. `sharadar-gap-check --propose` writes candidates here",
     "with `approved: null`; `merge_history.load_overrides` IGNORES those and logs how many are",

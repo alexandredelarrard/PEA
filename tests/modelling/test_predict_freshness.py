@@ -1,7 +1,7 @@
 """`run_predict` refuses to score on stale inputs (AC-017).
 
 A known-truth fixture on a real SQLite store: 20 universe tickers whose `prices`,
-`fundamentals_sharadar` and `fundamentals_history` are fresh as of today, a cube ending on the
+`sharadar_fundamentals_facts` and `sharadar_fundamentals_history` are fresh as of today, a cube ending on the
 last price date, and a stub one-member ensemble so no model is trained. Each case makes one
 input stale and checks whether prediction is blocked and `predictions_latest` left unwritten."""
 
@@ -39,10 +39,12 @@ def _seed(store: Any) -> None:
     """Every universe key fresh, and the cube ending on the last price date."""
     store.replace(Tables.prices, pd.DataFrame({"ticker": TICKERS, "date": LAST_PRICE, "close_split": 10.0}))
     store.replace(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         pd.DataFrame({"ticker": TICKERS, "dimension": "ARQ", "date": TODAY - pd.Timedelta(days=30), "reportperiod": TODAY - pd.Timedelta(days=60)}),
     )
-    store.replace(Tables.fundamentals_history, pd.DataFrame({"ticker": TICKERS, "as_of": TODAY - pd.Timedelta(days=30), "totalRevenue": 1.0}))
+    store.replace(
+        Tables.sharadar_fundamentals_history, pd.DataFrame({"ticker": TICKERS, "as_of": TODAY - pd.Timedelta(days=30), "totalRevenue": 1.0})
+    )
     store.replace(Tables.cube, pd.DataFrame({"date": LAST_PRICE, "ticker": TICKERS, "f0": np.linspace(-1.0, 1.0, len(TICKERS))}))
 
 
@@ -69,7 +71,13 @@ def _step(tmp_path: Path, store: Any, monkeypatch: pytest.MonkeyPatch, min_share
     monkeypatch.setattr(step_long_short, "load_ensemble", pinned_members)
     paths = {"DATA_STORE": tmp_path / "data", "OUTPUT_DIR": tmp_path / "out", "MODELS_DIR": tmp_path / "models"}
     context: Any = SimpleNamespace(
-        store=store, save=False, log=logging.getLogger("predict-freshness"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe_of(TICKERS)
+        store=store,
+        save=False,
+        log=logging.getLogger("predict-freshness"),
+        config=cfg,
+        config_dir=Path("configs"),
+        paths=paths,
+        universe=universe_of(TICKERS),
     )
     return StepLongShort(context=context, config=cfg)
 

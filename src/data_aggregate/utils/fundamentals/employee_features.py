@@ -3,7 +3,7 @@
 employee_features.py  (src/data_aggregate/utils/fundamentals/employee_features.py)
 -------------------------------------------------------------------------------
 Peer-relative WORKFORCE features from `fundamentals_employees` (the 10-K headcount
-components and their basis) joined onto `fundamentals_history` (revenue, fiscal dates):
+components and their basis) joined onto `sharadar_fundamentals_history` (revenue, fiscal dates):
 
     revenue_per_employee         TTM revenue / headcount proxy
     employee_growth              year-over-year change in the headcount proxy

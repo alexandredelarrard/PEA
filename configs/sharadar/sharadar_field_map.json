@@ -1,6 +1,6 @@
 {
   "_README": [
-    "SHARADAR SF1 -> the repo's `fundamentals_history` vocabulary. The map is DATA, not code:",
+    "SHARADAR SF1 -> the repo's `sharadar_fundamentals_history` vocabulary. The map is DATA, not code:",
     "`field_map.py` reads it and is fully deterministic given this file (D22's governance,",
     "applied to the map as well as to the registers).",
     "",
@@ -198,7 +198,7 @@
     "put `ncfx`, `prefdivis` and `accoci` in a table whose other 63 columns are camelCase. `to`",
     "is now REQUIRED and the loader refuses one that collides with a contract column, because two",
     "sources writing one column would let the later one win silently. The vendor spelling stays",
-    "the KEY, so this file still reads as a map FROM `fundamentals_sharadar`.",
+    "the KEY, so this file still reads as a map FROM `sharadar_fundamentals_facts`.",
     "",
     "`basis` drives `build_ttm`: `duration` is summed over four discrete quarters, `instant`",
     "takes the period-end value. It is declared HERE rather than read off `SHARADAR_FLOW_FIELDS`",
@@ -242,7 +242,7 @@
 
   "_EXCLUDED_README": [
     "D21: vendor-computed ratios and currency conversions stay in the RAW table and never reach",
-    "`fundamentals_history`. Listed so the loader can assert that every one of the 112 delivered",
+    "`sharadar_fundamentals_history`. Listed so the loader can assert that every one of the 112 delivered",
     "columns is accounted for -- mapped, extra, excluded or identifier -- rather than silently",
     "dropped."
   ],

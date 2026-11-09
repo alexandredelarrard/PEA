@@ -22,7 +22,7 @@ _FLOW = "totalRevenue"
 
 
 def _fact(**kwargs) -> dict:
-    """One `fundamentals_facts` row with every column `build_ticker` reads defaulted."""
+    """One `sec_fundamentals_facts` row with every column `build_ticker` reads defaulted."""
     row = {
         "ticker": _TICKER,
         "accession_number": "a-1",

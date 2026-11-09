@@ -310,7 +310,7 @@ def net_income(facts: pd.DataFrame, period: pd.Timestamp | None) -> float:
     Kept raw. The plausibility floor lives in `def14a_validate.repair_main_row`, because a value
     like SBUX FY2025's `1856.4` (tagged in $ millions, `decimals='1'`, `unit_ref='usd'`) is
     indistinguishable from a real number HERE -- nothing in the fact disambiguates millions from
-    units, and the trustworthy figure is in `fundamentals_history` anyway.
+    units, and the trustworthy figure is in `sharadar_fundamentals_history` anyway.
     """
     sub = _at_period(_concept(facts, _NET_INCOME), period)
     if sub.empty:

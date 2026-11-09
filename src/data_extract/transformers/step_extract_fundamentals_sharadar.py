@@ -5,7 +5,7 @@ step_extract_fundamentals_sharadar.py
 Sharadar fundamentals extraction -> SF1, S&P 500 membership and the merged history.
 
 A SIBLING of `StepExtractFundamentals` (the SEC layer) rather than a part of it, and it runs
-BEFORE it: the two producers are independent, and the merged `fundamentals_history` that
+BEFORE it: the two producers are independent, and the merged `sharadar_fundamentals_history` that
 consumes both is field-block precedence -- Sharadar owns a declared set of columns for all
 history, SEC owns the rest, and no column ever switches source mid-series (D11/D14).
 
@@ -65,7 +65,7 @@ class StepExtractFundamentalsSharadar(Step):
         #    (`context.universe`); nothing consumes this table yet.
         fetch_sharadar_sp500(self._context, full=full)
 
-        # 3. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the
+        # 3. The MERGED `sharadar_fundamentals_history` -- Sharadar's declared column block plus the
         #    SEC-owned ones, joined backward as of each publication date.
         #
         #    LAST, and never on its own schedule, for the same reason the SEC step already
@@ -73,7 +73,7 @@ class StepExtractFundamentalsSharadar(Step):
         #    the fetchers rather than after them would publish a table that silently lags its
         #    own inputs by one run, and every row it wrote would look perfectly normal.
         #
-        #    It reads `fundamentals_history_sec` too, which THIS step does not produce -- so
+        #    It reads `sec_fundamentals_history` too, which THIS step does not produce -- so
         #    the SEC-owned block is as fresh as the last `StepExtractFundamentals` run, not as
         #    this one. That is the stated coverage/freshness asymmetry, not a bug.
         build_merged_history(self._context, tickers=tickers, full=full, config_dir=config_dir)

@@ -101,3 +101,30 @@ def test_price_owner_windows_is_registered_and_spliced() -> None:
     assert "security_master" in blocks and "ix_entity_lineage_entity_id" in schema_sql
     print("\n=== SANITY CHECK: owner table DDL ===")
     print("  price_owner_windows registered with PK (ticker, valid_from), DATE windows, and its spliced block equals the generator's output")
+
+
+#: The four fundamentals tables: source-prefixed name -> its PK and the indexes `sql/schema.sql` declares on it.
+FUNDAMENTALS_TABLES = {
+    "sec_fundamentals_facts": (
+        ("ticker", "accession_number", "field", "duration_type", "period_end"),
+        ("ix_sec_fundamentals_facts_filing_date", "ix_sec_fundamentals_facts_field"),
+    ),
+    "sec_fundamentals_history": (("ticker", "as_of"), ("ix_sec_fundamentals_history_ticker",)),
+    "sharadar_fundamentals_facts": (("ticker", "dimension", "date", "reportperiod"), ()),
+    "sharadar_fundamentals_history": (("ticker", "as_of"), ("ix_sharadar_fundamentals_history_ticker",)),
+}
+
+
+def test_fundamentals_tables_carry_their_source_prefix() -> None:
+    schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_sql)
+    for name, (pk, indexes) in FUNDAMENTALS_TABLES.items():
+        table = getattr(Tables, name)
+        assert table.name == name and table.pk == pk, (name, table.pk)
+        assert f"PRIMARY KEY ({', '.join(chr(34) + c + chr(34) for c in pk)})" in blocks[name], name
+        for index in indexes:
+            assert f'CREATE INDEX IF NOT EXISTS {index} ON "{name}"' in schema_sql, index
+    old = ("fundamentals_facts", "fundamentals_history_sec", "fundamentals_history", "fundamentals_sharadar", "sharadar_fundamentals")
+    assert not [n for n in old if hasattr(Tables, n) or n in blocks], [n for n in old if hasattr(Tables, n) or n in blocks]
+    print("\n=== SANITY CHECK: fundamentals table names ===")
+    print(f"  {', '.join(FUNDAMENTALS_TABLES)} registered and spliced with their PKs and indexes; no old name left in the registry or the DDL")

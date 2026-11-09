@@ -223,7 +223,7 @@ FORM_POLICY: dict[str, Combine] = {
         (Tables.sec_13d, Combine.SPLIT),
         (Tables.sec_13g, Combine.SPLIT),
         (Tables.insider_transactions, Combine.UNION),
-        (Tables.fundamentals_facts, Combine.SPLIT),
+        (Tables.sec_fundamentals_facts, Combine.SPLIT),
         (Tables.fundamentals_employees, Combine.SPLIT),
         (Tables.filing_risk_text, Combine.SPLIT),
         (Tables.def14a_edgar, Combine.SPLIT),

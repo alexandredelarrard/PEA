@@ -386,7 +386,7 @@ CREATE TABLE IF NOT EXISTS "cusip_ticker_map" (
 );
 CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ticker");
 
--- [extract] fundamentals_history_sec  (pk: ticker, as_of)
+-- [extract] sec_fundamentals_history  (pk: ticker, as_of)
 -- The PUBLICATION-EVENT grain: `as_of` is a FILING DATE, not a period end, and a row exists
 -- for every date on which this ticker made >=1 extracted value newly public. Each row is a
 -- COMPLETE SNAPSHOT (every column carries its latest-known value at that date), so a plain
@@ -411,7 +411,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- fail this build); `ebitda_q` / `freeCashflow_q` / `capexGlobal` and the ~170 columns whose
 -- inputs left with the rebuild.
 
-CREATE TABLE IF NOT EXISTS "fundamentals_history_sec" (
+CREATE TABLE IF NOT EXISTS "sec_fundamentals_history" (
     "ticker" TEXT NOT NULL,
     "as_of" DATE NOT NULL,
     "fiscal_end" DATE,
@@ -495,18 +495,18 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history_sec" (
     "amended_fields" TEXT,
     PRIMARY KEY ("ticker", "as_of")
 );
-CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_history_sec" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_history_ticker ON "sec_fundamentals_history" ("ticker");
 
--- [extract] fundamentals_history  (pk: ticker, as_of)
+-- [extract] sharadar_fundamentals_history  (pk: ticker, as_of)
 -- THE MERGED TABLE, and the one every consumer should read. Field-block precedence (D14):
--- Sharadar owns a declared set of columns for ALL history, `fundamentals_history_sec` owns
+-- Sharadar owns a declared set of columns for ALL history, `sec_fundamentals_history` owns
 -- the 15 named below, and no column ever switches source mid-series. Built by
 -- data_extract/utils/fundamentals_sharadar/merge_history.py from two READ-ONLY sources;
 -- neither is written by that build.
 --
 -- Same PUBLICATION-EVENT grain as the SEC table: `as_of` is a FILING DATE. Here it is
 -- Sharadar's own `date`, which the AR dimensions document as the SEC filing date -- measured
--- against `fundamentals_history_sec.as_of` on 14 tickers x 5 years it matched 279 of 280
+-- against `sec_fundamentals_history.as_of` on 14 tickers x 5 years it matched 279 of 280
 -- (99.64%), the single miss being a 10-K/A Sharadar has no row for.
 --
 -- EXACTLY 92 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
@@ -523,7 +523,7 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_h
 --   * every Sharadar column is repo camelCase, including the 25 EXTRAS, which are keyed by
 --     their vendor spelling in `sharadar_field_map.json` and emitted under a repo name
 --     (`cashneq` -> `cashAndEquivalents`, `ncfx` -> `exchangeRateEffect`). The vendor
---     spelling survives only in `fundamentals_sharadar`, which is the table it belongs to.
+--     spelling survives only in `sharadar_fundamentals_facts`, which is the table it belongs to.
 --
 -- The 14 SEC-OWNED columns (D18): `goodwill`, `intangiblesExGoodwill`, `ppeGross`,
 -- `accumulatedDepreciation`, `minorityInterest`, `operatingLeaseLiability`,
@@ -536,19 +536,19 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_h
 --
 -- NOT here, each deliberately (D15): `publication_form`, `is_amendment`,
 -- `amended_fiscal_end`, `amended_fields` -- pure SEC RECONCILIATION columns that stay on
--- `fundamentals_history_sec`, where the amendment grain is real and the validator uses them.
+-- `sec_fundamentals_history`, where the amendment grain is real and the validator uses them.
 -- Sharadar publishes no amendment events, so carrying them here would be four permanently
 -- NULL columns that lie about what the table knows. There is no `source` column either:
 -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
 --
--- ⚠ `fundamentals_reason_codes` explains `fundamentals_history_sec`, NOT this table (D24).
+-- ⚠ `fundamentals_reason_codes` explains `sec_fundamentals_history`, NOT this table (D24).
 
-CREATE TABLE IF NOT EXISTS "fundamentals_history" (
+CREATE TABLE IF NOT EXISTS "sharadar_fundamentals_history" (
     "ticker" TEXT NOT NULL,
     "as_of" DATE NOT NULL,
     "fiscal_end" DATE,
     -- the 60 value columns, in STATEMENT order (HISTORY_STATEMENT_ORDER), same vocabulary
-    -- and same TTM/instant contract as fundamentals_history_sec above
+    -- and same TTM/instant contract as sec_fundamentals_history above
     -- income statement -- revenue, general top line then the regime-specific SEC-owned ones
     "totalRevenue" DOUBLE PRECISION,
     "premiumsEarned_sec" DOUBLE PRECISION,
@@ -666,10 +666,10 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "netCashFlow" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "as_of")
 );
-CREATE INDEX IF NOT EXISTS ix_fundamentals_history_ticker ON "fundamentals_history" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_sharadar_fundamentals_history_ticker ON "sharadar_fundamentals_history" ("ticker");
 
 -- [extract] fundamentals_reason_codes  (pk: ticker, as_of, field, dc_code)
--- WHY a `fundamentals_history_sec` cell is null, or why the value it does carry is not on the
+-- WHY a `sec_fundamentals_history` cell is null, or why the value it does carry is not on the
 -- field's nominal basis. Long rather than 39 `_DC` companion columns (which would be a ~50%
 -- wider table, almost entirely NULL); the deviation from the Compustat-style shape the spec
 -- asked for is reversible.
@@ -732,7 +732,7 @@ CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
     PRIMARY KEY ("ticker", "as_of")
 );
 
--- [extract] fundamentals_facts  (pk: ticker, accession_number, field, duration_type, period_end)
+-- [extract] sec_fundamentals_facts  (pk: ticker, accession_number, field, duration_type, period_end)
 -- One row per catalogue FIELD per period per filing, resolved from the filer's own XBRL
 -- calculation linkbase. STRICTLY AS-FILED: no derived quarter is ever written here (Q4 =
 -- FY - YTD9 happens in memory during the history build), and amendments append rather than
@@ -753,7 +753,7 @@ CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
 -- `fiscal_year` / `fiscal_period` are PAYLOAD: periods.py selects every input by calendar
 -- window and its own docstring records why ("Nothing in this module reads `fiscal_period`").
 
-CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
+CREATE TABLE IF NOT EXISTS "sec_fundamentals_facts" (
     "ticker" TEXT NOT NULL,
     "accession_number" TEXT NOT NULL,
     "field" TEXT NOT NULL,
@@ -782,8 +782,8 @@ CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
     "dc_code" TEXT,
     PRIMARY KEY ("ticker", "accession_number", "field", "duration_type", "period_end")
 );
-CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_filing_date ON "fundamentals_facts" ("filing_date");
-CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_field ON "fundamentals_facts" ("ticker", "field");
+CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_facts_filing_date ON "sec_fundamentals_facts" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_facts_field ON "sec_fundamentals_facts" ("ticker", "field");
 
 -- [extract] earnings_surprises  (pk: ticker, earnings_date)
 
@@ -841,9 +841,9 @@ CREATE TABLE IF NOT EXISTS "notes_text" (
 );
 CREATE INDEX IF NOT EXISTS ix_notes_text_ticker ON "notes_text" ("ticker");
 
--- [extract] fundamentals_sharadar  (pk: ticker, dimension, date, reportperiod)
+-- [extract] sharadar_fundamentals_facts  (pk: ticker, dimension, date, reportperiod)
 
-CREATE TABLE IF NOT EXISTS "fundamentals_sharadar" (
+CREATE TABLE IF NOT EXISTS "sharadar_fundamentals_facts" (
     "ticker" TEXT NOT NULL,
     "dimension" TEXT NOT NULL,
     "calendardate" DATE,

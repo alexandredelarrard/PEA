@@ -143,8 +143,10 @@ def test_validate_price_invariants_read_the_universe_only(monkeypatch):
                 "marketcap": 1.0,
             }
         )
-        context.store.save(Tables.sharadar_fundamentals, vendor)
-        context.store.save(Tables.fundamentals_history, pd.DataFrame({"ticker": UNIVERSE, "as_of": [SESSIONS[10]] * 2, "sharesOutstanding": 5.0}))
+        context.store.save(Tables.sharadar_fundamentals_facts, vendor)
+        context.store.save(
+            Tables.sharadar_fundamentals_history, pd.DataFrame({"ticker": UNIVERSE, "as_of": [SESSIONS[10]] * 2, "sharesOutstanding": 5.0})
+        )
         panel = vprices.load_panel(context).sort_values(["ticker", "date"])
         return panel, vprices.invariant_spike_revert(context), vprices.invariant_day_coverage(context)
 

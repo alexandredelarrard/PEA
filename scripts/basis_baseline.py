@@ -4,7 +4,7 @@ basis_baseline.py  (scripts/)
 Freeze the price / shares adjustment-basis measurements as ONE rerunnable script.
 
 Every number the 2026-09-01 research measured, recomputed from the EXTRACT layer only --
-`prices`, `fundamentals_history`, `fundamentals_sharadar`, `fundamentals_history_sec`,
+`prices`, `sharadar_fundamentals_history`, `sharadar_fundamentals_facts`, `sec_fundamentals_history`,
 `prices_macro`. Nothing here reads the cube: `cube_mcap` below REPLICATES the
 `daily_market_cap` formula (close x sharesOutstanding, as-of-joined onto the filing date)
 rather than reading a `marketCap` column, so the script runs whether or not a cube exists.
@@ -116,17 +116,17 @@ def load_frames(store, universe: list[str]) -> dict[str, pd.DataFrame]:
     prices = _as_ns(prices, "date")
 
     merged_cols = ["ticker", "as_of", "sharesOutstanding", "optionOverhang"]
-    if _has_column(store, "fundamentals_history", "sharesOutstandingPit"):
+    if _has_column(store, "sharadar_fundamentals_history", "sharesOutstandingPit"):
         merged_cols.append("sharesOutstandingPit")
-    merged = store.load(Tables.fundamentals_history, columns=merged_cols)
+    merged = store.load(Tables.sharadar_fundamentals_history, columns=merged_cols)
     merged = _as_ns(merged, "as_of")
 
     vendor = store.load(
-        Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "sharesbas", "marketcap", "price"], where={"dimension": "ARQ"}
+        Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "dimension", "sharesbas", "marketcap", "price"], where={"dimension": "ARQ"}
     )
     vendor = _as_ns(vendor, "date")
 
-    sec = store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", "sharesOutstanding"])
+    sec = store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "sharesOutstanding"])
     sec = _as_ns(sec, "as_of")
 
     macro = store.load(Tables.prices_macro, columns=["ticker", "date", "close"], where={"ticker": "equity_tr"})

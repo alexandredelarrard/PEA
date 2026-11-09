@@ -42,8 +42,8 @@ def governance_sources() -> dict[str, Any]:
     )
     wanted = ["ticker", "as_of", "fiscal_end", "fiscal_year", "fiscal_quarter", "totalRevenue", "sharesOutstandingPit"]
     fundamentals = store.load(
-        Tables.fundamentals_history,
-        columns=[c for c in wanted if c in store.columns(Tables.fundamentals_history)],
+        Tables.sharadar_fundamentals_history,
+        columns=[c for c in wanted if c in store.columns(Tables.sharadar_fundamentals_history)],
         where=where,
         since="2007-01-01",
         until="2026-10-08",

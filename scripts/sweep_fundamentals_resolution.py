@@ -102,7 +102,7 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None, scope: FilingScope) 
     so a ticker with a registrant chain (APA) arrives with its predecessor's filings.
     """
     cik = scope.roster_cik
-    filings = resolve_registrant_filings(scope, cast(Resume, Tables.fundamentals_facts.resume).forms, since=None, done_accessions=frozenset())
+    filings = resolve_registrant_filings(scope, cast(Resume, Tables.sec_fundamentals_facts.resume).forms, since=None, done_accessions=frozenset())
     frames: list[pd.DataFrame] = []
     for filing in filings:
         try:

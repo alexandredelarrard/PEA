@@ -21,8 +21,8 @@ _FILED = "2026-09-10"
 
 #: table -> (one real row with a float, a date and a text data column, the data columns checked)
 _CASES: dict[str, tuple[Table, dict[str, object], tuple[str, str, str]]] = {
-    "fundamentals_facts": (
-        Tables.fundamentals_facts,
+    "sec_fundamentals_facts": (
+        Tables.sec_fundamentals_facts,
         {
             "field": "totalRevenue",
             "duration_type": "duration",
@@ -112,7 +112,7 @@ def test_a_marker_is_one_typed_null_row_with_ddl_columns_only(name: str, sqlite_
 
 def test_marker_key_fill_for_the_composite_keys() -> None:
     stamp = FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="10-Q"), "0000000001")
-    facts = marker_row(Tables.fundamentals_facts, "AAA", stamp).iloc[0]
+    facts = marker_row(Tables.sec_fundamentals_facts, "AAA", stamp).iloc[0]
     insider = marker_row(Tables.insider_transactions, "AAA", stamp).iloc[0]
     proxy = marker_row(Tables.def14a_edgar, "AAA", stamp).iloc[0]
 

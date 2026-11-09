@@ -19,11 +19,11 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from tests.support import identity_regression_gate as gate
 from src.data_extract.utils.common.identity import CikWindow, FilingScope
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
 from tests.data_extract.fake_context import extract_config
+from tests.support import identity_regression_gate as gate
 from tests.support.universe import seed_universe, universe_config
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
@@ -422,7 +422,7 @@ def test_every_filing_rule_explains_its_accession_and_an_own_filing_lost_is_unex
             ("JCI", "j-margin", JCI_INC, "10-K", "2016-09-20", "2016-06-30"),
         ]
     )
-    facts = gate.filing_diff("fundamentals_facts", before_facts, after_facts, SCOPES, OLD_CIKS)
+    facts = gate.filing_diff("sec_fundamentals_facts", before_facts, after_facts, SCOPES, OLD_CIKS)
     assert {r.accession: r.reason for r in facts.itertuples(index=False)} == {
         "t-2015": "register_window",
         "j-2015": "register_window",
@@ -587,8 +587,8 @@ def test_a_column_the_merge_derives_from_an_sec_owned_input_moves_with_the_sec_b
     merged_after = merged_before.assign(minorityInterest_sec=[None, None], stockholdersEquityInclNci=[None, None], totalRevenue=[10.0, 12.0])
     merged_before.to_parquet(snap / "merged.parquet", index=False)
     pd.DataFrame({"ticker": ["DD"], "as_of": [day], "minorityInterest": [0.5]}).to_parquet(snap / "history_sec.parquet", index=False)
-    sqlite_store.save(Tables.fundamentals_history, merged_after)
-    sqlite_store.save(Tables.fundamentals_history_sec, pd.DataFrame({"ticker": ["DOW"], "as_of": [day], "minorityInterest": [0.1]}))
+    sqlite_store.save(Tables.sharadar_fundamentals_history, merged_after)
+    sqlite_store.save(Tables.sec_fundamentals_history, pd.DataFrame({"ticker": ["DOW"], "as_of": [day], "minorityInterest": [0.1]}))
 
     diff = gate._merged_section(_Context(sqlite_store), snap, ["DD"])
 
@@ -631,7 +631,7 @@ def test_prices_may_only_gain_secondary_class_symbols_and_new_dates() -> None:
 def test_a_hypothesis_that_does_not_hold_fails_and_a_skipped_one_is_reported() -> None:
     tape = gate.tape_diff(_raw(TAPE_ROWS), _master(), _resolver(), UNIVERSE, "ftd")
     filing = gate.filing_diff(
-        "fundamentals_facts", _filings([("JCI", "t-2015", TYCO, "10-Q", "2015-05-01", "2015-03-31")]), _filings([]), SCOPES, OLD_CIKS
+        "sec_fundamentals_facts", _filings([("JCI", "t-2015", TYCO, "10-Q", "2015-05-01", "2015-03-31")]), _filings([]), SCOPES, OLD_CIKS
     )
     filing["table"] = gate.HISTORY_TABLE
     hypotheses = [

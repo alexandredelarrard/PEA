@@ -7,7 +7,7 @@ written, and NOTHING ELSE.
 ## Why the guards live in the builder and not in the validator
 
 Decision 40. v2's design had the validator null impossible values with a post-hoc UPDATE on
-`fundamentals_history_sec`. That contradicts the table's append-only contract in the most damaging
+`sec_fundamentals_history`. That contradicts the table's append-only contract in the most damaging
 possible way -- a historical row would change value after publication, so yesterday's cube and
 today's would disagree about the same event, and `diff_against_stored` would start reporting
 drift it had itself caused. So the guards run before the write, and the validator only reports.
@@ -37,7 +37,7 @@ _FLOW, _LEVEL = "totalRevenue", "totalAssets"
 
 
 def _fact(**kwargs) -> dict:
-    """One `fundamentals_facts` row with every column the build reads defaulted."""
+    """One `sec_fundamentals_facts` row with every column the build reads defaulted."""
     row = {
         "ticker": "TST",
         "accession_number": "a-1",

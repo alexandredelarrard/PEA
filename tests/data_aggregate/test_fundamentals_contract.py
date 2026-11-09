@@ -170,7 +170,7 @@ def test_real_fundamentals_full_and_incremental_tail_parity(real_frames):
     close = real_frames["stock_close"][tickers]
     returns = real_frames["stock_ret"][tickers]
     fundamentals = DataStore(get_engine()).load(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         where={"ticker": tickers},
     )
     peers = build_peer_dict(returns, top_k=10, weighting="corr", min_obs=120)

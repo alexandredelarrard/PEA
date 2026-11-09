@@ -30,7 +30,7 @@ VENDOR_SERIES_OTHER_COMPANY = "vendor_series_other_company"
 CUTOVER_WINDOW_YEARS = 2
 
 #: The periodic forms whose period of report is a fiscal quarter or year end.
-PERIODIC_FORMS = cast(Resume, Tables.fundamentals_facts.resume).forms
+PERIODIC_FORMS = cast(Resume, Tables.sec_fundamentals_facts.resume).forms
 
 EXCEPTIONS_FILE = Path("sec") / "vendor_coverage_exceptions.json"
 FILING_COLUMNS = ("ticker", "cik", "accession_number", "form", "filing_date", "period_of_report")

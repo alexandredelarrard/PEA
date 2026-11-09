@@ -111,7 +111,7 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
             for a, c, f in rows
             for item in ("2.02", "9.01")
         ]
-    elif table == Tables.fundamentals_facts:
+    elif table == Tables.sec_fundamentals_facts:
         out = [
             {
                 "ticker": ticker,
@@ -150,12 +150,12 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
     else:
         raise AssertionError(table)
     frame = pd.DataFrame(out)
-    if table == Tables.fundamentals_facts:
+    if table == Tables.sec_fundamentals_facts:
         frame = frame.assign(**{column: None for column in build_history.FACT_COLUMNS if column not in frame.columns})
     return frame
 
 
-PURGED_FAMILIES = (Tables.sec_8k, Tables.fundamentals_facts, Tables.notes_num, Tables.insider_transactions)
+PURGED_FAMILIES = (Tables.sec_8k, Tables.sec_fundamentals_facts, Tables.notes_num, Tables.insider_transactions)
 
 
 def _seed(store) -> None:
@@ -278,7 +278,7 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings
     """AC-022 with P35: T-Mobile USA's facts under TMUS are the entity's own; its 8-Ks (an event-only CIK) and the
     foreign filer's rows go."""
     context = _context(sqlite_store, tmp_path)
-    for table in (Tables.sec_8k, Tables.fundamentals_facts):
+    for table in (Tables.sec_8k, Tables.sec_fundamentals_facts):
         sqlite_store.save(
             table, _filings(table, "TMUS", [("t-1", TMUS, "2024-02-01"), ("t-usa", TMO_USA, "2016-02-01"), ("s-1", SPRINT, "2019-07-01")])
         )
@@ -286,7 +286,7 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings
 
     run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
-    expected = {Tables.sec_8k: {TMUS: 2}, Tables.fundamentals_facts: {TMUS: 2}}
+    expected = {Tables.sec_8k: {TMUS: 2}, Tables.sec_fundamentals_facts: {TMUS: 2}}
     for table, want in expected.items():
         rows = sqlite_store.load(table, columns=["ticker", "cik"])
         counts = rows.groupby("cik").size().to_dict()
@@ -308,18 +308,18 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     )
     identity = build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": "PLD", "cik": prologis}])))
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
-    for table in (Tables.fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
+    for table in (Tables.sec_fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
     resolver = identity
     context = _context(sqlite_store, tmp_path)
 
     result = run_propagation(context, resolver, monkeypatch, ["PLD"], as_of=RUN_DATE)
 
-    for table in (Tables.fundamentals_facts, Tables.def14a_edgar):
+    for table in (Tables.sec_fundamentals_facts, Tables.def14a_edgar):
         assert _keys(sqlite_store, table) == {("PLD", "new-1")}, table.name
     assert _keys(sqlite_store, Tables.insider_transactions) == {("PLD", "old-1"), ("PLD", "old-2"), ("PLD", "new-1")}
     got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], strict=True))
-    assert got == [(Tables.fundamentals_facts.name, old_prologis, 2), (Tables.def14a_edgar.name, old_prologis, 2)], got
+    assert got == [(Tables.def14a_edgar.name, old_prologis, 2), (Tables.sec_fundamentals_facts.name, old_prologis, 2)], got
     assert stubs["history"] == [(["PLD"], True)]
     print("\n=== SANITY CHECK: H1 purge, single-window ticker ===")
     print("  PLD: old ProLogis's 2 facts filings and 2 proxies purged (before and after the 2011 seam); Prologis Inc's kept;")
@@ -329,14 +329,14 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
 def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store, tmp_path, monkeypatch, stubs):
     """D-7: the purge's pre-filter is the validator's. A junk CIK string ('N/A', '-') is not a filer, so its rows stay."""
     context = _context(sqlite_store, tmp_path)
-    for table in (Tables.sec_8k, Tables.fundamentals_facts):
+    for table in (Tables.sec_8k, Tables.sec_fundamentals_facts):
         filings = [("alb-1", ALB, "2024-02-01"), ("junk-1", "N/A", "2023-02-01"), ("junk-2", " - ", "2023-03-01"), ("ab-1", AB, "2019-03-01")]
         sqlite_store.save(table, _filings(table, "ALB", filings))
     resolver = _identity({"ALB": AFTER})
 
     result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
-    for table in (Tables.sec_8k, Tables.fundamentals_facts):
+    for table in (Tables.sec_8k, Tables.sec_fundamentals_facts):
         keys = _keys(sqlite_store, table)
         assert {("ALB", "alb-1"), ("ALB", "junk-1"), ("ALB", "junk-2")} <= keys, (table.name, keys)
         assert ("ALB", "ab-1") not in keys, table.name
@@ -350,7 +350,7 @@ def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store
         True,
     ]
     print("\n=== SANITY CHECK: junk-CIK pre-filter (D-7) ===")
-    print("  'N/A' and ' - ' rows kept in sec_8k and fundamentals_facts; only AB's foreign filing purged")
+    print("  'N/A' and ' - ' rows kept in sec_8k and sec_fundamentals_facts; only AB's foreign filing purged")
     print("  OK: a CIK with no digit is never judged, by the purge exactly as by the validator.")
 
 
@@ -537,7 +537,7 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     """Published history rows built from a foreign filing are replaced once its facts are purged."""
     context = _context(sqlite_store, tmp_path)
     sqlite_store.save(
-        Tables.fundamentals_facts, _filings(Tables.fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2021-08-01")])
+        Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2021-08-01")])
     )
 
     def one_row_per_filing(ticker, facts, **kwargs):
@@ -546,8 +546,8 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
 
     monkeypatch.setattr(build_history, "build_ticker", one_row_per_filing)
     # Published before the purge: the history build itself now sets AB aside (no window of ALB), so the stale rows are seeded.
-    sqlite_store.save(Tables.fundamentals_history_sec, _history("ALB", [pd.Timestamp("2021-08-01"), pd.Timestamp("2024-02-01")], 2.0).history)
-    assert sqlite_store.row_count(Tables.fundamentals_history_sec) == 2
+    sqlite_store.save(Tables.sec_fundamentals_history, _history("ALB", [pd.Timestamp("2021-08-01"), pd.Timestamp("2024-02-01")], 2.0).history)
+    assert sqlite_store.row_count(Tables.sec_fundamentals_history) == 2
     resolver = _identity({"ALB": AFTER})
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
     for name in ("reparse_financial_notes", "reparse_insider_transactions"):
@@ -557,7 +557,7 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
 
     run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
-    history = sqlite_store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", "totalRevenue"])
+    history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "totalRevenue"])
     assert [str(pd.Timestamp(d).date()) for d in history["as_of"]] == ["2024-02-01"] and list(history["totalRevenue"]) == [1.0]
     assert merged == [(["ALB"], True)]
     print("\n=== SANITY CHECK: history rebuild ===")
@@ -567,7 +567,7 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
 def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_run(sqlite_store, tmp_path, monkeypatch):
     """Expansion: predecessor facts change published rows; the replay rebuilds instead of refusing."""
     context = _context(sqlite_store, tmp_path)
-    sqlite_store.save(Tables.fundamentals_facts, _filings(Tables.fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01")]))
+    sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01")]))
 
     def count_rows(ticker, facts, **kwargs):
         return _history(ticker, [pd.Timestamp("2024-02-01")], float(len(facts)))
@@ -575,14 +575,14 @@ def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_
     monkeypatch.setattr(build_history, "build_ticker", count_rows)
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": BEFORE}))
     build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
-    sqlite_store.save(Tables.fundamentals_facts, _filings(Tables.fundamentals_facts, "ALB", [("pred-1", ALB, "2010-02-01")]))
+    sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("pred-1", ALB, "2010-02-01")]))
 
     with pytest.raises(ValueError, match="append-only"):
         build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
     build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
 
-    history = sqlite_store.load(Tables.fundamentals_history_sec, columns=["as_of", "totalRevenue"])
+    history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
     assert list(history["totalRevenue"]) == [4.0]
     print("\n=== SANITY CHECK: history expansion rebuild ===")
     print("  unchanged scope: a changed published row still refuses; scope changed inside the re-check window: ALB rebuilt (2 -> 4 fact rows)")

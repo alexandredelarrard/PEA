@@ -367,7 +367,7 @@ def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:
     splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     vendor = (
         context.store.load(
-            Tables.sharadar_fundamentals,
+            Tables.sharadar_fundamentals_facts,
             columns=["ticker", "date", "sharesbas", "price"],
             where={"ticker": sorted(policies), "dimension": "ARQ"},
             optional=True,

@@ -119,7 +119,7 @@ def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[p
 def fetch_sharadar_fundamentals(
     context: Context, tickers: list[str], *, years_history: int, full: bool = False, as_of: pd.Timestamp | None = None
 ) -> None:
-    """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `fundamentals_sharadar`, each ticker from its own window.
+    """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `sharadar_fundamentals_facts`, each ticker from its own window.
 
     Each ticker is requested under its trading symbol (`Universe.trading_symbols`) and stored under the ticker; a
     ticker with no window (ended, with stored rows, run past its grace end plus overlap) is skipped. Non-USD filers are skipped, not written. A ticker the subscription does not cover (`NotEntitledError`) is
@@ -129,7 +129,7 @@ def fetch_sharadar_fundamentals(
     currencies = _usd_roster(context)
     start_date = run_date(as_of)
     work = series_windows(
-        context, Tables.sharadar_fundamentals, tickers, start_date, until=start_date, years_history=years_history, full=full, calendar=None
+        context, Tables.sharadar_fundamentals_facts, tickers, start_date, until=start_date, years_history=years_history, full=full, calendar=None
     )
     pace = float(context.config.data_extract.sharadar_request_pace)
     context.log.info(
@@ -189,8 +189,8 @@ def fetch_sharadar_fundamentals(
         df_sf1["ticker"] = ticker
         # cast before the first write: `ensure_table` would type an all-None object column as TEXT
         df_sf1 = cast_value_columns(df_sf1)
-        df_sf1 = coerce_date_columns(df_sf1, Tables.sharadar_fundamentals.date_type_cols)
-        total_rows += context.store.save(Tables.sharadar_fundamentals, df_sf1)
+        df_sf1 = coerce_date_columns(df_sf1, Tables.sharadar_fundamentals_facts.date_type_cols)
+        total_rows += context.store.save(Tables.sharadar_fundamentals_facts, df_sf1)
 
     context.log.info(
         "Sharadar SF1: %d entitled, %d not entitled (403), %d failed; %d rows written to %s",
@@ -198,7 +198,7 @@ def fetch_sharadar_fundamentals(
         len(denied),
         len(failed),
         total_rows,
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
     )
     if failed:
         context.log.warning("Sharadar SF1: %d ticker(s) failed and are retried next run -> %s", len(failed), ", ".join(failed))

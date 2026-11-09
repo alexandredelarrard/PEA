@@ -212,7 +212,10 @@ def test_full_and_destructive_fundamentals_rebuild_remain_distinct(
     assert history.call_args.kwargs["rebuild_history"] is deletes
     assert history.call_args.kwargs["fetched"] == {"AAA": [pd.Timestamp("2026-09-29")]}
     assert context.store.delete.call_args_list == (
-        [call(table, {"ticker": "AAA"}) for table in (Tables.fundamentals_facts, Tables.fundamentals_history_sec, Tables.fundamentals_reason_codes)]
+        [
+            call(table, {"ticker": "AAA"})
+            for table in (Tables.sec_fundamentals_facts, Tables.sec_fundamentals_history, Tables.fundamentals_reason_codes)
+        ]
         if deletes
         else []
     )

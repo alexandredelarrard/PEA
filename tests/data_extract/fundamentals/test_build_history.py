@@ -1,10 +1,10 @@
-"""The `fundamentals_history_sec` CONTRACT: the 69 columns, the reason-code vocabulary, the
+"""The `sec_fundamentals_history` CONTRACT: the 69 columns, the reason-code vocabulary, the
 publication-event grain and the append-only guard.
 
 Synthetic where the question is arithmetic or grain (a known-truth fixture is the only way to
 assert "this window was refused for THIS reason"), and real where the question is whether the
 contract survives an actual filer -- the sweep ledgers in `data/fundamentals_sweep/` are
-genuine `fundamentals_facts` rows and are used as the real substrate, so these tests need no
+genuine `sec_fundamentals_facts` rows and are used as the real substrate, so these tests need no
 network and no populated DB.
 """
 
@@ -39,7 +39,7 @@ _FLOW, _LEVEL = "totalRevenue", "totalAssets"
 
 
 def _fact(**kwargs) -> dict:
-    """One `fundamentals_facts` row with every column the build reads defaulted."""
+    """One `sec_fundamentals_facts` row with every column the build reads defaulted."""
     row = {
         "ticker": "TST",
         "accession_number": "a-1",

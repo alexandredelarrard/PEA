@@ -94,16 +94,16 @@ def context():
             pass
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
-    if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
-        pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
+    if ctx.store.row_count(Tables.sharadar_fundamentals_facts) == 0:
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} is empty -- run fundamentals-sharadar")
     return ctx
 
 
 @pytest.fixture(scope="module")
 def sources(context, field_map):
     """The three real inputs, loaded once: Sharadar ARQ, the SEC block, actions."""
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"dimension": ARQ})
-    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *field_map.sec_owned])
+    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"dimension": ARQ})
+    sec = context.store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", *field_map.sec_owned])
     actions = context.store.load(Tables.sharadar_actions, project=True, optional=True)
     return vendor, sec, actions
 
@@ -141,7 +141,7 @@ def sec_periods(context):
     Loaded separately rather than added to `sources`, because `sources` feeds `build_frame`
     and an extra column there would change what the merge under test actually sees.
     """
-    frame = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", "fiscal_end"])
+    frame = context.store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "fiscal_end"])
     frame["as_of"] = pd.to_datetime(frame["as_of"])
     frame["fiscal_end"] = pd.to_datetime(frame["fiscal_end"])
     return frame
@@ -151,7 +151,7 @@ def sec_periods(context):
 # the grain: is Sharadar's `date` the SEC filing date?                         #
 # --------------------------------------------------------------------------- #
 def test_as_of_matches_sec(comparable, sec_periods):
-    """`ARQ.date` vs `fundamentals_history_sec.as_of`, on the overlapping tickers.
+    """`ARQ.date` vs `sec_fundamentals_history.as_of`, on the overlapping tickers.
 
     THE premise of the whole phase. If these two are not the same event, the merged table's
     `as_of` means one thing for 76 columns and another for 15, and no amount of downstream
@@ -323,7 +323,7 @@ def test_column_contract(merged, field_map):
     # someone has to type on purpose. Bump it WITH the change, never to make the test pass --
     # 93 -> 92 is `employees_sec` leaving: the cube reads `fundamentals_employees` directly.
     assert len(built) == 92, f"the merged contract is {len(built)}, not 92"
-    assert tuple(Tables.fundamentals_history.read_columns) == declared, (
+    assert tuple(Tables.sharadar_fundamentals_history.read_columns) == declared, (
         "schema.py's read_columns and the field map state the same contract twice; they differ"
     )
 
@@ -335,7 +335,7 @@ def test_no_amendment_columns(merged):
     'fix' it. `is_amendment` / `amended_fiscal_end` / `amended_fields` / `publication_form`
     are properties of the SEC amendment grain, which Sharadar has no equivalent of -- carrying
     them here would produce four permanently-NULL columns that lie about what the table knows.
-    They stay on `fundamentals_history_sec`, where the validator uses them.
+    They stay on `sec_fundamentals_history`, where the validator uses them.
     """
     present = [c for c in HISTORY_PROVENANCE if c in merged.columns]
     print(f"\nSEC provenance columns: {list(HISTORY_PROVENANCE)}")
@@ -350,13 +350,13 @@ def test_value_columns_are_float(context, merged):
     `sql/schema.sql` runs only when Postgres INITIALISES a volume, so on a live one
     `store.save` creates the table from the FIRST frame's inferred dtypes. An all-None object
     column becomes TEXT and every later real number is stored as a string -- which is exactly
-    how APA's values once landed in `fundamentals_history_sec` as `'1997000000.0'`.
+    how APA's values once landed in `sec_fundamentals_history` as `'1997000000.0'`.
     """
     wrong = [c for c in merged.columns if c not in NON_VALUE_COLUMNS and merged[c].dtype != np.float64]
     print(f"\nin-frame: {len(merged.columns) - len(NON_VALUE_COLUMNS)} value column(s); non-float64: {wrong or 'none'}")
     assert not wrong
 
-    name = name_of(Tables.fundamentals_history)
+    name = name_of(Tables.sharadar_fundamentals_history)
     if not context.store.exists(name):
         pytest.skip(f"{name} is not built yet -- run `fundamentals-history-merged`")
     types = {c["name"]: str(c["type"]) for c in inspect(context.store.engine).get_columns(name)}
@@ -413,7 +413,7 @@ def test_approved_override_takes_the_sec_value(context, sources, field_map):
         f"\nan override naming a column the SEC projection omitted RAISES rather than NULLing {ticker} {field} -- the two cannot drift apart silently"
     )
 
-    values = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", field])
+    values = context.store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", field])
     values["as_of"] = pd.to_datetime(values["as_of"]).astype("datetime64[ns]")
     wide = sec.copy()
     wide["as_of"] = pd.to_datetime(wide["as_of"]).astype("datetime64[ns]")
@@ -461,12 +461,12 @@ def test_axp_revenue_gap_is_detected(context):
     assert bool(revenue.loc["AXP", "is_systematic"]), "AXP's provision gap was not detected"
     # ⚠ The NEGATIVE control is SKIPPED, not dropped, when the SEC replay has not reached
     # JPM. `measure_gaps` can only compare an OVERLAPPING ticker, so a JPM absent from
-    # `fundamentals_history_sec` leaves no JPM row at all and indexing it was a KeyError.
+    # `sec_fundamentals_history` leaves no JPM row at all and indexing it was a KeyError.
     # Asserting only the positive half would be the real loss: a check that flags everything
     # passes it. The skip says which half went unverified.
     if "JPM" not in revenue.index:
         pytest.skip(
-            f"JPM is not in {name_of(Tables.fundamentals_history_sec)} yet, so the "
+            f"JPM is not in {name_of(Tables.sec_fundamentals_history)} yet, so the "
             f"gap check has no overlapping JPM date -- AXP's positive half passed, "
             f"the negative control is UNVERIFIABLE here, not verified"
         )
@@ -561,7 +561,7 @@ def test_stockholders_equity_incl_nci_is_rederived_at_the_merge(merged, overlap)
 
 def test_headcount_is_not_in_the_merged_contract(field_map):
     """Headcount is not a merged column: the cube reads `fundamentals_employees` directly."""
-    declared = Tables.fundamentals_history.read_columns
+    declared = Tables.sharadar_fundamentals_history.read_columns
     print(f"\nmerged contract: {len(declared)} column(s); SEC-owned: {len(field_map.sec_owned)}")
     assert "employees" not in field_map.outputs and "employees" not in field_map.sec_owned
     assert not [c for c in declared if c.startswith("employees")]

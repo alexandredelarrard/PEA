@@ -26,14 +26,14 @@ def load_fundamental_share_observations(
 ) -> pd.DataFrame:
     """Read one scoped raw representation projection for an ephemeral financial unit view."""
     wanted = ["ticker", "date", "reportperiod", "calendardate", "lastupdated", "sharesbas", "shareswa", "shareswadil", "dps"]
-    available = set(context.store.columns(Tables.sharadar_fundamentals))
+    available = set(context.store.columns(Tables.sharadar_fundamentals_facts))
     missing = pd.Series(pd.NaT, index=history.index, dtype="datetime64[ns]")
     dates = pd.to_datetime(history.get("as_of", missing), errors="coerce")
     fiscal = pd.to_datetime(history.get("fiscal_end", missing), errors="coerce")
     raw = None
     if dates.notna().any() and fiscal.notna().any():
         raw = context.store.load(
-            Tables.sharadar_fundamentals,
+            Tables.sharadar_fundamentals_facts,
             columns=[field for field in wanted if field in available] or wanted,
             where={"ticker": sorted(set(history["ticker"].astype(str))), "dimension": "ARQ"},
             since=fiscal.min() - pd.DateOffset(years=1),
@@ -91,15 +91,15 @@ def load_price_inputs(context: Context, tickers: list[str], bugfix: dict) -> Pri
     )
     df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": tickers}, optional=True)
     wanted = ["ticker", "date", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]
-    available = set(store.columns(Tables.sharadar_fundamentals))
+    available = set(store.columns(Tables.sharadar_fundamentals_facts))
     df_vendor = store.load(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         columns=[field for field in wanted if field in available] or wanted,
         where={"ticker": tickers, "dimension": "ARQ"},
         optional=True,
     )
     df_shares = store.load(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"],
         where={"ticker": tickers},
         optional=True,

@@ -1,7 +1,7 @@
 """
 The Phase 0 safety net for the fundamentals replay refactor (Phases 1-4 of
 `reports/planning/active-tasks/2026-08-27-refactor-fundamentals/`): freeze a sample of
-`fundamentals_facts`, replay `build_ticker` over the frozen parquet, and diff one replay
+`sec_fundamentals_facts`, replay `build_ticker` over the frozen parquet, and diff one replay
 against another CELL-EXACT.
 
 `_latest_per_window` (`periods.py:196`) picks the LATEST-FILED vintage per window, so
@@ -65,7 +65,7 @@ def truncate_by_accession(facts: pd.DataFrame, cap: int | None) -> pd.DataFrame:
 
 
 def freeze_inputs(context, tickers: list[str], out_dir: Path, *, filing_cap: int | None = None) -> dict:
-    """One projected read per ticker of `Tables.fundamentals_facts`, optionally truncated to
+    """One projected read per ticker of `Tables.sec_fundamentals_facts`, optionally truncated to
     `filing_cap` filings, written to `out_dir/<ticker>.parquet`. Writes and returns the
     manifest `verify_live_matches_manifest` checks later -- HEAD, the cap, and per-ticker
     row/filing counts and filing-date range -- so a re-freeze that silently reads different
@@ -75,9 +75,9 @@ def freeze_inputs(context, tickers: list[str], out_dir: Path, *, filing_cap: int
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict = {"head": head_sha(), "filing_cap": filing_cap, "tickers": {}}
     for ticker in tickers:
-        facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
+        facts = context.store.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
         if facts is None:
-            raise ValueError(f"{ticker}: no rows in fundamentals_facts -- not a valid replay-sample member")
+            raise ValueError(f"{ticker}: no rows in sec_fundamentals_facts -- not a valid replay-sample member")
         facts = truncate_by_accession(facts, filing_cap)
         facts.to_parquet(out_dir / f"{ticker}.parquet", index=False)
         manifest["tickers"][ticker] = {
@@ -104,7 +104,7 @@ def verify_live_matches_manifest(context, frozen_dir: Path, tickers: list[str]) 
         )
     moved = []
     for ticker in tickers:
-        live = context.store.load(Tables.fundamentals_facts, columns=["ticker"], where={"ticker": ticker}, optional=True)
+        live = context.store.load(Tables.sec_fundamentals_facts, columns=["ticker"], where={"ticker": ticker}, optional=True)
         live_rows = 0 if live is None else len(live)
         if live_rows != manifest["tickers"][ticker]["rows"]:
             moved.append(ticker)
@@ -225,7 +225,7 @@ def _cell_diffs(before: pd.DataFrame, after: pd.DataFrame) -> list[tuple]:
 
 def compare_against_stored(context, frozen_dir: Path, tickers: list[str]) -> dict[str, pd.DataFrame]:
     """`--source db` mode: replay off the frozen parquet, diff against what is actually
-    STORED in `fundamentals_history_sec` via the production `diff_against_stored` (which
+    STORED in `sec_fundamentals_history` via the production `diff_against_stored` (which
     already normalises the Postgres DATE-vs-`Timestamp` round trip a parquet-only harness
     would hide). Read-only. An empty frame per ticker means no drift; run once per phase."""
     from src.data_store.schema import Tables
@@ -235,7 +235,7 @@ def compare_against_stored(context, frozen_dir: Path, tickers: list[str]) -> dic
     out: dict[str, pd.DataFrame] = {}
     for ticker in tickers:
         rebuilt = build_ticker(ticker, pd.read_parquet(frozen_dir / f"{ticker}.parquet"), catalogue=catalogue, guards=guards).history
-        stored = context.store.load(Tables.fundamentals_history_sec, where={"ticker": ticker}, optional=True)
+        stored = context.store.load(Tables.sec_fundamentals_history, where={"ticker": ticker}, optional=True)
         out[ticker] = diff_against_stored(stored, rebuilt)
     return out
 

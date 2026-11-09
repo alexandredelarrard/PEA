@@ -412,7 +412,7 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:
     # It was the off-balance-sheet-inclusive twin of `net_debt_to_ebitda`: borrowings +
     # capitalized leases + pension/OPEB deficit + asset-retirement obligations - liquid
     # assets, over EBITDA. THREE of those four distinguishing legs do not exist on the
-    # Sharadar substrate -- `fundamentals_history` has no `operatingLeaseLiability`,
+    # Sharadar substrate -- `sharadar_fundamentals_history` has no `operatingLeaseLiability`,
     # `financeLeaseLiability` or `assetRetirementObligation` column at all -- and the
     # fourth, the pension pool, reaches 199 of 491 tickers.
     #
@@ -1436,7 +1436,7 @@ def _derived_fields(
     """Compose saved-capital, financial and comparison-unit characteristics."""
     df_history = history.normalized_share_history if history.normalized_share_history is not None else history.raw_history
     if df_history is None:
-        raise ValueError("Need to build fundamentals_history table first")
+        raise ValueError("Need to build sharadar_fundamentals_history table first")
     df_history = null_invalid_gross_profit_sentinels(df_history)
     idx = prices.trading_index
     supplement = supplement if supplement is not None else FundamentalSupplement()
@@ -1475,7 +1475,7 @@ def build_fundamental_feature_panel(
     """Build financial feature views from explicit histories and saved capital."""
     df_history = history.normalized_share_history if history.normalized_share_history is not None else history.raw_history
     if df_history is None or df_history.empty:
-        raise ValueError("Need to build fundamentals_history table first")
+        raise ValueError("Need to build sharadar_fundamentals_history table first")
     settings = settings if settings is not None else FundamentalFeatureSettings()
 
     # Preserve financial cadence, mathematical ordering and persisted precision.

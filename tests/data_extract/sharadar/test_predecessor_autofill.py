@@ -87,7 +87,7 @@ def _empties() -> dict[Any, pd.DataFrame]:
     return {
         Tables.sharadar_actions: pd.DataFrame(columns=["ticker", "action"]),
         Tables.prices_splits: pd.DataFrame(columns=["ticker", "date", "ratio"]),
-        Tables.fundamentals_history_sec: pd.DataFrame(columns=["ticker", "as_of"]),
+        Tables.sec_fundamentals_history: pd.DataFrame(columns=["ticker", "as_of"]),
     }
 
 
@@ -133,7 +133,7 @@ def test_the_merge_replaces_inside_the_window_before_ttm(monkeypatch: pytest.Mon
             **_empties(),
             Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
-            Tables.sharadar_fundamentals: pd.concat([canonical, owner], ignore_index=True),
+            Tables.sharadar_fundamentals_facts: pd.concat([canonical, owner], ignore_index=True),
         }
     )
     seen: dict[str, pd.DataFrame] = {}
@@ -161,7 +161,12 @@ def test_the_merge_replaces_inside_the_window_before_ttm(monkeypatch: pytest.Mon
 def test_a_missing_owner_series_leaves_the_canonical_rows_and_warns(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     canonical = _arq("STE", ["2015Q1", "2015Q2"], 600.0e6)
     store = FakeStore(
-        {**_empties(), Tables.universe_cik_symbol: _lineage(), Tables.sharadar_tickers: _vendor_tickers(), Tables.sharadar_fundamentals: canonical}
+        {
+            **_empties(),
+            Tables.universe_cik_symbol: _lineage(),
+            Tables.sharadar_tickers: _vendor_tickers(),
+            Tables.sharadar_fundamentals_facts: canonical,
+        }
     )
     seen: dict[str, pd.DataFrame] = {}
     monkeypatch.setattr(merge_history, "build_frame", lambda arq, *a, **k: seen.setdefault("arq", arq).iloc[:0])
@@ -183,7 +188,7 @@ def test_a_traded_view_ticker_keeps_the_vendors_own_rows(monkeypatch: pytest.Mon
             **_empties(),
             Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
-            Tables.sharadar_fundamentals: pd.concat([canonical, owner], ignore_index=True),
+            Tables.sharadar_fundamentals_facts: pd.concat([canonical, owner], ignore_index=True),
         }
     )
     seen: dict[str, pd.DataFrame] = {}

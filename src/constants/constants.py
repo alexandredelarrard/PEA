@@ -377,8 +377,8 @@ SHARADAR_NEGATE_IF_NON_POSITIVE = "if_non_positive"
 SHARADAR_ACTION_SPLIT = "split"
 SHARADAR_ACTION_SPINOFF = "spinoff"
 
-#: The 4 zero-filled fields `Tables.sharadar_fundamentals.read_columns` deliberately omits --
-#: three `*usd` conversions and one vendor ratio, all excluded from `fundamentals_history` by
+#: The 4 zero-filled fields `Tables.sharadar_fundamentals_facts.read_columns` deliberately omits --
+#: three `*usd` conversions and one vendor ratio, all excluded from `sharadar_fundamentals_history` by
 #: D21. The diagnostic still has to MEASURE them: every one of the 41 documented zero-filled
 #: fields must get a rule, and a field nobody projected would otherwise be silently missing.
 SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS = ("revenueusd", "cashnequsd", "debtusd", "divyield")
@@ -485,7 +485,7 @@ SHARADAR_NON_NEGATIVE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: Sharadar field -> (the `fundamentals_history_sec` columns that make up its counterpart,
+#: Sharadar field -> (the `sec_fundamentals_history` columns that make up its counterpart,
 #: how comparable the two bases are). The SECOND element is the whole point of this map: a
 #: zero-fill verdict is only as strong as the basis behind it, and this repo has already
 #: measured what happens when a comparison is made across two definitions that were never the
@@ -532,8 +532,8 @@ SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
 
 # --------------------------------------------------------------------------- #
 # Sharadar phase-4 MERGE -- the Sharadar TTM frame + the SEC-owned block ->     #
-# `fundamentals_history`, plus the gap check that proposes overrides and the    #
-# register that records the human decision (D14/D22/D23).                       #
+# `sharadar_fundamentals_history`, plus the gap check that proposes overrides   #
+# and the register that records the human decision (D14/D22/D23).               #
 # --------------------------------------------------------------------------- #
 #: The override register. Machine-PROPOSED, human-APPROVED: `merge_history` only READS it and
 #: never decides at runtime, so the merge stays deterministic given this file. Same

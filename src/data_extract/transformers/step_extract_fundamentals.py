@@ -27,7 +27,7 @@ class StepExtractFundamentals(Step):
         # `years_history = int(self._config.data_extract.years_history)` (`self._config`, the attribute
         # `Step.__init__` sets: `self.config` raised AttributeError on every real invocation of this step).
 
-        # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
+        # Per-filing SEC XBRL -> sec_fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.
         # Append-only and accession-grain, so a nightly re-run is idempotent and an
         # amendment lands as its own row at its own filing date.

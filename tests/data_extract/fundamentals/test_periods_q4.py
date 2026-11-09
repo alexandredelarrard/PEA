@@ -871,7 +871,7 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
 
     assert not coded, (
         "D1b saw a mislabelled year -- `_drop_note_only_quarter` should have refused it "
-        "while the filing was read, before `fundamentals_facts` could assert it"
+        "while the filing was read, before `sec_fundamentals_facts` could assert it"
     )
     for year_end in years:
         row = revenue[revenue["period_end"] == pd.Timestamp(year_end)]
@@ -887,7 +887,7 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
         & (facts["period_end"].isin([pd.Timestamp(y) for y in years]))
     ]
     assert as_filed.empty, (
-        f"{len(as_filed)} mislabelled year(s) still stored as a quarter in fundamentals_facts -- the substrate every Tier-2/3 check reads"
+        f"{len(as_filed)} mislabelled year(s) still stored as a quarter in sec_fundamentals_facts -- the substrate every Tier-2/3 check reads"
     )
     print("  OK: 0 of 9 mislabelled years survive as quarters; all 5 fourth quarters derive")
 

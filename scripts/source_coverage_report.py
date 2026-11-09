@@ -55,7 +55,7 @@ _SOURCES = [
     ("13G", Tables.sec_13g, "filing_date"),
     ("shortvol", Tables.short_interest, "date"),
     ("FTD", Tables.sec_fails_to_deliver, "date"),
-    ("fundamentals", Tables.fundamentals_history_sec, "as_of"),
+    ("fundamentals", Tables.sec_fundamentals_history, "as_of"),
 ]
 
 #: `sec13f_manager_holdings` has NO ticker column by design (see its schema docstring), so it is

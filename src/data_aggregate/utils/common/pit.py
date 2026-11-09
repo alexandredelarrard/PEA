@@ -111,7 +111,7 @@ _CUBE_TIME_GROWTH: dict[str, str] = {
 
 
 def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
-    """`fundamentals_history` + the `revenueGrowth` / `earningsGrowth` columns, row-level.
+    """`sharadar_fundamentals_history` + the `revenueGrowth` / `earningsGrowth` columns, row-level.
 
     Growth is measured against the same fiscal period one year earlier (within 45 days),
     using only amendments already public on the current row's `as_of`. Publication-date or

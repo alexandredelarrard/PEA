@@ -25,7 +25,7 @@ data_extract:
   # drains over later runs. The one-time backlog run lifts it with `--no-cap`.
   max_documents_per_run: 5000
   # `modelling predict` refuses to score when the share of universe tickers whose own latest
-  # prices / fundamentals_sharadar / fundamentals_history date is within the table's cadence
+  # prices / sharadar_fundamentals_facts / sharadar_fundamentals_history date is within the table's cadence
   # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.
   prediction_fresh_share: 0.95
   # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than

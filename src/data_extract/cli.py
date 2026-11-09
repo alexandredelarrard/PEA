@@ -359,7 +359,7 @@ def superinvestors(config_path: str, full: bool) -> None:
 
 @cli.command(
     name="fundamentals-facts",
-    help="SEC per-filing XBRL -> fundamentals_facts, resolved from each filer's own calculation linkbase. As-filed only; append-only.",
+    help="SEC per-filing XBRL -> sec_fundamentals_facts, resolved from each filer's own calculation linkbase. As-filed only; append-only.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -393,7 +393,7 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
 
 @cli.command(
     name="fundamentals-history-sec",
-    help="fundamentals_facts -> fundamentals_history_sec + _reason_codes, on the "
+    help="sec_fundamentals_facts -> sec_fundamentals_history + _reason_codes, on the "
     "publication-event grain. No network. Append-only: refuses to overwrite "
     "an already-published row unless --full deletes the requested tickers' history and reason codes first. Stored facts are unchanged; use `fundamentals --rebuild` for a facts-resolution bug.",
 )
@@ -410,8 +410,8 @@ def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
     """Delete each ticker's facts, history and reason-code rows, so the next fetch refetches every filing."""
     for ticker in names:
         for table in (
-            Tables.fundamentals_facts,
-            Tables.fundamentals_history_sec,
+            Tables.sec_fundamentals_facts,
+            Tables.sec_fundamentals_history,
             Tables.fundamentals_reason_codes,
         ):
             context.store.delete(table, {"ticker": ticker})
@@ -452,7 +452,7 @@ def fundamentals(
 # History depth is `data_extract.sharadar_years_history`, not `years_history`.
 @cli.command(
     name="fundamentals-sharadar",
-    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> the MERGED fundamentals_history (tickers and actions: `universe`).",
+    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> the MERGED sharadar_fundamentals_history (tickers and actions: `universe`).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -479,7 +479,7 @@ def sharadar_sp500(config_path: str, full: bool) -> None:
 # --- Fundamentals: the merged table, its gap check, and the remaining SEC sources ---
 @cli.command(
     name="fundamentals-history-merged",
-    help="fundamentals_sharadar + fundamentals_history_sec -> fundamentals_history, "
+    help="sharadar_fundamentals_facts + sec_fundamentals_history -> sharadar_fundamentals_history, "
     "the MERGED table every consumer reads. Build only, no network. Both "
     "inputs are read-only, so the rollback is a drop-and-rebuild.",
 )
@@ -506,7 +506,7 @@ def fundamentals_history_merged(config_path: str, tickers: str | None, full: boo
 @click.option(*REPORT_PATH_ARGS, **REPORT_PATH_KWARGS)
 @click.option(*PROPOSE_ARGS, **PROPOSE_KWARGS)
 def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str | None, propose: bool) -> None:
-    """Read-only Sharadar-vs-SEC disagreement report; reason codes stay with the SEC table and do not gate `fundamentals_history`.
+    """Read-only Sharadar-vs-SEC disagreement report; reason codes stay with the SEC table and do not gate `sharadar_fundamentals_history`.
 
     `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
     """

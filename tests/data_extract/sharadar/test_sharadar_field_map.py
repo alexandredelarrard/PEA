@@ -103,15 +103,15 @@ def context():
             pass
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
-    if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
-        pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
+    if ctx.store.row_count(Tables.sharadar_fundamentals_facts) == 0:
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} is empty -- run fundamentals-sharadar")
     return ctx
 
 
 @pytest.fixture(scope="module")
 def vendor_arq(context) -> pd.DataFrame:
     """Every stored ARQ row, as delivered."""
-    frame = context.store.load(Tables.sharadar_fundamentals, project=True, where={"dimension": "ARQ"})
+    frame = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"dimension": "ARQ"})
     assert frame is not None
     return frame
 
@@ -341,7 +341,9 @@ def test_debt_to_equity_is_not_vendor_de(context, ttm):
     and it is why this test loads its own columns instead of reusing `vendor_arq`.
     """
     frame = ttm[["ticker", "date", "debtToEquity", "totalDebt", "stockholdersEquity"]].dropna()
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=False, columns=["ticker", "dimension", "date", "de", "liabilities", "equity"])
+    vendor = context.store.load(
+        Tables.sharadar_fundamentals_facts, project=False, columns=["ticker", "dimension", "date", "de", "liabilities", "equity"]
+    )
     vendor = vendor[vendor["dimension"] == "ARQ"].drop(columns="dimension")
     gap = frame.merge(vendor, on=["ticker", "date"])
     gap = gap[gap["de"].notna() & (gap["de"] != 0)]
@@ -383,7 +385,7 @@ def test_epsdiluted_is_derived_not_vendor_epsdil(vendor_arq, ttm):
 def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, translated):
     """NVDA's 2021-2024 rows carry ~25bn shares against the ~2.5bn then outstanding.
 
-    The pin the plan asked for. Checked against `fundamentals_history_sec.sharesOutstanding`,
+    The pin the plan asked for. Checked against `sec_fundamentals_history.sharesOutstanding`,
     which this repo built from the cover-page `dei:EntityCommonStockSharesOutstanding` -- an
     as-filed number, so it is the right authority for "was this point-in-time?".
     """
@@ -397,13 +399,13 @@ def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, tran
     # real situation. The skip message IS the finding: re-run once NVDA/WMT are replayed.
     wanted = ["NVDA", "WMT"]
     sec = context.store.load(
-        Tables.fundamentals_history_sec, project=False, columns=["ticker", "as_of", "sharesOutstanding"], where={"ticker": wanted}, optional=True
+        Tables.sec_fundamentals_history, project=False, columns=["ticker", "as_of", "sharesOutstanding"], where={"ticker": wanted}, optional=True
     )
     if sec is None:
-        have = context.store.load(Tables.fundamentals_history_sec, columns=["ticker"], optional=True)
+        have = context.store.load(Tables.sec_fundamentals_history, columns=["ticker"], optional=True)
         n = 0 if have is None else have["ticker"].nunique()
         pytest.skip(
-            f"{name_of(Tables.fundamentals_history_sec)} carries none of {wanted} "
+            f"{name_of(Tables.sec_fundamentals_history)} carries none of {wanted} "
             f"({n} ticker(s) replayed) -- the cover-page de-adjustment is "
             f"UNVERIFIABLE here, not verified"
         )
@@ -674,11 +676,11 @@ def test_off_calendar_filers_have_a_ttm_line(context, field_map, actions):
 
     Real data, because the defect was entirely about what Sharadar's normalisation does to
     genuine filers and no fixture can encode that. Under the deleted 45-day cap these four lost
-    239 ARQ rows between them: AVGO lost ALL 69 and was absent from `fundamentals_history`
+    239 ARQ rows between them: AVGO lost ALL 69 and was absent from `sharadar_fundamentals_history`
     altogether, KR and AZO were 100% NULL revenue, COST 97.6%.
     """
     wanted = ["AVGO", "KR", "AZO", "COST"]
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"ticker": wanted})
+    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"ticker": wanted})
     vendor = vendor[vendor["dimension"] == "ARQ"].copy()
     built = build_ttm(translate(vendor, field_map), field_map, actions=actions)
     whole = built.groupby("ticker")["totalRevenue"].apply(lambda s: int(s.notna().sum()))

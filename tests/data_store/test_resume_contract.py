@@ -47,8 +47,8 @@ _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 # the same unit as a parent table, and caches derived from another table.
 SIDE_TABLES = frozenset(
     {
-        Tables.fundamentals_history.name,
-        Tables.fundamentals_history_sec.name,
+        Tables.sharadar_fundamentals_history.name,
+        Tables.sec_fundamentals_history.name,
         Tables.fundamentals_reason_codes.name,
         Tables.cusip_ticker_map.name,
         Tables.insider_footnotes.name,

@@ -29,7 +29,7 @@ def test_document_forms_are_in_the_form_policy() -> None:
     proxy_forms = {"DEF 14A", "DEF 14C", "DEFC14A"}
     assert index_diffed == {
         Tables.fundamentals_employees.name: {"10-K", "10-K/A", "10-K405"},
-        Tables.fundamentals_facts.name: {"10-K", "10-K/A", "10-Q", "10-Q/A"},
+        Tables.sec_fundamentals_facts.name: {"10-K", "10-K/A", "10-Q", "10-Q/A"},
         Tables.insider_transactions.name: {"3", "4", "5", "3/A", "4/A", "5/A"},
         Tables.sec_13d.name: {"SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"},
         Tables.sec_13g.name: {"SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"},

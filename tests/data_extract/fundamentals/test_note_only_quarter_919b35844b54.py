@@ -12,7 +12,7 @@ line at all**. Underneath it sits the sentence:
 The filer tagged that SENTENCE with `us-gaap:IncomeTaxExpenseBenefit` against Q4 contexts, and
 tagged the same magnitudes correctly signed as `us-gaap:TaxAdjustmentsSettlementsAndUnusual
 Provisions` (-$397M, -$371M) in the very same contexts. `_values_by_period` selects facts by
-concept-name equality with no context or role filter, so both landed in `fundamentals_facts`
+concept-name equality with no context or role filter, so both landed in `sec_fundamentals_facts`
 as those quarters' income tax expense.
 
 Ground truth read off the filed statements, not `companyfacts`:

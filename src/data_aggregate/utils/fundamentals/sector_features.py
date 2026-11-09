@@ -1,7 +1,7 @@
 """
 sector_features.py  (src/data_aggregate/utils/sector_features.py)
 ------------------------------------------------------------------
-Derived, sector-specific fundamental KPIs computed from `fundamentals_history`. Two layers:
+Derived, sector-specific fundamental KPIs computed from `sharadar_fundamentals_history`. Two layers:
 
   * compute_sector_kpis(df)          -> pure, row-level ratios (one value per
                                         filing). Scoped by GICS (`sector_gates.py`,
@@ -20,7 +20,7 @@ Derived, sector-specific fundamental KPIs computed from `fundamentals_history`. 
                                         they drop straight into the cube.
 
 ⚠ THE GICS COLUMNS MUST BE ON THE FRAME. `row_gate` fails CLOSED, so a caller that hands
-this a bare `fundamentals_history` gets every sector KPI silently gated off — which is what
+this a bare `sharadar_fundamentals_history` gets every sector KPI silently gated off — which is what
 happened for the whole life of this module until `step_cube_fundamentals` started attaching
 them (`context.universe.attach_gics`). The reference data is in `universe_tickers`.
 
@@ -42,7 +42,7 @@ NOT here (owned by fundamental_features.py, which emits the same feature NAMES):
   already gets sector membership from the GICS categorical.
 
 WHAT SHARADAR CANNOT FEED. The bank, insurance and several single-tag KPIs this module
-used to define are GONE rather than dormant: `fundamentals_history` is Sharadar-first and
+used to define are GONE rather than dormant: `sharadar_fundamentals_history` is Sharadar-first and
 SF1 carries no `loans`, `deposits`Domestic, `noninterestExpense`, `claimsIncurred`,
 `premiumsWritten`, `provisionForCreditLosses`, `tier1CapitalRatio`, `nonaccrualLoans`,
 `netChargeOffs`, `regulatoryAssets`, `oilGasPropertyNet`, `explorationExpense` or

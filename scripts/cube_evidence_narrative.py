@@ -9,7 +9,7 @@ Blocks are `(kind, ...)` tuples: `("h1", text)`, `("h2", text)`, `("p", text)`,
 `("table", header, rows, column_weights, {col_index: alignment})`.
 
 ⚠ MEASUREMENTS COME IN THROUGH `meta`, THEY ARE NOT WRITTEN HERE. The one exception is the
-`_sec` coverage table in section 3, which describes `fundamentals_history` rather than the
+`_sec` coverage table in section 3, which describes `sharadar_fundamentals_history` rather than the
 cube and so cannot be read from the cube profile; it is dated and its query is given, so it
 can be re-measured. Everything else -- row counts, column counts, null rates, clip
 saturation -- is substituted from the live measurement at render time. The entire reason this
@@ -18,8 +18,8 @@ report exists is that the codebase had accumulated claims nobody re-checked.
 
 from __future__ import annotations
 
-# Measured 2026-09-05 against `fundamentals_history` with
-#   select count("<col>")::float / count(*) from fundamentals_history
+# Measured 2026-09-05 against `sharadar_fundamentals_history` with
+#   select count("<col>")::float / count(*) from sharadar_fundamentals_history
 SEC_COVERAGE: list[tuple[str, str, str]] = [
     ("regime_sec", "11.6%", "filer-type conditioning"),
     ("goodwill_sec", "10.2%", "a true ex-**goodwill** ROIC (today's deduction is goodwill **and** other intangibles, combined)"),
@@ -151,7 +151,7 @@ MISSING: list[tuple] = [
 
 # --------------------------------------------------------------------------------------- #
 # NULL-RATE FORENSICS (section 4). Same exception as SEC_COVERAGE above: these describe
-# `fundamentals_history`, `notes_num` and per-SECTOR cuts of the cube, none of
+# `sharadar_fundamentals_history`, `notes_num` and per-SECTOR cuts of the cube, none of
 # which the cube profile can answer, so they cannot come through `meta`. Measured 2026-09-05;
 # each query is named beside its table so every figure is re-derivable.
 #
@@ -436,7 +436,7 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             "The audit deleted 65 dead features. They were not deleted because they were bad "
-            "ideas — they were deleted because **`fundamentals_history` is Sharadar-first and "
+            "ideas — they were deleted because **`sharadar_fundamentals_history` is Sharadar-first and "
             "SF1 does not carry their inputs**, so each measured exactly zero values while "
             "looking fully implemented. That is worse than absent: it is a feature the config "
             "references, the tests exercise on hand-built fixtures, and the model never sees.",
@@ -444,7 +444,7 @@ def closing(m: dict) -> list[tuple]:
         ("h2", "3.1 The Sharadar side is exhausted"),
         (
             "p",
-            "Measured, not assumed: of the 112 columns in `fundamentals_sharadar`, **every "
+            "Measured, not assumed: of the 112 columns in `sharadar_fundamentals_facts`, **every "
             "single data column is either already mapped or deliberately excluded**. Only the "
             "seven key/metadata columns (`ticker`, `date`, `reportperiod`, `calendardate`, "
             "`dimension`, `fiscalperiod`, `lastupdated`) are unreferenced by "
@@ -463,7 +463,7 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             'The field map already declares 13 fields as `kind: "sec"` — it *knows* they '
-            "cannot come from Sharadar. All 13 exist in `fundamentals_history` only as "
+            "cannot come from Sharadar. All 13 exist in `sharadar_fundamentals_history` only as "
             "`_sec`-namespaced twins, and their live coverage is the reason nothing is built on "
             "them (measured 2026-09-05):",
         ),
@@ -609,7 +609,7 @@ def closing(m: dict) -> list[tuple]:
         ("h2", "4.3 D1 — `cash` is destroyed wherever `investmentsc` is absent"),
         (
             "p",
-            "**Symptom.** In Financials and Real Estate, `fundamentals_history.cash` is null on "
+            "**Symptom.** In Financials and Real Estate, `sharadar_fundamentals_history.cash` is null on "
             "*exactly* the rows where `currentAssets` is null — 5,647 + 2,438 rows, with **zero** "
             "rows where one is null and the other is not. Sharadar's `cashneq` is **100%** "
             "populated for those same filers.",
@@ -629,7 +629,7 @@ def closing(m: dict) -> list[tuple]:
             "later ones are coalesced to 0, so a widening can never destroy the narrow line it "
             "widens. `sum` deliberately stays strict — `ebitda` without `depAmort` is EBIT, and "
             "widening *that* would silently mislabel the column. Recovered `cash` on **9,130 "
-            "filings = 17.81% of `fundamentals_history` across 91 tickers** (the earlier 8,085 "
+            "filings = 17.81% of `sharadar_fundamentals_history` across 91 tickers** (the earlier 8,085 "
             "counted Financials and Real Estate only; `cashneq` is 100% in every sector).",
         ),
         (
@@ -759,7 +759,7 @@ def closing(m: dict) -> list[tuple]:
             "p",
             "The pool documents three gap-filling sources. Source 2 is companyfacts "
             '`pensionDeficit`, read at `capital.py:163` via `get("pensionDeficit")` — but '
-            "**`fundamentals_history` has no pension column at all** (an `information_schema` match "
+            "**`sharadar_fundamentals_history` has no pension column at all** (an `information_schema` match "
             "on `%pension%` / `%opeb%` / `%benefit%` returns the empty list). That leg contributes "
             "exactly zero and always has; the docstring describes a three-source coalesce that is "
             "a two-source coalesce. Measured source depth, which is the ceiling any fix works "
@@ -773,8 +773,8 @@ def closing(m: dict) -> list[tuple]:
             "the leg is gone from the coalesce, and `_pension_pool`'s docstring now describes the "
             "two sources it actually has. **Zero change to any value** — that was the point, and it "
             "was proved at the source rather than by diffing a cube: an `information_schema` match "
-            "for `%pension%` / `%opeb%` / `%benefit%` / `%retire%` across `fundamentals_history` "
-            "**and** `fundamentals_sharadar` returns no columns at all, so the leg could not have "
+            "for `%pension%` / `%opeb%` / `%benefit%` / `%retire%` across `sharadar_fundamentals_history` "
+            "**and** `sharadar_fundamentals_facts` returns no columns at all, so the leg could not have "
             "fired on any live row. A unit test now pins it: feeding a `pensionDeficit` column must "
             "change nothing. Pension coverage stays at 199 / 489 tickers — a documented substrate "
             "limit, no longer an open defect.",
@@ -790,7 +790,7 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             "**Only BRK-B and BF-B were a defect**: `sharadar_tickers` holds `BRK.B` and `BF.B`, the "
-            "roster holds the dash form, and `fundamentals_sharadar` had **zero rows under either** "
+            "roster holds the dash form, and `sharadar_fundamentals_facts` had **zero rows under either** "
             "— the SF1 fetch asked for the dash form and got nothing back. **The mismatch failed "
             "silently**: asking Sharadar for `BRK-B` returns HTTP 200 with an empty body, not a 403 "
             "and not an error, so nothing in the run log ever said so while BRK-B kept appearing in "
@@ -813,7 +813,7 @@ def closing(m: dict) -> list[tuple]:
         ),
         (
             "p",
-            "**Measured**: `fundamentals_history` 489 → **491** tickers and 51,255 → 51,504 rows; "
+            "**Measured**: `sharadar_fundamentals_history` 489 → **491** tickers and 51,255 → 51,504 rows; "
             "BF-B 125 filings from 1995-09-06, BRK-B 124 from 1995-11-13; and **6 splits applied**, "
             "including **`BRK-B 2010-01-21 ×50.0`**. That last one is the proof the vendor-table "
             "migration was necessary rather than housekeeping: Berkshire's 50:1 B-share split is "
@@ -1041,7 +1041,7 @@ def closing(m: dict) -> list[tuple]:
             "The evidence here is about **construction**: that each feature computes the formula "
             "it claims, that its nulls are explained, and that its tail behaves. It is not a "
             "filing-level audit — no value was traced back to a filed 10-Q and hand-recomputed. "
-            "The vendor substrate underneath (`fundamentals_history`, Sharadar-first) is "
+            "The vendor substrate underneath (`sharadar_fundamentals_history`, Sharadar-first) is "
             "validated separately by the `fundamentals-validate` / `fundamentals-triage` path, "
             "and that remains the right tool for “is this number what the company actually "
             "reported?”.",

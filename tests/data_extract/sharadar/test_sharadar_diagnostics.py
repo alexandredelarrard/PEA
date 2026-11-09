@@ -73,8 +73,8 @@ def context():
             pass
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
-    if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
-        pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
+    if ctx.store.row_count(Tables.sharadar_fundamentals_facts) == 0:
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} is empty -- run fundamentals-sharadar")
     return ctx
 
 
@@ -89,7 +89,7 @@ def frames(context):
     by_dimension = {dim: group for dim, group in frame.groupby("dimension", sort=False)}
     arq = by_dimension.get("ARQ", frame.iloc[:0])
     if arq.empty:
-        pytest.skip(f"{Tables.sharadar_fundamentals} has no ARQ rows")
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} has no ARQ rows")
     return SimpleNamespace(
         all=frame, arq=arq, art=by_dimension.get("ART", frame.iloc[:0]), sec=load_sec(context, sorted(arq["ticker"].astype(str).unique()))
     )
@@ -313,7 +313,7 @@ def test_cik_cutover_continuity(context, frames):
 
     print("\n=== SANITY CHECK: D19, CIK-cutover continuity ===")
     print(f"  cutover tickers in the register : {sorted(registrants)}")
-    print(f"  tickers stored in {Tables.sharadar_fundamentals} : {len(stored)}")
+    print(f"  tickers stored in {Tables.sharadar_fundamentals_facts} : {len(stored)}")
     print(f"  testable (register and stored)    : {testable or 'NONE'}")
     if not testable:
         print("  => D19 IS UNVERIFIED. None of the register's cutover tickers has been")
@@ -332,7 +332,9 @@ def test_cik_cutover_continuity(context, frames):
     print(f"  predecessor quarters: {events['event'].value_counts().to_dict() if not events.empty else 'none'}")
 
     columns = list(cc.FILING_COLUMNS)
-    facts = context.store.load(Tables.fundamentals_facts, columns=columns, where={"ticker": testable, "form": list(cc.PERIODIC_FORMS)}, optional=True)
+    facts = context.store.load(
+        Tables.sec_fundamentals_facts, columns=columns, where={"ticker": testable, "form": list(cc.PERIODIC_FORMS)}, optional=True
+    )
     exceptions = cc.load_vendor_exceptions(CONFIG_DIR)
     report = cc.assess_continuity(merged, windows, cc.prepare_filings(facts), exceptions)
     table = [(r.ticker, r.quarter, r.boundary, r["class"], bool(r.explained), r.evidence) for _, r in report.table.iterrows()]

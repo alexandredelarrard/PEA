@@ -1,6 +1,6 @@
 {
   "_README": [
-    "PER-(TICKER, FIELD) SOURCE OVERRIDES for the merged `fundamentals_history` (D22).",
+    "PER-(TICKER, FIELD) SOURCE OVERRIDES for the merged `sharadar_fundamentals_history` (D22).",
     "",
     "MACHINE-PROPOSED, HUMAN-APPROVED. `sharadar-gap-check --propose` writes candidates here",
     "with `approved: null`; `merge_history.load_overrides` IGNORES those and logs how many are",

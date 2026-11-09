@@ -252,7 +252,7 @@ def retag_13f(context: Context, moves: pd.DataFrame, tags: CusipTags, dry_run: b
 def rebuild_history(context: Context, removals: pd.DataFrame, dry_run: bool) -> tuple[str, ...]:
     """Delete and rebuild the SEC history, then the merged history, of every ticker whose facts were purged."""
     # compute: the tickers whose facts were purged
-    tickers = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
+    tickers = sorted(set(removals.loc[removals["table"] == Tables.sec_fundamentals_facts.name, "ticker"]))
     if dry_run or not tickers:
         return ()
 

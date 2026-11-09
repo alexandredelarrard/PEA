@@ -1,7 +1,7 @@
 """
 periods.py (src/data_extract/utils/fundamentals/periods.py)
 --------------------------------------------------------------------------------------
-The period engine: turns one ticker's as-filed duration facts from `fundamentals_facts` into
+The period engine: turns one ticker's as-filed duration facts from `sec_fundamentals_facts` into
 discrete quarters, trailing-twelve-month values and quarterly-grid instants, in memory only.
 
 Every input is selected by its calendar WINDOW shape (`period_shape`), never by the filer's

@@ -161,7 +161,7 @@ def _as_ns(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     """Parse a date column to NANOSECOND resolution.
 
     Postgres DATE round-trips as `datetime64[s]` and TIMESTAMP as `datetime64[us]`, and
-    `merge_asof` refuses to join two keys of different resolution. `fundamentals_sharadar`
+    `merge_asof` refuses to join two keys of different resolution. `sharadar_fundamentals_facts`
     dates are DATE, `prices.date` is TIMESTAMP."""
     frame = frame.copy()
     frame[column] = pd.to_datetime(frame[column]).astype("datetime64[ns]")
@@ -190,20 +190,20 @@ def load_panel(context: Context, tickers: list[str] | None = None, since: str | 
     prices = _as_ns(prices, "date").dropna(subset=["close_split"])
 
     vendor = context.store.load(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         columns=["ticker", "date", "dimension", "price", "sharesbas", "marketcap"],
         where={**where, "dimension": "ARQ"},
         since=since,
     )
     if vendor is None:
-        raise RuntimeError(f"'{Tables.sharadar_fundamentals}' returned no vendor frame")
+        raise RuntimeError(f"'{Tables.sharadar_fundamentals_facts}' returned no vendor frame")
     vendor = _as_ns(vendor, "date")
 
     prices = _repair_registered(context, prices, vendor)
 
-    merged = context.store.load(Tables.fundamentals_history, columns=["ticker", "as_of", "sharesOutstanding"], where=where)
+    merged = context.store.load(Tables.sharadar_fundamentals_history, columns=["ticker", "as_of", "sharesOutstanding"], where=where)
     if merged is None:
-        raise RuntimeError(f"'{Tables.fundamentals_history}' returned no fundamentals frame")
+        raise RuntimeError(f"'{Tables.sharadar_fundamentals_history}' returned no fundamentals frame")
     merged = _as_ns(merged, "as_of")
 
     panel = vendor.merge(merged, left_on=["ticker", "date"], right_on=["ticker", "as_of"], how="left")

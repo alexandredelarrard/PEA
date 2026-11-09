@@ -248,7 +248,7 @@ def test_twelve_legacy_features_are_bit_identical(monkeypatch):
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
         # the revenue leg, so the TWELFTH feature (`ceo_pay_vs_revenue_growth`) is built too
-        fund = ctx.store.load("fundamentals_history", optional=True)
+        fund = ctx.store.load("sharadar_fundamentals_history", optional=True)
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:

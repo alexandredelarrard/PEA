@@ -1,7 +1,7 @@
 """
 diagnostics.py  (src/data_extract/utils/fundamentals_sharadar/diagnostics.py)
 ------------------------------------------------------------------------------------
-READ-ONLY measurement of `fundamentals_sharadar`: five gates, one markdown report of what
+READ-ONLY measurement of `sharadar_fundamentals_facts`: five gates, one markdown report of what
 they measured, and nothing else.
 
 The report RENDERS WHAT THIS RUN MEASURED and states no conclusions. An earlier version
@@ -25,7 +25,7 @@ aligned". That is the failure mode worth measuring.
 1. **A zero-fill verdict is only as strong as the basis behind it.** Sharadar zero-fills 41
    fields, and a 0 can mean "structurally not applicable" (a bank has no inventory) or
    "absent, and we wrote a zero anyway" (`intexp = 0` for JPM). Telling them apart needs a
-   second opinion, and the obvious one -- `fundamentals_history_sec` -- is on a DIFFERENT
+   second opinion, and the obvious one -- `sec_fundamentals_history` -- is on a DIFFERENT
    BASIS: it is TTM for duration fields, and three of its columns are documented supersets of
    Sharadar's. So the comparison is basis-matched explicitly: duration fields are judged at
    the TTM level against Sharadar's own ART dimension, instant fields point-in-time, and a
@@ -92,11 +92,11 @@ def _diagnostic_columns() -> list[str]:
     """The projection: the table's declared `read_columns` plus the 4 zero-filled fields it
     deliberately omits. Never the whole table -- 112 columns x 3 dimensions is the widest
     extract table in the schema."""
-    return list(dict.fromkeys(list(Tables.sharadar_fundamentals.read_columns) + list(SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS)))
+    return list(dict.fromkeys(list(Tables.sharadar_fundamentals_facts.read_columns) + list(SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS)))
 
 
 def load_sharadar(context: Context, tickers: Sequence[str] | None, dimensions: Sequence[str] = DIAGNOSTIC_DIMENSIONS) -> pd.DataFrame:
-    """One projected read of `fundamentals_sharadar`, filtered server-side to `dimensions`.
+    """One projected read of `sharadar_fundamentals_facts`, filtered server-side to `dimensions`.
 
     Dates are re-coerced on the way out: a Postgres DATE column round-trips as
     `datetime.date`, which does not compare equal to the `datetime64` on the other side of
@@ -105,10 +105,10 @@ def load_sharadar(context: Context, tickers: Sequence[str] | None, dimensions: S
     where: dict[str, object] = {"dimension": list(dimensions)}
     if tickers:
         where["ticker"] = list(tickers)
-    frame = context.store.load(Tables.sharadar_fundamentals, columns=_diagnostic_columns(), where=where, optional=True)
+    frame = context.store.load(Tables.sharadar_fundamentals_facts, columns=_diagnostic_columns(), where=where, optional=True)
     if frame is None or frame.empty:
         raise RuntimeError(
-            f"{Tables.sharadar_fundamentals} has no {'/'.join(dimensions)} rows for the "
+            f"{Tables.sharadar_fundamentals_facts} has no {'/'.join(dimensions)} rows for the "
             f"requested scope. Phase 2 measures the DB, not the API (D29) -- run "
             f"`python -m src data_extract fundamentals-sharadar` first."
         )
@@ -129,7 +129,7 @@ def load_sec(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
     for sec_cols, _ in SHARADAR_SEC_COUNTERPART.values():
         cols.extend(sec_cols)
     cols = list(dict.fromkeys(cols))
-    frame = context.store.load(Tables.fundamentals_history_sec, columns=cols, where={"ticker": list(tickers)} if tickers else None, optional=True)
+    frame = context.store.load(Tables.sec_fundamentals_history, columns=cols, where={"ticker": list(tickers)} if tickers else None, optional=True)
     if frame is None or frame.empty:
         return pd.DataFrame(columns=cols)
     frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce")
@@ -287,7 +287,7 @@ def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame, sec: pd.Da
     """How the SEC layer judges each zero cell of `field`, on a BASIS-MATCHED comparison.
 
     * A DURATION field is judged at the TTM level, because that is the only grain on which the
-      two sources mean the same thing: `fundamentals_history_sec` is TTM, so a non-zero there
+      two sources mean the same thing: `sec_fundamentals_history` is TTM, so a non-zero there
       says nothing about any individual quarter. The Sharadar side of that comparison is its
       own ART dimension. A zero quarter inside a non-zero trailing year stays INCONCLUSIVE --
       a quarter really can be zero.
@@ -589,7 +589,7 @@ def render_report(results: dict) -> str:
         f"# Sharadar diagnostics — {results['generated']}",
         "",
         f"Scope: {results['scope']}. "
-        f"{results['n_overlap']} ticker(s) overlap `{Tables.fundamentals_history_sec}`. "
+        f"{results['n_overlap']} ticker(s) overlap `{Tables.sec_fundamentals_history}`. "
         f"Magnitude ratio: {results['ratio']}.",
         "",
         "## Gate 1 — completeness (missing quarters per ticker)",
@@ -622,14 +622,14 @@ def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *, r
     art = by_dimension.get("ART", frame.iloc[:0])
     if arq.empty:
         raise RuntimeError(
-            f"{Tables.sharadar_fundamentals} has no ARQ rows for the requested scope; every gate is built on the as-reported quarters."
+            f"{Tables.sharadar_fundamentals_facts} has no ARQ rows for the requested scope; every gate is built on the as-reported quarters."
         )
 
     scope_tickers = sorted(str(t) for t in arq["ticker"].unique())
     sec = load_sec(context, scope_tickers)
     overlap = sorted(set(scope_tickers) & set(sec["ticker"].astype(str))) if not sec.empty else []
     scope = f"{len(scope_tickers)} ticker(s), {pd.Timestamp(arq['date'].min()).date()}..{pd.Timestamp(arq['date'].max()).date()}"
-    context.log.info("Sharadar diagnostics: %s; %d overlap with %s", scope, len(overlap), Tables.fundamentals_history_sec)
+    context.log.info("Sharadar diagnostics: %s; %d overlap with %s", scope, len(overlap), Tables.sec_fundamentals_history)
 
     results: dict = {
         "generated": pd.Timestamp.today().strftime("%Y-%m-%d"),

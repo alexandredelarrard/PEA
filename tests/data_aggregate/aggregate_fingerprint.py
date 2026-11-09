@@ -7,7 +7,7 @@ multi-GB download and is absent on most machines, so that guard cannot be replay
 which left the aggregation refactor with no safety net at all. This module closes that
 gap: it is SELF-CONTAINED after its first run.
 
-    * fundamentals come from the DB table `fundamentals_history` ONCE and are then
+    * fundamentals come from the DB table `sharadar_fundamentals_history` ONCE and are then
       frozen to `aggregate_fingerprint_fundamentals.parquet` next to this file, so every
       later run (and every CI machine) replays byte-identical inputs with no DB and no
       SEC cache. Real filings are used deliberately: 237 columns across all 11 GICS
@@ -79,7 +79,7 @@ def _select_fundamentals() -> pd.DataFrame:
     applies them between the load and the builders, so a slice frozen straight off the table is
     NOT the frame production feeds in:
 
-      * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
+      * `sector` / `industry_group` are not columns of `sharadar_fundamentals_history` at all -- they are
         a `universe_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
@@ -98,10 +98,10 @@ def _select_fundamentals() -> pd.DataFrame:
     from src.utils.tickers_universe.universe import Universe
 
     store = DataStore(get_engine())
-    fh = store.load("fundamentals_history")
+    fh = store.load("sharadar_fundamentals_history")
     assert fh is not None
     if fh.empty:
-        raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
+        raise RuntimeError("sharadar_fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
     fh = Universe(store, read_config(path=str(ROOT / "configs"))).attach_gics(add_cube_time_growth(fh))
     picked: list[str] = []
     for sector in sorted(fh["sector"].dropna().astype(str).unique()):

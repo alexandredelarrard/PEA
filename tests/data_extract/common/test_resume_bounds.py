@@ -4,7 +4,7 @@
 the phase-5 publish wrote: WBD ended on 2026-10-05 (prices stored to 2026-10-06, its completion 8-K filed 2026-10-06),
 AAPL open from 1995-10-09. Each planner yields nothing after WBD's end plus the U-65 grace of 10 trading sessions
 (2026-10-19 on the fixture's price calendar) and the same plan for AAPL as with no bounds:
-the series planner (`prices`, `fundamentals_sharadar`), the EDGAR document planner, the DEF 14A (LLM) listing, the
+the series planner (`prices`, `sharadar_fundamentals_facts`), the EDGAR document planner, the DEF 14A (LLM) listing, the
 earnings-call planner and the earnings-surprise plan.
 """
 
@@ -83,7 +83,7 @@ def _contexts(fixture: tuple[DataStore, pd.DataFrame]) -> tuple[Any, Any]:
     )
 
 
-@pytest.mark.parametrize("table", [Tables.prices, Tables.sharadar_fundamentals], ids=["prices", "sharadar_fundamentals"])
+@pytest.mark.parametrize("table", [Tables.prices, Tables.sharadar_fundamentals_facts], ids=["prices", "sharadar_fundamentals_facts"])
 def test_series_planner_stops_at_the_end_and_starts_at_the_first_price(fixture: tuple[DataStore, pd.DataFrame], table: Any) -> None:
     bounded, control = _contexts(fixture)
     until = pd.Timestamp("2026-11-02")
@@ -228,7 +228,7 @@ class _NewRowlessView(_UniverseView):
         return {ROWLESS}
 
 
-@pytest.mark.parametrize("table", [Tables.prices, Tables.sharadar_fundamentals], ids=["prices", "sharadar_fundamentals"])
+@pytest.mark.parametrize("table", [Tables.prices, Tables.sharadar_fundamentals_facts], ids=["prices", "sharadar_fundamentals_facts"])
 def test_an_ended_series_key_with_rows_is_done_once_the_run_is_past_its_grace_end_plus_the_overlap(
     fixture: tuple[DataStore, pd.DataFrame], table: Any
 ) -> None:

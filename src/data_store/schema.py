@@ -398,14 +398,11 @@ class Tables:
     # numbers forever, which is where the no-leakage property lives. Exactly 69 columns,
     # enumerated by `Catalogue.history_columns`. See fundamentals/build_history.py.
     #
-    # RENAMED from `fundamentals_history` on 2026-08-26 (Sharadar-integration phase 0). The
-    # bare name now belongs to the MERGED table below, so that every consumer of "the
-    # fundamentals history" keeps reading the strongest available dataset without being
-    # re-pointed. This entry is the SEC half of that merge and nothing else: it is what
-    # `build_history.py` writes, what `src/validate/` reads, and what
+    # This entry is the SEC half of the merge into `sharadar_fundamentals_history` below and
+    # nothing else: it is what `build_history.py` writes, what `src/validate/` reads, and what
     # `fundamentals_reason_codes` explains.
-    fundamentals_history_sec = Table(
-        "fundamentals_history_sec",
+    sec_fundamentals_history = Table(
+        "sec_fundamentals_history",
         ("ticker", "as_of"),
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end", "amended_fiscal_end"),
@@ -436,8 +433,8 @@ class Tables:
     #
     # ⚠ `regime` is the ONE non-float column among the 89 values (a label). Anything casting
     # "the value columns" must exclude it by NAME, never by a looks-numeric heuristic.
-    fundamentals_history = Table(
-        "fundamentals_history",
+    sharadar_fundamentals_history = Table(
+        "sharadar_fundamentals_history",
         ("ticker", "as_of"),
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
@@ -547,7 +544,7 @@ class Tables:
             "netCashFlow",
         ),
     )
-    # WHY a `fundamentals_history_sec` cell is null, or why its value is off-basis. DENSE -- one
+    # WHY a `sec_fundamentals_history` cell is null, or why its value is off-basis. DENSE -- one
     # row per null-or-qualified cell at every publication event -- so the
     # zero-unexplained-nulls gate is a LEFT JOIN on (ticker, as_of, field) rather than a
     # reconstruction. The code vocabulary is closed and lives in fundamentals/reason_codes.py.
@@ -560,7 +557,7 @@ class Tables:
     # guard actually throw away?" becomes unanswerable after the fact. That question is the
     # whole lesson of the 745 correct rows an over-strict guard once nulled.
     #
-    # ⚠ THIS EXPLAINS `fundamentals_history_sec`, NOT the merged `fundamentals_history`
+    # ⚠ THIS EXPLAINS `sec_fundamentals_history`, NOT the merged `sharadar_fundamentals_history`
     # (decision D24). Reason codes are a property of the SEC resolution layer -- they name
     # which SEC concept was combined, derived or rejected -- and Sharadar has no equivalent.
     # Accepted consequence: `unexplained_null` stops being a universal zero-ceiling gate on
@@ -592,7 +589,7 @@ class Tables:
     # period shape it tagged it with; nothing here is derived. Q4 = FY - YTD9 and the YTD
     # decumulation happen in memory during the history build, so this table stays a
     # faithful record of what was published -- which is what makes the publication-event
-    # grain and the no-leakage property of `fundamentals_history_sec` provable rather than
+    # grain and the no-leakage property of `sec_fundamentals_history` provable rather than
     # asserted. ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows and
     # are never overwritten, so "what was knowable on date D" is answerable by filtering
     # `filing_date <= D`.
@@ -610,8 +607,8 @@ class Tables:
     # start date. `fiscal_year` / `fiscal_period` stay as PAYLOAD, which is what periods.py
     # already assumes -- "Nothing in this module reads `fiscal_period`"; every input there is
     # selected by its calendar window.
-    fundamentals_facts = Table(
-        "fundamentals_facts",
+    sec_fundamentals_facts = Table(
+        "sec_fundamentals_facts",
         ("ticker", "accession_number", "field", "duration_type", "period_end"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
@@ -681,7 +678,7 @@ class Tables:
         freshness_date_col="available_at",
         resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01", observed_from="2026-09-01"),
     )
-    # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history_sec."employees"`
+    # NOTE: `employees_history` was RETIRED, and so was the `sec_fundamentals_history."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
     # table above (decision 35) -- one producer, `fundamentals_employees.py`, parsing the
     # 10-K prose inside the walk the fundamentals fetch already performs.
@@ -707,10 +704,10 @@ class Tables:
     # the schema. The projection is the 7 identifiers plus the line items the field map
     # consumes, and deliberately EXCLUDES the 35 vendor-computed ratios (`pe`, `roe`, `de`,
     # `ev`, `marketcap`, ...) and the 8 `*usd` conversions -- those live in the raw table
-    # only and never reach `fundamentals_history` (D21). A consumer needing one passes
+    # only and never reach `sharadar_fundamentals_history` (D21). A consumer needing one passes
     # `columns=` explicitly.
-    sharadar_fundamentals = Table(
-        "fundamentals_sharadar",
+    sharadar_fundamentals_facts = Table(
+        "sharadar_fundamentals_facts",
         ("ticker", "dimension", "date", "reportperiod"),
         date_col="date",
         date_type_cols=("date", "reportperiod", "calendardate", "lastupdated"),

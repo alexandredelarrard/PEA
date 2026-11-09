@@ -130,11 +130,11 @@ def test_reported_histories_real_coverage_and_tails() -> None:
         "totalAssets",
         "operatingLeaseRouAsset",
     ]
-    available = set(context.store.columns(Tables.fundamentals_history))
+    available = set(context.store.columns(Tables.sharadar_fundamentals_history))
     if not {"netIncome_q", "fiscal_end"}.issubset(available):
         pytest.skip("stored fundamentals lack the quarterly history contract")
     hist = context.store.load(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         columns=[name for name in columns if name in available],
         where={"ticker": names},
         since=pd.Timestamp("2010-01-01"),

@@ -1,5 +1,5 @@
 """
-`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, on the publication-event grain.
+`sec_fundamentals_facts` -> `sec_fundamentals_history` + `fundamentals_reason_codes`, on the publication-event grain.
 
 `as_of` is a FILING DATE. Rules: (1) a row for every `(ticker, date)` on which >=1 value became public (an original
 always qualifies); (2) an amendment emits a row only if it changes >=1 value and lands <= `MAX_AMENDMENT_LAG_DAYS`
@@ -43,7 +43,7 @@ from src.utils.string import pad_cik_series
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE = tuple(
-    sorted(cast(Resume, Tables.fundamentals_facts.resume).forms, key=lambda form: (not form.startswith("10-K"), form.endswith("/A")))
+    sorted(cast(Resume, Tables.sec_fundamentals_facts.resume).forms, key=lambda form: (not form.startswith("10-K"), form.endswith("/A")))
 )
 
 #: Structural, not tunable: a restated quarter stays inside some live TTM window for twelve months.
@@ -570,9 +570,9 @@ def _break_code(catalogue: Catalogue, field: str, period, code) -> None:
 
 
 def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
-    """One ticker's `fundamentals_history_sec` frame: 69 columns, one row per publication event.
+    """One ticker's `sec_fundamentals_history` frame: 69 columns, one row per publication event.
 
-    `facts` is the ticker's `fundamentals_facts` rows; a `companyfacts` mapping is accepted for synthetic fixtures only.
+    `facts` is the ticker's `sec_fundamentals_facts` rows; a `companyfacts` mapping is accepted for synthetic fixtures only.
     """
     return build_ticker(ticker, facts, catalogue=catalogue, guards=guards).history
 
@@ -711,7 +711,7 @@ def _own_period_of_report(facts: pd.DataFrame) -> pd.DataFrame:
 
 
 def _companyfacts_rows(concept: str, payload: dict, field: str) -> list[dict]:
-    """One `fundamentals_facts`-shaped row per companyfacts entry of `concept`, across all its units."""
+    """One `sec_fundamentals_facts`-shaped row per companyfacts entry of `concept`, across all its units."""
     return [
         {
             "ticker": "FIXTURE",
@@ -738,7 +738,7 @@ def _companyfacts_rows(concept: str, payload: dict, field: str) -> list[dict]:
 
 
 def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFrame:
-    """A `fundamentals_facts`-shaped frame from a raw `companyfacts` mapping, for synthetic fixtures ONLY.
+    """A `sec_fundamentals_facts`-shaped frame from a raw `companyfacts` mapping, for synthetic fixtures ONLY.
 
     Never on the production path (companyfacts drops extension and dimensioned facts). Concepts map to fields via
     the catalogue's own declared concepts; undeclared concepts are skipped.
@@ -836,7 +836,7 @@ def _seam_rule_windows(context: Context, ticker: str, filers: int) -> tuple[CikW
 
 # ------------------------------------------------------------------- immutability ---
 
-#: The `fundamentals_facts` columns the replay reads (projected read, one ticker at a time).
+#: The `sec_fundamentals_facts` columns the replay reads (projected read, one ticker at a time).
 FACT_COLUMNS: tuple[str, ...] = (
     "ticker",
     "cik",
@@ -910,7 +910,7 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
             drift.head(20).to_string(),
         )
         raise ValueError(
-            f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would change; history is append-only "
+            f"{ticker}: {len(drift)} stored sec_fundamentals_history cell(s) would change; history is append-only "
             "(run fundamentals-history-sec --full to rebuild)"
         )
     known = set(pd.to_datetime(stored["as_of"]))
@@ -920,7 +920,7 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
 
 def _drop_history(context: Context, ticker: str) -> None:
     """Delete a rebuilt ticker's history and reason codes when its facts now yield no event."""
-    deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
+    deleted = context.store.delete(Tables.sec_fundamentals_history, {"ticker": ticker})
     context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
     if deleted:
         context.log.warning("history: %s REBUILT -- %d row(s) deleted, no event left in its facts", ticker, deleted)
@@ -938,7 +938,7 @@ def _scope_changed_recently(context: Context, tickers: list[str], as_of: pd.Time
 #: Per-ticker history paths chosen by `_history_work`.
 FULL, INCREMENTAL, CHECK, SKIP = "full", "incremental", "check", "skip"
 
-#: The `fundamentals_facts` columns the triage reads: one filing date per row, and whether it is an original.
+#: The `sec_fundamentals_facts` columns the triage reads: one filing date per row, and whether it is an original.
 _TRIAGE_COLUMNS: tuple[str, ...] = ("ticker", "filing_date", "is_amendment")
 
 
@@ -956,7 +956,7 @@ def _stored_events(context: Context, tickers: list[str]) -> dict[str, pd.DataFra
     if not tickers:
         return {}
     stored = context.store.load(
-        Tables.fundamentals_history_sec, columns=["ticker", "as_of", *HISTORY_PROVENANCE], where={"ticker": list(tickers)}, optional=True
+        Tables.sec_fundamentals_history, columns=["ticker", "as_of", *HISTORY_PROVENANCE], where={"ticker": list(tickers)}, optional=True
     )
     if stored is None:
         return {}
@@ -969,7 +969,7 @@ def _filing_dates(context: Context, tickers: list[str]) -> dict[str, pd.DataFram
     if not tickers:
         return {}
     parts = []
-    for chunk in context.store.iter_load(Tables.fundamentals_facts, columns=list(_TRIAGE_COLUMNS), where={"ticker": list(tickers)}):
+    for chunk in context.store.iter_load(Tables.sec_fundamentals_facts, columns=list(_TRIAGE_COLUMNS), where={"ticker": list(tickers)}):
         filed = pd.to_datetime(chunk["filing_date"], errors="coerce").dt.normalize()
         original = ~chunk["is_amendment"].fillna(False).astype(bool)
         parts.append(pd.DataFrame({"ticker": chunk["ticker"].astype(str), "filing_date": filed, "original": original}).dropna().drop_duplicates())
@@ -1072,7 +1072,7 @@ def _incremental_rows(ticker: str, df_facts: pd.DataFrame, work: HistoryWork, ca
 def _ticker_facts(context: Context, ticker: str, seams: Mapping[str, pd.Timestamp]) -> pd.DataFrame | None:
     """The ticker's replay facts with the seam rule and, for a declared reverse acquisition (`seams`), the comparatives
     rule applied, or None when it has none stored."""
-    df_facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
+    df_facts = context.store.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
     if df_facts is None:
         return df_facts
     windows = _seam_rule_windows(context, ticker, _filer_count(df_facts))
@@ -1153,11 +1153,11 @@ def _full_rows(
             _drop_history(context, ticker)
         return None
     # Explicit projection so the read fails loudly if the table and the column contract diverge.
-    df_stored = context.store.load(Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
+    df_stored = context.store.load(Tables.sec_fundamentals_history, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
     df_history, df_codes = built.history, built.reason_codes
     drifted = ticker in rebuild and df_stored is not None and not diff_against_stored(df_stored, df_history).empty
     if rebuild_history or drifted:
-        deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
+        deleted = context.store.delete(Tables.sec_fundamentals_history, {"ticker": ticker})
         context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
         context.log.warning(
             "history: %s REBUILT -- %d row(s) deleted and recomputed. "
@@ -1181,7 +1181,7 @@ def build_fundamentals_history(
     full_fetch: bool = False,
     as_of: pd.Timestamp | None = None,
 ) -> None:
-    """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
+    """`sec_fundamentals_facts` -> `sec_fundamentals_history` + `fundamentals_reason_codes`, per ticker.
 
     Triage first (`_history_work`): a current ticker is skipped without reading its facts, a ticker with newer
     filings snapshots its new events only, and the rest replay in full. Append-only: a full replay saves only new
@@ -1245,7 +1245,7 @@ def build_fundamentals_history(
         if df_history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
             return
-        context.store.save(Tables.fundamentals_history_sec, df_history)
+        context.store.save(Tables.sec_fundamentals_history, df_history)
         if not df_codes.empty:
             context.store.save(Tables.fundamentals_reason_codes, df_codes)
         context.log.info("history: %s +%d event row(s), %d reason code(s)", ticker, len(df_history), len(df_codes))

@@ -90,7 +90,7 @@ def _quote_anchors(context: Context, anchors: list[tuple[str, dict]], bugfix: di
     )
     vendor = (
         context.store.load(
-            Tables.sharadar_fundamentals,
+            Tables.sharadar_fundamentals_facts,
             columns=["ticker", "date", "price"],
             where={"ticker": names, "dimension": "ARQ"},
             since=min(dates) - pd.Timedelta(days=7),
@@ -147,7 +147,7 @@ def load_share_basis(
     if share_anchors and shares is None:
         dates = [anchor["date"] for _, anchor in share_anchors]
         shares = context.store.load(
-            Tables.sharadar_fundamentals,
+            Tables.sharadar_fundamentals_facts,
             columns=["ticker", "date", "sharesbas"],
             where={"ticker": sorted({ticker for ticker, _ in share_anchors}), "dimension": "ARQ"},
             since=min(dates),

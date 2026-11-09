@@ -8,7 +8,7 @@ owns the fingerprinted output set, the real fundamentals input slice
 (`aggregate_fingerprint_fundamentals.parquet`) and the gated baseline.
 
 RETIRED: this module used to also fingerprint the EXTRACTION half, rebuilding
-`fundamentals_history` from cached SEC companyfacts JSON. That substrate is gone (a
+`sec_fundamentals_history` from cached SEC companyfacts JSON. That substrate is gone (a
 multi-GB download, absent on every machine) and the companyfacts extraction path it
 called no longer exists, so `compute()`, `pipeline_fingerprint_baseline.json` and
 `test_refactor_regression.py` were removed with the fundamentals rebuild -- see

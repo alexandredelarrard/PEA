@@ -145,7 +145,7 @@ class FieldSpec:
         return self.raw.get("regimes", {}).get(regime, {})
 
 
-#: `fundamentals_history_sec`'s key columns. `fiscal_quarter` labels which quarter of the issuer's own
+#: `sec_fundamentals_history`'s key columns. `fiscal_quarter` labels which quarter of the issuer's own
 #: fiscal year `fiscal_end` closes, on every row including TTM and instant values. Sector / industry
 #: are not carried: they join from the universe (`context.universe`).
 HISTORY_KEYS: tuple[str, ...] = ("ticker", "as_of", "fiscal_end", "fiscal_quarter")
@@ -229,10 +229,10 @@ HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
 
 #: Publication-event provenance, scalar per row: `publication_form` is the highest-precedence form filed
 #: that day (`10-K` > `10-K/A` > `10-Q` > `10-Q/A`), `is_amendment` an OR, `amended_fiscal_end` the latest
-#: restated period, `amended_fields` the union. Accession detail stays in `fundamentals_facts`.
+#: restated period, `amended_fields` the union. Accession detail stays in `sec_fundamentals_facts`.
 HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form", "is_amendment", "amended_fiscal_end", "amended_fields")
 
-#: The filing's resolution regime, as stamped per filing on `fundamentals_facts`.
+#: The filing's resolution regime, as stamped per filing on `sec_fundamentals_facts`.
 HISTORY_REGIME = "regime"
 
 #: Declared columns computed at CUBE time, not by the history build: year-on-year ratios need a 365-day
@@ -267,7 +267,7 @@ class Catalogue:
 
     @cached_property
     def history_fields(self) -> list[str]:
-        """The catalogue fields `fundamentals_history_sec` carries, ordered tier then name.
+        """The catalogue fields `sec_fundamentals_history` carries, ordered tier then name.
 
         One column per field under its bare name: the TTM for a `duration` field, the latest instant for an
         `instant` one.
@@ -282,7 +282,7 @@ class Catalogue:
 
     @cached_property
     def history_columns(self) -> list[str]:
-        """The `fundamentals_history_sec` column contract in table order: keys, `HISTORY_STATEMENT_ORDER`,
+        """The `sec_fundamentals_history` column contract in table order: keys, `HISTORY_STATEMENT_ORDER`,
         `regime`, provenance (4 + 60 + 1 + 4 = 69). `build_history` builds its frame from it.
 
         Asserts `HISTORY_STATEMENT_ORDER` matches the history fields plus derived columns exactly.
@@ -441,7 +441,7 @@ class Catalogue:
     def measured_absent_rate(self, regime: str, field: str) -> float | None:
         """The share of the regime's tickers with no fact for this field, or None where not measured.
 
-        A frozen historical record from a dropped source table: it cannot be re-derived from `fundamentals_facts`.
+        A frozen historical record from a dropped source table: it cannot be re-derived from `sec_fundamentals_facts`.
         """
         block = self.regime_exceptions.get(regime, {}).get(field)
         return block.get("measured_absent_rate") if isinstance(block, dict) else None

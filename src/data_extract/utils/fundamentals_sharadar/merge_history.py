@@ -1,6 +1,6 @@
-"""Merge the Sharadar TTM frame with the SEC-owned block into `fundamentals_history`, the table consumers read.
+"""Merge the Sharadar TTM frame with the SEC-owned block into `sharadar_fundamentals_history`, the table consumers read.
 
-Field-block precedence: Sharadar owns its declared columns for all history, `fundamentals_history_sec` owns the
+Field-block precedence: Sharadar owns its declared columns for all history, `sec_fundamentals_history` owns the
 `sec`-kind columns, and no column switches source mid-series; the only
 exception is a whole `(ticker, field)` series moved to SEC by the approved override register. Inside a register
 predecessor window (register-derived or a cited vendor series override) the canonical ARQ rows are replaced by the window
@@ -155,12 +155,12 @@ def write_overrides(entries: dict[str, dict[str, dict]], readme: list[str], conf
 def merged_columns(field_map: FieldMap) -> tuple[str, ...]:
     """The merged column tuple (keys + field-map outputs, SEC-owned suffixed `_sec`).
 
-    Raises unless it equals `Tables.fundamentals_history.read_columns` exactly, in order.
+    Raises unless it equals `Tables.sharadar_fundamentals_history.read_columns` exactly, in order.
     """
 
     owned = set(field_map.sec_owned)
     columns = (*MERGE_KEYS, *(sec_column(n) if n in owned else n for n in field_map.outputs))
-    declared = tuple(Tables.fundamentals_history.read_columns)
+    declared = tuple(Tables.sharadar_fundamentals_history.read_columns)
     if columns != declared:
         extra = [c for c in columns if c not in set(declared)]
         gone = [c for c in declared if c not in set(columns)]
@@ -385,7 +385,7 @@ def with_predecessor_series(
     if not series:
         return vendor, splits
     owners = context.store.load(
-        Tables.sharadar_fundamentals, project=True, where={"ticker": sorted({s.vendor_ticker for s in series}), "dimension": ARQ}, optional=True
+        Tables.sharadar_fundamentals_facts, project=True, where={"ticker": sorted({s.vendor_ticker for s in series}), "dimension": ARQ}, optional=True
     )
     stored = set(owners["ticker"].astype(str)) if owners is not None else set()
     for s in series:
@@ -458,7 +458,7 @@ def vendor_share_basis(
 
 
 def build_merged_history(context: Context, tickers: list[str], *, full: bool = False, config_dir: str = DEFAULT_CONFIG_DIR) -> None:
-    """Build `fundamentals_history` from `fundamentals_sharadar` + `fundamentals_history_sec` for `tickers`.
+    """Build `sharadar_fundamentals_history` from `sharadar_fundamentals_facts` + `sec_fundamentals_history` for `tickers`.
 
     Inputs are read-only. Default upserts; `full=True` first deletes these tickers' rows so vanished keys go too.
     Must run after both producers.
@@ -468,7 +468,7 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     overrides = load_overrides(config_dir)
     names = sorted(set(tickers))
 
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"ticker": names, "dimension": ARQ}, optional=True)
+    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"ticker": names, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
         context.log.warning("merged history: no ARQ rows for %d requested ticker(s) -- run `fundamentals-sharadar` first", len(names))
         return
@@ -486,7 +486,7 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
 
     # projection built from the register, so every override column is loaded
     sec_columns = ["ticker", "as_of", *field_map.sec_owned]
-    sec = context.store.load(Tables.fundamentals_history_sec, columns=sec_columns + list(overrides.fields), where={"ticker": names}, optional=True)
+    sec = context.store.load(Tables.sec_fundamentals_history, columns=sec_columns + list(overrides.fields), where={"ticker": names}, optional=True)
     if sec is None:
         context.log.warning(
             "merged history: NO SEC rows for these tickers -- all %d SEC-owned columns will be NULL. "
@@ -504,10 +504,10 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
 
     if full:
         # one `IN` delete rather than a round-trip per ticker
-        deleted = context.store.delete(Tables.fundamentals_history, {"ticker": names})
+        deleted = context.store.delete(Tables.sharadar_fundamentals_history, {"ticker": names})
         context.log.warning("merged history: --full deleted %d existing row(s) before the rebuild (scope: %d ticker(s))", deleted, len(names))
 
-    written = context.store.save(Tables.fundamentals_history, frame)
+    written = context.store.save(Tables.sharadar_fundamentals_history, frame)
     covered = int(frame[sec_column("regime")].notna().sum())
     context.log.info(
         "merged history: %d row(s) over %d ticker(s), %s..%s | SEC block on %d row(s) "

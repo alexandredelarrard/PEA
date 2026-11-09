@@ -158,7 +158,7 @@ def test_an_event_only_cik_is_set_aside_for_a_single_window_ticker(sqlite_store:
     assert list(dict.fromkeys(kept["accession_number"])) == ["prologis-q2-2011", "prologis-fy-2011", "no-cik"], list(kept["accession_number"])
     stored = _pld_facts().assign(duration_type="quarterly", period_end=lambda f: f["period_of_report"])
     stored = stored.assign(**{column: None for column in FACT_COLUMNS if column not in stored.columns})
-    sqlite_store.save(Tables.fundamentals_facts, stored.assign(fiscal_year=2011, period_days=91.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2011, period_days=91.0, is_amendment=False))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, facts, **kwargs):
@@ -193,7 +193,7 @@ def test_an_ordinary_single_cik_tickers_facts_are_unchanged():
 def test_the_history_build_applies_the_rule_before_the_event_ladder(sqlite_store: Any, monkeypatch, caplog):
     stored = _facts().assign(duration_type="quarterly", period_end=lambda f: f["period_of_report"])
     stored = stored.assign(**{column: None for column in FACT_COLUMNS if column not in stored.columns})
-    sqlite_store.save(Tables.fundamentals_facts, stored.assign(fiscal_year=2015, period_days=91.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2015, period_days=91.0, is_amendment=False))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, facts, **kwargs):
@@ -286,7 +286,7 @@ def test_post_seam_comparatives_of_a_reverse_acquisition_are_ignored(sqlite_stor
 
     stored = facts.assign(duration_type="annual")
     stored = stored.assign(**{column: None for column in FACT_COLUMNS if column not in stored.columns})
-    sqlite_store.save(Tables.fundamentals_facts, stored.assign(fiscal_year=2016, period_days=364.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2016, period_days=364.0, is_amendment=False))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, frame, **kwargs):
@@ -349,7 +349,7 @@ def _fresh_start_facts() -> pd.DataFrame:
 
 def _replayed_facts(sqlite_store: Any, monkeypatch, identity) -> pd.DataFrame:
     """The EXE facts `build_fundamentals_history` hands to the replay under `identity`."""
-    sqlite_store.save(Tables.fundamentals_facts, _fresh_start_facts().assign(fiscal_year=2020, period_days=365.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, _fresh_start_facts().assign(fiscal_year=2020, period_days=365.0, is_amendment=False))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, facts, **kwargs):

@@ -99,11 +99,11 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     block moved to the reconciled `totalDebt`, and that feature was deleted as a result."""
     try:
         store = DataStore(get_engine())
-        fh = store.load(Tables.fundamentals_history, where={"ticker": _TICKERS}, optional=True)
+        fh = store.load(Tables.sharadar_fundamentals_history, where={"ticker": _TICKERS}, optional=True)
     except Exception as exc:  # pragma: no cover - env without the DB
-        pytest.skip(f"{Tables.fundamentals_history} unavailable ({type(exc).__name__})")
+        pytest.skip(f"{Tables.sharadar_fundamentals_history} unavailable ({type(exc).__name__})")
     if fh is None or fh.empty:
-        pytest.skip(f"{Tables.fundamentals_history} is empty")
+        pytest.skip(f"{Tables.sharadar_fundamentals_history} is empty")
     fh["as_of"] = pd.to_datetime(fh["as_of"])
     fh = add_cube_time_growth(fh)
 

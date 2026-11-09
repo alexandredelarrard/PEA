@@ -1,7 +1,7 @@
 """
 Server-side filtering for `read_table` / `DataStore.load` (`where=`).
 
-Motivation, measured on the live table: `fundamentals_facts` holds 2,326,371 rows
+Motivation, measured on the live table: `sec_fundamentals_facts` holds 2,326,371 rows
 across 491 tickers, and the history build reads it ONCE
 PER TICKER. Loading the whole table and filtering in pandas cost 27.5s and 2.33M x 19
 cells per call -- ~3.7 hours for one `rebuild_fundamentals_history` pass -- against
@@ -98,7 +98,7 @@ def test_where_value_is_bound_not_interpolated(store):
     assert len(store.load("facts")) == len(_FRAME)  # table still there
 
     print("\n=== SANITY CHECK: server-side where= filter ===")
-    print("  fundamentals_facts on the live DB: 2,326,371 rows / 491 tickers.")
+    print("  sec_fundamentals_facts on the live DB: 2,326,371 rows / 491 tickers.")
     print("  Full load + pandas filter: 27.5s per ticker -> ~3.7h for one rebuild pass.")
     print("  store.load(..., where={'ticker': t}): 0.042s, an index seek on the existing")
     print("  PK btree (ticker, accession_number, ...) -- no new index required.")

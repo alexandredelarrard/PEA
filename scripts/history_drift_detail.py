@@ -1,4 +1,4 @@
-"""READ-ONLY: break ONE ticker's `fundamentals_history_sec` drift into shapes.
+"""READ-ONLY: break ONE ticker's `sec_fundamentals_history` drift into shapes.
 
 `history_drift_classify.py` splits drift two ways -- stored NULL vs stored not-NULL -- and
 calls the second one "published value would change". VTRS showed that is too coarse: 80 of its

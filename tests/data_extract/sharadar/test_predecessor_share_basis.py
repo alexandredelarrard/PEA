@@ -125,7 +125,7 @@ def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list
         {
             Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
-            Tables.sharadar_fundamentals: vendor,
+            Tables.sharadar_fundamentals_facts: vendor,
             Tables.sharadar_actions: pd.DataFrame(
                 [{"ticker": t, "date": pd.Timestamp(d), "action": "split", "value": v} for t, d, v in actions],
                 columns=["ticker", "date", "action", "value"],
@@ -134,7 +134,7 @@ def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list
                 [{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in yf], columns=["ticker", "date", "ratio"]
             ),
             # one NULL SEC row per ticker, so the backward join lands the SEC-owned columns (all NULL here)
-            Tables.fundamentals_history_sec: pd.DataFrame(
+            Tables.sec_fundamentals_history: pd.DataFrame(
                 {"ticker": ["PLD", "DD"], "as_of": pd.Timestamp("1990-01-01")}
                 | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned}
             ),
@@ -334,7 +334,7 @@ def _jci_store() -> FakeStore:
         {
             Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
-            Tables.sharadar_fundamentals: pd.concat([canonical, _tyc()], ignore_index=True),
+            Tables.sharadar_fundamentals_facts: pd.concat([canonical, _tyc()], ignore_index=True),
             Tables.sharadar_actions: pd.DataFrame(
                 [{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS],
                 columns=["ticker", "date", "action", "value"],
@@ -343,7 +343,7 @@ def _jci_store() -> FakeStore:
                 [{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF], columns=["ticker", "date", "ratio"]
             ),
             Tables.fundamentals_employees: pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            Tables.fundamentals_history_sec: pd.DataFrame(
+            Tables.sec_fundamentals_history: pd.DataFrame(
                 {"ticker": ["JCI"], "as_of": pd.Timestamp("1990-01-01")}
                 | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned if c != "employees"}
             ),
@@ -458,7 +458,7 @@ def test_the_gap_check_compares_the_sec_history_with_the_swapped_vendor_series(t
     """F-008: JCI's SEC history before the seam is Tyco's, so the gap check must read TYC's vendor rows there, as the merge
     does. Old JCI's own rows are published on Tyco's dates here, so comparing them is a gap on every pre-seam quarter."""
     store = _jci_store()
-    vendor = store.t[str(Tables.sharadar_fundamentals)]
+    vendor = store.t[str(Tables.sharadar_fundamentals_facts)]
     tyc = vendor[vendor["ticker"].eq("TYC")].set_index("calendardate")
     inside = vendor["ticker"].eq("JCI") & vendor["calendardate"].isin(tyc.index)
     vendor.loc[inside, "date"] = vendor.loc[inside, "calendardate"].map(tyc["date"])
@@ -466,7 +466,7 @@ def test_the_gap_check_compares_the_sec_history_with_the_swapped_vendor_series(t
     # Tyco's SEC rows on Tyco's publication dates, and JCI's own after the seam
     sec = pd.DataFrame({"ticker": "JCI", "as_of": pd.to_datetime([*tyc.loc[vendor.loc[inside, "calendardate"], "date"], "2017-02-09"])})
     sec = sec.assign(**{f: float("nan") for f in fields}).assign(sharesOutstanding=[*tyc.loc[vendor.loc[inside, "calendardate"], "sharesbas"], 935e6])
-    store.t[str(Tables.fundamentals_history_sec)] = sec
+    store.t[str(Tables.sec_fundamentals_history)] = sec
     config = SimpleNamespace(data_extract=SimpleNamespace(sharadar_gap_floor={"money": 1e6, "shares": 1e5, "ratio": 0.005}))
     config_dir = _config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE])
     context = SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config=config, config_dir=config_dir)

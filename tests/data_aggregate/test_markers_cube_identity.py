@@ -45,7 +45,7 @@ MARKERS_PER_TABLE = {
     Tables.insider_transactions: 4,
     Tables.def14a_llm: 3,
     Tables.sec_8k_votes: 3,
-    Tables.fundamentals_facts: 3,
+    Tables.sec_fundamentals_facts: 3,
 }
 #: The 13F gap-marker check: two tickers' `sec13f_hr` rows from F13_SINCE and one marker each.
 F13_TICKERS = ["HPQ", "PG"]
@@ -57,9 +57,9 @@ def _copy_live_rows(live: DataStore, sqlite: DataStore) -> pd.DataFrame:
     """Copy the five tickers' source rows into `sqlite`; return their wide close prices."""
     for table in (Tables.sec_13d, Tables.sec_13g, Tables.insider_transactions, Tables.def14a_llm, Tables.sec_8k_votes):
         sqlite.save(table, cast(pd.DataFrame, live.load(table, where={"ticker": TICKERS})))
-    facts = cast(pd.DataFrame, live.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": HISTORY_TICKERS}))
+    facts = cast(pd.DataFrame, live.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": HISTORY_TICKERS}))
     facts = facts[pd.to_datetime(facts["filing_date"]) >= FACTS_SINCE]
-    sqlite.save(Tables.fundamentals_facts, facts)
+    sqlite.save(Tables.sec_fundamentals_facts, facts)
     prices = cast(pd.DataFrame, live.load(Tables.prices, columns=["date", "ticker", "close_split", "close_total"], where={"ticker": TICKERS}))
     prices = prices[pd.to_datetime(prices["date"]) >= GRID_START]
     return prices.assign(date=pd.to_datetime(prices["date"]))
@@ -76,7 +76,7 @@ def _marker_dates(store: DataStore, table: Table, n: int) -> list[tuple[str, pd.
 
 def _add_markers(store: DataStore) -> int:
     """Save one marker per synthetic accession, built the way each fetcher builds it."""
-    forms = {Tables.sec_13d: "SC 13D", Tables.sec_13g: "SC 13G", Tables.insider_transactions: "4", Tables.fundamentals_facts: "10-Q"}
+    forms = {Tables.sec_13d: "SC 13D", Tables.sec_13g: "SC 13G", Tables.insider_transactions: "4", Tables.sec_fundamentals_facts: "10-Q"}
     n_saved = 0
     for table, n in MARKERS_PER_TABLE.items():
         for i, (ticker, day) in enumerate(_marker_dates(store, table, n)):
@@ -127,7 +127,8 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
 
     def history(store: DataStore) -> pd.DataFrame:
         parts = [
-            build_ticker_history(t, store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": t})) for t in HISTORY_TICKERS
+            build_ticker_history(t, store.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": t}))
+            for t in HISTORY_TICKERS
         ]
         return pd.concat(parts, ignore_index=True)
 

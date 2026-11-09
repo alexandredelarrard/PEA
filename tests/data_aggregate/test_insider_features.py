@@ -1242,7 +1242,7 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     ⚠ THE FAILURE MODE IS ABSENCE, WHICH IS WHY THIS TEST IS SHAPED AS A DELTA.
     `daily_market_cap` reads `sharesOutstanding` -- the VENDOR basis -- while the 13F and
     insider ownership-% denominator is `sharesOutstandingPit`. Both columns exist in
-    `fundamentals_history` and both are fully populated (measured 2026-09-14: 51,504 rows,
+    `sharadar_fundamentals_history` and both are fully populated (measured 2026-09-14: 51,504 rows,
     51,504 non-null each, differing on 14,296 of them), so it is easy to read one as a synonym
     of the other. It is not: projecting the read to the PIT column alone made
     `fundamentals_to_daily` take its `if field not in columns` branch, `daily_market_cap`

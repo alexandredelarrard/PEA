@@ -1,7 +1,7 @@
 """List a company's filings of arbitrary form types over its full submissions history.
 
 Reads the recent page and the older paginated `filings.files[]` pages of submissions/CIK{cik}.json,
-so long histories are not truncated. On-demand filing discovery for the structure fetchers.
+so long histories are not truncated. Read by the DEF 14A text walk; `archive_url` is shared by the EDGAR driver.
 """
 
 from __future__ import annotations
@@ -31,12 +31,10 @@ def _rows_from_recent(block: dict, forms: set, cutoff: pd.Timestamp) -> list[dic
     for i in range(n):
         if block["form"][i] not in forms:
             continue
-        fdate = pd.Timestamp(block["filingDate"][i])
-        if fdate < cutoff:
+        if pd.Timestamp(block["filingDate"][i]) < cutoff:
             continue
         rows.append(
             {
-                "filing_date": fdate,
                 "period_of_report": block.get("reportDate", [None] * n)[i],
                 "accession_number": block["accessionNumber"][i],
                 "primary_document": block["primaryDocument"][i],
@@ -46,8 +44,7 @@ def _rows_from_recent(block: dict, forms: set, cutoff: pd.Timestamp) -> list[dic
 
 
 def list_filings(context: Context, cik: str, forms: Sequence[str], since: pd.Timestamp | str) -> pd.DataFrame:
-    """Filings of `forms` for one CIK filed strictly after `since`, oldest first: accession, primary document,
-    report date and filing date.
+    """Filings of `forms` for one CIK filed strictly after `since`: accession, primary document and report date.
 
     Archive pages entirely before the cutoff are not downloaded. A page that cannot be read raises
     (`sec_io.TransientReadError` once retries are spent), so a listing is never silently short.
@@ -68,8 +65,4 @@ def list_filings(context: Context, cik: str, forms: Sequence[str], since: pd.Tim
             continue
         rows += _rows_from_recent(sec_get(context, SEC_SUBMISSIONS_PAGE_URL.format(name=older_name)).json(), forms_set, cutoff)
 
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df["filing_date"] = pd.to_datetime(df["filing_date"]).dt.normalize()
-        df = df.sort_values("filing_date").reset_index(drop=True)
-    return df
+    return pd.DataFrame(rows)

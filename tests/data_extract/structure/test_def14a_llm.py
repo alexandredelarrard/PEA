@@ -7,7 +7,7 @@ test_compensation_anchor_skips_noise— the SCT anchor skips CD&A prose AND "rea
 test_sayonpay_anchor_matches_approval — say-on-pay anchor catches "NN% approval"/"NN% of votes"
 test_payratio_and_ownership_anchors — pay-ratio & beneficial-ownership content anchors match
 test_def14a_sections_extraction     — prepare_def14a_sections() isolates the right blocks
-test_llm_extractor_mock             — LLMExtractor.extract() with a mocked OpenAI call
+test_llm_extractor_mock             — LLMExtractor.run() with a mocked OpenAI call
 test_flatten_surfaces_all_signals   — _flatten emits every governance / comp / ownership column
 test_flatten_ceo_age_fallback       — ceo_age recovered from the directors list
 test_evidence_gate_parsed_stored_and_persistence_agree — parsed, stored and persisted evidence agree
@@ -373,8 +373,9 @@ def test_tabular_sections_capture_rows_in_synthetic():
 # LLMExtractor (mocked)                                                         #
 # --------------------------------------------------------------------------- #
 def test_llm_extractor_mock():
-    """extract() uses the configured model, tailored instructions and stable cache key."""
+    """run() uses the configured model, tailored instructions and stable cache key."""
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+    from src.gpt_extract.utils.schemas_gpt import LlmTask
     from tests.gpt_extract.fakes import fake_context, gpt_config
 
     mock_response = MagicMock()
@@ -388,7 +389,7 @@ def test_llm_extractor_mock():
 
             config = gpt_config()
             extractor = LLMExtractor(fake_context(), config, action="def14a_executive_pay")
-            result = extractor.extract(Def14AExtract, _SYNTHETIC)
+            result = extractor.run([LlmTask(seq=0, payload=_SYNTHETIC, schema=Def14AExtract)])[0].parsed
 
     assert isinstance(result, Def14AExtract)
     assert result.company_name == "ACME Corporation"
@@ -408,7 +409,7 @@ def test_llm_extractor_mock():
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
     print(
-        f"  extract() -> {result.company_name}; parse() got the .md instructions, the "
+        f"  run() -> {result.company_name}; parse() got the .md instructions, the "
         f"payload last, configured model={expected_model!r}, "
         f"prompt_cache_key={call_kw['prompt_cache_key']!r}, and no seed. Validated."
     )

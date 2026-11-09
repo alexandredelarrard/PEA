@@ -20,7 +20,7 @@ import requests
 
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
-from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_fillings
 from src.data_extract.utils.edgar_extract import fetch_def14a_text as def14a_text
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
@@ -394,6 +394,32 @@ def test_failed_listing_stores_nothing_and_lists_again(tmp_path: Path, sqlite_st
     print("\n=== SANITY CHECK: failed submissions listing (R-C02) ===")
     print(f"  a 403 listing stores nothing ({stored_after_failure} rows) and reads no document; a KeyError propagates;")
     print("  the next run lists the proxy again and stores it from its primary document, not the .txt.")
+
+
+def test_listing_date_before_the_index_date_reads_the_primary_document(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    real_listing = def14a_text.list_filings
+    world = ProxyWorld(monkeypatch, {})
+    monkeypatch.setattr(def14a_text, "list_filings", real_listing)
+    recent = {
+        "accessionNumber": [accession],
+        "form": ["DEF 14A"],
+        "filingDate": ["2022-02-26"],
+        "primaryDocument": ["proxy.htm"],
+        "reportDate": ["2022-04-20"],
+    }
+    monkeypatch.setattr(
+        edgar_fillings, "sec_get", lambda context, url, **k: SimpleNamespace(json=lambda: {"filings": {"recent": recent, "files": []}})
+    )
+
+    _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+
+    assert world.urls == [archive_url("1", accession, "proxy.htm")]
+    assert _proxies(sqlite_store)["primary_document"].tolist() == ["proxy.htm"]
+    print("\n=== SANITY CHECK: SEC filingDate 3 days before the index date (R2-04) ===")
+    print("  the production listing keeps the proxy, so its primary document is read and stored, not the <acc>.txt submission.")
 
 
 def test_a_proxy_shared_by_two_tickers_is_stored_for_each(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:

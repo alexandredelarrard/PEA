@@ -28,14 +28,15 @@ from src.data_extract.utils.common.security_lines import load_security_manual
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
     INSTANT,
+    FieldFacts,
     InstantLookup,
     PeriodGuards,
-    field_periods,
     fiscal_quarter_of_end,
     fiscal_year_ends,
     instant_stock,
     is_duration,
     load_guards,
+    newest_periods,
 )
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
@@ -131,18 +132,7 @@ def carry_latest_known(facts: pd.DataFrame, ends, field: str, on: str = "period_
 TTM_STALENESS_DAYS = 45
 
 
-def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.Series | None:
-    """The row of `frame` (a `build_periods` output) with the newest `column` for `field`, or None."""
-    if frame is None or frame.empty or "field" not in frame.columns:
-        return None
-    rows = frame[frame["field"] == field]
-    if rows.empty:
-        return None
-    dates = pd.to_datetime(rows[column])
-    return rows.iloc[int(dates.to_numpy().argmax())]
-
-
-def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
+def _is_stale(newest: Mapping[str, Any], period: pd.Timestamp) -> bool:
     """Whether this TTM window ends more than `TTM_STALENESS_DAYS` from `period`; False when `period` is unknown."""
     if pd.isna(period):
         return False
@@ -162,9 +152,9 @@ class _Visible:
     facts: pd.DataFrame
     #: The `_IDENTITY_FIELDS` facts, one frame per field in `filing_date` order (callers rely on `.iloc[-1]`).
     by_field: dict[str, pd.DataFrame]
-    #: The newest TTM row and the newest discrete-quarter row of every duration field with a quarter.
-    ttm: dict[str, pd.Series]
-    quarters: dict[str, pd.Series]
+    #: The newest TTM row and the newest discrete quarter (`periods.newest_periods`) of every duration field with a quarter.
+    ttm: dict[str, dict]
+    quarters: dict[str, dict]
     lookup: InstantLookup
     year_ends: list[pd.Timestamp]
 
@@ -172,9 +162,9 @@ class _Visible:
 class _Replay:
     """One ticker's facts indexed once for its event loop.
 
-    `frame` is sorted by `filing_date`, so an event's visible facts are a positional prefix. A field's quarters and
-    TTM depend only on that field's visible duration facts and the fiscal calendar, so they are recomputed only when
-    the field gained a fact or the calendar moved, and otherwise reused from the previous event unchanged.
+    `frame` is sorted by `filing_date`, so an event's visible facts are a positional prefix. A field's newest quarter
+    and TTM depend only on that field's visible duration facts (the fiscal calendar only labels quarters), so they are
+    recomputed only when the field gained a fact and otherwise reused from the previous event unchanged.
     """
 
     def __init__(self, frame: pd.DataFrame, catalogue: Catalogue, guards: PeriodGuards) -> None:
@@ -187,7 +177,8 @@ class _Replay:
         self._positions: dict[str, np.ndarray] = {str(name): positions for name, positions in frame.groupby("field", sort=False).indices.items()}
         durations = is_duration(self._narrow).to_numpy()
         self._durations = {name: positions[durations[positions]] for name, positions in sorted(self._positions.items())}
-        self._periods: dict[str, tuple[tuple[int, tuple[pd.Timestamp, ...]], pd.Series | None, pd.Series | None]] = {}
+        self._facts = FieldFacts.of(self._narrow)
+        self._periods: dict[str, tuple[int, dict | None, dict | None]] = {}
 
     def at(self, as_of: pd.Timestamp) -> _Visible:
         """The snapshot inputs of the event dated `as_of`."""
@@ -195,17 +186,15 @@ class _Replay:
         narrow = self._narrow.iloc[:upto]
         # The filer's own year ends as known at THIS event, shared by every field.
         year_ends = fiscal_year_ends(narrow)
-        calendar = tuple(year_ends)
         ttm, quarters = {}, {}
         for name, positions in self._durations.items():
             count = int(positions.searchsorted(upto))
             if count == 0:
                 continue
-            key, newest_ttm, newest_quarter = self._periods.get(name, (None, None, None))
-            if key != (count, calendar):
-                periods = field_periods(self._narrow.iloc[positions[:count]], self._catalogue.field(name), self._guards, year_ends)
-                newest_ttm, newest_quarter = (None, None) if periods is None else (_latest(periods[1], name), _latest(periods[0], name))
-                self._periods[name] = ((count, calendar), newest_ttm, newest_quarter)
+            seen, newest_ttm, newest_quarter = self._periods.get(name, (0, None, None))
+            if seen != count:
+                newest_ttm, newest_quarter = newest_periods(self._facts.take(positions[:count]), self._catalogue.field(name), self._guards)
+                self._periods[name] = (count, newest_ttm, newest_quarter)
             if newest_ttm is not None:
                 ttm[name] = newest_ttm
             if newest_quarter is not None:

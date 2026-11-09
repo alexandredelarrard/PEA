@@ -307,7 +307,7 @@ def build_frame(
     if not dropped.empty:
         log.warning(
             "same-date collapse: %d row(s) dropped, greatest `fiscal_end` kept "
-            "(Sharadar ships no form column, so FORM_PRECEDENCE has no analogue):\n%s",
+            "(Sharadar ships no form column, so the SEC 10-K-first rule has no analogue):\n%s",
             len(dropped),
             dropped[["ticker", "as_of", "fiscal_end"]].to_string(),
         )

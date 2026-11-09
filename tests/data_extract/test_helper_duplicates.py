@@ -34,10 +34,7 @@ _LINEAGE = "the identity lineage rules, read back by the Identity reader in comm
 #: into `common/` is a separate decision (02-plan Phase 9b record).
 PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.edgar_extract.edgar_driver": (
-        frozenset(
-            {"EdgarFetch", "EdgarRun", "EdgarScope", "FetchSummary", "FilingStamp", "RetryRounds", "index_years", "refresh_index"}
-            | {"run_edgar_fetch", "universe_rows"}
-        ),
+        frozenset({"EdgarFetch", "EdgarScope", "FilingStamp", "RetryRounds", "universe_rows"}),
         _DRIVER,
     ),
     "src.data_extract.utils.edgar_extract.edgar_fillings": (frozenset({"list_filings"}), _DRIVER),
@@ -58,7 +55,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"Catalogue", "load_catalogue"}),
         "the KPI catalogue owned by fundamentals; the Sharadar merge reads the same catalogue",
     ),
-    "src.data_extract.utils.fundamentals_sharadar.merge_history": (frozenset({"build_merged_history"}), _PROPAGATE),
     "src.data_extract.utils.identity.cik_history": (
         frozenset({"IdentityError", "TwoUniverseTickersOneEntityError", "check_one_entity_per_cik", "entity_by_cik_map", "entity_or_singleton"}),
         _LINEAGE,

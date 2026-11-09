@@ -340,11 +340,10 @@ def test_a_stock_split_inside_the_window_refuses_the_trailing_average():
     )
     ttm = periods.trailing_twelve(quarters, spec, guards=GUARDS)
     last = ttm.iloc[-1]
-    assert pd.isna(last["value"])
-    assert last["dc_code"] == periods.SPLIT_BASIS_MISMATCH
+    assert pd.isna(last["value"]) and last["n_quarters"] == 4
     print(
         f"\nSANITY: three quarters at 1,000 shares then one at 7,000 (a 7:1 split) -> "
-        f"TTM is NULL with dc_code={last['dc_code']}, not the 2,500 a mean would give."
+        f"TTM is NULL over a full {last['n_quarters']}-quarter window, not the 2,500 a mean would give."
     )
 
 
@@ -383,12 +382,10 @@ def test_a_ttm_needs_four_contiguous_quarters_and_never_a_carried_forward_annual
     )
     ttm = periods.trailing_twelve(quarters, spec, guards=GUARDS)
     # Four quarters exist, but they span two years with a two-quarter hole in between.
-    assert ttm["value"].isna().all()
-    assert set(ttm["dc_code"].dropna()) == {periods.INSUFFICIENT_QUARTERS}
+    assert ttm["value"].isna().all() and "dc_code" not in ttm.columns
     print(
         f"\nSANITY: four quarters spanning 18 months with a hole -> "
-        f"{int(ttm['value'].isna().sum())}/{len(ttm)} NULL with "
-        f"{periods.INSUFFICIENT_QUARTERS}. No annual is carried forward to fill it."
+        f"{int(ttm['value'].isna().sum())}/{len(ttm)} NULL. No annual is carried forward to fill it."
     )
 
 
@@ -725,18 +722,15 @@ def test_an_annual_on_a_q4_window_with_no_annual_fact_is_refused():
             ("2020-03-01", "2020-05-31", 39_068e6),  # the YEAR, on a Q4 window
         ]
     )  # and NO annual fact anywhere
-    refusals: list[dict] = []
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"), refusals=refusals)
+    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2020-05-31")]
     print("\n=== SANITY CHECK: D1b, an annual on a Q4 window with no annual fact ===")
     print("  the fact      : $39,068M on a 91-day window ending 2020-05-31")
     print("  nine months   : $28,629M -- SMALLER than the 'quarter', which no real Q4 is")
-    print(f"  rows kept for that window: {len(q4)}")
-    print(f"  refusals      : {[(r['dc_code'], r['value']) for r in refusals]}")
+    print(f"  rows kept for that window: {len(q4)}; values kept {sorted(q['value'] / 1e6)}")
     assert q4.empty, "the mislabelled annual must not survive as a fourth quarter"
-    assert [r["dc_code"] for r in refusals] == [periods.AMBIGUOUS_DURATION]
-    assert refusals[0]["value"] == pytest.approx(39_068e6)
-    print("  OK: refused and reason-coded, rather than stored as a $39bn quarter.")
+    assert not (q["value"] == 39_068e6).any()
+    print("  OK: refused, rather than stored as a $39bn quarter.")
 
 
 def test_d1b_keeps_a_fourth_quarter_that_really_is_the_whole_year():
@@ -754,13 +748,11 @@ def test_d1b_keeps_a_fourth_quarter_that_really_is_the_whole_year():
             ("2020-03-01", "2020-05-31", 500e6),
         ]
     )
-    refusals: list[dict] = []
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"), refusals=refusals)
+    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2020-05-31")]
     print("\n=== SANITY CHECK: D1b does not eat a legitimate Q4-equals-FY ===")
-    print(f"  nine months $0, Q4 $500M -> rows kept {len(q4)}, refusals {len(refusals)}")
+    print(f"  nine months $0, Q4 $500M -> rows kept {len(q4)}")
     assert len(q4) == 1 and q4.iloc[0].value == pytest.approx(500e6)
-    assert not refusals
     print("  OK: silence in the cumulative is not evidence of a mislabelled year.")
 
 
@@ -776,24 +768,22 @@ def test_d1b_leaves_a_normal_fourth_quarter_alone_when_no_annual_exists():
             ("2020-03-01", "2020-05-31", 10_439e6),  # the real Q4
         ]
     )
-    refusals: list[dict] = []
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"), refusals=refusals)
+    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2020-05-31")]
     print("\n=== SANITY CHECK: D1b on the ordinary no-annual filer ===")
-    print(f"  nine months $28,629M, Q4 $10,439M -> kept {len(q4)}, refusals {len(refusals)}")
-    assert len(q4) == 1 and q4.iloc[0].basis == periods.AS_REPORTED
-    assert not refusals
+    print(f"  nine months $28,629M, Q4 $10,439M -> kept {len(q4)}")
+    assert len(q4) == 1 and q4.iloc[0].basis == periods.AS_REPORTED and q4.iloc[0].value == pytest.approx(10_439e6)
     print("  OK: the guard needs the quarter to EXCEED the nine months, not merely to exist.")
 
 
 @pytest.fixture(scope="module")
-def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
-    """ORCL's real revenue quarters, the D1b refusals, and the FACTS they were built from.
+def orcl_quarters() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """ORCL's real revenue quarters and the FACTS they were built from.
 
     The facts frame is returned because the refusal moved layers (cluster `2603621e89ab`):
     `fetch_fundamentals_sec._drop_note_only_quarter` now drops the mislabelled years while
     the filing is being read, so `build_periods` never sees them and D1b has nothing left to
-    refuse. The evidence is therefore in the fact rows, not in the `refusals` list.
+    refuse. The evidence is therefore in the fact rows.
 
     Since `_retry_without`, those three filings no longer produce a value-less stub either:
     withholding `us-gaap:Revenues` lets the ASC 606 element resolve and the annual windows
@@ -829,9 +819,8 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
             continue
         rows.extend(filing_rows("ORCL", FilingStamp.of(filing, str(company.cik)), CATALOGUE, gics))
     facts = pd.DataFrame(rows)
-    refusals: list[dict] = []
-    quarters, _ttm, _instants = periods.build_periods(facts, CATALOGUE, refusals=refusals)
-    return quarters, refusals, facts
+    quarters, _ttm, _instants = periods.build_periods(facts, CATALOGUE)
+    return quarters, facts
 
 
 @pytest.mark.live
@@ -854,9 +843,8 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
     back to it, so it derives only because `_retry_without` recovered its annual from the
     fiscal 2020 10-K itself.
     """
-    quarters, refusals, facts = orcl_quarters
+    quarters, facts = orcl_quarters
     revenue = quarters[quarters["field"] == "totalRevenue"]
-    coded = [r for r in refusals if r["dc_code"] == periods.AMBIGUOUS_DURATION]
     years = ("2018-05-31", "2019-05-31", "2020-05-31", "2021-05-31", "2022-05-31")
 
     print("\n=== SANITY CHECK: ORCL's Q4-windowed annuals, fiscal 2018-2022 ===")
@@ -867,12 +855,6 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
         else:
             row = got.iloc[0]
             print(f"  {year_end}  ${row.value / 1e9:6.3f}bn via {row.basis}")
-    print(f"  D1b refusals: {len(coded)} (expected 0 -- the facts layer refused first)")
-
-    assert not coded, (
-        "D1b saw a mislabelled year -- `_drop_note_only_quarter` should have refused it "
-        "while the filing was read, before `sec_fundamentals_facts` could assert it"
-    )
     for year_end in years:
         row = revenue[revenue["period_end"] == pd.Timestamp(year_end)]
         assert len(row) == 1, f"{year_end}: expected exactly one Q4 row"
@@ -913,7 +895,7 @@ def test_the_retry_recovers_the_annual_the_filer_tagged_under_the_other_element(
     fiscal 2020 10-K itself, because the later vintages that rescue 2021 and 2022 do not
     reach back that far.
     """
-    quarters, _refusals, facts = orcl_quarters
+    quarters, facts = orcl_quarters
     revenue = facts[facts["field"] == "totalRevenue"]
     annual = revenue[revenue["duration_type"] == periods.ANNUAL]
     broken = {"0001564590-20-030125", "0001564590-21-033616", "0001564590-22-023675"}
@@ -963,13 +945,11 @@ def test_d1b_keeps_a_genuine_loss_quarter_bigger_than_the_nine_months():
             ("2017-10-01", "2017-12-31", -1_656.9e6),  # Q4 a bigger NEGATIVE
         ]
     )  # and no annual fact anywhere
-    refusals: list[dict] = []
-    q = periods.quarterize(frame, CATALOGUE.field("netIncome"), periods.load_guards("./configs"), refusals=refusals)
+    q = periods.quarterize(frame, CATALOGUE.field("netIncome"), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2017-12-31")]
     print("\n=== SANITY CHECK: D1b keeps a genuine loss quarter ===")
-    print(f"  nine months +$1,452.8M, Q4 -$1,656.9M -> kept {len(q4)}, refusals {len(refusals)}")
+    print(f"  nine months +$1,452.8M, Q4 -$1,656.9M -> kept {len(q4)}")
     print(f"  four quarters sum to {q['value'].sum() / 1e6:,.1f}M (LLY's reported FY2017 net loss was -204.1M)")
-    assert len(q4) == 1 and q4.iloc[0].value == pytest.approx(-1_656.9e6)
-    assert not refusals, "a loss quarter is not a mislabelled year"
+    assert len(q4) == 1 and q4.iloc[0].value == pytest.approx(-1_656.9e6), "a loss quarter is not a mislabelled year"
     assert q["value"].sum() == pytest.approx(-204.1e6, rel=1e-6)
     print("  OK: opposite-signed cumulative means the year turned, not a tagging defect.")

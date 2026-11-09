@@ -393,19 +393,18 @@ class Tables:
     # Extract -- fundamentals                                           #
     # ----------------------------------------------------------------- #
     # The SEC producer's output. PUBLICATION-EVENT grain: `as_of` is a FILING DATE, one row
-    # per date on which >=1 extracted value became newly public, each row a COMPLETE snapshot
-    # of every column's latest-known value. Append-only -- an earlier row keeps its as-filed
-    # numbers forever, which is where the no-leakage property lives. Exactly 69 columns,
+    # per date on which an original 10-K or 10-Q was filed, each row a COMPLETE snapshot of
+    # every column's latest-known value. Append-only -- an earlier row keeps its as-filed
+    # numbers forever, which is where the no-leakage property lives. Exactly 66 columns,
     # enumerated by `Catalogue.history_columns`. See fundamentals/build_history.py.
     #
     # This entry is the SEC half of the merge into `sharadar_fundamentals_history` below and
-    # nothing else: it is what `build_history.py` writes, what `src/validate/` reads, and what
-    # `fundamentals_reason_codes` explains.
+    # nothing else: it is what `build_history.py` writes and what `src/validate/` reads.
     sec_fundamentals_history = Table(
         "sec_fundamentals_history",
         ("ticker", "as_of"),
         date_col="as_of",
-        date_type_cols=("as_of", "fiscal_end", "amended_fiscal_end"),
+        date_type_cols=("as_of", "fiscal_end"),
         freshness="quarterly",
     )
     # THE MERGED TABLE, and the one every consumer should read: Sharadar owns a declared
@@ -417,10 +416,8 @@ class Tables:
     # that `src/data_aggregate/` (all 12 files) is ALREADY pointed at the right name: phase 4
     # then only has to populate it, instead of re-pointing every consumer a second time.
     #
-    # NOT carried over from the SEC table: `is_amendment` / `amended_fiscal_end` /
-    # `amended_fields` are pure SEC reconciliation columns and stay there, since Sharadar has
-    # no amendment events and they would be permanently null here (D15). There is no `source`
-    # column either -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
+    # NOT carried over from the SEC table: `publication_form`. There is no `source` column
+    # either -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
     #
     # `read_columns` IS the column contract, declared here rather than only in the builder:
     # 3 keys + the 60 `HISTORY_STATEMENT_ORDER` names + `stockholdersEquityInclNci` +
@@ -544,27 +541,6 @@ class Tables:
             "netCashFlow",
         ),
     )
-    # WHY a `sec_fundamentals_history` cell is null, or why its value is off-basis. DENSE -- one
-    # row per null-or-qualified cell at every publication event -- so the
-    # zero-unexplained-nulls gate is a LEFT JOIN on (ticker, as_of, field) rather than a
-    # reconstruction. The code vocabulary is closed and lives in fundamentals/reason_codes.py.
-    #
-    # Two PAYLOAD columns, both NULL for every code but the one that owns them:
-    # `combined_into` names the destination field for `combined_into`, and `rejected_value`
-    # carries the number a `failed_hard_guard` refused (plan-5b decision 46). The second one
-    # exists because a nulled DERIVED value -- a TTM, a `derived_identity` total -- has no
-    # fact row anywhere, so without it the rejected number is simply lost and "what did the
-    # guard actually throw away?" becomes unanswerable after the fact. That question is the
-    # whole lesson of the 745 correct rows an over-strict guard once nulled.
-    #
-    # ⚠ THIS EXPLAINS `sec_fundamentals_history`, NOT the merged `sharadar_fundamentals_history`
-    # (decision D24). Reason codes are a property of the SEC resolution layer -- they name
-    # which SEC concept was combined, derived or rejected -- and Sharadar has no equivalent.
-    # Accepted consequence: `unexplained_null` stops being a universal zero-ceiling gate on
-    # the merged table; the phase-4 gap check is that table's instrument instead.
-    fundamentals_reason_codes = Table(
-        "fundamentals_reason_codes", ("ticker", "as_of", "field", "dc_code"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly"
-    )
     # Headcount, read from 10-K prose by `fundamentals_employees.py`. One row per 10-K filing date
     # (`as_of`), from the filing `accession_number` filed by `cik`: the stated `employees_total`,
     # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
@@ -580,7 +556,7 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405"), source_start="1993-01-01"),
     )
-    # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
+    # Accession-grain fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
     # data_extract/utils/fundamentals/xbrl_linkbase.py) rather than from a priority-ordered
     # candidate-tag list.
@@ -626,7 +602,6 @@ class Tables:
             "cik",
             "form",
             "filing_date",
-            "is_amendment",
             "period_of_report",
             "regime",
             "period_start",
@@ -639,10 +614,8 @@ class Tables:
             "source_concept",
             "roll_up_children",
             "root_anchor",
-            "adjustment",
             "role_uri",
             "is_extension",
-            "dc_code",
         ),
     )
     # Not index-diffed: the source lists no documents, so its units come from the stored dates.

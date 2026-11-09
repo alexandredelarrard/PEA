@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.data_extract import cli as cli_mod
+from src.data_extract.transformers import step_extract_fundamentals as step_fundamentals
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
 from tests.data_extract.edgar_fixtures import stub_edgar_step
@@ -148,7 +149,7 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
     [
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
-        ("fundamentals-history-sec", "build_fundamentals_history", "rebuild_history"),
+        ("sec-fundamentals-history", "build_fundamentals_history", "rebuild_history"),
         ("identity --only propagate", "recheck_tickers", "every"),
         ("edgar-index", "refresh", "rebuild"),
     ],
@@ -174,6 +175,8 @@ def test_full_reaches_the_existing_source_operation(
     elif command == "edgar-index":
         monkeypatch.setattr(cli_mod.edgar_index, target, record)
         monkeypatch.setattr(cli_mod.edgar_index, "quarter_counts", lambda ctx: {})
+    elif command == "sec-fundamentals-history":
+        monkeypatch.setattr(step_fundamentals, target, record)
     else:
         monkeypatch.setattr(cli_mod, target, record)
     context.config_dir = "configs"
@@ -182,7 +185,7 @@ def test_full_reaches_the_existing_source_operation(
     for flags in ([], ["-F"], ["--full"]):
         calls.clear()
         edgar_calls.clear()
-        date_flags = [] if command == "fundamentals-history-sec" else ["--as-of", "2026-09-29"]
+        date_flags = [] if command == "sec-fundamentals-history" else ["--as-of", "2026-09-29"]
         result = runner.invoke(cli_mod.cli, [*command.split(), *date_flags, *flags])
         assert result.exit_code == 0, result.output
         assert len(calls) == 1 and calls[0][keyword] is bool(flags)

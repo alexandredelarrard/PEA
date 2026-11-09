@@ -65,6 +65,7 @@ from src.constants.command_line_interface import (
 )
 from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar, widest_index_years
+from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
@@ -84,7 +85,6 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
@@ -384,18 +384,19 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
 
 
 @cli.command(
-    name="fundamentals-history-sec",
-    help="sec_fundamentals_facts -> sec_fundamentals_history + _reason_codes, on the "
-    "publication-event grain. No network. Append-only: refuses to overwrite "
-    "an already-published row unless --full deletes the requested tickers' history and reason codes first. Stored facts are unchanged; after a `sec-fundamentals-facts -F` re-read run this with --full.",
+    name="sec-fundamentals-history",
+    help="sec_fundamentals_facts -> sec_fundamentals_history, on the publication-event grain of original 10-K and 10-Q "
+    "filings. No network. Append-only: refuses to overwrite an already-published row unless --full deletes the requested "
+    "tickers' history first. Stored facts are unchanged; after a `sec-fundamentals-facts -F` re-read run this with --full "
+    "(or --verify-history).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
-def fundamentals_history_sec(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=full, verify_history=verify_history)
+def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), full=full, verify=verify_history)
 
 
 # --- Fundamentals: Sharadar (SF1) ---

@@ -559,8 +559,8 @@ SHARADAR_SEC_ASOF_TOLERANCE_DAYS = 370
 
 #: How a duplicate publication date is resolved, in MERGED names (the vendor columns behind
 #: them are `date` and `reportperiod`). Sharadar documents its AR dimensions as possibly
-#: carrying several observations in one quarter and ships NO form column, so
-#: `FORM_PRECEDENCE` has no analogue here: the vendor's own rule is to keep the GREATEST
+#: carrying several observations in one quarter and ships NO form column, so the SEC
+#: 10-K-first rule has no analogue here: the vendor's own rule is to keep the GREATEST
 #: period end, i.e. the most recent period the filer published that day.
 SHARADAR_COLLAPSE_KEY: tuple[str, ...] = ("ticker", "as_of")
 SHARADAR_COLLAPSE_ORDER = "fiscal_end"

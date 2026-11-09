@@ -40,13 +40,10 @@ gate, without which every quarter in every 10-Q is "lone" and the whole quarterl
 
 from __future__ import annotations
 
-import json
-
 import pandas as pd
 
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _adjustment_json, _drop_note_only_quarter, _period_frame, _values_by_period
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _drop_note_only_quarter, _period_frame, _values_by_period
 from src.data_extract.utils.fundamentals.periods import ANNUAL, QUARTERLY
-from src.data_extract.utils.fundamentals.xbrl_linkbase import LINKBASE_TOTAL, Resolution
 
 TAX = "us-gaap:IncomeTaxExpenseBenefit"
 REVENUES = "us-gaap:Revenues"
@@ -137,22 +134,14 @@ def test_the_refusal_is_recorded_on_the_covering_annual():
     """A refusal nobody can count is a silent delete.
 
     The marker lands on the ANNUAL window that contains the refused quarter -- the period the
-    note belongs to -- and rides the `adjustment` JSON, so
-    `adjustment::jsonb ? 'note_quarter_rejected'` finds every row the guard acted on with no
-    schema change.
+    note belongs to.
     """
     hosts = _by_end(_drop_note_only_quarter(_periods(_BA_TAX, TAX), form="10-K"))
 
     assert hosts["2010-12-31"]["note_quarter_rejected"] == [{"period_end": "2010-12-31", "value": 371_000_000.0}]
     assert hosts["2011-12-31"]["note_quarter_rejected"] == [{"period_end": "2011-12-31", "value": 397_000_000.0}]
     assert "note_quarter_rejected" not in hosts["2009-12-31"], "a year with no refusal carries no marker"
-
-    host = hosts["2011-12-31"]
-    adjustment = _adjustment_json(Resolution(field="incomeTaxExpense", method=LINKBASE_TOTAL, concept=TAX), host)
-    assert adjustment is not None
-    blob = json.loads(adjustment)
-    assert blob == {"note_quarter_rejected": [{"period_end": "2011-12-31", "value": 397_000_000.0}]}
-    print(f"refusal recorded: FY2011's adjustment blob is {json.dumps(blob)}")
+    print(f"refusal recorded on the covering annual: FY2011 -> {hosts['2011-12-31']['note_quarter_rejected']}")
 
 
 # --------------------------------------------------------------------------- #

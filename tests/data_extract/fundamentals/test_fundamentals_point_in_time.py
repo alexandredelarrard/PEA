@@ -32,7 +32,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.fundamentals.build_history import build_ticker_history
+from src.data_extract.utils.fundamentals.build_history import build_ticker
 
 MAX_FILING_LAG_DAYS = 200  # generous: 10-K ~90d + late filers + amendments
 TOLERATED_ROW_SHARE = 0.005  # a handful of genuine restatement oddities is acceptable
@@ -45,7 +45,7 @@ def _history() -> pd.DataFrame:
         _, context = get_config_context("./configs", use_cache=False, save=False)
         from src.data_store.schema import Tables
 
-        df = context.store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "is_amendment"])
+        df = context.store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "fiscal_end"])
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"sec_fundamentals_history unavailable: {exc}")
     if df is None or df.empty:
@@ -110,7 +110,7 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
     What must still hold, and is asserted here:
 
       1. `(ticker, as_of)` is UNIQUE. That is the table's primary key and the real grain.
-      2. Every repeated `fiscal_end` is EXPLAINED — by an amendment row (`is_amendment`), or by
+      2. Every repeated `fiscal_end` is EXPLAINED — by
          a declared registrant boundary in `configs/sec/registrant_cutover.json`, where two legal
          entities each filed for a period that straddles the cutover. Anything else is a
          genuine duplicate and fails.
@@ -134,8 +134,6 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
 
     unexplained = []
     for (ticker, fiscal_end), group in groups:
-        if bool(group["is_amendment"].fillna(False).any()):
-            continue  # a restatement: the whole point
         # ANY boundary in the chain excuses it, not just the latest. A ticker can have
         # several -- PSKY is CBS -> Viacom -> ViacomCBS -> Paramount Global -> Paramount
         # Skydance -- and each seam can produce the same two-publication-events shape.
@@ -208,7 +206,7 @@ def test_as_of_never_precedes_fiscal_end_unit():
         }
 
     for early in (False, True):
-        h = build_ticker_history("TEST", facts_for(early))
+        h = build_ticker("TEST", facts_for(early))
         if h.empty:
             continue
         as_of = pd.to_datetime(h["as_of"])

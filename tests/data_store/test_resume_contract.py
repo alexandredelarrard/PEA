@@ -49,7 +49,6 @@ SIDE_TABLES = frozenset(
     {
         Tables.sharadar_fundamentals_history.name,
         Tables.sec_fundamentals_history.name,
-        Tables.fundamentals_reason_codes.name,
         Tables.cusip_ticker_map.name,
         Tables.insider_footnotes.name,
         Tables.sec_13d_transactions.name,

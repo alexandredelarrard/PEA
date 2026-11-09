@@ -12,6 +12,9 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _row as _facts_row
+from src.data_extract.utils.fundamentals.reason_codes import NOT_DISCLOSED
+from src.data_extract.utils.fundamentals.xbrl_linkbase import UNRESOLVED, Resolution
 from src.data_store.schema import Table, Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_filing
@@ -107,6 +110,29 @@ def test_a_marker_is_one_typed_null_row_with_ddl_columns_only(name: str, sqlite_
     print(f"\n=== SANITY CHECK: {name} marker ===")
     print(
         f"  {column}={sentinel!r}; {float_col}={row[float_col]!r}, {date_col}={row[date_col]!r}, {text_col}={row[text_col]!r}; hidden from load; DDL columns only."
+    )
+
+
+def test_a_value_less_facts_row_is_kept_without_label_columns(sqlite_store) -> None:
+    """AC-004 / AM-1: a field the filing tags nowhere is still written as one value-less row (it marks the field as
+    read), and the facts table carries no `dc_code`, `adjustment` or `is_amendment` column."""
+    stamp = FilingStamp.of(fake_filing("0000000001-26-000003", 1, _FILED, form="10-Q"), "0000000001")
+    resolution = Resolution(field="totalRevenue", method=UNRESOLVED, dc_code=NOT_DISCLOSED)
+    row = _facts_row("AAA", stamp, pd.Timestamp("2026-06-30"), "industrial", "totalRevenue", resolution, None)
+    table = Tables.sec_fundamentals_facts
+    create_canonical(sqlite_store.engine, [table])
+    sqlite_store.save(table, pd.DataFrame([row], columns=table.retrieval_columns))
+
+    stored = sqlite_store.load(table).iloc[0]
+    labels = {"dc_code", "adjustment", "is_amendment"}
+    assert set(row) == set(table.retrieval_columns), set(row) ^ set(table.retrieval_columns)
+    assert not labels & (set(table.retrieval_columns) | _ddl_columns(table.name))
+    assert pd.isna(stored["value"]) and stored["field"] == "totalRevenue" and stored["resolution_method"] == UNRESOLVED
+    assert pd.Timestamp(stored["period_end"]) == pd.Timestamp("2026-06-30"), "a value-less row's PK falls back to the period of report"
+    print("\n=== SANITY CHECK: value-less facts row ===")
+    print(
+        f"  stored one row: field={stored['field']}, value={stored['value']!r}, method={stored['resolution_method']}, "
+        f"period_end={pd.Timestamp(stored['period_end']).date()}; no {sorted(labels)} column in the registry or the DDL."
     )
 
 

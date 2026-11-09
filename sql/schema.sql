@@ -388,13 +388,13 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 
 -- [extract] sec_fundamentals_history  (pk: ticker, as_of)
 -- The PUBLICATION-EVENT grain: `as_of` is a FILING DATE, not a period end, and a row exists
--- for every date on which this ticker made >=1 extracted value newly public. Each row is a
+-- for every date on which this ticker filed an original 10-K or 10-Q. Each row is a
 -- COMPLETE SNAPSHOT (every column carries its latest-known value at that date), so a plain
 -- `asof` merge needs no reconstruction -- and rows are append-only, so an earlier row keeps
 -- its as-filed numbers forever. See data_extract/utils/fundamentals/build_history.py.
 --
--- EXACTLY 69 columns, enumerated: 4 keys + 52 catalogue fields + 8 derived + `regime` +
--- 4 provenance, and the 60 value columns are in STATEMENT order rather than in the
+-- EXACTLY 66 columns, enumerated: 4 keys + 52 catalogue fields + 8 derived + `regime` +
+-- `publication_form`, and the 60 value columns are in STATEMENT order rather than in the
 -- tier-then-name order they are resolved in -- reading the table reads like the
 -- statements it came from. `fiscal_quarter` labels which quarter of the ISSUER's own
 -- year `fiscal_end` closes, on every row including the TTM and instant ones: a filer's
@@ -406,7 +406,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- Gone from the legacy shape, each deliberately: `sector` / `industry_group` (a
 -- slowly-changing dimension, joined from universe_tickers rather than duplicated into a
 -- point-in-time table); `revenueGrowth` / `earningsGrowth` (computed by pit.py at cube time
--- on a fixed 365-day as_of offset -- a row offset is ~9 months once an amendment row exists);
+-- on a fixed 365-day as_of offset, not a row offset);
 -- `employees` (text-sourced, so it lives in fundamentals_employees and a failed parse cannot
 -- fail this build); `ebitda_q` / `freeCashflow_q` / `capexGlobal` and the ~170 columns whose
 -- inputs left with the rebuild.
@@ -490,9 +490,6 @@ CREATE TABLE IF NOT EXISTS "sec_fundamentals_history" (
     "optionOverhang" DOUBLE PRECISION,
     "regime" TEXT,
     "publication_form" TEXT,
-    "is_amendment" BOOLEAN,
-    "amended_fiscal_end" DATE,
-    "amended_fields" TEXT,
     PRIMARY KEY ("ticker", "as_of")
 );
 CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_history_ticker ON "sec_fundamentals_history" ("ticker");
@@ -507,7 +504,7 @@ CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_history_ticker ON "sec_fundamenta
 -- Same PUBLICATION-EVENT grain as the SEC table: `as_of` is a FILING DATE. Here it is
 -- Sharadar's own `date`, which the AR dimensions document as the SEC filing date -- measured
 -- against `sec_fundamentals_history.as_of` on 14 tickers x 5 years it matched 279 of 280
--- (99.64%), the single miss being a 10-K/A Sharadar has no row for.
+-- (99.64%).
 --
 -- EXACTLY 92 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
 -- `stockholdersEquityInclNci` + `regime` + `sharesOutstandingPit` + the 26 Sharadar extras.
@@ -534,14 +531,8 @@ CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_history_ticker ON "sec_fundamenta
 -- SEC roster has them NULL rather than falling back, because a per-row fallback is exactly
 -- the mid-series source switch D14 forbids.
 --
--- NOT here, each deliberately (D15): `publication_form`, `is_amendment`,
--- `amended_fiscal_end`, `amended_fields` -- pure SEC RECONCILIATION columns that stay on
--- `sec_fundamentals_history`, where the amendment grain is real and the validator uses them.
--- Sharadar publishes no amendment events, so carrying them here would be four permanently
--- NULL columns that lie about what the table knows. There is no `source` column either:
--- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
---
--- ⚠ `fundamentals_reason_codes` explains `sec_fundamentals_history`, NOT this table (D24).
+-- NOT here: `publication_form`, which stays on `sec_fundamentals_history`. There is no
+-- `source` column either: precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
 
 CREATE TABLE IF NOT EXISTS "sharadar_fundamentals_history" (
     "ticker" TEXT NOT NULL,
@@ -668,43 +659,6 @@ CREATE TABLE IF NOT EXISTS "sharadar_fundamentals_history" (
 );
 CREATE INDEX IF NOT EXISTS ix_sharadar_fundamentals_history_ticker ON "sharadar_fundamentals_history" ("ticker");
 
--- [extract] fundamentals_reason_codes  (pk: ticker, as_of, field, dc_code)
--- WHY a `sec_fundamentals_history` cell is null, or why the value it does carry is not on the
--- field's nominal basis. Long rather than 39 `_DC` companion columns (which would be a ~50%
--- wider table, almost entirely NULL); the deviation from the Compustat-style shape the spec
--- asked for is reversible.
---
--- DENSE: one row per null-or-qualified cell at EVERY publication event, so the
--- zero-unexplained-nulls gate is a one-line LEFT JOIN on (ticker, as_of, field) and
--- "was this null explained on 2019-05-02?" stays a lookup rather than a window function.
--- Mostly repetition -- APA's totalLiabilities earns a row at all ~62 of its filing dates --
--- and that is the price of the snapshot contract, which a sparse state-change grain would
--- contradict. ~150-200k rows universe-wide.
---
--- The code vocabulary is closed and declared once, in
--- data_extract/utils/fundamentals/reason_codes.py; the build asserts every code against it.
---
--- TWO PAYLOAD COLUMNS, each NULL for every code but the one that owns it. `combined_into`
--- names the destination field for the `combined_into` code. `rejected_value` carries the
--- number a `failed_hard_guard` refused (plan-5b decision 46) -- it exists because a nulled
--- DERIVED value (a TTM, a `derived_identity` total) has no fact row anywhere, so without it
--- the refused number is simply lost and "did that guard null something CORRECT?" becomes
--- archaeology instead of a query. That question is the whole lesson of the 745 correct rows
--- an over-strict guard once nulled. Neither is part of the key: a field is folded into at
--- most one destination and refused at most one number per (field, code), so keying on either
--- would let two rows disagree rather than making the second impossible to write.
-
-CREATE TABLE IF NOT EXISTS "fundamentals_reason_codes" (
-    "ticker" TEXT NOT NULL,
-    "as_of" DATE NOT NULL,
-    "field" TEXT NOT NULL,
-    "dc_code" TEXT NOT NULL,
-    "combined_into" TEXT,
-    "rejected_value" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "as_of", "field", "dc_code")
-);
-CREATE INDEX IF NOT EXISTS ix_fundamentals_reason_codes_code ON "fundamentals_reason_codes" ("dc_code");
-
 -- [extract] fundamentals_employees  (pk: ticker, as_of)
 -- Employee headcount, read from 10-K prose (there is no GAAP concept for it). One row per
 -- 10-K filing date `as_of`, from filing `accession_number` filed by `cik`. The stated
@@ -735,8 +689,9 @@ CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
 -- [extract] sec_fundamentals_facts  (pk: ticker, accession_number, field, duration_type, period_end)
 -- One row per catalogue FIELD per period per filing, resolved from the filer's own XBRL
 -- calculation linkbase. STRICTLY AS-FILED: no derived quarter is ever written here (Q4 =
--- FY - YTD9 happens in memory during the history build), and amendments append rather than
--- overwrite -- so `filing_date <= D` answers "what was knowable on D" exactly.
+-- FY - YTD9 happens in memory during the history build), only original 10-K and 10-Q filings
+-- are read, and rows are never overwritten -- so `filing_date <= D` answers "what was knowable
+-- on D" exactly.
 --
 -- THE KEY IS THE CALENDAR WINDOW, NOT THE FISCAL LABEL. edgartools tags a 10-K's current year
 -- and its first comparative with the SAME `fiscal_year`, so the original PK
@@ -748,7 +703,7 @@ CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
 -- primary Q4 input. Keyed on `period_end` the same sweep loses 3 rows (0.001%), and those are
 -- the one case `periods._latest_per_window` already exists to collapse.
 --
--- `period_end` is therefore NOT NULL. A reason-coded row (a field the filing tags nowhere) has
+-- `period_end` is therefore NOT NULL. A value-less row (a field the filing tags nowhere) has
 -- no period of its own and falls back to the filing's `period_of_report` -- see `_period_end`.
 -- `fiscal_year` / `fiscal_period` are PAYLOAD: periods.py selects every input by calendar
 -- window and its own docstring records why ("Nothing in this module reads `fiscal_period`").
@@ -764,7 +719,6 @@ CREATE TABLE IF NOT EXISTS "sec_fundamentals_facts" (
     "cik" TEXT,
     "form" TEXT,
     "filing_date" DATE,
-    "is_amendment" BOOLEAN,
     "period_of_report" DATE,
     "regime" TEXT,
     "period_start" DATE,
@@ -776,10 +730,8 @@ CREATE TABLE IF NOT EXISTS "sec_fundamentals_facts" (
     "source_concept" TEXT,
     "roll_up_children" TEXT,
     "root_anchor" TEXT,
-    "adjustment" TEXT,
     "role_uri" TEXT,
     "is_extension" BOOLEAN,
-    "dc_code" TEXT,
     PRIMARY KEY ("ticker", "accession_number", "field", "duration_type", "period_end")
 );
 CREATE INDEX IF NOT EXISTS ix_sec_fundamentals_facts_filing_date ON "sec_fundamentals_facts" ("filing_date");

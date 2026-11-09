@@ -329,13 +329,8 @@ def test_column_contract(merged, field_map):
 
 
 def test_no_amendment_columns(merged):
-    """The four SEC reconciliation columns are ABSENT, and that is a DECISION (D15).
-
-    Explicit because a future reader will otherwise read their absence as an oversight and
-    'fix' it. `is_amendment` / `amended_fiscal_end` / `amended_fields` / `publication_form`
-    are properties of the SEC amendment grain, which Sharadar has no equivalent of -- carrying
-    them here would produce four permanently-NULL columns that lie about what the table knows.
-    They stay on `sec_fundamentals_history`, where the validator uses them.
+    """The SEC provenance column `publication_form` is ABSENT, and that is a DECISION (D15):
+    Sharadar ships no form, so it would be a permanently-NULL column. It stays on `sec_fundamentals_history`.
     """
     present = [c for c in HISTORY_PROVENANCE if c in merged.columns]
     print(f"\nSEC provenance columns: {list(HISTORY_PROVENANCE)}")
@@ -497,7 +492,7 @@ def test_expected_forks_are_named_not_rediscovered(context, field_map):
 # grain and coverage                                                           #
 # --------------------------------------------------------------------------- #
 def test_same_date_collapse_keeps_the_greatest_period():
-    """Sharadar ships no form column, so `FORM_PRECEDENCE` has no analogue: the vendor's own
+    """Sharadar ships no form column, so the SEC 10-K-first rule has no analogue: the vendor's own
     rule is the greatest `reportperiod` on a duplicate `(ticker, date)`."""
     frame = pd.DataFrame(
         {

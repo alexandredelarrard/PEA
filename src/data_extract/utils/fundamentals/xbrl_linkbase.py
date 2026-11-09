@@ -388,11 +388,7 @@ class Resolution:
     #: within 1%; mean aggregate/ex-IPR&D ratio 1.675).
     #:
     #: Deliberately NOT `dc_code`: `resolved` is defined as "no dc_code", so a qualifier
-    #: riding that column would turn every ex-IPR&D row into an absence and delete a real
-    #: number. It rides the `adjustment` JSON instead -- the same seam 4c.1 used for
-    #: `undeclared_rejected` -- and the history build lifts it into
-    #: `fundamentals_reason_codes`, where a qualified cell and a null cell are both
-    #: findable and still distinguishable.
+    #: carried there would turn every ex-IPR&D row into an absence and delete a real number.
     basis_qualifier: str | None = None
 
     @property

@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import build_history as mod
-from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, TickerHistory, keep_window_owner_filings
+from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, keep_window_owner_filings
 from src.data_store.schema import Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
@@ -158,12 +158,12 @@ def test_an_event_only_cik_is_set_aside_for_a_single_window_ticker(sqlite_store:
     assert list(dict.fromkeys(kept["accession_number"])) == ["prologis-q2-2011", "prologis-fy-2011", "no-cik"], list(kept["accession_number"])
     stored = _pld_facts().assign(duration_type="quarterly", period_end=lambda f: f["period_of_report"])
     stored = stored.assign(**{column: None for column in FACT_COLUMNS if column not in stored.columns})
-    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2011, period_days=91.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2011, period_days=91.0))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, facts, **kwargs):
         seen[ticker] = facts
-        return TickerHistory(pd.DataFrame(), pd.DataFrame())
+        return pd.DataFrame()
 
     monkeypatch.setattr(mod, "build_ticker", spy_build)
     monkeypatch.setattr(mod, "load_identity", lambda context: _PLD)
@@ -193,12 +193,12 @@ def test_an_ordinary_single_cik_tickers_facts_are_unchanged():
 def test_the_history_build_applies_the_rule_before_the_event_ladder(sqlite_store: Any, monkeypatch, caplog):
     stored = _facts().assign(duration_type="quarterly", period_end=lambda f: f["period_of_report"])
     stored = stored.assign(**{column: None for column in FACT_COLUMNS if column not in stored.columns})
-    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2015, period_days=91.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2015, period_days=91.0))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, facts, **kwargs):
         seen[ticker] = facts
-        return TickerHistory(pd.DataFrame(), pd.DataFrame())
+        return pd.DataFrame()
 
     monkeypatch.setattr(mod, "build_ticker", spy_build)
     monkeypatch.setattr(mod, "load_identity", lambda context: _IDENTITY)
@@ -271,8 +271,8 @@ def _comparative_facts() -> pd.DataFrame:
 
 def test_post_seam_comparatives_of_a_reverse_acquisition_are_ignored(sqlite_store: Any, monkeypatch, caplog):
     """REQ-014 / AC-017: JCI's post-seam 10-K/10-Q restate pre-seam periods with old JCI's numbers (the accounting
-    acquirer), which are not the traded security's history; Tyco's own pre-seam filings and its pre-seam-period
-    10-K/A filed after the seam are kept. DD is not a declared reverse acquisition, so its facts are unchanged."""
+    acquirer), which are not the traded security's history; Tyco's own pre-seam filings are kept, and its 10-K/A is
+    ignored with every amendment (originals only). DD is not a declared reverse acquisition, so its facts are unchanged."""
     facts = _comparative_facts()
     jci = facts[facts["ticker"].eq("JCI")]
 
@@ -286,12 +286,12 @@ def test_post_seam_comparatives_of_a_reverse_acquisition_are_ignored(sqlite_stor
 
     stored = facts.assign(duration_type="annual")
     stored = stored.assign(**{column: None for column in FACT_COLUMNS if column not in stored.columns})
-    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2016, period_days=364.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, stored.assign(fiscal_year=2016, period_days=364.0))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, frame, **kwargs):
         seen[ticker] = frame
-        return TickerHistory(pd.DataFrame(), pd.DataFrame())
+        return pd.DataFrame()
 
     monkeypatch.setattr(mod, "build_ticker", spy_build)
     monkeypatch.setattr(mod, "load_identity", lambda context: _REVERSE)
@@ -303,16 +303,16 @@ def test_post_seam_comparatives_of_a_reverse_acquisition_are_ignored(sqlite_stor
     assert pairs == {
         ("tyco-fy2015", "2015-09-25"),
         ("tyco-fy2015", "2014-09-26"),
-        ("tyco-fy2015-amendment", "2015-09-25"),
         ("jci-plc-fy2016", "2016-09-30"),
         ("jci-plc-q1-2017", "2016-12-31"),
     }, pairs
-    assert len(seen["DD"]) == int(facts["ticker"].eq("DD").sum()), "an undeclared ticker lost a fact"
+    dd = facts[facts["ticker"].eq("DD")]
+    assert len(seen["DD"]) == int((~dd["form"].str.endswith("/A")).sum()), "an undeclared ticker lost an original fact"
     assert "reverse-acquisition rule dropped 3 pre-seam comparative fact(s)" in caplog.text
     assert "jci-plc-fy2016 (2)" in caplog.text and "jci-plc-q1-2017 (1)" in caplog.text
     print("\n=== SANITY CHECK: REQ-014 post-merger comparatives (JCI seam 2016-09-02) ===")
     print("  JCI plc FY2016 10-K: FY2015/FY2014 comparatives (old JCI's) dropped, its FY2016 kept; Q1-2017 10-Q: Dec-2015 quarter dropped")
-    print("  Tyco's own FY2015 10-K and its 10-K/A filed after the seam (period of report 2015-09-25) kept; old JCI's 10-K set aside by H1")
+    print("  Tyco's own FY2015 10-K kept, its 10-K/A ignored (originals only); old JCI's 10-K set aside by H1")
     print(f"  DD (undeclared): all {len(seen['DD'])} facts kept, including DowDuPont's 2016 comparative")
 
 
@@ -349,12 +349,12 @@ def _fresh_start_facts() -> pd.DataFrame:
 
 def _replayed_facts(sqlite_store: Any, monkeypatch, identity) -> pd.DataFrame:
     """The EXE facts `build_fundamentals_history` hands to the replay under `identity`."""
-    sqlite_store.save(Tables.sec_fundamentals_facts, _fresh_start_facts().assign(fiscal_year=2020, period_days=365.0, is_amendment=False))
+    sqlite_store.save(Tables.sec_fundamentals_facts, _fresh_start_facts().assign(fiscal_year=2020, period_days=365.0))
     seen: dict[str, pd.DataFrame] = {}
 
     def spy_build(ticker, facts, **kwargs):
         seen[ticker] = facts
-        return TickerHistory(pd.DataFrame(), pd.DataFrame())
+        return pd.DataFrame()
 
     monkeypatch.setattr(mod, "build_ticker", spy_build)
     monkeypatch.setattr(mod, "load_identity", lambda context: identity)

@@ -9,7 +9,7 @@ Every input is selected by its calendar WINDOW shape (`period_shape`), never by 
 `Q3 = YTD9 - YTD6`, `Q4 = FY - YTD9`, fallback `Q4 = FY - (Q1+Q2+Q3)`, each tagged with its `basis`.
 The FY and YTD legs may come from different filings and concepts: a switch is allowed, recorded in
 `concept_switch`, and gated by a scale test. A TTM is emitted only from four contiguous discrete
-quarters, otherwise NULL with `insufficient_quarters`. Refused windows are reported through `refusals`.
+quarters, otherwise NULL (never a carried-forward annual). A refused window is simply not emitted.
 """
 
 from __future__ import annotations
@@ -97,22 +97,6 @@ TTM_FOUR_QUARTERS = "sum_4q"
 TTM_FOUR_QUARTER_MEAN = "mean_4q"
 TTM_AS_REPORTED_ANNUAL = "as_reported_annual"
 
-#: `dc_code`s attached to a value this module refuses to emit. Every refusal travels through the
-#: `refusals` out-parameter to `fundamentals_reason_codes`, the single source of truth for absences.
-INSUFFICIENT_QUARTERS = "insufficient_quarters"
-SPLIT_BASIS_MISMATCH = "split_basis_mismatch"
-
-#: Quarter-level refusals made by `_derived` (the window existed but the arithmetic was refused):
-#:   * `derived_basis_mismatch` -- the scale test refused a concept-switched subtraction (a share
-#:     count on two split bases uses `split_basis_mismatch` instead).
-#:   * `derived_sign_implausible` -- `_is_coherent` refused the value's sign.
-DERIVED_BASIS_MISMATCH = "derived_basis_mismatch"
-DERIVED_SIGN_IMPLAUSIBLE = "derived_sign_implausible"
-
-#: A quarterly-context fact whose value is the whole fiscal year, where no annual-window fact exists
-#: to compare it against (see `_is_ambiguous_duration`). Refused, never reclassified.
-AMBIGUOUS_DURATION = "ambiguous_duration"
-
 #: A trailing-twelve window is four quarters spanning the annual band, so 52/53-week years pass
 #: and a year with a stub or missing quarter does not.
 TTM_MIN_DAYS, TTM_MAX_DAYS = 330, 400
@@ -194,30 +178,13 @@ def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
     return bool(nine > 0.01 * abs(quarter) and abs(quarter) > nine)
 
 
-def _ambiguous_refusal(q) -> dict:
-    """The `AMBIGUOUS_DURATION` refusal record of one dropped quarter row."""
-    return {
-        "period_start": q.period_start,
-        "period_end": q.period_end,
-        "period_days": q.period_days,
-        "value": float(cast(Any, q.value)),
-        "known_from": q.filing_date,
-        "dc_code": AMBIGUOUS_DURATION,
-        "source_concept": getattr(q, "source_concept", None),
-    }
-
-
-def _drop_annual_masquerading_as_quarter(
-    frame: pd.DataFrame,
-    refusals: list[dict] | None = None,
-) -> pd.DataFrame:
+def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame) -> pd.DataFrame:
     """Drop quarterly-shaped facts whose value is the FULL YEAR (an annual figure tagged into a Q4 context).
 
     With an annual fact present, a quarter is dropped only when all hold: an annual fact ends within
     `_SAME_PERIOD_DAYS` of it, the values agree within 0.1%, and an interim cumulative inside that year
     is >1% of the annual (so a real Q4 that equals its year, after a zero nine months, survives).
-    With no annual fact, `_is_ambiguous_duration` decides; those drops are appended to `refusals`
-    with `AMBIGUOUS_DURATION`.
+    With no annual fact, `_is_ambiguous_duration` decides (refused, never reclassified).
     """
     quarters = frame[frame["duration_type"] == QUARTERLY]
     annual = frame[frame["duration_type"] == ANNUAL]
@@ -240,11 +207,8 @@ def _drop_annual_masquerading_as_quarter(
         q_end = np.datetime64(cast(Any, q.period_end), "ns")
         near = np.abs(a_end - q_end) <= same_period
         if not near.any():
-            ambiguous = _is_ambiguous_duration(q, y9_end, y9_value)
-            if ambiguous:
+            if _is_ambiguous_duration(q, y9_end, y9_value):
                 drop.append(q.Index)
-            if ambiguous and refusals is not None:
-                refusals.append(_ambiguous_refusal(q))
             continue
         near_value = a_value[near]
         scale = float(np.abs(near_value).max())
@@ -323,44 +287,23 @@ def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec, guards:
 # ----------------------------------------------------------------------- the ladder ---
 
 
-def _derived(
-    total, subtrahend, basis: str, spec: FieldSpec, siblings: list[float], guards: PeriodGuards, refusals: list[dict] | None = None
-) -> dict | None:
+def _derived(total, subtrahend, basis: str, spec: FieldSpec, siblings: list[float], guards: PeriodGuards) -> dict | None:
     """One guarded subtraction `total - subtrahend` -> a quarter row, or None when the guards refuse it.
 
-    A refusal is appended to `refusals` with the would-be window, the refused value and its `dc_code`.
-    For a non-additive field the recorded value is in share-days (diagnostic only).
+    Refused: a concept-switched (or share-count) subtraction failing the scale test, or a value `_is_coherent` rejects.
     """
     value = float(total["value"]) - float(subtrahend["value"])
     switched = str(total["source_concept"]) != str(subtrahend["source_concept"])
     start = pd.Timestamp(subtrahend["period_end"]) + pd.Timedelta(days=1)
     end = pd.Timestamp(total["period_end"])
 
-    def refuse(code: str) -> None:
-        if refusals is None:
-            return
-        refusals.append(
-            {
-                "period_start": start,
-                "period_end": end,
-                "period_days": (end - start).days,
-                "value": value,
-                "basis": basis,
-                "known_from": max(pd.Timestamp(total["filing_date"]), pd.Timestamp(subtrahend["filing_date"])),
-                "source_concept": total["source_concept"],
-                "dc_code": code,
-            }
-        )
-
     # Scale test on a concept switch, and always for a share count (legs may sit on two split bases).
     if switched or not spec.is_additive:
         if not _scale_agrees(
             total["value"], total["period_days"], subtrahend["value"], subtrahend["period_days"], guards, two_sided=not spec.is_additive
         ):
-            refuse(SPLIT_BASIS_MISMATCH if not spec.is_additive else DERIVED_BASIS_MISMATCH)
             return None
     if not _is_coherent(value, siblings, spec, guards):
-        refuse(DERIVED_SIGN_IMPLAUSIBLE)
         return None
     return {
         "period_start": start,
@@ -379,14 +322,13 @@ def quarterize(
     spec: FieldSpec,
     guards: PeriodGuards | None = None,
     year_ends: list[pd.Timestamp] | None = None,
-    refusals: list[dict] | None = None,
 ) -> pd.DataFrame:
     """One (ticker, field)'s duration facts -> discrete quarters (`_QUARTER_COLUMNS`), with provenance.
 
     Reported quarters are kept and win over a derived one for the same window; the rest come from the
     ladder. A non-additive field (weighted-average shares) is differenced in share-days
     (`average x days`) and converted back. `known_from` is the latest filing date of the inputs.
-    `refusals`, when given, collects every declined window; `year_ends` defaults to this field's own.
+    `year_ends` defaults to this field's own.
     """
     guards = guards or load_guards()
     if facts.empty:
@@ -397,7 +339,7 @@ def quarterize(
         if not is_datetime64_any_dtype(frame[column]):
             frame[column] = pd.to_datetime(frame[column])
     # Before the share-day transform, so the value comparison is on as-filed numbers.
-    frame = _drop_annual_masquerading_as_quarter(frame, refusals)
+    frame = _drop_annual_masquerading_as_quarter(frame)
     if not spec.is_additive:
         frame["value"] = frame["value"] * _inclusive_days(frame["period_days"])
 
@@ -420,7 +362,7 @@ def quarterize(
     ]  # still in share-days if weighted
 
     y6, y9, annual = (_shape(frame, s, presorted=True) for s in (YTD6, YTD9, ANNUAL))
-    rows.extend(_ladder(quarters, y6, y9, annual, spec, guards, refusals))
+    rows.extend(_ladder(quarters, y6, y9, annual, spec, guards))
 
     out = pd.DataFrame(rows, columns=[c for c in _QUARTER_COLUMNS if c not in ("ticker", "field", "fiscal_year", "fiscal_quarter")])
     if out.empty:
@@ -443,13 +385,8 @@ def _ladder(
     annual: pd.DataFrame,
     spec: FieldSpec,
     guards: PeriodGuards,
-    refusals: list[dict] | None = None,
 ) -> list[dict]:
-    """The Q2/Q3 decumulation rungs, then Q4 by `FY - YTD9` or else `FY - (Q1+Q2+Q3)`.
-
-    A rung that declines a window records it once in `refusals`; a window with no input to difference
-    is not a refusal and is not recorded.
-    """
+    """The Q2/Q3 decumulation rungs, then Q4 by `FY - YTD9` or else `FY - (Q1+Q2+Q3)`; a declined rung emits nothing."""
     out: list[dict] = []
     for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6), (y9, y6, Q3_FROM_YTD9)):
         earlier_bounds = _window_bounds(earlier)
@@ -457,7 +394,7 @@ def _ladder(
             prior = _same_start_before(earlier, row.period_start, row.period_end, earlier_bounds)
             if prior is None:
                 continue
-            derived = _derived(cast(Any, row)._asdict(), prior, basis, spec, [float(cast(Any, prior["value"]))], guards, refusals)
+            derived = _derived(cast(Any, row)._asdict(), prior, basis, spec, [float(cast(Any, prior["value"]))], guards)
             if derived:
                 out.append(derived)
 
@@ -475,7 +412,7 @@ def _ladder(
 
         ytd9 = _same_start_before(y9, fy.period_start, fy.period_end, y9_bounds)
         if ytd9 is not None:
-            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards, refusals)
+            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards)
             if derived:
                 out.append(derived)
                 continue
@@ -499,7 +436,6 @@ def _ladder(
             spec,
             siblings,
             guards,
-            refusals,
         )
         if derived:
             out.append(derived)
@@ -610,11 +546,11 @@ def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) 
 def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFrame | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
     """A TTM value at every quarter end, built only from FOUR contiguous discrete quarters.
 
-    Otherwise the row is NULL with `insufficient_quarters` (never a carried-forward annual). A
-    non-additive field is the share-day-weighted mean, or the as-reported annual figure where the
-    window ends on a fiscal year end; a window straddling a split is NULL with `split_basis_mismatch`.
+    Otherwise the row is NULL (never a carried-forward annual). A non-additive field is the share-day-weighted
+    mean, or the as-reported annual figure where the window ends on a fiscal year end; a window straddling a
+    split is NULL.
     """
-    empty = pd.DataFrame(columns=["ticker", "field", "period_end", "value", "basis", "known_from", "n_quarters", "dc_code"])
+    empty = pd.DataFrame(columns=["ticker", "field", "period_end", "value", "basis", "known_from", "n_quarters"])
     if quarters.empty:
         return empty
     guards = guards or load_guards()
@@ -643,16 +579,15 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
                     "basis": TTM_AS_REPORTED_ANNUAL,
                     "known_from": fact["filing_date"],
                     "n_quarters": 0,
-                    "dc_code": None,
                 }
             )
             continue
         if size < TTM_QUARTERS or not _bounds_are_contiguous(starts_ns[low : i + 1], ends_ns[low : i + 1]):
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": INSUFFICIENT_QUARTERS})
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size})
             continue
         window = values[low : i + 1]
         if not spec.is_additive and not _one_share_basis_values(window, guards):
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": SPLIT_BASIS_MISMATCH})
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size})
             continue
         # A twelve-month weighted average is share-days over days, not the mean of four means.
         days = days_all[low : i + 1]
@@ -670,12 +605,11 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
                 "basis": TTM_FOUR_QUARTERS if spec.is_additive else TTM_FOUR_QUARTER_MEAN,
                 "known_from": latest,
                 "n_quarters": TTM_QUARTERS,
-                "dc_code": None,
             }
         )
     out = pd.DataFrame(rows, columns=list(empty.columns))
     # One null representation: mixed None/NaN in an object column breaks downstream null tests.
-    return out.astype({"basis": "string", "dc_code": "string"})
+    return out.astype({"basis": "string"})
 
 
 def _annual_by_end(annual: pd.DataFrame | None) -> dict:
@@ -805,13 +739,11 @@ def build_periods(
     facts: pd.DataFrame,
     catalogue,
     guards: PeriodGuards | None = None,
-    refusals: list[dict] | None = None,
     year_ends: list[pd.Timestamp] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Every `duration` field's discrete quarters and TTM values, plus the instants, for one ticker's facts.
 
-    Returns long frames `(quarters, ttm, instants)`; nothing is written to a table. `refusals`, when given,
-    collects every refused window tagged with its `field`. `year_ends` is the ticker's fiscal calendar,
+    Returns long frames `(quarters, ttm, instants)`; nothing is written to a table. `year_ends` is the ticker's fiscal calendar,
     derived from all annual-shaped facts when omitted and shared by every field.
     """
     # Resolved once here rather than per (event, field) in the callees.
@@ -831,10 +763,7 @@ def build_periods(
         spec = catalogue.field(name)
         if spec.kind != "duration":
             continue
-        field_refusals: list[dict] = []
-        quarters = quarterize(group, spec, guards, year_ends, field_refusals)
-        if refusals is not None:
-            refusals.extend({**r, "field": name} for r in field_refusals)
+        quarters = quarterize(group, spec, guards, year_ends)
         if quarters.empty:
             continue
         all_quarters.append(quarters)

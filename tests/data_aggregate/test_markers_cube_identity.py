@@ -24,7 +24,7 @@ from src.data_aggregate.utils.institutionals.insider_features import InsiderCove
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
-from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, build_ticker_history
+from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, build_ticker
 from src.data_extract.utils.institutionals.fetch_13f_backfill import mark_gap_walked
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
@@ -126,10 +126,7 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
         return panel
 
     def history(store: DataStore) -> pd.DataFrame:
-        parts = [
-            build_ticker_history(t, store.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": t}))
-            for t in HISTORY_TICKERS
-        ]
+        parts = [build_ticker(t, store.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": t})) for t in HISTORY_TICKERS]
         return pd.concat(parts, ignore_index=True)
 
     return {"ownership": ownership, "insider": insider, "governance": governance, "fundamentals history": history}

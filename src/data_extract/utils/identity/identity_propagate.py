@@ -12,7 +12,7 @@ runs inside the window costs reads only.
 - Re-stamps: insider rows in place (co-registrant rows purged), FTD and short-volume lines of companies whose
   `universe_cusip` rows changed; the `sec13f_hr` accessions holding a CUSIP the dated lines now tag with another ticker,
   or a company CUSIP stored apart from its company row (U-67), are re-read from the local cache and rewritten.
-- A ticker whose facts were purged has its SEC and merged history rebuilt. A dry run only reports.
+- A ticker whose facts were purged has its SEC history rebuilt. A dry run only reports.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.common.security_lines import FTD_MASTER_COLUMNS, master_stamps, prepare_master
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
-from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.institutionals.fetch_13f_backfill import reread_hr_filings
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_extract.utils.institutionals.security_tape import restamp_targets
@@ -250,16 +249,15 @@ def retag_13f(context: Context, moves: pd.DataFrame, tags: CusipTags, dry_run: b
 
 
 def rebuild_history(context: Context, removals: pd.DataFrame, dry_run: bool) -> tuple[str, ...]:
-    """Delete and rebuild the SEC history, then the merged history, of every ticker whose facts were purged."""
+    """Delete and rebuild the SEC history of every ticker whose facts were purged."""
     # compute: the tickers whose facts were purged
     tickers = sorted(set(removals.loc[removals["table"] == Tables.sec_fundamentals_facts.name, "ticker"]))
     if dry_run or not tickers:
         return ()
 
-    # save: both histories in full
-    context.log.info(f"identity propagate: rebuilding the SEC and merged history of {len(tickers)} purged ticker(s): {', '.join(tickers)}")
+    # save: the SEC history in full
+    context.log.info(f"identity propagate: rebuilding the SEC history of {len(tickers)} purged ticker(s): {', '.join(tickers)}")
     build_fundamentals_history(context, tickers, rebuild_history=True)
-    build_merged_history(context, tickers, full=True, config_dir=str(context.config_dir))
     return tuple(tickers)
 
 

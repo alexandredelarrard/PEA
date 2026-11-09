@@ -20,8 +20,8 @@ from src.data_extract.utils.common.registrant import Combine, combine_for
 from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
-from src.gpt_extract.utils.schemas_gpt import LlmResult
-from tests.data_extract.edgar_fixtures import sent_excerpt
+from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, lent, sent_excerpt
+from tests.data_extract.edgar_fixtures import employee_answer as answer
 from tests.data_extract.fake_context import extract_config
 
 TEXT = Tables.sec_employees_text
@@ -42,48 +42,6 @@ class Filing:
 
     def text(self) -> str:
         return ""
-
-
-def answer(
-    total: int | None,
-    quote: str | None,
-    *,
-    full_time: int | None = None,
-    full_time_quote: str | None = None,
-    part_time: int | None = None,
-    part_time_quote: str | None = None,
-    is_fte: bool = False,
-    includes_contractors: bool = False,
-    status: str = "found",
-    measurement_period: str | None = "year end",
-) -> mod.EmployeeAnswer:
-    """A fake LLM answer: `total` with `quote`, plus optional full-/part-time components with their own quotes."""
-    return mod.EmployeeAnswer(
-        status=status,
-        total=total,
-        total_quote=quote,
-        full_time=full_time,
-        full_time_quote=full_time_quote,
-        part_time=part_time,
-        part_time_quote=part_time_quote,
-        is_fte=is_fte,
-        includes_contractors=includes_contractors,
-        measurement_period=measurement_period,
-        qualifier=None,
-        reason="fixture",
-    )
-
-
-class FakeLLM:
-    """No LLM: each task is answered with its accession's fixture answer; `tasks` records what was sent."""
-
-    def __init__(self, answers: dict[str, mod.EmployeeAnswer]) -> None:
-        self.answers = answers
-        self.tasks: list[Any] = []
-
-    def run(self, tasks: list[Any]) -> list[LlmResult]:
-        self.tasks += list(tasks)
-        return [LlmResult(seq=task.seq, task=task, parsed=self.answers[task.meta["stamp"].accession_number]) for task in tasks]
 
 
 def text_rows(filings: list[Filing]) -> pd.DataFrame:
@@ -108,7 +66,7 @@ def build(
         config=extract_config(data_extract={"llm_text_budget": {"employees": 60000}}),
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
-    return mod._ticker_employees("AAA", context=context, extractor=FakeLLM(answers), df_todo=df_todo, df_history=history)  # type: ignore[arg-type]
+    return mod._ticker_employees("AAA", context=context, extractors=lent(FakeEmployeesLLM(answers)), df_todo=df_todo, df_history=history)  # type: ignore[arg-type]
 
 
 def excerpt(text: str, limit: int) -> str:
@@ -846,7 +804,7 @@ def test_same_day_amendment_uses_later_supported_count(sqlite_store: Any) -> Non
 
 def test_missing_report_period_keeps_filing_date(sqlite_store: Any) -> None:
     filing = Filing("no-period", "2024-03-01", "We had 40,000 employees.", report=None)
-    llm = FakeLLM({"no-period": answer(40000, "We had 40,000 employees.")})
+    llm = FakeEmployeesLLM({"no-period": answer(40000, "We had 40,000 employees.")})
     df_text = text_rows([filing])
     sqlite_store.save(TEXT, df_text)
     df_todo, _ = mod._undecided(sqlite_store.load(TEXT, columns=mod._TEXT_COLUMNS), None, {})
@@ -856,7 +814,7 @@ def test_missing_report_period_keeps_filing_date(sqlite_store: Any) -> None:
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
     history = pd.DataFrame(columns=["ticker", "as_of", *mod._COUNT_COLUMNS])
-    result = mod._ticker_employees("AAA", context=context, extractor=llm, df_todo=df_todo, df_history=history)  # type: ignore[arg-type]
+    result = mod._ticker_employees("AAA", context=context, extractors=lent(llm), df_todo=df_todo, df_history=history)  # type: ignore[arg-type]
     assert pd.to_datetime(result.frame["as_of"]).tolist() == [pd.Timestamp("2024-03-01")]
     assert "Fiscal period end: unknown\n" in llm.tasks[0].payload
     print("\nSANITY: a filing with no report period is stored at its filing date, its prompt saying 'Fiscal period end: unknown'.")
@@ -877,12 +835,12 @@ def test_cli_dispatches_explicit_full_replay(monkeypatch):
     monkeypatch.setattr(
         llm_step_mod,
         "fetch_employees_llm",
-        lambda ctx, tickers, years_history, extractor, full=False: calls.append((tickers, years_history, extractor.threads, full)),
+        lambda ctx, tickers, years_history, extractors, full=False: calls.append((tickers, years_history, [e.threads for e in extractors], full)),
     )
     result = CliRunner().invoke(cli_mod.cli, ["sec-employees-llm", "-t", "AAA", "--full"])
     assert result.exit_code == 0, result.output
-    assert calls == [(["AAA"], 31, 2, True)]
-    print("\nSANITY: `sec-employees-llm -t AAA --full` runs a ticker-scoped full employee replay (2 concurrent calls).")
+    assert calls == [(["AAA"], 31, [1, 1], True)]
+    print("\nSANITY: `sec-employees-llm -t AAA --full` runs a ticker-scoped full employee replay (2 tickers at a time, one call each).")
 
 
 def test_the_walk_scans_a_document_for_workforce_numbers_once(monkeypatch):

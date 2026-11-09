@@ -41,11 +41,11 @@ _WORKFORCE_PAGE_RE = re.compile(r"\b(?:human\s+capital|employees|(?:persons|peop
 @dataclass(frozen=True)
 class EmployeeText:
     """The document text the employee excerpt is cut from, which document it is ("primary" or an exhibit type),
-    and its workforce-number spans when already scanned."""
+    and its workforce-number spans."""
 
     text: str
     source_document: str
-    spans: tuple[tuple[int, int], ...] | None = None
+    spans: tuple[tuple[int, int], ...]
 
 
 def filing_body_text(filing: Filing) -> str:
@@ -138,7 +138,7 @@ def _employee_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
         return []
 
     # compute: candidate windows in priority order and the text of their merged union
-    windows = candidate_windows(document.text, document.spans or ())
+    windows = candidate_windows(document.text, document.spans)
     pieces = [[start, document.text[start:end]] for start, end in merge_spans(windows)]
     return [
         {

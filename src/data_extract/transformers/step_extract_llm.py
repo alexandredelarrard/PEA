@@ -2,9 +2,9 @@
 
 Order: DEF 14A sections (reads the stored `sec_def14a_text`), 8-K Item 5.07 votes (reads the stored `sec_8k`
 narratives and the DEF 14A tables, so it runs after DEF 14A), employee counts (reads the stored `sec_employees_text`).
-The DEF 14A section extractors, the votes extractor and the employees extractor (its cheaper provider,
-`data_extract.fundamentals_workers` concurrent calls) are built once here and reused by every run; the init raises
-`OSError` when a provider these runs use has no API key.
+The DEF 14A section extractors, the votes extractor and the employees extractors (their cheaper provider, one per
+`data_extract.fundamentals_workers` concurrent ticker, one call at a time each) are built once here and reused by every
+run; the init raises `OSError` when a provider these runs use has no API key.
 """
 
 from __future__ import annotations
@@ -43,7 +43,8 @@ class StepExtractLlm(Step):
         self._def14a = section_extractors(context, config)
         self._votes = LLMExtractor(context, config, action=VOTES_ACTION)
         employees_config = with_gpt_overrides(config, "employees", provider=EMPLOYEES_PROVIDER)
-        self._employees = LLMExtractor(context, employees_config, action="employees", threads=int(config.data_extract.fundamentals_workers))
+        workers = int(config.data_extract.fundamentals_workers)
+        self._employees = [LLMExtractor(context, employees_config, action="employees", threads=1) for _ in range(workers)]
         for provider in (self._votes.default_api, EMPLOYEES_PROVIDER):
             self._votes._require_key(provider)
 

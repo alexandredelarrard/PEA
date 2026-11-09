@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 from bisect import bisect_right
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
@@ -600,12 +602,11 @@ def _undecided(df_text: pd.DataFrame | None, df_done: pd.DataFrame | None, pendi
 
 
 def _ticker_employees(
-    ticker: str, *, context: Context, extractor: LLMExtractor, df_todo: pd.DataFrame, df_history: pd.DataFrame
+    ticker: str, *, context: Context, extractors: queue.SimpleQueue[LLMExtractor], df_todo: pd.DataFrame, df_history: pd.DataFrame
 ) -> EmployeeTickerResult:
-    """Decide one ticker's undecided filings through the LLM and the source guard, and save its rows; the per-ticker worker.
-
-    A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing cannot mark that
-    date done; the ticker's other dates are kept."""
+    """Decide one ticker's undecided filings through the LLM (on an extractor borrowed from `extractors`) and the source
+    guard, and save its rows; the per-ticker worker. A filing whose LLM call failed withholds its whole filing date, so
+    a stored same-day filing cannot mark that date done; the ticker's other dates are kept."""
     # load: the stored windows and pieces of the ticker's undecided filings
     df_mine = df_todo[df_todo["ticker"].eq(ticker)]
     df_text = context.store.load(
@@ -622,7 +623,11 @@ def _ticker_employees(
 
     # compute: the answers, then the guarded decisions; a failed call withholds its date
     tasks = [employee_task(sequence, ticker, row, budget) for sequence, row in enumerate(df_rows.itertuples(index=False))]
-    results = extractor.run(tasks)
+    extractor = extractors.get()
+    try:
+        results = extractor.run(tasks)
+    finally:
+        extractors.put(extractor)
     if len(results) != len(tasks):
         raise RuntimeError(f"{ticker}: {len(results)} employee LLM result(s) for {len(tasks)} filing(s)")
     by_llm, failed = _llm_decisions(context, ticker, results, history)
@@ -669,11 +674,11 @@ def _log_run(context: Context, df_keys: pd.DataFrame, results: list[EmployeeTick
             )
 
 
-def fetch_employees_llm(context: Context, tickers: list[str], years_history: int, extractor: LLMExtractor, *, full: bool = False) -> None:
+def fetch_employees_llm(context: Context, tickers: list[str], years_history: int, extractors: Sequence[LLMExtractor], *, full: bool = False) -> None:
     """Decide every stored employees text in the window whose filing date has no row (a NULL row with its status when no
     count is supported); `full` re-decides them all. Reads `sec_employees_text` (markers: no call) and the local index (no
-    SEC): a ticker's dates from its earliest filing the text walk lacks on wait. One `extractor` serves the tickers in
-    turn; a failed call or ticker is logged and listed again next run."""
+    SEC): dates from a ticker's earliest filing the walk has not stored yet wait. `len(extractors)` tickers run at once,
+    one extractor each; a failed call or ticker is logged and listed again next run."""
     # load: the window's text rows (no windows or pieces), the stored rows, the text walk's pending filings
     start_date = run_date(None)
     since = document_floor(Tables.sec_employees_text, start_date, years_history)
@@ -690,8 +695,11 @@ def fetch_employees_llm(context: Context, tickers: list[str], years_history: int
     df_history = pd.DataFrame(columns=["ticker", "as_of", *_COUNT_COLUMNS]) if stored is None else stored
     df_todo, n_held = _undecided(df_text, None if full else df_history, pending)
     df_keys = cik_map[cik_map["ticker"].isin(df_todo["ticker"])].reset_index(drop=True)
-    worker = partial(_ticker_employees, context=context, extractor=extractor, df_todo=df_todo, df_history=df_history)
-    results = run_per_ticker(df_keys, worker, desc="fundamentals employees", log=context.log, max_workers=1, key_cols=("ticker",))
+    lent: queue.SimpleQueue[LLMExtractor] = queue.SimpleQueue()
+    for extractor in extractors:
+        lent.put(extractor)
+    worker = partial(_ticker_employees, context=context, extractors=lent, df_todo=df_todo, df_history=df_history)
+    results = run_per_ticker(df_keys, worker, desc="fundamentals employees", log=context.log, max_workers=len(extractors), key_cols=("ticker",))
 
     # log: the run's coverage
     _log_run(context, df_keys, results, n_held)

@@ -149,7 +149,7 @@ def _def14a_rows(context: Context, ticker: str, stamp: FilingStamp) -> list[dict
     except TransientReadError:
         raise
     except Exception:
-        if not filing.txt_url or filing.txt_url == filing.doc_url:
+        if filing.txt_url == filing.doc_url:
             raise
         logger.info("%s: primary document unavailable, falling back to the full submission", stamp.accession_number)
         html = sec_get(context, filing.txt_url).text

@@ -69,8 +69,8 @@ class Fetchers:
         monkeypatch.setattr(
             step_mod,
             "fetch_employees_llm",
-            lambda context, tickers, years_history, extractor, full=False: self.call(
-                "run_employees_llm", tickers=tickers, years=years_history, extractor=extractor, full=full
+            lambda context, tickers, years_history, extractors, full=False: self.call(
+                "run_employees_llm", tickers=tickers, years=years_history, extractors=extractors, full=full
             ),
         )
 
@@ -113,20 +113,23 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
         step.run_8k_votes()
         step.run_employees_llm()
 
-    # One extractor per action: the five DEF 14A sections, the Item 5.07 votes and the employees; each reads its prompts and scans the keys once.
-    assert built == {"LLMExtractor.__init__": 7, "GptExtracter.read_prompts": 7, "GptExtracter.get_api_keys": 7}, built
+    # One extractor per action (the five DEF 14A sections, the Item 5.07 votes), and one employees extractor per concurrent
+    # ticker (fundamentals_workers = 8); each reads its prompts and scans the keys once.
+    assert built == {"LLMExtractor.__init__": 14, "GptExtracter.read_prompts": 14, "GptExtracter.get_api_keys": 14}, built
     assert dict(counted) == built, "a run_* call builds nothing"
     def14a = [call["extractors"] for call in fetchers.calls if call["name"] == "run_def14a_llm"]
     votes = [call["extractor"] for call in fetchers.calls if call["name"] == "run_8k_votes"]
-    employees = [call["extractor"] for call in fetchers.calls if call["name"] == "run_employees_llm"]
+    employees = [call["extractors"] for call in fetchers.calls if call["name"] == "run_employees_llm"]
     assert def14a[0] is def14a[1] and votes[0] is votes[1] and employees[0] is employees[1] and len(def14a[0]) == 5
     assert {extractor.threads for extractor in def14a[0].values()} == {2} and votes[0].threads == int(config.gpt.threads)
-    assert employees[0].threads == 8 and employees[0].default_api == "open_ai_cheap" and employees[0].action == "employees"
+    assert len(employees[0]) == 8 and len({id(extractor) for extractor in employees[0]}) == 8
+    assert {(e.threads, e.default_api, e.action) for e in employees[0]} == {(1, "open_ai_cheap", "employees")}
     assert fetchers.order.count("universe") == 1
     print("\n=== SANITY: StepExtractLlm setup (AC-010) ===")
     print(
-        f"  init: {built}; 2x run_def14a_llm + 2x run_8k_votes + 2x run_employees_llm added nothing and reused the same 7 extractors "
-        "(employees: open_ai_cheap, 8 threads = fundamentals_workers); no provider built; universe read once, on first use."
+        f"  init: {built}; 2x run_def14a_llm + 2x run_8k_votes + 2x run_employees_llm added nothing and reused the same 14 extractors "
+        "(employees: 8 distinct open_ai_cheap extractors, one call at a time each = 8 concurrent tickers); no provider built; "
+        "universe read once, on first use."
     )
 
 

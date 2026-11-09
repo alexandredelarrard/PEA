@@ -1,4 +1,5 @@
-"""Offline fixtures for the EDGAR document driver: a fake `Context`, a seeded local index, fake filings.
+"""Offline fixtures for the EDGAR document driver: a fake `Context`, a seeded local index, fake filings, and the
+employees walk/LLM stand-ins (a 10-K, a fixture answer, a fake extractor).
 
 The index cache is written through `edgar_index`'s own parser and writer, so tests read it exactly
 as production does. Fake filings stand in for `edgar.Filing` by accession (`patch_index_filings`).
@@ -6,6 +7,7 @@ as production does. Fake filings stand in for `edgar.Filing` by accession (`patc
 
 from __future__ import annotations
 
+import queue
 import types
 from collections.abc import Iterable
 from typing import Any
@@ -14,9 +16,11 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
-from src.data_extract.utils.fundamentals.fundamentals_employees import employee_task
+from src.data_extract.utils.fundamentals.fundamentals_employees import EmployeeAnswer, employee_task
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
@@ -34,6 +38,93 @@ Cloud HTTP:            https://www.sec.gov/Archives/
 CIK|Company Name|Form Type|Date Filed|Filename
 --------------------------------------------------------------------------------
 """
+
+
+class TenK:
+    """A 10-K family stand-in: `text()` returns `body` (no HTML, no exhibit); the first `fail` reads raise a transient
+    SEC error; `_sgml` stands for edgartools' cached submission."""
+
+    def __init__(
+        self, accession: str, filed: str, body: str, *, cik: int = 1, form: str = "10-K", report: str | None = "2020-12-31", fail: int = 0
+    ) -> None:
+        self.accession_number, self.cik, self.filing_date, self.form = accession, cik, filed, form
+        self.company, self.period_of_report, self.primary_document = "Fixture Co", report, None
+        self.attachments: list[object] = []
+        self._sgml: object | None = object()
+        self.body, self.fail = body, fail
+
+    def html(self) -> str:
+        if self.fail > 0:
+            self.fail -= 1
+            raise TransientReadError(f"{self.accession_number}: HTTP 503")
+        return ""
+
+    def text(self) -> str:
+        return self.body
+
+    def full_text_submission(self) -> str:
+        return ""
+
+
+def employee_answer(
+    total: int | None,
+    quote: str | None,
+    *,
+    full_time: int | None = None,
+    full_time_quote: str | None = None,
+    part_time: int | None = None,
+    part_time_quote: str | None = None,
+    is_fte: bool = False,
+    includes_contractors: bool = False,
+    status: str = "found",
+    measurement_period: str | None = "year end",
+) -> EmployeeAnswer:
+    """A fake LLM answer: `total` with `quote`, plus optional full-/part-time components with their own quotes."""
+    return EmployeeAnswer(
+        status=status,  # type: ignore[arg-type]
+        total=total,
+        total_quote=quote,
+        full_time=full_time,
+        full_time_quote=full_time_quote,
+        part_time=part_time,
+        part_time_quote=part_time_quote,
+        is_fte=is_fte,
+        includes_contractors=includes_contractors,
+        measurement_period=measurement_period,
+        qualifier=None,
+        reason="fixture",
+    )
+
+
+class FakeEmployeesLLM:
+    """No LLM: each task is answered with its accession's fixture answer (a string answer is a failed call carrying
+    that error); `tasks` records what was sent, `calls` their accessions."""
+
+    def __init__(self, answers: dict[str, Any]) -> None:
+        self.answers = answers
+        self.tasks: list[LlmTask] = []
+
+    @property
+    def calls(self) -> list[str]:
+        return [str(task.meta["stamp"].accession_number) for task in self.tasks]
+
+    def run(self, tasks: Iterable[LlmTask]) -> list[LlmResult]:
+        tasks = list(tasks)
+        self.tasks += tasks
+        results = []
+        for task in tasks:
+            reply = self.answers[str(task.meta["stamp"].accession_number)]
+            failed = isinstance(reply, str)
+            results.append(LlmResult(seq=task.seq, task=task, parsed=None if failed else reply, error=reply if failed else None))
+        return results
+
+
+def lent(*extractors: Any) -> queue.SimpleQueue:
+    """The extractor queue the employees per-ticker worker borrows from."""
+    pool: queue.SimpleQueue = queue.SimpleQueue()
+    for extractor in extractors:
+        pool.put(extractor)
+    return pool
 
 
 def sent_excerpt(row: Any, limit: int) -> str:

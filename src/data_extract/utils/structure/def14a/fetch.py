@@ -45,6 +45,7 @@ from src.data_store.schema import Tables
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.utils.string import run_date
 from src.utils.tickers_universe.universe import before_end
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,7 @@ def fetch_def14a_llm(
     holds one extractor per section; their worker count bounds the answers in flight."""
     # load: the walked proxies in the window (no payloads), the ticker names and end bounds
     years = int(config.data_extract.years_history)
-    floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
+    floor = document_floor(Tables.def14a_llm, run_date(None), years)
     df_text = context.store.load(Tables.sec_def14a_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=floor, optional=True)
     df_names = universe_rows(context, tickers)
     bounds = planner_bounds(context)

@@ -7,23 +7,11 @@ from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_
 from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, employee_task
 from src.data_store.schema import Tables
 from src.utils.config import read_config
+from tests.data_extract.edgar_fixtures import TenK
 
 FILLER = "The Company designs and sells measurement instruments to laboratories in many markets. "  # no workforce word
-
-
-class TenK:
-    """A long 10-K stand-in: 200 generic workforce mentions, then the workforce sentence."""
-
-    accession_number, cik, filing_date, form, company, primary_document = "acc-1", 1, "2025-03-01", "10-K", "Fixture Co", None
-    period_of_report = "2024-12-31"
-    attachments: list[object] = []
-    body = "".join(f"Our employees value safety and training, item {i}. {FILLER * 15}" for i in range(200)) + "We had 41,000 employees."
-
-    def html(self) -> str:
-        return ""
-
-    def text(self) -> str:
-        return self.body
+#: A long 10-K: 200 generic workforce mentions, then the workforce sentence.
+LONG_10K = "".join(f"Our employees value safety and training, item {i}. {FILLER * 15}" for i in range(200)) + "We had 41,000 employees."
 
 
 def test_llm_text_budget_is_declared_in_the_extract_config() -> None:
@@ -44,7 +32,7 @@ def test_llm_text_budget_is_declared_in_the_extract_config() -> None:
 
 def test_a_larger_employees_budget_changes_the_excerpt_from_stored_rows() -> None:
     """AC-008: the stored row is parsed once; each budget rebuilds its own excerpt from it, with no further read."""
-    filing = TenK()
+    filing = TenK("acc-1", "2025-03-01", LONG_10K, report="2024-12-31")
     stamp = edgar_driver.FilingStamp.of(filing, "0000000001")
     assert EMPLOYEES_TEXT_FETCH.parse is not None
     row = next(EMPLOYEES_TEXT_FETCH.parse("AAA", "0000000001", stamp, edgar_driver.EdgarScope())[Tables.sec_employees_text].itertuples(index=False))

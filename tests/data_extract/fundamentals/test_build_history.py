@@ -296,7 +296,7 @@ def real_build():
     """One roster ticker's real facts, off the committed sweep ledger. No network, no DB."""
     path = SWEEP / "AAPL.parquet"
     if not path.exists():
-        pytest.skip(f"{path} not present -- run scripts/sweep_fundamentals_resolution.py")
+        pytest.skip(f"{path} not present -- the committed fundamentals sweep ledger is missing")
     facts = pd.read_parquet(path)
     prefer_structure = facts["prefer_structure"].astype(bool) if "prefer_structure" in facts else pd.Series(True, index=facts.index)
     facts = facts[prefer_structure]

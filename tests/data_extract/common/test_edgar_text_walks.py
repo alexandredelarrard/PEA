@@ -32,7 +32,7 @@ from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payload
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
-from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, roster_run, seed_index, sent_excerpt
+from tests.data_extract.edgar_fixtures import TenK, fake_context, patch_index_filings, roster_run, seed_index, sent_excerpt
 
 #: Real 10-K document texts (the base code's chosen document), keyed `<ticker>_<accession>`.
 REAL: dict[str, str] = json.loads((Path(__file__).resolve().parents[2] / "fixtures" / "employees_text" / "real_10k_texts.json").read_text("utf-8"))
@@ -47,29 +47,6 @@ def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     recorded: list[float] = []
     monkeypatch.setattr(edgar_driver, "_sleep", recorded.append)
     return recorded
-
-
-class TenK:
-    """A 10-K stand-in: `text()` returns `body` (no HTML), `fail` transient reads raise first."""
-
-    def __init__(self, accession: str, cik: int, filed: str, body: str, *, report: str | None = "2020-12-31", fail: int = 0) -> None:
-        self.accession_number, self.cik, self.filing_date, self.form = accession, cik, filed, "10-K"
-        self.company, self.period_of_report, self.primary_document = "Fixture Co", report, None
-        self.attachments: list[object] = []
-        self._sgml: object | None = object()
-        self.body, self.fail = body, fail
-
-    def html(self) -> str:
-        if self.fail > 0:
-            self.fail -= 1
-            raise TransientReadError(f"{self.accession_number}: HTTP 503")
-        return ""
-
-    def text(self) -> str:
-        return self.body
-
-    def full_text_submission(self) -> str:
-        return ""
 
 
 def old_excerpt(text: str, limit: int) -> str:
@@ -99,7 +76,7 @@ def _stored(store: Any, *, markers: bool = False) -> pd.DataFrame:
 def test_stored_windows_rebuild_the_old_excerpt_on_real_10k_text(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     texts = list(REAL.values())
-    filings = {_accession(i): TenK(_accession(i), 1, f"202{i}-03-01", text) for i, text in enumerate(texts, start=1)}
+    filings = {_accession(i): TenK(_accession(i), f"202{i}-03-01", text) for i, text in enumerate(texts, start=1)}
     seed_index(ctx, [(1, "AAA Inc", "10-K", f.filing_date, a) for a, f in filings.items()])
     patch_index_filings(monkeypatch, filings)
 
@@ -124,7 +101,7 @@ def test_stored_windows_rebuild_the_old_excerpt_on_real_10k_text(tmp_path: Path,
 
 def test_empty_text_is_one_marker_stored_once(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
-    blank = TenK(_accession(1), 1, "2021-03-01", "   ")
+    blank = TenK(_accession(1), "2021-03-01", "   ")
     seed_index(ctx, [(1, "AAA Inc", "10-K", blank.filing_date, blank.accession_number)])
     patch_index_filings(monkeypatch, {blank.accession_number: blank})
 
@@ -144,7 +121,7 @@ def test_empty_text_is_one_marker_stored_once(tmp_path: Path, sqlite_store: Any,
 
 def test_transient_read_stores_nothing_and_lists_again(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
-    flaky = TenK(_accession(1), 1, "2021-03-01", "As of December 31, 2020, we had 41,000 employees.", fail=10)
+    flaky = TenK(_accession(1), "2021-03-01", "As of December 31, 2020, we had 41,000 employees.", fail=10)
     seed_index(ctx, [(1, "AAA Inc", "10-K", flaky.filing_date, flaky.accession_number)])
     patch_index_filings(monkeypatch, {flaky.accession_number: flaky})
 
@@ -162,7 +139,7 @@ def test_transient_read_stores_nothing_and_lists_again(tmp_path: Path, sqlite_st
 def test_cold_fill_then_nothing_new(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"], max_documents_per_run=2)
     body = "As of December 31, 2020, we had 41,000 employees."
-    filings = {_accession(i): TenK(_accession(i), 1, f"202{i}-03-01", body) for i in range(1, 5)}
+    filings = {_accession(i): TenK(_accession(i), f"202{i}-03-01", body) for i in range(1, 5)}
     seed_index(ctx, [(1, "AAA Inc", "10-K", f.filing_date, a) for a, f in filings.items()])
     patch_index_filings(monkeypatch, filings)
 
@@ -182,10 +159,10 @@ def test_multi_window_ticker_keeps_only_its_own_windows(tmp_path: Path, sqlite_s
     body = "As of December 31, 2020, we had 41,000 employees."
     old, new = 9999991, 1
     filings = {
-        "old-in": TenK(_accession(9, old), old, "2019-03-01", body),
-        "old-after": TenK(_accession(1, old), old, "2021-03-01", body),
-        "new-before": TenK(_accession(8, new), new, "2018-03-01", body),
-        "new-in": TenK(_accession(2, new), new, "2022-03-01", body),
+        "old-in": TenK(_accession(9, old), "2019-03-01", body, cik=old),
+        "old-after": TenK(_accession(1, old), "2021-03-01", body, cik=old),
+        "new-before": TenK(_accession(8, new), "2018-03-01", body, cik=new),
+        "new-in": TenK(_accession(2, new), "2022-03-01", body, cik=new),
     }
     seed_index(ctx, [(f.cik, "Fixture Co", "10-K", f.filing_date, f.accession_number) for f in filings.values()])
     patch_index_filings(monkeypatch, {f.accession_number: f for f in filings.values()})
@@ -206,7 +183,7 @@ def test_multi_window_ticker_keeps_only_its_own_windows(tmp_path: Path, sqlite_s
 
 
 def test_parse_drops_the_submission_and_stamps_the_listed_period(monkeypatch: pytest.MonkeyPatch) -> None:
-    filing = TenK("acc-1", 1, "2021-03-01", "We had 41,000 employees.", report="2020-12-31")
+    filing = TenK("acc-1", "2021-03-01", "We had 41,000 employees.", report="2020-12-31")
     stamp = edgar_driver.FilingStamp.of(filing, "0000000001")
     assert EMPLOYEES_TEXT_FETCH.parse is not None
 

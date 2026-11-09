@@ -35,7 +35,6 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
-from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
 
@@ -45,7 +44,6 @@ class SecThirteenResources:
     """One loaded capital/security snapshot shared by both13F families."""
 
     frames: PriceFrames
-    cusip_tags: CusipTags
     cohorts: Mapping[str, frozenset[str]] | None
 
 
@@ -106,7 +104,6 @@ class StepCubeSecThirteen(Step):
         # Read the shared dependencies once before any cleaning or feature work.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
-        cusip_tags = CusipTags.load(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -114,7 +111,7 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, cusip_tags, cohorts)
+        return SecThirteenResources(frames, cohorts)
 
     def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
 
@@ -153,8 +150,8 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        # `sec13f_hr` rows keep the ticker stored at extraction (no tags); amended books arrive whole.
-        with closing(clean_public_batches(packets, None, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        # `sec13f_hr` rows keep the ticker stored at extraction; amended books arrive whole.
+        with closing(clean_public_batches(packets, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:
             return None
@@ -173,16 +170,15 @@ class StepCubeSecThirteen(Step):
         if resources.cohorts is None:
             return None
 
-        packets = thirteen_inputs.iter_filing_vintages(
-            self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]), table=Tables.sec13f_manager_holdings
-        )
+        # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
+        packets = thirteen_inputs.iter_filing_vintages(self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]))
         if packets is None:
             return None
 
-        # Clean whole books once, retaining mapped off-universe positions and provenance.
+        # Clean whole books once, retaining off-universe and unmapped positions and provenance.
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, resources.cusip_tags, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
             books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
         if books is None:
@@ -209,11 +205,7 @@ class StepCubeSecThirteen(Step):
         broad = self._project_institutional_panel(prepared.institutional, frames, resources) if prepared.institutional is not None else None
         elite = None
         if prepared.superinvestor is not None:
-            start = (
-                self._availability.source_date(Tables.sec13f_manager_holdings)
-                if self._availability is not None
-                else resources.frames.trading_index.min()
-            )
+            start = self._availability.source_date(Tables.sec13f_hr) if self._availability is not None else resources.frames.trading_index.min()
             elite = project_superinvestor_features(prepared.superinvestor, frames, start)
         return broad, elite
 

@@ -18,7 +18,6 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags, tag_cusips
@@ -70,8 +69,8 @@ def test_a_superinvestor_book_keeps_its_non_universe_holdings(fixture: tuple[Dat
     book = book[book["cusip"].str.len().eq(9)].drop_duplicates("cusip").reset_index(drop=True)
     known = set(tags.lines["cusip"])
 
-    # the superinvestor path tags with no universe filter (`clean_public_batches(..., universe=None)`)
-    tagged = attach_tickers(book, tags)
+    # extraction tags a whole book with no universe filter (`company_rows` -> `tag_cusips`); superinvestors read that ticker
+    tagged = book.assign(ticker=tags.tag(book))
     old = book.merge(tags.cmap.dropna().drop_duplicates("cusip"), on="cusip", how="left")["ticker"]
     outside = ~book["cusip"].isin(known)
     n_new, n_old = int(tagged.loc[outside, "ticker"].notna().sum()), int(old[outside].notna().sum())

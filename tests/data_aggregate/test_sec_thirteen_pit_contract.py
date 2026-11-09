@@ -112,7 +112,7 @@ def test_broad_basis_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
     basis = ShareBasis(empty, empty, empty, {}, actual_available=False)
     frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]), security_basis=_basis_frame(basis))
-    resources = SecThirteenResources(frames, pd.DataFrame(), None)
+    resources = SecThirteenResources(frames, None)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._cfg, step._settle_days = None, {"institutionals": {}}, F13_SETTLE_TRADING_DAYS
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))

@@ -31,7 +31,6 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
@@ -1069,7 +1068,7 @@ def test_the_coverage_diagnostic_is_share_weighted_not_filer_weighted():
 
 def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """Known-truth packet math through the ordinary builder preserves public cohorts and history."""
-    create_canonical(sqlite_store.engine, [Tables.sec13f_hr, Tables.sec13f_manager_holdings])
+    create_canonical(sqlite_store.engine, [Tables.sec13f_hr])
 
     def save_packet(accession: str, cik: str, period: str, filed: str, shares: float | None, *, kind: str = "original") -> None:
         columns = ["CUSIP", "TITLEOFCLASS", "SSHPRNAMT", "SSHPRNAMTTYPE", "VALUE"]
@@ -1101,9 +1100,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2024-06-28", "2024-12-06"), columns=["AAA"])
     frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10, close_pit=quotes, security_basis=basis)
-    cusip_map = pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
-    sqlite_store.save(Tables.cusip_ticker_map, cusip_map)
-    resources = SecThirteenResources(frames, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), None)
+    resources = SecThirteenResources(frames, None)
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)

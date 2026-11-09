@@ -677,32 +677,26 @@ def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Gene
     return holdings, roster
 
 
-def synthetic_manager_book(holdings: pd.DataFrame, tickers: list[str], rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """`sec13f_manager_holdings`: CUSIP grain, and the manager's WHOLE book.
+def synthetic_manager_book(holdings: pd.DataFrame, tickers: list[str], rng: np.random.Generator) -> pd.DataFrame:
+    """`sec13f_hr` rows of the roster managers: each manager's WHOLE book, as superinvestors read it.
 
-    ⚠ A SEPARATE FIXTURE FROM `synthetic_13f`, MIRRORING A SEPARATE TABLE. The elite panel
-    reads the complete book so that `portfolio_weight` divides by the manager's real total;
-    the all-filer panel reads `sec13f_hr`, which is universe-filtered at extraction. Feeding
-    one frame to both is what the whole Phase 2.2 rebuild exists to stop, and a fixture that
-    did it would fingerprint a denominator the production code never sees.
+    ⚠ A SEPARATE FIXTURE FROM `synthetic_13f`. Extraction stores whole books in `sec13f_hr` (one
+    row per universe company, other CUSIPs as filed, unmapped ones on the `_empty` ticker); the
+    all-filer panel reads only the universe rows, while the elite panel reads every row so that
+    `portfolio_weight` divides by the manager's real total. Feeding the universe slice to both
+    would fingerprint a denominator the production code never sees.
 
     ⚠ IT ALSO DRAWS FROM ITS OWN RNG STREAM AND LEAVES `holdings` UNTOUCHED, so
     `panel.institutional` stays byte-identical. Off-universe positions are appended, never
     interleaved, for the same reason -- an order-coupled draw is how this fixture previously
     faked drift in seven outputs.
     """
-    cusip_map = pd.DataFrame(
-        {
-            "cusip": [f"{i:08d}C" for i in range(len(tickers))],
-            "ticker": sorted(tickers),
-        }
-    )
-    by_ticker = dict(zip(cusip_map["ticker"], cusip_map["cusip"], strict=False))
+    by_ticker = {ticker: f"{i:08d}C" for i, ticker in enumerate(sorted(tickers))}
     book = holdings.assign(cusip=holdings["ticker"].map(by_ticker), position_type="common")
-    book = book.drop(columns=[c for c in ("ticker", "call_value", "put_value", "call_shares", "put_shares") if c in book.columns])
+    book = book.drop(columns=[c for c in ("call_value", "put_value", "call_shares", "put_shares") if c in book.columns])
 
-    # the rest of each manager's book: names outside the analysis universe, which carry a
-    # median ~40-50% of real book value and are exactly what the slice denominator missed.
+    # the rest of each manager's book: unmapped names outside the analysis universe, which carry
+    # a median ~40-50% of real book value and are exactly what the slice denominator missed.
     keys = holdings[["cik", "period", "filing_date"]].drop_duplicates()
     extra = []
     for cik, period, filed in keys.itertuples(index=False):
@@ -714,13 +708,13 @@ def synthetic_manager_book(holdings: pd.DataFrame, tickers: list[str], rng: np.r
                     "period": period,
                     "filing_date": filed,
                     "cusip": f"OTC{j:05d}X",
+                    "ticker": "_empty",
                     "position_type": "common",
                     "shares": round(shares, 0),
                     "value_usd": round(shares * float(rng.uniform(20, 400)), 2),
                 }
             )
-    book = pd.concat([book, pd.DataFrame(extra)], ignore_index=True)
-    return book, cusip_map
+    return pd.concat([book, pd.DataFrame(extra)], ignore_index=True)
 
 
 def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
@@ -846,7 +840,6 @@ def compute() -> dict:
         cross_sectional_rank,
         cross_sectional_zscore,
     )
-    from src.utils.identity_tables import LINE_COLUMNS, CusipTags
     from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
@@ -877,7 +870,7 @@ def compute() -> dict:
     sec_13d, sec_13g = synthetic_ownership(tickers, idx, rng_for("ownership"))
     insider = synthetic_insider(tickers, idx, rng_for("insider"))
     holdings, roster = synthetic_13f(tickers, idx, rng_for("13f"))
-    book, cusip_map = synthetic_manager_book(holdings, tickers, rng_for("13f_manager_book"))
+    book = synthetic_manager_book(holdings, tickers, rng_for("13f_manager_book"))
     # Public builders need the same as-traded reference and typed quantities as the step.
     # Keep the older raw primitive inputs and RNG streams unchanged.
     valuation_close = as_traded_close(close, close * 0 + 1, splits.rename(columns={"ratio": "value"}))
@@ -889,7 +882,7 @@ def compute() -> dict:
         value_usd=holdings["shares"] * quote, call_value=holdings["call_shares"] * quote, put_value=holdings["put_shares"] * quote
     )
     priced_book = book.copy()
-    book_tickers = book["cusip"].map(cusip_map.set_index("cusip")["ticker"])
+    book_tickers = book["ticker"].where(book["ticker"].ne("_empty"))
     book_quotes = period_prices.reindex(pd.MultiIndex.from_arrays([book["period"], book_tickers])).to_numpy()
     priced_book.loc[book_tickers.notna(), "value_usd"] = (book["shares"] * book_quotes).loc[book_tickers.notna()]
     # One wrong VALUE per book must fall back without losing a holder or changing shares.
@@ -1035,7 +1028,7 @@ def compute() -> dict:
             accepted_at=pd.NaT,
         )
     )
-    df_books = clean_public_holdings(attach_tickers(df_books, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map)), valuation_close, None)
+    df_books = clean_public_holdings(attach_tickers(df_books), valuation_close, None)
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
     book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None
@@ -1045,7 +1038,7 @@ def compute() -> dict:
     cohort = frozenset(pad_cik(cik) for cik in roster)
     super_history = compute_superinvestor_feature_history(book_history, {"": cohort, "topk": cohort}, tuple(tickers), market)
     superinvestor = project_superinvestor_features(
-        super_history, make_frames(idx, peers, close_split=close, universe=tickers), pd.Timestamp("2013-01-01")
+        super_history, make_frames(idx, peers, close_split=close, universe=tickers), pd.Timestamp("2013-06-30")
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)

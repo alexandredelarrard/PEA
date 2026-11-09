@@ -35,7 +35,7 @@ from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vin
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags
+from src.utils.identity_tables import LINE_COLUMNS
 from src.utils.institutional_vintages import reconcile_13f_source
 from src.utils.price.levels import split_cum_product
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
@@ -1389,7 +1389,6 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     for m, h in (original, new, revised):
         save_13f_filing(filing_store, m, h)
         save_hr_filing(filing_store, m, h, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
-    filing_store.save(Tables.cusip_ticker_map, cmap)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
@@ -1430,7 +1429,6 @@ def ordinary_step(
     for manifest, holdings in packets:
         save_13f_filing(filing_store, manifest, holdings)
         save_hr_filing(filing_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
-    filing_store.save(Tables.cusip_ticker_map, cmap)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
@@ -1452,17 +1450,14 @@ def ordinary_step(
     return step, frames
 
 
-def normal_resources(step: StepCubeSecThirteen, frames: PriceFrames) -> SecThirteenResources:
-    cusip_map = step._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"])
+def normal_resources(frames: PriceFrames) -> SecThirteenResources:
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(
-        replace(frames, security_basis=basis), CusipTags(pd.DataFrame(columns=LINE_COLUMNS), cusip_map), {"": cohort, "topk": cohort}
-    )
+    return SecThirteenResources(replace(frames, security_basis=basis), {"": cohort, "topk": cohort})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
-    resources = normal_resources(step, frames)
+    resources = normal_resources(frames)
     prepared = PreparedSecThirteen(step._institutional_features(resources), step._superinvestor_history(resources))
     broad, elite = step._project_panels(resources, prepared, frames.trading_index)
     assert broad is not None and elite is not None
@@ -1529,7 +1524,7 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     close = pd.DataFrame(10.0, index=grid, columns=["AAA"])
     frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]), close_pit=close)
     resources = replace(
-        normal_resources(step, frames),
+        normal_resources(frames),
         cohorts={"": frozenset({"0000000001", "0000000002"}), "topk": frozenset({"0000000002"})},
     )
     history = step._superinvestor_history(resources)
@@ -1705,7 +1700,7 @@ def test_normal_broad_retains_option_only_names(
         declared_value=1000,
     )
     step, frames = ordinary_step(filing_store, monkeypatch, (option,))
-    resources = normal_resources(step, frames)
+    resources = normal_resources(frames)
     features = step._institutional_features(resources)
     assert features is not None
     broad = step._project_institutional_panel(features, frames, resources).set_index(["date", "ticker"])
@@ -1739,7 +1734,7 @@ def test_normal_elite_handles_colliding_expiry_sessions(
     packets[-1][0]["cik"] = packets[-1][1]["cik"] = "0000000002"
     step, frames = ordinary_step(filing_store, monkeypatch, packets)
     step._cfg["institutionals"]["superinvestor"] = {"max_age_calendar_days": 365}
-    resources = replace(normal_resources(step, frames), cohorts=dict.fromkeys(("", "topk"), frozenset({"0000000001", "0000000002"})))
+    resources = replace(normal_resources(frames), cohorts=dict.fromkeys(("", "topk"), frozenset({"0000000001", "0000000002"})))
     history = step._superinvestor_history(resources)
     assert history is not None
     _, panel = step._project_panels(resources, PreparedSecThirteen(None, history), frames.trading_index)

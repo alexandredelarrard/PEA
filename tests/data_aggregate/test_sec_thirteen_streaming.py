@@ -17,7 +17,6 @@ from src.data_aggregate.utils.sec_thirteen import value_basis as values
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
 from src.data_store.schema import Tables
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books, iter_snapshot_books, snapshot_feature_history
 
 
@@ -196,11 +195,11 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
         expected_packets = list(packets)
     manifests = pd.concat([packet[0] for packet in expected_packets], ignore_index=True)
     raw = pd.concat([packet[1] for packet in expected_packets], ignore_index=True)
-    prepared = clean_public_holdings(attach_tickers(raw, None, universe), close, None)
+    prepared = clean_public_holdings(attach_tickers(raw, universe), close, None)
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    with closing(holdings_clean.clean_public_batches(stream, None, universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(stream, universe, close, None)) as batches:
         history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
     actual = list(iter_snapshot_books(*history))
@@ -218,7 +217,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     # The universe-scoped read (universe positions + whole amended books) replays the same books.
     scoped = inputs.iter_filing_vintages(sqlite_store, grid.max(), universe=universe)
     assert scoped is not None
-    with closing(holdings_clean.clean_public_batches(scoped, None, universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(scoped, universe, close, None)) as batches:
         scoped_history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert scoped_history is not None
     for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(actual, iter_snapshot_books(*scoped_history), strict=True):
@@ -368,7 +367,7 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
-        batches = holdings_clean.clean_public_batches(packets, None, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None)
+        batches = holdings_clean.clean_public_batches(packets, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None)
         with closing(batches):
             history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
     assert history is not None
@@ -406,12 +405,22 @@ def test_empty_public_prefix_closes_the_stream(sqlite_store: Any, monkeypatch: p
 @pytest.mark.parametrize("chunksize", [1, 31, 500_000])
 def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlite_store: Any, chunksize: int) -> None:
     mapping = pd.DataFrame({"cusip": [f"{number:09d}" for number in range(15)], "ticker": [f"T{number:02d}" for number in range(15)]})
-    rows = [{"cusip": cusip, "shares": 100.0, "value_usd": 1000.0} for cusip in mapping.cusip]
+    rows = [
+        {"cusip": cusip, "ticker": ticker, "shares": 100.0, "value_usd": 1000.0} for cusip, ticker in zip(mapping.cusip, mapping.ticker, strict=True)
+    ]
     packets = [
         _version("0000000001", "2024-03-31", accession, "2024-05-14", [{**row, "value_usd": row["value_usd"] * scale} for row in rows])
         for accession, scale in (("dollars", 1.0), ("large", 1000.0), ("small", 0.001))
     ]
-    packets.append(_version("0000000002", "2024-03-31", "unmapped", "2024-05-14", [*rows, {"cusip": "999999999", "shares": 5.0, "value_usd": 50.0}]))
+    packets.append(
+        _version(
+            "0000000002",
+            "2024-03-31",
+            "unmapped",
+            "2024-05-14",
+            [*rows, {"cusip": "999999999", "ticker": "_empty", "shares": 5.0, "value_usd": 50.0}],
+        )
+    )
     packets.append(_version("0000000003", "2024-03-31", "empty", "2024-05-14", []))
     sqlite_store.save(Tables.sec13f_hr, pd.concat(packets, ignore_index=True))
     grid = pd.bdate_range("2024-01-02", "2024-05-16")
@@ -432,11 +441,9 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     source = inputs.iter_filing_vintages(sqlite_store, grid.max(), chunksize=chunksize)
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
-        expected = clean_public_holdings(attach_tickers(raw, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping)), close, None)
+        expected = clean_public_holdings(attach_tickers(raw), close, None)
         expected_register = registers.pop()
-        with closing(
-            holdings_clean.clean_public_batches(source, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), None, close, None)
-        ) as batches:
+        with closing(holdings_clean.clean_public_batches(source, None, close, None)) as batches:
             result = list(batches)
     # Empty books retain their manifests and contribute no position rows to the union.
     actual = pd.concat([packet[1] for packet in result if not packet[1].empty], ignore_index=True)
@@ -457,22 +464,23 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     }
     assert actual.loc[actual.cusip.ne("999999999"), "shares"].eq(100.0).all()
     assert actual.cusip.eq("999999999").sum() == 1 and sum(len(packet[0]) for packet in result) == 5
+    assert actual.loc[actual.cusip.eq("999999999"), "ticker"].isna().all()
     print(
         f"SANITY: row budget{chunksize} preserves exact mixed-accession factors/registers, genuine shares, unmapped evidence and a complete empty book."
     )
 
 
 def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
-    mapping = pd.DataFrame({"cusip": ["000000001"], "ticker": ["OUT"]})
-    raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].drop(columns="ticker").reset_index(drop=True))
-    expected = clean_public_holdings(attach_tickers(raw, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), ("ABC",)), None, None)
+    raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].reset_index(drop=True))
+    raw.loc[raw.cusip.eq("000000001"), "ticker"] = "OUT"
+    raw.loc[raw.cusip.eq("000000002"), "ticker"] = "_empty"
+    expected = clean_public_holdings(attach_tickers(raw, ("ABC",)), None, None)
     packets = ((pd.DataFrame(), raw) for _ in range(1))
-    with closing(
-        holdings_clean.clean_public_batches(packets, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), ("ABC",), None, None)
-    ) as batches:
+    with closing(holdings_clean.clean_public_batches(packets, ("ABC",), None, None)) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-    print("SANITY: a universe-filtered mapping retains every raw row with the existing unknown ticker dtype and null mask.")
+    assert len(actual) == len(raw) and actual.ticker.isna().sum() == raw.ticker.ne("ABC").sum() > 0
+    print("SANITY: a universe-filtered read retains every raw row; off-universe and unmapped rows keep the unknown ticker dtype and null mask.")
 
 
 def test_compact_books_refuse_two_rows_of_one_manager_and_company() -> None:

@@ -62,7 +62,7 @@ def _source_tables(part: Table) -> tuple[Table, ...]:
         Tables.sharadar_tickers,
     )
     if part == Tables.cube_part_sec_thirteen:
-        return (*common, Tables.sec13f_hr, Tables.sec13f_manager_holdings, Tables.superinvestor_roster, Tables.cusip_ticker_map)
+        return (*common, Tables.sec13f_hr, Tables.superinvestor_roster)
     return (
         *common,
         Tables.universe_tickers,
@@ -1232,7 +1232,7 @@ def _feature_eligibility_start(
     if family == "broad_13f":
         dependencies = ((Tables.sec13f_hr, None),)
     elif family == "elite_13f":
-        dependencies = ((Tables.sec13f_manager_holdings, None),)
+        dependencies = ((Tables.sec13f_hr, None),)
     elif family == "insider":
         field = "is_10b5_1" if characteristic in {"ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d"} else None
         dependencies = ((Tables.insider_transactions, field),)

@@ -165,7 +165,7 @@ def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_
     def marker_and_history() -> tuple[int, int]:
         stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
         packets = thirteen_inputs.iter_filing_vintages(filing_store, grid.max())
-        with closing(clean_public_batches(packets, None, ["BRK-B", "VMRK"], None, None)) as batches:
+        with closing(clean_public_batches(packets, ["BRK-B", "VMRK"], None, None)) as batches:
             history = prepare_institutional_book_history(batches, grid, settle_days=3)
         assert history is not None
         return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])

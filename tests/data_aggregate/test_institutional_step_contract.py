@@ -17,14 +17,15 @@ from omegaconf import OmegaConf
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context
 from src.data_aggregate.transformers import step_cube_institutionals as institutional_step
+from src.data_aggregate.transformers import step_cube_sec_thirteen as sec_thirteen_step
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_aggregate.insider_pit_reference import row
+from tests.support.sec_thirteen_panel import unsaved_panel
 
 INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_buy_value_mcap_60d",
@@ -65,6 +66,14 @@ def context(store: Any, path: Path) -> Context:
         Context,
         SimpleNamespace(store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}),
     )
+
+
+def fixed_sec_thirteen_projection(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch, panel: pd.DataFrame) -> Mock:
+    """The real SEC13F `run()` around a fixed projection: every call returns `panel` on the requested dates."""
+    monkeypatch.setattr(sec_thirteen_step, "load_peers_or_raise", lambda ctx: {})
+    project = Mock(side_effect=lambda resources, prepared, dates: (panel.loc[panel.date.isin(dates)].reset_index(drop=True), None))
+    monkeypatch.setattr(step, "_project_panels", project)
+    return project
 
 
 def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
@@ -329,7 +338,7 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
     sqlite_store.replace(table, initial)
     if cls is StepCubeSecThirteen:
-        monkeypatch.setattr(step, "build_panel", lambda window=None, *, existing_columns=None: expected.copy())
+        fixed_sec_thirteen_projection(step, monkeypatch, expected)
     else:
         monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
     expected_saved = expected.copy()
@@ -372,11 +381,7 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
             return _original(table, *args, **kwargs)
 
         monkeypatch.setattr(sqlite_store, method, capture)
-    result = (
-        step.build_panel()
-        if cls is StepCubeInstitutionals
-        else step.build_panel(PartWindow(None, None), existing_columns=sqlite_store.columns(Tables.cube_part_sec_thirteen))
-    )
+    result = step.build_panel() if cls is StepCubeInstitutionals else unsaved_panel(step)
     if cls is StepCubeInstitutionals:
         assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
         assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
@@ -678,25 +683,27 @@ def test_changed_columns_trigger_full_owned_part_replacement(
     step = cls(ctx, ctx.config)
     sqlite_store.replace(table, pd.DataFrame({"date": days[:3], "ticker": "AAA", "f_old": 9.0}))
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_current": 1.0})
-    builds: list[PartWindow | None] = []
+    builds: list[None] = []
 
     def build() -> pd.DataFrame:
         builds.append(None)
         return expected.copy()
 
-    def sec_build(window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
-        assert window is not None and existing_columns is not None
-        builds.append(window)
-        return expected.copy()
-
-    monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
+    if cls is StepCubeSecThirteen:
+        # Each broad preparation counts as one build; the fixed projection stands in for the families.
+        fixed_sec_thirteen_projection(step, monkeypatch, expected)
+        monkeypatch.setattr(step, "_institutional_features", lambda resources: builds.append(None))
+    else:
+        monkeypatch.setattr(step, "build_panel", build)
     method = "replace"
     replace = Mock(side_effect=getattr(type(sqlite_store), method))
     monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: replace(store, *args, **kwargs))
     step.run()
     assert len(builds) == 1
     if cls is StepCubeSecThirteen:
-        assert builds[0] is not None and not builds[0].is_full
+        # The window projection, then one whole-history reprojection for the new schema.
+        project = cast(Mock, step._project_panels)
+        assert project.call_count == 2 and len(project.call_args_list[-1].args[2]) == len(days)
     replace.assert_called_once()
     assert set(sqlite_store.columns(table)) == set(expected.columns)
     assert sqlite_store.row_count(table) == len(expected)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator, Sequence
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
@@ -20,8 +20,9 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSIO
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.institutional_vintages import prepare_book_vintages
-from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
+from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
+from tests.support.sec_thirteen_panel import unsaved_panel
 
 
 def _manager_batch_owner(
@@ -148,7 +149,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     elite = Mock(return_value=SuperinvestorFeatureHistory(levels, pd.DataFrame()))
     monkeypatch.setattr(step, "_institutional_features", broad)
     monkeypatch.setattr(step, "_superinvestor_history", elite)
-    result = step.build_panel(PartWindow(None, None), existing_columns=sqlite_store.columns(Tables.cube_part_sec_thirteen))
+    result = unsaved_panel(step)
     assert step._store is sqlite_store and step._part.table == Tables.cube_part_sec_thirteen
     assert broad.call_count == elite.call_count == 1
     assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration"} | {"f_" + name for name in EMISSION}
@@ -215,17 +216,11 @@ def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch:
     previous = pd.DataFrame({"date": days, "ticker": "AAA", "f_previous": 1.0})
     sqlite_store.save(Tables.cube_part_sec_thirteen, previous)
     panel = previous.drop(columns="f_previous").assign(f_current=2.0)
-    calls = []
-
-    def build(window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
-        assert window is not None and existing_columns is not None
-        calls.append(window.is_full)
-        return panel
-
-    monkeypatch.setattr(step, "build_panel", build)
+    project = fixed_sec_thirteen_projection(step, monkeypatch, panel)
     monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: days)
     step.run()
-    assert calls == [False]
+    # The incremental window projection, then one whole-history reprojection reused by the schema fallback.
+    assert project.call_count == 2 and len(project.call_args_list[-1].args[2]) == len(days)
     persisted = sqlite_store.load(Tables.cube_part_sec_thirteen)
     assert persisted is not None
     pd.testing.assert_frame_equal(persisted.sort_values(["date", "ticker"]).reset_index(drop=True), panel.reset_index(drop=True), check_dtype=False)

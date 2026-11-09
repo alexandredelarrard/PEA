@@ -68,7 +68,7 @@ class StepCubeSecThirteen(Step):
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
     def run(self, full: bool = False) -> None:
-
+        """Plan the effective window, prepare both families once, project them on the window and save it."""
         # Plan the actual rewrite footprint before loading dependency payloads.
         calendar = load_trading_calendar(self._store)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
@@ -85,12 +85,46 @@ class StepCubeSecThirteen(Step):
             window = PartWindow(None, None)
         self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
 
+        # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
+        resources = self._load_resources()
+        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
+        self._require_saved_families(prepared, existing_columns)
+
+        # Project the output window; a full window is the whole history.
+        dates = resources.frames.trading_index
+        output_dates = dates if window.since is None else dates[dates >= window.since]
+        panels = self._project_panels(resources, prepared, output_dates)
+        supported = self._feature_columns(panels)
+
+        # Probe older windows, newest first, for columns the output window cannot show.
+        unresolved = set() if window.is_full else self._possible_columns(resources, prepared) - supported
+        end = int(dates.searchsorted(output_dates[0])) if len(output_dates) else len(dates)
+        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
+        while unresolved and end:
+            start = max(0, end - span)
+            broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
+            elite = prepared.superinvestor if any(column.startswith("f_ic_super_") for column in unresolved) else None
+            supported.update(self._feature_columns(self._project_panels(resources, PreparedSecThirteen(broad, elite), dates[start:end])))
+            unresolved.difference_update(supported)
+            end = start
+
+        # A schema change reprojects the whole history; otherwise the window keeps the saved columns and their order.
+        if window.is_full:
+            df_panel = self._merge_panels(resources.frames, panels)
+        elif supported != set(existing_columns) - {"date", "ticker"}:
+            df_panel = self._merge_panels(resources.frames, self._project_panels(resources, prepared, dates))
+        else:
+            output_frames = resources.frames.on(output_dates, *self._OUTPUT_FIELDS)
+            df_panel = self._merge_panels(output_frames, panels)
+            df_panel = output_frames.skeleton() if df_panel.empty else df_panel
+            df_panel = df_panel.assign(**{column: pd.Series(index=df_panel.index, dtype="float32") for column in supported - set(df_panel.columns)})
+            df_panel = df_panel.reindex(columns=existing_columns)
+
         # Schema fallback reuses the prepared full-history panel and performs one save.
-        panel = self.build_panel(window, existing_columns=existing_columns)
-        result = write_part(self._store, Tables.cube_part_sec_thirteen, panel, window, drop_empty=True, existing_columns=existing_columns)
+        result = write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
         if result == COLUMNS_CHANGED:
             self._require_saved_calendar(saved_dates, calendar, None)
-            write_part(self._store, Tables.cube_part_sec_thirteen, panel, PartWindow(None, None), drop_empty=True)
+            write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, PartWindow(None, None), drop_empty=True)
 
     @staticmethod
     def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
@@ -164,46 +198,6 @@ class StepCubeSecThirteen(Step):
         for prefix, missing in failed:
             if missing and any(column.startswith(prefix) for column in saved_columns):
                 raise RuntimeError(f"SEC13F source preparation failed for {prefix}; saved output is preserved.")
-
-    def build_panel(self, window: PartWindow, *, existing_columns: Sequence[str]) -> pd.DataFrame:
-        """Both families on the output window, without saving. Older windows are probed for columns the window cannot
-        show; a column set other than the saved one reprojects the whole history."""
-        # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
-        saved_columns = list(existing_columns)
-        resources = self._load_resources()
-        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
-        self._require_saved_families(prepared, saved_columns)
-
-        # The output window; a full window is the whole history.
-        dates = resources.frames.trading_index
-        output_dates = dates if window.since is None else dates[dates >= window.since]
-        panels = self._project_panels(resources, prepared, output_dates)
-        if window.is_full:
-            return self._merge_panels(resources.frames, panels)
-
-        # Probe historical support with the same prepared facts and projectors, newest window first.
-        supported = self._feature_columns(panels)
-        unresolved = self._possible_columns(resources, prepared) - supported
-        end = int(dates.searchsorted(output_dates[0])) if len(output_dates) else len(dates)
-        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
-        while unresolved and end:
-            start = max(0, end - span)
-            broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
-            elite = prepared.superinvestor if any(column.startswith("f_ic_super_") for column in unresolved) else None
-            supported.update(self._feature_columns(self._project_panels(resources, PreparedSecThirteen(broad, elite), dates[start:end])))
-            unresolved.difference_update(supported)
-            end = start
-
-        # A schema change reprojects the whole history; otherwise the window keeps the saved columns and their order.
-        if supported != set(saved_columns) - {"date", "ticker"}:
-            return self._merge_panels(resources.frames, self._project_panels(resources, prepared, dates))
-        output_frames = resources.frames.on(output_dates, *self._OUTPUT_FIELDS)
-        df_panel = self._merge_panels(output_frames, panels)
-        if df_panel.empty:
-            df_panel = output_frames.skeleton()
-        for column in supported - set(df_panel.columns):
-            df_panel[column] = pd.Series(index=df_panel.index, dtype="float32")
-        return df_panel.reindex(columns=saved_columns)
 
     def _project_panels(
         self, resources: SecThirteenResources, prepared: PreparedSecThirteen, dates: pd.DatetimeIndex

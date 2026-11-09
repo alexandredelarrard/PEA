@@ -27,13 +27,13 @@ if str(ROOT) not in sys.path:
 
 from tests.support.cube_institutionals_catalogue import INSTITUTIONALS as NON_THIRTEEN
 from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
+from tests.support.sec_thirteen_panel import unsaved_panel
 
 INSTITUTIONALS = {**NON_THIRTEEN, **SEC_THIRTEEN}
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.config import read_config
 from src.validate.checks.catalogue import _load as load_catalogue
@@ -443,10 +443,8 @@ def build_candidate(
     context.paths["SECTOR_PEERS_PATH"] = peer_path
     sources = _verify_source_identity(context.store, manifest, part=part)
     if part == Tables.cube_part_sec_thirteen:
-        panel = StepCubeSecThirteen(context=context, config=config_node).build_panel(
-            PartWindow(None, None), existing_columns=context.store.columns(Tables.cube_part_sec_thirteen)
-        )
-        builder = f"{StepCubeSecThirteen.__name__}.build_panel()"
+        panel = unsaved_panel(StepCubeSecThirteen(context=context, config=config_node))
+        builder = f"{StepCubeSecThirteen.__name__}.run() unsaved panel"
     else:
         panel = StepCubeInstitutionals(context=context, config=config_node).build_panel()
         builder = f"{StepCubeInstitutionals.__name__}.build_panel()"
@@ -489,7 +487,7 @@ def build_candidate(
         "source_tables": sources,
         "peer_cache": manifest["peer_cache"],
         "builder": builder,
-        "write_contract": "parquet artifact only; builder run/write_part not called",
+        "write_contract": "parquet artifact only; write_part not called",
     }
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "candidate-metadata.json", metadata)

@@ -212,6 +212,18 @@ def test_fundamentals_check_runs_the_check_on_the_ticker_subset(context: SimpleN
     print(f"SANITY: fundamentals-check -> check only, tickers {calls[0][0]}, thresholds {calls[0][1]}; no history build, no store write.")
 
 
+def test_help_lists_the_split_fundamentals_commands_and_none_of_the_removed_ones() -> None:
+    """AC-010: one command per producer stage, plus the check; the combined `fundamentals` / `fundamentals-facts` are gone."""
+    result = CliRunner().invoke(cli_mod.cli, ["--help"])
+    listed = {line.split()[0] for line in result.output.splitlines() if line.startswith("  ") and line.split()}
+    current = {"sec-fundamentals-facts", "sec-fundamentals-history", "fundamentals-check", "fundamentals-sharadar", "fundamentals-employees"}
+
+    assert result.exit_code == 0, result.output
+    assert current <= listed, sorted(current - listed)
+    assert not {"fundamentals", "fundamentals-facts"} & listed and not {"fundamentals", "fundamentals-facts"} & set(cli_mod.cli.commands)
+    print(f"SANITY: --help lists {sorted(current)}; the removed fundamentals / fundamentals-facts commands are absent.")
+
+
 @pytest.mark.parametrize(
     "command,exit_code,called",
     [

@@ -145,13 +145,45 @@ def _latest_per_window(frame: pd.DataFrame, *, presorted: bool = False) -> pd.Da
     if frame.empty:
         return frame
     ordered = frame if presorted else frame.sort_values(_WINDOW_ORDER)
-    ends = pd.to_datetime(ordered["period_end"])
-    bucket = (ends.diff().dt.days.fillna(0) > _SAME_PERIOD_DAYS).cumsum()
-    return ordered[~bucket.duplicated(keep="last")]
+    return ordered.iloc[_latest_positions(ordered["period_end"].to_numpy("datetime64[ns]"))]
 
 
-def _shape(frame: pd.DataFrame, shape: str, *, presorted: bool = False) -> pd.DataFrame:
-    return _latest_per_window(frame[frame["duration_type"] == shape], presorted=presorted)
+def _latest_positions(ends: np.ndarray) -> np.ndarray:
+    """`_latest_per_window` on the sorted `period_end` array: the positions of each window's last row.
+
+    A row starts a new window when it ends more than `_SAME_PERIOD_DAYS` whole days after the previous
+    row; a NaT gap never does.
+    """
+    gaps = ends[1:] - ends[:-1]
+    known = ~np.isnat(gaps)
+    opens = np.zeros(gaps.size, dtype=bool)
+    opens[known] = gaps[known] // np.timedelta64(1, "D") > _SAME_PERIOD_DAYS
+    # Row i closes its window when row i + 1 opens the next one; the last row always closes.
+    return np.flatnonzero(np.append(opens, True)) if ends.size else np.empty(0, dtype=np.intp)
+
+
+#: The fact values a subtraction leg carries into `_derived`.
+_LEG_COLUMNS: tuple[str, ...] = ("period_start", "period_end", "period_days", "value", "filing_date", "source_concept")
+
+
+@dataclass(frozen=True)
+class _Legs:
+    """One shape's latest-per-window facts (`_WINDOW_ORDER` kept): the frame, its bounds and values as arrays,
+    and each row as a plain dict of `_LEG_COLUMNS` (what `itertuples` used to hand `_derived`)."""
+
+    frame: pd.DataFrame
+    starts: np.ndarray
+    ends: np.ndarray
+    values: np.ndarray
+    rows: list[dict]
+
+    @classmethod
+    def of(cls, ordered: pd.DataFrame, shape: str) -> _Legs:
+        """The `shape` legs of a frame already sorted by `_WINDOW_ORDER`."""
+        frame = _latest_per_window(ordered[ordered["duration_type"] == shape], presorted=True)
+        rows = [dict(zip(_LEG_COLUMNS, row, strict=True)) for row in zip(*(frame[c].tolist() for c in _LEG_COLUMNS), strict=True)]
+        starts, ends = _window_bounds(frame)
+        return cls(frame, starts, ends, frame["value"].to_numpy(dtype=float), rows)
 
 
 #: Max gap between a nine-month cumulative's end and a fourth quarter's start for the two to be
@@ -159,23 +191,21 @@ def _shape(frame: pd.DataFrame, shape: str, *, presorted: bool = False) -> pd.Da
 _CONTIGUOUS_DAYS = 4
 
 
-def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
-    """Is this `quarterly`-shaped fact really the whole fiscal year? Used only where no annual fact exists.
+def _ambiguous_durations(q_start: np.ndarray, q_value: np.ndarray, ends: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Per quarterly-shaped fact: is it really the whole fiscal year? Used only where no annual fact exists.
 
-    True when a contiguous `ytd9` (given as numpy `ends` / `values`) exists, is materially non-zero
-    (>1% of the quarter), has the SAME sign, and is smaller in magnitude than the "quarter". The
-    same-sign condition keeps a genuine loss quarter after a profitable nine months.
+    True when a contiguous `ytd9` (given as `ends` / `values`) exists, is materially non-zero (>1% of the
+    quarter), has the SAME sign, and is smaller in magnitude than the "quarter". The same-sign condition
+    keeps a genuine loss quarter after a profitable nine months.
     """
-    if ends.size == 0 or pd.isna(q.period_start) or pd.isna(q.value):
-        return False
-    gap = cast(Any, np.datetime64(cast(Any, q.period_start), "ns") - ends) / np.timedelta64(1, "D")
-    quarter = float(cast(Any, q.value))
+    if ends.size == 0 or q_start.size == 0:
+        return np.zeros(q_start.size, dtype=bool)
+    gap = (q_start[:, None] - ends[None, :]) / np.timedelta64(1, "D")
     # An opposite-sign cumulative means the year turned, not that the window is mislabelled.
-    keep = (gap >= 0) & (gap <= _CONTIGUOUS_DAYS) & (values * quarter > 0)
-    if not keep.any():
-        return False
-    nine = float(np.abs(values[keep]).max())
-    return bool(nine > 0.01 * abs(quarter) and abs(quarter) > nine)
+    keep = (gap >= 0) & (gap <= _CONTIGUOUS_DAYS) & (values[None, :] * q_value[:, None] > 0)
+    nine = np.where(keep, np.abs(values)[None, :], -np.inf).max(axis=1)
+    quarter = np.abs(q_value)
+    return ~np.isnat(q_start) & ~np.isnan(q_value) & keep.any(axis=1) & (nine > 0.01 * quarter) & (quarter > nine)
 
 
 def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame) -> pd.DataFrame:
@@ -184,7 +214,7 @@ def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame) -> pd.DataFrame:
     With an annual fact present, a quarter is dropped only when all hold: an annual fact ends within
     `_SAME_PERIOD_DAYS` of it, the values agree within 0.1%, and an interim cumulative inside that year
     is >1% of the annual (so a real Q4 that equals its year, after a zero nine months, survives).
-    With no annual fact, `_is_ambiguous_duration` decides (refused, never reclassified).
+    With no annual fact, `_ambiguous_durations` decides (refused, never reclassified).
     """
     quarters = frame[frame["duration_type"] == QUARTERLY]
     annual = frame[frame["duration_type"] == ANNUAL]
@@ -193,33 +223,26 @@ def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame) -> pd.DataFrame:
     # `annual` may be empty: the no-annual-fact branch must still run.
     if quarters.empty or (annual.empty and ytd9.empty):
         return frame
-    drop: list = []
     # Numpy arrays taken once; `quarterize` has already dropped rows with a null value, start or end.
-    a_end = annual["period_end"].to_numpy("datetime64[ns]")
-    a_start = annual["period_start"].to_numpy("datetime64[ns]")
+    q_start, q_end = _window_bounds(quarters)
+    q_value = quarters["value"].to_numpy(float)
+    a_start, a_end = _window_bounds(annual)
     a_value = annual["value"].to_numpy(float)
-    y9_end = ytd9["period_end"].to_numpy("datetime64[ns]")
-    y9_value = ytd9["value"].to_numpy(float)
     i_end = interim["period_end"].to_numpy("datetime64[ns]")
     i_value = interim["value"].to_numpy(float)
-    same_period = np.timedelta64(_SAME_PERIOD_DAYS, "D")
-    for q in quarters.itertuples():
-        q_end = np.datetime64(cast(Any, q.period_end), "ns")
-        near = np.abs(a_end - q_end) <= same_period
-        if not near.any():
-            if _is_ambiguous_duration(q, y9_end, y9_value):
-                drop.append(q.Index)
-            continue
-        near_value = a_value[near]
-        scale = float(np.abs(near_value).max())
-        if scale < 1 or float(np.abs(near_value - float(cast(Any, q.value))).min()) > 0.001 * scale:
-            continue
-        # Scoped to the annual window: the nine-month cumulative ends where the quarter begins.
-        year_start = a_start[near].min()
-        accumulated = (i_end > year_start) & (i_end <= q_end)
-        if (np.abs(i_value[accumulated]) > 0.01 * scale).any():
-            drop.append(q.Index)
-    return frame.drop(index=drop) if drop else frame
+    # One row per quarter, one column per annual fact; NaN and NaT propagate exactly as a per-row scan's would.
+    near = np.abs(a_end[None, :] - q_end[:, None]) <= np.timedelta64(_SAME_PERIOD_DAYS, "D")
+    has_near = near.any(axis=1)
+    drop = _ambiguous_durations(q_start, q_value, ytd9["period_end"].to_numpy("datetime64[ns]"), ytd9["value"].to_numpy(float)) & ~has_near
+    if a_end.size:
+        scale = np.where(near, np.abs(a_value)[None, :], -np.inf).max(axis=1)
+        closest = np.where(near, np.abs(a_value[None, :] - q_value[:, None]), np.inf).min(axis=1)
+        for i in np.flatnonzero(has_near & ~((scale < 1) | (closest > 0.001 * scale))):
+            # Scoped to the annual window: the nine-month cumulative ends where the quarter begins.
+            year_start = a_start[near[i]].min()
+            accumulated = (i_end > year_start) & (i_end <= q_end[i])
+            drop[i] = bool((np.abs(i_value[accumulated]) > 0.01 * scale[i]).any())
+    return frame.drop(index=quarters.index[drop]) if drop.any() else frame
 
 
 def _window_bounds(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -227,22 +250,20 @@ def _window_bounds(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return frame["period_start"].to_numpy("datetime64[ns]"), frame["period_end"].to_numpy("datetime64[ns]")
 
 
-def _same_start_before(candidates: pd.DataFrame, start, end, bounds: tuple[np.ndarray, np.ndarray] | None = None) -> pd.Series | None:
-    """The latest candidate sharing this window's START and ending strictly earlier, or None.
+def _same_start_before(candidates: _Legs, start: np.datetime64, end: np.datetime64) -> int | None:
+    """The position in `candidates` of the latest leg sharing this window's START and ending strictly earlier, or None.
 
     Sharing the start is what makes a cumulative subtraction valid (never across a fiscal-year boundary).
-    `bounds` is `_window_bounds(candidates)`, passed by a caller that probes the same frame repeatedly.
     """
-    if candidates.empty or pd.isna(start) or pd.isna(end):
+    if candidates.ends.size == 0 or np.isnat(start) or np.isnat(end):
         return None
-    starts, ends = bounds if bounds is not None else _window_bounds(candidates)
-    hit = (starts == np.datetime64(pd.Timestamp(start), "ns")) & (ends < np.datetime64(pd.Timestamp(end), "ns"))
+    hit = (candidates.starts == start) & (candidates.ends < end)
     if not hit.any():
         return None
     # The latest end wins; on a tie, the last such row in frame order.
     positions = np.flatnonzero(hit)
-    hit_ends = ends[positions]
-    return candidates.iloc[int(positions[np.flatnonzero(hit_ends == hit_ends.max())[-1]])]
+    hit_ends = candidates.ends[positions]
+    return int(positions[np.flatnonzero(hit_ends == hit_ends.max())[-1]])
 
 
 # ---------------------------------------------------------------------------- guards ---
@@ -346,22 +367,20 @@ def quarterize(
     # Sorted once for all four shape reads below -- see `_latest_per_window`.
     frame = frame.sort_values(_WINDOW_ORDER)
 
-    quarters = _shape(frame, QUARTERLY, presorted=True)
+    quarters, y6, y9, annual = (_Legs.of(frame, s) for s in (QUARTERLY, YTD6, YTD9, ANNUAL))
     rows: list[dict] = [
         {
-            "period_start": r.period_start,
-            "period_end": r.period_end,
-            "period_days": r.period_days,
-            "value": float(cast(Any, r.value)),
+            "period_start": r["period_start"],
+            "period_end": r["period_end"],
+            "period_days": r["period_days"],
+            "value": float(r["value"]),
             "basis": AS_REPORTED,
-            "known_from": r.filing_date,
-            "source_concept": r.source_concept,
+            "known_from": r["filing_date"],
+            "source_concept": r["source_concept"],
             "concept_switch": False,
         }
-        for r in quarters.itertuples()
+        for r in quarters.rows
     ]  # still in share-days if weighted
-
-    y6, y9, annual = (_shape(frame, s, presorted=True) for s in (YTD6, YTD9, ANNUAL))
     rows.extend(_ladder(quarters, y6, y9, annual, spec, guards))
 
     out = pd.DataFrame(rows, columns=[c for c in _QUARTER_COLUMNS if c not in ("ticker", "field", "fiscal_year", "fiscal_quarter")])
@@ -378,41 +397,29 @@ def quarterize(
     return label_fiscal_periods(out, fiscal_year_ends(frame) if year_ends is None else year_ends)
 
 
-def _ladder(
-    quarters: pd.DataFrame,
-    y6: pd.DataFrame,
-    y9: pd.DataFrame,
-    annual: pd.DataFrame,
-    spec: FieldSpec,
-    guards: PeriodGuards,
-) -> list[dict]:
+def _ladder(quarters: _Legs, y6: _Legs, y9: _Legs, annual: _Legs, spec: FieldSpec, guards: PeriodGuards) -> list[dict]:
     """The Q2/Q3 decumulation rungs, then Q4 by `FY - YTD9` or else `FY - (Q1+Q2+Q3)`; a declined rung emits nothing."""
     out: list[dict] = []
     for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6), (y9, y6, Q3_FROM_YTD9)):
-        earlier_bounds = _window_bounds(earlier)
-        for row in cumulative.itertuples():
-            prior = _same_start_before(earlier, row.period_start, row.period_end, earlier_bounds)
+        for row, start, end in zip(cumulative.rows, cumulative.starts, cumulative.ends, strict=True):
+            prior = _same_start_before(earlier, start, end)
             if prior is None:
                 continue
-            derived = _derived(cast(Any, row)._asdict(), prior, basis, spec, [float(cast(Any, prior["value"]))], guards)
+            derived = _derived(row, earlier.rows[prior], basis, spec, [float(earlier.values[prior])], guards)
             if derived:
                 out.append(derived)
 
-    y9_bounds = _window_bounds(y9)
-    q_starts, q_ends = _window_bounds(quarters)
-    q_values = quarters["value"].to_numpy(dtype=float)
-    for fy in annual.itertuples():
-        fy_row = cast(Any, fy)._asdict()
-        fy_end = np.datetime64(pd.Timestamp(cast(Any, fy.period_end)), "ns")
-        within = (q_starts >= np.datetime64(pd.Timestamp(cast(Any, fy.period_start)), "ns")) & (q_ends <= fy_end)
+    q_starts, q_ends, q_values = quarters.starts, quarters.ends, quarters.values
+    for fy_row, fy_start, fy_end in zip(annual.rows, annual.starts, annual.ends, strict=True):
+        within = (q_starts >= fy_start) & (q_ends <= fy_end)
         # A discrete quarter ending on the fiscal year-end IS Q4 as reported.
         if (q_ends[within] == fy_end).any():
             continue
         siblings = [float(v) for v in q_values[within]]
 
-        ytd9 = _same_start_before(y9, fy.period_start, fy.period_end, y9_bounds)
+        ytd9 = _same_start_before(y9, fy_start, fy_end)
         if ytd9 is not None:
-            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards)
+            derived = _derived(fy_row, y9.rows[ytd9], FY_MINUS_YTD9, spec, siblings, guards)
             if derived:
                 out.append(derived)
                 continue
@@ -420,7 +427,7 @@ def _ladder(
         # Fallback needs exactly the three preceding quarters; a gap, overlap or stub is ambiguous.
         if int(within.sum()) != TTM_QUARTERS - 1:
             continue
-        inside = quarters[within]
+        inside = quarters.frame[within]
         total = float(inside["value"].sum())
         last = inside.sort_values("period_end").iloc[-1]
         derived = _derived(
@@ -754,20 +761,33 @@ def build_periods(
             trailing_twelve(pd.DataFrame(), catalogue.field(catalogue.extracted_fields[0]), guards=guards),
             facts,
         )
-    durations = facts[~facts["duration_type"].isin([INSTANT, OTHER_SHAPE])]
+    durations = facts[is_duration(facts)]
     # One calendar for the whole ticker, built from every field's annual-shaped facts.
     if year_ends is None:
         year_ends = fiscal_year_ends(durations)
     all_quarters, all_ttm = [], []
     for name, group in durations.groupby("field", sort=True):
-        spec = catalogue.field(name)
-        if spec.kind != "duration":
-            continue
-        quarters = quarterize(group, spec, guards, year_ends)
-        if quarters.empty:
-            continue
-        all_quarters.append(quarters)
-        all_ttm.append(trailing_twelve(quarters, spec, annual=group, guards=guards))
+        periods = field_periods(group, catalogue.field(name), guards, year_ends)
+        if periods is not None:
+            all_quarters.append(periods[0])
+            all_ttm.append(periods[1])
     quarters = pd.concat(all_quarters, ignore_index=True) if all_quarters else pd.DataFrame(columns=list(_QUARTER_COLUMNS))
     ttm = pd.concat(all_ttm, ignore_index=True) if all_ttm else pd.DataFrame()
     return quarters, ttm, instant_stock(facts)
+
+
+def is_duration(facts: pd.DataFrame) -> pd.Series:
+    """The rows `build_periods` treats as duration facts: every shape but `instant` and `other`."""
+    return ~facts["duration_type"].isin([INSTANT, OTHER_SHAPE])
+
+
+def field_periods(
+    group: pd.DataFrame, spec: FieldSpec, guards: PeriodGuards, year_ends: list[pd.Timestamp]
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """One field's `(quarters, ttm)` from its duration facts, or None for a non-`duration` field or no quarter."""
+    if spec.kind != "duration":
+        return None
+    quarters = quarterize(group, spec, guards, year_ends)
+    if quarters.empty:
+        return None
+    return quarters, trailing_twelve(quarters, spec, annual=group, guards=guards)

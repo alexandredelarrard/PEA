@@ -16,8 +16,9 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype
+from pandas.api.types import is_datetime64_any_dtype, is_object_dtype, is_string_dtype
 
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
@@ -29,9 +30,11 @@ from src.data_extract.utils.fundamentals.periods import (
     INSTANT,
     InstantLookup,
     PeriodGuards,
-    build_periods,
+    field_periods,
     fiscal_quarter_of_end,
     fiscal_year_ends,
+    instant_stock,
+    is_duration,
     load_guards,
 )
 from src.data_store.schema import Tables
@@ -147,9 +150,73 @@ def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
     return pd.notna(end) and abs((period - end).days) > TTM_STALENESS_DAYS
 
 
-def _split_by_field(visible: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """`visible` split into one frame per field, each kept in `filing_date` order (callers rely on `.iloc[-1]`)."""
-    return {str(field): group for field, group in visible.groupby("field", sort=False)}
+#: The fields whose visible facts the identities read (`_total_liabilities_identity` and its helpers).
+_IDENTITY_FIELDS: tuple[str, ...] = ("stockholdersEquity", "minorityInterest")
+
+
+@dataclass(frozen=True)
+class _Visible:
+    """What one snapshot reads, all derived from the facts filed on or before its `as_of`."""
+
+    #: Every visible fact, in `filing_date` order.
+    facts: pd.DataFrame
+    #: The `_IDENTITY_FIELDS` facts, one frame per field in `filing_date` order (callers rely on `.iloc[-1]`).
+    by_field: dict[str, pd.DataFrame]
+    #: The newest TTM row and the newest discrete-quarter row of every duration field with a quarter.
+    ttm: dict[str, pd.Series]
+    quarters: dict[str, pd.Series]
+    lookup: InstantLookup
+    year_ends: list[pd.Timestamp]
+
+
+class _Replay:
+    """One ticker's facts indexed once for its event loop.
+
+    `frame` is sorted by `filing_date`, so an event's visible facts are a positional prefix. A field's quarters and
+    TTM depend only on that field's visible duration facts and the fiscal calendar, so they are recomputed only when
+    the field gained a fact or the calendar moved, and otherwise reused from the previous event unchanged.
+    """
+
+    def __init__(self, frame: pd.DataFrame, catalogue: Catalogue, guards: PeriodGuards) -> None:
+        self._frame = frame
+        self._narrow = _period_projection(frame)
+        self._catalogue = catalogue
+        self._guards = guards
+        self._filed = frame["filing_date"].to_numpy()
+        # Ascending positions per field; a field's duration facts are the subset `build_periods` would group.
+        self._positions: dict[str, np.ndarray] = {str(name): positions for name, positions in frame.groupby("field", sort=False).indices.items()}
+        durations = is_duration(self._narrow).to_numpy()
+        self._durations = {name: positions[durations[positions]] for name, positions in sorted(self._positions.items())}
+        self._periods: dict[str, tuple[tuple[int, tuple[pd.Timestamp, ...]], pd.Series | None, pd.Series | None]] = {}
+
+    def at(self, as_of: pd.Timestamp) -> _Visible:
+        """The snapshot inputs of the event dated `as_of`."""
+        upto = int(self._filed.searchsorted(as_of.to_datetime64(), side="right"))
+        narrow = self._narrow.iloc[:upto]
+        # The filer's own year ends as known at THIS event, shared by every field.
+        year_ends = fiscal_year_ends(narrow)
+        calendar = tuple(year_ends)
+        ttm, quarters = {}, {}
+        for name, positions in self._durations.items():
+            count = int(positions.searchsorted(upto))
+            if count == 0:
+                continue
+            key, newest_ttm, newest_quarter = self._periods.get(name, (None, None, None))
+            if key != (count, calendar):
+                periods = field_periods(self._narrow.iloc[positions[:count]], self._catalogue.field(name), self._guards, year_ends)
+                newest_ttm, newest_quarter = (None, None) if periods is None else (_latest(periods[1], name), _latest(periods[0], name))
+                self._periods[name] = ((count, calendar), newest_ttm, newest_quarter)
+            if newest_ttm is not None:
+                ttm[name] = newest_ttm
+            if newest_quarter is not None:
+                quarters[name] = newest_quarter
+        by_field = {}
+        for name in _IDENTITY_FIELDS:
+            positions = self._positions.get(name)
+            count = 0 if positions is None else int(positions.searchsorted(upto))
+            if count:
+                by_field[name] = self._frame.iloc[positions[:count]]
+        return _Visible(self._frame.iloc[:upto], by_field, ttm, quarters, InstantLookup(instant_stock(narrow)), year_ends)
 
 
 def _deduced_nci(by_field: dict[str, pd.DataFrame]) -> float | None:
@@ -286,30 +353,19 @@ def _ratio(column: str, numerator, denominator):
     return float(_FORMULAS[column][1](float(numerator), float(denominator)))
 
 
-def _snapshot(
-    ticker: str, visible: pd.DataFrame, event: pd.Series, catalogue: Catalogue, guards: PeriodGuards, narrow: pd.DataFrame | None = None
-) -> dict:
-    """One complete history row from `visible` (every fact filed on or before `as_of`).
-
-    `narrow` is the same rows projected to `PERIOD_COLUMNS` for `build_periods`.
-    """
-    # load: this event's periods, instants, fiscal end and regime
+def _snapshot(ticker: str, visible: _Visible, event: pd.Series, catalogue: Catalogue) -> dict:
+    """One complete history row from `visible` (every fact filed on or before `as_of`)."""
+    # load: this event's fiscal end and regime (periods and instants come with `visible`)
     as_of = pd.Timestamp(event["as_of"])
-    facts = narrow if narrow is not None else visible
-    by_field = _split_by_field(visible)
-    # The filer's own year ends as known at THIS event, shared with `build_periods`.
-    year_ends = fiscal_year_ends(facts)
-    quarters, ttm, instants = build_periods(facts, catalogue, guards, year_ends=year_ends)
-    lookup = InstantLookup(instants)
-    period = _latest_period_known(visible, as_of)
-    # `visible` is a filing-date-sorted prefix, so the last non-null regime is the latest-filed one.
-    regime = visible["regime"].dropna()
+    period = _latest_period_known(visible.facts, as_of)
+    # `visible.facts` is a filing-date-sorted prefix, so the last non-null regime is the latest-filed one.
+    regime = visible.facts["regime"].dropna()
     regime = str(regime.iloc[-1]) if not regime.empty else None
     row: dict = {
         "ticker": ticker,
         "as_of": event["as_of"],
         "fiscal_end": period,
-        "fiscal_quarter": fiscal_quarter_of_end(period, year_ends),
+        "fiscal_quarter": fiscal_quarter_of_end(period, visible.year_ends),
         HISTORY_REGIME: regime,
         **{c: event[c] for c in HISTORY_PROVENANCE},
     }
@@ -320,24 +376,24 @@ def _snapshot(
         if field in _FORMULAS:
             continue  # computed once the inputs are in
         if catalogue.field(field).kind == INSTANT:
-            value = _instant(lookup, field, as_of)
+            value = _instant(visible.lookup, field, as_of)
         else:
-            newest = _latest(ttm, field)
+            newest = visible.ttm.get(field)
             value = None if newest is None or _is_stale(newest, period) or pd.isna(newest["value"]) else float(newest["value"])
         row[field] = _gate(catalogue, regime, field, value)
 
     # compute: the identities, after the field loop so `minorityInterest` is available and before `_FORMULAS` so
     # `grossMargins` can use `grossProfit`; `operatingIncome`'s `derived_fallback` is deliberately unwired
     if row.get("totalLiabilities") is None:
-        row["totalLiabilities"] = _total_liabilities_identity(row, by_field)
+        row["totalLiabilities"] = _total_liabilities_identity(row, visible.by_field)
     if row.get("grossProfit") is None:
-        row["grossProfit"] = _gross_profit_identity(row, visible)
+        row["grossProfit"] = _gross_profit_identity(row, visible.facts)
 
     # compute: the ratios and the two discrete-quarter columns
     for column, (inputs, _) in _FORMULAS.items():
         row[column] = _ratio(column, *(row.get(name) for name in inputs))
     for column, source in _QUARTER_LABEL_COLUMNS.items():
-        newest = _latest(quarters, source)
+        newest = visible.quarters.get(source)
         row[column] = None if newest is None or pd.isna(newest["value"]) else float(newest["value"])
 
     # check: last, so the guard also covers derived and computed columns
@@ -369,9 +425,10 @@ def build_ticker(
     """One ticker's `sec_fundamentals_history` frame: 66 columns, one row per publication event of an original filing.
 
     `facts` is the ticker's `sec_fundamentals_facts` rows (a `companyfacts` mapping is accepted for synthetic fixtures
-    only); amendment facts are ignored. Every event rebuilds its whole snapshot from facts with `filing_date <= as_of`,
-    so no-leakage follows from the algorithm. `after` keeps only the events with `as_of > after`; each snapshot
-    depends on its own prefix only, so those rows equal a full replay's. Asserts the 66-column contract and the grain.
+    only); amendment facts are ignored. Every event's snapshot is built only from facts with `filing_date <= as_of`
+    (`_Replay` reuses a field's periods from an earlier event only while that field's visible facts are unchanged), so
+    no-leakage follows from the algorithm. `after` keeps only the events with `as_of > after`; each snapshot depends on
+    its own prefix only, so those rows equal a full replay's. Asserts the 66-column contract and the grain.
     """
     catalogue = catalogue or load_catalogue()
     guards = guards or load_guards()
@@ -384,13 +441,8 @@ def build_ticker(
     if events.empty:
         return pd.DataFrame(columns=columns)
 
-    narrow = _period_projection(frame)
-    filed = frame["filing_date"].to_numpy()
-    rows = []
-    for _, event in events.iterrows():
-        # `frame` is sorted by `filing_date`, so "filed on or before as_of" is a positional prefix.
-        upto = int(filed.searchsorted(event["as_of"].to_datetime64(), side="right"))
-        rows.append(_snapshot(ticker, frame.iloc[:upto], event, catalogue, guards, narrow.iloc[:upto]))
+    replay = _Replay(_plain_strings(frame), catalogue, guards)
+    rows = [_snapshot(ticker, replay.at(event["as_of"]), event, catalogue) for _, event in events.iterrows()]
 
     # Pinned dtypes (all-null columns too) for `diff_against_stored` and cold-table type inference.
     history = pin_dtypes(
@@ -437,12 +489,14 @@ STATED_PERIOD_TOLERANCE_DAYS = 7
 
 
 def _period_projection(frame: pd.DataFrame) -> pd.DataFrame:
-    """`frame` reduced to `PERIOD_COLUMNS`, with string columns cast to object (cheap per-slice takes, unlike Arrow)."""
-    out = frame[[c for c in PERIOD_COLUMNS if c in frame.columns]].copy()
-    for column in ("field", "duration_type", "source_concept", "fiscal_period"):
-        if column in out.columns and not pd.api.types.is_object_dtype(out[column]):
-            out[column] = out[column].astype(object)
-    return out
+    """`frame` reduced to `PERIOD_COLUMNS` (every engine filter copies its frame, so fewer columns copy less)."""
+    return frame[[c for c in PERIOD_COLUMNS if c in frame.columns]].copy()
+
+
+def _plain_strings(frame: pd.DataFrame) -> pd.DataFrame:
+    """`frame` with its string columns cast to object once, so per-event slices and groups never take Arrow strings."""
+    strings = {c: object for c in frame.columns if is_string_dtype(frame[c]) and not is_object_dtype(frame[c])}
+    return frame.astype(strings) if strings else frame
 
 
 def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:

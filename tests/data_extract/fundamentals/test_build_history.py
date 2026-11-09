@@ -17,7 +17,6 @@ import pytest
 
 from src.data_extract.utils.fundamentals.build_history import (
     _FORMULAS,
-    _split_by_field,
     _total_liabilities_identity,
     build_ticker,
     diff_against_stored,
@@ -379,8 +378,8 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
         )
 
     def visible(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
-        """The per-field split `_snapshot` hands the identity, not the raw visible frame."""
-        return _split_by_field(frame)
+        """The per-field split `_snapshot` hands the identity (`_Visible.by_field`), not the raw visible frame."""
+        return {str(field): group for field, group in frame.groupby("field", sort=False)}
 
     row = {"totalAssets": 1000.0, "stockholdersEquity": 800.0, "minorityInterest": 50.0}
     ex_nci = _total_liabilities_identity(row, visible(equity_row("StockholdersEquity")))

@@ -44,14 +44,8 @@ from src.constants.command_line_interface import (
     PERIOD_END_KWARGS,
     PERIOD_START_ARGS,
     PERIOD_START_KWARGS,
-    PROPOSE_ARGS,
-    PROPOSE_KWARGS,
-    REBUILD_ARGS,
-    REBUILD_KWARGS,
     REPAIR_AVAILABILITY_ARGS,
     REPAIR_AVAILABILITY_KWARGS,
-    REPORT_PATH_ARGS,
-    REPORT_PATH_KWARGS,
     TABLE_ARGS,
     TABLE_KWARGS,
     TICKERS_ARGS,
@@ -67,6 +61,7 @@ from src.constants.command_line_interface import (
 )
 from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar, widest_index_years
+from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
@@ -86,18 +81,10 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
 )
-from src.data_extract.utils.fundamentals_sharadar.gap_check import (
-    DEFAULT_REPORT_PATH as GAP_REPORT_PATH,
-)
-from src.data_extract.utils.fundamentals_sharadar.gap_check import (
-    run_gap_check,
-)
-from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
@@ -105,7 +92,7 @@ from src.data_extract.utils.institutionals.fetch_short_interest import fetch_sho
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
-from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
+from src.data_store.schema import Table, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.string import run_date
@@ -353,29 +340,23 @@ def superinvestors(config_path: str, full: bool) -> None:
 
 
 # --- Fundamentals: SEC ---
-# Facts (network walk) and history (pure replay) are separate commands so a history-layer bug never costs a re-download.
-# `-F/--full` re-reads every listed filing, stored ones included (see `run_edgar_fetch`).
+# Facts (the EDGAR step's network walk) and history (pure replay) are separate commands so a history-layer bug never
+# costs a re-download. `-F/--full` re-reads every listed filing, stored ones included (see `run_edgar_fetch`).
 
 
 @cli.command(
-    name="fundamentals-facts",
-    help="SEC per-filing XBRL -> fundamentals_facts, resolved from each filer's own calculation linkbase. As-filed only; append-only.",
+    name="sec-fundamentals-facts",
+    help="SEC per-filing XBRL (original 10-K and 10-Q) -> sec_fundamentals_facts, resolved from each filer's own calculation "
+    "linkbase. As-filed only; append-only. The EDGAR step's facts walk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fundamentals_sec(
-        context,
-        tickers=_tickers(context, tickers),
-        full=full,
-        years_history=int(config.data_extract.years_history),
-        as_of=run_date(as_of),
-        no_cap=no_cap,
-    )
+def sec_fundamentals_facts(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_fundamentals_facts()
 
 
 @cli.command(
@@ -392,59 +373,32 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
 
 
 @cli.command(
-    name="fundamentals-history-sec",
-    help="fundamentals_facts -> fundamentals_history_sec + _reason_codes, on the "
-    "publication-event grain. No network. Append-only: refuses to overwrite "
-    "an already-published row unless --full deletes the requested tickers' history and reason codes first. Stored facts are unchanged; use `fundamentals --rebuild` for a facts-resolution bug.",
+    name="sec-fundamentals-history",
+    help="sec_fundamentals_facts -> sec_fundamentals_history, on the publication-event grain of original 10-K and 10-Q "
+    "filings. No network. Append-only: refuses to overwrite an already-published row unless --full deletes the requested "
+    "tickers' history first. Stored facts are unchanged; after a `sec-fundamentals-facts -F` re-read run this with --full "
+    "(or --verify-history).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
-def fundamentals_history_sec(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=full, verify_history=verify_history)
+def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), full=full, verify=verify_history)
 
 
-def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
-    """Delete each ticker's facts, history and reason-code rows, so the next fetch refetches every filing."""
-    for ticker in names:
-        for table in (
-            Tables.fundamentals_facts,
-            Tables.fundamentals_history_sec,
-            Tables.fundamentals_reason_codes,
-        ):
-            context.store.delete(table, {"ticker": ticker})
-    context.log.warning("fundamentals: --rebuild deleted the facts/history tables for %d ticker(s); every XBRL filing will be refetched", len(names))
-
-
-@cli.command(help="Both fundamentals layers in order: facts (network) then history (replay).")
+@cli.command(
+    name="fundamentals-check",
+    help="Read-only SEC vs Sharadar check: logs the tickers held by one history only, the Sharadar CIKs outside their company, "
+    "the exact (ticker, as_of) match share and the shared fields where enough rows differ (`data_extract.fundamentals_check`). "
+    "Writes nothing; a finding never fails the task.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*REBUILD_ARGS, **REBUILD_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def fundamentals(
-    config_path: str, tickers: str | None, rebuild: bool, full: bool, verify_history: bool, as_of: datetime | None, no_cap: bool
-) -> None:
-    """The fetch hands the filing dates it read to the history triage, so a back-dated read replays that ticker in full."""
+def fundamentals_check(config_path: str, tickers: str | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers)
-    if rebuild:
-        _delete_fundamentals_layers(context, names)
-    summary = fetch_fundamentals_sec(
-        context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=run_date(as_of), no_cap=no_cap
-    )
-    build_fundamentals_history(
-        context,
-        tickers=names,
-        rebuild_history=rebuild,
-        verify_history=verify_history,
-        fetched=fetched_filing_dates(summary),
-        full_fetch=full or rebuild,
-    )
+    StepExtractFundamentals(context, config).run_check(_tickers(context, tickers))
 
 
 # --- Fundamentals: Sharadar (SF1) ---
@@ -452,14 +406,14 @@ def fundamentals(
 # History depth is `data_extract.sharadar_years_history`, not `years_history`.
 @cli.command(
     name="fundamentals-sharadar",
-    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> the MERGED fundamentals_history (tickers and actions: `universe`).",
+    help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> sharadar_fundamentals_history (tickers and actions: `universe`).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
+    """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the history build, lives in one place."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractFundamentalsSharadar(context=context, config=config)
     step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
@@ -474,45 +428,6 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
 def sharadar_sp500(config_path: str, full: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_sp500(context, full=full)
-
-
-# --- Fundamentals: the merged table, its gap check, and the remaining SEC sources ---
-@cli.command(
-    name="fundamentals-history-merged",
-    help="fundamentals_sharadar + fundamentals_history_sec -> fundamentals_history, "
-    "the MERGED table every consumer reads. Build only, no network. Both "
-    "inputs are read-only, so the rollback is a drop-and-rebuild.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals_history_merged(config_path: str, tickers: str | None, full: bool) -> None:
-    """Field-block precedence: each column has one declared source for all history and never switches mid-series.
-
-    `--full` deletes these tickers' rows before rebuilding; the default upsert cannot remove a row that no longer exists.
-    """
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    build_merged_history(context, tickers=_tickers(context, tickers), full=full, config_dir=config_path)
-
-
-@cli.command(
-    name="sharadar-gap-check",
-    help="READ-ONLY: where Sharadar and the SEC layer disagree on their SHARED "
-    "dates, and which gaps are SYSTEMATIC enough to be a basis conflict. "
-    "Writes a markdown report and, with --propose, INERT override candidates.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*REPORT_PATH_ARGS, **REPORT_PATH_KWARGS)
-@click.option(*PROPOSE_ARGS, **PROPOSE_KWARGS)
-def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str | None, propose: bool) -> None:
-    """Read-only Sharadar-vs-SEC disagreement report; reason codes stay with the SEC table and do not gate `fundamentals_history`.
-
-    `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
-    """
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers) if tickers else None
-    run_gap_check(context, tickers=names, report_path=report_path or GAP_REPORT_PATH, propose_overrides=propose, config_dir=config_path)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E (the prices step's `run_earnings_surprises`).")
@@ -747,7 +662,7 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
         click.echo(f"{quarter}\t{n_rows}")
 
 
-def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
+def _document_fetches() -> dict[str, EdgarFetch]:
     """Every EDGAR document fetch, keyed by its done table's name."""
     fetches = (
         SEC_8K_FETCH,
@@ -755,7 +670,7 @@ def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
         SEC_13G_FETCH,
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
-        fundamentals_fetch(context),
+        SEC_FUNDAMENTALS_FETCH,
         INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
@@ -770,7 +685,7 @@ def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
-    fetches = _document_fetches(context)
+    fetches = _document_fetches()
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
     for name, fetch in fetches.items():

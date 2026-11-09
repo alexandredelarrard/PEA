@@ -180,7 +180,7 @@ def test_generic_validator_measures_new_features_instead_of_abstaining() -> None
     features = ["f_revenue_cagr_3y", "f_y_earnings_growth_signed", "f_y_earnings_growth_signed_vs_hist", "f_cash_runway_months"]
     for feature in features:
         sources = [source for prefix, source in spec.pit_sources.items() if feature.startswith(prefix)]
-        assert sources == [(name_of(Tables.fundamentals_history),)]
+        assert sources == [(name_of(Tables.sharadar_fundamentals_history),)]
     assert spec.bounds["f_revenue_cagr_3y"] == (-1.0, np.inf)
     assert spec.bounds["f_cash_runway_months"] == (0.0, np.inf)
     assert "f_y_earnings_growth_signed" not in spec.bounds

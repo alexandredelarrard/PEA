@@ -1089,3 +1089,17 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Profile: internal/standard; branch `harness/price-pit-quantity-basis` merged with `dev` @ `abdf8231` (merge `4f33f011`).
 - Scope: `sec13f_hr` rows keep the company-level ticker stored at extraction; manager books are tagged through `CusipTags`; `common/class_lines.py` removed (class lines read from `universe_cusip`); the price identity reads `universe_cik_symbol`. P1 removed from the TODO.
 - Pages: [Cube aggregation](./modules/data-aggregate.md), [Table catalog](./reference/table-catalog.md), [TODO](./TODO.md).
+
+
+## 2026-11-08: refresh — independent SEC and Sharadar fundamentals
+
+- Profile: internal/standard; branch `harness/sec-sharadar-fundamentals-split`.
+- source_commit: 39b261e8 (was 1c36d16f)
+- Scope: tables `sec_fundamentals_facts`, `sec_fundamentals_history`, `sharadar_fundamentals_facts` and `sharadar_fundamentals_history`; the facts walk is the seventh `StepExtractEdgar` walk (original 10-K and 10-Q only); SEC history 66 columns, originals only, fast replay; Sharadar history 77 columns with no SEC read; `fundamentals-check` (thresholds in `data_extract.fundamentals_check`); the cube joins three `sec_*` columns on the exact `(ticker, as_of)` key with no buffer; DAG `identity >> edgar_index >> sec_fundamentals_facts >> sec_fundamentals_history`, `identity >> fundamentals_sharadar`, both histories `>> fundamentals_check`; commands `sec-fundamentals-facts`, `sec-fundamentals-history`, `fundamentals-check`; runbook notes for a facts `-F` re-read and for a lineage change; reason-code output, override register, gap check and the sweep, sweep-report, cube-evidence, basis-baseline and table-recreation scripts removed. TODO: facts-walk P2, gap-check P3, TRS-3 and replay-cost P1 closed; DF-1 to DF-6 and five follow-ups added.
+- Pages: [Table catalog](./reference/table-catalog.md), [Data extraction](./modules/data-extract.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Point-in-time data](./concepts/point-in-time-data.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Data access](./guides/data-access.md), [TODO](./TODO.md).
+
+## 2026-11-09: refresh — offline import chain for the SEC history (P9b)
+
+- Profile: internal/standard; branch `harness/sec-sharadar-fundamentals-split`.
+- Pure moves, no logic change: the live `Company` listing walk (`resolve_registrant_filings` and its scope guard) and `header_subject_ciks` from `common/registrant.py` to `edgar_extract/edgar_driver.py`; the identity row contract (role and source labels, `SENTINEL_START`, identity errors, CIK -> `company_id` helpers, `DEI_SOURCE`) from `identity/cik_history.py` and `identity/symbol_tenure.py` to `common/identity_contract.py`; `period_end` from `common/bulk_cache.py` to `common/resume.py`. Importing `step_extract_fundamentals` now loads neither `edgar` nor `sec_io`.
+- Pages: [Data extraction](./modules/data-extract.md), [Data sources](./reference/data-sources.md).

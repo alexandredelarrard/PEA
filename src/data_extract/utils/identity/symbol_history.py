@@ -19,20 +19,16 @@ from typing import Any
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.identity.cik_history import (
-    BACKLOG_COLUMNS,
-    EVIDENCE_SOURCES,
+from src.data_extract.utils.common.identity_contract import (
+    DEI_SOURCE,
     FORM345_SOURCE,
     MANUAL_SOURCE,
     ROLE_SYMBOL,
     ROLE_WINDOW,
-    ROSTER_SOURCE,
     SENTINEL_START,
-    TABLE_COLUMNS,
-    CikHistory,
     entity_or_singleton,
 )
-from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS, EVIDENCE_SOURCES, ROSTER_SOURCE, TABLE_COLUMNS, CikHistory
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series, yahoo_symbol
 

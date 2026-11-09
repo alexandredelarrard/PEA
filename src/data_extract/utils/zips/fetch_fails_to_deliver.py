@@ -27,8 +27,9 @@ from tqdm import tqdm
 
 from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SHARADAR_ACTION_SPLIT
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
+from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
 from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.resume import period_end
 from src.data_extract.utils.common.security_lines import master_stamps, prepare_master, trade_dates
 from src.data_extract.utils.institutionals.security_tape import (
     assert_tape_owners,
@@ -378,7 +379,7 @@ def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:
     splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     vendor = (
         context.store.load(
-            Tables.sharadar_fundamentals,
+            Tables.sharadar_fundamentals_facts,
             columns=["ticker", "date", "sharesbas", "price"],
             where={"ticker": sorted(policies), "dimension": "ARQ"},
             optional=True,

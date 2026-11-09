@@ -229,7 +229,7 @@ _SCREEN_CTES = """
 WITH px AS (SELECT ticker, min(date)::date AS first_px FROM prices GROUP BY 1),
      k8 AS (SELECT ticker, min(filing_date)::date AS d FROM sec_8k GROUP BY 1),
      nt AS (SELECT ticker, min(filed)::date AS d FROM notes_text GROUP BY 1),
-     ff AS (SELECT ticker, min(filing_date)::date AS d FROM fundamentals_facts GROUP BY 1),
+     ff AS (SELECT ticker, min(filing_date)::date AS d FROM sec_fundamentals_facts GROUP BY 1),
      dl AS (SELECT ticker, min(as_of)::date AS d FROM def14a_llm GROUP BY 1)
 """
 
@@ -279,7 +279,7 @@ def oracle1(conn) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """The tight cluster, the proxy corroboration, and the full late-8-K population.
 
     ⚠ A ticker ALREADY IN THE REGISTER should not appear in either screen, and that is the
-    detector working rather than a gap: APA, ETN and GOOGL show `fundamentals_facts` at the
+    detector working rather than a gap: APA, ETN and GOOGL show `sec_fundamentals_facts` at the
     2009 floor precisely because their entries repaired that leg. A screen that still flagged
     them would be measuring the roster, not the data.
     """

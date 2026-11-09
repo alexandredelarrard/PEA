@@ -42,8 +42,8 @@ def governance_sources() -> dict[str, Any]:
     )
     wanted = ["ticker", "as_of", "fiscal_end", "fiscal_year", "fiscal_quarter", "totalRevenue", "sharesOutstandingPit"]
     fundamentals = store.load(
-        Tables.fundamentals_history,
-        columns=[c for c in wanted if c in store.columns(Tables.fundamentals_history)],
+        Tables.sharadar_fundamentals_history,
+        columns=[c for c in wanted if c in store.columns(Tables.sharadar_fundamentals_history)],
         where=where,
         since="2007-01-01",
         until="2026-10-08",
@@ -112,7 +112,7 @@ def rebuilt_governance(governance_sources: dict[str, Any]) -> pd.DataFrame:
         inputs.def14a,
         source["peers"],
         close.index,
-        fundamentals_history=source["fundamentals"],
+        fundamentals=source["fundamentals"],
         votes=inputs.votes,
         exec_comp=inputs.exec_comp,
         directors=inputs.directors,
@@ -130,7 +130,7 @@ def test_real_panel_window_matches_full_tail(governance_sources: dict[str, Any],
         inputs.def14a,
         source["peers"],
         window.index,
-        fundamentals_history=source["fundamentals"],
+        fundamentals=source["fundamentals"],
         votes=inputs.votes,
         exec_comp=inputs.exec_comp,
         directors=inputs.directors,

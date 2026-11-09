@@ -122,11 +122,6 @@ class FieldMap:
     def derived(self) -> dict[str, ColumnSpec]:
         return {n: s for n, s in self.outputs.items() if s.kind == "derived"}
 
-    @cached_property
-    def sec_owned(self) -> list[str]:
-        """The columns the SEC layer owns; NaN here, filled by the merge."""
-        return sorted(n for n, s in self.outputs.items() if s.kind == "sec")
-
 
 @dataclass
 class TranslationReport:
@@ -291,8 +286,9 @@ def load_field_map(config_dir: str | None = DEFAULT_CONFIG_DIR) -> FieldMap:
 def _field_map_at(config_dir: str) -> FieldMap:
     """Load and validate the map and both registers; raise RuntimeError on any contract violation.
 
-    Rejects an unmapped or stray `HISTORY_STATEMENT_ORDER` name, a `from` SF1 does not deliver, an extra whose
-    `to` collides with a contract column or another extra, and a derived input the map does not produce.
+    Rejects a stray `HISTORY_STATEMENT_ORDER` name, a `from` SF1 does not deliver, an extra whose `to` collides
+    with a contract column or another extra, and a derived input the map does not produce. The SEC-only names of
+    `HISTORY_STATEMENT_ORDER` are absent; `history_columns` checks the result against the registry.
     """
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_FIELD_MAP_FILENAME
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -306,9 +302,6 @@ def _field_map_at(config_dir: str) -> FieldMap:
         for n, e in raw["extras"].items()
     }
 
-    unmapped = [n for n in HISTORY_STATEMENT_ORDER if n not in columns]
-    if unmapped:
-        raise RuntimeError(f"{path} leaves {len(unmapped)} contract column(s) unmapped: {unmapped}")
     stray = sorted(set(columns) - set(HISTORY_STATEMENT_ORDER))
     if stray:
         raise RuntimeError(f"{path} maps {stray}, which are not in HISTORY_STATEMENT_ORDER. A column beyond the 60 belongs in `added_columns`.")
@@ -466,8 +459,8 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationRe
     """A vendor ARQ frame -> the repo-named ARQ frame, still on the discrete-quarter grain.
 
     Zero rules, corrections, then direct renames with their sign guards. Derived formulas and split
-    de-adjustment run later on the TTM frame (`build_ttm`). `sec` and `null` columns are emitted all-NaN; the
-    merge fills the SEC-owned ones. Raises if a mapped vendor column is missing from the frame.
+    de-adjustment run later on the TTM frame (`build_ttm`). `null` columns are emitted all-NaN. Raises if a
+    mapped vendor column is missing from the frame.
     """
     report = report if report is not None else TranslationReport()
     report.rows_in = len(frame)
@@ -493,7 +486,7 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationRe
             values = _null_if_negative(values, name, report)
         columns[name] = values
     for name, spec in field_map.outputs.items():
-        if spec.kind in ("sec", "null"):
+        if spec.kind == "null":
             columns[name] = pd.Series(np.nan, index=cleaned.index)
 
     keys = cleaned[[c for c in KEY_COLUMNS if c in cleaned.columns]]
@@ -535,15 +528,14 @@ def _negate_if_non_positive(values: pd.Series, name: str, report: TranslationRep
 # --------------------------------------------------------------------------- #
 # the derived formulas -- LAST, on the TTM frame                               #
 # --------------------------------------------------------------------------- #
-def apply_derived(frame: pd.DataFrame, field_map: FieldMap, only: set[str] | None = None) -> pd.DataFrame:
+def apply_derived(frame: pd.DataFrame, field_map: FieldMap) -> pd.DataFrame:
     """Evaluate every `derived` column on the TTM frame (a ratio of TTM levels, never the TTM of a ratio).
 
-    `op == "quarter"` is skipped (`build_ttm` owns it). A zero denominator yields NaN, not inf. `only` restricts
-    the pass to named columns, so the post-merge recompute leaves every other derived column as built.
+    `op == "quarter"` is skipped (`build_ttm` owns it). A zero denominator yields NaN, not inf.
     """
     computed: dict[str, pd.Series] = {}
     for name, spec in field_map.derived.items():
-        if spec.op == "quarter" or (only is not None and name not in only):
+        if spec.op == "quarter":
             continue
         missing = [c for c in spec.inputs if c not in frame.columns]
         if missing:

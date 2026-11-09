@@ -31,7 +31,6 @@ __all__ = [
     "cached_periods",
     "ensure_zip",
     "is_cached",
-    "period_end",
     "quarter_periods",
     "read_zip_tables",
     "read_zip_text",
@@ -203,15 +202,6 @@ def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger 
 def cached_periods(cache: Path, *, prefix: str = "", suffix: str = ".zip") -> set[str]:
     """Period tags of the non-empty archives cached in `cache`, named `{prefix}{period}{suffix}`."""
     return {path.name[len(prefix) : -len(suffix)] for path in cache.glob(f"{prefix}*{suffix}") if is_cached(path)}
-
-
-def period_end(tag: str) -> date:
-    """Last calendar day covered by a `YYYYqN`, `YYYY_MM` or semi-monthly `YYYYMMa`/`YYYYMMb` archive tag."""
-    if tag[-1] in "ab":
-        month_end = pd.Period(year=int(tag[:4]), month=int(tag[4:6]), freq="M").end_time.date()
-        return month_end.replace(day=15) if tag[-1] == "a" else month_end
-    month = int(tag[-2:]) if "_" in tag else int(tag[-1]) * 3
-    return pd.Period(year=int(tag[:4]), month=month, freq="M").end_time.date()
 
 
 def archive_available_at(end: date, path: Path, *, observed_from: date, downloaded: bool) -> date | None:

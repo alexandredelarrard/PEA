@@ -21,13 +21,8 @@ import pytest
 import src.data_extract.utils.identity.evidence as dei
 import src.data_extract.utils.zips.fetch_financial_notes as fn
 from src.data_extract.utils.common.bulk_cache import read_zip_tables
-from src.data_extract.utils.identity.symbol_tenure import (
-    DEI_SOURCE,
-    TABLE_COLUMNS,
-    aggregate_dei_symbols,
-    collapse_dei_periods,
-    parse_symbol_field,
-)
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE
+from src.data_extract.utils.identity.symbol_tenure import TABLE_COLUMNS, aggregate_dei_symbols, collapse_dei_periods, parse_symbol_field
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
 from tests.canonical_schema import create_canonical

@@ -27,7 +27,7 @@ CATALOGUE = load_catalogue("./configs")
 
 
 def _instant(field: str, period_end: str, filing_date: str, value: float | None, accession: str) -> dict:
-    """One instant `fundamentals_facts` row. No `period_start` is the load-bearing part --
+    """One instant `sec_fundamentals_facts` row. No `period_start` is the load-bearing part --
     it is what tells `instant_stock` this is a level and not a duration."""
     return {
         "ticker": "TST",
@@ -38,7 +38,6 @@ def _instant(field: str, period_end: str, filing_date: str, value: float | None,
         "duration_type": "instant",
         "form": "10-Q",
         "filing_date": filing_date,
-        "is_amendment": False,
         "period_of_report": period_end,
         "regime": "industrial",
         "period_start": None,
@@ -47,8 +46,6 @@ def _instant(field: str, period_end: str, filing_date: str, value: float | None,
         "value": value,
         "unit": "USD",
         "source_concept": "us-gaap:Assets",
-        "dc_code": None,
-        "adjustment": None,
     }
 
 

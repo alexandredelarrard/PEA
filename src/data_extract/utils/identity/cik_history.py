@@ -25,8 +25,16 @@ from typing import Any
 import pandas as pd
 
 from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_extract.utils.common.identity_contract import (
+    DEI_SOURCE,
+    FORM345_SOURCE,
+    MANUAL_SOURCE,
+    ROLE_EVENT,
+    ROLE_WINDOW,
+    SENTINEL_START,
+    IdentityError,
+)
 from src.data_extract.utils.common.registrant import Registrant
-from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.utils.identity_flags import RESOLUTIONS_KEY
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
@@ -44,18 +52,10 @@ OVERLAP_SHARED_SAME = 5
 
 SOURCE_PRIORITY = ("register", "manual", "sec_succession", "symbol_handoff", "owner_overlap", "roster")
 
-#: Stored value of an open start: `valid_from` is a PK column and cannot be NULL.
-SENTINEL_START = pd.Timestamp("1900-01-01")
 #: A minted `company_id` is `E` + the group's CIK current on this date, so neither a curated predecessor nor a later
 #: successor changes it (D-5); a group whose windows all start later takes its oldest window CIK.
 MINT_CUTOFF = pd.Timestamp("2026-10-01")
 
-ROLE_WINDOW = "cik_window"
-ROLE_EVENT = "cik_event"
-ROLE_SYMBOL = "symbol"
-
-FORM345_SOURCE = "form345"
-MANUAL_SOURCE = "manual"
 ROSTER_SOURCE = "roster"
 REGISTER_SOURCE = "register"
 SEC_PROFILE_SOURCE = "sec_profile"
@@ -106,20 +106,8 @@ _ROSTER_VERDICT = ("roster", None, "roster CIK with no predecessor found by any 
 Window = tuple[pd.Timestamp, pd.Timestamp | None, str, str, str]
 
 
-class IdentityError(ValueError):
-    """Base of every identity failure, so one `except` covers the whole layer."""
-
-
-class CikInTwoEntitiesError(IdentityError):
-    """One CIK carries two `company_id`s; asserted by the build, since the PK does not guarantee it."""
-
-
 class UniverseEntityDisagreementError(IdentityError):
     """D19: the roster CIK and `symbol_tenure` name different entities for one ticker, with no D19 allow-list entry."""
-
-
-class TwoUniverseTickersOneEntityError(ValueError):
-    """A merge would put two universe tickers in one entity; the fix is a curated row, never a wider merge."""
 
 
 class CompanyIdCollisionError(IdentityError):
@@ -172,28 +160,6 @@ class CikHistory:
     evidence: pd.DataFrame
     activity: pd.DataFrame
     ended_on: Mapping[str, pd.Timestamp] = field(default_factory=dict)
-
-
-# Shared row helpers
-def entity_or_singleton(entity_by_cik: Mapping[str, str], cik: str) -> str:
-    """The stored entity of a padded CIK; a CIK with no stored row is its own entity `E{cik}`."""
-    return entity_by_cik.get(cik, f"E{cik}")
-
-
-def entity_by_cik_map(lineage: pd.DataFrame) -> dict[str, str]:
-    """`{cik: company_id}` from `universe_cik_symbol` rows with padded CIKs (several rows per CIK share one entity)."""
-    return dict(zip(lineage["cik"].astype(str), lineage["company_id"].astype(str), strict=False))
-
-
-def check_one_entity_per_cik(lineage: pd.DataFrame) -> None:
-    """Raise `CikInTwoEntitiesError` when one (padded) CIK carries two company ids, which would make `entity_of` order-dependent."""
-    per_cik = pd.DataFrame({"cik": lineage["cik"].astype(str), "company_id": lineage["company_id"].astype(str)}).drop_duplicates()
-    clashes = per_cik[per_cik.duplicated("cik", keep=False)]
-    if not clashes.empty:
-        raise CikInTwoEntitiesError(
-            f"identity: {clashes['cik'].nunique()} CIK(s) carry two company ids in universe_cik_symbol -- "
-            f"{clashes.sort_values(['cik', 'company_id']).to_dict('records')}. One CIK belongs to one company."
-        )
 
 
 # Curated configuration

@@ -2,7 +2,7 @@
 """Tests for the workforce features (src/data_aggregate/utils/fundamentals/employee_features.py).
 
 Headcount comes from `fundamentals_employees` (components plus basis), joined backward as-of onto the
-`fundamentals_history` rows that carry revenue. Known-truth frames check the REQ-007 proxy branches,
+`sharadar_fundamentals_history` rows that carry revenue. Known-truth frames check the REQ-007 proxy branches,
 basis-consistent growth, point-in-time visibility, the configured part-time weight, and the
 existing growth / revenue-per-employee math.
 """

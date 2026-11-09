@@ -135,7 +135,7 @@ class StepCubeTarget(Step):
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
         columns = ("ticker", "as_of", "netIncome", "freeCashflow", "stockholdersEquity")
-        return self._context.store.load(Tables.fundamentals_history, columns=columns)
+        return self._context.store.load(Tables.sharadar_fundamentals_history, columns=columns)
 
     def _load_macro(self) -> pd.DataFrame:
         """`prices_macro`, pivoted wide -- date-indexed, one column per series.
@@ -197,7 +197,7 @@ class StepCubeTarget(Step):
         chars = build_characteristics(
             stock_close_total=frames.close_total,
             stock_ret=frames.ret,
-            fundamentals_history=fundamentals,
+            fundamentals=fundamentals,
             resvol_window=63,
             mcap_pit=frames.mcap_pit,
             seams=seams,

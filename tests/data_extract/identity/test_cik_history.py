@@ -13,8 +13,9 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_extract.utils.common.identity_contract import SENTINEL_START
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_extract.utils.identity.cik_history import SENTINEL_START, succession_pairs
+from src.data_extract.utils.identity.cik_history import succession_pairs
 from src.data_extract.utils.identity.company_anchor import sharadar_ciks
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore

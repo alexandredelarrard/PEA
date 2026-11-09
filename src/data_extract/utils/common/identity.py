@@ -24,15 +24,8 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
-from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
-from src.data_extract.utils.common.security_lines import (
-    ACQUIRED_CONSTITUENT,
-    MergerBoundary,
-    co_registrant_ciks,
-    load_security_manual,
-    merger_boundaries,
-)
-from src.data_extract.utils.identity.cik_history import (
+from src.data_extract.utils.common.identity_contract import (
+    DEI_SOURCE,
     FORM345_SOURCE,
     MANUAL_SOURCE,
     ROLE_EVENT,
@@ -45,7 +38,14 @@ from src.data_extract.utils.identity.cik_history import (
     entity_by_cik_map,
     entity_or_singleton,
 )
-from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
+from src.data_extract.utils.common.security_lines import (
+    ACQUIRED_CONSTITUENT,
+    MergerBoundary,
+    co_registrant_ciks,
+    load_security_manual,
+    merger_boundaries,
+)
 from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.identity_tables import LINE_COLUMNS
@@ -713,6 +713,12 @@ def _log_identity(identity: Identity) -> None:
         len(identity.redundant_symbols),
         len(identity.securities_by_cusip),
     )
+
+
+def load_entity_by_cik(context: Context) -> dict[str, str]:
+    """`{padded CIK: company_id}` from the published `universe_cik_symbol` alone; empty before the first build."""
+    lineage = context.store.load(Tables.universe_cik_symbol, columns=["company_id", "cik"], optional=True)
+    return {} if lineage is None else entity_by_cik_map(lineage)
 
 
 def load_identity(context: Context, refresh: bool = False) -> Identity:

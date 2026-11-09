@@ -6,7 +6,7 @@ HTTP layer for the Sharadar DIRECT API (`api.sharadar.com`): one paged request p
 
 WHY NOT `nasdaqdatalink` / `quandl`: those libraries speak to `data.nasdaq.com`, which names
 the filing-date column `datekey` and does not ship `fiscalperiod`. That column name sits
-inside `fundamentals_sharadar`'s primary key, so the two channels are not interchangeable
+inside `sharadar_fundamentals_facts`'s primary key, so the two channels are not interchangeable
 (decisions D1/D2). Nothing here is a new dependency -- the transport is `src/utils/polite_http`.
 
 Two traps this module exists to close:

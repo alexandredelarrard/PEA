@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 def build_characteristics(
     stock_close_total: pd.DataFrame,
     stock_ret: pd.DataFrame,
-    fundamentals_history: pd.DataFrame | None,
+    fundamentals: pd.DataFrame | None,
     resvol_window: int = 63,  # 3 month stock
     *,
     mcap_pit: pd.DataFrame | None = None,
@@ -82,10 +82,10 @@ def build_characteristics(
     chars["size"] = cast(pd.DataFrame, -np.log(df_mcap))
 
     # Fiscal numerators retain their original publication clock and coverage.
-    if fundamentals_history is not None and not fundamentals_history.empty:
+    if fundamentals is not None and not fundamentals.empty:
         val_parts = []
         for field in ("netIncome", "freeCashflow", "stockholdersEquity"):
-            df_num = fundamentals_to_daily(fundamentals_history, field, idx)
+            df_num = fundamentals_to_daily(fundamentals, field, idx)
             common = df_num.columns.intersection(df_mcap.columns)
             if len(common):
                 df_yield = (df_num[common] / df_mcap[common]).replace([np.inf, -np.inf], np.nan)

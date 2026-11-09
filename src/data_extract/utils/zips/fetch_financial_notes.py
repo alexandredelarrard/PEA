@@ -29,14 +29,13 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir,
     cached_periods,
     ensure_zip,
-    period_end,
     quarter_periods,
     read_zip_tables,
     stored_period_clock,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.resume import archive_worklist
+from src.data_extract.utils.common.resume import archive_worklist, period_end
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive, reparse_clock

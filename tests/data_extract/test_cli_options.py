@@ -5,16 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock, call
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
 from src.data_extract import cli as cli_mod
+from src.data_extract.transformers import step_extract_fundamentals as step_fundamentals
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
-from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import stub_edgar_step
 from tests.support.propagation import stub_propagation
 from tests.support.universe import seed_universe
@@ -149,7 +149,7 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
     [
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
-        ("fundamentals-history-sec", "build_fundamentals_history", "rebuild_history"),
+        ("sec-fundamentals-history", "build_fundamentals_history", "rebuild_history"),
         ("identity --only propagate", "recheck_tickers", "every"),
         ("edgar-index", "refresh", "rebuild"),
     ],
@@ -175,6 +175,8 @@ def test_full_reaches_the_existing_source_operation(
     elif command == "edgar-index":
         monkeypatch.setattr(cli_mod.edgar_index, target, record)
         monkeypatch.setattr(cli_mod.edgar_index, "quarter_counts", lambda ctx: {})
+    elif command == "sec-fundamentals-history":
+        monkeypatch.setattr(step_fundamentals, target, record)
     else:
         monkeypatch.setattr(cli_mod, target, record)
     context.config_dir = "configs"
@@ -183,7 +185,7 @@ def test_full_reaches_the_existing_source_operation(
     for flags in ([], ["-F"], ["--full"]):
         calls.clear()
         edgar_calls.clear()
-        date_flags = [] if command == "fundamentals-history-sec" else ["--as-of", "2026-09-29"]
+        date_flags = [] if command == "sec-fundamentals-history" else ["--as-of", "2026-09-29"]
         result = runner.invoke(cli_mod.cli, [*command.split(), *date_flags, *flags])
         assert result.exit_code == 0, result.output
         assert len(calls) == 1 and calls[0][keyword] is bool(flags)
@@ -194,41 +196,32 @@ def test_full_reaches_the_existing_source_operation(
     print(f"SANITY: {command} resumes by default; -F and --full select the complete source operation; supported run dates reach the source.")
 
 
-@pytest.mark.parametrize(("flags", "deletes"), [([], False), (["--full"], False), (["--rebuild"], True)])
-def test_full_and_destructive_fundamentals_rebuild_remain_distinct(
-    flags: list[str], deletes: bool, context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fetch = Mock(return_value=SimpleNamespace())
-    history = Mock()
-    monkeypatch.setattr(cli_mod, "fetch_fundamentals_sec", fetch)
-    monkeypatch.setattr(cli_mod, "fetched_filing_dates", lambda summary: {"AAA": [pd.Timestamp("2026-09-29")]})
-    monkeypatch.setattr(cli_mod, "build_fundamentals_history", history)
+def test_fundamentals_check_runs_the_check_on_the_ticker_subset(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    context.config.data_extract.fundamentals_check = SimpleNamespace(gap_pct=0.03, field_share=0.05, top_tickers=3)
+    context.config_dir = "configs"
+    monkeypatch.setattr(step_fundamentals, "check_fundamentals_sources", lambda ctx, tickers, **kwargs: calls.append((tickers, kwargs)))
+    monkeypatch.setattr(step_fundamentals, "build_fundamentals_history", Mock(side_effect=AssertionError("the check builds no history")))
 
-    result = CliRunner().invoke(cli_mod.cli, ["fundamentals", "-t", "AAA", *flags])
+    result = CliRunner().invoke(cli_mod.cli, ["fundamentals-check", "-t", "AAA"])
 
     assert result.exit_code == 0, result.output
-    assert fetch.call_args.kwargs["full"] is bool(flags)
-    assert history.call_args.kwargs["full_fetch"] is bool(flags)
-    assert history.call_args.kwargs["rebuild_history"] is deletes
-    assert history.call_args.kwargs["fetched"] == {"AAA": [pd.Timestamp("2026-09-29")]}
-    assert context.store.delete.call_args_list == (
-        [call(table, {"ticker": "AAA"}) for table in (Tables.fundamentals_facts, Tables.fundamentals_history_sec, Tables.fundamentals_reason_codes)]
-        if deletes
-        else []
-    )
-    print(f"SANITY: fundamentals {flags or 'default'} reaches the expected replay mode; only --rebuild deletes the three SEC layers.")
+    assert calls == [(["AAA"], {"gap_pct": 0.03, "field_share": 0.05, "top_tickers": 3})], calls
+    context.store.save.assert_not_called()
+    context.store.delete.assert_not_called()
+    print(f"SANITY: fundamentals-check -> check only, tickers {calls[0][0]}, thresholds {calls[0][1]}; no history build, no store write.")
 
 
-def test_gap_check_uses_the_shared_report_option_and_keeps_its_default(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
-    report = Mock()
-    monkeypatch.setattr(cli_mod, "run_gap_check", report)
-    runner = CliRunner()
-    for flags, expected in (([], cli_mod.GAP_REPORT_PATH), (["--report", "custom.md"], "custom.md")):
-        result = runner.invoke(cli_mod.cli, ["sharadar-gap-check", *flags])
-        assert result.exit_code == 0, result.output
-        assert report.call_args.kwargs["report_path"] == expected
-        assert report.call_args.kwargs["tickers"] is None
-    print("SANITY: --report selects the gap-check output path; an omitted path retains the existing report destination.")
+def test_help_lists_the_split_fundamentals_commands_and_none_of_the_removed_ones() -> None:
+    """AC-010: one command per producer stage, plus the check; the combined `fundamentals` / `fundamentals-facts` are gone."""
+    result = CliRunner().invoke(cli_mod.cli, ["--help"])
+    listed = {line.split()[0] for line in result.output.splitlines() if line.startswith("  ") and line.split()}
+    current = {"sec-fundamentals-facts", "sec-fundamentals-history", "fundamentals-check", "fundamentals-sharadar", "fundamentals-employees"}
+
+    assert result.exit_code == 0, result.output
+    assert current <= listed, sorted(current - listed)
+    assert not {"fundamentals", "fundamentals-facts"} & listed and not {"fundamentals", "fundamentals-facts"} & set(cli_mod.cli.commands)
+    print(f"SANITY: --help lists {sorted(current)}; the removed fundamentals / fundamentals-facts commands are absent.")
 
 
 @pytest.mark.parametrize(

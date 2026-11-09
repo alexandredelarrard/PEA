@@ -60,12 +60,13 @@ class _SourceStore:
 
     def load(self, table, **kwargs):
         self.calls.append((name_of(table), kwargs))
-        return pd.DataFrame(
+        frame = pd.DataFrame(
             {
                 "ticker": ["AAA", "GHOST"],
                 "as_of": pd.to_datetime(["2026-01-01", "2026-01-01"]),
             }
         )
+        return frame.reindex(columns=kwargs.get("columns") or frame.columns)
 
     @staticmethod
     def columns(table) -> list[str]:
@@ -97,13 +98,99 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
         ("AAA", "BBB"),
     )
 
-    assert len(store.calls) == 3
+    assert [table for table, _ in store.calls] == [
+        "sharadar_fundamentals_history",
+        "sec_fundamentals_history",
+        "earnings_surprises",
+        "prices_dividends",
+    ]
     for table, kwargs in store.calls:
         assert kwargs["where"] == {"ticker": ["AAA", "BBB"]}, (table, kwargs)
     assert store.calls[0][1]["since"] == source_since
     assert store.calls[0][1]["project"] is True
+    assert store.calls[1][1]["since"] == source_since
+    assert store.calls[1][1]["columns"] == ["ticker", "as_of", "minorityInterest", "operatingLeaseLiability", "financeLeaseLiability"]
     print("\n=== SANITY CHECK: fundamentals source universe pushdown ===")
-    print("  fundamentals is date-bounded and projected; all three sources carry the price-universe predicate. Validated.")
+    print("  both histories are date-bounded and projected; all four sources carry the price-universe predicate. Validated.")
+
+
+_CARRIED = ("minorityInterest", "operatingLeaseLiability", "financeLeaseLiability")
+
+
+class _HistoryStore:
+    """Sharadar spine + an SEC history (or none) keyed on `(ticker, as_of)`."""
+
+    def __init__(self, sec: pd.DataFrame | None) -> None:
+        self._sec = sec
+        self.calls: list[tuple[str, dict]] = []
+
+    def load(self, table, **kwargs):
+        self.calls.append((name_of(table), kwargs))
+        if name_of(table) == "sharadar_fundamentals_history":
+            return pd.DataFrame(
+                {
+                    "ticker": ["AAA", "AAA", "BBB"],
+                    "as_of": pd.to_datetime(["2024-02-01", "2024-05-01", "2024-02-10"]),
+                    "fiscal_end": pd.to_datetime(["2023-12-31", "2024-03-31", "2023-12-31"]),
+                    "totalRevenue": [10.0, 11.0, 20.0],
+                }
+            )
+        return None if self._sec is None else self._sec[kwargs["columns"]]
+
+
+def _history_step(store: _HistoryStore) -> StepCubeFundamentals:
+    step = StepCubeFundamentals.__new__(StepCubeFundamentals)
+    step._context = SimpleNamespace(store=store, universe=SimpleNamespace(attach_gics=lambda frame: frame))
+    step._log = logging.getLogger("test.cube_fundamentals")
+    return step
+
+
+def test_the_cube_left_joins_three_sec_columns_onto_the_sharadar_spine(monkeypatch):
+    monkeypatch.setattr("src.data_aggregate.transformers.step_cube_fundamentals.add_cube_time_growth", lambda frame: frame)
+    sec = pd.DataFrame(
+        {
+            "ticker": ["AAA", "BBB", "CCC"],
+            "as_of": pd.to_datetime(["2024-02-01", "2024-02-09", "2024-02-01"]),  # BBB one day off, CCC not in Sharadar
+            "minorityInterest": [5.0, 6.0, 7.0],
+            "operatingLeaseLiability": [1.0, 2.0, 3.0],
+            "financeLeaseLiability": [np.nan, 4.0, 5.0],
+            "totalRevenue": [99.0, 99.0, 99.0],  # an SEC column the cube must not read
+        }
+    )
+    store = _HistoryStore(sec)
+
+    frame = _history_step(store)._load_fundamentals(("AAA", "BBB"))
+
+    keys = list(zip(frame["ticker"], frame["as_of"].dt.strftime("%Y-%m-%d"), strict=True))
+    assert keys == [("AAA", "2024-02-01"), ("AAA", "2024-05-01"), ("BBB", "2024-02-10")]
+    assert frame["totalRevenue"].tolist() == [10.0, 11.0, 20.0]
+    assert not set(_CARRIED) & set(frame.columns), "a bare SEC name would change meaning in fundamentals_to_daily"
+    matched = frame.iloc[0]
+    assert (matched["sec_minorityInterest"], matched["sec_operatingLeaseLiability"]) == (5.0, 1.0)
+    assert np.isnan(matched["sec_financeLeaseLiability"])
+    assert frame.loc[1:, [f"sec_{c}" for c in _CARRIED]].isna().all().all()
+    sec_kwargs = store.calls[1][1]
+    assert sec_kwargs["columns"] == ["ticker", "as_of", *_CARRIED] and sec_kwargs["optional"] is True
+    print("\n=== SANITY CHECK: Sharadar spine, exact SEC key ===")
+    print(
+        f"  {len(frame)} Sharadar rows kept of 3; 1 exact match carries sec_minorityInterest=5, sec_operatingLeaseLiability=1; "
+        "the 1-day-off BBB row and the Sharadar-less CCC row add nothing; no bare SEC name in the frame. Validated."
+    )
+
+
+def test_a_missing_sec_history_only_warns(monkeypatch, caplog):
+    monkeypatch.setattr("src.data_aggregate.transformers.step_cube_fundamentals.add_cube_time_growth", lambda frame: frame)
+
+    with caplog.at_level(logging.WARNING, logger="test.cube_fundamentals"):
+        frame = _history_step(_HistoryStore(None))._load_fundamentals(("AAA", "BBB"))
+
+    assert len(frame) == 3 and frame["totalRevenue"].tolist() == [10.0, 11.0, 20.0]
+    assert frame[[f"sec_{c}" for c in _CARRIED]].isna().all().all()
+    assert not set(_CARRIED) & set(frame.columns)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("sec_fundamentals_history" in message for message in warnings), warnings
+    print("\n=== SANITY CHECK: missing SEC history ===")
+    print(f"  3 Sharadar rows kept, the 3 sec_* columns empty, one warning: {warnings[0]!r}. Validated.")
 
 
 def test_sec_fact_reads_are_ticker_and_date_bounded():
@@ -170,7 +257,7 @@ def test_real_fundamentals_full_and_incremental_tail_parity(real_frames):
     close = real_frames["stock_close"][tickers]
     returns = real_frames["stock_ret"][tickers]
     fundamentals = DataStore(get_engine()).load(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         where={"ticker": tickers},
     )
     peers = build_peer_dict(returns, top_k=10, weighting="corr", min_obs=120)

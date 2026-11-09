@@ -157,7 +157,7 @@ class StepCubeGovernance(Step):
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
-        df = self._store.load(Tables.fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], optional=True)
+        df = self._store.load(Tables.sharadar_fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], optional=True)
         if df is None or df.empty:
             self._log.warning("No fundamentals history -> the pay-vs-revenue-growth misalignment feature is skipped.")
             return None
@@ -193,7 +193,7 @@ class StepCubeGovernance(Step):
             inputs.def14a,
             frames.peers,
             frames.trading_index,
-            fundamentals_history=fundamentals,
+            fundamentals=fundamentals,
             votes=inputs.votes,
             exec_comp=inputs.exec_comp,
             directors=inputs.directors,

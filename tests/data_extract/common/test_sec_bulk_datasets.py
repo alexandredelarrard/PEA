@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 import src.data_extract.cli as cli_mod
 from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.transformers import step_extract_zips as step_zips
-from src.data_extract.utils.common import bulk_cache
+from src.data_extract.utils.common import bulk_cache, resume
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.edgar_extract.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
@@ -273,7 +273,7 @@ def test_insider_download_cli_runs_only_the_download(monkeypatch):
 def test_quarterly_zip_available_after_quarter_end_plus_twelve_days(quarter: str, expected: date, tmp_path: Path) -> None:
     assert (
         bulk_cache.archive_available_at(
-            bulk_cache.period_end(quarter),
+            resume.period_end(quarter),
             tmp_path / f"{quarter}.zip",
             observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
             downloaded=False,
@@ -291,14 +291,14 @@ def test_future_cached_zip_uses_new_york_file_date(tmp_path: Path) -> None:
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
     assert bulk_cache.archive_available_at(
-        bulk_cache.period_end("2026q3"),
+        resume.period_end("2026q3"),
         path,
         observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
         downloaded=False,
     ) == date(2026, 10, 15)
     assert (
         bulk_cache.archive_available_at(
-            bulk_cache.period_end("2026q3"),
+            resume.period_end("2026q3"),
             tmp_path / "missing.zip",
             observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
             downloaded=False,

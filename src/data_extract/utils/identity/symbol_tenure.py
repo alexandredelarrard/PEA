@@ -20,6 +20,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE
 from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_store.schema import Tables
@@ -78,9 +79,6 @@ BUILD_SOURCES = ("form345", "manual")
 
 #: Column order of the materialized partitions.
 TABLE_COLUMNS = ("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence")
-
-#: Notes cover-page (`dei:TradingSymbol`) partition, one row set per Notes zip period.
-DEI_SOURCE = "dei"
 
 MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
 MANUAL_TENURE_VERSION = 1

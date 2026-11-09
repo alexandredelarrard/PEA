@@ -1,7 +1,7 @@
 """Ticker -> CIK, name and GICS come from `context.universe` (the `universe_tickers` rows); `load_cik_mapping` is gone.
 
 test_universe_rows_are_the_requested_universe_rows — `universe_rows` keeps the 10-digit CIK, the name and GICS.
-test_fundamentals_gics_come_from_the_universe — the XBRL regime GICS dict equals the universe rows.
+The XBRL regime GICS of the facts walk: `tests/data_extract/fundamentals/test_facts_fetch_scope.py`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
 from tests.support.universe import seed_universe
 
 ROWS = {
@@ -39,14 +38,3 @@ def test_universe_rows_are_the_requested_universe_rows(sqlite_store):
     assert importlib.util.find_spec("src.data_extract.utils.edgar_extract.sec_utils") is None
     print("\n=== SANITY CHECK: universe rows ===")
     print(f"  {sorted(by_ticker)} from context.universe; CIK {by_ticker['AAPL']['cik']}, name and GICS kept; sec_utils is gone. Validated.")
-
-
-def test_fundamentals_gics_come_from_the_universe(sqlite_store):
-    context: Any = SimpleNamespace(universe=seed_universe(sqlite_store, list(ROWS), rows=ROWS), config_dir="./configs")
-
-    gics = fundamentals_fetch(context).parse.keywords["gics_by_ticker"]
-
-    levels = ("sector", "industry_group", "sub_industry")
-    assert gics == {ticker: {level: row[level] for level in levels} for ticker, row in ROWS.items()}
-    print("\n=== SANITY CHECK: XBRL regime GICS ===")
-    print(f"  {len(gics)} tickers, three GICS levels each, equal to the universe_tickers rows. Validated.")

@@ -29,15 +29,11 @@ _INSIDER = "the insider Form 4 pipeline shared by the EDGAR fetch and the bulk z
 _DEF14A = "a DEF 14A / 8-K vote parser owned by its structure package; the EDGAR fetch calls it on each filing"
 _TAPE = "the security-tape contract shared by the FTD and short-volume tapes (moving it is a follow-up)"
 _PROPAGATE = "a source's own re-stamp / re-parse entry point, called by identity propagation"
-_LINEAGE = "the identity lineage rules, read back by the Identity reader in common/"
 #: Accepted placement exceptions: owner module -> (names, reason). Phase 9b measured these; moving the shared ones
 #: into `common/` is a separate decision (02-plan Phase 9b record).
 PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.edgar_extract.edgar_driver": (
-        frozenset(
-            {"EdgarFetch", "EdgarRun", "EdgarScope", "FetchSummary", "FilingStamp", "RetryRounds", "index_years", "refresh_index"}
-            | {"run_edgar_fetch", "universe_rows"}
-        ),
+        frozenset({"EdgarFetch", "EdgarScope", "FilingStamp", "RetryRounds", "header_subject_ciks", "universe_rows"}),
         _DRIVER,
     ),
     "src.data_extract.utils.edgar_extract.edgar_fillings": (frozenset({"list_filings"}), _DRIVER),
@@ -57,11 +53,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.fundamentals.kpi_catalogue": (
         frozenset({"Catalogue", "load_catalogue"}),
         "the KPI catalogue owned by fundamentals; the Sharadar merge reads the same catalogue",
-    ),
-    "src.data_extract.utils.fundamentals_sharadar.merge_history": (frozenset({"build_merged_history"}), _PROPAGATE),
-    "src.data_extract.utils.identity.cik_history": (
-        frozenset({"IdentityError", "TwoUniverseTickersOneEntityError", "check_one_entity_per_cik", "entity_by_cik_map", "entity_or_singleton"}),
-        _LINEAGE,
     ),
     "src.data_extract.utils.identity.symbol_tenure": (
         frozenset({"captured_dei_periods"}),

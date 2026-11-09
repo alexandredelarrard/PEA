@@ -369,7 +369,7 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     store = _store()
     # optional=True: these builders accept None, and `load` now raises rather than
     # returning an empty frame
-    fundamentals = store.load("fundamentals_history", optional=True)
+    fundamentals = store.load("sharadar_fundamentals_history", optional=True)
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
@@ -451,9 +451,9 @@ def fundamental_panel(real_frames):
     # 495-ticker history against a 101-ticker close frame built a ~1.9M-row x 200-feature
     # panel (with rolling(1260) windows) for tickers the test never looks at.
     tickers = sorted(stock_close.columns)
-    fundamentals = _store().load("fundamentals_history", where={"ticker": tickers}, optional=True)
+    fundamentals = _store().load("sharadar_fundamentals_history", where={"ticker": tickers}, optional=True)
     if fundamentals is None:
-        pytest.skip("fundamentals_history has no rows for the sample universe")
+        pytest.skip("sharadar_fundamentals_history has no rows for the sample universe")
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     panel = build_fundamental_feature_panel(
         FundamentalHistory(raw_history=fundamentals, share_basis=known_no_share_events()),

@@ -39,7 +39,7 @@ def null_invalid_gross_profit_sentinels(fund_hist: pd.DataFrame) -> pd.DataFrame
 
 
 def fundamentals_to_daily(
-    fundamentals_history: pd.DataFrame,
+    fundamentals: pd.DataFrame,
     field: str,
     trading_index: pd.DatetimeIndex,
     max_age_days: int | None = None,
@@ -49,9 +49,9 @@ def fundamentals_to_daily(
     field, forward-filled point-in-time: value on date d is the most recent
     as_of <= d. No look-ahead.
     """
-    if field not in fundamentals_history.columns:
+    if field not in fundamentals.columns:
         return pd.DataFrame(index=trading_index)
-    df = fundamentals_history[["ticker", "as_of", field]].copy()
+    df = fundamentals[["ticker", "as_of", field]].copy()
     return _observations_to_daily(df, field, trading_index, max_age_days=max_age_days)
 
 
@@ -111,7 +111,7 @@ _CUBE_TIME_GROWTH: dict[str, str] = {
 
 
 def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
-    """`fundamentals_history` + the `revenueGrowth` / `earningsGrowth` columns, row-level.
+    """`sharadar_fundamentals_history` + the `revenueGrowth` / `earningsGrowth` columns, row-level.
 
     Growth is measured against the same fiscal period one year earlier (within 45 days),
     using only amendments already public on the current row's `as_of`. Publication-date or

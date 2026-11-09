@@ -1,18 +1,21 @@
 """
-Per-filing SEC XBRL walk -> `fundamentals_facts`: one row per catalogue field per period per filing.
+Per-filing SEC XBRL walk -> `sec_fundamentals_facts`: one row per catalogue field per period per filing.
 
 Strictly as-filed: every value is a number the filer tagged, on the period shape it tagged it with; Q4 = FY - YTD9
 and YTD decumulation happen later, in memory, in the history build. `xbrl_linkbase` picks the concept(s) for a
 field, `entity_scope` picks the consolidated-registrant facts, and this module turns both into rows. A field or
-period with no usable value is emitted as a value-less row carrying a `dc_code`, so every null has a reason.
-`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL or no consolidated facts becomes
-an empty-filing marker, an unreadable one (`ParseFailureError`) is listed again next run.
+period with no usable value is emitted as a value-less row, so the field reads as looked for in that filing.
+`SEC_FUNDAMENTALS_FETCH` is a `StepExtractEdgar` walk like the others: the shared driver lists the index filings
+not yet stored; a filing with no XBRL or no consolidated facts becomes an empty-filing marker, an unreadable one
+(`ParseFailureError`) is listed again next run.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
 from typing import Any, cast
@@ -20,22 +23,14 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
-from src.data_extract.utils.edgar_extract.edgar_driver import (
-    EdgarFetch,
-    EdgarRun,
-    EdgarScope,
-    FetchSummary,
-    FilingStamp,
-    index_years,
-    refresh_index,
-    run_edgar_fetch,
-)
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
-from src.data_extract.utils.fundamentals.periods import AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape
-from src.data_extract.utils.fundamentals.reason_codes import NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL
+from src.data_extract.utils.fundamentals.periods import ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape
+from src.data_extract.utils.fundamentals.reason_codes import NOT_DISCLOSED
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     FIELD_SUM,
     INCOMPLETE_ROLL_UP,
@@ -139,8 +134,11 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
     return out
 
 
+#: Facts columns whose NULL must not demote the column to TEXT/DOUBLE on a cold table.
+_FACT_NULLABLE_DTYPES = {"fiscal_year": "Int64", "period_days": "Int64", "is_extension": "boolean"}
+
 #: Forms whose statement periods are all annual, so any quarterly fact in them comes from a note. Matched exactly.
-_ANNUAL_FORMS = tuple(form for form in cast(Resume, Tables.fundamentals_facts.resume).forms if form.startswith("10-K"))
+_ANNUAL_FORMS = tuple(form for form in cast(Resume, Tables.sec_fundamentals_facts.resume).forms if form.startswith("10-K"))
 
 
 _Window = tuple[tuple, pd.Timestamp, pd.Timestamp]
@@ -210,7 +208,7 @@ def _drop_note_only_quarter(
     Such a value is a discrete item from a note, never the quarter's total. Gated on `_ANNUAL_FORMS`: every
     quarter in a 10-Q is "lone", so an ungated rule would delete the quarterly grain. Each dropped quarter is
     recorded as `note_quarter_rejected` on its covering annual period when that period survives. Complements,
-    and does not replace, the value-based check in `periods._drop_annual_masquerading_as_quarter`.
+    and does not replace, the value-based check in `periods._masquerading_quarters`.
     """
     if str(form or "").upper() not in _ANNUAL_FORMS:
         return periods
@@ -277,8 +275,8 @@ def _materialise(resolution: Resolution, facts: pd.DataFrame) -> tuple[dict[tupl
     """Turn one field's resolution into `({period key: value + provenance}, {refused period key: stub})`.
 
     `linkbase_sum` and `statement_leaf_sum` emit a period ONLY where every leg reports that same period (a
-    partial sum is not the total); the other periods come back as value-less refused stubs so the caller can
-    code them. `subtract` concepts are then netted off the periods that have them.
+    partial sum is not the total); the other periods come back as value-less refused stubs, written as value-less
+    rows. `subtract` concepts are then netted off the periods that have them.
     """
     if resolution.method in (LINKBASE_SUM, STATEMENT_LEAF_SUM):
         legs = {c: _values_by_period(facts, c) for c, _ in resolution.children}
@@ -362,37 +360,6 @@ def _compose(
     return out, None
 
 
-def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str | None:
-    """The `adjustment` JSON provenance blob, or None when empty.
-
-    Resolution-level keys: `subtract`, `zero_only_retained`, `role_rejected`, `role_only_retained`,
-    `segment_rejected`, `undeclared_rejected`, `sibling_rejected` (`[total, leg]` pairs), `basis_qualifier`.
-    Period-level keys, read off `period`: `note_quarter_rejected`, `duplicate_fact`.
-    """
-    blob: dict = {}
-    if resolution.subtract:
-        blob["subtract"] = list(resolution.subtract)
-    if resolution.zero_only_retained:
-        blob["zero_only_retained"] = True
-    if resolution.role_rejected:
-        blob["role_rejected"] = list(resolution.role_rejected)
-    if resolution.role_only_retained:
-        blob["role_only_retained"] = True
-    if resolution.segment_rejected:
-        blob["segment_rejected"] = list(resolution.segment_rejected)
-    if resolution.undeclared_rejected:
-        blob["undeclared_rejected"] = list(resolution.undeclared_rejected)
-    if resolution.sibling_rejected:
-        blob["sibling_rejected"] = [list(pair) for pair in resolution.sibling_rejected]
-    if resolution.basis_qualifier:
-        blob["basis_qualifier"] = resolution.basis_qualifier
-    if period and period.get("note_quarter_rejected"):
-        blob["note_quarter_rejected"] = period["note_quarter_rejected"]
-    if period and period.get("duplicate_fact"):
-        blob["duplicate_fact"] = period["duplicate_fact"]
-    return json.dumps(blob) if blob else None
-
-
 def _period_end(period: dict | None, reported: pd.Timestamp, filed: pd.Timestamp) -> pd.Timestamp:
     """The row's `period_end`, never NULL (PK column): the period's own, else `period_of_report`, else filing date.
 
@@ -411,13 +378,10 @@ def _row(
     field: str,
     resolution: Resolution,
     period: dict | None,
-    *,
-    dc_code: str | None = None,
 ) -> dict:
-    """One `fundamentals_facts` row; `period=None` gives a value-less reason-coded row.
+    """One `sec_fundamentals_facts` row; `period=None` gives a value-less row.
 
-    `reported` is the filing's `period_of_report` (NaT when absent). `dc_code` overrides the resolution's own,
-    for a refused period on a field that otherwise resolved.
+    `reported` is the filing's `period_of_report` (NaT when absent).
     """
     children = [[c, w] for c, w in resolution.children] if resolution.children else None
     return {
@@ -430,11 +394,10 @@ def _row(
         "duration_type": period["duration_type"] if period else OTHER_SHAPE,
         "form": stamp.form,
         "filing_date": stamp.filed,
-        "is_amendment": stamp.is_amendment,
         "period_of_report": reported,
         "regime": regime,
         "period_start": period["period_start"] if period else pd.NaT,
-        # PK column: a reason-coded row falls back to the filing's period of report (see `_period_end`).
+        # PK column: a value-less row falls back to the filing's period of report (see `_period_end`).
         "period_end": _period_end(period, reported, stamp.filed),
         "period_days": period["period_days"] if period else None,
         "value": period["value"] if period else None,
@@ -445,10 +408,8 @@ def _row(
         "source_concept": resolution.source_concept,
         "roll_up_children": json.dumps(children) if children else None,
         "root_anchor": resolution.anchor,
-        "adjustment": _adjustment_json(resolution, period),
         "role_uri": resolution.role_uri,
         "is_extension": resolution.is_extension,
-        "dc_code": dc_code or resolution.dc_code,
     }
 
 
@@ -524,8 +485,6 @@ def rows_from_xbrl(
         if resolution.method != FIELD_SUM:
             values[name], refused[name] = _materialise(resolution, facts)
     # After every field is materialised (lone quarters are dated on the filing's calendar), before `_compose`.
-    #: Fields the note guard emptied outright; their stub is coded `AMBIGUOUS_DURATION`, not `NO_USABLE_PERIOD`.
-    note_refused: set[str] = set()
     form = str(stamp.form or "").upper()
     if form in _ANNUAL_FORMS:
         filing_windows = _filing_annual_windows(values)
@@ -553,7 +512,6 @@ def rows_from_xbrl(
             if retry is not None:
                 resolutions[name], values[name], refused[name] = retry
                 continue
-            note_refused.add(name)
             values[name] = kept
     for name, resolution in list(resolutions.items()):
         if resolution.method == FIELD_SUM:
@@ -566,20 +524,17 @@ def rows_from_xbrl(
     for name, resolution in resolutions.items():
         periods = values.get(name) or {}
         if not periods:
-            # No value in this filing: emit ONE reason-coded row so a downstream null is always explained;
-            # a resolved field with no period gets its own code.
+            # No value in this filing: emit ONE value-less row; a resolved field with no period is unresolved here.
             if resolution.resolved:
-                resolution = replace(resolution, method=UNRESOLVED, dc_code=(AMBIGUOUS_DURATION if name in note_refused else NO_USABLE_PERIOD))
+                resolution = replace(resolution, method=UNRESOLVED, dc_code=NO_USABLE_PERIOD)
             rows.append(_row(ticker, stamp, reported, regime, name, resolution, None))
             continue
         rows.extend(_row(ticker, stamp, reported, regime, name, resolution, period) for period in periods.values())
-    # Refused periods, each a value-less row coded `PERIOD_INTERSECTION_PARTIAL`, for every field.
+    # Refused periods (the strict intersection kept only some leaves), each a value-less row, for every field.
     for name, periods in refused.items():
         # Disjoint by construction; a shared key would write one PK twice and dedup could keep the stub.
         assert not (set(periods) & set(values.get(name, {}))), f"{ticker} {stamp.accession_number} {name}: a refused period is also resolved"
-        rows.extend(
-            _row(ticker, stamp, reported, regime, name, resolutions[name], period, dc_code=PERIOD_INTERSECTION_PARTIAL) for period in periods.values()
-        )
+        rows.extend(_row(ticker, stamp, reported, regime, name, resolutions[name], period) for period in periods.values())
     return rows
 
 
@@ -592,41 +547,24 @@ def parse_fundamentals(
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
 ) -> dict[Table, pd.DataFrame]:
-    """One filing's `fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice)."""
-    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=Tables.fundamentals_facts.retrieval_columns)
-    return {Tables.fundamentals_facts: df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")}
+    """One filing's `sec_fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice).
+
+    Dtypes are pinned on every frame, an empty filing's too: the first write creates the table from them.
+    """
+    table = Tables.sec_fundamentals_facts
+    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=table.retrieval_columns)
+    df = pin_dtypes(df, dates=table.date_type_cols, floats=("value",)).astype(_FACT_NULLABLE_DTYPES)
+    return {table: df.drop_duplicates(subset=list(table.pk), keep="last")}
 
 
-def fundamentals_fetch(context: Context) -> EdgarFetch:
-    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
+@contextmanager
+def _facts_run_scope(context: Context, _tickers: Sequence[str], _as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
+    """Bind the run's parser: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
     catalogue = load_catalogue(str(context.config_dir))
     df_gics = context.universe.frame.set_index("ticker")[["sector", "industry_group", "sub_industry"]]
     gics = cast(dict[str, dict], df_gics.to_dict("index"))
-    return EdgarFetch(
-        tables=(Tables.fundamentals_facts,),
-        parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
-    )
+    yield replace(SEC_FUNDAMENTALS_FETCH, parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics))
 
 
-def fetched_filing_dates(summary: FetchSummary) -> dict[str, list[pd.Timestamp]]:
-    """Per ticker, the filing dates of the documents the fetch read (listed minus still missing), oldest first.
-
-    A ticker that read nothing is left out, so the history build treats it as not fetched.
-    """
-    missing = summary.missing
-    out: dict[str, list[pd.Timestamp]] = {}
-    for ticker, df_units in summary.work.units.items():
-        read = df_units[~df_units["accession"].astype(str).isin(missing.get(ticker, []))]
-        if not read.empty:
-            out[ticker] = sorted(pd.Timestamp(day).normalize() for day in read["filed"])
-    return out
-
-
-def fetch_fundamentals_sec(
-    context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
-) -> FetchSummary:
-    """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
-    run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
-    fetch = fundamentals_fetch(context)
-    refresh_index(context, run, index_years(fetch, run.years_history, run.run_date))
-    return run_edgar_fetch(context, fetch, run, max_workers=int(context.config.data_extract.fundamentals_workers))
+#: The `sec_fundamentals_facts` walk of `StepExtractEdgar`; its parser is bound per run by `_facts_run_scope`.
+SEC_FUNDAMENTALS_FETCH = EdgarFetch(tables=(Tables.sec_fundamentals_facts,), run_scope=_facts_run_scope)

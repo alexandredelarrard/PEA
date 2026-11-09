@@ -1,5 +1,5 @@
 """`StepExtractEdgar` declares its window, run date, tickers, CIK mapping, identity scope, cap and retry policy once,
-runs the six EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
+runs the seven EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
 universe, the CIK mapping and the identity are stubbed."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from tests.data_extract.edgar_fixtures import walk_call
 from tests.support.universe import universe_of
 
-RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_def14a_ecd")
+RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_def14a_ecd", "run_fundamentals_facts")
 FETCHES = {
     "run_insider": step_mod.INSIDER_EDGAR_FETCH,
     "run_13d": step_mod.SEC_13D_FETCH,
@@ -27,6 +27,7 @@ FETCHES = {
     "run_8k": step_mod.SEC_8K_FETCH,
     "run_filing_text": step_mod.FILING_TEXT_FETCH,
     "run_def14a_ecd": step_mod.DEF14A_EDGAR_FETCH,
+    "run_fundamentals_facts": step_mod.SEC_FUNDAMENTALS_FETCH,
 }
 COMMANDS = {
     "insider-edgar": "run_insider",
@@ -35,6 +36,7 @@ COMMANDS = {
     "sec-8k-items": "run_8k",
     "filing-text": "run_filing_text",
     "def14a-edgar": "run_def14a_ecd",
+    "sec-fundamentals-facts": "run_fundamentals_facts",
 }
 CIK_MAP = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]})
 
@@ -101,7 +103,7 @@ def _step(driver: Driver, options: EdgarOptions | None = None) -> StepExtractEdg
     return StepExtractEdgar(driver.context(config), config, options)  # type: ignore[arg-type]
 
 
-def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_walks_the_seven_fetches_in_order_on_state_declared_once(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
     step = _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00")))
     assert driver.reads == [], "constructing the step reads nothing (REQ-014)"
@@ -118,7 +120,7 @@ def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: 
     }
     print("\n=== SANITY: StepExtractEdgar.run order ===")
     print(
-        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all 6 walks; window 15y, run date 2026-10-31."
+        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all {len(RUNS)} walks; window 15y, run date 2026-10-31."
     )
 
 
@@ -130,7 +132,7 @@ def test_options_reach_every_walk_and_a_subset_skips_the_universe_read(monkeypat
     assert {(tuple(call["tickers"]), call["years_history"], call["full"], call["no_cap"]) for call in driver.calls} == {(("BBB",), 3, True, True)}
     assert driver.calls[0]["cik_map"]["ticker"].tolist() == ["BBB"]
     print("\n=== SANITY: EdgarOptions ===")
-    print("  -t BBB, -y 3, -F and --no-cap reach all 6 walks; no universe read when tickers are given.")
+    print(f"  -t BBB, -y 3, -F and --no-cap reach all {len(RUNS)} walks; no universe read when tickers are given.")
 
 
 @pytest.mark.parametrize("boom", RUNS)
@@ -151,7 +153,7 @@ def test_a_failing_walk_raises_from_its_own_run_only(monkeypatch: pytest.MonkeyP
     assert alone == [FETCHES[name].done.desc for name in (boom, *[n for n in RUNS if n != boom])]
     assert driver.order == [FETCHES[name].done.desc for name in RUNS[: RUNS.index(boom) + 1]], "run() is a plain sequence: it stops at the failure"
     print(f"\n=== SANITY: {boom} failure ===")
-    print(f"  {boom} raised alone; the 5 other run_* methods ran when called alone; run() stopped after {len(driver.order)} walk(s).")
+    print(f"  {boom} raised alone; the {len(RUNS) - 1} other run_* methods ran when called alone; run() stopped after {len(driver.order)} walk(s).")
 
 
 @pytest.mark.parametrize("command", sorted(COMMANDS))
@@ -178,9 +180,9 @@ def test_run_refreshes_the_index_once_over_the_widest_window_before_the_walks(mo
     _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31"))).run()
 
     assert driver.refreshes == [max(15, INSIDER_YEARS)], "one refresh per run(), over the insider walk's source-start window"
-    assert driver.events[0].startswith("refresh") and len(driver.events) == 7
+    assert driver.events[0].startswith("refresh") and len(driver.events) == 1 + len(RUNS) == 8
     print("\n=== SANITY: one index refresh per run() ===")
-    print(f"  {driver.events[0]} then the 6 walks; edgar_index.refresh 6 -> 1.")
+    print(f"  {driver.events[0]} then the {len(RUNS)} walks; edgar_index.refresh {len(RUNS)} -> 1.")
 
 
 @pytest.mark.parametrize("name", RUNS)

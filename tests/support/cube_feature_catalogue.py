@@ -2,9 +2,8 @@
 cube_feature_catalogue.py  (tests/support/)
 --------------------------------------------------------------------------------------------
 The PROSE half of the `cube_part_fundamentals` evidence report: what each characteristic
-measures, why its null rate is the right one, and how to read its tail.
-`cube_fundamentals_evidence.py` supplies the other half -- the measured numbers -- and joins
-the two.
+measures, why its null rate is the right one, and how to read its tail. The catalogue check
+(`src/validate/checks/catalogue.py`) reads it per table through `CATALOGUES`.
 
 Keyed on the CHARACTERISTIC, i.e. the cube column minus the `f_` prefix and the
 `_vs_peers` / `_xs` / `_vs_hist` suffix. The three views are one quantity seen three ways and
@@ -37,9 +36,8 @@ from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
 #: characteristic -> (family, what it does, why it is right, how to read the tail)
 #:
 #: ⚠ THIS DICT IS `cube_part_fundamentals` ONLY, and the scope is load-bearing rather than
-#: incidental: `cube_fundamentals_evidence.py` asserts both directions against ONE table and
-#: exits non-zero on either failure, so an entry describing another part's column would land in
-#: its `unused` list and fail every future run. Both directions are only assertable PER PART.
+#: incidental: a catalogue is checked in both directions against ONE table, so an entry
+#: describing another part's column would read as a dead catalogued name. Both directions are only assertable PER PART.
 #: Add another part's prose as its own module and register it in `CATALOGUES` below.
 CATALOGUE: dict[str, tuple[str, str, str, str]] = {}
 

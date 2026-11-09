@@ -45,7 +45,7 @@ def _rows(filing: object) -> list[dict]:
 def test_filing_fetchers_take_years_history_as_an_argument():
     """Every EDGAR-discovery fetcher must receive its window from its step rather than
     reading the config itself -- that is what keeps 8-K/13D/DEF 14A/filing-text discovery
-    over the SAME window as fundamentals_facts, instead of drifting apart through a config
+    over the SAME window as sec_fundamentals_facts, instead of drifting apart through a config
     read nobody can see from the call site.
 
     The invariant is checked on BOTH windowed steps: each reads the window exactly once and

@@ -7,11 +7,13 @@ multi-GB download and is absent on most machines, so that guard cannot be replay
 which left the aggregation refactor with no safety net at all. This module closes that
 gap: it is SELF-CONTAINED after its first run.
 
-    * fundamentals come from the DB table `fundamentals_history` ONCE and are then
-      frozen to `aggregate_fingerprint_fundamentals.parquet` next to this file, so every
-      later run (and every CI machine) replays byte-identical inputs with no DB and no
-      SEC cache. Real filings are used deliberately: 237 columns across all 11 GICS
-      sectors is what makes the sector gates (banks / REITs / insurance / energy) fire,
+    * fundamentals come from the DB tables `sharadar_fundamentals_history` and
+      `sec_fundamentals_history` ONCE and are then frozen to
+      `aggregate_fingerprint_fundamentals.parquet` (Sharadar) and
+      `aggregate_fingerprint_sec.parquet` (SEC) next to this file, so every later run (and
+      every CI machine) replays byte-identical inputs with no DB and no SEC cache. They meet
+      through the cube's own `join_sec_columns`. Real filings are used deliberately: all 11
+      GICS sectors is what makes the sector gates (banks / REITs / insurance / energy) fire,
       and no synthetic frame reproduces that.
     * everything else (prices, dividends, earnings, proxies, 13F, insider, attention,
       short interest, fails) is a SEEDED synthetic source shaped like the real table.
@@ -44,7 +46,7 @@ from __future__ import annotations
 
 import json
 import zlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -52,6 +54,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
+from src.data_aggregate.utils.fundamentals.source_join import join_sec_columns
 from src.data_aggregate.utils.price.frames import PriceFrames
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
@@ -59,6 +62,7 @@ from tests.data_aggregate.pipeline_fingerprint import frame_digest
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("aggregate_fingerprint_baseline.json")
 FUNDAMENTALS_CACHE = Path(__file__).with_name("aggregate_fingerprint_fundamentals.parquet")
+SEC_CACHE = Path(__file__).with_name("aggregate_fingerprint_sec.parquet")
 
 SEED = 20260805
 START, END = "2019-01-02", "2026-06-30"
@@ -70,16 +74,27 @@ FILING_LAG = 45
 # --------------------------------------------------------------------------- #
 # fixed inputs: fundamentals (DB once -> frozen parquet)                       #
 # --------------------------------------------------------------------------- #
-def _select_fundamentals() -> pd.DataFrame:
+@dataclass(frozen=True, slots=True)
+class FrozenHistories:
+    """The two frozen producer slices, as the cube reads them before its join."""
+
+    sharadar: pd.DataFrame
+    sec: pd.DataFrame
+
+
+def _select_fundamentals() -> FrozenHistories:
     """`TICKERS_PER_SECTOR` alphabetically-first tickers per GICS sector, so the draw is
     reproducible without an RNG and every sector-gated KPI family has names that pass its
-    gate. Read from the DB only when the frozen parquet is absent.
+    gate. Read from the DB only when the frozen parquets are absent.
+
+    The Sharadar slice's `employees_sec`, which `employee_rows` reads, exists only in the frozen
+    vintage (no table carries it now), so a regeneration needs a new workforce fixture source.
 
     THE TWO ENRICHMENTS ARE PART OF THE INPUT, not of the panel builders. `StepCubeFundamentals`
     applies them between the load and the builders, so a slice frozen straight off the table is
     NOT the frame production feeds in:
 
-      * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
+      * `sector` / `industry_group` are not columns of `sharadar_fundamentals_history` at all -- they are
         a `universe_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
@@ -98,30 +113,36 @@ def _select_fundamentals() -> pd.DataFrame:
     from src.utils.tickers_universe.universe import Universe
 
     store = DataStore(get_engine())
-    fh = store.load("fundamentals_history")
-    assert fh is not None
+    fh = store.load("sharadar_fundamentals_history")
+    sec = store.load("sec_fundamentals_history")
+    assert fh is not None and sec is not None
     if fh.empty:
-        raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
+        raise RuntimeError("sharadar_fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
     fh = Universe(store, read_config(path=str(ROOT / "configs"))).attach_gics(add_cube_time_growth(fh))
     picked: list[str] = []
     for sector in sorted(fh["sector"].dropna().astype(str).unique()):
         names = sorted(fh.loc[fh["sector"].astype(str) == sector, "ticker"].unique())
         picked.extend(names[:TICKERS_PER_SECTOR])
-    out = fh[fh["ticker"].isin(picked)].copy()
-    out["as_of"] = pd.to_datetime(out["as_of"])
-    return out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    frames = []
+    for frame in (fh, sec):
+        out = frame[frame["ticker"].isin(picked)].copy()
+        out["as_of"] = pd.to_datetime(out["as_of"])
+        frames.append(out.sort_values(["ticker", "as_of"]).reset_index(drop=True))
+    return FrozenHistories(*frames)
 
 
-def fundamentals() -> pd.DataFrame:
-    """The frozen fundamentals slice. Written on first use, read verbatim afterwards, so
+def fundamentals() -> FrozenHistories:
+    """The frozen Sharadar and SEC slices. Written on first use, read verbatim afterwards, so
     the fingerprint is reproducible on a machine with neither the DB nor the SEC cache."""
-    if FUNDAMENTALS_CACHE.exists():
-        df = pd.read_parquet(FUNDAMENTALS_CACHE)
-        df["as_of"] = pd.to_datetime(df["as_of"])
-        return df
-    df = _select_fundamentals()
-    df.to_parquet(FUNDAMENTALS_CACHE, index=False)
-    return df
+    if FUNDAMENTALS_CACHE.exists() and SEC_CACHE.exists():
+        frames = [pd.read_parquet(path) for path in (FUNDAMENTALS_CACHE, SEC_CACHE)]
+        for frame in frames:
+            frame["as_of"] = pd.to_datetime(frame["as_of"])
+        return FrozenHistories(*frames)
+    frozen = _select_fundamentals()
+    frozen.sharadar.to_parquet(FUNDAMENTALS_CACHE, index=False)
+    frozen.sec.to_parquet(SEC_CACHE, index=False)
+    return frozen
 
 
 def employee_rows(fund: pd.DataFrame) -> pd.DataFrame:
@@ -787,7 +808,7 @@ def governance_panel(
         inputs.def14a,
         peers,
         idx,
-        fundamentals_history=fund,
+        fundamentals=fund,
         votes=inputs.votes,
         exec_comp=inputs.exec_comp,
         directors=inputs.directors,
@@ -855,7 +876,8 @@ def compute() -> dict:
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
     from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features, build_institutional_feature_panel
 
-    fund = fundamentals()
+    frozen = fundamentals()
+    fund = join_sec_columns(frozen.sharadar, frozen.sec).frame
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
     px = synthetic_prices(tickers, rng_for("prices"))
     close = px["close"]
@@ -903,7 +925,7 @@ def compute() -> dict:
     out: dict[str, dict] = {}
 
     # ---- the frozen input itself: a DB change must fail LOUDLY and by name ---- #
-    out["input.fundamentals_slice"] = frame_digest(fund)
+    out["input.fundamentals_slice"] = frame_digest(frozen.sharadar)
 
     # ---- PUBLIC entry points: every panel builder ---- #
     out["panel.raw_features"] = frame_digest(
@@ -1214,8 +1236,8 @@ def compute() -> dict:
         "seed": SEED,
         "start": START,
         "end": END,
-        "fundamentals_rows": int(len(fund)),
-        "fundamentals_cols": int(len(fund.columns)),
+        "fundamentals_rows": int(len(frozen.sharadar)),
+        "fundamentals_cols": int(len(frozen.sharadar.columns)),
     }
     return out
 

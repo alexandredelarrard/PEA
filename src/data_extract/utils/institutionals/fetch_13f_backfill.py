@@ -202,7 +202,7 @@ def _backfill_data_set(
     completed: frozenset[str] = frozenset(),
 ) -> int:
     """Preserve full source accessions for a scope fixed across all recovery archives."""
-    saver = saver or _Saver(context, set(tickers), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
+    saver = saver or _Saver(context, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     if submissions is None:
         scope = _archive_scope(path, target_cusips(cmap, saver.cusip_lines(), tickers))
         if scope is None:
@@ -324,7 +324,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         archived.append((data_set, due, path, submissions))
     completed = frozenset() if full else _completed_accessions(context, relevant_ciks)
     saved = 0
-    saver = _Saver(context, set(targets), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
+    saver = _Saver(context, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))

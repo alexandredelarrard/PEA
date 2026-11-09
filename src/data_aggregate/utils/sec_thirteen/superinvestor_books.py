@@ -88,7 +88,6 @@ class PublicBookSnapshot:
 
     day: pd.Timestamp
     common_period: pd.Timestamp | None
-    latest_period_by_manager: Mapping[str, pd.Timestamp]
     level_books: Mapping[str, PublicBook]
     archive: Mapping[BookKey, PublicBook]
 
@@ -240,9 +239,6 @@ def prepare_superinvestor_book_history(
     for day in days:
         _advance_latest_books(latest, publications.get(day, []))
         level_books = {cik: book for cik, book in latest.items() if book.first_public_at is not None and day <= book.first_public_at + age}
-        latest_periods = {cik: book.period for cik, book in latest.items()}
-        common_period = max(latest_periods.values(), default=None)
-        snapshots.append(
-            PublicBookSnapshot(day, common_period, MappingProxyType(latest_periods), MappingProxyType(level_books), _PublicBookArchive(archive, day))
-        )
+        common_period = max((book.period for book in latest.values()), default=None)
+        snapshots.append(PublicBookSnapshot(day, common_period, MappingProxyType(level_books), _PublicBookArchive(archive, day)))
     return tuple(snapshots)

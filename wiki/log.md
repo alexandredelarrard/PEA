@@ -1089,3 +1089,10 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Profile: internal/standard; branch `harness/price-pit-quantity-basis` merged with `dev` @ `abdf8231` (merge `4f33f011`).
 - Scope: `sec13f_hr` rows keep the company-level ticker stored at extraction; manager books are tagged through `CusipTags`; `common/class_lines.py` removed (class lines read from `universe_cusip`); the price identity reads `universe_cik_symbol`. P1 removed from the TODO.
 - Pages: [Cube aggregation](./modules/data-aggregate.md), [Table catalog](./reference/table-catalog.md), [TODO](./TODO.md).
+
+## 2026-11-09: refresh (sec13f-cube-speed Phase 8)
+
+- Profile: internal/standard
+- source_commit: harness/sec13f-cube-speed (Phase 8)
+- Coverage: 13F cube read scope (universe rows plus whole amended books; whole roster books by literal CIK list), event-difference broad engine, summarize-once superinvestor engine on `sec13f_hr`, implied-price whole-book pricing without a split rule, superinvestor start date at the `sec13f_hr` availability date; `sec13f_manager_holdings` retired in code (the user runs the live DROP after re-extraction); dead links to the deleted aggregate `institutional_vintages.py` and the deleted `roster_as_of` removed; call-depth rule (3 levels below `run()` plus one flat numpy/pandas/regex/stdlib handler, deepest chain) aligned in coding standards and the harness-refactor checklist
+- Pages: [Cube aggregation](./modules/data-aggregate.md), [Data extraction](./modules/data-extract.md), [Runtime and shared utilities](./modules/runtime-and-shared-utils.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Live database](./reference/live-database.md), [Data access](./guides/data-access.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Run the pipeline](./guides/run-the-pipeline.md), [Coding standards](./guides/coding-standards.md), [TODO](./TODO.md)

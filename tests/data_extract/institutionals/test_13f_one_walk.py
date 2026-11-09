@@ -835,7 +835,7 @@ def test_empty_cover_is_silent_and_marked_once(filing_store, monkeypatch, caplog
         return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     with caplog.at_level(logging.WARNING):
         held = f13._first_pass([filing], saver)
@@ -877,7 +877,7 @@ def test_zero_count_cover_with_a_positive_total_is_marked_once_keeping_the_total
         return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     with caplog.at_level(logging.WARNING):
         held = f13._first_pass([filing], saver)
@@ -1014,7 +1014,7 @@ def test_first_pass_reads_the_done_set_once(filing_store, monkeypatch):
     ciks = [f"{i:010d}" for i in range(1, 7)]
     filings = [_walk_filing(cik, 10 + q, f"{cik}-26-{q:06d}") for cik in ciks for q in range(3)]
     calls = _spy_done_reads(monkeypatch)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     held = f13._first_pass(filings, saver)
     first = list(calls)
@@ -1045,7 +1045,7 @@ def test_first_pass_done_semantics_match_the_per_cik_sets(filing_store, monkeypa
     failed = _FakeFiling(OTHER, "2026-05-17", "2026-03-31", [], accession="0000000001-26-000017", unparseable=True)
     listing = [filing for filing, _, _ in cases.values()] + [failed]
     calls = _spy_done_reads(monkeypatch)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     f13._first_pass(listing, saver)
     f13._first_pass(listing, saver)

@@ -540,7 +540,6 @@ class _Saver:
     one OpenFIGI pass; an unflushed book is not stored and is read again on the next run."""
 
     context: Context
-    universe: set[str]
     save_every: int
     walk: _WalkState = field(default_factory=_WalkState)
     pending: list[tuple[pd.DataFrame, pd.DataFrame]] = field(default_factory=list)
@@ -668,7 +667,7 @@ def fetch_13f(
     if not total:
         return 0
 
-    saver = _Saver(context, universe, save_every)
+    saver = _Saver(context, save_every)
     failed = _first_pass(filings, saver)
     _retry_rounds(context, failed, saver)
     for read in failed:

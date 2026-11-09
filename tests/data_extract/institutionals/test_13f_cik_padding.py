@@ -42,7 +42,7 @@ def _packet():
 def test_the_walk_save_pads_the_cik(filing_store, monkeypatch):
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     ctx: Any = SimpleNamespace(store=filing_store, _identity_resolver=store_identity(filing_store))
-    saver = f13._Saver(ctx, {"AAPL"}, save_every=1)
+    saver = f13._Saver(ctx, save_every=1)
     saver.save_packet(*_packet())
     assert filing_store.load(Tables.sec13f_hr, columns=["cik"])["cik"].tolist() == [ROSTER]
     print("SANITY: the actual saver stores the padded source CIK in sec13f_hr.")

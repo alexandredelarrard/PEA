@@ -70,7 +70,7 @@ These rules are compulsory for every future coding change:
 - No function input only used by tests + no logger passed as an input of any function.
 - Logical parts of a function are separated by 1 jumped line and one line comment explaining what the block does.
 - No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
-- **Call depth counted from the step.** Level 0 = `run()`; level 1 = a `run_*` sub-step; level 2 = a domain function it calls; level 3 = a helper, which is FLAT: it calls no repository function, only pandas, numpy or stdlib operations. Maximum 3 levels; 2 preferred. No pass-through functions at any level.
+- **Call depth counted from the step.** Level 0 = a step's `run()`. At most 3 levels of repository functions below it (levels 1-3), plus one flat level-4 handler that calls only numpy, pandas, regex or stdlib and no repository function. Count each function at its deepest call chain from `run()`. No pass-through functions at any level.
 - **Every function:** at most 6 inputs; at most 90 lines; control-flow nesting at most 2 inside a function; logical blocks separated by one blank line, each opened by a one-line comment; ordered load -> clean -> merge -> compute -> post-process -> check -> save; table reads at the top, each table read once.
 
 - Tickers, CIKs, names, GICS and entry dates come from `context.universe` (`self._universe` in a step), never a table read of the roster and never a complete-universe parameter; [universe.yml](../../configs/universe.yml) is the only hand-edited ticker list. `context.universe.tickers` is already normalized. CLI `-t` input is a comma-separated string: split it and pass it to `context.universe.subset`, which normalizes each symbol and refuses names outside the universe. Downstream lists need no repeated normalization; guard subset writes with `context.universe.outside(scope)` or `is_full(tickers)`. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
@@ -240,7 +240,8 @@ Important data, model, or output work ends with the appropriate read-only valida
 - [ ] Step/Strategy boundary preserved.
 - [ ] Full annotations and top-level imports.
 - [ ] Flow ordered load → clean → merge → compute features or steps → post-process →  log → save.
-- [ ] Each function does one thing in at most 90 lines and 3 nesting levels.
+- [ ] Each function does one thing in at most 90 lines and control-flow nesting at most 2.
+- [ ] At most 3 levels of repository functions below `run()`, plus one flat level-4 handler (numpy/pandas/regex/stdlib only), counted at the deepest chain.
 - [ ] No pass-through functions.
 - [ ] No more than 6 inputs in each function
 - [ ] Functions logical blocks visible with 1 line comment per block

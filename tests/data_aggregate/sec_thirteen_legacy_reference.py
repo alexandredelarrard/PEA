@@ -15,7 +15,7 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.quotes import period_bases
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.price.frames import PriceFrames
@@ -883,7 +883,9 @@ def _quarter_basis_ratio(df_basis: pd.DataFrame | None, tickers: pd.Index, perio
     """`F_period / F_prior` per ticker: the factor carrying prior-quarter shares onto the current quarter's basis."""
     if df_basis is None:
         return pd.Series(1.0, index=tickers)
-    prior, now = period_bases(df_basis, pd.Series(tickers, index=tickers), prior_period, period)
+    keys = pd.Series(tickers, index=tickers)
+    prior = lookup_asof(df_basis, keys, pd.Series(prior_period, index=tickers))
+    now = lookup_asof(df_basis, keys, pd.Series(period, index=tickers))
     return convert_quantities(1.0, prior, now)
 
 

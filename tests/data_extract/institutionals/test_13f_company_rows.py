@@ -108,7 +108,7 @@ def test_the_walk_saves_company_rows_in_sec13f_hr(filing_store, monkeypatch) -> 
         declared_value=1_449_000.0,
     )
     ctx: Any = SimpleNamespace(store=filing_store)
-    saver = f13._Saver(ctx, {"BRK-B"}, save_every=1)
+    saver = f13._Saver(ctx, save_every=1)
     saver.walk.lines = LINES
     saver.save_packet(*packet)
 

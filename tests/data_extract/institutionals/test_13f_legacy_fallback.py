@@ -914,7 +914,7 @@ def test_unconsumed_holdings_cannot_complete_a_book(location: str, filing_store:
     monkeypatch.setattr(filing, "full_text_submission", lambda: raw, raising=False)
     packet = f13.read_filing_vintage(FilingStamp.of(filing, filing.cik))
     assert isinstance(packet, f13.ReadFailure) and not packet.transient
-    saver = f13._Saver(SimpleNamespace(store=filing_store), {"AFL", "AMGN"}, 600)
+    saver = f13._Saver(SimpleNamespace(store=filing_store), 600)
     saver.add(f13._Read(FilingStamp.of(filing, filing.cik), packet))
     assert filing_store.row_count(f13.Tables.sec13f_hr) == 0
     print(f"SANITY: economic rows {location} cannot self-certify a surviving subset or produce a completion marker in sec13f_hr.")

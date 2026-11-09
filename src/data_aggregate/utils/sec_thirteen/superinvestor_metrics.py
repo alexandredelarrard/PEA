@@ -80,10 +80,10 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     df_positions["_book"] = np.repeat(np.arange(len(books)), [len(book.df_positions) for book in books])
     has_class = np.array(["class_evidence" in book.df_positions for book in books], dtype=bool)
 
-    # Each book's own flag dtype decides its inversion, as the per-book rule always did; a missing flag is verified.
+    # A missing flag column is verified; a null flag is unverified.
     flag = "value_basis_inverse_unit_unverified"
-    verified = [~book.df_positions.get(flag, pd.Series(False, index=book.df_positions.index)).fillna(True) for book in books]
-    df_positions["_verified"] = pd.concat(verified, ignore_index=True).astype(bool).to_numpy() if books else np.array([], dtype=bool)
+    verified = [~book.df_positions.get(flag, pd.Series(False, index=book.df_positions.index)).fillna(True).astype(bool) for book in books]
+    df_positions["_verified"] = pd.concat(verified, ignore_index=True).to_numpy(bool) if books else np.array([], dtype=bool)
     df_positions = df_positions.astype({"ticker": object, "class_evidence": object})
     df_positions["_cusip"] = pd.factorize(df_positions["cusip"], sort=True)[0]
     for name in ("shares", "value_usd"):

@@ -66,7 +66,6 @@ def _snapshot(books: list[PublicBook], day: str = "2024-08-15") -> PublicBookSna
     return PublicBookSnapshot(
         day=pd.Timestamp(day),
         common_period=max(book.period for book in books),
-        latest_period_by_manager={cik: book.period for cik, book in latest.items()},
         level_books=latest,
         archive=archive,
     )
@@ -96,7 +95,7 @@ def _market(split: bool = False) -> BehaviorMarket:
 
 
 def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> SuperinvestorFeatureHistory:
-    roster = frozenset(snapshot.latest_period_by_manager)
+    roster = frozenset(snapshot.level_books)
     cohorts = {"": roster, "topk": roster if topk is None else topk}
     return compute_superinvestor_feature_history((snapshot,), cohorts, ("AAA", "BBB"), market or _market())
 
@@ -428,7 +427,7 @@ def test_consensus_is_signed_and_excludes_unchanged_managers() -> None:
         ("missing_source", False),
         ("missing_unverified", True),
         ("null_unverified", False),
-        ("object_null_unverified", True),
+        ("object_null_unverified", False),
     ],
 )
 def test_duration_preserves_same_ticker_sibling_evidence(endpoint: str, evidence: str, verified: bool) -> None:

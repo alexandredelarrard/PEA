@@ -75,7 +75,7 @@ def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None
     actual = prepare_superinvestor_book_history(prepared, grid, 90)
     assert actual is not None and [state.day for state in actual] == [state.day for state in expected]
     for old, new in zip(expected, actual, strict=True):
-        assert old.common_period == new.common_period and dict(old.latest_period_by_manager) == dict(new.latest_period_by_manager)
+        assert old.common_period == new.common_period
         assert set(old.level_books) == set(new.level_books) and set(old.archive) == set(new.archive)
         for key in old.archive:
             before, after = old.archive[key], new.archive[key]
@@ -145,9 +145,8 @@ def test_newer_unusable_books_are_barriers_and_old_backfills_do_not_replace_them
     assert book.period == pd.Timestamp("2024-06-30")
     assert not book.support.zero_eligible and not book.support.comparison_eligible
     assert current.common_period == pd.Timestamp("2024-06-30")
-    assert current.latest_period_by_manager["0000000001"] == book.period
     assert not _on(history, "2024-11-13").level_books
-    assert _on(history, "2024-11-13").latest_period_by_manager["0000000001"] == pd.Timestamp("2024-06-30")
+    assert _on(history, "2024-11-13").common_period == pd.Timestamp("2024-06-30")
     print(f"SANITY: the latest {scope} quarter remains the support barrier; an older late original cannot replace or refresh it.")
 
 
@@ -242,7 +241,6 @@ def test_future_vintages_cannot_change_historical_snapshots_or_leak_archive_keys
     assert [snapshot.day for snapshot in early_prefix] == [snapshot.day for snapshot in early_full]
     for before, after in zip(early_prefix, early_full, strict=True):
         assert before.common_period == after.common_period
-        assert dict(before.latest_period_by_manager) == dict(after.latest_period_by_manager)
         assert set(before.archive) == set(after.archive)
         assert len(after.archive) == len(before.archive)
         assert after.archive.get(("0000000001", pd.Timestamp("2024-06-30"))) is None

@@ -46,6 +46,11 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         "the EDGAR driver's read-only planner; the employees LLM step reads the text walk's pending filings from it to hold back later dates",
     ),
     "src.data_extract.utils.edgar_extract.edgar_index": (frozenset({"index_filing"}), _DRIVER),
+    "src.data_extract.utils.edgar_extract.fetch_def14a_text": (
+        frozenset({"accepted_subjects", "proxy_html", "proxy_subject_ciks", "subject_accepted"}),
+        "the DEF 14A text walk's document and subject-header readers, moved there; the old DEF 14A LLM listing reads them "
+        "until its listing is deleted (P5 removes this entry)",
+    ),
     "src.data_extract.utils.edgar_extract.empty_markers": (frozenset({"marker_frame", "marker_mask"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.html_text": (frozenset({"html_to_text"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.parallel_fetch": (frozenset({"run_per_ticker"}), _DRIVER),
@@ -80,6 +85,7 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         ),
         _TAPE,
     ),
+    "src.data_extract.utils.structure.def14a.carve": (frozenset({"prepare_def14a_payloads"}), _DEF14A),
     "src.data_extract.utils.structure.def14a.ecd": (frozenset({"ecd_facts", "ecd_row", "has_ecd_block"}), _DEF14A),
     "src.data_extract.utils.structure.def14a.validate": (frozenset({"repair_main_row"}), _DEF14A),
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),

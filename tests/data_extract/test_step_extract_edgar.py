@@ -1,5 +1,5 @@
 """`StepExtractEdgar` declares its window, run date, tickers, CIK mapping, identity scope, cap and retry policy once,
-runs the seven EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
+runs the eight EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
 universe, the CIK mapping and the identity are stubbed."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from tests.data_extract.edgar_fixtures import walk_call
 from tests.support.universe import universe_of
 
-RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_employees_text", "run_def14a_ecd")
+RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_employees_text", "run_def14a_text", "run_def14a_ecd")
 FETCHES = {
     "run_insider": step_mod.INSIDER_EDGAR_FETCH,
     "run_13d": step_mod.SEC_13D_FETCH,
@@ -27,6 +27,7 @@ FETCHES = {
     "run_8k": step_mod.SEC_8K_FETCH,
     "run_filing_text": step_mod.FILING_TEXT_FETCH,
     "run_employees_text": step_mod.EMPLOYEES_TEXT_FETCH,
+    "run_def14a_text": step_mod.DEF14A_TEXT_FETCH,
     "run_def14a_ecd": step_mod.DEF14A_EDGAR_FETCH,
 }
 COMMANDS = {
@@ -36,6 +37,7 @@ COMMANDS = {
     "sec-8k-items": "run_8k",
     "filing-text": "run_filing_text",
     "sec-employees-text": "run_employees_text",
+    "sec-def14a-text": "run_def14a_text",
     "def14a-edgar": "run_def14a_ecd",
 }
 CIK_MAP = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]})

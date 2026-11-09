@@ -400,7 +400,7 @@ def test_section_extractors_run_two_wide_whatever_config_gpt_threads(tmp_path, m
 
 def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatch):
     """AC-008 (DEF 14A LLM): proxies are listed by CIK for each window of the scope, never by roster CIK alone;
-    each CIK keeps only what its widened window admits, and a multi-window scope checks subject headers."""
+    each CIK keeps only what its widened window admits (the subject-guard scope rule is tested with the text walk)."""
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     identity = dated_identity(
@@ -424,7 +424,5 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
 
     assert listed == ["0000813828", "0002041610"]
     assert sorted(out["accession_number"]) == ["1610-2025-07-20", "1610-2026-04-02", "3828-2024-04-01", "3828-2025-08-20"]
-    assert mod.accepted_subjects(scope) == frozenset({"0000813828", "0002041610"})
-    assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "0000320193")) == frozenset()
     print("\n=== SANITY: DEF 14A LLM per-window listing ===")
     print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")

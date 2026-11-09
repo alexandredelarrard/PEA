@@ -16,7 +16,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.fundamentals.fundamentals_employees import EMPLOYEES_PROVIDER, fetch_employees_llm
-from src.data_extract.utils.structure.def14a import fetch_def14a_llm, section_extractors
+from src.data_extract.utils.structure.def14a.fetch import fetch_def14a_llm, section_extractors
 from src.data_extract.utils.structure.votes import VOTES_ACTION, fetch_8k_votes_llm
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).

@@ -7,17 +7,16 @@ from collections.abc import Mapping
 from typing import cast
 
 import pandas as pd
-from edgar import Filing
 from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
-from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.resume import document_floor, planner_bounds
-from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import accepted_subjects, proxy_html, proxy_subject_ciks, subject_accepted
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_extract.utils.structure.def14a.gender import (
@@ -50,30 +49,14 @@ logger = logging.getLogger(__name__)
 
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
-    """The filing's raw markup, falling back to the `<accession>.txt` full submission when the primary
-    document is not served; re-raises a transient failure, and when there is no distinct `.txt` URL."""
-    try:
-        return sec_get(context, filing["doc_url"]).text
-    except TransientReadError:
-        raise
-    except Exception:
-        txt_url = filing.get("txt_url")
-        if not txt_url or txt_url == filing["doc_url"]:
-            raise
-        logger.info("%s: primary document unavailable, falling back to the full submission", filing.get("accession_number", ""))
-        return sec_get(context, txt_url).text
+    """The filing's raw markup through the DEF 14A text walk's reader (primary document, else the `.txt` submission)."""
+    return proxy_html(context, filing["doc_url"], filing.get("txt_url"), str(filing.get("accession_number", "")))
 
 
 def _filing_subject_ciks(filing: pd.Series) -> frozenset[str]:
     """Read a listed filing's SGML subject CIKs through the shared header reader."""
-    candidate = Filing(
-        cik=int(str(filing["cik"])),
-        company=str(filing.get("company_name", "")),
-        form=str(filing["form"]),
-        filing_date=pd.Timestamp(filing["filing_date"]).date().isoformat(),
-        accession_no=str(filing["accession_number"]),
-    )
-    return header_subject_ciks(candidate)
+    filed = filing["filing_date"]
+    return proxy_subject_ciks(str(filing["cik"]), str(filing.get("company_name", "")), str(filing["form"]), filed, str(filing["accession_number"]))
 
 
 def _subject_is_accepted(
@@ -85,7 +68,6 @@ def _subject_is_accepted(
     """Reject only a known subject that is outside the accepted registrant entity. A header SEC could
     not serve skips the filing this run (it is not queued, so a later run reads it again)."""
     accession = str(filing["accession_number"])
-    filer_cik = str(filing["cik"])
     try:
         context.ensure_edgar_identity()
         subjects = _filing_subject_ciks(filing)
@@ -100,18 +82,7 @@ def _subject_is_accepted(
             exc,
         )
         return True
-    if not subjects or not subjects.isdisjoint(accepted_subject_ciks):
-        return True
-    context.log.warning(
-        "%s: rejecting DEF 14A accession %s before extraction; filer CIK %s; "
-        "subject CIK(s) %s; accepted entity CIK(s) %s; reason=subject_cik_disjoint",
-        ticker,
-        accession,
-        filer_cik,
-        ",".join(sorted(subjects)),
-        ",".join(sorted(accepted_subject_ciks)),
-    )
-    return False
+    return subject_accepted(ticker, str(filing["cik"]), accession, subjects, accepted_subject_ciks)
 
 
 def _list_scope_windows(
@@ -140,11 +111,6 @@ def _list_scope_windows(
     if len(frames) > 1:
         context.log.info("%s: DEF 14A listed across %s", scope.ticker, ", ".join(f"{len(part)} from {part['cik'].iloc[0]}" for part in frames))
     return pd.concat(frames, ignore_index=True).drop_duplicates("accession_number", keep="first")
-
-
-def accepted_subjects(scope: FilingScope) -> frozenset[str]:
-    """Subject CIKs a multi-window ticker's proxy may name (its event CIKs); empty, i.e. no header check, otherwise."""
-    return frozenset(scope.event_ciks) if len(scope.windows) > 1 else frozenset()
 
 
 def _finalise_gender(context: Context) -> None:

@@ -27,6 +27,7 @@ from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
@@ -111,6 +112,21 @@ def test_sec_employees_text_takes_every_edgar_walk_option(recorded: list[dict[st
     assert "sec_employees_text" in cli_mod._document_fetches(SimpleNamespace(config=None))
     print("\n=== SANITY: `sec-employees-text` dispatch ===")
     print("  -t -y -F --as-of --no-cap reach run_edgar_fetch(sec_employees_text); resume-plan lists the table.")
+
+
+def test_sec_def14a_text_takes_every_edgar_walk_option(recorded: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+    args = ["sec-def14a-text", "-t", "aapl", "-y", "7", "-F", "--as-of", "2026-09-30", "--no-cap"]
+    monkeypatch.setattr(cli_mod, "fundamentals_fetch", lambda ctx: EdgarFetch(tables=(Tables.fundamentals_facts,)))
+
+    result = CliRunner().invoke(cli_mod.cli, args)
+
+    assert result.exit_code == 0, result.output
+    call = recorded[0]
+    assert call["fetch"] is DEF14A_TEXT_FETCH and call["tickers"] == ["AAPL"] and call["years_history"] == 7
+    assert call["full"] is True and call["no_cap"] is True and call["as_of"] == pd.Timestamp("2026-09-30")
+    assert cli_mod._document_fetches(SimpleNamespace(config=None))["sec_def14a_text"] is DEF14A_TEXT_FETCH
+    print("\n=== SANITY: `sec-def14a-text` dispatch ===")
+    print("  -t -y -F --as-of --no-cap reach run_edgar_fetch(sec_def14a_text); resume-plan lists the table.")
 
 
 def test_markers_counts_and_deletes_by_sentinel(monkeypatch: pytest.MonkeyPatch, sqlite_store: Any) -> None:

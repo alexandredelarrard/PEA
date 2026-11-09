@@ -23,6 +23,5 @@ the same human differently. `gender.py` and `validate.py` re-export them, so not
 """
 
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
-from src.data_extract.utils.structure.def14a.fetch import fetch_def14a_llm, section_extractors
 
-__all__ = ["fetch_def14a_llm", "prepare_def14a_sections", "section_extractors"]
+__all__ = ["prepare_def14a_sections"]

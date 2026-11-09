@@ -1,5 +1,7 @@
 """The `sec-employees-text` walk: the shared driver stores each 10-K family filing's chosen document as candidate
 windows plus their merged union, from which the unchanged greedy rebuilds today's employee excerpt at any budget.
+The `sec-def14a-text` walk stores each proxy's untruncated section payloads, marks a foreign-subject proxy once and
+gives a proxy with no payload one visible `_none` row; SEC (listing, documents, headers) is stubbed.
 
 Offline: a real SQLite `DataStore`, a seeded local EDGAR index and filing stand-ins whose text is three real 10-K
 documents (ITW 2003 10-K/A, DUK 1999 10-K/A, MRSH 1997 10-K) under fixture filing dates inside the window.
@@ -9,18 +11,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.common.workforce import merge_spans, workforce_number_spans
 from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract import fetch_def14a_text as def14a_text
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH, NO_PAYLOAD, accepted_subjects
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH, candidate_windows
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, stored_excerpt
+from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_store.schema import Tables
+from src.utils.string import pad_cik
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, roster_run, seed_index
 
@@ -208,3 +218,217 @@ def test_parse_drops_the_submission_and_stamps_the_listed_period(monkeypatch: py
     assert json.loads(row["windows"])[0] == [0, 24] and json.loads(row["pieces"]) == [[0, "We had 41,000 employees."]]
     print("\n=== SANITY CHECK: one parsed row ===")
     print(f"  windows {row['windows']}, pieces {row['pieces']}, period_of_report {row['period_of_report']}; submission dropped (L4).")
+
+
+# --- `sec-def14a-text` --------------------------------------------------------------------------------------------
+
+#: A proxy whose carve fills the governance section only (the board-election prose).
+PROXY = """<html><body><h1>Election of Directors</h1>
+<p>Jane Example, age 54, Director since 2018. Jane Example is Chief Executive Officer.</p>
+</body></html>"""
+BLANK_PROXY = "<html><body><p>Notice of annual meeting.</p></body></html>"
+DEF14A = Tables.sec_def14a_text
+FOREIGN = "0001437107"
+
+
+class ProxyWorld:
+    """SEC stand-ins for the DEF 14A walk: the submissions listing, the document reads and the SGML subject headers.
+
+    `listing[cik]` holds `(accession, primaryDocument, reportDate)`; `html[url]` (else `PROXY`) is the document, a
+    `BaseException` value raises; `subjects[accession]` is the header's subject CIKs, a `BaseException` raises."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, listing: dict[str, list[tuple[str, str, str]]]) -> None:
+        self.listing = listing
+        self.html: dict[str, object] = {}
+        self.subjects: dict[str, object] = {}
+        self.listed: list[str] = []
+        self.urls: list[str] = []
+        self.headers: list[str] = []
+        monkeypatch.setattr(def14a_text, "list_filings", self.list_filings)
+        monkeypatch.setattr(def14a_text, "sec_get", self.sec_get)
+        monkeypatch.setattr(def14a_text, "header_subject_ciks", self.header)
+
+    def list_filings(self, context: Any, cik: str, forms: Any, years: int, since: pd.Timestamp | None = None) -> pd.DataFrame:
+        self.listed.append(pad_cik(cik))
+        rows = [{"accession_number": a, "primary_document": p, "period_of_report": r} for a, p, r in self.listing.get(pad_cik(cik), [])]
+        return pd.DataFrame(rows, columns=["accession_number", "primary_document", "period_of_report"])
+
+    def sec_get(self, context: Any, url: str) -> SimpleNamespace:
+        self.urls.append(url)
+        body = self.html.get(url, PROXY)
+        if isinstance(body, BaseException):
+            raise body
+        return SimpleNamespace(text=body)
+
+    def header(self, filing: Any) -> frozenset[str]:
+        self.headers.append(str(filing.accession_no))
+        subjects = self.subjects.get(str(filing.accession_no), frozenset())
+        if isinstance(subjects, BaseException):
+            raise subjects
+        return cast(frozenset[str], subjects)
+
+
+def _proxy_walk(ctx: Any, run: EdgarRun) -> edgar_driver.FetchSummary:
+    return run_edgar_fetch(ctx, DEF14A_TEXT_FETCH, run, max_workers=1)
+
+
+def _proxies(store: Any, *, markers: bool = False) -> pd.DataFrame:
+    df = store.load(DEF14A, markers=markers, optional=True)
+    return pd.DataFrame(columns=list(DEF14A.retrieval_columns)) if df is None else df
+
+
+def _two_window_run(ctx: Any, monkeypatch: pytest.MonkeyPatch) -> EdgarRun:
+    """AAA = CIK 9999991 until 2020, CIK 1 after: a multi-window scope, so its proxies' subject headers are checked."""
+    identity = dated_identity(
+        [("AAA", "0009999991", "cik_window", SENTINEL, "2020-01-01"), ("AAA", "0000000001", "cik_window", "2020-01-01", None)],
+        {"AAA": "0000000001"},
+    )
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda context: identity)
+    return EdgarRun.load(ctx, ["AAA"], 15, as_of=AS_OF)
+
+
+def test_rejected_foreign_subject_is_one_marker_never_read_again(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    own, foreign = _accession(1), _accession(2)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", own), (1, "AAA Inc", "DEFC14A", "2023-03-01", foreign)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(own, "proxy.htm", "2022-04-20"), (foreign, "contest.htm", "2023-04-20")]})
+    world.subjects = {own: frozenset({"0000000001"}), foreign: frozenset({FOREIGN})}
+
+    first = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
+    second = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
+
+    rows, markers = _proxies(sqlite_store), _proxies(sqlite_store, markers=True)
+    marker = markers[markers["section"].eq("_empty")]
+    assert first.work.size == 2 and first.outcomes["AAA"].markers == 1 and second.work.size == 0
+    assert marker["accession_number"].tolist() == [foreign] and set(rows["accession_number"]) == {own}
+    assert sorted(world.headers) == sorted([own, foreign]) and not any("contest.htm" in url for url in world.urls)
+    assert world.listed == ["0000000001"]
+    print("\n=== SANITY CHECK: DEF 14A subject guard (AC-005/006) ===")
+    print(f"  multi-window AAA: the proxy whose subject is {FOREIGN} is stored once as section=_empty (hidden by load), its document")
+    print(f"  never read; the own proxy stored {len(rows)} section row(s); the next run lists {second.work.size} and reads no header again.")
+
+
+def test_transient_header_error_stores_nothing_and_lists_again(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world.subjects = {accession: TransientReadError("header: HTTP 503")}
+
+    first = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
+    stored_after_failure, read_after_failure = len(_proxies(sqlite_store, markers=True)), len(world.urls)
+    world.subjects = {accession: frozenset({"0000000001"})}
+    second = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
+
+    assert stored_after_failure == 0 and read_after_failure == 0 and first.missing == {"AAA": [accession]}
+    assert second.work.size == 1 and _proxies(sqlite_store)["accession_number"].unique().tolist() == [accession]
+    print("\n=== SANITY CHECK: transient subject header (M3) ===")
+    print(f"  an SEC 503 on the header saves no row and no marker ({stored_after_failure} stored) and reads no document;")
+    print("  the next run lists the proxy again, reads the header and stores it.")
+
+
+def test_unreadable_header_accepts_the_proxy(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world.subjects = {accession: ValueError("no SGML header")}
+
+    summary = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
+
+    rows = _proxies(sqlite_store, markers=True)
+    assert summary.outcomes["AAA"].markers == 0 and rows["section"].tolist() == ["governance"] and world.headers == [accession]
+    print("\n=== SANITY CHECK: non-transient header error (D-10) ===")
+    print("  a header that cannot be parsed (not an SEC error page) accepts the proxy, as today: its governance payload is stored.")
+
+
+def test_walked_proxy_with_no_payload_is_one_visible_none_row(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "notice.htm", "2022-04-20")]})
+    world.html = {archive_url("1", accession, "notice.htm"): BLANK_PROXY}
+
+    first = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+    second = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+
+    rows = _proxies(sqlite_store)
+    assert first.outcomes["AAA"].markers == 0 and second.work.size == 0
+    assert rows[["section", "payload", "n_chars"]].to_dict("records") == [{"section": NO_PAYLOAD, "payload": "", "n_chars": 0}]
+    print("\n=== SANITY CHECK: walked proxy, no payload (H2) ===")
+    print(f"  every section carved empty: one VISIBLE row section={NO_PAYLOAD} (empty payload, n_chars 0), not a marker;")
+    print(f"  the next run lists {second.work.size}.")
+
+
+def test_def14a_cold_fill_then_nothing_new(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"], max_documents_per_run=2)
+    accessions = [_accession(i) for i in range(1, 5)]
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", f"202{i}-03-01", a) for i, a in enumerate(accessions, start=1)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(a, f"p{i}.htm", f"202{i}-04-20") for i, a in enumerate(accessions, start=1)]})
+
+    capped = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+    after_capped = set(_proxies(sqlite_store)["accession_number"])
+    uncapped = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF, no_cap=True))
+    again = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+
+    assert capped.work.uncapped == 4 and capped.work.size == 2 and after_capped == set(accessions[2:])
+    assert uncapped.work.size == 2 and set(_proxies(sqlite_store)["accession_number"]) == set(accessions) and again.work.size == 0
+    assert world.listed == ["0000000001"] * 2, "one submissions read per run with pending proxies, none when nothing is pending"
+    print("\n=== SANITY CHECK: DEF 14A cold fill (AC-004) ===")
+    print(f"  cap 2: the 2 newest of 4 proxies stored; --no-cap filled the other {uncapped.work.size}; the next run lists {again.work.size};")
+    print(f"  submissions reads per run: 1, 1, 0 ({len(world.listed)} in all).")
+
+
+def test_single_window_ticker_reads_no_header(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accession = _accession(1)
+    seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world.subjects = {accession: frozenset({FOREIGN})}
+
+    _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+
+    scope = dated_identity(
+        [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
+        {"PSKY": "0002041610"},
+    ).filing_scope("PSKY")
+    assert world.headers == [] and _proxies(sqlite_store)["section"].tolist() == ["governance"]
+    assert accepted_subjects(scope) == frozenset({"0000813828", "0002041610"})
+    assert accepted_subjects(FilingScope.roster_only("AAPL", "0000320193")) == frozenset()
+    print("\n=== SANITY CHECK: single-window ticker ===")
+    print("  a one-CIK scope stores its proxy with no SGML header read (no guard), even when the header would name another")
+    print("  subject; a two-CIK scope accepts its event CIKs.")
+
+
+def test_parse_reads_the_listed_document_and_stamps_period(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    old, gone, contest = _accession(1), _accession(2), _accession(3)
+    seed_index(
+        ctx,
+        [
+            (1, "AAA Inc", "DEF 14A", "2021-03-01", old),
+            (1, "AAA Inc", "DEF 14A", "2022-03-01", gone),
+            (1, "AAA Inc", "DEFC14A", "2023-03-01", contest),
+        ],
+    )
+    world = ProxyWorld(monkeypatch, {"0000000001": [(old, "", "2021-04-20"), (gone, "gone.htm", "2022-04-20"), (contest, "c.htm", "")]})
+    world.html = {archive_url("1", gone, "gone.htm"): ValueError("HTTP 404")}
+
+    _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
+
+    rows = _proxies(sqlite_store).set_index("accession_number")
+    expected = prepare_def14a_payloads(PROXY, html_to_text(PROXY))["governance"]
+    assert sorted(world.urls) == sorted(
+        [
+            archive_url("1", old, f"{old}.txt"),
+            archive_url("1", gone, "gone.htm"),
+            archive_url("1", gone, f"{gone}.txt"),
+            archive_url("1", contest, "c.htm"),
+        ]
+    )
+    assert rows.loc[old, "period"] == "2021-04-20" and rows.loc[contest, "period"] == "" and rows.loc[old, "primary_document"] == ""
+    assert (rows["payload"] == expected).all() and (rows["n_chars"] == len(expected)).all() and "period_of_report" not in rows.columns
+    assert world.listed == ["0000000001"]
+    print("\n=== SANITY CHECK: one listing, today's document rule ===")
+    print("  one submissions read for the CIK; no primaryDocument -> <acc>.txt; a 404 primary -> the .txt fallback; period is the")
+    print(f"  listing's reportDate ('' kept); the stored payload equals the carve's untruncated payload ({len(expected)} chars).")

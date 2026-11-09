@@ -409,3 +409,61 @@ def test_a_warm_ticker_keeps_the_cap_while_a_cold_one_fills(
     print("\n=== SANITY CHECK: warm ticker capped, cold ticker uncapped ===")
     print(f"  7 missing filings, cap 2: cold AAA read 4/4 outside the cap; warm BBB read its 2 newest (quarters {bbb[:2]}), Q1 left for")
     print("  a later night, with the cap ERROR naming the warm list's 3 documents only. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# `-F` re-read leaves exactly what the resolver emits now                      #
+# --------------------------------------------------------------------------- #
+def test_a_full_re_read_drops_the_facts_the_resolver_no_longer_emits(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AAA and BBB hold 4 filings each. Stale AAA rows are then stored: a field no longer emitted (Q2 filing), a
+    period whose key changed (Q4 filing) and one on the Q3 filing; AAA's Q1 filing now emits nothing (a dropped
+    note-only quarter) and its Q3 filing fails to parse. `-F -t AAA` must leave, per re-read AAA filing, exactly
+    the resolver's rows; the failed Q3 filing keeps all its old rows; BBB is untouched; a plain run deletes nothing."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every)
+    pk = list(Tables.sec_fundamentals_facts.pk)
+    before = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True).sort_values(pk).reset_index(drop=True)
+    aaa = before[before["ticker"] == "AAA"]
+    q1, q2, q3, q4 = (_accession(1, i) for i in range(4))
+    stale_field = aaa[(aaa["accession_number"] == q2) & (aaa["field"] == "totalRevenue")].assign(field="retiredField")
+    stale_key = aaa[(aaa["accession_number"] == q4) & (aaa["field"] == "totalAssets")].assign(period_end=pd.Timestamp("2023-12-30"))
+    kept_on_failure = aaa[(aaa["accession_number"] == q3) & (aaa["field"] == "totalRevenue")].assign(field="retiredField")
+    stale = pd.concat([stale_field, stale_key, kept_on_failure], ignore_index=True)
+    sqlite_store.save(Tables.sec_fundamentals_facts, stale)
+
+    # a plain (non `-F`) night lists nothing and deletes nothing
+    assert _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every).work.size == 0
+    assert len(sqlite_store.load(Tables.sec_fundamentals_facts, markers=True)) == len(before) + 3
+
+    quarter_of = {_accession(1, i): i for i in range(4)}
+    current = _filing_rows({q1}, quarter_of)
+
+    def resolver_now(ticker: str, stamp: FilingStamp, catalogue: Any, gics: Any) -> list[dict]:
+        if stamp.accession_number == q3:
+            raise facts_mod.ParseFailureError("unreadable instance")
+        return current(ticker, stamp, catalogue, gics)
+
+    monkeypatch.setattr(facts_mod, "filing_rows", resolver_now)
+    fetch = dataclasses.replace(SEC_FUNDAMENTALS_FETCH, run_scope=None, parse=partial(parse_fundamentals, catalogue=None, gics_by_ticker={}))
+    summary = run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], as_of=_AS_OF, full=True), max_workers=1)
+
+    after = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True).sort_values(pk).reset_index(drop=True)
+    by_filing = after[after["ticker"] == "AAA"].groupby("accession_number")["field"].apply(sorted).to_dict()
+    expected_q1 = ["_empty"]
+    assert summary.outcomes["AAA"].read == 3 and len(summary.outcomes["AAA"].failed) == 1
+    assert by_filing[q1] == expected_q1, by_filing[q1]
+    assert "retiredField" not in by_filing[q2] and by_filing[q2] == ["goodwill", "totalAssets", "totalRevenue"]
+    assert pd.Timestamp("2023-12-30") not in set(after.loc[after["accession_number"] == q4, "period_end"]), "the moved-key row survived"
+    assert by_filing[q3].count("retiredField") == 1, "a failed re-read must keep its filing's old rows"
+    unchanged = after[(after["ticker"] == "AAA") & after["accession_number"].isin([q2, q4]) | (after["ticker"] == "BBB")]
+    reference = before[(before["ticker"] == "AAA") & before["accession_number"].isin([q2, q4]) | (before["ticker"] == "BBB")]
+    # the Q1 marker's NULL fiscal_year turns the loaded column float; the values must be identical
+    pd.testing.assert_frame_equal(unchanged.reset_index(drop=True), reference.reset_index(drop=True), check_dtype=False)
+
+    print("\n=== SANITY CHECK: `-F` re-read of AAA's facts ===")
+    print(f"  stored {len(before)} rows + 3 stale AAA rows; a plain night listed 0 and kept all {len(before) + 3}")
+    print(f"  -F -t AAA read 3/4 (Q3 failed to parse): Q1 now empty -> {by_filing[q1]}; Q2 retired field gone; Q4 moved-key row gone;")
+    print("  Q3's old rows (stale one included) kept; Q2/Q4 rows and all of BBB equal the pre-run rows. Validated.")

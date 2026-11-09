@@ -569,4 +569,5 @@ def _facts_run_scope(context: Context, _tickers: Sequence[str], _as_of: pd.Times
 #: The `sec_fundamentals_facts` walk of `StepExtractEdgar`; its parser is bound per run by `_facts_run_scope`.
 #: A cold ticker fills in full on its first night: a newest-first capped suffix would make the history build
 #: publish events missing their earlier quarters, which the later back-fill then trips the drift guard on.
-SEC_FUNDAMENTALS_FETCH = EdgarFetch(tables=(Tables.sec_fundamentals_facts,), run_scope=_facts_run_scope, fill_cold=True)
+#: A `-F` re-read replaces each re-read filing's rows, so the table holds what the current resolver emits.
+SEC_FUNDAMENTALS_FETCH = EdgarFetch(tables=(Tables.sec_fundamentals_facts,), run_scope=_facts_run_scope, fill_cold=True, rewrite_on_full=True)

@@ -255,11 +255,11 @@ def _plan_days(context: Context, full: bool, as_of: pd.Timestamp | None) -> pd.D
     return pd.bdate_range(start, start_date)
 
 
-def _company_rows(context: Context, identity: Identity, companies: Sequence[str]) -> pd.DataFrame:
-    """Stored rows stamped with one of `companies`, or whose symbol's key is one of their master securities."""
+def _company_rows(context: Context, identity: Identity, companies: Sequence[str], stored_symbols: Sequence[str]) -> pd.DataFrame:
+    """Stored rows stamped with one of `companies`, or whose symbol (of `stored_symbols`) keys one of their master securities."""
     table = Tables.sec_short_volume_security
     keys = master_keys(identity, companies)
-    symbols = sorted(s for s in map(str, context.store.distinct(table, "source_symbol")) if finra_key(s) in keys)
+    symbols = sorted(s for s in stored_symbols if finra_key(s) in keys)
     rows = context.store.load_cohort(table, "source_symbol", [{"ticker": list(companies)}, {"source_symbol": symbols}])
     rows["date"] = pd.to_datetime(rows["date"]).dt.normalize()
     return rows
@@ -305,14 +305,13 @@ def _short_grain_losses(previous: pd.DataFrame, grain: pd.DataFrame) -> list[dic
 
 def _same_short_cohorts(stored: pd.DataFrame, payload: pd.DataFrame, previous: pd.DataFrame, grain: pd.DataFrame) -> bool:
     for left, right, keys in ((stored, payload, list(Tables.sec_short_volume_security.pk)), (previous, grain, list(Tables.short_interest.pk))):
-        if (set(left.columns) ^ set(right.columns)) - {"source_checked_at"}:
+        if (set(left.columns) ^ set(right.columns)) - {"source_checked_at"} or len(left) != len(right):
             return False
         columns = sorted(set(left.columns) | set(right.columns))
         left, right = left.reindex(columns=columns), right.reindex(columns=columns)
         left["date"], right["date"] = pd.to_datetime(left["date"]), pd.to_datetime(right["date"])
-        left, right = left.sort_values(keys), right.sort_values(keys)
-        left, right = left.astype(object).where(left.notna(), None), right.astype(object).where(right.notna(), None)
-        if left.to_dict("records") != right.to_dict("records"):
+        left, right = left.sort_values(keys, ignore_index=True), right.sort_values(keys, ignore_index=True)
+        if not left.astype(object).where(left.notna(), None).equals(right.astype(object).where(right.notna(), None)):
             return False
     return True
 
@@ -320,28 +319,37 @@ def _same_short_cohorts(stored: pd.DataFrame, payload: pd.DataFrame, previous: p
 def restamp_short_volume(
     context: Context, companies: Collection[str], universe: Collection[str], *, identity: Identity, dry_run: bool = False
 ) -> list[dict]:
-    """Re-stamp the stored rows of `companies` with `identity` and rebuild their ticker rows, writing only what changed.
+    """Re-stamp the stored rows of `companies` with `identity` and rebuild their ticker rows, one company at a time,
+    writing only a company whose rows changed.
 
     A row that no longer resolves to a universe security is deleted. Returns one record per ticker whose ticker rows
     vanished. A security newly in scope needs `short-interest --full` (rows are not cached).
     """
     names = sorted(set(companies) & set(universe))
-    stored = _company_rows(context, identity, names) if names else pd.DataFrame()
-    if stored.empty:
-        return []
-    fresh = stamp_short_volume(stored[list(RAW_COLUMNS)], identity, universe)
-    payload = fresh[list(SECURITY_COLUMNS)]
-    previous = context.store.load(Tables.short_interest, where={"ticker": names}, optional=True)
-    previous = previous if previous is not None else pd.DataFrame(columns=[*TICKER_COLUMNS, "source_checked_at"])
-    grain = _retain_short_source_proof(ticker_rows(fresh, names), previous)
-    logger.info("RegSHO: %d raw row(s) of %d company(ies) re-stamped%s", len(stored), len(names), " (dry run)" if dry_run else "")
-    if not dry_run and not _same_short_cohorts(stored, payload, previous, grain):
-        replace_short_source(
-            context.store,
-            {Tables.sec_short_volume_security: payload, Tables.short_interest: grain},
-            {Tables.sec_short_volume_security: {"source_symbol": sorted(set(stored["source_symbol"]))}, Tables.short_interest: {"ticker": names}},
-        )
-    return _short_grain_losses(previous, grain)
+    stored_symbols = list(map(str, context.store.distinct(Tables.sec_short_volume_security, "source_symbol"))) if names else []
+    records, raw = [], 0
+    for name in tqdm(names, desc="RegSHO re-stamp"):
+        stored = _company_rows(context, identity, [name], stored_symbols)
+        if stored.empty:
+            continue
+        fresh = stamp_short_volume(stored[list(RAW_COLUMNS)], identity, universe)
+        payload = fresh[list(SECURITY_COLUMNS)]
+        previous = context.store.load(Tables.short_interest, where={"ticker": name}, optional=True)
+        previous = previous if previous is not None else pd.DataFrame(columns=[*TICKER_COLUMNS, "source_checked_at"])
+        grain = _retain_short_source_proof(ticker_rows(fresh, [name]), previous)
+        if not dry_run and not _same_short_cohorts(stored, payload, previous, grain):
+            replace_short_source(
+                context.store,
+                {Tables.sec_short_volume_security: payload, Tables.short_interest: grain},
+                {
+                    Tables.sec_short_volume_security: {"source_symbol": sorted(set(stored["source_symbol"]))},
+                    Tables.short_interest: {"ticker": [name]},
+                },
+            )
+        records += _short_grain_losses(previous, grain)
+        raw += len(stored)
+    logger.info("RegSHO: %d raw row(s) of %d company(ies) re-stamped%s", raw, len(names), " (dry run)" if dry_run else "")
+    return records
 
 
 def _log_stamps(stamped: pd.DataFrame) -> None:

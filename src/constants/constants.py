@@ -288,9 +288,7 @@ SHARADAR_ZERO_FILLED_FIELDS: frozenset[str] = frozenset(
 )
 
 # --------------------------------------------------------------------------- #
-# Sharadar phase-2 DIAGNOSTICS -- the vocabulary the read-only gate runner      #
-# needs to interpret SF1 without fooling itself.                                #
-#                                                                               #
+# Sharadar config files.                                                        #
 # --------------------------------------------------------------------------- #
 #: Where the human-approved per-field zero rule lives. Its own subdirectory rather than
 #: `configs/fundamentals/`, because that directory is the SEC KPI catalogue's contract and
@@ -316,10 +314,6 @@ SHARADAR_CORRECTIONS_FILENAME = "sharadar_corrections.json"
 #: otherwise, and the whole point of the files is that a human looked at the entries.
 SHARADAR_APPROVAL_KEY = "_APPROVED"
 
-#: Keys in either register that are DOCUMENTATION, not entries. Prose lives beside the
-#: decision it justifies so the two cannot drift into separate files.
-SHARADAR_REGISTER_DOC_PREFIX = "_"
-
 #: The correction register's CLOSED action vocabulary. Closed on purpose: a free-form
 #: expression field would be code in a config file, and `apply_corrections` raises on an
 #: action it does not know rather than skipping it silently.
@@ -332,7 +326,7 @@ SHARADAR_CORRECTION_ACTIONS: frozenset[str] = frozenset(
 )
 
 #: The field map's CLOSED vocabularies, for the same reason.
-SHARADAR_MAP_KINDS: frozenset[str] = frozenset({"direct", "derived", "sec", "null"})
+SHARADAR_MAP_KINDS: frozenset[str] = frozenset({"direct", "derived", "null"})
 #: `sum` propagates NaN -- every leg must be present, which is right for `ebitda`
 #: (operatingIncome without depAmort is EBIT, not EBITDA, and would be silently
 #: mislabelled). `sum_optional` requires only the FIRST input and coalesces the rest to 0,
@@ -376,12 +370,6 @@ SHARADAR_NEGATE_IF_NON_POSITIVE = "if_non_positive"
 # --------------------------------------------------------------------------- #
 SHARADAR_ACTION_SPLIT = "split"
 SHARADAR_ACTION_SPINOFF = "spinoff"
-
-#: The 4 zero-filled fields `Tables.sharadar_fundamentals.read_columns` deliberately omits --
-#: three `*usd` conversions and one vendor ratio, all excluded from `fundamentals_history` by
-#: D21. The diagnostic still has to MEASURE them: every one of the 41 documented zero-filled
-#: fields must get a rule, and a field nobody projected would otherwise be silently missing.
-SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS = ("revenueusd", "cashnequsd", "debtusd", "divyield")
 
 #: DURATION fields: a value covering the PERIOD, so ARQ rows of one fiscal year sum to the
 #: ARY row. This is what makes the Q4 identity measurable at all -- summing a balance-sheet
@@ -431,170 +419,22 @@ SHARADAR_FLOW_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: Fields where a NEGATIVE value is an artefact, never a fact. This is the ABT failure mode:
-#: Sharadar CONSTRUCTS Q4 as `ARY - Σ(Q1..Q3)`, and the legacy Quandl documentation shows that
-#: construction yielding ABT 2011 Q4 revenue of -$7.1bn, annotated as intentional "to ensure
-#: that the quarterly and annual financials are aligned".
-#:
-#: Deliberately EXCLUDED because a negative is real there: `equity` (buybacks put MCD, HD and
-#: BA below zero), `retearn`, `accoci`, `workingcapital`, `gp` (a pre-revenue biotech),
-#: `taxexp` (a tax benefit), every `netinc*`, `ebit`/`ebitda`, `fcf`, and all `ncf*` --
-#: those are signed by design. `capex` is excluded too: Sharadar stores it NEGATIVE, and its
-#: sign is asserted separately by `confirm_sign_conventions`.
-SHARADAR_NON_NEGATIVE_FIELDS: frozenset[str] = frozenset(
-    {
-        "revenue",
-        "revenueusd",
-        "cor",
-        "sgna",
-        "rnd",
-        "opex",
-        "intexp",
-        "assets",
-        "assetsc",
-        "assetsnc",
-        "cashneq",
-        "cashnequsd",
-        "investments",
-        "investmentsc",
-        "investmentsnc",
-        "receivables",
-        "inventory",
-        "intangibles",
-        "ppnenet",
-        "taxassets",
-        "liabilities",
-        "liabilitiesc",
-        "liabilitiesnc",
-        "debt",
-        "debtc",
-        "debtnc",
-        "debtusd",
-        "deferredrev",
-        "payables",
-        "deposits",
-        "taxliabilities",
-        "depamor",
-        "sbcomp",
-        "prefdivis",
-        "dps",
-        "divyield",
-        "shareswa",
-        "shareswadil",
-        "sharesbas",
-    }
-)
-
-#: Sharadar field -> (the `fundamentals_history_sec` columns that make up its counterpart,
-#: how comparable the two bases are). The SECOND element is the whole point of this map: a
-#: zero-fill verdict is only as strong as the basis behind it, and this repo has already
-#: measured what happens when a comparison is made across two definitions that were never the
-#: same thing.
-#:
-#:   "exact"     -- the same accounting line on both sides. A disagreement is a real defect.
-#:   "sec_wider" -- the SEC column is a documented SUPERSET, so "SEC is non-zero while
-#:                  Sharadar is zero" is EVIDENCE, never proof: the difference may live
-#:                  entirely in the components Sharadar's column does not carry.
-#:
-#: The three `sec_wider` entries and why: `cash` is cash + restricted cash + short-term
-#: investments (SEC decision #5) against Sharadar's `cashneq` alone; `totalDebt` includes
-#: finance- and operating-lease liabilities (SEC decision #4) against Sharadar's lease-free
-#: `debt`; `intangibles` is Sharadar's single goodwill-inclusive line against two SEC columns.
-#:
-#: 20 of the 41 zero-filled fields appear here. The other 21 -- `deposits`, `accoci`,
-#: `taxassets`, `taxliabilities`, `prefdivis`, `netincnci`, `netincdis`, `deferredrev`,
-#: `divyield`, `dps`, `investments`, `investmentsnc` and the 9 remaining `ncf*` legs -- have
-#: NO counterpart in the 60-field SEC catalogue, so their zeros can only be judged on
-#: Sharadar-internal evidence. Say so in the report rather than implying a check ran.
-SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
-    "revenue": (("totalRevenue",), "exact"),
-    "revenueusd": (("totalRevenue",), "exact"),
-    "cor": (("costOfRevenue",), "exact"),
-    "sgna": (("sellingGeneralAdmin",), "exact"),
-    "rnd": (("researchAndDevelopment",), "exact"),
-    "intexp": (("interestExpense",), "exact"),
-    "taxexp": (("incomeTaxExpense",), "exact"),
-    "depamor": (("depAmort",), "exact"),
-    "capex": (("capex",), "exact"),
-    "cashneq": (("cash",), "sec_wider"),
-    "cashnequsd": (("cash",), "sec_wider"),
-    "investmentsc": (("shortTermInvestments",), "exact"),
-    "receivables": (("accountsReceivable",), "exact"),
-    "inventory": (("inventory",), "exact"),
-    "intangibles": (("goodwill", "intangiblesExGoodwill"), "sec_wider"),
-    "ppnenet": (("ppeNet",), "exact"),
-    "debt": (("totalDebt",), "sec_wider"),
-    "debtusd": (("totalDebt",), "sec_wider"),
-    "debtc": (("shortTermDebt",), "exact"),
-    "debtnc": (("longTermDebt",), "exact"),
-    "payables": (("accountsPayable",), "exact"),
-}
-
 # --------------------------------------------------------------------------- #
-# Sharadar phase-4 MERGE -- the Sharadar TTM frame + the SEC-owned block ->     #
-# `fundamentals_history`, plus the gap check that proposes overrides and the    #
-# register that records the human decision (D14/D22/D23).                       #
+# Sharadar history build and the SEC/Sharadar tolerances shared with the cube.  #
 # --------------------------------------------------------------------------- #
-#: The override register. Machine-PROPOSED, human-APPROVED: `merge_history` only READS it and
-#: never decides at runtime, so the merge stays deterministic given this file. Same
-#: `_APPROVED` refusal as the other two registers.
-SHARADAR_SOURCE_OVERRIDES_FILENAME = "sharadar_source_overrides.json"
-
-#: The only `source` an override entry may name. There is exactly one legal direction: a
-#: Sharadar-owned column may be moved to SEC for a named ticker. The reverse is not an
-#: override but a field-block change (D14), which belongs in the field map, and an
-#: open vocabulary here would let one become the other silently.
-SHARADAR_OVERRIDE_SOURCE_SEC = "sec"
-
-#: The key whose presence -- not its truthiness -- distinguishes a REVIEWED entry from a
-#: freshly PROPOSED one. `--propose` writes `null`; a human writes the date they adjudicated
-#: it. An unapproved proposal must never change data.
-SHARADAR_OVERRIDE_APPROVED_KEY = "approved"
-
-#: `as_of` is Sharadar's `date`, the SEC block is joined BACKWARD onto it (never forward --
-#: that is the leak), and this caps how stale the carried SEC snapshot may be. One year: the
-#: SEC block is quarterly, so anything past four quarters means the SEC producer has stopped
-#: covering that ticker and a carried value would be a fabricated present, not a lag.
+#: How stale a carried SEC snapshot may be when joined BACKWARD (never forward -- that is the
+#: leak) onto a later date. One year: the SEC data is quarterly, so anything past four quarters
+#: means the SEC producer stopped covering that ticker and a carried value would be a fabricated
+#: present, not a lag.
 SHARADAR_SEC_ASOF_TOLERANCE_DAYS = 370
 
-#: How a duplicate publication date is resolved, in MERGED names (the vendor columns behind
+#: How a duplicate publication date is resolved, in history names (the vendor columns behind
 #: them are `date` and `reportperiod`). Sharadar documents its AR dimensions as possibly
-#: carrying several observations in one quarter and ships NO form column, so
-#: `FORM_PRECEDENCE` has no analogue here: the vendor's own rule is to keep the GREATEST
+#: carrying several observations in one quarter and ships NO form column, so the SEC
+#: 10-K-first rule has no analogue here: the vendor's own rule is to keep the GREATEST
 #: period end, i.e. the most recent period the filer published that day.
 SHARADAR_COLLAPSE_KEY: tuple[str, ...] = ("ticker", "as_of")
 SHARADAR_COLLAPSE_ORDER = "fiscal_end"
-
-#: The gap check's RELATIVE threshold (D23): |shar - sec| / |sec|. Paired with an absolute
-#: floor from `configs.yml`, because either alone is useless -- a 3% relative test fires on
-#: every rounding difference in a small number, and an absolute floor alone fires on every
-#: large one.
-SHARADAR_GAP_RELATIVE_THRESHOLD = 0.03
-
-#: Share of a `(ticker, field)`'s shared dates that must be flagged before the gap is called
-#: SYSTEMATIC -- i.e. a BASIS conflict rather than a one-off restatement. AXP `totalRevenue`
-#: was 6.6-8.1% low on ALL 11 dates; that persistence is the whole signal. A gap on 1 of 11
-#: dates is not an override candidate, and only a systematic gap is ever proposed.
-SHARADAR_GAP_SYSTEMATIC_SHARE = 0.8
-
-#: How many shared dates a `(ticker, field)` needs before "most dates" means anything.
-SHARADAR_GAP_MIN_DATES = 4
-
-#: The basis forks phase 3 DESIGNED IN. Each of these gaps is expected, is explained in
-#: `sharadar_field_map.json`, and is NOT an override candidate -- the report names them so
-#: they do not drown the real finding, which is anything gapping that is not on this list.
-SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
-    {
-        "stockholdersEquity",
-        "ppeNet",
-        "shortTermDebt",
-        "longTermDebt",
-        "accountsReceivable",
-        "accountsPayable",
-        "cash",
-        "ebitda",
-    }
-)
 
 # Earnings-call output contract shared by the builder and read-only validator.
 EARNINGS_CALL_SIGNAL_SESSIONS = 66

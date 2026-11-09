@@ -89,7 +89,7 @@ def test_a_superinvestor_book_keeps_its_non_universe_holdings(fixture: tuple[Dat
 def test_the_combined_company_denominator_covers_every_class(fixture: tuple[DataStore, CusipTags]) -> None:
     store, _ = fixture
     shares = store.load(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         columns=["ticker", "dimension", "date", "sharesbas"],
         where={"ticker": ["GOOGL", "FOXA", "NWSA"], "dimension": "ARQ"},
     )

@@ -1,7 +1,8 @@
 """
-DDL generation for every MANAGED table in `schema.py`. Two consumers, one code path:
+DDL generation for the tables in `schema.py`. Two consumers, one code path:
 `store.ensure_table` (create on first write, from the frame's dtypes) and
-`sql/generate_schema_sql.py` -> `sql/schema.sql`, which Postgres runs on first init.
+`sql/generate_schema_sql.py` -> `sql/schema.sql`, which Postgres runs on first init. Only
+MANAGED tables reach `sql/schema.sql`; a `managed=False` table is created by its producer alone.
 
 Changes from the old `schema_sql.py`:
   * No flat-file path -- the parquet migrator is gone, so regenerating schema.sql now
@@ -119,7 +120,7 @@ def existing_blocks(schema_sql: str) -> dict[str, str]:
 
 
 def generate_schema_sql(reflected: dict[str, list[tuple[str, str]]], previous: str | None = None) -> str:
-    """sql/schema.sql text for every MANAGED table (`cube_part_*` own their own DDL).
+    """sql/schema.sql text for every MANAGED table (`managed=False` tables own their own DDL).
 
     `reflected` is `{table: [(column, sql_type)]}` from the live DB, produced by the caller.
 

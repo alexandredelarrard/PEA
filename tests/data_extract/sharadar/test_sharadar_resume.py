@@ -73,7 +73,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeSharadar:
 
 def test_sf1_resumes_each_ticker_from_its_last_date_minus_the_overlap(tmp_path, sqlite_store, fake):
     ctx = _context(tmp_path, sqlite_store, ["AAA", "LAG", "OLD"])
-    sqlite_store.save(Tables.sharadar_fundamentals, pd.concat([_sf1("AAA", ["2026-08-01"]), _sf1("LAG", ["2025-11-01"])]))
+    sqlite_store.save(Tables.sharadar_fundamentals_facts, pd.concat([_sf1("AAA", ["2026-08-01"]), _sf1("LAG", ["2025-11-01"])]))
 
     fetch_mod.fetch_sharadar_fundamentals(ctx, ["AAA", "LAG", "OLD"], years_history=10, as_of=_AS_OF)
 
@@ -87,13 +87,13 @@ def test_sf1_resumes_each_ticker_from_its_last_date_minus_the_overlap(tmp_path, 
 
 def test_a_failed_sf1_page_fails_the_ticker_and_is_named(tmp_path, sqlite_store, fake):
     ctx = _context(tmp_path, sqlite_store, ["AAA", "BAD"])
-    sqlite_store.save(Tables.sharadar_fundamentals, pd.concat([_sf1("AAA", ["2026-08-01"]), _sf1("BAD", ["2026-08-01"])]))
+    sqlite_store.save(Tables.sharadar_fundamentals_facts, pd.concat([_sf1("AAA", ["2026-08-01"]), _sf1("BAD", ["2026-08-01"])]))
     fake.failing = {"BAD"}
 
     fetch_mod.fetch_sharadar_fundamentals(ctx, ["AAA", "BAD"], years_history=10, as_of=_AS_OF)
 
     assert any("1 ticker(s) failed and are retried next run -> BAD" in w for w in ctx.warnings)
-    assert sqlite_store.max_date_by(Tables.sharadar_fundamentals, "ticker")["BAD"] == pd.Timestamp("2026-08-01")
+    assert sqlite_store.max_date_by(Tables.sharadar_fundamentals_facts, "ticker")["BAD"] == pd.Timestamp("2026-08-01")
     print("\n=== SANITY CHECK: SF1 failed page ===")
     print("  BAD's request raised -> counted as failed (not 'up to date'), named in the coverage warning, frontier unchanged.")
 

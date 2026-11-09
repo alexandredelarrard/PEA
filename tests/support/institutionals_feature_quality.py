@@ -54,9 +54,9 @@ def _source_tables(part: Table) -> tuple[Table, ...]:
     common = (
         Tables.cube_part_prices,
         Tables.prices_splits,
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         Tables.sharadar_actions,
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         Tables.prices,
         Tables.universe_cik_symbol,
         Tables.sharadar_tickers,

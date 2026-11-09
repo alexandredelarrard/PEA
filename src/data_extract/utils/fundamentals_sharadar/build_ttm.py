@@ -6,7 +6,7 @@ The repo-named DISCRETE-QUARTER frame -> the repo's TTM/instant contract (D17).
 Two rules, and they are the SEC path's, not new ones:
 
   * a DURATION field is the SUM OF FOUR DISCRETE QUARTERS -- never a carried-forward annual.
-    Fewer than four and the value is NULL, which is `periods.INSUFFICIENT_QUARTERS`. That
+    Fewer than four and the value is NULL, as on the SEC path. That
     fallback is what froze 1,622 of 26,242 consecutive `totalRevenue` pairs in the legacy
     table (6.2%; APA 100%, XOM 36%) and made `revenueGrowth` exactly 0 for three quarters in
     four. Coverage drops here on purpose.
@@ -41,7 +41,7 @@ contiguity check exactly as a missing one does, so `_one_row_per_quarter` collap
 2024-02-04 period end FORWARD to 2024-03-31 (+56d) and WMT's 1995-07-31 BACKWARD to 1995-06-30
 (-31d). So neither an absolute-drift cap nor a containment test measures anything real. A
 45-day cap on `|calendardate - reportperiod|` used to sit here and deleted 239 correct rows
-over 4 tickers -- every one of AVGO's, leaving it absent from `fundamentals_history` entirely,
+over 4 tickers -- every one of AVGO's, leaving it absent from `sharadar_fundamentals_history` entirely,
 and KR/AZO at 100% NULL revenue. A containment test scores worse still: 6,083 false rejects.
 
 What holds regardless of the filer's calendar is that four consecutive quarters span about a
@@ -91,7 +91,7 @@ TTM_KEYS: tuple[str, ...] = ("ticker", "date", "reportperiod", "calendardate", "
 #: It replaces a 45-day cap on `calendardate` vs `reportperiod`, which measured the wrong
 #: thing: Sharadar's normalisation legitimately drifts 56-59 days for a filer whose quarters
 #: end early in the calendar quarter (AVGO), and that cap silently deleted 239 correct rows
-#: over 4 tickers -- every one of AVGO's, leaving it absent from `fundamentals_history`.
+#: over 4 tickers -- every one of AVGO's, leaving it absent from `sharadar_fundamentals_history`.
 #:
 #: Module-local, not in `constants.py`: one non-test consumer, the function below.
 TTM_SPAN_DAYS: tuple[int, int] = (240, 320)
@@ -110,7 +110,7 @@ def _one_row_per_quarter(frame: pd.DataFrame) -> pd.DataFrame:
     and immutable, and taking the amendment would file a later restatement under an earlier
     publication date. 439 of the 543 groups carry identical values, so the choice only bites on
     the 97 that were genuinely restated -- and those remain recoverable from
-    `fundamentals_sharadar`, which this transform leaves lossless.
+    `sharadar_fundamentals_facts`, which this transform leaves lossless.
 
     Keyed on `reportperiod`, NEVER `calendardate`: 7 groups over 4 tickers (BBY, GPN, OKE, KR)
     are two REAL quarters whose fiscal ends normalise onto one calendar quarter, and keying on
@@ -168,7 +168,7 @@ def build_ttm(
     The output carries every column the map declares, on the repo's contract: duration fields
     summed over four consecutive quarters, weighted-average counts averaged over the same
     four, instants read off the period end, and the derived formulas evaluated LAST on the
-    result. `sec` and `null` columns pass through as NaN.
+    result. `null` columns pass through as NaN.
 
     `quarter_columns` are the two slices that expose the single quarter beside the TTM line it
     was cut from; they are read off the map's `op == "quarter"` entries by default.
@@ -229,7 +229,7 @@ def build_ttm(
     for name, spec in field_map.outputs.items():
         if spec.kind == "derived":
             continue
-        if spec.kind in ("sec", "null"):
+        if spec.kind == "null":
             basis_of[name] = "null"
             continue
         if spec.basis not in (DURATION, INSTANT, MEAN):

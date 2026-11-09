@@ -14,7 +14,7 @@ exactly the two things that were wrong -- a repeated quarter does not change a s
 absolute date drift is not a set operation -- which is what makes it a cross-check rather than
 a restatement of the code under test.
 
-Reads `sharadar_fundamentals` once, module-scoped, and shares one `build_ttm` result across
+Reads `sharadar_fundamentals_facts` once, module-scoped, and shares one `build_ttm` result across
 all three tests: the ARQ table is ~51.8k rows x ~112 columns and rebuilding per ticker would
 cost minutes for no extra coverage.
 """
@@ -84,8 +84,8 @@ def context():
             pass
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
-    if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
-        pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
+    if ctx.store.row_count(Tables.sharadar_fundamentals_facts) == 0:
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} is empty -- run fundamentals-sharadar")
     return ctx
 
 
@@ -102,7 +102,7 @@ def roster(context, field_map):
     `actions` is passed so the build is the production one; the share block is irrelevant to
     `totalRevenue`, but running a different code path than production would weaken the guard.
     """
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True)
+    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True)
     vendor = vendor[vendor["dimension"] == ARQ].copy()
     actions = context.store.load(Tables.sharadar_actions, project=True)
     report = TranslationReport()
@@ -154,7 +154,7 @@ def test_no_window_is_nulled_except_by_a_genuine_missing_quarter(roster):
         nulls nothing that was not already null.
       * a 45-day cap on `|calendardate - reportperiod|` deleted 239 correct rows from four
         off-calendar filers outright -- every one of AVGO's, leaving it absent from
-        `fundamentals_history` entirely, with KR and AZO at 100% NULL revenue and COST 97.6%.
+        `sharadar_fundamentals_history` entirely, with KR and AZO at 100% NULL revenue and COST 97.6%.
     """
     _, discrete, built = roster
     actual_by_ticker = {

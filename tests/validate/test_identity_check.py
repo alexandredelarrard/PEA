@@ -277,7 +277,7 @@ def test_pending_removals_list_an_event_only_ciks_consolidating_rows(sqlite_stor
             for f in ("totalRevenue", "totalAssets")
         ]
     )
-    sqlite_store.save(Tables.fundamentals_facts, facts)
+    sqlite_store.save(Tables.sec_fundamentals_facts, facts)
     sqlite_store.save(
         Tables.def14a_edgar,
         pd.DataFrame([{"ticker": t, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(d)} for t, a, c, d in filings]),
@@ -287,7 +287,7 @@ def test_pending_removals_list_an_event_only_ciks_consolidating_rows(sqlite_stor
 
     removals = report.removals[report.removals["ticker"].eq("TMUS")]
     got = sorted(zip(removals["table"], removals["cik"], removals["keys"], removals["rows"], strict=True))
-    assert got == [("fundamentals_facts", TMO_USA, 1, 2), ("sec_8k", TMO_USA, 1, 2), (Tables.def14a_edgar.name, TMO_USA, 1, 1)], got
+    assert got == [("sec_8k", TMO_USA, 1, 2), (Tables.def14a_edgar.name, TMO_USA, 1, 1), ("sec_fundamentals_facts", TMO_USA, 1, 2)], got
     assert report.removals[report.removals["ticker"].eq("REG")].empty, report.removals
     print("\n=== SANITY CHECK: validator pending removals, H1 ===")
     print(removals.to_string(index=False))
@@ -409,14 +409,16 @@ def test_continuity_items_carry_label_and_accession_and_heal_through_the_predece
     _seed_store(sqlite_store, _store_lineage())
     canonical = [q for q in _all_quarters("2013Q1", "2017Q4") if q not in {"2014Q2", "2014Q3", "2016Q1"}]
     owner = [q for q in _all_quarters("2013Q1", "2015Q2") if q != "2014Q2"]
-    sqlite_store.save(Tables.sharadar_fundamentals, pd.concat([_quarters("REG", canonical, 7.0), _quarters("REG1", owner, 20.0)], ignore_index=True))
+    sqlite_store.save(
+        Tables.sharadar_fundamentals_facts, pd.concat([_quarters("REG", canonical, 7.0), _quarters("REG1", owner, 20.0)], ignore_index=True)
+    )
     url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}&type=&dateb=&owner=include&count=40"
     # written raw: SQLite refuses the registry's PK, whose first column is the reserved word `table`
     pd.DataFrame(
         {"ticker": ["REG1", "REG"], "secfilings": [url.format(PRED), url.format(SUCC)], "lastquarter": pd.to_datetime(["2015-06-30", "2017-12-31"])}
     ).to_sql(Tables.sharadar_tickers.name, sqlite_store.engine, index=False)
     sqlite_store.save(
-        Tables.fundamentals_facts,
+        Tables.sec_fundamentals_facts,
         pd.DataFrame(
             [
                 {
@@ -484,7 +486,7 @@ def test_continuity_items_carry_label_and_accession_and_heal_through_the_predece
 
 def test_without_the_owner_series_the_window_is_an_action_item(sqlite_store, tmp_path):
     _seed_store(sqlite_store, _store_lineage())
-    sqlite_store.save(Tables.sharadar_fundamentals, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
+    sqlite_store.save(Tables.sharadar_fundamentals_facts, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
     url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
     pd.DataFrame({"ticker": ["REG1"], "secfilings": [url.format(PRED)], "lastquarter": pd.to_datetime(["2015-06-30"])}).to_sql(
         Tables.sharadar_tickers.name, sqlite_store.engine, index=False
@@ -506,7 +508,9 @@ def test_a_cited_vendor_series_override_is_checked_like_a_register_series(sqlite
     (another company's assets -> INFO, replaced at the merge) and the boundary is assessed through the replaced series."""
     _seed_store(sqlite_store, _store_lineage())
     canonical, owner = _all_quarters("2013Q1", "2017Q4"), _all_quarters("2013Q1", "2015Q2")
-    sqlite_store.save(Tables.sharadar_fundamentals, pd.concat([_quarters("ALB", canonical, 7.0), _quarters("ALB0", owner, 20.0)], ignore_index=True))
+    sqlite_store.save(
+        Tables.sharadar_fundamentals_facts, pd.concat([_quarters("ALB", canonical, 7.0), _quarters("ALB0", owner, 20.0)], ignore_index=True)
+    )
     (tmp_path / "sec").mkdir()
     override = {"ticker": "ALB", "vendor_ticker": "ALB0", "cik": ALB, "valid_from": None, "valid_to": "2015-07-01", "source": "fixture 8-K"}
     (tmp_path / "sec" / "security_master_manual.json").write_text(json.dumps({"vendor_series_overrides": [override]}), encoding="utf-8")
@@ -660,7 +664,7 @@ def test_the_validator_applies_the_builds_resolutions(sqlite_store, tmp_path):
     """REQ-031/032 (phase 9e): an action item with a reviewed `resolutions` entry needs no decision in the validator either,
     because the validator matches its items with the build's `load_resolutions` / `review_flags`."""
     _seed_store(sqlite_store, _store_lineage())
-    sqlite_store.save(Tables.sharadar_fundamentals, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
+    sqlite_store.save(Tables.sharadar_fundamentals_facts, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
     url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
     pd.DataFrame({"ticker": ["REG1"], "secfilings": [url.format(PRED)], "lastquarter": pd.to_datetime(["2015-06-30"])}).to_sql(
         Tables.sharadar_tickers.name, sqlite_store.engine, index=False

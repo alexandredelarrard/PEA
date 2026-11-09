@@ -2,7 +2,7 @@
 The aggregation refactor guard: `src/data_aggregate/` must produce byte-identical numbers.
 
 `aggregate_fingerprint.py` runs every public panel builder AND every primitive that the
-refactor deduplicates, over frozen inputs (a saved `fundamentals_history` slice + seeded
+refactor deduplicates, over frozen inputs (a saved `sharadar_fundamentals_history` slice + seeded
 synthetic sources), and hashes every output column. This test replays it and diffs
 against the baseline captured BEFORE the refactor.
 
@@ -509,7 +509,7 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # code regression spread across every fundamentals-derived panel
     assert baseline["input.fundamentals_slice"]["rows"] > 0
     # A bare width threshold is what this used to be (`> 100`, written against a 237-column
-    # vintage), and it went stale silently when `fundamentals_history` moved to the
+    # vintage), and it went stale silently when `sharadar_fundamentals_history` moved to the
     # Sharadar-first 93-column shape: the assertion still passed for a whole vintage because
     # the FROZEN PARQUET had not been regenerated, so it was measuring a file, not the table.
     # Name the columns that must be there instead -- a width is a proxy for coverage, these

@@ -30,7 +30,7 @@ _DTYPE_SAMPLE_ROWS = 200
 
 def key_columns(table: Table | str) -> tuple[str, ...]:
     """The DECLARED grain. Never guessed: cube parts key on `(date, ticker)` and
-    `fundamentals_history` on `(ticker, as_of)`, and a check that assumes the first is a
+    `sharadar_fundamentals_history` on `(ticker, as_of)`, and a check that assumes the first is a
     check that reports a clean grain on the second by measuring the wrong thing."""
     return resolve(table).pk
 

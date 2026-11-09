@@ -17,18 +17,13 @@ that can drift on a code change is the first one, and it is the one worth a fast
 against live columns here would make the check unrunnable exactly when someone is editing the
 field sets on a machine with no built cube.
 
-⚠ WHY THE CATALOGUE IS PER PART. `cube_fundamentals_evidence.py` asserts both directions against
-ONE table and exits non-zero on either failure, so 85 governance entries in the dict it reads
-would land in its `unused` list and fail every future fundamentals run. Hence
+⚠ WHY THE CATALOGUE IS PER PART. A catalogue is checked in both directions against ONE
+table, so 85 governance entries in the fundamentals dict would read as dead catalogued names. Hence
 `cube_feature_catalogue.CATALOGUES`, a registry of one dict per part.
 """
 
 from __future__ import annotations
 
-from tests.support.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
-from tests.support.cube_governance_catalogue import GOVERNANCE
-from tests.support.cube_institutionals_catalogue import INSTITUTIONALS
-from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
 from src.data_aggregate.utils.governance import director_comp as dc
 from src.data_aggregate.utils.governance import directors as dr
 from src.data_aggregate.utils.governance import panel as pn
@@ -41,6 +36,10 @@ from src.data_aggregate.utils.institutionals import (
     short_flow_features,
 )
 from src.data_aggregate.utils.sec_thirteen import institutional_features, superinvestor_features
+from tests.support.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
+from tests.support.cube_governance_catalogue import GOVERNANCE
+from tests.support.cube_institutionals_catalogue import INSTITUTIONALS
+from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
 
 #: ⚠ THE ONE ALLOWED DECLARED-BUT-ABSENT FIELD, named rather than filtered.
 #:

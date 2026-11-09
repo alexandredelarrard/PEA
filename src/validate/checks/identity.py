@@ -354,7 +354,7 @@ def _removal_metrics(removals: pd.DataFrame) -> dict[str, Any]:
 
 def _vendor_arq(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
     rows = context.store.load(
-        Tables.sharadar_fundamentals, columns=_VENDOR_COLUMNS, where={"ticker": list(tickers), "dimension": "ARQ"}, optional=True
+        Tables.sharadar_fundamentals_facts, columns=_VENDOR_COLUMNS, where={"ticker": list(tickers), "dimension": "ARQ"}, optional=True
     )
     return rows if rows is not None else pd.DataFrame(columns=_VENDOR_COLUMNS)
 
@@ -419,7 +419,7 @@ def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[st
     declared = tuple(s for s in load_vendor_series(config_dir) if s.ticker in set(scope) and s.valid_to is not None)
     for s in declared:
         windows.setdefault(s.ticker, (cc.CikWindow(s.cik, s.valid_from, s.valid_to), cc.CikWindow(s.cik, s.valid_to, None)))
-    if not windows or not context.store.exists(Tables.sharadar_fundamentals):
+    if not windows or not context.store.exists(Tables.sharadar_fundamentals_facts):
         return pd.DataFrame(columns=list(FLAG_COLUMNS)), {}
     vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
     series = with_overrides(cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope), declared)
@@ -427,7 +427,10 @@ def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[st
     owners = _vendor_arq(context, sorted({s.vendor_ticker for s in series})) if series else pd.DataFrame(columns=_VENDOR_COLUMNS)
     merged, events = cc.apply_predecessor_series(arq, owners, series)
     facts = context.store.load(
-        Tables.fundamentals_facts, columns=list(cc.FILING_COLUMNS), where={"ticker": sorted(windows), "form": list(cc.PERIODIC_FORMS)}, optional=True
+        Tables.sec_fundamentals_facts,
+        columns=list(cc.FILING_COLUMNS),
+        where={"ticker": sorted(windows), "form": list(cc.PERIODIC_FORMS)},
+        optional=True,
     )
     report = cc.assess_continuity(merged, windows, cc.prepare_filings(facts), cc.load_vendor_exceptions(config_dir))
     items = [_continuity_item(row) for row in report.table.to_dict("records")]

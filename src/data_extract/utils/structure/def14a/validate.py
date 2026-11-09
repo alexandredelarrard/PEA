@@ -212,7 +212,7 @@ def repair_main_row(row: dict) -> dict:
     # (raw value '1856.4', decimals='1', unit_ref='usd' -- tagged in $ millions), and that is
     # equally consistent with millions and billions: NOTHING in the fact disambiguates them,
     # unlike a fee block whose factor a sibling filing's overlapping year confirms. So an
-    # implausible figure is dropped rather than guessed; `fundamentals_history` has the real one.
+    # implausible figure is dropped rather than guessed; `sharadar_fundamentals_history` has the real one.
     if _isnum(row.get("net_income")) and 0 < abs(float(row["net_income"])) < DEF14A_NET_INCOME_MIN_PLAUSIBLE:
         row["net_income"] = _NAN
 

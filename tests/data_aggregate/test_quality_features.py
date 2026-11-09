@@ -154,7 +154,7 @@ def test_forensic_days_and_offbs_leverage():
     """The pension leg reaches `capital.py` ONLY as the caller's coalesced frame.
 
     It used to be supplied here as a `pensionDeficit` field on the `daily` accessor, which
-    is a column `fundamentals_history` has never had on the Sharadar-first schema — so the
+    is a column `sharadar_fundamentals_history` has never had on the Sharadar-first schema — so the
     test was green on a leg that contributed zero in production. `capital.py` no longer has
     that field-getter fallback; the deficit is the third positional argument, exactly as
     `_derived_fields` passes it from `_pension_pool`.
@@ -251,7 +251,7 @@ def test_pension_adjusted_ev_and_overhang_leverage():
 
     The deficit comes from the `notes_num` recognized net-liability tag, the pool's PRIMARY leg. It used to be hand-built here as a
     `pensionDeficit` column on `fund_hist`, so this test asserted a source that cannot fire
-    in production: the Sharadar-first `fundamentals_history` carries no pension column at
+    in production: the Sharadar-first `sharadar_fundamentals_history` carries no pension column at
     all. Now it exercises the code path the live build actually takes."""
     fh = pd.DataFrame([{"ticker": "P", "as_of": "2019-12-31", "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0, "longTermDebt": 200.0}])
     idx = pd.bdate_range("2020-01-02", periods=30)
@@ -645,11 +645,11 @@ def test_distress_debt_prefers_the_reconciled_total_debt_column():
 
 
 def test_pension_has_exactly_two_sources_no_fundamentals_history_column():
-    """REGRESSION GUARD: the pension overhang has TWO sources, and a `fundamentals_history`
+    """REGRESSION GUARD: the pension overhang has TWO sources, and a `sharadar_fundamentals_history`
     column is not one of them.
 
     A third leg used to sit in the coalesce, reading `pensionDeficit` off the fundamentals
-    frame. `fundamentals_history` has no pension column on the Sharadar-first schema — an
+    frame. `sharadar_fundamentals_history` has no pension column on the Sharadar-first schema — an
     `information_schema` match on `%pension%`/`%opeb%`/`%benefit%` returns nothing — so the
     leg contributed exactly zero on every live row while two tests kept it green by
     hand-building the column. Feeding it here must now change NOTHING.
@@ -680,7 +680,7 @@ def test_pension_has_exactly_two_sources_no_fundamentals_history_column():
 
     print("\n=== SANITY CHECK: pension pool has exactly TWO sources ===")
     print(
-        "  A `pensionDeficit` column on fundamentals_history is IGNORED: no pension "
+        "  A `pensionDeficit` column on sharadar_fundamentals_history is IGNORED: no pension "
         "feature is emitted and EV stays 690 (= 500 mcap + 200 debt - 10 cash), "
         "identical to the run without it. The dead third leg cannot come back. "
         "Sources: the notes_num net-liability tags, then the notes_num footnote "

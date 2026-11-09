@@ -11,14 +11,11 @@ import logging
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.registrant import (
-    listing_ciks,
-    resolve_registrant_entries,
-    resolve_registrant_filings,
-)
+from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
+from src.data_extract.utils.edgar_extract.edgar_driver import resolve_registrant_filings
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity, filing, patch_company
 
-LOGGER = "src.data_extract.utils.common.registrant"
+LOGGER = "src.data_extract.utils.edgar_extract.edgar_driver"
 
 #: XOM's register windows plus one event-only CIK (99).
 _XOM = dated_identity(

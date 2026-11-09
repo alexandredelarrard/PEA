@@ -511,7 +511,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     )
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([marker]))
     sqlite_store.save(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2023-01-01")], "sharesOutstanding": [1000.0], "sharesOutstandingPit": [1000.0]}),
     )
     ctx = context(sqlite_store, tmp_path)
@@ -555,7 +555,7 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
 ) -> None:
     days = seed_prices(sqlite_store, periods=60)
     sqlite_store.save(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2023-01-01")], "sharesOutstanding": [1000.0], "sharesOutstandingPit": [1000.0]}),
     )
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[20])]))

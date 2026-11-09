@@ -125,14 +125,14 @@ def test_real_sharadar_class_scope_and_public_support() -> None:
     _, context = get_config_context("./configs", use_cache=False, save=False)
     names = ["BRK-B", "V"]
     df_history = context.store.load(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"],
         where={"ticker": names},
         since="2026-01-01",
         until="2026-10-26",
     )
     df_vendor = context.store.load(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         columns=["ticker", "date", "reportperiod", "sharesbas", "sharefactor", "lastupdated", "price", "marketcap"],
         where={"ticker": names, "dimension": "ARQ"},
         since="2026-01-01",

@@ -152,7 +152,7 @@ def test_implausible_net_income_is_nulled_not_guessed():
     in $ millions). That is equally consistent with millions and billions and NOTHING in the fact
     disambiguates them, unlike a fee block whose factor a sibling filing's overlapping year
     confirms. So it is dropped rather than rescaled into a confidently wrong number;
-    `fundamentals_history` has the trustworthy figure."""
+    `sharadar_fundamentals_history` has the trustworthy figure."""
     assert math.isnan(repair_main_row(_ecd(net_income=1856.4))["net_income"])
     assert math.isnan(repair_main_row(_ecd(net_income=16.1))["net_income"])
     assert repair_main_row(_ecd(net_income=93_736_000_000.0))["net_income"] == 93_736_000_000.0

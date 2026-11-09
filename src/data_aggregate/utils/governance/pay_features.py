@@ -10,7 +10,7 @@ Sources, and the grain each arrives on:
     def14a_executive_comp   one row per NEO per FISCAL  -> the top-five denominator
                             YEAR per filing (~3 years
                             per NEO, Item 402(c))
-    fundamentals_history    quarterly filings           -> the revenue leg
+    sharadar_fundamentals_history  quarterly filings    -> the revenue leg
     close_total             daily                       -> the shareholder-return leg
 
 ⚠ WHY THE TURNOVER GUARD IS THE POINT OF FAMILY 5. A partial-year incoming CEO's package is

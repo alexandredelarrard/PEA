@@ -91,11 +91,11 @@ def _cube_s(context: SimpleNamespace, tickers: list[str], owners: list[dict] | N
     if owners:
         context.store.replace(Tables.price_owner_windows, pd.DataFrame(owners))
     context.store.replace(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         pd.DataFrame(columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]),
     )
     context.store.replace(
-        Tables.fundamentals_history, pd.DataFrame(columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"])
+        Tables.sharadar_fundamentals_history, pd.DataFrame(columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"])
     )
     context.store.save(
         Tables.prices,

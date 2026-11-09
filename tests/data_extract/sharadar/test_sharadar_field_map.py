@@ -103,15 +103,15 @@ def context():
             pass
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
-    if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
-        pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
+    if ctx.store.row_count(Tables.sharadar_fundamentals_facts) == 0:
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} is empty -- run fundamentals-sharadar")
     return ctx
 
 
 @pytest.fixture(scope="module")
 def vendor_arq(context) -> pd.DataFrame:
     """Every stored ARQ row, as delivered."""
-    frame = context.store.load(Tables.sharadar_fundamentals, project=True, where={"dimension": "ARQ"})
+    frame = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"dimension": "ARQ"})
     assert frame is not None
     return frame
 
@@ -180,21 +180,20 @@ def four_quarters(ticker: str, values: dict[str, list[float]], *, n: int = 4, st
 # the contract                                                                 #
 # --------------------------------------------------------------------------- #
 def test_every_history_column_is_mapped(field_map):
-    """All 60 `HISTORY_STATEMENT_ORDER` names resolve to direct / derived / sec / null.
+    """The 47 `HISTORY_STATEMENT_ORDER` names Sharadar serves resolve to direct / derived / null; the 13 others are SEC-only.
 
-    The loader already refuses a gap; this asserts the resolved kinds and prints the census,
-    because the failure mode is not a crash -- the merged table's contract asserts by LIST
-    EQUALITY, so an unfilled column would pass it while carrying nothing.
+    Asserts the resolved kinds and prints the census, because the failure mode is not a crash -- the history
+    contract asserts by LIST EQUALITY, so an unfilled column would pass it while carrying nothing.
     """
-    unmapped = [n for n in HISTORY_STATEMENT_ORDER if n not in field_map.columns]
+    sec_only = [n for n in HISTORY_STATEMENT_ORDER if n not in field_map.columns]
     kinds = pd.Series([field_map.columns[n].kind for n in HISTORY_STATEMENT_ORDER if n in field_map.columns]).value_counts().to_dict()
     print(f"\ncontract columns : {len(HISTORY_STATEMENT_ORDER)}")
-    print(f"unmapped         : {unmapped or 'none'}")
+    print(f"SEC-only (absent): {len(sec_only)} -> {sec_only}")
     print(f"by kind          : {kinds}")
-    print(f"SEC-owned (D18)  : {len(field_map.sec_owned)} -> {field_map.sec_owned}")
     print(f"permanently NULL : {sorted(n for n, s in field_map.columns.items() if s.kind == 'null')}")
-    assert not unmapped
-    assert len(field_map.sec_owned) == 14, "The current merged contract declares 14 SEC-owned columns"
+    assert len(field_map.columns) == 47 and len(sec_only) == 13
+    assert set(kinds) <= {"direct", "derived", "null"}
+    assert "stockholdersEquityInclNci" not in field_map.outputs and "regime" not in field_map.outputs
     assert field_map.outputs["sharesOutstanding"].source == "sharesbas"
     assert field_map.outputs["sharesOutstanding"].split_basis is None
     assert field_map.outputs["sharesOutstandingPit"].split_basis == "count"
@@ -341,7 +340,9 @@ def test_debt_to_equity_is_not_vendor_de(context, ttm):
     and it is why this test loads its own columns instead of reusing `vendor_arq`.
     """
     frame = ttm[["ticker", "date", "debtToEquity", "totalDebt", "stockholdersEquity"]].dropna()
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=False, columns=["ticker", "dimension", "date", "de", "liabilities", "equity"])
+    vendor = context.store.load(
+        Tables.sharadar_fundamentals_facts, project=False, columns=["ticker", "dimension", "date", "de", "liabilities", "equity"]
+    )
     vendor = vendor[vendor["dimension"] == "ARQ"].drop(columns="dimension")
     gap = frame.merge(vendor, on=["ticker", "date"])
     gap = gap[gap["de"].notna() & (gap["de"] != 0)]
@@ -383,7 +384,7 @@ def test_epsdiluted_is_derived_not_vendor_epsdil(vendor_arq, ttm):
 def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, translated):
     """NVDA's 2021-2024 rows carry ~25bn shares against the ~2.5bn then outstanding.
 
-    The pin the plan asked for. Checked against `fundamentals_history_sec.sharesOutstanding`,
+    The pin the plan asked for. Checked against `sec_fundamentals_history.sharesOutstanding`,
     which this repo built from the cover-page `dei:EntityCommonStockSharesOutstanding` -- an
     as-filed number, so it is the right authority for "was this point-in-time?".
     """
@@ -397,13 +398,13 @@ def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, tran
     # real situation. The skip message IS the finding: re-run once NVDA/WMT are replayed.
     wanted = ["NVDA", "WMT"]
     sec = context.store.load(
-        Tables.fundamentals_history_sec, project=False, columns=["ticker", "as_of", "sharesOutstanding"], where={"ticker": wanted}, optional=True
+        Tables.sec_fundamentals_history, project=False, columns=["ticker", "as_of", "sharesOutstanding"], where={"ticker": wanted}, optional=True
     )
     if sec is None:
-        have = context.store.load(Tables.fundamentals_history_sec, columns=["ticker"], optional=True)
+        have = context.store.load(Tables.sec_fundamentals_history, columns=["ticker"], optional=True)
         n = 0 if have is None else have["ticker"].nunique()
         pytest.skip(
-            f"{name_of(Tables.fundamentals_history_sec)} carries none of {wanted} "
+            f"{name_of(Tables.sec_fundamentals_history)} carries none of {wanted} "
             f"({n} ticker(s) replayed) -- the cover-page de-adjustment is "
             f"UNVERIFIABLE here, not verified"
         )
@@ -674,11 +675,11 @@ def test_off_calendar_filers_have_a_ttm_line(context, field_map, actions):
 
     Real data, because the defect was entirely about what Sharadar's normalisation does to
     genuine filers and no fixture can encode that. Under the deleted 45-day cap these four lost
-    239 ARQ rows between them: AVGO lost ALL 69 and was absent from `fundamentals_history`
+    239 ARQ rows between them: AVGO lost ALL 69 and was absent from `sharadar_fundamentals_history`
     altogether, KR and AZO were 100% NULL revenue, COST 97.6%.
     """
     wanted = ["AVGO", "KR", "AZO", "COST"]
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"ticker": wanted})
+    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"ticker": wanted})
     vendor = vendor[vendor["dimension"] == "ARQ"].copy()
     built = build_ttm(translate(vendor, field_map), field_map, actions=actions)
     whole = built.groupby("ticker")["totalRevenue"].apply(lambda s: int(s.notna().sum()))
@@ -740,18 +741,15 @@ def test_a_zero_denominator_is_null_not_infinity(field_map):
             # the repo name the extra is EMITTED under, not `cashneq`
             "cashAndEquivalents": [1.0],
             "shortTermInvestments": [2.0],
-            "minorityInterest": [np.nan],
         }
     )
     out = apply_derived(frame, field_map)
     ratios = {n: out[n].iloc[0] for n in ("profitMargins", "returnOnEquity", "grossMargins", "effectiveTaxRate", "optionOverhang", "epsDiluted")}
     print(f"\nzero-denominator ratios: {ratios}")
     print(f"cash (a SUM, both legs present): {out['cash'].iloc[0]} (expected 3.0)")
-    print(f"stockholdersEquityInclNci with a NaN NCI leg: {out['stockholdersEquityInclNci'].iloc[0]} (expected NaN, not 0.0)")
     assert all(pd.isna(v) for v in ratios.values())
     assert not np.isinf(out[list(ratios)].to_numpy(dtype="float64")).any()
     assert out["cash"].iloc[0] == 3.0
-    assert pd.isna(out["stockholdersEquityInclNci"].iloc[0])
 
 
 def test_sum_optional_widens_cash_without_being_able_to_destroy_it(field_map):
@@ -785,7 +783,6 @@ def test_sum_optional_widens_cash_without_being_able_to_destroy_it(field_map):
             "incomeTaxExpense": [1.0] * 4,
             "dilutedShares": [1.0] * 4,
             "basicShares": [1.0] * 4,
-            "minorityInterest": [1.0] * 4,
         }
     )
     out = apply_derived(frame, field_map)
@@ -845,7 +842,6 @@ def test_coverage_of_the_built_frame(ttm, field_map, translated):
     print(coverage[coverage["basis"].isin([DURATION, INSTANT, MEAN])].nsmallest(8, "pct_non_null").to_string(index=False))
     print(f"totalRevenue non-null: {int(ttm['totalRevenue'].notna().sum())}")
     print(f"totalAssets  non-null: {int(ttm['totalAssets'].notna().sum())} (an instant needs no window)")
-    print(f"SEC-owned columns are all NULL until phase 4 merges them: {all(ttm[n].isna().all() for n in field_map.sec_owned)}")
     # The load-bearing direction: a FILLED duration cell must have had a whole window. The
     # converse is not an equality -- a whole window whose four quarters include one NaN
     # `revenue` (zero-ruled, corrected, or never delivered) legitimately sums to NaN, which is
@@ -860,7 +856,6 @@ def test_coverage_of_the_built_frame(ttm, field_map, translated):
     assert int(ttm["totalRevenue"].notna().sum()) <= len(ttm) - cold_start, (
         "more windows than the cold start allows -- a ticker's first three quarters were filled from another issuer's rows"
     )
-    assert all(ttm[n].isna().all() for n in field_map.sec_owned)
     assert census.get(MEAN) == 2, "only the two weighted-average share counts are averaged"
 
 

@@ -19,7 +19,7 @@ def test_jci_tyco_consolidation_steps_the_quantity_basis_only() -> None:
         Tables.sharadar_actions, columns=["ticker", "date", "action", "value"], where={"ticker": ["JCI"], "action": [SHARADAR_ACTION_SPLIT]}
     )
     df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": ["JCI"]})
-    df_vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "sharesbas"], where={"ticker": ["JCI"], "dimension": "ARQ"})
+    df_vendor = store.load(Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "sharesbas"], where={"ticker": ["JCI"], "dimension": "ARQ"})
     df_bars = store.load(Tables.prices, columns=["ticker", "date", "close_split"], where={"ticker": ["JCI"]}, since="2016-09-02", until="2016-09-06")
     assert df_actions is not None and df_splits is not None and df_vendor is not None and df_bars is not None
 

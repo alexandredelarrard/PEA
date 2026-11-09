@@ -22,7 +22,7 @@ def test_columns_uses_lightweight_inspection(sqlite_store: DataStore, monkeypatc
 
     monkeypatch.setattr(store_module, "_reflect", refuse_reflection)
     assert sqlite_store.columns(Tables.prices) == list(frame.columns)
-    assert sqlite_store.columns(Tables.fundamentals_history) == []
+    assert sqlite_store.columns(Tables.sharadar_fundamentals_history) == []
     print("SANITY: ordered names and missing-table behavior use inspection without full reflection.")
 
 

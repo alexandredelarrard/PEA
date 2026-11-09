@@ -1,4 +1,4 @@
-"""`parse_fundamentals`, the per-filing parse the EDGAR driver calls for `fundamentals_facts`.
+"""`parse_fundamentals`, the per-filing parse the EDGAR driver calls for `sec_fundamentals_facts`.
 
 Shallow on purpose: the row builder is patched and only what the parse itself owns is asserted --
 the CIK stamped on a row, the primary-key dedup, the single output table, and which filings become
@@ -47,8 +47,8 @@ def patched(monkeypatch):
 def _parse(ticker: str, roster_cik: str, filing) -> pd.DataFrame:
     stamp = FilingStamp.of(filing, roster_cik)
     out = mod.parse_fundamentals(ticker, roster_cik, stamp, EdgarScope(), catalogue=cast(Any, None), gics_by_ticker={})
-    assert set(out) == {mod.Tables.fundamentals_facts}  # no employee-side output
-    return out[mod.Tables.fundamentals_facts]
+    assert set(out) == {mod.Tables.sec_fundamentals_facts}  # no employee-side output
+    return out[mod.Tables.sec_fundamentals_facts]
 
 
 def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):

@@ -55,9 +55,13 @@ def test_market_uses_saved_pit_quote_and_repaired_total_return(
     pd.testing.assert_frame_equal(load(Tables.prices), original)
     counts = Counter(reads)
     assert counts[Tables.cube_part_prices] == 1
-    assert not {Tables.prices, Tables.prices_splits, Tables.sharadar_actions, Tables.sharadar_tickers, Tables.fundamentals_history}.intersection(
-        reads
-    )
+    assert not {
+        Tables.prices,
+        Tables.prices_splits,
+        Tables.sharadar_actions,
+        Tables.sharadar_tickers,
+        Tables.sharadar_fundamentals_history,
+    }.intersection(reads)
     assert result.metadata == {"identity": "known-truth"}
     print(
         "SANITY: portfolio reads saved quotes, returns and the forward basis F (1 -> 4 on the split) in one price-part read, preserves quote holes"

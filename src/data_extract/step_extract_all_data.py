@@ -5,7 +5,8 @@ Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, Sharadar actions, S
 Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
 symbol_tenure + universe_cik_symbol + universe_cusip -> propagation) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
-Sharadar -> fundamentals -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD) -> LLM (DEF 14A, 8-K votes)
+Sharadar -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD, SEC fundamentals facts) -> SEC fundamentals
+history + SEC vs Sharadar check -> LLM (DEF 14A, 8-K votes)
 -> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step
 has run, so a missing API key fails from there on; employees stay on their own command (`fundamentals-employees`).
 """
@@ -56,8 +57,8 @@ class StepExtractAllData(Step):
         self._prices.run(tickers=tickers)
         self._institutionals.run(tickers=tickers)
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
-        self._fundamentals.run(tickers=tickers, full=False)
         StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()
+        self._fundamentals.run(tickers=tickers, full=False)  # reads the facts the EDGAR step just stored
         # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a
         # missing API key fails only from this point on.
         llm = StepExtractLlm(self._context, self._config, LlmOptions(tickers=tickers))

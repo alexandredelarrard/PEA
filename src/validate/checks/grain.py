@@ -4,7 +4,7 @@ grain.py  (src/validate/checks/grain.py)
 Is the table one row per declared key?
 
 The key is `resolve(table).pk`, never inferred. Cube parts key on `(date, ticker)` and
-`fundamentals_history_sec` on `(ticker, as_of, ...)`, and a check that assumes the first would
+`sec_fundamentals_history` on `(ticker, as_of, ...)`, and a check that assumes the first would
 report a clean grain on the second by counting the wrong thing -- passing loudly while
 measuring nothing. A table whose registry entry declares no pk therefore ABSTAINS.
 

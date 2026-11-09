@@ -210,7 +210,7 @@ def test_new_valuation_views_real_yearly_cross_sections() -> None:
     close = prices.pivot(index="date", columns="ticker", values="close_split").reindex(index=dates, columns=names)
     factor = prices.pivot(index="date", columns="ticker", values="level_factor").reindex_like(close)
     history = context.store.load(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         columns=["ticker", "as_of", "sharesOutstanding", "operatingCashFlow"],
         where={"ticker": names},
         since=dates.min() - pd.Timedelta(days=370),

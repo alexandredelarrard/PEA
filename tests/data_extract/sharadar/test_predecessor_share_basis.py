@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import security_lines as sl
-from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, gap_check, merge_history
+from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, sharadar_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
@@ -125,18 +125,13 @@ def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list
         {
             Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
-            Tables.sharadar_fundamentals: vendor,
+            Tables.sharadar_fundamentals_facts: vendor,
             Tables.sharadar_actions: pd.DataFrame(
                 [{"ticker": t, "date": pd.Timestamp(d), "action": "split", "value": v} for t, d, v in actions],
                 columns=["ticker", "date", "action", "value"],
             ),
             Tables.prices_splits: pd.DataFrame(
                 [{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in yf], columns=["ticker", "date", "ratio"]
-            ),
-            # one NULL SEC row per ticker, so the backward join lands the SEC-owned columns (all NULL here)
-            Tables.fundamentals_history_sec: pd.DataFrame(
-                {"ticker": ["PLD", "DD"], "as_of": pd.Timestamp("1990-01-01")}
-                | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned}
             ),
         }
     )
@@ -145,19 +140,19 @@ def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list
 def _merged(
     store: FakeStore, ticker: str, config_dir: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """`(the ARQ frame handed to build_frame, the merged frame build_frame returns from it)`, both keyed by quarter."""
+    """`(the ARQ frame handed to build_frame, the history frame build_frame returns from it)`, both keyed by quarter."""
     seen: dict[str, Any] = {}
-    real = merge_history.build_frame
+    real = sharadar_history.build_frame
 
     def capture(*args: Any, **kwargs: Any) -> pd.DataFrame:
         seen["arq"] = args[0]
         seen["out"] = real(*args, **kwargs)
         return seen["out"].iloc[:0]
 
-    monkeypatch.setattr(merge_history, "build_frame", capture)
+    monkeypatch.setattr(sharadar_history, "build_frame", capture)
     context = SimpleNamespace(store=store, log=logging.getLogger(LOGGER))
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        merge_history.build_merged_history(context, [ticker], config_dir=config_dir)
+        sharadar_history.build_sharadar_history(context, [ticker], config_dir=config_dir)
     arq = (
         seen["arq"].assign(quarter=lambda f: [str(pd.Period(pd.Timestamp(d), freq="Q")) for d in f["reportperiod"]]).set_index("quarter").sort_index()
     )
@@ -334,7 +329,7 @@ def _jci_store() -> FakeStore:
         {
             Tables.universe_cik_symbol: _lineage(),
             Tables.sharadar_tickers: _vendor_tickers(),
-            Tables.sharadar_fundamentals: pd.concat([canonical, _tyc()], ignore_index=True),
+            Tables.sharadar_fundamentals_facts: pd.concat([canonical, _tyc()], ignore_index=True),
             Tables.sharadar_actions: pd.DataFrame(
                 [{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS],
                 columns=["ticker", "date", "action", "value"],
@@ -343,10 +338,6 @@ def _jci_store() -> FakeStore:
                 [{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF], columns=["ticker", "date", "ratio"]
             ),
             Tables.fundamentals_employees: pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            Tables.fundamentals_history_sec: pd.DataFrame(
-                {"ticker": ["JCI"], "as_of": pd.Timestamp("1990-01-01")}
-                | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned if c != "employees"}
-            ),
         }
     )
 
@@ -413,7 +404,7 @@ def test_configured_guard_uses_the_same_owner_actions_in_both_consumers(tmp_path
     shares = pd.DataFrame({"ticker": ["JCI"], "date": pd.to_datetime(["2008-01-02"]), "sharesbas": [1000.0]})
     default = genuine_splits(selected, yahoo)
     aggregate = load_share_basis(context, ["JCI"], policy, selected, yahoo, shares=shares, base_events=default)
-    extract = merge_history.vendor_share_basis(context, shares, ["JCI"], yahoo, default, str(directory))
+    extract = sharadar_history.vendor_share_basis(context, shares, ["JCI"], yahoo, default, str(directory))
     pd.testing.assert_frame_equal(aggregate.vendor, extract.vendor)
     pd.testing.assert_frame_equal(aggregate.actual, extract.actual)
     print(
@@ -452,29 +443,3 @@ def test_jci_rows_before_the_seam_are_tyco_and_agree_with_the_cube_level_factor(
     assert arq.loc["2016Q4", "sharesbas"] == 935e6 and out.loc["2016Q4", "sharesOutstandingPit"] == pytest.approx(935e6)
     print("  OK: Tyco's sharesbas unchanged (ratio 1, no genuine JCI split after the seam); S = 2.0117 x 0.955 before 2012-10-01")
     print("  and 0.955 after; close_split x S x shares and raw price x PIT both equal Tyco's market cap; after the seam untouched.")
-
-
-def test_the_gap_check_compares_the_sec_history_with_the_swapped_vendor_series(tmp_path: Path) -> None:
-    """F-008: JCI's SEC history before the seam is Tyco's, so the gap check must read TYC's vendor rows there, as the merge
-    does. Old JCI's own rows are published on Tyco's dates here, so comparing them is a gap on every pre-seam quarter."""
-    store = _jci_store()
-    vendor = store.t[str(Tables.sharadar_fundamentals)]
-    tyc = vendor[vendor["ticker"].eq("TYC")].set_index("calendardate")
-    inside = vendor["ticker"].eq("JCI") & vendor["calendardate"].isin(tyc.index)
-    vendor.loc[inside, "date"] = vendor.loc[inside, "calendardate"].map(tyc["date"])
-    fields = gap_check.comparable_fields(load_field_map(str(REPO_CONFIGS)))
-    # Tyco's SEC rows on Tyco's publication dates, and JCI's own after the seam
-    sec = pd.DataFrame({"ticker": "JCI", "as_of": pd.to_datetime([*tyc.loc[vendor.loc[inside, "calendardate"], "date"], "2017-02-09"])})
-    sec = sec.assign(**{f: float("nan") for f in fields}).assign(sharesOutstanding=[*tyc.loc[vendor.loc[inside, "calendardate"], "sharesbas"], 935e6])
-    store.t[str(Tables.fundamentals_history_sec)] = sec
-    config = SimpleNamespace(data_extract=SimpleNamespace(sharadar_gap_floor={"money": 1e6, "shares": 1e5, "ratio": 0.005}))
-    config_dir = _config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE])
-    context = SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config=config, config_dir=config_dir)
-    gaps = gap_check.measure_gaps(context, ["JCI"], config_dir=config_dir).set_index(["ticker", "field"])
-    shares = gaps.loc[("JCI", "sharesOutstanding")]
-    print("\n=== SANITY CHECK: gap check through the JCI <- TYC vendor series ===")
-    print(gaps[["n_dates", "n_flagged", "median_pct_gap"]].to_string())
-    assert shares["n_dates"] == int(inside.sum()) + 1, "every pre-seam Tyco quarter and the post-seam row are compared"
-    assert shares["n_flagged"] == 0, "old JCI's raw rows were compared with Tyco's SEC history"
-    assert gaps["n_flagged"].sum() == 0
-    print(f"  OK: {int(inside.sum())} pre-seam quarters compared with TYC's rows (0 flagged), the post-seam JCI row with JCI's own.")

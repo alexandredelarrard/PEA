@@ -20,12 +20,12 @@ import logging
 import time
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import cast
 
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import period_end
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import run_date
@@ -298,6 +298,15 @@ def _period_column(table: Table) -> str:
     if table.resume is None or table.resume.period_col is None:
         raise ValueError(f"{table.name} declares no archive period column")
     return table.resume.period_col
+
+
+def period_end(tag: str) -> date:
+    """Last calendar day covered by a `YYYYqN`, `YYYY_MM` or semi-monthly `YYYYMMa`/`YYYYMMb` archive tag."""
+    if tag[-1] in "ab":
+        month_end = pd.Period(year=int(tag[:4]), month=int(tag[4:6]), freq="M").end_time.date()
+        return month_end.replace(day=15) if tag[-1] == "a" else month_end
+    month = int(tag[-2:]) if "_" in tag else int(tag[-1]) * 3
+    return pd.Period(year=int(tag[:4]), month=month, freq="M").end_time.date()
 
 
 def archive_periods(context: Context, tables: Sequence[Table], published: Sequence[str]) -> tuple[list[str], frozenset[str]]:

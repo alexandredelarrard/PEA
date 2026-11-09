@@ -21,10 +21,17 @@ import pytest
 
 from src.data_extract.utils.common import frame_sanitize
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import (
+    EdgarFetch,
+    EdgarRun,
+    EdgarScope,
+    FilingStamp,
+    parse_filing_rows,
+    resolve_registrant_filings,
+    run_edgar_fetch,
+)
 from src.data_store import schema
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity

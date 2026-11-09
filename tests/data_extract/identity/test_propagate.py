@@ -107,6 +107,12 @@ def _rows(store: DataStore) -> pd.DataFrame:
     return rows.sort_values(["accession_number", "cusip"], ignore_index=True)
 
 
+def _marker_counts(store: DataStore) -> dict[str, int]:
+    markers = store.load(Tables.sec13f_hr, columns=["accession_number", "parse_status", "parsed_row_count"], markers=True)
+    done = markers[markers["parse_status"].eq("complete")]
+    return {str(a): int(n) for a, n in zip(done["accession_number"], done["parsed_row_count"], strict=True)}
+
+
 def _offline_reread(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The re-read serves each accession's source packet as filed (no network); returns the accessions asked."""
     packets = {str(m.iloc[0].accession_number): (m, b) for m, b in PACKETS}
@@ -135,19 +141,53 @@ def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_not
     moved = {(r.cusip, r.from_ticker, r.to_ticker): r.rows for r in dry.itertuples(index=False)}
     assert moved == {(EQR_CUSIP, "EQR", "VMRK"): 3, (BRK_A, "BRK-B", "BRK-B"): 1}, moved
     assert after_dry.equals(before), "a dry run writes nothing"
-    assert wet.equals(dry) and sorted(asked) == sorted(str(m.iloc[0].accession_number) for m, _ in PACKETS)
+    assert wet.equals(dry) and asked == [], "rows stored as filed are restated from the table, no source is read"
     brk = after[after["ticker"].eq("BRK-B")]
     assert brk[["cusip", "shares", "value_usd"]].values.tolist() == [[BRK_B, 3_100.0, 1_343_000.0]]
     assert set(after.loc[after["cusip"].eq(EQR_CUSIP), "ticker"]) == {"VMRK"}
     assert set(after.loc[after["cusip"].eq(OTHER_CUSIP), "ticker"]) == {"ZZZ"}, "a CUSIP outside every line keeps its market ticker"
     assert after["value_usd"].sum() == before["value_usd"].sum() and len(after) == len(before) - 1
+    counts = _marker_counts(filing_store)
+    assert counts == {"acc-0000000001-2024-03-31": 2, "acc-0000000001-2024-06-30": 2, "acc-0000000002-2024-06-30": 2}, counts
     assert again.empty and stale.empty, "a second run (and a stamp outside the window) finds nothing out of place"
-    print("\n=== SANITY CHECK: 13F rewrite of out-of-place accessions (AC-009, AC-013, U-67) ===")
+    print("\n=== SANITY CHECK: 13F restatement of out-of-place rows from the table (AC-009, AC-013, U-67) ===")
     print(f"  dry run: {dry.to_dict('records')}; stored rows unchanged ({len(after_dry)})")
     print(
-        f"  real run: {len(asked)} accession(s) re-read offline; rows {len(before)} -> {len(after)}; value {before['value_usd'].sum():,.0f} = {after['value_usd'].sum():,.0f}"
+        f"  real run: {len(asked)} source read(s); rows {len(before)} -> {len(after)}; value {before['value_usd'].sum():,.0f} = {after['value_usd'].sum():,.0f}; markers {counts}"
     )
     print(f"  BRK-B: one row of {brk['shares'].iloc[0]:,.0f} B shares (2 x 1,500 + 100); EQR -> VMRK; ZZZ unchanged; second run 0 group(s)")
+
+
+def test_a_class_already_scaled_on_its_own_cusip_is_reread_from_its_source_not_scaled_twice(
+    filing_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Known truth: with no canonical BRK-B line on 2024-06-30, `company_rows` stores the 2 BRK-A shares as 3,000
+    canonical shares on BRK-A's own CUSIP. The table cannot tell that row from one stored as filed, so its accession is
+    re-read from source: 3,000 shares again, never 2 x 1,500 x 1,500."""
+    manifest, book = PACKETS[1]
+    lines = pd.DataFrame(
+        [
+            _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "2025-01-01"),
+            _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
+        ]
+    )
+    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": [EQR_CUSIP, BRK_A, BRK_B], "ticker": ["EQR", "BRK-A", "BRK-B"]}))
+    filing_store.save(Tables.universe_cusip, lines)
+    save_hr_filing(filing_store, manifest, book, lines, filing_store.load(Tables.cusip_ticker_map))
+    context = _context(filing_store)
+    asked = _offline_reread(monkeypatch)
+
+    moves, tags = thirteenf_moves(context, ["BRK-B"], RUN_DATE, False)
+    retag_13f(context, moves, tags, False)
+    after = _rows(filing_store)
+
+    brk = after[after["cusip"].eq(BRK_A)]
+    assert asked == [str(manifest.iloc[0].accession_number)], asked
+    assert brk[["ticker", "shares"]].values.tolist() == [["BRK-B", 3_000.0]], brk
+    print("\n=== SANITY CHECK: an already-scaled class goes to its source ===")
+    print(
+        f"  moves {moves[['cusip', 'ticker', 'new_ticker']].values.tolist()}; source reads {asked}; BRK-A row {brk['shares'].iloc[0]:,.0f} canonical shares"
+    )
 
 
 def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_it(filing_store: DataStore) -> None:

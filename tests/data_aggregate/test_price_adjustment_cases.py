@@ -33,7 +33,7 @@ def source_case() -> tuple[Context, pd.DataFrame, ShareBasis, dict]:
     _, context = get_config_context("./configs", use_cache=False, save=False)
     names = ["IVZ", "HBAN", "APA", "SJM"]
     shares = context.store.load(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "price"],
         where={"ticker": names, "dimension": "ARQ"},
         since="1995-01-01",
@@ -106,7 +106,7 @@ def test_real_level_boundaries(source_case: tuple, ticker: str, start: str, boun
     context, _, _, blob = source_case
     raw = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where={"ticker": ticker}, since="1995-01-01", until=end)
     vendor = context.store.load(
-        Tables.sharadar_fundamentals, columns=["ticker", "date", "price"], where={"ticker": ticker, "dimension": "ARQ"}, until=end
+        Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "price"], where={"ticker": ticker, "dimension": "ARQ"}, until=end
     )
     assert raw is not None and vendor is not None
     raw["date"] = pd.to_datetime(raw["date"])
@@ -159,7 +159,7 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
     sqlite_store.save(Tables.prices, raw)
     sqlite_store.save(Tables.prices_splits, yahoo)
     sqlite_store.save(Tables.sharadar_actions, actions.assign(contraticker=""))
-    sqlite_store.save(Tables.sharadar_fundamentals, vendor)
+    sqlite_store.save(Tables.sharadar_fundamentals_facts, vendor)
     sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": raw["date"], "close": 1.0}))
     peer_path = tmp_path / "peers.json"
     peer_path.write_text(json.dumps({"IVZ": {"IVZ": 1.0}}), encoding="utf-8")

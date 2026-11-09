@@ -28,10 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, Identity, UnknownUniverseTickerError, load_identity  # noqa: E402
+from src.data_extract.utils.common.identity_contract import entity_by_cik_map, entity_or_singleton  # noqa: E402
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
-from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
-from src.data_extract.utils.identity.cik_history import d19_allowlist, entity_by_cik_map, entity_or_singleton, manual_lineage_blob  # noqa: E402
+from src.data_extract.utils.identity.cik_history import d19_allowlist, manual_lineage_blob
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
@@ -93,7 +93,7 @@ OUTPUTS = {
     "merged": "gate_fundamentals_diff.csv",
     "prices": "gate_prices_diff.csv",
 }
-HISTORY_TABLE = Tables.fundamentals_history_sec.name
+HISTORY_TABLE = Tables.sec_fundamentals_history.name
 HYPOTHESES_FILE = Path("sec") / "expected_lineage_changes.json"
 _TABLE_POLICY = {
     Tables.sec_8k.name: Combine.SPLIT,
@@ -137,7 +137,6 @@ REASONS = frozenset(
         "acquired_constituent",
         "co_registrant_purge",
         "predecessor_vendor_series",
-        "sec_block_changed",
         "new_period",
         "secondary_class_added",
         "new_data",
@@ -639,7 +638,7 @@ def _filing_frame(out: pd.DataFrame) -> pd.DataFrame:
 
 
 def history_diff(before: pd.DataFrame, after: pd.DataFrame, scopes: Mapping[str, FilingScope], facts_reasons: pd.DataFrame) -> pd.DataFrame:
-    """The filings feeding `fundamentals_history_sec`: before = every stored periodic accession, after = those the
+    """The filings feeding `sec_fundamentals_history`: before = every stored periodic accession, after = those the
     seam rule keeps (`keep_window_owner_filings`, applied as the history build applies it)."""
     periodic = lambda f: f.loc[f["form"].map(lambda form: FORM_POLICY.get(form) is Combine.SPLIT and not str(form).startswith("DEF")).astype(bool)]  # noqa: E731
     before, after = periodic(before), periodic(after)
@@ -816,15 +815,12 @@ def _merged_reason(
     change: str,
     ticker: Any,
     stamp: pd.Timestamp,
-    cols: Sequence[str],
     fiscal_end: Any,
     windows: Sequence[Window],
     frontier: Mapping[Any, pd.Timestamp],
-    sec_columns: Collection[str],
-    sec_changed: Collection[str],
 ) -> tuple[str, str]:
-    """`(reason, evidence)` explaining one changed merged row: a predecessor window, a period after the snapshot, a changed
-    SEC block, or the trailing quarters after a window; empty strings when none does."""
+    """`(reason, evidence)` explaining one changed Sharadar history row: a predecessor window, a period after the
+    snapshot, or the trailing quarters after a window; empty strings when none does."""
     hit = next((w for w in windows if w.ticker == ticker and w.holds(fiscal_end)), None)
     trail = next((w for w in windows if w.ticker == ticker and w.trails(fiscal_end)), None)
     if hit is not None:
@@ -832,19 +828,15 @@ def _merged_reason(
         return "predecessor_vendor_series", f"{hit.vendor_ticker} window {start}..{end}"
     if change == "added" and ticker in frontier and stamp > frontier[ticker]:
         return "new_period", f"after the snapshot's last as_of {frontier[ticker].date()}"
-    if change == "changed" and ticker in sec_changed and set(cols) <= set(sec_columns):
-        return "sec_block_changed", "the ticker's fundamentals_history_sec rows changed"
     if change == "changed" and trail is not None:
         end = trail.end.date() if trail.end is not None else "-"
         return "predecessor_vendor_series", f"trailing quarters after the {trail.vendor_ticker} window ending {end}"
     return "", ""
 
 
-def merged_diff(
-    before: pd.DataFrame, after: pd.DataFrame, windows: Sequence[Window], sec_columns: Collection[str], sec_changed: Collection[str]
-) -> pd.DataFrame:
-    """Rows of the merged `fundamentals_history` that changed, explained by the predecessor replacement, a changed
-    SEC block, or a period after the snapshot."""
+def merged_diff(before: pd.DataFrame, after: pd.DataFrame, windows: Sequence[Window]) -> pd.DataFrame:
+    """Rows of `sharadar_fundamentals_history` that changed, explained by the predecessor replacement or a period after
+    the snapshot."""
     key = ["ticker", "as_of"]
     columns = [c for c in before.columns if c in after.columns and c not in key]
     merged = before.merge(after, on=key, how="outer", suffixes=("_b", "_a"), indicator=True)
@@ -866,7 +858,7 @@ def merged_diff(
         change = {"left_only": "removed", "right_only": "added"}.get(state, "changed")
         fiscal_end = pd.to_datetime(a_end if not pd.isna(a_end) else b_end)
         stamp = pd.Timestamp(as_of)
-        reason, evidence = _merged_reason(change, ticker, stamp, cols, fiscal_end, windows, frontier, sec_columns, sec_changed)
+        reason, evidence = _merged_reason(change, ticker, stamp, fiscal_end, windows, frontier)
         out.append(
             {
                 "ticker": ticker,
@@ -1009,7 +1001,7 @@ def _filer_columns(store: Any, spec: FilerTable) -> dict[str, str]:
     present = set(store.columns(spec.table))
     if "form" in present:
         names["form"] = "form"
-    if spec.table.name == Tables.fundamentals_facts.name:
+    if spec.table.name == Tables.sec_fundamentals_facts.name:
         names["period_of_report"] = "period_end"
     return names
 
@@ -1047,11 +1039,10 @@ _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
     "universe_cik_symbol": (Tables.universe_cik_symbol, None),
     "symbol_tenure": (Tables.symbol_tenure, None),
     "roster": (Tables.universe_tickers, ("ticker", "cik")),
-    "history_sec": (Tables.fundamentals_history_sec, None),
     "ftd": (Tables.sec_fails_to_deliver, ("ticker", "date", "fails_quantity", "fails_value")),
     "short_interest": (Tables.short_interest, ("ticker", "date", "short_volume", "total_volume")),
     "insider": (Tables.insider_transactions, (*_INSIDER_KEY, "ticker", "issuer_cik", "filing_date")),
-    "merged": (Tables.fundamentals_history, tuple(Tables.fundamentals_history.read_columns)),
+    "merged": (Tables.sharadar_fundamentals_history, tuple(Tables.sharadar_fundamentals_history.read_columns)),
     "prices": (Tables.prices, ("ticker", "date", "open", "high", "low", "close_split", "close_total", "volume")),
 }
 _UNSCOPED = {"universe_cik_symbol", "symbol_tenure", "roster"}
@@ -1298,7 +1289,7 @@ def _check_scope(snap_dir: Path, scope: Sequence[str] | None) -> None:
 def _filing_section(
     store: Any, snap_dir: Path, identity: Identity, old_ciks: Mapping[str, frozenset[str]], scope: Sequence[str] | None
 ) -> pd.DataFrame:
-    """Accessions added or removed per filer-CIK table, plus the filings feeding `fundamentals_history_sec`."""
+    """Accessions added or removed per filer-CIK table, plus the filings feeding `sec_fundamentals_history`."""
     frames, facts = [], {}
     for spec in PURGE_TABLES:
         before = _snap(snap_dir, f"filing_{spec.table.name}")
@@ -1307,7 +1298,7 @@ def _filing_section(
         diff = filing_diff(
             spec.table.name, before, after, _scopes(identity, set(before["ticker"]) | set(after["ticker"])), old_ciks, identity.co_registrant_ciks
         )
-        if spec.table.name == Tables.fundamentals_facts.name:
+        if spec.table.name == Tables.sec_fundamentals_facts.name:
             facts = {"before": before, "after": after, "diff": diff}
         frames.append(diff)
     tickers = set(facts["before"]["ticker"]) | set(facts["after"]["ticker"])
@@ -1340,33 +1331,12 @@ def _merged_section(context: Any, snap_dir: Path, scope: Sequence[str] | None) -
     names = sorted(set(before["ticker"]) | set(after["ticker"]))
     series = load_predecessor_series(context, names)
     stored = (
-        set(store.distinct(Tables.sharadar_fundamentals, "ticker", where={"ticker": sorted({s.vendor_ticker for s in series})})) if series else set()
+        set(store.distinct(Tables.sharadar_fundamentals_facts, "ticker", where={"ticker": sorted({s.vendor_ticker for s in series})}))
+        if series
+        else set()
     )
     windows = [Window(s.ticker, s.vendor_ticker, s.valid_from, s.valid_to) for s in series if s.vendor_ticker in stored]
-    sec_before = _snap(snap_dir, "history_sec")
-    sec_after = _read(store, "history_sec", scope)
-    sec_changed = _changed_tickers(sec_before, sec_after, ["ticker", "as_of"])
-    field_map = load_field_map(str(context.config_dir))
-    sec_owned = set(field_map.sec_owned)
-    # a column the merge derives from an SEC-owned input (`stockholdersEquityInclNci`) moves with the SEC block
-    sec_derived = {name for name, spec in field_map.derived.items() if set(spec.inputs) & sec_owned}
-    sec_columns = {c for c in before.columns if c.endswith("_sec")} | sec_owned | sec_derived
-    return merged_diff(before, after, windows, sec_columns, sec_changed)
-
-
-def _changed_tickers(before: pd.DataFrame, after: pd.DataFrame, key: list[str]) -> set[str]:
-    """Tickers whose rows differ in any shared column."""
-    if "ticker" not in before.columns or "ticker" not in after.columns:
-        return {str(t) for frame in (before, after) if "ticker" in frame.columns for t in frame["ticker"]}
-    columns = [c for c in before.columns if c in after.columns]
-    a = before[columns].assign(as_of=pd.to_datetime(before["as_of"]))
-    b = after[columns].assign(as_of=pd.to_datetime(after["as_of"]))
-    both = a.merge(b, on=key, how="outer", suffixes=("_b", "_a"), indicator=True)
-    values = [c for c in columns if c not in key]
-    same = _same_cells(
-        both[[f"{c}_b" for c in values]].set_axis(values, axis=1), both[[f"{c}_a" for c in values]].set_axis(values, axis=1), values
-    ).all(axis=1)
-    return set(both.loc[both["_merge"].ne("both") | ~same, "ticker"].astype(str))
+    return merged_diff(before, after, windows)
 
 
 def _prices_section(store: Any, snap_dir: Path, master: pd.DataFrame, scope: Sequence[str] | None) -> pd.DataFrame:

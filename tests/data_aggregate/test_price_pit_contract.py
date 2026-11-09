@@ -51,7 +51,7 @@ def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
         Tables.sharadar_actions, pd.DataFrame({"ticker": ["AAA"], "date": [index[5]], "action": ["split"], "value": [4.0], "contraticker": [""]})
     )
     store.save(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         pd.DataFrame(
             {
                 "ticker": ["AAA", "BBB"],
@@ -63,7 +63,7 @@ def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
         ),
     )
     store.save(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         pd.DataFrame(
             {
                 "ticker": ["AAA", "BBB"],
@@ -277,11 +277,11 @@ def test_new_public_share_observation_preserves_the_earlier_prefix(sqlite_store:
     public = pd.Timestamp(sorted(sqlite_store.distinct(Tables.prices, "date"))[400])
     fiscal = pd.Timestamp("2020-12-31")
     sqlite_store.save(
-        Tables.fundamentals_history,
+        Tables.sharadar_fundamentals_history,
         pd.DataFrame({"ticker": ["AAA"], "as_of": [public], "fiscal_end": [fiscal], "sharesOutstanding": [440.0], "sharesOutstandingPit": [440.0]}),
     )
     sqlite_store.save(
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         pd.DataFrame(
             {
                 "ticker": ["AAA"],
@@ -310,43 +310,43 @@ def test_new_public_share_observation_preserves_the_earlier_prefix(sqlite_store:
 
 def test_count_restoration_uses_matched_vendor_vintage_not_stale_cache(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
-    df_history = sqlite_store.load(Tables.fundamentals_history)
+    df_history = sqlite_store.load(Tables.sharadar_fundamentals_history)
     df_history.loc[df_history["ticker"].eq("AAA"), "sharesOutstandingPit"] = 50.0
-    sqlite_store.replace(Tables.fundamentals_history, df_history)
+    sqlite_store.replace(Tables.sharadar_fundamentals_history, df_history)
     StepCubePrices(context, context.config).run(full=True)
     df_a = sqlite_store.load(Tables.cube_part_prices, where={"ticker": "AAA"}).sort_values("date")
     assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
     assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
     assert df_a["mcap_pit"].eq(10_000.0).all()
-    assert sqlite_store.load(Tables.fundamentals_history, where={"ticker": "AAA"})["sharesOutstandingPit"].eq(50.0).all()
+    assert sqlite_store.load(Tables.sharadar_fundamentals_history, where={"ticker": "AAA"})["sharesOutstandingPit"].eq(50.0).all()
     print("SANITY: the new count restores the corroborated vendor vintage, rather than trusting a stale cachedPIT value; the source is unchanged.")
 
 
 def test_vendor_catch_up_preserves_original_counts_and_quoted_cap(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
-    df_history = sqlite_store.load(Tables.fundamentals_history)
-    df_vendor = sqlite_store.load(Tables.sharadar_fundamentals)
+    df_history = sqlite_store.load(Tables.sharadar_fundamentals_history)
+    df_vendor = sqlite_store.load(Tables.sharadar_fundamentals_facts)
     selected = df_history["ticker"].eq("AAA")
     df_history.loc[selected, "sharesOutstanding"] = 100.0
     df_history.loc[selected, "sharesOutstandingPit"] = 25.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "sharesbas"] = 100.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "price"] = 100.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "lastupdated"] = df_history.loc[selected, "as_of"].iloc[0]
-    sqlite_store.replace(Tables.fundamentals_history, df_history)
-    sqlite_store.replace(Tables.sharadar_fundamentals, df_vendor)
+    sqlite_store.replace(Tables.sharadar_fundamentals_history, df_history)
+    sqlite_store.replace(Tables.sharadar_fundamentals_facts, df_vendor)
     StepCubePrices(context, context.config).run(full=True)
     df_before = sqlite_store.load(Tables.cube_part_prices)
     df_a = df_before.loc[df_before["ticker"].eq("AAA")].sort_values("date")
     assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
     assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
     assert df_a["mcap_pit"].eq(10_000.0).all()
-    pd.testing.assert_frame_equal(sqlite_store.load(Tables.fundamentals_history), df_history, check_exact=True)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.sharadar_fundamentals_history), df_history, check_exact=True)
     df_history.loc[selected, "sharesOutstanding"] = 400.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "sharesbas"] = 400.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "price"] = 25.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "lastupdated"] = df_a["date"].iloc[6]
-    sqlite_store.replace(Tables.fundamentals_history, df_history)
-    sqlite_store.replace(Tables.sharadar_fundamentals, df_vendor)
+    sqlite_store.replace(Tables.sharadar_fundamentals_history, df_history)
+    sqlite_store.replace(Tables.sharadar_fundamentals_facts, df_vendor)
     StepCubePrices(context, context.config).run(full=True)
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube_part_prices), df_before, check_exact=True)
     print("SANITY: a vendor catch-up changes its representation, preserving every historical quote/count/cap; the stale cache is never rewritten.")

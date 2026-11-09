@@ -60,26 +60,6 @@ class ProxyFiling:
         return archive_url(self.cik, self.accession_number, f"{self.accession_number}.txt")
 
 
-def proxy_html(context: Context, doc_url: str, txt_url: str | None, accession: str) -> str:
-    """The filing's raw markup, falling back to the `<accession>.txt` full submission when the primary
-    document is not served; re-raises a transient failure, and when there is no distinct `.txt` URL."""
-    try:
-        return sec_get(context, doc_url).text
-    except TransientReadError:
-        raise
-    except Exception:
-        if not txt_url or txt_url == doc_url:
-            raise
-        logger.info("%s: primary document unavailable, falling back to the full submission", accession)
-        return sec_get(context, txt_url).text
-
-
-def proxy_subject_ciks(cik: str, company: str, form: str, filed: object, accession: str) -> frozenset[str]:
-    """A listed proxy's SGML subject CIKs through the shared header reader."""
-    candidate = Filing(cik=int(cik), company=company, form=form, filing_date=pd.Timestamp(filed).date().isoformat(), accession_no=accession)
-    return header_subject_ciks(candidate)
-
-
 def accepted_subjects(scope: FilingScope) -> frozenset[str]:
     """Subject CIKs a multi-window ticker's proxy may name (its event CIKs); empty, i.e. no header check, otherwise."""
     return frozenset(scope.event_ciks) if len(scope.windows) > 1 else frozenset()
@@ -104,12 +84,15 @@ def subject_accepted(ticker: str, filer_cik: str, accession: str, subjects: froz
 def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool:
     """The subject guard of a multi-window ticker: False (a marker) when the proxy's SGML subject names none of its
     event CIKs. A transient header failure raises (listed again); any other unreadable header accepts the proxy."""
+    # read: the accepted subjects, then (multi-window tickers only) the proxy's SGML subject CIKs
     accepted = accepted_subjects(scope.filing_scope(ticker, cik))
     if not accepted:
         return True
-    filing = stamp.filing
+    company = str(getattr(stamp.filing, "company", ""))
     try:
-        subjects = proxy_subject_ciks(stamp.cik, str(getattr(filing, "company", "")), str(stamp.form), stamp.filed, stamp.accession_number)
+        filed = pd.Timestamp(stamp.filed).date().isoformat()
+        header = Filing(cik=int(stamp.cik), company=company, form=str(stamp.form), filing_date=filed, accession_no=stamp.accession_number)
+        subjects = header_subject_ciks(header)
     except TransientReadError:
         raise
     except Exception as exc:  # noqa: BLE001 -- an unknown header follows the existing path
@@ -159,9 +142,17 @@ def _section_rows(ticker: str, stamped: Mapping[str, object], payloads: Mapping[
 
 def _def14a_rows(context: Context, ticker: str, stamp: FilingStamp) -> list[dict]:
     """The proxy's section rows: its document carved into the five section payloads."""
-    # read: the listed document (primary, else the full submission)
+    # read: the listed document, else the full submission when the primary is not served (a transient failure raises)
     filing = cast(ProxyFiling, stamp.filing)
-    html = proxy_html(context, filing.doc_url, filing.txt_url, stamp.accession_number)
+    try:
+        html = sec_get(context, filing.doc_url).text
+    except TransientReadError:
+        raise
+    except Exception:
+        if not filing.txt_url or filing.txt_url == filing.doc_url:
+            raise
+        logger.info("%s: primary document unavailable, falling back to the full submission", stamp.accession_number)
+        html = sec_get(context, filing.txt_url).text
 
     # compute: the carved payloads, stamped with the filing (no `period_of_report`: this table keeps `period`)
     payloads = prepare_def14a_payloads(html, html_to_text(html))

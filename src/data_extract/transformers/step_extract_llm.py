@@ -53,12 +53,15 @@ class StepExtractLlm(Step):
         return self._requested or self._universe.tickers
 
     def run_def14a_llm(self) -> None:
+        """Extract the open DEF 14A sections from the stored `sec_def14a_text` payloads."""
         fetch_def14a_llm(self._context, self._config, self._tickers, self._def14a)
 
     def run_8k_votes(self) -> None:
+        """Parse the stored 8-K Item 5.07 narratives into vote rows."""
         fetch_8k_votes_llm(self._context, self._tickers, self._votes)
 
     def run_employees_llm(self) -> None:
+        """Decide the employee counts of the stored `sec_employees_text` filings with no row yet (`full`: all of them)."""
         fetch_employees_llm(self._context, self._tickers, self._years_history, self._employees, full=self._full)
 
     def run(self) -> None:

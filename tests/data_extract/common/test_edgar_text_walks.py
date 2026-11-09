@@ -27,12 +27,12 @@ from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH, NO_PAYLOAD, accepted_subjects
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH, candidate_windows
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, stored_excerpt
+from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
-from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, roster_run, seed_index
+from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, roster_run, seed_index, sent_excerpt
 
 #: Real 10-K document texts (the base code's chosen document), keyed `<ticker>_<accession>`.
 REAL: dict[str, str] = json.loads((Path(__file__).resolve().parents[2] / "fixtures" / "employees_text" / "real_10k_texts.json").read_text("utf-8"))
@@ -104,21 +104,20 @@ def test_stored_windows_rebuild_the_old_excerpt_on_real_10k_text(tmp_path: Path,
     patch_index_filings(monkeypatch, filings)
 
     _walk(ctx, ["AAA"])
-    df = _stored(sqlite_store).set_index("accession_number")
+    df = _stored(sqlite_store)
 
     diffs = 0
-    for accession, filing in filings.items():
-        row = df.loc[accession]
-        windows, pieces = json.loads(row["windows"]), json.loads(row["pieces"])
-        assert row["source_document"] == "primary" and int(row["n_chars"]) == len(filing.body) and filing._sgml is None
+    for row in df.itertuples(index=False):
+        filing, pieces = filings[row.accession_number], json.loads(row.pieces)
+        assert row.source_document == "primary" and int(row.n_chars) == len(filing.body) and filing._sgml is None
         assert [[s, filing.body[s : s + len(t)]] for s, t in pieces] == pieces, "every piece is the document text at its offset"
         for limit in LIMITS:
-            diffs += stored_excerpt(windows, pieces, limit) != old_excerpt(filing.body, limit)
+            diffs += sent_excerpt(row, limit) != old_excerpt(filing.body, limit)
     sizes = sorted(sum(len(t) for _, t in json.loads(p)) for p in df["pieces"])
     assert diffs == 0 and len(df) == len(REAL) == 3
     print("\n=== SANITY CHECK: stored windows -> old excerpt ===")
     print(
-        f"  {len(df)} real 10-K documents x {len(LIMITS)} limits: {diffs} diff(s) between stored_excerpt over stored rows and the old full-text greedy;"
+        f"  {len(df)} real 10-K documents x {len(LIMITS)} limits: {diffs} diff(s) between the excerpt employee_task sends from stored rows and the old full-text greedy;"
     )
     print(f"  pieces chars {sizes} of documents {sorted(len(t) for t in texts)}; each filing's cached submission dropped after its read.")
 

@@ -45,7 +45,7 @@ from src.data_store.schema import Tables
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmTask
-from src.utils.tickers_universe.universe import Bounds, before_end
+from src.utils.tickers_universe.universe import before_end
 
 logger = logging.getLogger(__name__)
 
@@ -59,20 +59,22 @@ def _finalise_gender(context: Context) -> None:
     A director recurs across companies, so the consensus needs every ticker's rows. Rewrites
     `def14a_directors` gender columns and the parent's gender ratios only when something changed.
     """
+    # load: every ticker's directors
     directors = context.store.load(
         Tables.def14a_directors, columns=["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"], optional=True
     )
     if directors is None or directors.empty:
         return
 
+    # compute: the consensus, logged against the basis distribution before it
     before = basis_distribution(directors)
     resolved, stats = consensus(directors)
     after = basis_distribution(resolved)
     log_consensus(context.log, stats, before, after)
-
     if not (stats["filled"] or stats["overturned"]):
         return
 
+    # save: the changed gender columns
     context.store.save(
         Tables.def14a_directors,
         resolved[["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"]],
@@ -93,13 +95,11 @@ def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExt
     return {section.key: LLMExtractor(context, config, action=section.action, threads=workers) for section in SECTIONS}
 
 
-def _walked_proxies(df_text: pd.DataFrame | None, names: Mapping[str, str], bounds: Bounds) -> pd.DataFrame:
-    """One row per walked proxy filed on or before its ticker's end (plus the grace), in filing order: the filings
-    frame `load_work` reads, with the universe company name; a NULL period reads back as '' (Postgres COPY stores
-    the walk's '' as NULL)."""
+def _walked_proxies(df_text: pd.DataFrame | None, names: Mapping[str, str]) -> pd.DataFrame:
+    """One row per walked proxy, in filing order: the filings frame `load_work` reads, with the universe company name;
+    a NULL period reads back as '' (Postgres COPY stores the walk's '' as NULL)."""
     df = (pd.DataFrame(columns=_TEXT_COLUMNS) if df_text is None else df_text).drop_duplicates(["ticker", "accession_number"])
     df = df.assign(filing_date=pd.to_datetime(df["filing_date"]).dt.normalize(), ticker=df["ticker"].astype(str))
-    df = df[before_end(df["ticker"], df["filing_date"], bounds)]
     df = df.assign(period_of_report=df["period"].fillna(""), company_name=df["ticker"].map(names).fillna(""))
     return df.sort_values(["ticker", "filing_date", "accession_number"], kind="stable").reset_index(drop=True)
 
@@ -188,20 +188,21 @@ def fetch_def14a_llm(
     extractors: Mapping[str, LLMExtractor],
     replay_stored_json: bool = False,
 ) -> None:
-    """Extract every section of a walked proxy that has a key gap and fewer than two attempts, then stamp the attempt.
-
-    A new proxy gets `retry=1`; a proxy still gapped at `retry=1` gets one more call and `retry=2`; the rest is
-    skipped from the stored tables alone. `replay_stored_json` re-runs the postprocessing on already-paid answers
-    stored in `def14a_json`, with no provider call. `extractors` (`section_extractors`) holds one extractor per
-    section; their worker count bounds the answers in flight.
-    """
+    """Extract every section of a walked proxy filed by its ticker's end (plus the grace) that has a key gap and fewer
+    than two attempts (`retry=1`, then one more call and `retry=2`), from the stored tables alone. `replay_stored_json`
+    re-runs the postprocessing on the paid answers in `def14a_json` with no call. `extractors` (`section_extractors`)
+    holds one extractor per section; their worker count bounds the answers in flight."""
     # load: the walked proxies in the window (no payloads), the ticker names and end bounds
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
     df_text = context.store.load(Tables.sec_def14a_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=floor, optional=True)
     df_names = universe_rows(context, tickers)
-    df_proxies = _walked_proxies(df_text, dict(zip(df_names["ticker"], df_names["name"], strict=True)), planner_bounds(context))
+    bounds = planner_bounds(context)
     budget = int(config.data_extract.llm_text_budget.def14a)
+
+    # clean: the filings frame of the walked proxies filed on or before their ticker's end (plus the grace)
+    df_proxies = _walked_proxies(df_text, dict(zip(df_names["ticker"], df_names["name"], strict=True)))
+    df_proxies = df_proxies[before_end(df_proxies["ticker"], df_proxies["filing_date"], bounds)].reset_index(drop=True)
     batch_size = max((extractor.threads for extractor in extractors.values()), default=1)
 
     # compute: each ticker's replay, then its open sections, saved per section

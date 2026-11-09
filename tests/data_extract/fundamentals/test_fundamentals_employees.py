@@ -21,6 +21,7 @@ from src.data_extract.utils.common.workforce import merge_spans, workforce_numbe
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult
+from tests.data_extract.edgar_fixtures import sent_excerpt
 from tests.data_extract.fake_context import extract_config
 
 TEXT = Tables.sec_employees_text
@@ -113,7 +114,18 @@ def build(
 def excerpt(text: str, limit: int) -> str:
     """The excerpt the LLM step rebuilds at `limit` from the windows and pieces the walk stores for `text`."""
     windows = text_mod.candidate_windows(text, workforce_number_spans(text))
-    return mod.stored_excerpt(windows, [[start, text[start:end]] for start, end in merge_spans(windows)], limit)
+    pieces = [[start, text[start:end]] for start, end in merge_spans(windows)]
+    row = SimpleNamespace(
+        form="10-K",
+        filing_date="2025-03-01",
+        period_of_report=None,
+        accession_number="x",
+        cik="1",
+        source_document="primary",
+        windows=json.dumps(windows),
+        pieces=json.dumps(pieces),
+    )
+    return sent_excerpt(row, limit)
 
 
 STORED_COLUMNS = [

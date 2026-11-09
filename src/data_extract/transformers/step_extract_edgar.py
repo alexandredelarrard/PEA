@@ -88,6 +88,7 @@ class StepExtractEdgar(Step):
         self._refresh(years)
 
     def _run_fetch(self, fetch: EdgarFetch) -> FetchSummary:
+        """Run one walk through the shared driver, on an index covering its window."""
         self._ensure_index(fetch)
         return run_edgar_fetch(self._context, fetch, self._run)
 
@@ -111,9 +112,11 @@ class StepExtractEdgar(Step):
         return self._run_fetch(FILING_TEXT_FETCH)
 
     def run_employees_text(self) -> FetchSummary:
+        """Walk the 10-K family filings into `sec_employees_text` (candidate windows and their union)."""
         return self._run_fetch(EMPLOYEES_TEXT_FETCH)
 
     def run_def14a_text(self) -> FetchSummary:
+        """Walk the proxies into `sec_def14a_text` (untruncated section payloads, subject guard as markers)."""
         return self._run_fetch(DEF14A_TEXT_FETCH)
 
     def run(self) -> None:

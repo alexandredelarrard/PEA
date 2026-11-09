@@ -1,4 +1,4 @@
-"""The five per-ticker EDGAR CLI commands dispatch their `EdgarFetch` declaration to the shared
+"""The seven per-ticker EDGAR CLI commands dispatch their `EdgarFetch` declaration to the shared
 driver with the requested tickers, window, `--full`, `--as-of` and `--no-cap`; `resume-plan` and
 `markers` report per table; the steps and the Airflow DAG that call them still import and parse.
 Offline: `run_edgar_fetch` (called by `StepExtractEdgar`) is replaced by a recorder, `markers` runs on SQLite.
@@ -44,6 +44,8 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
     "sec-13g": (SEC_13G_FETCH, True),
     "filing-text": (FILING_TEXT_FETCH, True),
     "insider-edgar": (INSIDER_EDGAR_FETCH, True),
+    "sec-employees-text": (EMPLOYEES_TEXT_FETCH, True),
+    "sec-def14a-text": (DEF14A_TEXT_FETCH, True),
 }
 
 

@@ -16,6 +16,7 @@ import pytest
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
+from src.data_extract.utils.fundamentals.fundamentals_employees import employee_task
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
@@ -33,6 +34,14 @@ Cloud HTTP:            https://www.sec.gov/Archives/
 CIK|Company Name|Form Type|Date Filed|Filename
 --------------------------------------------------------------------------------
 """
+
+
+def sent_excerpt(row: Any, limit: int) -> str:
+    """The excerpt `employee_task` sends for a stored `sec_employees_text` row when `limit` characters are left after
+    its prefix (the prefix length read from an unbounded task)."""
+    probe = employee_task(0, "AAA", row, 10**9)
+    prefix = len(probe.payload) - len(str(probe.meta["source_text"]))
+    return str(employee_task(0, "AAA", row, limit + prefix).meta["source_text"])
 
 
 def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:

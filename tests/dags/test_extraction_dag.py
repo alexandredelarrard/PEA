@@ -25,6 +25,8 @@ STRICT_EDGAR_FILES = (
     "src/data_extract/utils/edgar_extract/fetch_13g_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_insider_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_filing_text.py",
+    "src/data_extract/utils/edgar_extract/fetch_employees_text.py",
+    "src/data_extract/utils/edgar_extract/fetch_def14a_text.py",
 )
 #: the universe step: the two ticker lists and the two identity evidence refreshes, then the sync (AC-020).
 EVIDENCE_TASKS = ("sec_company_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions")
@@ -53,6 +55,8 @@ REQUIRED_COMMANDS = {
     "sec-13d",
     "sec-13g",
     "filing-text",
+    "sec-employees-text",
+    "sec-def14a-text",
     "extract-earnings-calls",
     "extraction-status",
 }
@@ -99,8 +103,10 @@ def test_freshness_inventory_comes_only_from_schema():
 IDENTITY_DOWNLOADS = {"zips_download"}
 #: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
 ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
-#: the five EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
-EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text"}
+#: the seven EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
+EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text", "sec_employees_text", "sec_def14a_text"}
+#: the LLM passes over the stored text tables (no SEC read): default pool, after the walk storing their text (D-05, M4).
+LLM_TEXT_TASKS = {"sec_employees_llm": {"sec_employees_text"}, "sec_def14a_llm": {"sec_def14a_text", "sec_8k_items"}}
 #: every task that reads the lineage; each must start after `identity`.
 IDENTITY_CONSUMERS = {
     *ZIP_INGESTS,
@@ -109,16 +115,19 @@ IDENTITY_CONSUMERS = {
     "thirteen_f",
     "extract_earnings_calls",
     "fundamentals",
-    "fundamentals_employees",
-    "def14a",
+    "sec_employees_llm",
+    "sec_def14a_llm",
     "sec_8k_items",
     "sec_13d",
     "sec_13g",
     "filing_text",
+    "sec_employees_text",
+    "sec_def14a_text",
 }
 #: derived from consumer tables; each must start after its parents.
 DERIVED_PARENTS = {
-    "sec_8k_votes": {"sec_8k_items", "def14a"},
+    "sec_8k_votes": {"sec_def14a_llm"},
+    **LLM_TEXT_TASKS,
     "fundamentals_sharadar": {"fundamentals"},
     "thirteen_f_backfill": {"thirteen_f"},
     "superinvestors": {"thirteen_f"},
@@ -217,8 +226,8 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
     assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
     assert "fundamentals >> fundamentals_sharadar" in source
-    assert "fundamentals_employees] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
-    assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
+    assert "sec_employees_llm] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
+    assert "[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
@@ -270,8 +279,8 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     )
 
 
-def test_the_edgar_index_refreshes_once_before_the_six_edgar_walks(monkeypatch):
-    """P7b / D-17: one `edgar-index` task in the sec_api pool, after identity; the six document walks wait for it."""
+def test_the_edgar_index_refreshes_once_before_the_seven_edgar_walks(monkeypatch):
+    """P7b / D-17: one `edgar-index` task in the sec_api pool, after identity; the seven document walks wait for it."""
     graph, params = _load_dag_graph(monkeypatch)
     task = params["edgar_index"]
     assert task["pool"] == "sec_api" and task["pool_slots"] == 2 and " edgar-index -c " in str(task["bash_command"])
@@ -286,10 +295,30 @@ def test_the_sharadar_merge_does_not_wait_for_headcount(monkeypatch):
     """Headcount is read by the cube from `fundamentals_employees`, so the merged history does not wait for it."""
     graph, _ = _load_dag_graph(monkeypatch)
     assert "fundamentals_sharadar" in graph["fundamentals"]
-    assert "fundamentals_sharadar" not in _descendants(graph, "fundamentals_employees"), "the merge still waits for headcount"
-    assert "extraction_status" in graph["fundamentals_employees"]
+    assert "fundamentals_sharadar" not in _descendants(graph, "sec_employees_llm"), "the merge still waits for headcount"
+    assert graph["sec_employees_llm"] == {"extraction_status"}
     print("\n=== SANITY CHECK: headcount is not a merge input ===")
-    print("  fundamentals -> fundamentals_sharadar; fundamentals_employees -> extraction_status only")
+    print("  fundamentals -> fundamentals_sharadar; sec_employees_llm -> extraction_status only")
+
+
+def test_the_llm_passes_run_in_the_default_pool_after_the_walk_storing_their_text(monkeypatch):
+    """D-05 / M4: the text walks hold both sec_api slots; the LLM passes read only stored text, so they run in the
+    default pool (no new pool), each after its walk; DEF 14A also waits for the 8-K items and feeds the vote parser."""
+    graph, params = _load_dag_graph(monkeypatch)
+    upstream = {task: {up for up, downs in graph.items() if task in downs} for task in graph}
+    for walk, command in (("sec_employees_text", "sec-employees-text"), ("sec_def14a_text", "sec-def14a-text")):
+        assert params[walk]["pool"] == "sec_api" and params[walk]["pool_slots"] == 2 and f" {command} -c " in str(params[walk]["bash_command"])
+    for task, parents in LLM_TEXT_TASKS.items():
+        assert params[task]["pool"] == "default_pool" and params[task]["pool_slots"] == 1, params[task]
+        assert upstream[task] == {"universe_sync", "identity", *parents}, sorted(upstream[task])
+    assert graph["sec_employees_text"] == {"sec_employees_llm", "extraction_status"}
+    assert graph["sec_def14a_text"] == {"sec_def14a_llm", "extraction_status"}
+    assert graph["sec_def14a_llm"] == {"sec_8k_votes", "extraction_status"} and upstream["sec_8k_votes"] == {"universe_sync", "sec_def14a_llm"}
+    assert not {"fundamentals_employees", "def14a"} & set(graph), "the old LLM task ids are gone"
+    assert {str(kwargs.get("pool")) for kwargs in params.values() if "pool" in kwargs} == {"default_pool", "sec_api", "sec_bulk"}, "no new pool"
+    print("\n=== SANITY CHECK: text walks -> LLM passes (D-05, M4) ===")
+    print("  sec_employees_text, sec_def14a_text: sec_api (2 slots); sec_employees_llm, sec_def14a_llm: default_pool (1 slot)")
+    print("  sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec_8k_items] -> sec_def14a_llm -> sec_8k_votes; no new pool")
 
 
 def test_price_history_waits_for_the_security_master(monkeypatch):

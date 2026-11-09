@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from bisect import bisect_right
-from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
@@ -184,26 +183,6 @@ class _Decision:
     stamp: FilingStamp
     source_document: str  # "primary" or an exhibit type such as "EX-13"
     decided: EmployeeDecision
-
-
-def stored_excerpt(windows: Sequence[Sequence[int]], pieces: Sequence[Sequence[Any]], limit: int) -> str:
-    """The stored candidate `windows`, each kept in priority order while the gap-joined excerpt stays within `limit`
-    characters; each kept span is sliced from the stored `[offset, text]` piece that holds it."""
-    # compute: the greedy choice of windows within the limit
-    separator = f"\n\n{_GAP}\n\n"
-    chosen: list[tuple[int, int]] = []
-    for start, end in windows:
-        trial = merge_spans([*chosen, (start, end)])
-        if sum(stop - begin for begin, stop in trial) + len(separator) * (len(trial) - 1) <= limit:
-            chosen = trial
-
-    # post-process: the text of each chosen span, from the last piece starting at or before it
-    offsets = [int(offset) for offset, _ in pieces]
-    texts = []
-    for start, end in chosen:
-        offset, text = pieces[bisect_right(offsets, start) - 1]
-        texts.append(str(text)[start - int(offset) : end - int(offset)])
-    return separator.join(texts)
 
 
 @dataclass(frozen=True)
@@ -450,10 +429,10 @@ def _task_stamp(result: LlmResult) -> FilingStamp:
 
 
 def employee_task(sequence: int, ticker: str, row: Any, budget: int) -> LlmTask:
-    """One LLM task for a stored `sec_employees_text` row, the filing prefix plus the excerpt within `budget` characters.
-
-    `meta` carries the row's `stamp`, `report_date`, `source_text` (the excerpt sent, which the guard checks quotes
-    against) and `source_document`."""
+    """One LLM task for a stored `sec_employees_text` row: the filing prefix, then the stored candidate windows kept in
+    priority order while the gap-joined excerpt fits the rest of `budget`, each sliced from the stored piece holding it.
+    `meta` carries the row's `stamp`, `report_date`, `source_text` (the excerpt the guard checks quotes against) and
+    `source_document`."""
     # clean: the filing stamp and the prefix from the stored filing columns
     form = str(row.form)
     filed = pd.Timestamp(row.filing_date)
@@ -468,8 +447,22 @@ def employee_task(sequence: int, ticker: str, row: Any, budget: int) -> LlmTask:
     if budget <= len(prefix):
         raise ValueError("data_extract.llm_text_budget.employees is too small for filing metadata")
 
-    # compute: the excerpt rebuilt from the stored windows
-    source_text = stored_excerpt(json.loads(row.windows), json.loads(row.pieces), budget - len(prefix))
+    # compute: the greedy choice of the stored windows within the excerpt limit
+    windows, pieces, limit = json.loads(row.windows), json.loads(row.pieces), budget - len(prefix)
+    separator = f"\n\n{_GAP}\n\n"
+    chosen: list[tuple[int, int]] = []
+    for start, end in windows:
+        trial = merge_spans([*chosen, (start, end)])
+        if sum(stop - begin for begin, stop in trial) + len(separator) * (len(trial) - 1) <= limit:
+            chosen = trial
+
+    # post-process: the text of each chosen span, from the last piece starting at or before it
+    offsets = [int(offset) for offset, _ in pieces]
+    texts = []
+    for start, end in chosen:
+        offset, text = pieces[bisect_right(offsets, start) - 1]
+        texts.append(str(text)[start - int(offset) : end - int(offset)])
+    source_text = separator.join(texts)
     return LlmTask(
         seq=sequence,
         payload=prefix + source_text,

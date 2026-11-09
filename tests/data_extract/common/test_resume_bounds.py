@@ -139,7 +139,20 @@ def test_edgar_document_planner_drops_filings_after_the_end(fixture: tuple[DataS
     print("  Validated: no WBD filing after its end + grace; AAPL and CHTR's predecessor history unchanged.")
 
 
-def test_def14a_worklist_keeps_only_proxies_inside_the_bounds(fixture: tuple[DataStore, pd.DataFrame]) -> None:
+def _def14a_worklist(context: Any, walked: pd.DataFrame, monkeypatch: pytest.MonkeyPatch) -> pd.DataFrame:
+    """The filings `fetch_def14a_llm` hands its ticker loop when `sec_def14a_text` holds `walked`, under the bounds of
+    `context` (the store read and the universe names are stubbed; nothing is extracted)."""
+    seen: list[pd.DataFrame] = []
+    monkeypatch.setattr(def14a_fetch, "planner_bounds", lambda ctx: planner_bounds(context))
+    monkeypatch.setattr(def14a_fetch, "universe_rows", lambda ctx, tickers: pd.DataFrame({"ticker": SAMPLE, "name": SAMPLE}))
+    monkeypatch.setattr(def14a_fetch, "_ticker_works", lambda ctx, ticker, df_filings, floor, replay: seen.append(df_filings) or [])
+    config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=40, llm_text_budget=types.SimpleNamespace(def14a=130_000)))
+    run = types.SimpleNamespace(store=types.SimpleNamespace(load=lambda table, **kwargs: walked), log=logging.getLogger(__name__))
+    def14a_fetch.fetch_def14a_llm(run, config, SAMPLE, {})  # type: ignore[arg-type]
+    return pd.concat(seen, ignore_index=True) if seen else pd.DataFrame(columns=["ticker"])
+
+
+def test_def14a_worklist_keeps_only_proxies_inside_the_bounds(fixture: tuple[DataStore, pd.DataFrame], monkeypatch: pytest.MonkeyPatch) -> None:
     store, _ = fixture
     bounded, control = _contexts(fixture)
     stored = store.load(Tables.def14a_llm, columns=["ticker", "accession_number", "as_of"], where={"ticker": SAMPLE}).rename(
@@ -156,9 +169,9 @@ def test_def14a_worklist_keeps_only_proxies_inside_the_bounds(fixture: tuple[Dat
         }
     )
     walked = pd.concat([stored, late], ignore_index=True).assign(filing_date=lambda f: pd.to_datetime(f["filing_date"]), period="")
-    worklist = def14a_fetch._walked_proxies(walked, {}, planner_bounds(bounded))
+    worklist = _def14a_worklist(bounded, walked, monkeypatch)
     kept = {ticker: worklist[worklist["ticker"] == ticker].reset_index(drop=True) for ticker in SAMPLE}
-    open_list = def14a_fetch._walked_proxies(walked, {}, planner_bounds(control))
+    open_list = _def14a_worklist(control, walked, monkeypatch)
     open_aapl = open_list[open_list["ticker"] == "AAPL"].reset_index(drop=True)
 
     assert "late-wbd" not in set(kept["WBD"]["accession_number"]) and pd.to_datetime(kept["WBD"]["filing_date"]).max() <= WBD_GRACE_END

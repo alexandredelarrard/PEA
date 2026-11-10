@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import _section_rows
-from src.data_extract.utils.structure.def14a import fetch
+from src.data_extract.utils.structure.def14a import fetch, work
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -150,13 +150,13 @@ def test_the_prompt_is_cut_and_postprocess_gets_the_uncut_payload(run: Run, monk
     run.answers.update(_complete_answers())
     run.seed("long", YESTERDAY, {**PAYLOADS, "governance": long_payload})
     seen: dict[str, str] = {}
-    original = fetch.postprocess_section
+    original = work.postprocess_section
 
     def spy(section: Any, answer: Any, stamp: dict, saved: Any, parent: dict, source_payload: str = "") -> Any:
         seen[section.key] = source_payload
         return original(section, answer, stamp, saved, parent, source_payload)
 
-    monkeypatch.setattr(fetch, "postprocess_section", spy)
+    monkeypatch.setattr(work, "postprocess_section", spy)
     run()
     user = next(user for name, user in run.calls if name == "GovernanceExtract")
     assert long_payload[:BUDGET] in user and "TAIL-BEYOND-THE-BUDGET" not in user

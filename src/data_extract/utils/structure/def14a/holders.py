@@ -12,6 +12,7 @@ from src.data_extract.utils.structure.def14a.validate import clean_holder_name
 
 def normalize_name(value: str) -> str:
     """Canonical name identity without parenthetical text, accents or punctuation."""
+    # clean: the working text and the innermost parenthetical group pattern
     text = value
     parentheses = re.compile(r"\([^()]*\)")
 
@@ -26,6 +27,7 @@ def normalize_name(value: str) -> str:
 
 def _holder_name(value: str) -> str:
     """Remove explicit postal tails and terminal letter footnotes, retaining readable names."""
+    # clean: the validated holder name, else the raw value
     name = clean_holder_name(value) or value
 
     # A source footnote may sit directly before whitespace and the street number.
@@ -37,6 +39,7 @@ def _holder_name(value: str) -> str:
 
 def reconcile_holders(df_saved: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
     """Fill missing cells of exact name aliases only at the same filing date and holder type."""
+    # merge: the saved rows before the new ones, on a datetime filing date
     df_rows = pd.concat([df_saved, df_new], ignore_index=True, sort=False)
     if df_rows.empty:
         return df_rows

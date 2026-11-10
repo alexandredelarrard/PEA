@@ -8,9 +8,7 @@ domain empty, and an open empty domain consumes its attempt. The prompt gets the
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
-from typing import cast
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -19,72 +17,18 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.resume import document_floor, planner_bounds
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
-from src.data_extract.utils.structure.def14a.gender import (
-    basis_distribution,
-    consensus,
-    log_consensus,
-    recompute_parent_gender,
-)
-from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
-from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section
-from src.data_extract.utils.structure.def14a.work import (
-    FilingWork,
-    load_archives,
-    load_work,
-    matched_batches,
-    open_sections,
-    requests_for,
-    reserve,
-    save_archive,
-    save_section,
-)
+from src.data_extract.utils.structure.def14a.gender import finalise_gender
+from src.data_extract.utils.structure.def14a.retry import SECTIONS
+from src.data_extract.utils.structure.def14a.work import call_sections, section_requests, ticker_works
 from src.data_store.schema import Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.gpt_extract.utils.schemas_gpt import LlmTask
 from src.utils.string import run_date
 from src.utils.tickers_universe.universe import before_end
 
-logger = logging.getLogger(__name__)
-
 #: The `sec_def14a_text` columns the worklist reads; `payload` is read per ticker, for its proxies worth a payload.
 _TEXT_COLUMNS = ["ticker", "accession_number", "cik", "filing_date"]
-
-
-def _finalise_gender(context: Context) -> None:
-    """Cross-ticker gender consensus over `def14a_directors`, run once after the per-ticker loop.
-
-    A director recurs across companies, so the consensus needs every ticker's rows. Rewrites
-    `def14a_directors` gender columns and the parent's gender ratios only when something changed.
-    """
-    # load: every ticker's directors
-    directors = context.store.load(
-        Tables.def14a_directors, columns=["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"], optional=True
-    )
-    if directors is None or directors.empty:
-        return
-
-    # compute: the consensus, logged against the basis distribution before it
-    before = basis_distribution(directors)
-    resolved, stats = consensus(directors)
-    after = basis_distribution(resolved)
-    log_consensus(context.log, stats, before, after)
-    if not (stats["filled"] or stats["overturned"]):
-        return
-
-    # save: the changed gender columns
-    context.store.save(
-        Tables.def14a_directors,
-        resolved[["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"]],
-        pk=["ticker", "accession_number", "name"],
-    )
-
-    # The filing's stated `n_women_directors` still wins; this ratio only improves the fallback.
-    parent = recompute_parent_gender(resolved)
-    if not parent.empty:
-        context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])
-        context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
 
 
 def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExtractor]:
@@ -100,64 +44,6 @@ def _walked_proxies(df_text: pd.DataFrame | None, names: Mapping[str, str]) -> p
     df = df.assign(filing_date=pd.to_datetime(df["filing_date"]).dt.normalize(), ticker=df["ticker"].astype(str))
     df = df.assign(company_name=df["ticker"].map(names).fillna(""))
     return df.sort_values(["ticker", "filing_date", "accession_number"], kind="stable").reset_index(drop=True)
-
-
-def _ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
-    """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those with an open
-    section."""
-    # load: the saved facts and archives, then the payloads of the proxies that need them
-    works = load_work(context, ticker, df_filings, floor)
-    load_archives(context, works)
-    wanted = [work.stamp["accession_number"] for work in works if open_sections(work)]
-    if not wanted:
-        return works
-    df_payloads = context.store.load(
-        Tables.sec_def14a_text, columns=["accession_number", "section", "payload"], where={"ticker": ticker, "accession_number": wanted}
-    )
-
-    # merge: each section's payload onto its proxy (the `_none` row carries no domain)
-    payloads = {str(acc): dict(zip(df.section, df.payload.fillna(""), strict=True)) for acc, df in df_payloads.groupby("accession_number")}
-    for work in works:
-        work.payloads = payloads.get(str(work.stamp["accession_number"]), {})
-    return works
-
-
-def _requests(context: Context, works: list[FilingWork], budget: int) -> list[tuple[Section, LlmTask]]:
-    """The prompt task of every open section with a payload, cut to `budget`; an open section the proxy lacks consumes
-    its attempt."""
-    requests = []
-    for work in works:
-        requests.extend(requests_for(work, budget))
-        for section in (item for item in open_sections(work) if not work.payloads.get(item.key, "").strip()):
-            reserve(context, work, section, work.attempts[section.key] + 1)
-    return requests
-
-
-def _call_sections(
-    context: Context, ticker: str, requests: list[tuple[Section, LlmTask]], extractors: Mapping[str, LLMExtractor], batch_size: int
-) -> int:
-    """Reserve each owned attempt, call its section's prompt/schema, archive the answer, then postprocess the stored
-    uncut payload and save that section only. Returns the sections answered."""
-    answered = 0
-    for section, tasks in matched_batches(requests, batch_size):
-        for task in tasks:
-            work = cast(FilingWork, task.meta["work"])
-            reserve(context, work, section, min(2, work.attempts[section.key] + 1))
-        results = extractors[section.key].run(tasks)
-        failed = {cast(FilingWork, r.task.meta["work"]).stamp["accession_number"]: r.error for r in results if not r.ok}
-        if failed:
-            context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
-        for result in (r for r in results if r.ok):
-            work = cast(FilingWork, result.task.meta["work"])
-            assert result.parsed is not None
-            work.raw = append_answer(work.raw, section, result.parsed)
-            save_archive(context, work)
-            processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent, work.payloads.get(section.key, ""))
-            save_section(context, work, processed)
-            work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
-            save_archive(context, work)
-            answered += 1
-    return answered
 
 
 def fetch_def14a_llm(
@@ -188,10 +74,10 @@ def fetch_def14a_llm(
     # compute: each ticker's open sections, saved per section
     updated = 0
     for ticker, df_filings in tqdm(df_proxies.groupby("ticker", sort=False), desc="DEF 14A LLM"):
-        works = _ticker_works(context, str(ticker), df_filings, floor)
-        updated += _call_sections(context, str(ticker), _requests(context, works, budget), extractors, batch_size)
+        works = ticker_works(context, str(ticker), df_filings, floor)
+        updated += call_sections(context, str(ticker), section_requests(context, works, budget), extractors, batch_size)
 
     # save: the cross-ticker gender reconciliation after saved updates
     if updated:
-        _finalise_gender(context)
+        finalise_gender(context)
     context.log.info("DEF 14A: %d section answer(s) extracted; sections at retry=2 skipped", updated)

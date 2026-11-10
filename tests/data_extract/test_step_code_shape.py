@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import ast
 import functools
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,26 +40,19 @@ _CALLBACK_DECLARATIONS = {"EdgarFetch", "replace"}
 _EDGAR = "src.data_extract.utils.edgar_extract."
 _EMPLOYEES = "src.data_extract.utils.fundamentals.fundamentals_employees"
 _DEF14A = "src.data_extract.utils.structure.def14a."
-_CARRIED_DEF14A = "carried-over DEF 14A {} code, unchanged by this run (D-16; follow-up harness run in wiki/TODO.md)"
-_TRIMMED_DEF14A = (
-    "carried-over DEF 14A {} code: this run moved the prompt and postprocess source to the stored `sec_def14a_text` "
-    "payloads (no archived `source`) and deleted the test-only free-replay path; the rest is carried over (D-16; "
-    "follow-up harness run in wiki/TODO.md)"
-)
 
 
 @dataclass(frozen=True)
 class Flow:
     """One step's walk: its roots (`run` is level 0, any other root a level-1 sub-run), the modules whose callback
     declarations add level-2 roots, the per-ticker workers `run_per_ticker` calls (level-2 roots too), the in-scope
-    prefixes, the allowlist with reasons and the expected `run()` order."""
+    prefixes and the expected `run()` order."""
 
     name: str
     step_module: str
     step_class: str
     roots: tuple[str, ...]
     scope: tuple[str, ...]
-    allowlist: Mapping[str, str] = field(default_factory=dict)
     callback_modules: tuple[str, ...] = ()
     workers: tuple[str, ...] = ()
     run_order: tuple[str, ...] = ()
@@ -117,12 +110,6 @@ LLM_TEXT = Flow(
     step_class="StepExtractLlm",
     roots=("run_employees_llm", "run_def14a_llm"),
     scope=("src.data_extract.transformers.step_extract_llm", _EMPLOYEES, f"{_DEF14A}fetch"),
-    # Only entries the walk meets are listed (a stale entry fails): the DEF 14A retry/basis/holders/tables/flatten/carve
-    # modules sit below `work`, `postprocess` and `gender`.
-    allowlist={
-        **{f"{_DEF14A}{name}.": _TRIMMED_DEF14A.format(name) for name in ("work", "postprocess")},
-        f"{_DEF14A}gender.": _CARRIED_DEF14A.format("gender"),
-    },
     workers=(f"{_EMPLOYEES}._ticker_employees",),
     run_order=("run_def14a_llm", "run_8k_votes", "run_employees_llm"),
 )
@@ -130,7 +117,11 @@ FLOWS = (IDENTITY, EDGAR_TEXT, LLM_TEXT)
 #: Domain libraries the flows call from levels 1-2 (infrastructure, not walked): every function of these modules keeps
 #: the per-function contract, except the `Tables.<x>` literal rule (D-06: the DEF 14A modules store through the
 #: `SECTIONS` registry tables).
-LIBRARY_MODULES = (f"{_EDGAR}employee_document", "src.data_extract.utils.fundamentals.employee_guard")
+LIBRARY_MODULES = (
+    f"{_EDGAR}employee_document",
+    "src.data_extract.utils.fundamentals.employee_guard",
+    *(f"{_DEF14A}{name}" for name in ("work", "postprocess", "basis", "carve", "holders", "retry", "gender")),
+)
 
 
 @dataclass
@@ -214,17 +205,9 @@ def _qualified(module: _Module, name: str) -> str:
     return f"{module.name}.{name}"
 
 
-def _matches(name: str, prefixes: tuple[str, ...] | Mapping[str, str]) -> str | None:
+def _matches(name: str, prefixes: tuple[str, ...]) -> str | None:
     """The first prefix naming `name` itself, or a module/class prefix (`a.b.` or `a.b` + `.`) holding it."""
     return next((prefix for prefix in prefixes if name == prefix or name.startswith(prefix if prefix.endswith(".") else f"{prefix}.")), None)
-
-
-def _allowlisted(flow: Flow, caller: str, callee: str) -> str | None:
-    """The allowlist key covering the call `caller -> callee` (an edge, or a callee name or prefix)."""
-    edge = f"{caller} -> {callee}"
-    if edge in flow.allowlist:
-        return edge
-    return _matches(callee, {key: reason for key, reason in flow.allowlist.items() if " -> " not in key})
 
 
 def _callbacks(flow: Flow) -> set[str]:
@@ -374,7 +357,6 @@ class _Walk:
     flow: Flow
     callbacks: set[str]
     reached: dict[str, int] = field(default_factory=dict)
-    allowlisted: set[str] = field(default_factory=set)
     infrastructure: set[str] = field(default_factory=set)
     problems: list[str] = field(default_factory=list)
 
@@ -397,9 +379,7 @@ def _visit(walk: _Walk, module: _Module, qualname: str, level: int, path: tuple[
     for target, name in _calls(module, qualname, function):
         callee = _qualified(target, name)
         root = _root_level(walk, target, name)
-        if (key := _allowlisted(walk.flow, qualified, callee)) is not None:
-            walk.allowlisted.add(key)
-        elif root is not None:
+        if root is not None:
             _visit(walk, target, name, root, (*path, qualified))
         elif level >= MAX_LEVEL:
             walk.problems.append(f"{qualified}: level-{level} helper calls repository function {callee}")
@@ -468,13 +448,11 @@ def test_the_walk_callbacks_are_the_declared_ones() -> None:
 
 @pytest.mark.parametrize("flow", FLOWS, ids=lambda flow: flow.name)
 def test_every_function_the_flow_reaches_keeps_the_code_shape_contract(flow: Flow) -> None:
-    """Plan 3c on the AST: depth, flat helpers, limits, blocks, reads, annotations, no inline import; every
-    allowlist entry is used and carries a reason."""
+    """Plan 3c on the AST: depth, flat helpers, limits, blocks, reads, annotations, no inline import, and no
+    exception: every reached function is checked."""
     walk = _walk(flow)
 
     assert not walk.problems, "\n".join(walk.problems)
-    assert walk.allowlisted == set(flow.allowlist), f"stale allowlist entries: {sorted(set(flow.allowlist) - walk.allowlisted)}"
-    assert all(reason.strip() for reason in flow.allowlist.values())
     assert all(f"{flow.step_module}.{flow.step_class}.{root}" in walk.reached for root in flow.roots)
     levels: dict[int, int] = {}
     for level in walk.reached.values():
@@ -482,8 +460,8 @@ def test_every_function_the_flow_reaches_keeps_the_code_shape_contract(flow: Flo
     print(f"\n=== SANITY CHECK: {flow.name} code shape ===")
     print(f"  {len(walk.reached)} function(s) reached from {', '.join(flow.roots)}; per level {dict(sorted(levels.items()))}; 0 violations")
     print(f"  callback roots: {len(walk.callbacks)}; infrastructure leaves called from levels 1-2: {len(walk.infrastructure)}")
-    short = sorted(" -> ".join(part.rstrip(".").rsplit(".", 1)[-1] for part in key.split(" -> ")) for key in flow.allowlist)
-    print(f"  allowlisted ({len(flow.allowlist)}, each with a reason): {short}")
+    libraries = sorted({name.rsplit(".", 1)[0].rsplit(".", 1)[-1] for name in walk.infrastructure if _matches(name, LIBRARY_MODULES)})
+    print(f"  domain libraries called (gated module-wide): {libraries}")
     print("  OK: every reached function keeps the contract; level-3 helpers call no repository function")
 
 

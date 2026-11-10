@@ -29,6 +29,7 @@ class Section:
 
     @property
     def action(self) -> str:
+        """The section's LLM action name (its prompt and model settings)."""
         return "def14a_" + self.key
 
 

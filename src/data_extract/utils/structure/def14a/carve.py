@@ -1,19 +1,15 @@
-"""
-carve.py  (src/data_extract/utils/structure/def14a/carve.py)
--------------------------------------------------------------
-Anchor a proxy statement into the `=== LABEL ===` blocks the model reads. Keep source
-headings, dates and ownership definitions beside the selected tables.
+"""Anchor a proxy statement into the `=== LABEL ===` blocks the model reads, keeping source headings, dates and
+ownership definitions beside the selected tables.
 
-Two thresholds here are load-bearing and measured, not tuned:
-  `_TOC_SKIP_FRAC`      the table-of-contents floor -- an anchor in the first 5% of a proxy
-                        is the TOC entry, not the section
-  `_DIRECTOR_MAX_FRAC`  the director-window ceiling
+Two thresholds are load-bearing: `_TOC_SKIP_FRAC`, the table-of-contents floor (an anchor in the first 5% of a proxy
+is the TOC entry, not the section), and `_DIRECTOR_MAX_FRAC`, the director-window ceiling.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from bisect import bisect_right
 
 from src.data_extract.utils.structure.def14a.tables import (
     AUDIT_FEES,
@@ -238,32 +234,17 @@ def _densest_window(
     min_rows: int = 3,
     max_frac: float | None = None,
 ) -> int:
-    """Return the start of the `chars`-wide window holding the MOST `row_re` matches
-    (the table), `context_pre` chars before its first row — or -1 if fewer than
-    `min_rows` matches exist (caller then falls back to `_find_content_section`).
-
-    Robust to proxies that scatter the director / ownership data or format it as a
-    matrix vs per-person blocks: the densest cluster of row tokens IS the table,
-    whereas isolated prose mentions never accumulate.
-
-    `max_frac` bounds how far INTO the document the window may start, for a section that is
-    always in the front matter. Density alone cannot reject a back-half block: T's winner sat at
-    53.6% in the pension-assumptions discussion and EOG's at 70.0% in change-of-control prose,
-    both dense in "Age"/"Director Since" tokens (see `_DIRECTOR_MAX_FRAC`). Left None for every
-    section whose target may legitimately be anywhere.
-    """
+    """The start of the `chars`-wide window holding the most `row_re` matches (the table), `context_pre` chars before
+    its first row; -1 when fewer than `min_rows` match (the caller falls back to `_find_content_section`). `max_frac`
+    caps how far into the document the window may start, for a section always in the front matter; None for a
+    section whose target may be anywhere."""
     limit = len(text) if max_frac is None else int(len(text) * max_frac)
     starts = [m.start() for m in row_re.finditer(text) if m.start() <= limit]
     if len(starts) < min_rows:
         return -1
     best_start, best_n = starts[0], 0
     for i, p in enumerate(starts):
-        n = 0
-        for q in starts[i:]:
-            if q <= p + chars:
-                n += 1
-            else:
-                break
+        n = bisect_right(starts, p + chars) - i  # the matches from this one within `chars` (`starts` is ascending)
         if n > best_n:
             best_n, best_start = n, p
     return max(0, best_start - context_pre)
@@ -277,23 +258,10 @@ def _find_content_section(
     last_occurrence: bool = False,
     toc_frac: float = _TOC_SKIP_FRAC,
 ) -> int:
-    """Find the start of a section using content-based regex(es).
-
-    `content_re` may be a single pattern or a TUPLE of patterns tried in priority
-    order (the first that matches wins — used for compensation: prefer the SCT
-    title+data-row anchor, else the header-cluster fallback). Returns a position
-    `context_pre` chars before the first (or last, if `last_occurrence=True`) match
-    so the LLM sees full context. When `content_re` is None (prose sections) or no
-    content match is found, falls back to text-anchor scanning.
-
-    `toc_frac` is the front-matter fraction a match must clear, and it now applies to the
-    CONTENT-REGEX path as well as the anchor fallback. It used to guard only the fallback,
-    which is how the NEM / ROK / SYK carves landed at 3.0% / 2.0% / 3.7% of the document while
-    the pay ratio they were looking for sat at 49-92%. Pass `toc_frac=0.0` for a section whose
-    target legitimately appears in the front matter — SAY ON PAY does, because filers summarise
-    last year's result in an early "voting matters" panel, and A-2016's sits at 4.2%. A floor
-    is only correct for the sections that are NEVER in the front matter.
-    """
+    """The start of a section, `context_pre` chars before the first (or last) match of the content pattern(s), tried
+    in priority order, that clears the `toc_frac` front-matter floor; else the first text anchor followed by prose;
+    -1 when neither is found. Pass `toc_frac=0.0` for a section whose target may sit in the front matter."""
+    # compute: the first content pattern with a match past the front matter
     patterns = () if content_re is None else content_re if isinstance(content_re, tuple) else (content_re,)
     min_pos = int(len(text) * toc_frac) if toc_frac > 0 else 0
     for pattern in patterns:
@@ -306,31 +274,29 @@ def _find_content_section(
     low = text.lower()
     anchor_min = max(5000, min_pos) if toc_frac > 0 else 0
     for anchor in fallback_anchors:
-        start = anchor_min
-        while True:
-            p = low.find(anchor, start)
-            if p == -1:
-                break
-            after = text[p + len(anchor) : p + len(anchor) + 200]
-            letter_ratio = sum(c.isalpha() for c in after[:100]) / max(len(after[:100]), 1)
-            if letter_ratio > 0.20:
-                return max(0, p - context_pre)
-            start = p + 1
+        position = _anchor_position(text, low, anchor, anchor_min)
+        if position != -1:
+            return max(0, position - context_pre)
+    return -1
+
+
+def _anchor_position(text: str, low: str, anchor: str, start: int) -> int:
+    """The first occurrence of `anchor` in the lower-cased `low` from `start` on that is followed by prose (over 20%
+    letters in the next 100 chars of `text`); -1 when there is none."""
+    position = low.find(anchor, start)
+    while position != -1:
+        after = text[position + len(anchor) : position + len(anchor) + 200]
+        letter_ratio = sum(c.isalpha() for c in after[:100]) / max(len(after[:100]), 1)
+        if letter_ratio > 0.20:
+            return position
+        position = low.find(anchor, position + 1)
     return -1
 
 
 def _auditor_name_slice(text: str, fee_table: tuple[list[str], list[list[str]]] | None) -> int:
-    """Start of a narrative slice positioned on the FEE TABLE, for the auditor's firm name.
-
-    The firm name is not in the fee table's cells -- it is in the sentence just before it
-    ("fees billed by PricewaterhouseCoopers LLP") or in cell [0][0]. Position is derived from
-    the table itself by finding one of its comma-grouped values in the flattened text, which
-    maps the HTML-side match onto the text-side offset with no second regex.
-
-    This replaces `last_occurrence=True` on the auditor anchor, which overshot in BOTH
-    directions -- WMT's carve landed 3,066 chars BEFORE the fee table, HUBB's and ROK's
-    149k / 165k chars away.
-    """
+    """Start of a narrative slice positioned on the fee table, for the auditor's firm name, which sits in the
+    sentence just before the table ("fees billed by PricewaterhouseCoopers LLP") or in its first cell. The table is
+    found in the flattened text by one of its comma-grouped values; -1 when none is found."""
     if not fee_table:
         return -1
     values = [c for row in fee_table[1] for c in row if _FEE_VALUE_RE.fullmatch(c or "")]
@@ -370,33 +336,16 @@ def _table_context(text: str, table: str, domain: str) -> str:
 
 
 def prepare_def14a_sections(html: str, text: str) -> str:
-    """Return a focused subset of the DEF 14A, routing each target to the strategy that
-    actually reaches it.
-
-    Two strategies, per the measured recall:
-
-    * **Tables (B)** own the five tabular targets -- Summary Compensation Table, director
-      compensation, audit fees, >=5% holders, insider ownership. `def14a_tables` classifies
-      the filing's `<table>` elements on their header signature and serializes the winner as
-      TSV. Measured 308/320 = 96.2% over 64 cached filings, mean 5,316 chars for all five.
-    * **Anchors (A)** own the two PROSE targets (director bios, corporate governance) and the
-      two narrative numbers (pay ratio, say-on-pay), and stand in as the FALLBACK whenever B
-      finds no table -- which is not a rare path: EOG, GE, JPM and PEG all disclose their audit
-      fees in narrative prose, so B reaches only 81% of fee disclosures by construction.
-
-    Why B matters most: the director-compensation table is A's structural blind spot and always
-    was. It sits at 23-36% of the document, in the gap between A's `DIRECTOR NOMINEES` window
-    (ends ~17-21%) and `EXECUTIVE COMPENSATION` (starts ~42-64%), median miss distance 70,761
-    chars. A found it in 2 of 25 filings; no budget widening reaches it.
-
-    `=== LABEL ===` blocks, the same convention the prompt references. Never emits nothing for
-    a target A could have reached.
-    """
+    """A focused subset of the DEF 14A as `=== LABEL ===` blocks: the classified tables (B) for the five tabular
+    targets as TSV, the text anchors (A) for the prose targets and the narrative numbers, and A as the fallback for a
+    tabular target B found no table for; the auditor name slice is positioned on B's fee table."""
+    # load: the filing's classified tables
     tables = classify_filing(html) if html else {}
     parts: list[str] = []
     from_b: list[str] = []
     from_a: list[str] = []
 
+    # B: each tabular target the classifier found, as TSV
     for label, target in _TABLE_TARGETS:
         if target in tables:
             parts.append(f"\n\n=== {label} ===\n{to_tsv(*tables[target])}")
@@ -409,15 +358,15 @@ def prepare_def14a_sections(html: str, text: str) -> str:
             parts.append("\n\n=== DIRECTOR COMPENSATION TABLE ===\n" + historical)
             from_a.append("DIRECTOR COMPENSATION TABLE")
 
-    # A's EXECUTIVE COMPENSATION / SECURITY OWNERSHIP / AUDITOR FEES windows are now
-    # FALLBACKS -- emitted only when B found no table for that target. Dropping them on the
-    # happy path is where most of the payload saving comes from (three windows, 19,500 chars).
+    # A's EXECUTIVE COMPENSATION / SECURITY OWNERSHIP / AUDITOR FEES windows are fallbacks, emitted only when B
+    # found no table for that target.
     fallbacks = {
         "EXECUTIVE COMPENSATION": SCT not in tables,
         "SECURITY OWNERSHIP": OWNERSHIP_INSIDER not in tables and OWNERSHIP_5PCT not in tables,
         "AUDITOR FEES": AUDIT_FEES not in tables,
     }
 
+    # A: each anchored window, by row density first, then by content pattern or text anchor
     for label, dense_re, content_re, anchors, use_last, toc_frac, chars, max_frac in _ANCHOR_SECTIONS:
         if label in fallbacks and not fallbacks[label]:
             continue
@@ -437,10 +386,9 @@ def prepare_def14a_sections(html: str, text: str) -> str:
         parts.append(f"\n\n=== AUDITOR NAME ===\n{text[name_pos:end]}")
         from_a.append("AUDITOR NAME")
 
+    # log: where each target came from; a target moving from B to A across a filer's template change shows here first
     payload = "".join(parts) if parts else text[:120_000]
     missing = [lbl for lbl, _ in _TABLE_TARGETS if lbl not in from_b]
-    # This log line is the diagnostic that tells you a FORMAT ERA broke: a target that
-    # silently moves from B to A across a filer's template change shows up here first.
     logger.debug(
         "def14a carve: B=%s | A=%s | no-table=%s | %d chars", ",".join(from_b) or "-", ",".join(from_a) or "-", ",".join(missing) or "-", len(payload)
     )
@@ -489,12 +437,7 @@ def _fixed_width_sct(raw: str) -> str:
         ends = [*starts[1:], max(len(line) for line in lines)]
         headers = [re.sub(r"<[^>]*>", lambda item: " " * len(item[0]), line) for line in lines[:alignment] if not re.fullmatch(r"[-\s]*", line)]
         header = [" ".join(line[start:end].strip() for line in headers if line[start:end].strip()) for start, end in zip(starts, ends, strict=True)]
-        for label in ("OTHER ANNUAL", "TOTAL ANNUAL"):
-            heading = next((found for line in headers if (found := re.search(label, line, re.I))), None)
-            if heading is not None:
-                position = heading.start()
-                column = min(range(2, len(starts)), key=lambda index: abs(starts[index] - position))
-                header[column] = label + " COMPENSATION"
+        _label_annual_columns(header, headers, starts)
         if not any("salary" in cell.lower() for cell in header) or not any("year" in cell.lower() for cell in header):
             continue
         rows = [
@@ -504,6 +447,47 @@ def _fixed_width_sct(raw: str) -> str:
         ]
         parts.append("\t".join(header) + "\n" + "\n".join("\t".join(row) for row in rows))
     return "\n\n".join(parts)
+
+
+def _label_annual_columns(header: list[str], headers: list[str], starts: list[int]) -> None:
+    """Name the OTHER ANNUAL and TOTAL ANNUAL columns of a fixed-width header after the column whose start is
+    nearest each heading."""
+    for label in ("OTHER ANNUAL", "TOTAL ANNUAL"):
+        heading = next((found for line in headers if (found := re.search(label, line, re.I))), None)
+        if heading is not None:
+            position = heading.start()
+            column = min(range(2, len(starts)), key=lambda index: abs(starts[index] - position))
+            header[column] = label + " COMPENSATION"
+
+
+def _domain_parts(text: str, blocks: dict[str, str], domain: str, labels: tuple[str, ...]) -> list[str]:
+    """The domain's carved blocks in label order; a director-pay or ownership table keeps its date headings, basis
+    definitions and neighbouring source tables before it."""
+    parts: list[str] = []
+    for label in labels:
+        block = blocks.get(label, "")
+        if not block:
+            continue
+        if domain in ("director_pay", "ownership") and "\t" in block:
+            context = _table_context(text, block, domain)
+            block = f"Source context surrounding this table:\n{context}\n\nSource table (tab-separated columns):\n{block}" if context else block
+        parts.append(f"=== {label} ===\n{block}")
+    return parts
+
+
+def _fallback_part(text: str, label: str, anchor: str) -> list[str]:
+    """The text from the domain's content anchor to the next domain heading, under `label`, for a domain the carve
+    kept no block for; none when the anchor is not found."""
+    position = _find_content_section(text, re.compile(anchor, re.I), (), toc_frac=0.0)
+    if position < 0:
+        return []
+    other = re.search(
+        r"\n\s*(?:SUMMARY COMPENSATION TABLE|COMPENSATION OF DIRECTORS|AUDIT FEES|BENEFICIAL OWNERSHIP|CORPORATE GOVERNANCE)\b",
+        text[position + _CONTEXT_PRE :],
+        re.I,
+    )
+    end = position + _CONTEXT_PRE + other.start() if other else len(text)
+    return [f"=== {label} ===\n{text[position:end]}"]
 
 
 def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
@@ -529,27 +513,7 @@ def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
     # Recover short historical text and preserve the nearby scale/currency declaration.
     result: dict[str, str] = {}
     for domain, (labels, anchor) in domains.items():
-        # Preserve date headings, basis definitions and neighboring source tables for these domains.
-        parts: list[str] = []
-        for label in labels:
-            block = blocks.get(label, "")
-            if not block:
-                continue
-            if domain in ("director_pay", "ownership") and "\t" in block:
-                context = _table_context(text, block, domain)
-                block = f"Source context surrounding this table:\n{context}\n\nSource table (tab-separated columns):\n{block}" if context else block
-            parts.append(f"=== {label} ===\n{block}")
-
-        if not parts:
-            position = _find_content_section(text, re.compile(anchor, re.I), (), toc_frac=0.0)
-            if position >= 0:
-                other = re.search(
-                    r"\n\s*(?:SUMMARY COMPENSATION TABLE|COMPENSATION OF DIRECTORS|AUDIT FEES|BENEFICIAL OWNERSHIP|CORPORATE GOVERNANCE)\b",
-                    text[position + _CONTEXT_PRE :],
-                    re.I,
-                )
-                end = position + _CONTEXT_PRE + other.start() if other else len(text)
-                parts.append(f"=== {labels[0]} ===\n{text[position:end]}")
+        parts = _domain_parts(text, blocks, domain, labels) or _fallback_part(text, labels[0], anchor)
         units = _unit_context(text, anchor) if parts else ""
         if units:
             parts.append("=== SOURCE UNITS ===\n" + units)

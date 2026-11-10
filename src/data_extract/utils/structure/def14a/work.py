@@ -1,18 +1,21 @@
-"""Scoped reads and durable saves for the five proxy domains."""
+"""Scoped reads, the per-ticker section calls and durable saves for the five proxy domains."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection
+from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
+
+# `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmTask
 
 
@@ -61,6 +64,7 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
 
 def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
     """Read each scoped fact table once, without the large paid JSON archive."""
+    # load: each section table's rows of the ticker in the window, markers included
     if filings.empty:
         return []
     frames: dict[Table, pd.DataFrame] = {}
@@ -104,6 +108,7 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
 
 def load_archives(context: Context, works: list[FilingWork]) -> None:
     """Load only candidate archives, and inherit legacy all-domain attempts."""
+    # load: the archives of the proxies with a gap
     accessions = [work.stamp["accession_number"] for work in works if work.pending]
     saved = (
         context.store.load(
@@ -139,6 +144,26 @@ def open_sections(work: FilingWork) -> list[Section]:
     return [section for section in SECTIONS if section.key in work.pending and work.attempts[section.key] < 2]
 
 
+def ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
+    """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those with an open
+    section."""
+    # load: the saved facts and archives, then the payloads of the proxies that need them
+    works = load_work(context, ticker, df_filings, floor)
+    load_archives(context, works)
+    wanted = [work.stamp["accession_number"] for work in works if open_sections(work)]
+    if not wanted:
+        return works
+    df_payloads = context.store.load(
+        Tables.sec_def14a_text, columns=["accession_number", "section", "payload"], where={"ticker": ticker, "accession_number": wanted}
+    )
+
+    # merge: each section's payload onto its proxy (the `_none` row carries no domain)
+    payloads = {str(acc): dict(zip(df.section, df.payload.fillna(""), strict=True)) for acc, df in df_payloads.groupby("accession_number")}
+    for work in works:
+        work.payloads = payloads.get(str(work.stamp["accession_number"]), {})
+    return works
+
+
 def requests_for(work: FilingWork, budget: int) -> list[tuple[Section, LlmTask]]:
     """One task per open section whose stored payload is not empty; the prompt gets its first `budget` characters."""
     return [
@@ -148,6 +173,17 @@ def requests_for(work: FilingWork, budget: int) -> list[tuple[Section, LlmTask]]
     ]
 
 
+def section_requests(context: Context, works: list[FilingWork], budget: int) -> list[tuple[Section, LlmTask]]:
+    """The prompt task of every open section with a payload, cut to `budget`; an open section the proxy lacks consumes
+    its attempt."""
+    requests = []
+    for work in works:
+        requests.extend(requests_for(work, budget))
+        for section in (item for item in open_sections(work) if not work.payloads.get(item.key, "").strip()):
+            reserve(context, work, section, work.attempts[section.key] + 1)
+    return requests
+
+
 def matched_batches(requests: list[tuple[Section, LlmTask]], size: int) -> Iterator[tuple[Section, list[LlmTask]]]:
     """Bound in-flight answers using the existing worker count, without capping the daily worklist."""
     for section in SECTIONS:
@@ -155,6 +191,33 @@ def matched_batches(requests: list[tuple[Section, LlmTask]], size: int) -> Itera
         for start in range(0, len(tasks), max(1, size)):
             batch = tasks[start : start + max(1, size)]
             yield section, [replace(task, seq=seq) for seq, task in enumerate(batch)]
+
+
+def call_sections(
+    context: Context, ticker: str, requests: list[tuple[Section, LlmTask]], extractors: Mapping[str, LLMExtractor], batch_size: int
+) -> int:
+    """Reserve each owned attempt, call its section's prompt/schema, archive the answer, then postprocess the stored
+    uncut payload and save that section only. Returns the sections answered."""
+    answered = 0
+    for section, tasks in matched_batches(requests, batch_size):
+        for task in tasks:
+            work = cast(FilingWork, task.meta["work"])
+            reserve(context, work, section, min(2, work.attempts[section.key] + 1))
+        results = extractors[section.key].run(tasks)
+        failed = {cast(FilingWork, r.task.meta["work"]).stamp["accession_number"]: r.error for r in results if not r.ok}
+        if failed:
+            context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
+        for result in (r for r in results if r.ok):
+            work = cast(FilingWork, result.task.meta["work"])
+            assert result.parsed is not None
+            work.raw = append_answer(work.raw, section, result.parsed)
+            save_archive(context, work)
+            processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent, work.payloads.get(section.key, ""))
+            save_section(context, work, processed)
+            work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
+            save_archive(context, work)
+            answered += 1
+    return answered
 
 
 def reserve(context: Context, work: FilingWork, section: Section, attempt: int) -> None:
@@ -183,12 +246,7 @@ def save_section(context: Context, work: FilingWork, processed: ProcessedSection
             work.saved[table] = pd.DataFrame([work.parent])
             continue
         if table is Tables.def14a_ownership and not work.saved[table].empty:
-            keys = [*table.pk, "as_of"]
-            df_previous = work.saved[table][keys].assign(as_of=pd.to_datetime(work.saved[table]["as_of"]))
-            df_current = frame[keys].assign(as_of=pd.to_datetime(frame["as_of"]))
-            obsolete = df_previous.merge(df_current, on=keys, how="left", indicator=True)
-            for row in obsolete.loc[obsolete._merge.eq("left_only"), keys].to_dict("records"):
-                context.store.delete(table, where=cast(dict[str, object], row))
+            _delete_obsolete_holders(context, work.saved[table], frame)
         work.saved[table] = frame
         marker_column, marker = cast(tuple[str, str], table.empty_marker)
         if frame[marker_column].ne(marker).any():
@@ -196,3 +254,13 @@ def save_section(context: Context, work: FilingWork, processed: ProcessedSection
                 table, where={"ticker": work.stamp["ticker"], "accession_number": work.stamp["accession_number"], marker_column: marker}
             )
     work.pending = {section.key for section in SECTIONS if has_gaps(section, work.saved[section.table], work.parent)}
+
+
+def _delete_obsolete_holders(context: Context, df_saved: pd.DataFrame, frame: pd.DataFrame) -> None:
+    """Delete each saved `def14a_ownership` holder key the new frame no longer holds."""
+    keys = [*Tables.def14a_ownership.pk, "as_of"]
+    df_previous = df_saved[keys].assign(as_of=pd.to_datetime(df_saved["as_of"]))
+    df_current = frame[keys].assign(as_of=pd.to_datetime(frame["as_of"]))
+    obsolete = df_previous.merge(df_current, on=keys, how="left", indicator=True)
+    for row in obsolete.loc[obsolete._merge.eq("left_only"), keys].to_dict("records"):
+        context.store.delete(Tables.def14a_ownership, where=cast(dict[str, object], row))

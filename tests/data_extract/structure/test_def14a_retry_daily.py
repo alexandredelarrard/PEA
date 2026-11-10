@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from src.context import Context
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import _section_rows
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.structure.def14a import fetch
+from src.data_extract.utils.structure.def14a import fetch, work
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Table, Tables
@@ -89,7 +89,7 @@ def daily(tmp_path, monkeypatch):
                 raise answer
             return schema.model_validate(answer), {"input_tokens": 1, "output_tokens": 1}
 
-    monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)
+    monkeypatch.setattr(fetch, "finalise_gender", lambda *_: None)
     monkeypatch.setattr(LLMExtractor, "initialize_client", lambda *_args, **_kwargs: Provider())
     return context, calls, answers, filing
 
@@ -250,7 +250,7 @@ def test_paid_answer_survives_postprocessing_failure(daily, monkeypatch):
     def broken(*_):
         raise RuntimeError("postprocessing interrupted")
 
-    monkeypatch.setattr(fetch, "postprocess_section", broken)
+    monkeypatch.setattr(work, "postprocess_section", broken)
     with pytest.raises(RuntimeError, match="postprocessing interrupted"):
         fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
     raw = context.store.load(Tables.def14a_llm, markers=True).iloc[0].def14a_json

@@ -13,12 +13,13 @@ from src.data_extract.transformers.step_extract_institutionals import (
     StepExtractInstitutionals,
 )
 
-#: names that build, download for or propagate the identity; none belongs in a domain step.
+#: names that build, download for or sync the identity; none belongs in a domain step.
 IDENTITY_STAGE_NAMES = (
     "scan_form345_cache",
     "build_symbol_tenure",
     "symbol_rows",
-    "identity_propagate",
+    "identity_sync",
+    "restamp_insider_lineage",
     "download_insider_transactions",
     "download_notes_periods",
     "refresh=True",

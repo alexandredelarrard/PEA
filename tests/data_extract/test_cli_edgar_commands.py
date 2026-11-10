@@ -192,10 +192,10 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
     print("  the two in order run both halves. OK: the DAG can schedule the walk in its own pool.")
 
 
-def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(
+def test_f109_f115_identity_sync_every_ticker_and_notes_download_years_reach_their_functions(
     sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`identity --only propagate`, and `zips-download --only notes` then `identity --only capture-evidence`."""
+    """`identity --only sync`, and `zips-download --only notes` then `identity --only capture-evidence`."""
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     calls: list[tuple[str, dict[str, Any]]] = []
     context = SimpleNamespace(name="ctx", store=sqlite_store, config_dir="configs", universe=seed_universe(sqlite_store, ["AAA"]))
@@ -205,21 +205,20 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     monkeypatch.setattr(step_identity, "pending_dei_periods", lambda ctx, cache, full: calls.append(("dei", {"full": full})) or [])
     monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(step_identity, "build_symbol_tenure", lambda *args: pd.DataFrame())
-    monkeypatch.setattr(step_identity, "recheck_tickers", lambda scopes, as_of, every: calls.append(("propagate", {"every": every})) or [])
+    monkeypatch.setattr(step_identity, "recheck_tickers", lambda scopes, as_of, every: calls.append(("sync", {"every": every})) or [])
     stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: calls.append(("periods", {"years": years})) or ["2026q1"])
     monkeypatch.setattr(step_zips, "download_notes_periods", lambda ctx, cache, periods: calls.append(("notes", {"periods": periods})) or 0)
 
-    dry_run = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "propagate", "--full", "--dry-run"])
-    assert dry_run.exit_code == 0 and "no pending removals" in dry_run.output
-    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "propagate"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "sync", "--full"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "sync"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["zips-download", "--only", "notes"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-evidence"]).exit_code == 0
-    assert [kwargs.get("every") for name, kwargs in calls if name == "propagate"] == [True, False]
+    assert [kwargs.get("every") for name, kwargs in calls if name == "sync"] == [True, False]
     assert [kwargs for name, kwargs in calls if name in ("periods", "notes")] == [{"years": 32}, {"periods": ["2026q1"]}]
     assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], (
         "identity --only capture-evidence captures the cover-page symbols"
     )
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
-    print("  identity --only propagate --full re-checks every ticker (recheck_tickers every=True) and prints the dry run;")
+    print("  identity --only sync --full re-checks every ticker (recheck_tickers every=True), without it only the recent stamps;")
     print("  zips-download --only notes lists years_history 31 + 1 Notes years; identity --only capture-evidence captures")

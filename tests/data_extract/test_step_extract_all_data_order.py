@@ -1,5 +1,5 @@
 """`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, anchor,
-CIK / symbol / CUSIP history, propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> `StepExtractEdgar`
+CIK / symbol / CUSIP history, SQL-only sync) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> `StepExtractEdgar`
 (the SEC facts walk included) -> SEC fundamentals history + check -> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
 from src.data_extract.transformers import step_extract_universe as universe_module
 from src.data_extract.transformers import step_extract_zips as zips_module
-from tests.support.propagation import stub_propagation
+from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe
 
 #: an empty published lineage, as the stubbed resolver inputs carry
@@ -39,7 +39,7 @@ IDENTITY_STAGE = (
     "universe_cik_symbol",
     "universe_cusip",
     "identity_refresh",
-    "propagate",
+    "sync",
 )
 ZIP_INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 
@@ -104,10 +104,10 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
         return mark("identity_refresh", inputs)()
 
-    def propagate(scopes, as_of, every):
+    def sync(scopes, as_of, every):
         today = pd.Timestamp.today().normalize()
         assert sorted(scopes) == ["AAA", "BBB"] and not every and as_of == today
-        return mark("propagate", [])()
+        return mark("sync", [])()
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
@@ -117,9 +117,9 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_lifecycle", lambda step: None)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_publish", lambda step: None)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cusip_history", universe_cusip)
-    stub_propagation(monkeypatch, identity_module)
+    stub_sync(monkeypatch, identity_module)
     monkeypatch.setattr(identity_module, "identity_inputs", refresh)
-    monkeypatch.setattr(identity_module, "recheck_tickers", propagate)
+    monkeypatch.setattr(identity_module, "recheck_tickers", sync)
 
     config = SimpleNamespace(
         data_extract=SimpleNamespace(years_history=15, sharadar_years_history=31),
@@ -165,12 +165,12 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch, sqlite_store)
     print(f"  then zip ingests: {' -> '.join(ZIP_INGESTS)}")
     print(f"  then domain steps: {' -> '.join(DOMAIN_STEPS)}")
     print(
-        "  OK: decision-1 order; Sharadar -> EDGAR (facts walk) -> SEC history + check; the LLM step is built after; every consumer reads the propagated lineage"
+        "  OK: decision-1 order; Sharadar -> EDGAR (facts walk) -> SEC history + check; the LLM step is built after; every consumer reads the published lineage"
     )
 
 
-@pytest.mark.parametrize("boom", ["universe_cik_symbol", "universe_cusip", "propagate"])
-def test_identity_or_propagation_failure_stops_before_any_consumer(monkeypatch, sqlite_store, boom):
+@pytest.mark.parametrize("boom", ["universe_cik_symbol", "universe_cusip", "sync"])
+def test_identity_or_sync_failure_stops_before_any_consumer(monkeypatch, sqlite_store, boom):
     order: list[str] = []
     with pytest.raises(RuntimeError, match=boom):
         _step(monkeypatch, sqlite_store, order, boom=boom).run()

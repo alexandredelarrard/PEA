@@ -26,7 +26,6 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     archive_available_at,
-    cache_dir,
     cached_periods,
     ensure_zip,
     quarter_periods,
@@ -35,10 +34,10 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.resume import archive_worklist, period_end
+from src.data_extract.utils.common.resume import archive_worklist, period_end, rescan_lineage
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
-from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive, reparse_clock
+from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik_series, run_date
 
@@ -387,8 +386,9 @@ def repair_notes_availability(context: Context, cache: Path) -> int:
 def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, periods: list[str]) -> int:
     """Parse the work list's notes periods into `notes_num` and `notes_text`; returns rows upserted.
 
-    Periods missing from either table are parsed for every ticker, and cached periods again for a new ticker
-    with no row. `scope.full` re-reads every stored period too (after a parse change).
+    Periods missing from either table are parsed for every ticker; on such a run, cached stored periods again for
+    each (ticker, window CIK) pair changed since the newest stored period with no row, keeping that CIK's rows only.
+    `scope.full` re-reads every stored period too (after a parse change).
     """
     period_clocks = _repair_stored_clocks(context, cache, overwrite=False)
     identity = load_identity(context)
@@ -400,6 +400,7 @@ def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, perio
         scope.tickers,
         scope.run_date,
         full=scope.full,
+        lineage=rescan_lineage(identity),
     )
     units = dict(work.units())
     n_num = n_txt = 0
@@ -417,30 +418,10 @@ def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, perio
             logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
         num, txt = _read_notes(path, identity, set(units[period]))
+        if period in work.rescan:
+            num, txt = work.rescan_rows(num, "cik"), work.rescan_rows(txt, "cik")
         n_num += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
         n_txt += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
 
     logger.info("notes: upserted %d num + %d text rows (%d pending + %d rescanned periods)", n_num, n_txt, len(work.pending), len(work.rescan))
     return n_num + n_txt
-
-
-def reparse_financial_notes(context: Context, tickers: list[str], *, identity: Identity) -> int:
-    """Re-read every cached notes zip for `tickers` only (a lineage expansion) through `identity`; returns rows upserted.
-
-    No download: the next regular run keeps its own resume.
-    """
-    cache = cache_dir(context, context.config.local.paths.financial_notes)
-    saved = 0
-    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
-    periods = cached_notes_periods(cache)
-    for period in periods:
-        path = cache / f"{period}_notes.zip"
-        available_at = reparse_clock(context, _NOTES_TABLES, period, path, observed_from)
-        if available_at is None:
-            logger.warning("notes %s: archive clock unavailable -> not re-parsed", period)
-            continue
-        num, txt = _read_notes(path, identity, set(tickers))
-        saved += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
-        saved += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
-    logger.info("notes: re-parsed %d cached period(s) for %d ticker(s), %d row(s) upserted", len(periods), len(tickers), saved)
-    return saved

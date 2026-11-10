@@ -27,7 +27,7 @@ DUPLICATE_EXCEPTIONS: dict[tuple[str, str], str] = {}
 _DRIVER = "the EDGAR fetch driver and its parsers, owned by edgar_extract; fundamentals and 13F run their fetches through it"
 _INSIDER = "the insider Form 4 pipeline shared by the EDGAR fetch and the bulk zip reader (moving it is a follow-up)"
 _DEF14A = "a DEF 14A / 8-K vote parser owned by its structure package; the EDGAR fetch calls it on each filing"
-_PROPAGATE = "a source's own re-stamp / re-parse entry point, called by identity propagation"
+_NOTES_CACHE = "the Notes cache listing owned by the Notes reader; the identity dei capture lists the same zips"
 #: Accepted placement exceptions: owner module -> (names, reason). Phase 9b measured these; moving the shared ones
 #: into `common/` is a separate decision (02-plan Phase 9b record).
 PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
@@ -47,7 +47,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         _INSIDER,
     ),
     "src.data_extract.utils.edgar_extract.insider_store": (frozenset({"patch_insider_source", "save_insider_source"}), _INSIDER),
-    "src.data_extract.utils.fundamentals.build_history": (frozenset({"build_fundamentals_history"}), _PROPAGATE),
     "src.data_extract.utils.fundamentals.kpi_catalogue": (
         frozenset({"Catalogue", "load_catalogue"}),
         "the KPI catalogue owned by fundamentals; the Sharadar merge reads the same catalogue",
@@ -59,8 +58,7 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.structure.def14a.ecd": (frozenset({"ecd_facts", "ecd_row", "has_ecd_block"}), _DEF14A),
     "src.data_extract.utils.structure.def14a.validate": (frozenset({"repair_main_row"}), _DEF14A),
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),
-    "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods", "reparse_financial_notes"}), _PROPAGATE),
-    "src.data_extract.utils.zips.fetch_insider_transactions": (frozenset({"reparse_insider_transactions", "restamp_insider_lineage"}), _PROPAGATE),
+    "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods"}), _NOTES_CACHE),
 }
 
 

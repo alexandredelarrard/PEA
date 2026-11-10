@@ -30,7 +30,7 @@ from tests.canonical_schema import create_canonical
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _lineage, _master
-from tests.support.propagation import run_propagation
+from tests.support.identity_sync import run_sync
 from tests.support.universe import seed_universe
 
 
@@ -547,17 +547,15 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     sqlite_store.save(Tables.insider_footnotes, notes)
     spec = next(spec for spec in step_module.PURGE_TABLES if spec.table == Tables.insider_transactions)
     monkeypatch.setattr(step_module, "PURGE_TABLES", (spec,))
-    for name in ("reparse_notes", "reparse_insider"):
-        monkeypatch.setattr(step_module, name, lambda *args: {})
-    monkeypatch.setattr(step_module, "refresh_insider", lambda *args, **kwargs: [])
-    run_propagation(context, identity, monkeypatch, ["LEN"], full=True, as_of=pd.Timestamp("2026-10-08"))
+    monkeypatch.setattr(step_module, "restamp_insider_lineage", lambda *args, **kwargs: [])
+    run_sync(context, identity, monkeypatch, full=True, as_of=pd.Timestamp("2026-10-08"))
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None
     assert set(zip(kept["accession_number"], kept["ticker"], strict=True)) == {("a", "AAA"), ("b", "LEN")}
     kept_notes = sqlite_store.load(Tables.insider_footnotes)
     assert kept_notes is not None
     assert kept_notes["footnote_text"].tolist() == ["shared actual note"]
-    print("SANITY: actual generic identity propagation preserves another issuer's shared-accession payload/notes.")
+    print("SANITY: the actual identity sync purge preserves another issuer's shared-accession payload/notes.")
 
 
 def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Identity]:

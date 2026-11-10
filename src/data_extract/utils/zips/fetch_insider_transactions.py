@@ -9,9 +9,10 @@ kept accessions. Each quarter logs how many of its filings EDGAR missed.
 
 `download_insider_transactions` caches every quarter's zip (the identity build reads them). Zips are
 cached and downloaded only when missing. The quarters parsed come from `resume.archive_worklist`: those
-no stored row carries, plus every cached quarter for a new ticker with no zip-covered row yet (its rows
-only); `reparse` re-reads every stored quarter too. `restamp_insider_lineage` rewrites the lineage stamp
-of stored rows (either source) after a lineage change and purges co-registrant rows, reading no zip and
+no stored row carries, plus, on a run that stores a new quarter, every cached stored quarter for a (ticker,
+issuer CIK) pair changed since the newest stored quarter with no zip-covered row yet (that CIK's rows only);
+`reparse` re-reads every stored quarter too. `restamp_insider_lineage` (the identity sync) rewrites the lineage
+stamp of stored rows (either source) after a lineage change and purges co-registrant rows, reading no zip and
 no EDGAR filing.
 """
 
@@ -41,7 +42,8 @@ from src.data_extract.utils.common.bulk_cache import (
     read_zip_tables,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.resume import ArchiveWork, archive_worklist
+from src.data_extract.utils.common.identity_contract import ROLE_EVENT, ROLE_WINDOW
+from src.data_extract.utils.common.resume import ArchiveWork, archive_worklist, rescan_lineage
 from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
@@ -480,12 +482,14 @@ def download_insider_transactions(context: Context) -> list[str]:
     return cached
 
 
-def _keep_keys(parsed: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], keys: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """A rescanned quarter's output cut to `keys`: their kept rows, the rejects that claimed them, and the
-    footnotes of the kept accessions."""
+def _keep_keys(
+    parsed: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], keys: Sequence[str], work: ArchiveWork
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """A rescanned quarter's output cut to `keys`: their kept rows (outside `full`, of their rescan issuer CIKs only),
+    the rejects that claimed them, and the footnotes of the kept accessions."""
     df_kept, df_rejected, df_notes = parsed
     wanted = set(keys)
-    df_kept = df_kept[df_kept["ticker"].isin(wanted)] if "ticker" in df_kept.columns else df_kept
+    df_kept = work.rescan_rows(df_kept[df_kept["ticker"].isin(wanted)], "issuer_cik") if "ticker" in df_kept.columns else df_kept
     df_rejected = df_rejected[df_rejected["claimed_ticker"].isin(wanted)] if "claimed_ticker" in df_rejected.columns else df_rejected
     df_notes = filter_footnotes(df_notes, set(df_kept["accession_number"].dropna().unique())) if not df_kept.empty else empty_footnotes()
     return df_kept, df_rejected, df_notes
@@ -512,7 +516,16 @@ def fetch_insider_transactions(
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
     span = (start_date.year - first_year + 1) if reparse else years_history + 1
     quarters = quarter_periods(span, first_year, start_date)
-    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, start_date, full=reparse)
+    work = archive_worklist(
+        context,
+        (Tables.insider_transactions,),
+        quarters,
+        cached_periods(cache),
+        tickers,
+        start_date,
+        full=reparse,
+        lineage=rescan_lineage(identity, (ROLE_WINDOW, ROLE_EVENT)),
+    )
 
     units, rescanned = _insider_work_units(work, cached_periods(cache))
     saved = notes_saved = 0
@@ -525,7 +538,7 @@ def fetch_insider_transactions(
             continue
         # Screened against the whole universe, so a row of another universe ticker is never rejected;
         # a rescanned quarter then keeps only its keys' rows.
-        df_kept, df_rejected, df_notes = _keep_keys(parsed, keys) if quarter in rescanned else parsed
+        df_kept, df_rejected, df_notes = _keep_keys(parsed, keys, work) if quarter in rescanned else parsed
         excluded.append(exclusion_rows(df_rejected))
         if quarter not in rescanned:
             report_zip_quarter(context, quarter, df_kept)
@@ -550,29 +563,6 @@ def fetch_insider_transactions(
     return saved
 
 
-def reparse_insider_transactions(context: Context, tickers: list[str], *, identity: Identity, run_date: pd.Timestamp) -> int:
-    """Re-read every cached quarter up to `run_date`'s year for `tickers` only (a lineage expansion) through `identity`;
-    returns the zip rows saved.
-
-    Each quarter goes through `store_zip_quarter`, so a filing EDGAR already stored keeps its rows. The
-    stored-row sweep belongs to the regular full-universe run.
-    """
-    cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    on_disk = cached_periods(cache)
-    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
-    quarters = [q for q in quarter_periods(run_date.year - first_year + 1, first_year) if q in on_disk]
-    saved = 0
-    fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
-    for quarter in quarters:
-        parsed = _read_quarter(cache / f"{quarter}.zip", quarter, tickers, identity, fetched_at)
-        if parsed is None:
-            continue
-        df_kept, _, df_notes = parsed
-        saved += store_zip_quarter(context, quarter, df_kept, df_notes)
-    logger.info("insider_transactions: re-parsed %d cached quarter(s) for %d ticker(s), %d row(s) upserted", len(quarters), len(tickers), saved)
-    return saved
-
-
 def _restamp_targets(context: Context, tickers: Sequence[str], identity: Identity) -> list[str]:
     """`tickers`, every ticker holding a row without a stamp (rows stored before the lineage columns existed), and the
     tickers the manual `merger_metadata` and co-registrants name, since editing those moves no lineage stamp."""
@@ -594,11 +584,11 @@ def _changed_stamps(df_rows: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame
     return df_new.loc[changed, [*INSIDER_KEY, "economic_date", "lineage_role"]]
 
 
-def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identity: Identity, dry_run: bool = False) -> list[dict]:
+def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identity: Identity) -> list[dict]:
     """Re-stamp `economic_date` and `lineage_role` on the stored rows of `tickers` (and of every ticker with an
     unstamped row) under `identity`, and delete their co-registrant rows. Reads stored rows only, so EDGAR-sourced
     filings change exactly like zip ones; an unchanged lineage writes nothing. Returns the co-registrant removal
-    records; `dry_run` writes nothing."""
+    records."""
     if not context.store.exists(Tables.insider_transactions):
         return []
     present = set(context.store.columns(Tables.insider_transactions))
@@ -615,14 +605,11 @@ def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identit
         )
         if df_rows is None:
             continue
-        chunk_records, chunk_restamped = _restamp_rows(
-            context, df_rows.reindex(columns=_RESTAMP_COLUMNS).reset_index(drop=True), identity, dry_run=dry_run
-        )
+        chunk_records, chunk_restamped = _restamp_rows(context, df_rows.reindex(columns=_RESTAMP_COLUMNS).reset_index(drop=True), identity)
         records += chunk_records
         restamped += chunk_restamped
     context.log.info(
-        "insider lineage%s: re-stamped %d row(s) over %d ticker(s); %d co-registrant row(s) purged",
-        " (dry run)" if dry_run else "",
+        "insider lineage: re-stamped %d row(s) over %d ticker(s); %d co-registrant row(s) purged",
         restamped,
         len(targets),
         sum(record["rows"] for record in records),
@@ -630,13 +617,13 @@ def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identit
     return records
 
 
-def _restamp_rows(context: Context, df_rows: pd.DataFrame, identity: Identity, *, dry_run: bool) -> tuple[list[dict], int]:
+def _restamp_rows(context: Context, df_rows: pd.DataFrame, identity: Identity) -> tuple[list[dict], int]:
     """Purge one chunk's co-registrant rows and rewrite the stamps that changed; `(removal records, rows re-stamped)`."""
     co_registrant = pad_cik_series(df_rows["issuer_cik"]).isin(identity.co_registrant_ciks)
     df_purge = df_rows[co_registrant]
     records = removal_records(Tables.insider_transactions.name, df_purge, _CO_REGISTRANT_SPEC) if not df_purge.empty else []
     df_kept = df_rows[~co_registrant]
     df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity))
-    if not dry_run and (not df_changed.empty or not df_purge.empty):
+    if not df_changed.empty or not df_purge.empty:
         patch_insider_source(context.store, df_changed, sorted(df_purge["accession_number"].unique()))
     return records, len(df_changed)

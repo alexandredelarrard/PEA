@@ -1,7 +1,7 @@
 """Identity step: one dated identity per universe company, built offline from the cached zips and the DB.
 
 `run()` is the flow: capture evidence -> company anchor -> CIK history -> symbol history -> CUSIP history -> lifecycle ->
-publish -> propagate. Each `run_*` runs alone from stored inputs (`identity --only <stage>`).
+publish -> sync. Each `run_*` runs alone from stored inputs (`identity --only <stage>`); `run_sync` is SQL only.
 """
 
 from __future__ import annotations
@@ -80,18 +80,7 @@ from src.data_extract.utils.identity.cusip_history import (
 )
 from src.data_extract.utils.identity.cusip_history import TABLE_COLUMNS as CUSIP_COLUMNS
 from src.data_extract.utils.identity.evidence import capture_dei_period, pending_dei_periods
-from src.data_extract.utils.identity.identity_propagate import (
-    PropagationResult,
-    log_propagation,
-    owned_scopes,
-    purge_rows,
-    rebuild_history,
-    rebuilt_since,
-    recheck_tickers,
-    refresh_insider,
-    reparse_insider,
-    reparse_notes,
-)
+from src.data_extract.utils.identity.identity_sync import SyncResult, log_sync, owned_scopes, recheck_tickers, sync_filer_rows, sync_result
 from src.data_extract.utils.identity.lifecycle import (
     LIFE_COLUMNS,
     PRICE_SPAN,
@@ -124,8 +113,9 @@ from src.data_extract.utils.identity.symbol_tenure import (
     load_rejected_symbol_tenure,
     scan_form345_cache,
 )
+from src.data_extract.utils.zips.fetch_insider_transactions import restamp_insider_lineage
 from src.data_store.schema import Tables
-from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS
+from src.utils.filer_tables import PURGE_TABLES
 from src.utils.identity_flags import (
     FLAG_COLUMNS,
     cik_activity,
@@ -154,12 +144,9 @@ _ANCHOR_LINEAGE_COLUMNS = ("canonical_ticker", "company_id", "cik", "role", "val
 
 @dataclass(frozen=True)
 class IdentityOptions:
-    """The `identity` command's options: the propagated ticker subset (None: the universe), `full` re-capture and
-    re-check, `dry_run` propagation and the run date."""
+    """The `identity` command's options: `full` re-capture and re-check, and the run date."""
 
-    tickers: list[str] | None = None
     full: bool = False
-    dry_run: bool = False
     as_of: pd.Timestamp | None = None
 
 
@@ -179,8 +166,6 @@ class StepExtractIdentity(Step):
         self._cusips: CusipHistory | None = None
         self._lifecycle: Lifecycle | None = None
         self._first_build = False
-        #: this run's start (UTC, the lineage stamps' clock): the scopes stamped since then changed in this run (X90)
-        self._started = pd.Timestamp.now(tz="UTC").tz_localize(None).floor("s")
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured (the FTD
@@ -413,10 +398,10 @@ class StepExtractIdentity(Step):
         self._log.info(f"identity publish: {written} row(s) written ({len(changed)} universe ticker(s) with changed identity columns)")
         return written
 
-    def run_propagate(self) -> PropagationResult:
-        """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
-        scope, re-parse, re-stamp the insider rows, rebuild purged histories. A first build or
-        `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
+    def run_sync(self) -> SyncResult:
+        """Carry the published identity into the CIK-keyed stored rows, SQL only (Q1): move the rows another company's
+        scope now holds, purge the rows filed outside each changed company's scope, re-stamp the insider lineage. A first
+        build or `--full` re-checks every ticker (PD-13)."""
         # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49), bound to
         # the universe re-read after the publish (the cached one predates this run's end dates, symbols and CIKs)
         inputs = identity_inputs(self._context)
@@ -425,27 +410,21 @@ class StepExtractIdentity(Step):
         roster_cik = {ticker: current[ticker] for ticker in universe.tickers if ticker in current}
         built = build_identity(inputs.lineage, inputs.tenure, roster_cik, inputs.master, inputs.co_registrants, inputs.mergers)
         identity = bind_identity(self._context, built, universe)
-        tickers, dry_run, every = self._options.tickers or universe.tickers, self._options.dry_run, self._options.full or self._first_build
 
         # compute: the tickers whose scope changed, and what each company owns
-        scopes = {ticker: identity.filing_scope(ticker) for ticker in tickers}
-        changed = recheck_tickers(scopes, as_of=self._run_date, every=every)
+        scopes = {ticker: identity.filing_scope(ticker) for ticker in universe.tickers}
+        changed = recheck_tickers(scopes, as_of=self._run_date, every=self._options.full or self._first_build)
         owned = owned_scopes(identity)
 
-        # contraction: rows filed by a CIK outside the ticker's company or windows (the event-only CIKs on consolidating tables)
-        records = [record for spec in PURGE_TABLES for record in purge_rows(self._context, spec, changed, owned, identity.bounds, dry_run)]
+        # save: per filer table the moves then the purge, then the insider stamps of the changed and the receiving tickers
+        synced = [sync_filer_rows(self._context, spec, changed, owned, identity.bounds) for spec in PURGE_TABLES]
+        removals, moves = [r for records, _ in synced for r in records], [m for _, moved in synced for m in moved]
+        receiving = sorted(set(changed) | {m["new_ticker"] for m in moves})
+        removals += restamp_insider_lineage(self._context, receiving, identity=identity)
 
-        # expansion and re-stamps: the bulk re-parse of the scopes this run changed (X90: every cached zip, so once per change;
-        # not on a dry run), then the insider rows
-        reparsed = changed if every else rebuilt_since(scopes, self._started)
-        notes = {} if dry_run else reparse_notes(self._context, reparsed, scopes, identity)
-        insider = {} if dry_run else reparse_insider(self._context, reparsed, scopes, identity, self._run_date)
-        records += refresh_insider(self._context, identity, changed, dry_run)
-
-        # post-process: the history of every ticker whose facts were purged; one summary
-        removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
-        result = PropagationResult(removals, {**notes, **insider}, rebuild_history(self._context, removals, dry_run))
-        log_propagation(self._context, changed, result, dry_run)
+        # post-process: one summary
+        result = sync_result(removals, moves)
+        log_sync(self._context, changed, result)
         return result
 
     def run(self) -> None:
@@ -458,4 +437,4 @@ class StepExtractIdentity(Step):
         self.run_cusip_history()
         self.run_lifecycle()
         self.run_publish()
-        self.run_propagate()
+        self.run_sync()

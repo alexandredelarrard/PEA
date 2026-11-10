@@ -1,5 +1,6 @@
 """Insider bulk resume (M3): the quarters `fetch_insider_transactions` parses come from the stored rows
-alone. A new ticker re-reads every cached quarter for itself only, screened against the whole universe;
+alone. A new ticker re-reads every cached quarter for its window CIK only on a run that stores a new quarter, screened
+against the whole universe;
 a scoped (`-t`) run parses no unstored quarter and skips the stored-row sweep. Rejects are logged, never stored."""
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from tests.canonical_schema import create_canonical
 from tests.support.universe import seed_universe
 
 _AS_OF = pd.Timestamp("2024-07-01")
+_CIKS = {"AAA": "0000000001", "NEW": "0000000002"}
 
 
 def _context(store: Any, tmp_path: Path) -> Any:
@@ -36,6 +38,7 @@ def _row(ticker: str, quarter: str) -> dict[str, object]:
         "security_type": "nonderiv",
         "row_sequence": 1,
         "ticker": ticker,
+        "issuer_cik": _CIKS.get(ticker),
         "quarter": quarter,
         "source": "zip",
         "filing_date": pd.Period(quarter, freq="Q").start_time,
@@ -87,7 +90,13 @@ def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_a_new_ticker_re_reads_cached_quarters_for_itself_only(harness: dict[str, Any]) -> None:
     store, calls = harness["store"], harness["calls"]
     harness["ctx"].universe = seed_universe(store, ["AAA", "NEW"], rows={"NEW": {"universe_added_on": pd.Timestamp("2024-06-28")}})
+    lineage = [
+        {"company_id": f"E{c}", "canonical_ticker": t, "cik": c, "role": "cik_window", "symbol": "", "valid_from": pd.Timestamp("1900-01-01")}
+        for t, c in _CIKS.items()
+    ]
+    store.save(Tables.universe_cik_symbol, pd.DataFrame(lineage).assign(scope_changed_at=pd.Timestamp("2020-01-01")))
     store.save(Tables.insider_transactions, pd.DataFrame([_row("AAA", "2024q1")]))
+    (harness["ctx"].paths["DATA_STORE"] / "sec_insider_transactions" / "2024q2.zip").write_bytes(b"cached")  # the new quarter is cached
 
     saved = ins.fetch_insider_transactions(harness["ctx"], ["AAA", "NEW"], years_history=15, as_of=_AS_OF)
 
@@ -99,7 +108,7 @@ def test_a_new_ticker_re_reads_cached_quarters_for_itself_only(harness: dict[str
     assert sorted(notes["accession_number"]) == ["AAA-2024q2", "NEW-2024q1", "NEW-2024q2"]
     assert calls["sweeps"] == 1 and calls["reported"] == ["2024q2"], "only the pending quarter reports its EDGAR gap"
     print("\n=== SANITY CHECK: insider new-ticker re-read ===")
-    print("  2024q2 (unstored) parsed for AAA and NEW; cached 2024q1 re-read for NEW only (its rows, logged rejects and footnotes);")
+    print("  2024q2 (unstored, cached) parsed for AAA and NEW; cached 2024q1 re-read for NEW's CIK only (its rows, rejects, footnotes);")
     print("  both screened against the whole universe; the full-universe run sweeps stored rows once. Validated.")
 
 

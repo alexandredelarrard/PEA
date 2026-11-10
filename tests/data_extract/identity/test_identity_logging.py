@@ -46,7 +46,7 @@ def _warning_sites() -> dict[str, int]:
 
 def test_every_identity_warning_site_is_classified() -> None:
     """PD-14: the WARNING sites are exactly the classified ones; the backlog, refused merges, symbol conflicts, stale
-    rejections, cold-start states and propagation purges log at INFO or DEBUG."""
+    rejections, cold-start states and the sync's moves and purges log at INFO or DEBUG."""
     sites = _warning_sites()
 
     assert set(sites) == set(CLASSIFIED), {"unclassified": sorted(set(sites) - set(CLASSIFIED)), "gone": sorted(set(CLASSIFIED) - set(sites))}

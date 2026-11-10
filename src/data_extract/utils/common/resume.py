@@ -11,7 +11,9 @@ with the U-65 grace after the end; a ticker-keyed series has no row before its l
 stored rows gets none once the run date is past its grace end plus the table's overlap (`ended_keys`).
 
 `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
-parsed for every key; plus, for a new key with no archive row yet, every cached period re-parsed for it alone.
+parsed for every key; plus, only on a run that parses a new cached period, every cached stored period re-parsed for
+the (key, lineage CIK) pairs stamped (`universe_cik_symbol.scope_changed_at`) or added to the universe after the
+newest stored period ended that have no archive row: once per change, a CIK that never files is not re-read nightly.
 """
 
 from __future__ import annotations
@@ -26,9 +28,12 @@ from typing import cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.identity_contract import ROLE_WINDOW
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import run_date
+from src.utils.filer_tables import PURGE_TABLES_BY_NAME
+from src.utils.string import pad_cik_series, run_date
 from src.utils.tickers_universe.universe import Bounds
 
 logger = logging.getLogger(__name__)
@@ -40,11 +45,9 @@ KEY_ESTABLISHED = "established"
 #: Done-set scopes: accessions stored under the key itself, or anywhere in the table.
 DONE_PER_KEY = "key"
 DONE_TABLE = "table"
-#: Days a new ticker with no row re-parses the cached archives, for every archive (as the 13F backfill).
-ARCHIVE_NEW_KEY_DAYS = 7
-#: Days after a lineage scope change during which the identity propagation re-checks the key (purge,
-#: re-parse, re-stamp, history), the window a new key gets for its archive history.
-LINEAGE_RECHECK_DAYS = ARCHIVE_NEW_KEY_DAYS
+#: Days after a lineage scope change during which the identity sync (move, purge, re-stamp) and the SEC history
+#: re-check the key; each re-check is SQL only and idempotent.
+LINEAGE_RECHECK_DAYS = 7
 
 
 def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timestamp | None, days: int = LINEAGE_RECHECK_DAYS) -> list[str]:
@@ -275,7 +278,8 @@ class ArchiveWork:
     """An archive fetcher's work list.
 
     `pending` periods are parsed for every key of the run (`screen` is the universe a parse screens
-    against); `rescan` periods, already stored in every table, are re-parsed for `rescan_keys` only.
+    against); `rescan` periods, already stored in every table, are re-parsed for `rescan_keys` only, and
+    (outside `full`) for each key's `rescan_ciks` only (`rescan_rows`).
     A scoped (`-t`) run parses no pending period: parsing it for a few keys would mark it stored for all.
     """
 
@@ -287,11 +291,21 @@ class ArchiveWork:
     screen: list[str]
     scoped: bool
     held: list[str] = field(default_factory=list)
+    rescan_ciks: dict[str, frozenset[str]] = field(default_factory=dict)
 
     def units(self) -> Iterator[tuple[str, list[str]]]:
         """`(period, keys to keep)` in period order; a period is never in both lists."""
         by_period = {period: self.keys for period in self.pending} | {period: self.rescan_keys for period in self.rescan if self.rescan_keys}
         yield from sorted(by_period.items())
+
+    def rescan_rows(self, frame: pd.DataFrame, cik_col: str) -> pd.DataFrame:
+        """A rescanned period's parsed rows (`ticker`, `cik_col`) cut to each key's rescan CIKs; unchanged under `full`."""
+        if not self.rescan_ciks or frame.empty:
+            return frame
+        pairs = pd.DataFrame([(key, cik) for key, ciks in self.rescan_ciks.items() for cik in sorted(ciks)], columns=["ticker", "cik"])
+        rows = pd.DataFrame({"ticker": frame["ticker"].astype(str).to_numpy(), "cik": pad_cik_series(frame[cik_col]).to_numpy()})
+        hit = rows.merge(pairs.assign(hit=True), on=["ticker", "cik"], how="left")["hit"].notna().to_numpy(dtype=bool)
+        return frame[hit]
 
 
 def _period_column(table: Table) -> str:
@@ -325,20 +339,35 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
     return listed, stored or frozenset()
 
 
-def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collection[str], as_of: pd.Timestamp) -> set[str]:
-    """Keys added in the last `ARCHIVE_NEW_KEY_DAYS` days that have no archive row in any of `tables`.
+def rescan_lineage(identity: Identity, roles: Collection[str] = (ROLE_WINDOW,)) -> pd.DataFrame:
+    """The published `universe_cik_symbol` rows of `roles` (`canonical_ticker`, `cik`, `scope_changed_at`) the resolver
+    was built from: the (key, CIK) pairs an archive rescan may plan."""
+    lineage = identity.source_cohort.get(Tables.universe_cik_symbol)
+    if lineage is None or lineage.empty:
+        return pd.DataFrame(columns=["canonical_ticker", "cik", "scope_changed_at"])
+    return lineage.loc[lineage["role"].isin(list(roles)), ["canonical_ticker", "cik", "scope_changed_at"]]
 
-    An archive row carries its period; a row without one (an EDGAR row or marker of a table both
-    legs write) does not make the key's archive history stored."""
-    new = context.universe.new_since(ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
+
+def _rowless_pairs(
+    context: Context, tables: Sequence[Table], keys: Collection[str], since: pd.Timestamp, lineage: pd.DataFrame, as_of: pd.Timestamp
+) -> dict[str, frozenset[str]]:
+    """`{key: CIKs}` of the `lineage` rows (`rescan_lineage`) of `keys` stamped after `since`, or of a key added to the
+    universe after it, that have no archive row of that CIK in any of `tables`. An archive row carries its period; a row
+    without one (an EDGAR row or marker of a table both legs write) does not make the pair's archive history stored."""
+    lineage = lineage[lineage["canonical_ticker"].isin(list(keys))]
+    joined = {key for key, added in context.universe.added_on_dates(keys, run_date(as_of)).items() if added > since}
+    changed = lineage[pd.to_datetime(lineage["scope_changed_at"]).gt(since) | lineage["canonical_ticker"].isin(joined)]
+    pairs = set(zip(changed["canonical_ticker"].astype(str), pad_cik_series(changed["cik"]), strict=True))
     for table in tables:
-        if not new:
-            break
-        key_col = cast(str, cast(Resume, table.resume).key)
-        if {key_col, _period_column(table)} <= set(context.store.columns(table)):
-            where = {key_col: sorted(new), _period_column(table): context.store.NOT_NULL}
-            new -= set(context.store.distinct(table, key_col, where=where))
-    return new
+        key_col, cik_col, period_col = cast(str, cast(Resume, table.resume).key), PURGE_TABLES_BY_NAME[table.name].cik_col, _period_column(table)
+        if pairs and {key_col, cik_col, period_col} <= set(context.store.columns(table)):
+            scope = {key_col: sorted({key for key, _ in pairs}), period_col: context.store.NOT_NULL}
+            held = context.store.summarize(table, [key_col, cik_col], {"rows": ("count", None)}, where=scope)
+            pairs -= set(zip(held[key_col].astype(str), pad_cik_series(held[cik_col]), strict=True))
+    out: dict[str, set[str]] = {}
+    for key, cik in pairs:
+        out.setdefault(key, set()).add(cik)
+    return {key: frozenset(ciks) for key, ciks in sorted(out.items())}
 
 
 def archive_worklist(
@@ -350,25 +379,36 @@ def archive_worklist(
     as_of: pd.Timestamp,
     *,
     full: bool = False,
+    lineage: pd.DataFrame | None = None,
 ) -> ArchiveWork:
     """Which archive periods to parse, and for which keys, from the stored periods of `tables` alone.
 
-    Pending = listed periods missing from any table. Rescan = listed periods stored in every table and
-    cached on disk (any stored period under `full`), for the new rowless keys, or every key under `full`.
+    Pending = listed periods missing from any table. Rescan = listed periods stored in every table and cached on disk
+    (any stored period under `full`, for every key); outside `full`, only on a full-universe run with a cached pending
+    period after stored ones, for the rowless (key, `lineage` CIK) pairs changed after the newest stored period ended.
     """
     keys = sorted(set(keys))
     listed, stored = archive_periods(context, tables, published)
     missing = [p for p in listed if p not in stored]
     scoped = not context.universe.is_full(keys)
-    rescan_keys = keys if full else sorted(_new_rowless_keys(context, tables, keys, as_of))
     on_disk = set(cached)
+    since = pd.Timestamp(max(period_end(p) for p in stored)) if stored else None
+    growth = lineage is not None and not full and not scoped and since is not None and any(p in on_disk for p in missing)
+    rescan_ciks = _rowless_pairs(context, tables, keys, cast(pd.Timestamp, since), cast(pd.DataFrame, lineage), as_of) if growth else {}
+    rescan_keys = keys if full else sorted(rescan_ciks)
     rescan = [p for p in listed if p in stored and (full or p in on_disk)] if rescan_keys else []
-    if rescan_keys and not full:
+    if rescan_ciks:
+        logger.info(
+            "%s: %d (ticker, CIK) pair(s) changed after %s with no archive row: rescanning %d cached stored period(s) for those CIKs only: %s",
+            tables[0].name,
+            sum(len(ciks) for ciks in rescan_ciks.values()),
+            cast(pd.Timestamp, since).date(),
+            len(rescan),
+            "; ".join(f"{key} {', '.join(sorted(ciks))}" for key, ciks in rescan_ciks.items()),
+        )
         absent = [p for p in listed if p in stored and p not in on_disk]
         if absent:
-            logger.warning(
-                "%s: %d stored period(s) have no cached archive and are not re-parsed for new keys: %s", tables[0].name, len(absent), absent
-            )
+            logger.warning("%s: %d stored period(s) have no cached archive and are not rescanned: %s", tables[0].name, len(absent), absent)
     pending, held = ([], missing) if scoped else (missing, [])
     if held:
         logger.info("%s: scoped run leaves %d unparsed period(s) to the full run: %s", tables[0].name, len(held), held)
@@ -381,4 +421,5 @@ def archive_worklist(
         screen=sorted(set(context.universe.tickers) | set(keys)),
         scoped=scoped,
         held=held,
+        rescan_ciks=rescan_ciks,
     )

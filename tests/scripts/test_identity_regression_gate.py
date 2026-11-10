@@ -1,11 +1,10 @@
 """The explained-difference regression gate (P22, `tests/support/identity_regression_gate.py`).
 
-Known-truth fixtures on the real CIKs, CUSIPs and seams: ACE / old Chubb (event-only acquired target), Merck /
-Schering-Plough (outside its window), BRK-A (ratio 1,500), FITB's preferred, XOM's placeholder, WBD's superseded
-DISCA, APTV's DLPH (manual boundary), NWSA (recovered by CUSIP), FOX class B, Tyco / Johnson Controls (register
-window and seam margin) and the co-registrant Digital Realty LP. Every reason rule has a row; an injected row no
-rule explains fails the gate (E30); a hypothesis that does not hold fails the gate. The traded-security realignment
-(TDCC moving DOW -> DD) exercises an insider row following its CIK's entity.
+Known-truth fixtures on the real CIKs and seams: ACE / old Chubb (event-only acquired target), Merck /
+Schering-Plough (outside its window), Tyco / Johnson Controls (register window and seam margin) and the co-registrant
+Digital Realty LP. Every filing reason rule has a row; a row no rule explains fails the gate; a hypothesis that does
+not hold fails the gate. The traded-security realignment (TDCC moving DOW -> DD) exercises an insider row following
+its CIK's entity. No market tape is diffed: the FTD and FINRA lines are stored as filed (P4, P5).
 """
 
 from __future__ import annotations
@@ -40,10 +39,9 @@ BRK, FITB, XOM, WBD, APTV, NWSA, FOXA, GOOGL = (
 )
 TYCO, JCI_INC, FOREIGN = "0000833444", "0000053669", "0000999999"
 DLR, DLR_LP = "0001297996", "0001494877"
-UNIVERSE = ("CB", "MRK", "BRK-B", "FITB", "XOM", "WBD", "APTV", "NWSA", "FOXA", "GOOGL")
 
 
-# --------------------------------------------------------------------------- the frozen legacy resolver
+# --------------------------------------------------------------------------- the before-state fixtures
 
 
 def _old_lineage() -> pd.DataFrame:
@@ -78,283 +76,6 @@ def _tenure() -> pd.DataFrame:
     ]
     return pd.DataFrame(
         [{"symbol": s, "issuer_cik": c, "valid_from": f, "valid_to": t, "n_filings": 9, "source": "form345", "evidence": ""} for s, c, f, t in rows]
-    )
-
-
-def _resolver(redundant: tuple[str, ...] = ()) -> gate.LegacyTapeResolver:
-    return gate.LegacyTapeResolver(_old_lineage(), _tenure(), _roster(), allowlist={}, redundant=redundant)
-
-
-def test_the_frozen_resolver_reproduces_the_pre_cutover_tape_attribution() -> None:
-    resolver = _resolver(redundant=("GOOG",))
-    universe = frozenset(UNIVERSE)
-    day = pd.Timestamp
-    cases = {
-        ("CB", "2015-06-02"): "CB",  # old Chubb's symbol, one entity with ACE in the membership lineage
-        ("ACE", "2015-06-02"): "CB",
-        ("SGP", "2009-06-01"): "MRK",  # Schering-Plough's own symbol counted for MRK before the merger
-        ("MRK", "2009-06-01"): "MRK",  # old Merck, same entity
-        ("GOOG", "2015-01-05"): None,  # a redundant class while its retained class trades
-        ("BRK-A", "2015-01-05"): None,  # no tenure for this spelling
-        ("CB", "2000-01-03"): None,  # before every tenure, and not a closed roster interval
-    }
-    got = {key: resolver.ticker(symbol, day(on), universe) for key, (symbol, on) in zip(cases, cases, strict=True)}
-    assert got == cases
-    # a closed roster-entity interval extends past its last filing (a last Form 4 is not a delisting)
-    closed = _tenure()
-    closed.loc[closed["symbol"].eq("FITB"), "valid_to"] = "2020-01-01"
-    extended = gate.LegacyTapeResolver(_old_lineage(), closed, _roster(), allowlist={}, redundant=())
-    assert extended.ticker("FITB", day("2021-06-01"), universe) == "FITB"
-    # the D19 roster proxy: an allow-listed roster ticker without tenure borrows its entity's filing symbols
-    no_aptv = _tenure()[~_tenure()["symbol"].isin(["NWSA"])]
-    no_aptv = pd.concat(
-        [
-            no_aptv,
-            pd.DataFrame(
-                [
-                    {
-                        "symbol": "NWS",
-                        "issuer_cik": NWSA,
-                        "valid_from": "2013-06-28",
-                        "valid_to": None,
-                        "n_filings": 3,
-                        "source": "form345",
-                        "evidence": "",
-                    }
-                ]
-            ),
-        ]
-    )
-    proxied = gate.LegacyTapeResolver(_old_lineage(), no_aptv, _roster(), allowlist={"NWSA": "fixture"}, redundant=())
-    assert proxied.ticker("NWSA", day("2015-01-05"), universe) == "NWSA"
-    assert gate.legacy_symbol(pd.Series(["brk.b", "BRK/A", " bacpb "])).tolist() == ["BRK-B", "BRK-A", "BACPB"]
-    print(
-        "sanity: the frozen resolver dates symbols by tenure, joins entities by the membership lineage, extends a closed roster interval, proxies an allow-listed roster ticker and drops a redundant class while its retained class trades"
-    )
-
-
-# --------------------------------------------------------------------------- market tapes
-
-
-def _master() -> pd.DataFrame:
-    rows = [
-        ("C171232101", "acquired_constituent", "event_only_cik", 1.0, OLD_CHUBB, "2009-06-26", "2016-01-15"),
-        ("C806605101", "acquired_constituent", "outside_window", 1.0, SGP, "2009-06-26", "2009-11-04"),
-        ("C084670108", "secondary_class", "class_description", 1500.0, BRK, "2010-01-21", None),
-        ("C38259P706", "secondary_class", "class_description", 1.0, GOOGL, "2014-04-03", None),
-        ("C316773209", "excluded", "preferred", 1.0, FITB, "2009-06-26", None),
-        ("C30233Q108", "excluded", "transition_placeholder", 1.0, XOM, "2026-07-01", "2026-07-02"),
-        ("C25470F104", "excluded", "superseded", 1.0, WBD, "2022-04-07", "2022-04-12"),
-        ("CG27823106", "canonical_current", "manual_boundary", 1.0, APTV, "2011-11-17", "2017-12-05"),
-        ("C65249B109", "canonical_current", "ticker_symbol", 1.0, NWSA, "2013-07-01", None),
-        ("C35137L204", "secondary_class", "class_description", 1.0, FOXA, "2019-03-19", None),
-        ("C14040H105", "canonical_current", "ticker_symbol", 1.0, "0000927628", "2009-06-26", None),
-    ]
-    return pd.DataFrame(
-        [
-            {
-                "security_id": s,
-                "valid_from": f,
-                "valid_to": t,
-                "lineage_role": r,
-                "lineage_reason": why,
-                "conversion_ratio": x,
-                "issuer_cik": c,
-                "exchange": "NYSE",
-                "market_symbol": "",
-            }
-            for s, r, why, x, c, f, t in rows
-        ]
-    )
-
-
-def _raw(rows: list[tuple[str, str, str, str | None, str | None, str | None, float]]) -> pd.DataFrame:
-    """(date, cusip, symbol, ticker, role, class, quantity) lines of `sec_fails_to_deliver_security`."""
-    frame = pd.DataFrame(rows, columns=["date", "cusip", "source_symbol", "ticker", "lineage_role", "security_class", "quantity"])
-    frame["date"] = pd.to_datetime(frame["date"])
-    frame["trade_date"] = frame["date"]
-    frame["security_id"] = "C" + frame["cusip"]
-    return frame
-
-
-TAPE_ROWS = [
-    ("2015-06-02", "171232101", "CB", "CB", "acquired_constituent", "common", 2368.0),
-    ("2015-06-02", "H0023R105", "ACE", "CB", "canonical_current", "common", 293.0),
-    ("2009-07-01", "806605101", "SGP", "MRK", "acquired_constituent", "common", 500.0),
-    ("2015-01-05", "084670108", "BRKA", "BRK-B", "secondary_class", "class_A", 3.0),
-    ("2015-01-05", "38259P706", "GOOG", "GOOGL", "secondary_class", "class_C", 40.0),
-    ("2015-01-05", "316773209", "FITBP", "FITB", "excluded", "preferred", 10.0),
-    ("2026-07-01", "30233Q108", "XOMZZZZ", "XOM", "excluded", "unclassified", 7.0),
-    ("2022-04-08", "25470F104", "DISCA", "WBD", "excluded", "class_A", 11.0),
-    ("2015-01-05", "G27823106", "DLPH", "APTV", "canonical_current", "common", 12.0),
-    ("2015-01-05", "65249B109", "NWSA", "NWSA", "canonical_current", "class_A", 13.0),
-    ("2020-01-02", "35137L204", "FOX", "FOXA", "secondary_class", "class_B", 14.0),
-]
-EXPECTED_TAPE = {
-    "171232101": ("CB", "", "p21_event_only_cik"),
-    "806605101": ("MRK", "", "p21_outside_window"),
-    "084670108": ("BRK-B", "BRK-B", "conversion_ratio"),
-    "316773209": ("FITB", "", "preferred_excluded"),
-    "30233Q108": ("XOM", "", "transition_excluded"),
-    "25470F104": ("WBD", "", "superseded_excluded"),
-    "G27823106": ("", "APTV", "manual_market_boundary"),
-    "65249B109": ("", "NWSA", "cusip_recovered"),
-    "35137L204": ("", "FOXA", "secondary_class_summed"),
-}
-
-
-def test_every_tape_rule_explains_its_row_and_an_unchanged_row_is_not_listed() -> None:
-    diff = gate.tape_diff(_raw(TAPE_ROWS), _master(), _resolver(), UNIVERSE, "ftd")
-    got = {r.cusip: (r.old_canonical_issuer, r.new_canonical_issuer, r.reason) for r in diff.itertuples(index=False)}
-    assert got == EXPECTED_TAPE  # ACE (old CB = new CB) and GOOG class C (old GOOGL = new GOOGL, ratio 1) unchanged
-    assert list(diff.columns[:8]) == [
-        "settlement_date",
-        "cusip",
-        "source_symbol",
-        "exchange",
-        "security_class",
-        "old_canonical_issuer",
-        "new_canonical_issuer",
-        "reason",
-    ]
-    brka = diff[diff["cusip"].eq("084670108")].iloc[0]
-    assert (brka["old_weight"], brka["new_weight"]) == (1.0, 1500.0)
-    print(f"sanity: {len(diff)} changed tape rows, each with its rule ({sorted(set(diff['reason']))}); ACE and GOOG class C unchanged and not listed")
-
-
-def test_e30_an_injected_unexplained_tape_row_fails_the_gate() -> None:
-    injected = TAPE_ROWS + [
-        ("2015-06-03", "171232101", "CB", None, None, None, 5.0),  # a known security with no master interval: no rule
-        ("2015-06-04", "14040H105", "CB", "COF", "canonical_current", "common", 6.0),  # an issuer move: no rule
-    ]
-    diff = gate.tape_diff(_raw(injected), _master(), _resolver(), (*UNIVERSE, "COF"), "ftd")
-    unexplained = diff[diff["reason"].eq("")]
-    assert sorted(zip(unexplained["settlement_date"], unexplained["old_canonical_issuer"], unexplained["new_canonical_issuer"], strict=True)) == [
-        ("2015-06-03", "CB", ""),
-        ("2015-06-04", "CB", "COF"),
-    ]
-    print("sanity: E30 -- an unstamped line and an issuer move have no rule and are named as unexplained tape rows")
-
-
-def test_a_finra_line_outside_every_master_interval_is_named_and_a_symbol_conflict_is_not() -> None:
-    master = pd.DataFrame(
-        [
-            {
-                "security_id": "CG3223R108",
-                "source_symbol": "EG",
-                "valid_from": "2023-07-19",
-                "valid_to": None,
-                "lineage_role": "canonical_current",
-                "lineage_reason": "ticker_symbol",
-                "conversion_ratio": 1.0,
-                "issuer_cik": "0001095073",
-                "exchange": "",
-                "market_symbol": "EG",
-            },
-            {
-                "security_id": "CG0408V102",
-                "source_symbol": "AON",
-                "valid_from": "2020-03-30",
-                "valid_to": None,
-                "lineage_role": "excluded",
-                "lineage_reason": "superseded",
-                "conversion_ratio": 1.0,
-                "issuer_cik": "0000315293",
-                "exchange": "",
-                "market_symbol": "AON",
-            },
-            {
-                "security_id": "CG0403H108",
-                "source_symbol": "AON",
-                "valid_from": "2020-03-30",
-                "valid_to": None,
-                "lineage_role": "canonical_current",
-                "lineage_reason": "ticker_symbol",
-                "conversion_ratio": 1.0,
-                "issuer_cik": "0000315293",
-                "exchange": "",
-                "market_symbol": "AON",
-            },
-        ]
-    )
-    raw = pd.DataFrame(
-        {
-            "date": pd.to_datetime(["2023-07-14", "2020-04-15"]),
-            "source_symbol": ["EG", "AON"],
-            "security_id": [None, None],
-            "ticker": [None, None],
-            "lineage_role": [None, None],
-            "security_class": [None, None],
-            "quantity": [5.0, 6.0],
-        }
-    )
-    raw["trade_date"] = raw["date"]
-    tenure = pd.DataFrame(
-        [
-            {"symbol": s, "issuer_cik": c, "valid_from": "2006-01-01", "valid_to": None, "n_filings": 9, "source": "form345", "evidence": ""}
-            for s, c in (("EG", "0001095073"), ("AON", "0000315293"))
-        ]
-    )
-    roster = pd.DataFrame({"ticker": ["EG", "AON"], "cik": ["0001095073", "0000315293"]})
-    resolver = gate.LegacyTapeResolver(_old_lineage(), tenure, roster, allowlist={}, redundant=())
-    diff = gate.tape_diff(raw, master, resolver, ("EG", "AON"), "finra")
-    assert dict(zip(diff["source_symbol"], diff["reason"], strict=True)) == {"EG": "no_master_interval", "AON": ""}
-    print(
-        "sanity: EG's FINRA day before its line's first fail is outside every interval (named); AON's day under two open securities is a conflict (unexplained)"
-    )
-
-
-def test_the_ticker_grain_residual_lists_a_stored_value_the_legacy_resolver_does_not_reproduce() -> None:
-    raw = _raw(TAPE_ROWS[:2])
-    raw["fails_quantity"] = raw["quantity"]
-    old = gate.legacy_tickers(_resolver(), raw["source_symbol"], raw["date"], UNIVERSE)
-    assert old.tolist() == ["CB", "CB"]
-    before = pd.DataFrame({"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [2661.0]})
-    assert gate.grain_residual(raw, old, before, ["fails_quantity"], "ftd").empty
-    residual = gate.grain_residual(raw, old, before.assign(fails_quantity=2000.0), ["fails_quantity"], "ftd")
-    assert residual[["old_canonical_issuer", "reason", "source"]].values.tolist() == [["CB", "", "ftd_ticker_grain"]]
-    listed = {
-        "id": "x",
-        "kind": "market_tape",
-        "tickers": ["CB"],
-        "tape_source": "ftd_ticker_grain",
-        "source": "provenance",
-        "dates": ["2015-06-02"],
-        "change": "removed",
-        "expected": 1,
-        "reason": "other_issuer_line",
-    }
-    explained = gate.explain_listed_rows(residual, [listed])
-    assert explained["reason"].tolist() == ["other_issuer_line"]
-    assert gate.check_hypotheses([listed], pd.DataFrame(columns=gate.FILING_COLUMNS), explained)["status"].tolist() == ["pass"]
-    assert gate.explain_listed_rows(residual, [{**listed, "dates": ["2015-06-03"]}])["reason"].tolist() == [""]
-    print(
-        "sanity: CB 2015-06-02 = old Chubb 2,368 + ACE 293 reproduces the stored 2,661; a stored 2,000 is an unexplained ticker-day unless a hypothesis lists that date"
-    )
-
-
-def test_f102_a_before_day_no_raw_row_carries_and_an_after_table_off_the_new_stamps_are_unexplained() -> None:
-    raw = _raw(TAPE_ROWS[:2])
-    raw["fails_quantity"] = raw["quantity"]
-    old = gate.legacy_tickers(_resolver(), raw["source_symbol"], raw["date"], UNIVERSE)
-    before = pd.DataFrame({"ticker": ["CB", "CB"], "date": pd.to_datetime(["2015-06-02", "2015-06-01"]), "fails_quantity": [2661.0, 50.0]})
-    residual = gate.grain_residual(raw, old, before, ["fails_quantity"], "ftd")
-    assert residual[["settlement_date", "old_canonical_issuer", "reason"]].values.tolist() == [["2015-06-01", "CB", ""]]
-
-    after = pd.DataFrame({"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [293.0]})
-    assert gate.after_grain_residual(raw, _master(), after, ["fails_quantity"], UNIVERSE, "ftd").empty
-    stale = pd.concat([after.assign(fails_quantity=2661.0), after.assign(date=pd.Timestamp("2015-06-01"), fails_quantity=50.0)])
-    off = gate.after_grain_residual(raw, _master(), stale, ["fails_quantity"], UNIVERSE, "ftd")
-    assert off[["settlement_date", "new_canonical_issuer", "reason", "source"]].values.tolist() == [
-        ["2015-06-01", "CB", "", "ftd_after_grain"],
-        ["2015-06-02", "CB", "", "ftd_after_grain"],
-    ]
-    brk = _raw([TAPE_ROWS[3]]).rename(columns={"quantity": "fails_quantity"})
-    brk_after = pd.DataFrame({"ticker": ["BRK-B"], "date": [pd.Timestamp("2015-01-05")], "fails_quantity": [4500.0]})
-    assert gate.after_grain_residual(brk, _master(), brk_after, ["fails_quantity"], UNIVERSE, "ftd").empty, "3 class A x 1,500"
-    print(
-        "sanity: a before CB day no raw row carries is unexplained; the after table must equal the new stamps' sum "
-        "(ACE 293, BRK-B 3 x 1,500), a stale or extra after day is unexplained"
     )
 
 
@@ -596,36 +317,25 @@ def test_prices_may_only_gain_secondary_class_symbols_and_new_dates() -> None:
 
 
 def test_a_hypothesis_that_does_not_hold_fails_and_a_skipped_one_is_reported() -> None:
-    tape = gate.tape_diff(_raw(TAPE_ROWS), _master(), _resolver(), UNIVERSE, "ftd")
     filing = gate.filing_diff(
         "sec_fundamentals_facts", _filings([("JCI", "t-2015", TYCO, "10-Q", "2015-05-01", "2015-03-31")]), _filings([]), SCOPES, OLD_CIKS
     )
     filing["table"] = gate.HISTORY_TABLE
     hypotheses = [
-        {
-            "id": "chubb",
-            "kind": "market_tape",
-            "tickers": ["CB"],
-            "cusips": ["171232101"],
-            "change": "removed",
-            "expected": 1,
-            "reason": "p21_event_only_cik",
-        },
-        {"id": "chubb_wrong", "kind": "market_tape", "tickers": ["CB"], "change": "removed", "expected": 2, "reason": "p21_event_only_cik"},
         {"id": "tyco", "kind": "filing_lineage", "tickers": ["JCI"], "change": "removed", "expected": 1, "reason": "register_window"},
-        {"id": "nwsa", "kind": "market_tape", "tickers": ["NWSA"], "change": "added", "expected": None, "reason": "cusip_recovered"},
+        {"id": "tyco_wrong", "kind": "filing_lineage", "tickers": ["JCI"], "change": "removed", "expected": 2, "reason": "register_window"},
+        {"id": "tyco_any", "kind": "filing_lineage", "tickers": ["JCI"], "change": "removed", "expected": None, "reason": "register_window"},
         {"id": "dd", "kind": "filing_lineage", "tickers": ["DD"], "change": "added", "expected": 30, "reason": "register_window"},
     ]
-    result = gate.check_hypotheses(hypotheses, filing, tape, skip={"dd"})
+    result = gate.check_hypotheses(hypotheses, filing, skip={"dd"})
     assert dict(zip(result["id"], zip(result["observed"], result["status"], strict=True), strict=True)) == {
-        "chubb": (1, "pass"),
-        "chubb_wrong": (1, "fail"),
         "tyco": (1, "pass"),
-        "nwsa": (1, "pass"),
+        "tyco_wrong": (1, "fail"),
+        "tyco_any": (1, "pass"),
         "dd": (0, "skipped"),
     }
-    shipped = gate.load_hypotheses(CONFIGS)
-    assert all(h["reason"] in gate.REASONS for h in shipped), "every shipped hypothesis names a gate reason"
+    shipped = [h for h in gate.load_hypotheses(CONFIGS) if h["kind"] not in gate.RETIRED_KINDS]
+    assert all(h["reason"] in gate.REASONS for h in shipped), "every checked shipped hypothesis names a gate reason"
     print(f"sanity: a matching count passes, a wrong count fails, a skipped id is reported; the {len(shipped)} shipped hypotheses name gate reasons")
 
 
@@ -688,6 +398,39 @@ def _seed_before(store: Any) -> None:
     )
 
 
+def _master() -> pd.DataFrame:
+    """The after state's `universe_cusip` lines (the prices section reads its secondary-class symbols)."""
+    rows = [
+        ("C171232101", "acquired_constituent", "event_only_cik", 1.0, OLD_CHUBB, "2009-06-26", "2016-01-15"),
+        ("C806605101", "acquired_constituent", "outside_window", 1.0, SGP, "2009-06-26", "2009-11-04"),
+        ("C084670108", "secondary_class", "class_description", 1500.0, BRK, "2010-01-21", None),
+        ("C38259P706", "secondary_class", "class_description", 1.0, GOOGL, "2014-04-03", None),
+        ("C316773209", "excluded", "preferred", 1.0, FITB, "2009-06-26", None),
+        ("C30233Q108", "excluded", "transition_placeholder", 1.0, XOM, "2026-07-01", "2026-07-02"),
+        ("C25470F104", "excluded", "superseded", 1.0, WBD, "2022-04-07", "2022-04-12"),
+        ("CG27823106", "canonical_current", "manual_boundary", 1.0, APTV, "2011-11-17", "2017-12-05"),
+        ("C65249B109", "canonical_current", "ticker_symbol", 1.0, NWSA, "2013-07-01", None),
+        ("C35137L204", "secondary_class", "class_description", 1.0, FOXA, "2019-03-19", None),
+        ("C14040H105", "canonical_current", "ticker_symbol", 1.0, "0000927628", "2009-06-26", None),
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "security_id": s,
+                "valid_from": f,
+                "valid_to": t,
+                "lineage_role": r,
+                "lineage_reason": why,
+                "conversion_ratio": x,
+                "issuer_cik": c,
+                "exchange": "NYSE",
+                "market_symbol": "",
+            }
+            for s, r, why, x, c, f, t in rows
+        ]
+    )
+
+
 def _make_after(store: Any, *, lose_own: bool) -> None:
     store.drop(Tables.universe_cik_symbol)
     store.save(Tables.universe_cik_symbol, _dated_lineage())
@@ -718,13 +461,11 @@ def test_snapshot_reads_only_and_diff_exits_non_zero_on_an_unexplained_row(sqlit
     skip = {h["id"] for h in gate.load_hypotheses(CONFIGS)}
     code = gate.run_diff(_Context(gate.ReadOnlyStore(sqlite_store)), tmp_path / "before", tmp_path / "out", skip=skip)
     filing = pd.read_csv(tmp_path / "out" / gate.OUTPUTS["filing"], dtype=str, keep_default_na=False)
-    tape = pd.read_csv(tmp_path / "out" / gate.OUTPUTS["tape"], dtype=str, keep_default_na=False)
-    assert list(filing.columns) == gate.FILING_COLUMNS and list(tape.columns) == gate.TAPE_COLUMNS
+    assert list(filing.columns) == gate.FILING_COLUMNS and "tape" not in gate.OUTPUTS
     assert (tmp_path / "out" / "gate_summary.txt").is_file() and (tmp_path / "out" / "gate_hypotheses.csv").is_file()
     sec_8k = filing[filing["table"].eq("sec_8k")]
     expected = {"a-foreign": "foreign_filer_purge", **({"a-own": ""} if lose_own else {})}
     assert dict(zip(sec_8k["accession"], sec_8k["reason"], strict=True)) == expected
-    assert tape.empty, tape
     assert code == (1 if lose_own else 0)
     print(
         f"sanity: snapshot made no write; diff exit {code} with {'an unexplained own 8-K' if lose_own else 'every row explained'} (foreign 8-K purged; no stamped tape row)"
@@ -734,7 +475,7 @@ def test_snapshot_reads_only_and_diff_exits_non_zero_on_an_unexplained_row(sqlit
 def test_hypotheses_config_round_trips(tmp_path: Path) -> None:
     data = json.loads((CONFIGS / gate.HYPOTHESES_FILE).read_text(encoding="utf-8"))
     ids = [h["id"] for h in data["hypotheses"]]
-    assert len(ids) == len(set(ids)) and all(h["kind"] in gate.HYPOTHESIS_KINDS for h in data["hypotheses"])
+    assert len(ids) == len(set(ids)) and all(h["kind"] in gate.HYPOTHESIS_KINDS or h["kind"] in gate.RETIRED_KINDS for h in data["hypotheses"])
     print(f"sanity: {len(ids)} hypotheses, unique ids, known kinds")
 
 
@@ -744,17 +485,17 @@ def test_the_cli_computes_only_the_requested_sections_and_reads_only(sqlite_stor
     _make_after(sqlite_store, lose_own=True)
     ids = [h["id"] for h in gate.load_hypotheses(CONFIGS)]
     code = gate.main(
-        ["diff", str(tmp_path / "before"), "-o", str(tmp_path / "out"), "--sections", "tape", "--skip-hypothesis", *ids],
+        ["diff", str(tmp_path / "before"), "-o", str(tmp_path / "out"), "--sections", "insider", "--skip-hypothesis", *ids],
         context_factory=lambda c, u: _Context(sqlite_store),
     )
     assert code == 0, "the lost own 8-K is in the filing section, which was not requested"
-    assert sorted(p.name for p in (tmp_path / "out").glob("gate_*")) == ["gate_hypotheses.csv", "gate_market_tape_diff.csv", "gate_summary.txt"]
+    assert sorted(p.name for p in (tmp_path / "out").glob("gate_*")) == ["gate_hypotheses.csv", "gate_insider_diff.csv", "gate_summary.txt"]
     hypotheses = pd.read_csv(tmp_path / "out" / "gate_hypotheses.csv")
-    assert set(hypotheses["kind"]) == {"market_tape"} and set(hypotheses["status"]) == {"skipped"}
+    assert set(hypotheses["kind"]) == {"insider"} and set(hypotheses["status"]) == {"skipped"}
     with pytest.raises(PermissionError):
         gate.ReadOnlyStore(sqlite_store).save(Tables.prices, pd.DataFrame({"ticker": ["X"], "date": ["2026-01-02"]}))
     print(
-        "sanity: the CLI diff of the tape section alone writes its file, the summary and only the tape hypotheses; the wrapped store refuses writes"
+        "sanity: the CLI diff of the insider section alone writes its file, the summary and only the insider hypotheses; the wrapped store refuses writes"
     )
 
 
@@ -766,11 +507,11 @@ def test_f112_the_cli_splits_commas_refuses_a_scope_outside_the_snapshot_and_ski
     assert meta["tickers"] == ["CB", "MRK"], "-t CB,MRK is two tickers"
     _make_after(sqlite_store, lose_own=False)
     out = tmp_path / "out"
-    assert gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "--sections", "tape"], context_factory=factory) == 2, (
+    assert gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "--sections", "insider"], context_factory=factory) == 2, (
         "unscoped diff of a scoped snapshot"
     )
-    assert gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "-t", "CB,AAPL", "--sections", "tape"], context_factory=factory) == 2
-    code = gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "-t", "CB", "--sections", "tape"], context_factory=factory)
+    assert gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "-t", "CB,AAPL", "--sections", "insider"], context_factory=factory) == 2
+    code = gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "-t", "CB", "--sections", "insider"], context_factory=factory)
     hypotheses = pd.read_csv(out / "gate_hypotheses.csv")
     assert code != 2 and set(hypotheses.loc[hypotheses["tickers"].ne("CB"), "status"]) == {"skipped"}, hypotheses
     print("sanity: -t CB,MRK snapshots two tickers; a diff outside that scope exits 2; a CB diff skips every hypothesis naming another ticker")
@@ -779,16 +520,6 @@ def test_f112_the_cli_splits_commas_refuses_a_scope_outside_the_snapshot_and_ski
 # --------------------------------------------------------------------------- the traded-security realignment (stamped before view)
 
 TDCC, DOW_INC, DOWDUPONT = "0000029915", "0001751788", "0001666700"
-
-
-def test_a_stamped_ratio_change_is_listed_and_an_unchanged_ratio_is_not() -> None:
-    raw = _raw([TAPE_ROWS[3]])
-    old = pd.Series(["BRK-B"], index=raw.index)
-    same = gate.tape_diff(raw, _master(), _resolver(), UNIVERSE, "ftd", old, pd.Series([1500.0], index=raw.index))
-    assert same.empty, "BRK-A at 1,500 before and after"
-    moved = gate.tape_diff(raw, _master(), _resolver(), UNIVERSE, "ftd", old, pd.Series([1000.0], index=raw.index))
-    assert moved[["reason", "old_weight", "new_weight"]].values.tolist() == [["conversion_ratio", 1000.0, 1500.0]]
-    print("sanity: a stamped before view lists BRK-A only when its conversion ratio changed (1,000 -> 1,500), not at an unchanged 1,500")
 
 
 def test_an_insider_row_follows_its_cik_to_the_entity_that_now_holds_it() -> None:
@@ -809,7 +540,7 @@ def test_an_insider_row_follows_its_cik_to_the_entity_that_now_holds_it() -> Non
     assert {r.accession_number: r.reason for r in diff.itertuples(index=False)} == {"acc-tdcc": "entity_moved", "acc-dow": ""}
     hypothesis = {"id": "x", "kind": "insider", "tickers": ["DOW"], "ciks": [TDCC], "change": "moved", "expected": 1, "reason": "entity_moved"}
     empty = pd.DataFrame(columns=gate.FILING_COLUMNS)
-    result = gate.check_hypotheses([hypothesis], empty, pd.DataFrame(columns=gate.TAPE_COLUMNS), insider=diff)
+    result = gate.check_hypotheses([hypothesis], empty, insider=diff)
     assert result[["observed", "status"]].values.tolist() == [[1, "pass"]]
     print(
         "sanity: TDCC's row moves DOW -> DD with its CIK's entity (entity_moved, counted by an insider hypothesis); Dow Inc's own row moving is unexplained"
@@ -821,8 +552,7 @@ def test_the_shipped_hypotheses_describe_the_traded_security_realignment_only() 
     assert hypotheses and all(h["change_set"] == "traded_security_realignment" for h in hypotheses)
     named = {t for h in hypotheses for t in h["tickers"]}
     assert named == {"PLD", "JCI", "DD", "DOW"}, named
-    assert all(h["reason"] in gate.REASONS and h["kind"] in gate.HYPOTHESIS_KINDS for h in hypotheses)
-    declared = [h for h in hypotheses if h["reason"] in gate.DECLARED_REASONS]
-    assert declared and all(h.get("cusips") or h.get("dates") for h in declared), "a declared reason names its rows"
+    checked = [h for h in hypotheses if h["kind"] not in gate.RETIRED_KINDS]
+    assert checked and all(h["reason"] in gate.REASONS and h["kind"] in gate.HYPOTHESIS_KINDS for h in checked)
     by_kind = pd.Series([h["kind"] for h in hypotheses]).value_counts().to_dict()
     print(f"sanity: {len(hypotheses)} hypotheses {by_kind}, all under traded_security_realignment, naming only {sorted(named)}")

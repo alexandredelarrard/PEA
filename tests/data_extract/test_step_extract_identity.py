@@ -1,4 +1,4 @@
-"""`StepExtractIdentity`: `run()` is the eight-stage flow, the captures land before the builders with one Form 3/4/5 scan,
+"""`StepExtractIdentity`: `run()` is the eight-stage flow (the last one the SQL-only sync), the captures land before the builders with one Form 3/4/5 scan,
 per-stage failures, and the D-15 cold start."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.identity.test_ftd_evidence_table import _HEADER, _lineage
-from tests.support.propagation import stub_propagation
+from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe, universe_of
 
 #: an empty published lineage, as the stubbed resolver inputs carry
@@ -33,7 +33,7 @@ FLOW = (
     "run_cusip_history",
     "run_lifecycle",
     "run_publish",
-    "run_propagate",
+    "run_sync",
 )
 
 
@@ -88,10 +88,10 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
     monkeypatch.setattr(StepExtractIdentity, "run_lifecycle", lambda self: order.append("lifecycle"))
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
     monkeypatch.setattr(StepExtractIdentity, "run_cusip_history", lambda self: mark("cusips", pd.DataFrame())())
-    stub_propagation(monkeypatch, module)
+    stub_sync(monkeypatch, module)
     inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     monkeypatch.setattr(module, "identity_inputs", mark("refresh", inputs))
-    monkeypatch.setattr(module, "recheck_tickers", mark("propagate", []))
+    monkeypatch.setattr(module, "recheck_tickers", mark("sync", []))
     monkeypatch.setattr(module, "load_stored_lineage", lambda context: pd.DataFrame())
 
 
@@ -107,10 +107,10 @@ def test_run_is_the_flow_of_eight_named_stages(monkeypatch: pytest.MonkeyPatch) 
     assert tuple(calls) == FLOW, calls
     print("\n=== SANITY CHECK: StepExtractIdentity.run is the flow ===")
     print(f"  {' -> '.join(calls)}")
-    print("  OK: evidence, anchor, CIK, symbol and CUSIP history, lifecycle, publish, propagate -- in the REQ-009 order")
+    print("  OK: evidence, anchor, CIK, symbol and CUSIP history, lifecycle, publish, sync -- in the REQ-009 order")
 
 
-def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_captures_first_then_builds_and_syncs_with_one_scan(monkeypatch: pytest.MonkeyPatch) -> None:
     order: list[str] = []
     _stub_operations(monkeypatch, order)
 
@@ -128,18 +128,18 @@ def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch
         "lifecycle",
         "publish",
         "refresh",
-        "propagate",
+        "sync",
     ]
     assert order == expected, order
     assert order.count("scan") == 1, "the tenure and the CIK history share one Form 3/4/5 scan"
     print("\n=== SANITY CHECK: StepExtractIdentity.run operations ===")
     print(f"  {' -> '.join(order)}; one scan shared by the tenure and the CIK history")
-    print("  OK: the captures land before the builders read their evidence, and propagation runs on the rebuilt tables")
+    print("  OK: the captures land before the builders read their evidence, and the sync runs on the rebuilt tables")
 
 
-@pytest.mark.parametrize("boom", ["dei", "symbols", "cusips", "propagate"])
+@pytest.mark.parametrize("boom", ["dei", "symbols", "cusips", "sync"])
 def test_a_failing_stage_raises_from_its_own_method_only(monkeypatch: pytest.MonkeyPatch, boom: str) -> None:
-    owner = {"dei": "run_capture_evidence", "symbols": "run_symbol_history", "cusips": "run_cusip_history", "propagate": "run_propagate"}
+    owner = {"dei": "run_capture_evidence", "symbols": "run_symbol_history", "cusips": "run_cusip_history", "sync": "run_sync"}
     order: list[str] = []
     _stub_operations(monkeypatch, order, boom=boom)
     step = StepExtractIdentity(_context(), _config())  # type: ignore[arg-type]
@@ -157,25 +157,21 @@ def test_a_failing_stage_raises_from_its_own_method_only(monkeypatch: pytest.Mon
     print(f"  {owner[boom]} raised alone; the other seven sub-runs completed when called alone; run() stopped at it")
 
 
-def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_options_reach_the_capture_and_the_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, dict[str, Any]] = {}
     _stub_operations(monkeypatch, [])
     monkeypatch.setattr(module, "pending_dei_periods", lambda context, cache, full: calls.setdefault("dei", {"full": full}) and [])
-    stages = stub_propagation(monkeypatch, module)
-    dry_runs: list[bool] = []
-    monkeypatch.setattr(module, "purge_rows", lambda context, spec, changed, owned, bounds, dry_run: dry_runs.append(dry_run) or [])
-    options = IdentityOptions(tickers=["AAA"], full=True, dry_run=True, as_of=pd.Timestamp("2026-10-30"))
-    step = StepExtractIdentity(_context(), _config(), options)  # type: ignore[arg-type]
+    stages = stub_sync(monkeypatch, module)
+    step = StepExtractIdentity(_context(), _config(), IdentityOptions(full=True, as_of=pd.Timestamp("2026-10-30")))  # type: ignore[arg-type]
 
     step.run_capture_evidence()
-    step.run_propagate()
+    step.run_sync()
 
     assert calls["dei"] == {"full": True}
     recheck = stages["recheck"][0]
-    assert recheck["tickers"] == ["AAA"] and dry_runs and all(dry_runs)
-    assert recheck["every"] and recheck["as_of"] == pd.Timestamp("2026-10-30")
+    assert recheck["tickers"] == ["AAA", "BBB"] and recheck["every"] and recheck["as_of"] == pd.Timestamp("2026-10-30")
     print("\n=== SANITY CHECK: identity options ===")
-    print("  --full reaches the capture; -t, --full, --dry-run and --as-of reach the propagation")
+    print("  --full reaches the capture; --full and --as-of reach the sync, which re-checks the whole universe")
 
 
 def test_cold_start_run_builds_universe_cusip_from_the_stored_ftd_lines(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -206,7 +202,7 @@ def test_cold_start_run_builds_universe_cusip_from_the_stored_ftd_lines(sqlite_s
     monkeypatch.setattr(
         module, "prepare_observations", lambda observations: lines_seen.append(observations["cusip"].tolist()) or prepare(observations)
     )
-    stub_propagation(monkeypatch, module)
+    stub_sync(monkeypatch, module)
     assert sqlite_store.row_count(Tables.universe_cik_symbol) == 0, "a cold store: no lineage yet"
 
     StepExtractIdentity(context, config).run()  # type: ignore[arg-type]

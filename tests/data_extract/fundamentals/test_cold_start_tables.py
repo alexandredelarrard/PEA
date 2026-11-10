@@ -324,3 +324,221 @@ def test_an_empty_database_gets_both_sharadar_tables_from_the_nightly_writers(
     print(
         f"  -> {Tables.sharadar_fundamentals_history}: {len(columns)} columns (DATE keys, DOUBLE values), PK (ticker, as_of), indexes {history_indexes}; 6 rows. Validated."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Cold tickers fill in full on the nightly run (per-run cap)                  #
+# --------------------------------------------------------------------------- #
+def _nightly_walk(ctx: Any, tickers: list[str], monkeypatch: pytest.MonkeyPatch, accessions: dict[str, list[int]], *, full: bool = False) -> Any:
+    """One nightly facts walk (capped; `full` is `-F`) over an index holding `accessions[ticker]`'s quarters,
+    CIKs as `fake_context` seeded them (universe position + 1)."""
+    universe = ctx.universe.frame.set_index("ticker")["cik"].astype(int).to_dict()
+    rows: list[tuple[int | str, str, str, str, str]] = []
+    quarter_of: dict[str, int] = {}
+    for ticker, quarters in accessions.items():
+        for i in quarters:
+            _start, _end, label, filed = _QUARTERS[i]
+            accession = _accession(universe[ticker], i)
+            rows.append((universe[ticker], f"{ticker} Co", "10-K" if label == "Q4" else "10-Q", filed, accession))
+            quarter_of[accession] = i
+    seed_index(ctx, rows)
+    monkeypatch.setattr(facts_mod, "filing_rows", _filing_rows(set(), quarter_of))
+    fetch = dataclasses.replace(SEC_FUNDAMENTALS_FETCH, run_scope=None, parse=partial(parse_fundamentals, catalogue=None, gics_by_ticker={}))
+    return run_edgar_fetch(ctx, fetch, roster_run(ctx, tickers, as_of=_AS_OF, full=full), max_workers=1)
+
+
+def _stored_filings(store: DataStore) -> dict[str, int]:
+    stored = store.load(Tables.sec_fundamentals_facts, columns=["ticker", "accession_number"], markers=True)
+    return stored.groupby("ticker")["accession_number"].nunique().to_dict()
+
+
+def test_cold_tickers_fill_in_full_and_the_next_night_is_a_no_op(tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty database, per-run cap 2, two tickers of 4 filings, nightly walk + history build until the walk lists
+    nothing: the first night reads every filing of both cold tickers and the history replays them in full; the
+    second night lists nothing. A capped first night instead back-fills older quarters on later nights, and the
+    night the Q4 row's TTM becomes computable the drift guard raises."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], max_documents_per_run=2)
+    history_ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.cold"), config_dir=str(CONFIG_DIR))
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+
+    listed: list[int] = []
+    for night in range(1, 6):
+        summary = _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every)
+        listed.append(summary.work.size)
+        print(f"\n  night {night}: listed {summary.work.size} of {summary.work.uncapped}; stored filings {_stored_filings(sqlite_store)}")
+        if night == 1:
+            night_one = _stored_filings(sqlite_store)
+        build_history.build_fundamentals_history(history_ctx, ["AAA", "BBB"])
+        if summary.work.size == 0:
+            break
+    history = sqlite_store.load(Tables.sec_fundamentals_history)
+
+    assert night_one == {"AAA": 4, "BBB": 4}, night_one
+    assert listed == [8, 0], listed
+    assert not ctx.errors, ctx.errors
+    assert history.groupby("ticker").size().to_dict() == {"AAA": 4, "BBB": 4}
+    # the Q4 event's TTM revenue is the four quarters 100 + 101 + 102 + 103
+    assert history.sort_values("as_of").groupby("ticker")["totalRevenue"].last().eq(406.0).all(), history[["ticker", "as_of", "totalRevenue"]]
+
+    print("=== SANITY CHECK: cold tickers on a capped nightly run ===")
+    print("  cap 2, 8 cold filings: night 1 read all 8 (no cap ERROR), the history replayed 4 events per ticker in full (Q4 TTM revenue 406);")
+    print(f"  night 2 listed 0 documents (nights {listed}) and the history build skipped both tickers: no back-fill, no drift. Validated.")
+
+
+def test_a_warm_ticker_keeps_the_cap_while_a_cold_one_fills(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """BBB already holds its newest filing (warm, 3 older ones missing); AAA holds nothing (cold). Under cap 2,
+    AAA lists all 4 filings outside the cap, BBB only its 2 newest missing ones."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], max_documents_per_run=2)
+    _nightly_walk(ctx, ["BBB"], monkeypatch, {"BBB": [3]})
+    assert _stored_filings(sqlite_store) == {"BBB": 1}
+    caplog.clear()
+
+    summary = _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]})
+    stored = sqlite_store.load(Tables.sec_fundamentals_facts, columns=["ticker", "accession_number"])
+    bbb = sorted(int(a[-1]) for a in stored.loc[stored["ticker"] == "BBB", "accession_number"].unique())
+
+    assert len(summary.work.units["AAA"]) == 4 and len(summary.work.units["BBB"]) == 2, {k: len(v) for k, v in summary.work.units.items()}
+    assert summary.work.uncapped == 7
+    assert bbb == [1, 2, 3], bbb
+    capped = [r.getMessage() for r in caplog.records if "exceeds the per-run cap" in r.getMessage()]
+    assert capped == [
+        "sec_fundamentals_facts: work list of 3 document(s) exceeds the per-run cap of 2; the newest 2 run tonight, the rest on later runs"
+    ], capped
+    print("\n=== SANITY CHECK: warm ticker capped, cold ticker uncapped ===")
+    print(f"  7 missing filings, cap 2: cold AAA read 4/4 outside the cap; warm BBB read its 2 newest (quarters {bbb[:2]}), Q1 left for")
+    print("  a later night, with the cap ERROR naming the warm list's 3 documents only. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# `-F` re-read leaves exactly what the resolver emits now                      #
+# --------------------------------------------------------------------------- #
+def test_a_full_re_read_drops_the_facts_the_resolver_no_longer_emits(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AAA and BBB hold 4 filings each. Stale AAA rows are then stored: a field no longer emitted (Q2 filing), a
+    period whose key changed (Q4 filing) and one on the Q3 filing; AAA's Q1 filing now emits nothing (a dropped
+    note-only quarter) and its Q3 filing fails to parse. `-F -t AAA` must leave, per re-read AAA filing, exactly
+    the resolver's rows; the failed Q3 filing keeps all its old rows; BBB is untouched; a plain run deletes nothing."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every)
+    pk = list(Tables.sec_fundamentals_facts.pk)
+    before = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True).sort_values(pk).reset_index(drop=True)
+    aaa = before[before["ticker"] == "AAA"]
+    q1, q2, q3, q4 = (_accession(1, i) for i in range(4))
+    stale_field = aaa[(aaa["accession_number"] == q2) & (aaa["field"] == "totalRevenue")].assign(field="retiredField")
+    stale_key = aaa[(aaa["accession_number"] == q4) & (aaa["field"] == "totalAssets")].assign(period_end=pd.Timestamp("2023-12-30"))
+    kept_on_failure = aaa[(aaa["accession_number"] == q3) & (aaa["field"] == "totalRevenue")].assign(field="retiredField")
+    stale = pd.concat([stale_field, stale_key, kept_on_failure], ignore_index=True)
+    sqlite_store.save(Tables.sec_fundamentals_facts, stale)
+
+    # a plain (non `-F`) night lists nothing and deletes nothing
+    assert _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every).work.size == 0
+    assert len(sqlite_store.load(Tables.sec_fundamentals_facts, markers=True)) == len(before) + 3
+
+    quarter_of = {_accession(1, i): i for i in range(4)}
+    current = _filing_rows({q1}, quarter_of)
+
+    def resolver_now(ticker: str, stamp: FilingStamp, catalogue: Any, gics: Any) -> list[dict]:
+        if stamp.accession_number == q3:
+            raise facts_mod.ParseFailureError("unreadable instance")
+        return current(ticker, stamp, catalogue, gics)
+
+    monkeypatch.setattr(facts_mod, "filing_rows", resolver_now)
+    fetch = dataclasses.replace(SEC_FUNDAMENTALS_FETCH, run_scope=None, parse=partial(parse_fundamentals, catalogue=None, gics_by_ticker={}))
+    summary = run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], as_of=_AS_OF, full=True), max_workers=1)
+
+    after = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True).sort_values(pk).reset_index(drop=True)
+    by_filing = after[after["ticker"] == "AAA"].groupby("accession_number")["field"].apply(sorted).to_dict()
+    expected_q1 = ["_empty"]
+    assert summary.outcomes["AAA"].read == 3 and len(summary.outcomes["AAA"].failed) == 1
+    assert by_filing[q1] == expected_q1, by_filing[q1]
+    assert "retiredField" not in by_filing[q2] and by_filing[q2] == ["goodwill", "totalAssets", "totalRevenue"]
+    assert pd.Timestamp("2023-12-30") not in set(after.loc[after["accession_number"] == q4, "period_end"]), "the moved-key row survived"
+    assert by_filing[q3].count("retiredField") == 1, "a failed re-read must keep its filing's old rows"
+    unchanged = after[(after["ticker"] == "AAA") & after["accession_number"].isin([q2, q4]) | (after["ticker"] == "BBB")]
+    reference = before[(before["ticker"] == "AAA") & before["accession_number"].isin([q2, q4]) | (before["ticker"] == "BBB")]
+    # the Q1 marker's NULL fiscal_year turns the loaded column float; the values must be identical
+    pd.testing.assert_frame_equal(unchanged.reset_index(drop=True), reference.reset_index(drop=True), check_dtype=False)
+
+    print("\n=== SANITY CHECK: `-F` re-read of AAA's facts ===")
+    print(f"  stored {len(before)} rows + 3 stale AAA rows; a plain night listed 0 and kept all {len(before) + 3}")
+    print(f"  -F -t AAA read 3/4 (Q3 failed to parse): Q1 now empty -> {by_filing[q1]}; Q2 retired field gone; Q4 moved-key row gone;")
+    print("  Q3's old rows (stale one included) kept; Q2/Q4 rows and all of BBB equal the pre-run rows. Validated.")
+
+
+def _counted(monkeypatch: pytest.MonkeyPatch, store: DataStore, method: str) -> list[str]:
+    """Record each call of `store.<method>` (the table name when the first argument is a table)."""
+    calls: list[str] = []
+    original = getattr(store, method)
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls.append(str(args[0]) if args else method)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, method, counted)
+    return calls
+
+
+def test_a_full_re_read_on_an_absent_facts_table_creates_it_outside_a_transaction(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-F` on an empty database: the first key has nothing to delete, so its save creates the table without a
+    transaction (a `CREATE TABLE` inside one per-key transaction can deadlock the threaded walk on PostgreSQL); the
+    second key then replaces through one transaction on the existing table. The table has the registry schema,
+    every filing is stored and the next plain night lists nothing."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+    opened_on_existing: list[bool] = []
+    transaction = sqlite_store.transaction
+
+    def counted() -> Any:
+        opened_on_existing.append(sqlite_store.exists(Tables.sec_fundamentals_facts))
+        return transaction()
+
+    monkeypatch.setattr(sqlite_store, "transaction", counted)
+
+    summary = _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every, full=True)
+
+    assert opened_on_existing == [True], opened_on_existing
+    assert not ctx.warnings, ctx.warnings
+    _assert_created(sqlite_store, Tables.sec_fundamentals_facts, FACT_TYPES)
+    stored = sqlite_store.load(Tables.sec_fundamentals_facts)
+    assert stored.groupby("ticker").size().to_dict() == {"AAA": 12, "BBB": 12}
+    assert {t: o.saved.get(Tables.sec_fundamentals_facts, 0) for t, o in summary.outcomes.items()} == {"AAA": 12, "BBB": 12}
+    assert _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every).work.size == 0
+    print("\n=== SANITY CHECK: `-F` on an absent facts table ===")
+    print(f"  2 keys x 4 filings re-read: AAA created the table with no transaction; transactions opened on an existing table {opened_on_existing}")
+    print("  (BBB); registry schema, 12 rows per key stored and the next plain night lists 0 documents. Validated.")
+
+
+def test_a_full_re_read_adds_columns_only_when_the_frame_has_new_ones(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stored facts table lacks `role_uri`. The first `-F` adds it once (AAA, the first key) and BBB's save does
+    not call `ensure_columns`; a second `-F` calls it for no key. Each key still replaces through one transaction."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every)
+    rows = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True)
+    sqlite_store.drop(Tables.sec_fundamentals_facts)
+    sqlite_store.save(Tables.sec_fundamentals_facts, rows.drop(columns="role_uri"))
+    assert "role_uri" not in sqlite_store.columns(Tables.sec_fundamentals_facts)
+    added = _counted(monkeypatch, sqlite_store, "ensure_columns")
+    transactions = _counted(monkeypatch, sqlite_store, "transaction")
+
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every, full=True)
+    first = (list(added), len(transactions))
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every, full=True)
+    second = (added[len(first[0]) :], len(transactions) - first[1])
+
+    assert first == ([str(Tables.sec_fundamentals_facts)], 2), first
+    assert second == ([], 2), second
+    assert "role_uri" in sqlite_store.columns(Tables.sec_fundamentals_facts)
+    after = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True)
+    assert after.groupby("ticker").size().to_dict() == {"AAA": 12, "BBB": 12}
+    print("\n=== SANITY CHECK: `ensure_columns` guard on `-F` ===")
+    print(f"  table without role_uri: 1st -F ensure_columns calls {first[0]} (AAA only), {first[1]} transactions;")
+    print(f"  2nd -F: {len(second[0])} ensure_columns calls, {second[1]} transactions; 12 rows per key kept. Validated.")

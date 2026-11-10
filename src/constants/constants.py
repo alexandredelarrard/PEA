@@ -422,10 +422,10 @@ SHARADAR_FLOW_FIELDS: frozenset[str] = frozenset(
 # --------------------------------------------------------------------------- #
 # Sharadar history build and the SEC/Sharadar tolerances shared with the cube.  #
 # --------------------------------------------------------------------------- #
-#: How stale a carried SEC snapshot may be when joined BACKWARD (never forward -- that is the
-#: leak) onto a later date. One year: the SEC data is quarterly, so anything past four quarters
-#: means the SEC producer stopped covering that ticker and a carried value would be a fabricated
-#: present, not a lag.
+#: How old an annual SEC employee-count row may be when the cube's employee features attach it
+#: BACKWARD (never forward -- that is the leak) onto a later fundamentals history row
+#: (`employee_features.attach_headcount`). One year: the count is annual, so a row older than
+#: that means the company stopped reporting it and a carried value would be a fabricated present.
 SHARADAR_SEC_ASOF_TOLERANCE_DAYS = 370
 
 #: How a duplicate publication date is resolved, in history names (the vendor columns behind

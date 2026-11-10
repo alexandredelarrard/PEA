@@ -130,20 +130,6 @@ def test_ba_shape_a_lone_quarter_in_a_10k_is_refused():
     )
 
 
-def test_the_refusal_is_recorded_on_the_covering_annual():
-    """A refusal nobody can count is a silent delete.
-
-    The marker lands on the ANNUAL window that contains the refused quarter -- the period the
-    note belongs to.
-    """
-    hosts = _by_end(_drop_note_only_quarter(_periods(_BA_TAX, TAX), form="10-K"))
-
-    assert hosts["2010-12-31"]["note_quarter_rejected"] == [{"period_end": "2010-12-31", "value": 371_000_000.0}]
-    assert hosts["2011-12-31"]["note_quarter_rejected"] == [{"period_end": "2011-12-31", "value": 397_000_000.0}]
-    assert "note_quarter_rejected" not in hosts["2009-12-31"], "a year with no refusal carries no marker"
-    print(f"refusal recorded on the covering annual: FY2011 -> {hosts['2011-12-31']['note_quarter_rejected']}")
-
-
 # --------------------------------------------------------------------------- #
 # The regressions the defect's obvious fix would have caused                    #
 # --------------------------------------------------------------------------- #

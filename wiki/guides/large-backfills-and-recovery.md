@@ -51,7 +51,7 @@ rtk "$PY" -m src data_extract sec-def14a-text -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-def14a-llm -t TICKER1,TICKER2
 ~~~
 
-The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers list each ticker's filings from the local filing index over its current registrant lineage on every run, so a newly declared CIK's filings enter the work list with no flag. Run those walks serially because SEC rate limiting is process-local; use `-F` only to re-read filings already stored. The SEC history picks up a newly listed back-dated original on its next run (full replay of that ticker). The Sharadar history is keyed through the lineage too, so after a lineage change rebuild it with `fundamentals-sharadar -F -t <tickers>`.
+The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers list each ticker's filings from the local filing index over its current registrant lineage on every run, so a newly declared CIK's filings enter the work list with no flag. Run those walks serially because SEC rate limiting is process-local; use `-F` only to re-read filings already stored. The SEC history picks up a newly listed back-dated original on its next run: it rewrites that ticker's rows from the filing's date, and the rows before that date must recompute unchanged. The Sharadar history is keyed through the lineage too, so after a lineage change rebuild it with `fundamentals-sharadar -F -t <tickers>`.
 
 After rebuilding affected cube parts, compare the frozen state:
 
@@ -74,14 +74,15 @@ The SEC history build sorts each ticker before any replay:
 
 | Ticker state | Work |
 | --- | --- |
-| no filing newer than its newest stored row | skipped; facts not read |
-| filings only after its newest stored row | snapshots of the new events only |
-| no stored history, a back-dated original, an event list that disagrees with the stored rows, or `--verify-history` | full replay with the append-only guard |
+| no new date (an original filing date that the replay consumes and that is not stored) | skipped; facts not read |
+| new dates only after its newest stored row | snapshots of the new events only |
+| a new date on or before its newest stored row (a late original) | full replay; the rows from that date are deleted and saved again in one transaction, and the drift guard covers the rows before it |
+| no stored history, an event list that disagrees with the stored rows, a recent lineage change, or `--verify-history` | full replay with the append-only guard |
 | `--full` | delete, then full replay |
 
 Full replays run in a process pool of `fundamentals_workers` and take seconds per ticker. Facts and history are separate commands with no hand-off between them: the triage reads only stored facts and stored rows, so a `sec-fundamentals-facts -F` re-read of already-stored filings must be followed by `sec-fundamentals-history --full` (or `--verify-history`, as above) on the same tickers.
 
-Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings. A chunk larger than `max_documents_per_run` drains over several runs unless `--no-cap` is given.
+Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings: it replaces the ticker's stored rows of each filing it re-reads, so facts the current resolver no longer emits (a dropped quarter, a moved period key, a retired field) disappear, while a filing that fails to read keeps its rows and is listed again. A ticker with no `sec_fundamentals_facts` row is listed in full outside `max_documents_per_run`, so its first history is never built from a newest-only suffix. For tickers that already hold facts, a gap larger than the cap drains over several runs unless `--no-cap` is given. Older filings back-filled under an already-published history need no flag: the next `sec-fundamentals-history` run rewrites that ticker's rows from the oldest back-filled filing date. A back-filled original filed on the same day as a stored row adds no new date, so it is not picked up. `sec-fundamentals-history --verify-history -t ...` raises on such a ticker, and so does the next nightly run once a later late original arrives for it; then run `--full` on it. A ticker the append-only guard refuses keeps its rows, the other tickers are still built, and the run fails at the end listing every refused ticker. A stored row whose filing the facts no longer hold sends its ticker to a full replay under the guard.
 
 Choose the narrowest repair:
 
@@ -140,7 +141,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 ## Document backlogs and markers
 
-A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`: the nightly run drains it over several nights, or run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. The first fill of `sec_employees_text` and `sec_def14a_text` is one and needs no one-time step: each nightly text walk creates its table from its `sql/schema.sql` block when it is missing, and the DAG runs each LLM pass after its walk. Measured 2026-11-09: ~14.0k 10-K-family filings and ~12.9k proxies, about 3 nights each at the cap of 5000.
+A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`: the nightly run drains it over several nights, or run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. `sec_fundamentals_facts` is the exception: its walk never caps a ticker with no stored row, so a cleared table refills on the nightly run. The first fill of `sec_employees_text` and `sec_def14a_text` is one and needs no one-time step: each nightly text walk creates its table from its `sql/schema.sql` block when it is missing, and the DAG runs each LLM pass after its walk. Measured 2026-11-09: ~14.0k 10-K-family filings and ~12.9k proxies, about 3 nights each at the cap of 5000.
 
 Expected first-fill LLM spend: about 5 employee calls (~$0.01) and up to ~10.4k DEF 14A section calls over ~6.4k proxies (~$150 upper bound at $0.023 per proxy; a section the proxy lacks makes no call). Nearly all are the one further attempt the retry contract owes a gapped section of a proxy answered by the legacy whole-proxy call; the code before the text split owed the same calls. At the cap the spend follows the walk, about a third a night; `--no-cap` puts it on one night. Before a `--no-cap` run, read the work list without touching SEC:
 

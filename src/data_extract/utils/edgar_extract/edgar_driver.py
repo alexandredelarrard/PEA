@@ -18,7 +18,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import cached_property, partial
 from operator import attrgetter
@@ -170,8 +170,10 @@ class EdgarFetch:
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
     `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
     `save` replaces the per-table key save. `source_history` lists filings, and refreshes the index, from the done
-    table's source start rather than the run's window (gap filings). The done table owns the description, forms
-    and marker stamps.
+    table's source start rather than the run's window (gap filings). `fill_cold` lists a key with no stored row in
+    full, outside the per-run cap. `rewrite_on_full` (a single-table walk keyed on `ticker`) makes a `-F` run
+    replace the key's stored rows of each re-read filing, so rows the parser no longer emits disappear. The done
+    table owns the description, forms and marker stamps.
     """
 
     tables: tuple[Table, ...]
@@ -186,6 +188,8 @@ class EdgarFetch:
     save: SaveFn | None = None
     source_history: bool = False
     done_accessions: DoneFn | None = None
+    fill_cold: bool = False
+    rewrite_on_full: bool = False
 
     @property
     def done(self) -> Table:
@@ -394,9 +398,15 @@ def _add_frames(frames: dict[Table, list[pd.DataFrame]], outcome: dict[Table, pd
             frames.setdefault(table, []).append(df)
 
 
-def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
+def _save_key(
+    context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]], *, rewrite: bool = False
+) -> tuple[dict[Table, int], bool]:
     """Upsert one key's frames, the done table last. Returns `(rows per table, failed_save)`; after a
-    failed or undeclared save the done table is withheld, so the key's documents stay listed."""
+    failed or undeclared save the done table is withheld, so the key's documents stay listed.
+
+    `rewrite` replaces the key's stored rows of each filing read this pass: delete and save share one
+    transaction per table, so a row the parser no longer emits is gone and a filing that failed to read keeps its rows."""
+    read = sorted({str(a) for df in frames.get(fetch.done, []) for a in df["accession_number"]}) if rewrite else []
     order = [t for t in frames if t != fetch.done] + ([fetch.done] if fetch.done in frames else [])
     counts: dict[Table, int] = {}
     failed_save = False
@@ -414,13 +424,30 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
             counts[table] = 0
             continue
         try:
-            context.store.save(table, df)
+            if read:
+                _replace_filings(context, table, ticker, read, df)
+            else:
+                context.store.save(table, df)
         except Exception as exc:  # noqa: BLE001 -- a failed save is per table; the others still save
             context.log.warning("%s: %s save to '%s' failed (%s)", fetch.done.desc, ticker, table, exc)
             failed_save = True
             continue
         counts[table] = len(df)
     return counts, failed_save
+
+
+def _replace_filings(context: Context, table: Table, ticker: str, accessions: list[str], df: pd.DataFrame) -> None:
+    """Delete `ticker`'s rows of `accessions` from `table` and save `df`, in one transaction. An absent table has
+    nothing to delete and is created by a plain save, keeping its `CREATE TABLE` out of a per-key transaction."""
+    stored = context.store.columns(table)
+    if not stored:
+        context.store.save(table, df)
+        return
+    if table.is_unmanaged and set(df.columns) - set(stored):
+        context.store.ensure_columns(table, df)
+    with context.store.transaction() as bound:
+        bound.delete(table, {"ticker": ticker, "accession_number": accessions})
+        bound.save(table, df)
 
 
 def _walk_key(context: Context, fetch: EdgarFetch, identity: Identity, units: dict[str, pd.DataFrame], ticker: str, cik: str) -> KeyOutcome:
@@ -535,6 +562,7 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
         cap=run.cap,
         listing_floor=_source_start(fetch) if fetch.source_history else None,
         done_accessions=fetch.done_accessions,
+        fill_cold=fetch.fill_cold,
     )
     return document_worklist(context, fetch.done, request)
 
@@ -561,13 +589,16 @@ def refresh_index(context: Context, run: EdgarRun, years_history: int) -> None:
 def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_workers: int | None = None) -> FetchSummary:
     """Fetch every document `fetch.done` still lacks for `run`'s keys, on the index as it stands, and save what was read.
 
-    `run.full` re-reads the whole listed history (stored accessions and markers included). Never raises for a
-    source failure: what could not be read is logged and listed again on the next run.
+    `run.full` re-reads the whole listed history (stored accessions and markers included), and replaces each read
+    filing's stored rows for a `rewrite_on_full` fetch. Never raises for a source failure: what could not be read is
+    logged and listed again on the next run.
     """
     start_date = run.run_date
     with fetch.run_scope(context, run.tickers, start_date) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
         if prepared.parse is None:
             raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
+        if run.full and prepared.rewrite_on_full:
+            prepared = replace(prepared, save=partial(_save_key, rewrite=True))
         context.ensure_edgar_identity()
         configure(context)
         work = plan_fetch(context, prepared, run)

@@ -799,11 +799,6 @@ def blocked_frame(membership: Membership, roster_cik: Mapping[str, str]) -> pd.D
     return pd.DataFrame(rows, columns=list(BLOCKED_COLUMNS))
 
 
-def sharadar_outside(sharadar: Mapping[str, str], entities: Entities, roster_cik: Mapping[str, str]) -> list[str]:
-    """The universe tickers whose Sharadar `secfilings` CIK is not one of their company's CIKs (AC-004)."""
-    return sorted(t for t, cik in sharadar.items() if t in roster_cik and entities.entity_of.get(cik) != entities.entity_of.get(roster_cik[t]))
-
-
 def log_cik_history(history: CikHistory, membership: Membership, n_candidates: int, outside: list[str]) -> None:
     """One INFO summary; the refused merges and the CIK curation backlog in detail at DEBUG (PD-14: their items reach the
     publish review as `refused_merge`, `grey_band` and the extra-CIK kinds)."""

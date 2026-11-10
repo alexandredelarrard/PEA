@@ -827,6 +827,7 @@ def role_segments(
 ) -> tuple[dict[str, list[_Segment]], dict[str, list[_Candidate]]]:
     """Each CUSIP's non-canonical segments (manual roles, acquired outside its issuers' windows, excluded by kind, secondary
     classes) and each company's canonical candidates, over its traded life; a co-registrant's CUSIPs get none."""
+    # the CUSIPs of every issuer but a co-registrant
     kept = [fact for fact in facts if fact.issuer.primary not in co_registrants]
 
     # each CUSIP's life: its manual roles, then each issuer span's roles inside and outside the CIK's windows

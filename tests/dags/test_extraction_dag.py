@@ -566,8 +566,7 @@ INPUT_PRODUCERS = {
     "symbol_tenure": {"identity"},
     "universe_cik_symbol": {"identity"},
     "universe_cusip": {"identity"},
-    "sec_fails_to_deliver_security": {"identity"},  # the capture adds the lines; `zips_ingest_datasets` only stamps them
-    "sec_fails_to_deliver": {"identity", "zips_ingest_datasets"},  # the capture keeps (unverified) the derived rows of a re-read period
+    "sec_fails_to_deliver_security": {"zips_ingest_datasets"},  # the FTD ingest stores the lines as filed
     "sec_short_volume_security": {"short_interest"},
     "prices": {"price_history"},
     "sec13f_hr": {"thirteen_f", "thirteen_f_backfill"},
@@ -575,9 +574,9 @@ INPUT_PRODUCERS = {
     "sec_13g": {"sec_13g"},
 }
 #: inputs read one night old, as history only. U-3: prices, 13F and 13D/G CUSIPs. X15 (2026-11-04): the CUSIP history's
-#: FINRA presence check (`sec_short_volume_security`). `sec_fails_to_deliver`: the FTD capture keeps the derived rows the
-#: ingest wrote last night for a period it re-reads (the ingest rebuilds them after identity).
-ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security", "sec_fails_to_deliver"}
+#: FINRA presence check (`sec_short_volume_security`). Q4 (2026-11-09): the CUSIP history reads the FTD lines the ingest
+#: stored last night (`sec_fails_to_deliver_security`).
+ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security", "sec_fails_to_deliver_security"}
 
 
 def test_identity_reads_no_input_written_later_in_the_night():

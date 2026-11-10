@@ -557,8 +557,11 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     # -- the point-in-time half, on a table that declares its sources --------------------- #
     # FTD absence is an observed zero once the source is globally live. BBB deliberately has
     # no event at all: requiring its own first event would manufacture a leak on the correct 0.
-    ftd = pd.DataFrame({"ticker": ["AAA"], "date": [SESSIONS[10]], "fails_quantity": [1.0]})
-    ftd.to_sql("sec_fails_to_deliver", sqlite_store.engine, index=False)
+    # The FTD line is stored as filed (CUSIP grain); `universe_cusip` maps its CUSIP to AAA.
+    ftd = pd.DataFrame({"cusip": ["000000001"], "date": [SESSIONS[10]], "fails_quantity": [1.0]})
+    ftd.to_sql("sec_fails_to_deliver_security", sqlite_store.engine, index=False)
+    lines = pd.DataFrame({"cusip": ["000000001"], "canonical_company": ["AAA"], "source": ["ftd"]})
+    lines.to_sql("universe_cusip", sqlite_store.engine, index=False)
     short = pd.DataFrame(
         {
             "ticker": ["AAA", "BBB"],

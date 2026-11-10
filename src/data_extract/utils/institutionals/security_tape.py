@@ -1,28 +1,26 @@
 """Shared plumbing of the security-grain market tapes (FTD lines, RegSHO short-volume rows).
 
 Both tapes store raw lines stamped from `universe_cusip` (`STAMP_COLUMNS`) and rebuild a ticker-grain table by
-summing the canonical and secondary-class lines (`SUMMED_ROLES`). These helpers load stored rows in keyed chunks,
+summing the canonical and secondary-class lines (`security_series.summed_lines`). These helpers load stored rows in keyed chunks,
 compare stamps, and write only the ticker rows that changed.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_store.schema import Table
 from src.data_store.store import NOT_NULL, DataStore, Where
+from src.utils.security_series import nullable
 
 #: The four columns stamped from the security master on every stored tape line.
 STAMP_COLUMNS = ["security_id", "ticker", "lineage_role", "security_class"]
-#: Roles whose lines are summed into the ticker grain.
-SUMMED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
 
 
 def restamp_targets(
@@ -35,23 +33,12 @@ def restamp_targets(
     return sorted(changed | (stored - set(stamps)))
 
 
-def nullable(values: pd.Series) -> pd.Series:
-    """`values` as objects with missing values as None (the store's NULL)."""
-    return values.astype(object).where(values.notna(), None)
-
-
 def stamp_changed(old: pd.DataFrame, new: pd.DataFrame, old_suffix: str = "") -> pd.Series:
     """True where any stamp column of `old` (named with `old_suffix`) differs from `new`, row by row; indexed like `new`."""
     differs = np.zeros(len(new), dtype=bool)
     for column in STAMP_COLUMNS:
         differs |= nullable(old[f"{column}{old_suffix}"]).astype(str).to_numpy() != nullable(new[column]).astype(str).to_numpy()
     return pd.Series(differs, index=new.index)
-
-
-def summed_lines(stamped: pd.DataFrame, tickers: Collection[str] | None) -> pd.DataFrame:
-    """The stamped lines summed into the ticker grain: a summed role and a ticker, limited to `tickers` when given."""
-    summed = stamped[stamped["lineage_role"].isin(SUMMED_ROLES) & stamped["ticker"].notna()]
-    return summed if tickers is None else summed[summed["ticker"].isin(set(tickers))]
 
 
 def _same(a: pd.Series, b: pd.Series) -> np.ndarray:

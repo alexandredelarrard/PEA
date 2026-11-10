@@ -5,8 +5,7 @@ Schering-Plough (outside its window), BRK-A (ratio 1,500), FITB's preferred, XOM
 DISCA, APTV's DLPH (manual boundary), NWSA (recovered by CUSIP), FOX class B, Tyco / Johnson Controls (register
 window and seam margin) and the co-registrant Digital Realty LP. Every reason rule has a row; an injected row no
 rule explains fails the gate (E30); a hypothesis that does not hold fails the gate. The traded-security realignment
-(AMB / old ProLogis, TDCC moving DOW -> DD) exercises the stamped before view, a declared tape move and an insider
-row following its CIK's entity.
+(TDCC moving DOW -> DD) exercises an insider row following its CIK's entity.
 """
 
 from __future__ import annotations
@@ -675,12 +674,6 @@ def _seed_before(store: Any) -> None:
     store.save(Tables.symbol_tenure, _tenure().assign(evidence_period=""))
     seed_universe(store, _roster()["ticker"].tolist(), rows={t: {"cik": c} for t, c in _roster().itertuples(index=False)})
     store.save(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame(
-            {"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [2661.0], "fails_value": [1.0], "period": ["201506a"]}
-        ),
-    )
-    store.save(
         Tables.sec_8k,
         pd.DataFrame(
             {
@@ -711,10 +704,6 @@ def _make_after(store: Any, *, lose_own: bool) -> None:
         scope_changed_at=pd.Timestamp("2026-10-01"),
     )
     store.save(Tables.universe_cusip, master)
-    raw = _raw(TAPE_ROWS[:2]).rename(columns={"quantity": "fails_quantity"}).assign(description="", price=1.0, fails_value=1.0, period="201506a")
-    store.save(Tables.sec_fails_to_deliver_security, raw)
-    after = {"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [293.0], "fails_value": [1.0], "period": ["201506a"]}
-    store.save(Tables.sec_fails_to_deliver, pd.DataFrame(after))  # rebuilt from the new stamps: ACE only
     store.delete(Tables.sec_8k, {"accession_number": "a-foreign"})
     if lose_own:
         store.delete(Tables.sec_8k, {"accession_number": "a-own"})
@@ -724,7 +713,7 @@ def _make_after(store: Any, *, lose_own: bool) -> None:
 def test_snapshot_reads_only_and_diff_exits_non_zero_on_an_unexplained_row(sqlite_store: Any, tmp_path: Path, lose_own: bool) -> None:
     _seed_before(sqlite_store)
     counts = gate.take_snapshot(gate.ReadOnlyStore(sqlite_store), tmp_path / "before")
-    assert counts["filing_sec_8k"] == 2 and counts["ftd"] == 1
+    assert counts["filing_sec_8k"] == 2 and "ftd" not in counts, "the FTD lines carry no ticker grain to snapshot"
     _make_after(sqlite_store, lose_own=lose_own)
     skip = {h["id"] for h in gate.load_hypotheses(CONFIGS)}
     code = gate.run_diff(_Context(gate.ReadOnlyStore(sqlite_store)), tmp_path / "before", tmp_path / "out", skip=skip)
@@ -735,10 +724,10 @@ def test_snapshot_reads_only_and_diff_exits_non_zero_on_an_unexplained_row(sqlit
     sec_8k = filing[filing["table"].eq("sec_8k")]
     expected = {"a-foreign": "foreign_filer_purge", **({"a-own": ""} if lose_own else {})}
     assert dict(zip(sec_8k["accession"], sec_8k["reason"], strict=True)) == expected
-    assert tape[["cusip", "reason"]].values.tolist() == [["171232101", "p21_event_only_cik"]]
+    assert tape.empty, tape
     assert code == (1 if lose_own else 0)
     print(
-        f"sanity: snapshot made no write; diff exit {code} with {'an unexplained own 8-K' if lose_own else 'every row explained'} (foreign 8-K purged, old Chubb tape row p21)"
+        f"sanity: snapshot made no write; diff exit {code} with {'an unexplained own 8-K' if lose_own else 'every row explained'} (foreign 8-K purged; no stamped tape row)"
     )
 
 
@@ -789,129 +778,7 @@ def test_f112_the_cli_splits_commas_refuses_a_scope_outside_the_snapshot_and_ski
 
 # --------------------------------------------------------------------------- the traded-security realignment (stamped before view)
 
-AMB, OLD_PROLOGIS, TDCC, DOW_INC, DOWDUPONT = "0001045609", "0000899881", "0000029915", "0001751788", "0001666700"
-TRS_ROSTER = {"PLD": AMB, "DD": DOWDUPONT, "DOW": DOW_INC}
-#: (cusip, symbol, issuer CIK, (before ticker, role, reason), (after ticker, role, reason)) on 2010-03-01, real CUSIPs.
-TRS_LINES: list[tuple[Any, ...]] = [
-    ("00163T109", "AMB", AMB, ("PLD", "acquired_constituent", "outside_window"), ("PLD", "canonical_current", "tape_symbol")),
-    ("743410102", "PLD", OLD_PROLOGIS, ("PLD", "canonical_predecessor", "ticker_symbol"), ("PLD", "acquired_constituent", "event_only_cik")),
-    ("260543103", "DOW", TDCC, ("DOW", "canonical_predecessor", "ticker_symbol"), ("DD", "canonical_predecessor", "tape_symbol")),
-    ("260557103", "DOW", DOW_INC, ("DOW", "canonical_current", "ticker_symbol"), ("DOW", "canonical_current", "ticker_symbol")),
-]
-
-
-def _trs_master(side: int, lines: list[tuple[Any, ...]]) -> pd.DataFrame:
-    rows = []
-    for cusip, symbol, cik, *views in lines:
-        ticker, role, reason = views[side]
-        rows.append(
-            {
-                "security_id": f"C{cusip}",
-                "valid_from": "2009-06-26",
-                "valid_to": None,
-                "lineage_role": role,
-                "lineage_reason": reason,
-                "conversion_ratio": 1.0,
-                "issuer_cik": cik,
-                "exchange": "NYSE",
-                "market_symbol": symbol,
-                "canonical_company": ticker,
-                "source": "ftd",
-                "source_symbol": symbol,
-                "cusip": cusip,
-                "security_class": "common",
-                "source_accession": None,
-                "evidence": "",
-                "n_observations": 1,
-                "scope_changed_at": pd.Timestamp("2026-10-01"),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def _trs_tape(side: int, lines: list[tuple[Any, ...]]) -> pd.DataFrame:
-    rows = [("2010-03-01", cusip, symbol, *views[side][:2], "common", 100.0 + i) for i, (cusip, symbol, _, *views) in enumerate(lines)]
-    raw = _raw(rows).rename(columns={"quantity": "fails_quantity"})
-    return raw.assign(description="", price=1.0, fails_value=1.0, period="201003a")
-
-
-def _trs_ticker_table(raw: pd.DataFrame) -> pd.DataFrame:
-    summed = raw[raw["lineage_role"].isin(["canonical_current", "canonical_predecessor"])]
-    out = summed.groupby(["ticker", "date"], as_index=False)["fails_quantity"].sum()
-    return out.assign(fails_value=1.0, period="201003a")
-
-
-def _trs_lineage(after: bool) -> pd.DataFrame:
-    tdcc_ticker, old_prologis_role = ("DD", "cik_event") if after else ("DOW", "cik_window")
-    members = [
-        ("PLD", AMB, "cik_window"),
-        ("PLD", OLD_PROLOGIS, old_prologis_role),
-        ("DD", DOWDUPONT, "cik_window"),
-        (tdcc_ticker, TDCC, "cik_window"),
-        ("DOW", DOW_INC, "cik_window"),
-    ]
-    base = {
-        "symbol": "",
-        "valid_to": None,
-        "status": "curated",
-        "sources": "roster",
-        "oracle": "fixture",
-        "confidence": None,
-        "n_observations": 1,
-        "evidence": "",
-        "scope_changed_at": pd.Timestamp("2026-10-01"),
-    }
-    return pd.DataFrame(
-        [
-            {**base, "company_id": f"E{TRS_ROSTER[t]}", "canonical_ticker": t, "cik": c, "role": role, "valid_from": "1900-01-01"}
-            for t, c, role in members
-        ]
-    )
-
-
-def _trs_seed(store: Any, side: int, lines: list[tuple[Any, ...]]) -> None:
-    for table in (Tables.universe_cik_symbol, Tables.universe_cusip, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver):
-        if store.exists(table):
-            store.drop(table)
-    store.save(Tables.universe_cik_symbol, _trs_lineage(after=side == 1))
-    store.save(Tables.universe_cusip, _trs_master(side, lines))
-    raw = _trs_tape(side, lines)
-    store.save(Tables.sec_fails_to_deliver_security, raw)
-    store.save(Tables.sec_fails_to_deliver, _trs_ticker_table(raw))
-
-
-@pytest.mark.parametrize("undeclared", [False, True])
-def test_a_stamped_snapshot_takes_the_old_issuer_from_the_stored_stamps_and_a_declared_move_is_explained(
-    sqlite_store: Any, tmp_path: Path, undeclared: bool
-) -> None:
-    seed_universe(sqlite_store, list(TRS_ROSTER), rows={t: {"cik": c} for t, c in TRS_ROSTER.items()})
-    sqlite_store.save(Tables.symbol_tenure, _tenure().assign(evidence_period=""))
-    _trs_seed(sqlite_store, 0, TRS_LINES)
-    counts = gate.take_snapshot(gate.ReadOnlyStore(sqlite_store), tmp_path / "before")
-    assert counts["ftd_stamps"] == 4 and counts["master"] == 4, counts
-    lines = list(TRS_LINES)
-    if undeclared:  # Dow Inc's own line moving to DD: no rule and no declaration
-        lines[3] = (*lines[3][:4], ("DD", "canonical_current", "ticker_symbol"))
-    _trs_seed(sqlite_store, 1, lines)
-    skip = {h["id"] for h in gate.load_hypotheses(CONFIGS)}
-    code = gate.run_diff(_Context(gate.ReadOnlyStore(sqlite_store)), tmp_path / "before", tmp_path / "out", skip=skip, sections={"tape"})
-    tape = pd.read_csv(tmp_path / "out" / gate.OUTPUTS["tape"], dtype=str, keep_default_na=False)
-    got = {(r.cusip, r.old_canonical_issuer, r.new_canonical_issuer): r.reason for r in tape.itertuples(index=False) if r.cusip}
-    expected = {
-        ("00163T109", "", "PLD"): "cusip_recovered",
-        ("743410102", "PLD", ""): "p21_event_only_cik",
-        ("260543103", "DOW", "DD"): "traded_security_realignment",
-    }
-    if undeclared:
-        expected[("260557103", "DOW", "DD")] = ""
-    assert got == expected
-    grain = tape[tape["source"].str.endswith("_grain")]
-    assert grain.empty, grain  # the before table equals its own stamps' sum, the after table its new stamps' sum
-    assert code == (1 if undeclared else 0)
-    print(
-        "sanity: the old issuer comes from the snapshot's stamps (AMB recovered, old ProLogis acquired, TDCC DOW -> DD declared); "
-        + ("an undeclared Dow Inc move is unexplained, exit 1" if undeclared else "every row explained, exit 0")
-    )
+TDCC, DOW_INC, DOWDUPONT = "0000029915", "0001751788", "0001666700"
 
 
 def test_a_stamped_ratio_change_is_listed_and_an_unchanged_ratio_is_not() -> None:

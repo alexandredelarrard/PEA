@@ -30,15 +30,11 @@ from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICA
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
 from src.data_extract.utils.common.security_lines import EXCLUDED, SOURCE_FTD, master_stamps
-from src.data_extract.utils.institutionals.security_tape import (
-    SUMMED_ROLES,
-    commit_tape_source,
-    summed_lines,
-    validate_tape_frames,
-)
+from src.data_extract.utils.institutionals.security_tape import commit_tape_source, validate_tape_frames
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import filing_window
+from src.utils.security_series import SUMMED_ROLES, summed_lines
 from src.utils.string import run_date, squash, yahoo_symbol
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"

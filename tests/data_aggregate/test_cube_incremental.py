@@ -612,7 +612,8 @@ def test_read_projection_covers_builder_needs():
         # two dead columns here made the projection look broken when it was the contract that
         # was stale. Do not add them back without a fetcher that populates them.
         Tables.short_interest: {"date", "ticker", "short_volume", "total_volume"},
-        Tables.sec_fails_to_deliver: {"date", "ticker", "fails_quantity"},
+        # the institutionals loader builds the ticker FTD series from the as-filed lines (`security_series.LINE_COLUMNS`)
+        Tables.sec_fails_to_deliver_security: {"date", "trade_date", "cusip", "source_symbol", "fails_quantity", "fails_value", "period"},
         # ownership_features (13D/13G). `accession_number` + `cusip` are the canonical-event
         # key (a group files one 13D under many reporting persons; summing their
         # `percent_of_class` would double-count the same block), and `filing_date` is the ONLY

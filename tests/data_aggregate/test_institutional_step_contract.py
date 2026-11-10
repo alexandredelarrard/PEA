@@ -23,7 +23,7 @@ from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecTh
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
-from tests.canonical_schema import create_canonical
+from src.utils.security_series import trade_dates
 from tests.data_aggregate.insider_pit_reference import row
 from tests.support.sec_thirteen_panel import unsaved_panel
 
@@ -121,6 +121,13 @@ def market_lines(tickers: Sequence[str], start: pd.Timestamp) -> pd.DataFrame:
             for number, ticker in enumerate(tickers, start=1)
         ]
     )
+
+
+def ftd_lines(rows: Sequence[tuple[str, str, str, float, str]]) -> pd.DataFrame:
+    """As-filed `sec_fails_to_deliver_security` lines `(settlement date, cusip, symbol, quantity, period)` at price 1."""
+    frame = pd.DataFrame(rows, columns=["date", "cusip", "source_symbol", "fails_quantity", "period"])
+    frame["date"] = pd.to_datetime(frame["date"])
+    return frame.assign(trade_date=trade_dates(frame["date"]), description="", price=1.0, fails_value=frame["fails_quantity"])
 
 
 def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -391,35 +398,14 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
     print(f"SANITY: {cls.__name__} reads each payload once, including absent optional sources.")
 
 
-@pytest.mark.parametrize("checked", [False, True], ids=["legacy-unknown", "checked-zero"])
-def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool) -> None:
-    if checked:
-        create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver])
+@pytest.mark.parametrize("start, checked", [("2024-01-15", False), ("2023-12-01", True)], ids=["unsupported-unknown", "supported-zero"])
+def test_ftd_step_retains_global_zip_dates_from_one_stream(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: str, checked: bool
+) -> None:
+    """OTHER's 2024-01-12 line (a CUSIP no master row carries) serves the date; AAA is zero there only when its master
+    row covers the trade date."""
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
-    sqlite_store.save(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame(
-            {
-                "date": pd.to_datetime(["2024-01-02", "2024-01-12"]),
-                "ticker": ["AAA", "OTHER"],
-                "fails_quantity": [100.0, 50.0],
-                "period": ["202401a", "202401a"],
-            }
-        ),
-    )
-    if checked:
-        sqlite_store.save(
-            Tables.sec_fails_to_deliver,
-            pd.DataFrame(
-                {
-                    "date": [pd.Timestamp("2024-01-12")],
-                    "ticker": ["AAA"],
-                    "fails_quantity": [0.0],
-                    "period": ["202401a"],
-                    "source_checked_at": [pd.Timestamp("2024-01-30")],
-                }
-            ),
-        )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-02", "000000001", "AAA", 100.0, "202401a"), ("2024-01-12", "999999999", "OTHER", 50.0, "202401a")]))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     frames = PriceFrames(
@@ -430,24 +416,25 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
         shares_outstanding_pit=pd.DataFrame({"AAA": float("nan")}, index=idx),
         security_basis=pd.DataFrame({"AAA": 1.0}, index=idx),
     )
-    streams = []
-    original = sqlite_store.iter_load
+    reads = []
+    original = sqlite_store.load
 
-    def capture(table: Any, **kwargs: Any) -> Any:
-        streams.append(table)
-        return original(table, **kwargs)
+    def capture(table: Any, *args: Any, **kwargs: Any) -> Any:
+        reads.append(table)
+        return original(table, *args, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), terminal_basis_factor(frames.security_basis))
+    monkeypatch.setattr(sqlite_store, "load", capture)
+    result = step._short_flow_panel(frames, market_lines(["AAA"], pd.Timestamp(start)), terminal_basis_factor(frames.security_basis))
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
     value = ratio.loc[(pd.Timestamp("2024-02-05"), "AAA")]
     assert value == 0 if checked else pd.isna(value)
-    assert streams.count(Tables.sec_fails_to_deliver) == 1
+    assert reads.count(Tables.sec_fails_to_deliver_security) == 1
     assert set(result["ticker"]).issubset({"AAA"})
     print(
-        "SANITY: one FTD stream retains global publication dates, but only AAA's checked zero can publish zero; OTHER cannot establish AAA absence."
+        f"SANITY: one FTD read serves OTHER's 2024-01-12 date; AAA (master from {start}) reads {value} there: a zero only on a "
+        "supported date, OTHER's line cannot establish AAA's absence."
     )
 
 
@@ -587,10 +574,7 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
 
 def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
-    sqlite_store.save(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame({"date": pd.to_datetime(["2024-01-15"]), "ticker": ["AAA"], "fails_quantity": [100.0], "period": ["202401a"]}),
-    )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-15", "000000001", "AAA", 100.0, "202401a")]))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     frames = PriceFrames(
@@ -737,10 +721,7 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
         Tables.short_interest,
         pd.DataFrame({"ticker": "AAA", "date": days, "short_volume": 100.0 * as_traded.values, "total_volume": 1_000.0 * as_traded.values}),
     )
-    sqlite_store.save(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame({"date": [pd.Timestamp("2024-01-25")], "ticker": ["AAA"], "fails_quantity": [100.0], "period": ["202401b"]}),
-    )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-25", "000000001", "AAA", 100.0, "202401b")]))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})

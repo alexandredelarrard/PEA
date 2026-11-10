@@ -31,5 +31,5 @@ def test_an_or_scope_loads_branch_by_branch_with_each_row_once(sqlite_store: Dat
     assert expected is not None and len(cohort) == len(expected) == 3, cohort
     assert not cohort.duplicated(["cusip", "date"]).any()
     assert sorted(zip(cohort["cusip"], cohort["period"], strict=True)) == sorted(zip(expected["cusip"], expected["period"], strict=True))
-    assert load_tape_cohorts(sqlite_store, {Tables.sec_fails_to_deliver: where})[Tables.sec_fails_to_deliver].empty
+    assert load_tape_cohorts(sqlite_store, {Tables.sec_short_volume_security: where})[Tables.sec_short_volume_security].empty, "an absent table"
     print("\nSANITY: an OR scope loaded branch by branch returns the 3 rows of the OR load, the doubly matched row once.")

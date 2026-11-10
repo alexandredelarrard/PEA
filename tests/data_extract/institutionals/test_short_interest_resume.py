@@ -31,7 +31,6 @@ def sqlite_store(sqlite_store):
             Tables.symbol_tenure,
             Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
-            Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
             Tables.short_interest,
         ],

@@ -30,6 +30,7 @@ from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from tests.conftest import make_frames
+from tests.data_aggregate.test_institutional_step_contract import ftd_lines
 from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel, split_factor
 
 
@@ -187,8 +188,8 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 100.0, "total_volume": 300.0} for day in idx for ticker in volume]),
     )
     sqlite_store.save(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame([{"date": bad_day, "ticker": ticker, "fails_quantity": 300.0, "period": "202401a"} for ticker in volume]),
+        Tables.sec_fails_to_deliver_security,
+        ftd_lines([(f"{bad_day:%Y-%m-%d}", cusip, ticker, 300.0, "202401a") for ticker, cusip in (("LEN", "526057104"), ("MRK", "589331107"))]),
     )
     config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}}})
     ctx = cast(

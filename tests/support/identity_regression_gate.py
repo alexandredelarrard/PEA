@@ -33,10 +33,10 @@ from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noq
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.identity.cik_history import d19_allowlist, manual_lineage_blob
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
-from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
 from src.utils.predecessor_series import load_predecessor_series  # noqa: E402
+from src.utils.security_series import SUMMED_ROLES  # noqa: E402
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol  # noqa: E402
 
 log = logging.getLogger("identity_regression_gate")
@@ -1039,7 +1039,6 @@ _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
     "universe_cik_symbol": (Tables.universe_cik_symbol, None),
     "symbol_tenure": (Tables.symbol_tenure, None),
     "roster": (Tables.universe_tickers, ("ticker", "cik")),
-    "ftd": (Tables.sec_fails_to_deliver, ("ticker", "date", "fails_quantity", "fails_value")),
     "short_interest": (Tables.short_interest, ("ticker", "date", "short_volume", "total_volume")),
     "insider": (Tables.insider_transactions, (*_INSIDER_KEY, "ticker", "issuer_cik", "filing_date")),
     "merged": (Tables.sharadar_fundamentals_history, tuple(Tables.sharadar_fundamentals_history.read_columns)),
@@ -1047,10 +1046,9 @@ _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
 }
 _UNSCOPED = {"universe_cik_symbol", "symbol_tenure", "roster"}
 _MASTER_COLUMNS = ("security_id", "valid_from", "valid_to", "lineage_role", "lineage_reason", "conversion_ratio", "issuer_cik", "exchange")
-#: The tapes' before stamps and the master behind them, dumped unscoped when the store has them: name -> (table, columns,
+#: The stamped tape's before stamps and the master behind them, dumped unscoped when the store has them: name -> (table, columns,
 #: raw-line key).
 _STAMPS: dict[str, tuple[Any, tuple[str, ...], tuple[str, ...]]] = {
-    "ftd_stamps": (Tables.sec_fails_to_deliver_security, ("cusip", "date", "trade_date", "security_id", "ticker", "lineage_role"), ("cusip", "date")),
     "finra_stamps": (Tables.sec_short_volume_security, ("source_symbol", "date", "security_id", "ticker", "lineage_role"), ("source_symbol", "date")),
     "master": (Tables.universe_cusip, _MASTER_COLUMNS, ()),
 }
@@ -1140,12 +1138,10 @@ def _raw_tape(store: Any, table: Any, values: Sequence[str]) -> pd.DataFrame:
 def _tape_section(
     store: Any, snap_dir: Path, master: pd.DataFrame, resolver: LegacyTapeResolver, universe: list[str], tickers: Sequence[str] | None
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Per raw row diff of both tapes, the ticker-grain residual against the stored before tables (every before day),
-    and the stored after ticker tables against the sum of the new stamps."""
-    specs = (
-        ("ftd", Tables.sec_fails_to_deliver_security, "ftd", ("fails_quantity",)),
-        ("finra", Tables.sec_short_volume_security, "short_interest", ("short_volume", "total_volume")),
-    )
+    """Per raw row diff of the stamped tape (FINRA; the FTD lines are stored as filed, with no stamp or ticker grain),
+    the ticker-grain residual against the stored before table (every before day), and the
+    stored after ticker table against the sum of the new stamps."""
+    specs = (("finra", Tables.sec_short_volume_security, "short_interest", ("short_volume", "total_volume")),)
     frames, stats = [], {}
     scope = set(tickers) if tickers else None
     judged = set(universe) & scope if scope is not None else set(universe)

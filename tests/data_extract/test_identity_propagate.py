@@ -19,11 +19,9 @@ from src.data_extract.utils.fundamentals import build_history
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.identity import identity_propagate as prop
-from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils import filer_tables
-from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.support.propagation import run_propagation
 from tests.support.universe import as_roster, seed_universe
@@ -171,15 +169,10 @@ def _seed(store) -> None:
 
 @pytest.fixture
 def stubs(monkeypatch) -> dict[str, list]:
-    """Bulk re-parsers, the FTD re-stamp and the derived rebuilds recorded instead of run."""
-    calls: dict[str, list] = {"notes": [], "insider": [], "ftd": [], "short": [], "history": []}
+    """Bulk re-parsers, the short-volume re-stamp and the derived rebuilds recorded instead of run."""
+    calls: dict[str, list] = {"notes": [], "insider": [], "short": [], "history": []}
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: calls["notes"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: calls["insider"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(
-        prop,
-        "restamp_fails",
-        lambda context, companies, tickers, identity=None, dry_run=False, others=None: calls["ftd"].append(sorted(companies)) or [],
-    )
     monkeypatch.setattr(
         prop,
         "restamp_short_volume",
@@ -397,9 +390,8 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
     run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
     assert stubs["notes"] == stubs["insider"] == [["MSFT"]]
-    assert stubs["ftd"] == []  # no stored FTD lines, no master
     print("\n=== SANITY CHECK: expansion (AC-030) ===")
-    print("  notes and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
+    print("  notes and insider bulk re-parsed for MSFT only")
 
 
 def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
@@ -446,81 +438,6 @@ def _master(owner_of_old: str, stamps: dict[str, pd.Timestamp]) -> pd.DataFrame:
     frame["valid_to"] = pd.to_datetime(frame["valid_to"])
     frame["scope_changed_at"] = [stamps.get(t, BEFORE) for t in frame["canonical_company"]]
     return frame[list(sm.TABLE_COLUMNS)]
-
-
-def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
-    lines = ["SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"]
-    lines += [f"{day}|{cusip}|{symbol}|{qty}|X|1.0" for day, cusip, symbol, qty in rows]
-    return ftd._parse_ftd_lines("\n".join(lines) + "\n")
-
-
-def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch):
-    """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
-    ticker row retains verified zero completion, MSFT gains it after reconciling the controlled original source units."""
-    create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
-    context = _context(sqlite_store, tmp_path)
-    raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
-    raw = raw.assign(
-        period=["201203a", "202402a", "202402a"],
-        security_id="C" + raw["cusip"],
-        ticker=["ALB", "ALB", "MSFT"],
-        lineage_role=sm.CANONICAL_CURRENT,
-        security_class="common",
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
-    stored = pd.DataFrame(
-        {
-            "ticker": ["ALB", "ALB", "MSFT"],
-            "date": pd.to_datetime(["2012-03-01", "2024-02-01", "2024-02-01"]),
-            "fails_quantity": [10.0, 5.0, 7.0],
-            "fails_value": [10.0, 5.0, 7.0],
-            "period": ["201203a", "202402a", "202402a"],
-        }
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver, stored)
-    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
-    resolver = _identity({})
-    originals = {
-        "201203a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20120301|000000OL1|OLD|10|X|1.0\n",
-        "202402a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240201|000000AL1|ALB|5|X|1.0\n20240201|000000MS1|MSFT|7|X|1.0\n",
-    }
-    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(originals))
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, **kwargs: originals[path.stem.removeprefix("cnsfails")])
-    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: 0)
-    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: 0)
-
-    result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    after = sqlite_store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "fails_quantity"])
-    got = sorted((t, str(pd.Timestamp(d).date()), q) for t, d, q in after.itertuples(index=False))
-    assert got == [("ALB", "2012-03-01", 0.0), ("ALB", "2024-02-01", 5.0), ("MSFT", "2012-03-01", 10.0), ("MSFT", "2024-02-01", 7.0)], got
-    checked = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "ALB", "date": pd.Timestamp("2012-03-01")})
-    assert checked is not None and checked["source_checked_at"].notna().all()
-    restamped = sqlite_store.load(Tables.sec_fails_to_deliver_security, where={"cusip": "000000OL1"})
-    assert restamped["ticker"].tolist() == ["MSFT"]
-    assert result.removals.empty, result.removals
-    print("\n=== SANITY CHECK: FTD re-stamp ===")
-    print("  OLD moved from ALB to MSFT: ALB's 2012 row retains verified zero completion, MSFT gains its fails; 2024 rows kept; no removals")
-
-
-def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path, monkeypatch, stubs):
-    """Only companies whose master rows changed since the table's last run are re-stamped; no CIK family is re-parsed."""
-    context = _context(sqlite_store, tmp_path)
-    raw = _ftd_raw([("20240201", "000000AL1", "ALB", 5)]).assign(
-        period="202402a", security_id="C000000AL1", ticker="ALB", lineage_role=sm.CANONICAL_CURRENT, security_class="common"
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
-    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
-    identity = _identity({})
-    resolver = identity
-
-    run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    assert stubs["ftd"] == [["ALB", "MSFT"]]
-    assert stubs["notes"] == stubs["insider"] == []
-    print("\n=== SANITY CHECK: master stamp ===")
-    print("  universe_cusip rows carry their own change stamp: FTD re-stamped for ALB and MSFT, no CIK family re-parsed")
 
 
 def _history(ticker: str, dates: list, revenue: float) -> pd.DataFrame:

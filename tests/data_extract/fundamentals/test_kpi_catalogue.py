@@ -17,6 +17,7 @@ real artifact, and checking anything else would prove nothing. What is enforced:
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
 
 import pytest
@@ -339,3 +340,16 @@ def test_the_measured_traps_are_encoded(cat):
     print("    6/7/8). InterestExpenseBorrowings is EXCLUDED -- 2 of 14 banks tag it.")
     print("  IncomeTaxExpenseBenefitContinuingOperations is kept as a pre-2014 fallback:")
     print("    276 facts / 82 tickers, window 2011-06-30..2013-12-31. Validated.")
+
+
+def test_a_catalogue_the_resolver_has_used_still_pickles(cat):
+    """The history replay pool pickles the process-cached catalogue AFTER the facts resolver has filled
+    every field's `never_use` memo; the copy must load with identical bans (F-007)."""
+    names = list(cat.extracted_fields)
+    used = {(name, regime): dict(cat.field(name).never_use(regime)) for name in names for regime in (None, "bank")}
+
+    copy = pickle.loads(pickle.dumps(cat))
+
+    assert {(name, regime): dict(copy.field(name).never_use(regime)) for name in names for regime in (None, "bank")} == used
+    print("\n=== SANITY CHECK: a used catalogue pickles ===")
+    print(f"  never_use read on {len(names)} field(s) x 2 regimes; the pickled copy returns the same bans. Validated.")

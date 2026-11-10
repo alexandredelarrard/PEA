@@ -137,6 +137,12 @@ class FieldSpec:
             cached = self._never_use_by_regime[regime] = MappingProxyType(merged)
         return cached
 
+    def __getstate__(self) -> dict[str, Any]:
+        """Pickle without the `never_use` memo: its read-only views do not pickle, and the replay pool ships the catalogue."""
+        state = dict(self.__dict__)
+        state.pop("_never_use_by_regime", None)
+        return state
+
     def _regime_block(self, regime: str | None) -> dict[str, Any]:
         if not regime:
             return {}

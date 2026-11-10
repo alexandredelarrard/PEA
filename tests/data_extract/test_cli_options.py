@@ -216,7 +216,7 @@ def test_help_lists_the_split_fundamentals_commands_and_none_of_the_removed_ones
     """AC-010: one command per producer stage, plus the check; the combined `fundamentals` / `fundamentals-facts` are gone."""
     result = CliRunner().invoke(cli_mod.cli, ["--help"])
     listed = {line.split()[0] for line in result.output.splitlines() if line.startswith("  ") and line.split()}
-    current = {"sec-fundamentals-facts", "sec-fundamentals-history", "fundamentals-check", "fundamentals-sharadar", "fundamentals-employees"}
+    current = {"sec-fundamentals-facts", "sec-fundamentals-history", "fundamentals-check", "fundamentals-sharadar", "sec-employees-llm"}
 
     assert result.exit_code == 0, result.output
     assert current <= listed, sorted(current - listed)

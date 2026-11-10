@@ -351,7 +351,7 @@ def test_list_filings_raises_when_an_older_page_fails(monkeypatch: pytest.Monkey
     monkeypatch.setattr(ef, "sec_get", get)
 
     with pytest.raises(TransientReadError):
-        ef.list_filings(cast(Any, None), "1", ["DEF 14A"], years=40)
+        ef.list_filings(cast(Any, None), "1", ["DEF 14A"], "1990-01-01")
     print("\n=== SANITY CHECK: no silently short listing ===")
     print("  an older submissions page that cannot be read raises instead of being skipped.")
 

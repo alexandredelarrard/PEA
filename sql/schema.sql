@@ -582,58 +582,6 @@ CREATE TABLE IF NOT EXISTS "sec13f_hr" (
     PRIMARY KEY ("cik", "period", "accession_number", "ticker", "cusip")
 );
 
--- [extract] sec13f_manager_holdings  (pk: cik, period, accession_number, cusip)
-
-CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
-    "cik" TEXT NOT NULL,
-    "period" DATE NOT NULL,
-    "filing_date" DATE,
-    "cusip" TEXT NOT NULL,
-    "issuer_name" TEXT,
-    "title_of_class" TEXT,
-    "position_type" TEXT,
-    "shares" DOUBLE PRECISION,
-    "value_usd" DOUBLE PRECISION,
-    "call_shares" DOUBLE PRECISION,
-    "call_value" DOUBLE PRECISION,
-    "put_shares" DOUBLE PRECISION,
-    "put_value" DOUBLE PRECISION,
-    "debt_prn" DOUBLE PRECISION,
-    "debt_value" DOUBLE PRECISION,
-    "other_value" DOUBLE PRECISION,
-    "raw_value_usd" DOUBLE PRECISION,
-    "raw_call_value" DOUBLE PRECISION,
-    "raw_put_value" DOUBLE PRECISION,
-    "raw_debt_value" DOUBLE PRECISION,
-    "raw_other_value" DOUBLE PRECISION,
-    "class_evidence" TEXT,
-    "accession_number" TEXT NOT NULL,
-    "parse_status" TEXT,
-    "form" TEXT,
-    "amendment_type" TEXT,
-    "amendment_number" BIGINT,
-    "report_type" TEXT,
-    "accepted_at" TIMESTAMP,
-    "clock_source" TEXT,
-    "clock_timezone" TEXT,
-    "clock_precision" TEXT,
-    "restricted" BOOLEAN,
-    "source" TEXT,
-    "source_checksum" TEXT,
-    "expected_unit_factor" DOUBLE PRECISION,
-    "stated_unit_factor" DOUBLE PRECISION,
-    "value_unit_factor" DOUBLE PRECISION,
-    "value_unit_evidence" TEXT,
-    "source_row_count" BIGINT,
-    "declared_row_count" BIGINT,
-    "source_value_total" DOUBLE PRECISION,
-    "declared_value_total" DOUBLE PRECISION,
-    "parsed_row_count" BIGINT,
-    "completed_at" TIMESTAMP,
-    "content_checksum" TEXT,
-    PRIMARY KEY ("cik", "period", "accession_number", "cusip")
-);
-
 -- [extract] insider_transactions  (pk: accession_number, security_type, row_sequence)
 -- EDGAR daily rows are authoritative (source='edgar'); zip quarters add missing filings (source='zip').
 
@@ -962,48 +910,6 @@ CREATE TABLE IF NOT EXISTS "def14a_ownership" (
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_ownership_as_of ON "def14a_ownership" ("as_of");
 
--- [extract] sec_def14a  (pk: ticker, accession_number)
--- The Pay-versus-Performance / ECD inline-XBRL block ONLY. 2023+ by regulation: Item 402(v)
--- applies to fiscal years ending >= 2022-12-16, so a proxy covering an earlier year carries no
--- `ecd:` facts and gets NO ROW -- which is why `has_xbrl` was dropped as degenerate. Everything
--- a proxy says in PROSE (comp tables, director fees, ownership, audit fees, pay ratio, board
--- recommendations) moved to `def14a_llm` and its four child tables.
--- `ecd_period_end` is the fiscal year the PVP facts describe; `period_of_report` for a proxy is
--- the MEETING date, so without it nothing says which year `peo_total_comp` belongs to.
--- `peo_actually_paid_comp` is NEGATIVE on real filings (NKE 2025: -10,924,243).
-
-CREATE TABLE IF NOT EXISTS "sec_def14a" (
-    "ticker" TEXT NOT NULL,
-    "cik" TEXT,
-    "accession_number" TEXT NOT NULL,
-    "form" TEXT,
-    "filing_date" DATE,
-    "period_of_report" DATE,
-    "company_name" TEXT,
-    "has_individual_executive_data" DOUBLE PRECISION,
-    "ecd_period_end" DATE,
-    "peo_name" TEXT,
-    "peo_total_comp" DOUBLE PRECISION,
-    "peo_actually_paid_comp" DOUBLE PRECISION,
-    "n_peos" DOUBLE PRECISION,
-    "peo_names_all" TEXT,
-    "neo_avg_total_comp" DOUBLE PRECISION,
-    "neo_avg_actually_paid_comp" DOUBLE PRECISION,
-    "total_shareholder_return" DOUBLE PRECISION,
-    "peer_group_tsr" DOUBLE PRECISION,
-    "net_income" DOUBLE PRECISION,
-    "company_selected_measure_name" TEXT,
-    "company_selected_measure_value" DOUBLE PRECISION,
-    "insider_trading_policy_adopted" DOUBLE PRECISION,
-    "award_timing_mnpi_considered" DOUBLE PRECISION,
-    "award_dates_predetermined" DOUBLE PRECISION,
-    "mnpi_disclosure_timed_for_comp_value" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "accession_number")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_def14a_filing_date ON "sec_def14a" ("filing_date");
--- The four HTML-parsed child tables (`sec_def14a_executive_comp` / `_director_comp` /
--- `_ownership` / `_votes`) were DELETED here; Phase 6 issues their DROP TABLE.
-
 -- [extract] sec_8k  (pk: ticker, accession_number, item)
 
 CREATE TABLE IF NOT EXISTS "sec_8k" (
@@ -1103,6 +1009,46 @@ CREATE TABLE IF NOT EXISTS "sec_filing_text" (
     PRIMARY KEY ("ticker", "accession_number", "section")
 );
 CREATE INDEX IF NOT EXISTS ix_sec_filing_text_filed ON "sec_filing_text" ("filed");
+
+-- [extract] sec_employees_text  (pk: ticker, accession_number)
+-- 10-K-family headcount text for the employees LLM step. `source_document` is the main
+-- document or the EX-13 read; `windows` is a JSON list of candidate [start, end] offsets in
+-- selection order; `pieces` a JSON list of [offset, text] covering their union. A filing with
+-- no usable text is a marker row (`source_document` = '_empty').
+
+CREATE TABLE IF NOT EXISTS "sec_employees_text" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "source_document" TEXT,
+    "windows" TEXT,
+    "pieces" TEXT,
+    "n_chars" BIGINT,
+    PRIMARY KEY ("ticker", "accession_number")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_employees_text_filing_date ON "sec_employees_text" ("filing_date");
+
+-- [extract] sec_def14a_text  (pk: ticker, accession_number, section)
+-- Proxy text for the DEF 14A LLM step: one row per carved section with its untruncated
+-- `payload`. `section` = '_empty'
+-- is a subject-guard rejection marker; `section` = '_none' a walked filing with no payload.
+
+CREATE TABLE IF NOT EXISTS "sec_def14a_text" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "primary_document" TEXT,
+    "section" TEXT NOT NULL,
+    "payload" TEXT,
+    "n_chars" BIGINT,
+    PRIMARY KEY ("ticker", "accession_number", "section")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_text_filing_date ON "sec_def14a_text" ("filing_date");
 
 -- [extract] earnings_call_sections  (pk: ticker, quarter, paragraph)
 -- Raw defeatbeta transcript paragraphs, one row per source paragraph. The prepared-remarks /

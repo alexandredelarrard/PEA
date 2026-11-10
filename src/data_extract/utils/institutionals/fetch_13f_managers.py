@@ -1,9 +1,8 @@
 """
 fetch_13f_managers.py (src/data_extract/utils/institutionals/fetch_13f_managers.py)
 ------------------------------------------------------------------------------------
-Per-CIK immutable-accession catch-up for every ever-listed roster manager. Complete source packets
-are saved atomically; originals and amendments remain separate. Only a completed accession is skipped.
-Both existing destinations preserve source versions.
+Per-CIK immutable-accession catch-up of `sec13f_hr` for every ever-listed roster manager. Complete source
+packets are saved atomically; originals and amendments remain separate. Only a completed accession is skipped.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from src.data_extract.utils.institutionals.fetch_13f import (
     ReadFailure,
     _suspect_prices,
     read_filing_vintage,
-    save_13f_filing,
     save_hr_filing,
 )
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
@@ -49,16 +47,10 @@ def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd
     """`(stamp, period)` for the CIK's 13F-HR filings whose period is on/after `since`, oldest
     first by (filed, amendment last, accession) -- edgartools lists newest first; a null or
     unparseable period is skipped."""
-    listing = company_filings(company(cik), cast(Resume, Tables.sec13f_manager_holdings.resume).forms) or []
+    listing = company_filings(company(cik), cast(Resume, Tables.sec13f_hr.resume).forms) or []
     stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.is_amendment, s.accession_number))
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
-
-
-def _pending_filings(context: Context, cik: str, listed: list[tuple[FilingStamp, pd.Timestamp]]) -> list[tuple[FilingStamp, pd.Timestamp]]:
-    """Only a verified completed accession can remove that accession from the pending set."""
-    completed = stored_accessions(context, Tables.sec13f_manager_holdings, [cik], DONE_PER_KEY, where={"parse_status": "complete"})[cik]
-    return [(stamp, period) for stamp, period in listed if stamp.accession_number not in completed]
 
 
 def _log_read_failure(context: Context, cik: str, stamp: FilingStamp, period: pd.Timestamp, failure: ReadFailure) -> None:
@@ -81,18 +73,21 @@ def _log_read_failure(context: Context, cik: str, stamp: FilingStamp, period: pd
     )
 
 
-def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp) -> tuple[int, int, int]:
-    """Save each complete pending accession independently; failed siblings remain pending.
-    Returns (rows saved, suspect-price rows, transient failures)."""
+def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp, lines: pd.DataFrame, cmap: pd.DataFrame) -> tuple[int, int, int]:
+    """Save each complete pending accession to `sec13f_hr` independently, tagged by the `universe_cusip` `lines` and
+    the stored `cmap`; failed siblings remain pending. Returns (rows saved, suspect-price rows, transient failures)."""
     frames: list[pd.DataFrame] = []
     held_periods: list[pd.Timestamp] = []
-    for stamp, period in _pending_filings(context, cik, _listed_filings(cik, since)):
+    # Only a verified completed accession leaves the pending set.
+    listed = _listed_filings(cik, since)
+    pending = set(pending_vintages(context, cik, [stamp.accession_number for stamp, _ in listed]))
+    for stamp, period in (item for item in listed if item[0].accession_number in pending):
         rows = read_filing_vintage(stamp)
         if isinstance(rows, ReadFailure):
             _log_read_failure(context, cik, stamp, period, rows)
         else:
             manifest, book = rows
-            save_13f_filing(context.store, manifest, book)
+            save_hr_filing(context.store, manifest, book, lines, cmap)
             if not book.empty:
                 frames.append(book)
         if isinstance(rows, ReadFailure) and rows.transient:
@@ -135,13 +130,14 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
             "The roster is this walk's entire scope; there is nothing to fetch without it."
         )
     names = roster_map_as_of(context)  # latest snapshot; only used for log lines
-    with_book = set(context.store.distinct(Tables.sec13f_manager_holdings, "cik"))
+    with_book = set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cik": ciks}))
+    lines, cmap = load_identity(context).cusip_lines, load_cusip_map(context.store)
     since = run_date(None) - pd.DateOffset(years=years_history)
-    logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book & set(ciks)), since.date())
+    logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book), since.date())
 
-    worker = partial(_catch_up_cik, context=context, since=since)
+    worker = partial(_catch_up_cik, context=context, since=since, lines=lines, cmap=cmap)
     df_scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
-    guarded = run_per_ticker(df_scope, worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
+    guarded = run_per_ticker(df_scope, worker, desc="13F manager books", key_cols=("cik_label", "cik"))
     results = [result or (0, 0, 0) for result in guarded]
     saved = sum(n for n, _, _ in results)
     suspect = sum(s for _, s, _ in results)
@@ -163,13 +159,13 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
             saved,
             _IMPLIED_PRICE_BAND,
         )
-    logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s", saved, len(ciks), Tables.sec13f_manager_holdings)
+    logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s", saved, len(ciks), Tables.sec13f_hr)
     return saved
 
 
 def pending_vintages(context: Context, cik: str, accessions: list[str]) -> list[str]:
     """A later restatement never marks an unpreserved original accession complete."""
-    done = stored_accessions(context, Tables.sec13f_manager_holdings, [cik], DONE_PER_KEY, where={"parse_status": "complete"})[cik]
+    done = stored_accessions(context, Tables.sec13f_hr, [cik], DONE_PER_KEY, where={"parse_status": "complete"})[cik]
     return [accession for accession in accessions if accession not in done]
 
 
@@ -185,7 +181,7 @@ def recover_13f_vintages(
     dry_run: bool = True,
     archives: list[Path] | None = None,
 ) -> dict[str, object]:
-    """Bounded source recovery into the two existing tables; legacy rows cannot certify an accession."""
+    """Bounded source recovery into `sec13f_hr`; legacy rows cannot certify an accession."""
     if not ciks or not accessions or max_filings < 1:
         raise ValueError("Version recovery requires explicit CIKs, accessions and a positive filing cap")
     ciks = [pad_cik(cik) for cik in ciks]
@@ -231,9 +227,8 @@ def recover_13f_vintages(
         raise ValueError("Recovery sources repeat an accession; select one source per accession")
     if {row["accession"] for row in selected} != set(accessions):
         raise ValueError("Some requested accessions are missing or outside the explicit recovery scope")
-    done = {cik: set(accessions) - set(pending_vintages(context, cik, accessions)) for cik in ciks}
-    broad_done = stored_accessions(context, Tables.sec13f_hr, ciks, DONE_PER_KEY, where={"parse_status": "complete"})
-    pending = [row for row in selected if row["accession"] not in (done[str(row["cik"])] & broad_done[str(row["cik"])])]
+    done = stored_accessions(context, Tables.sec13f_hr, ciks, DONE_PER_KEY, where={"parse_status": "complete"})
+    pending = [row for row in selected if row["accession"] not in done[str(row["cik"])]]
     if len(pending) > max_filings:
         raise ValueError(f"Recovery has {len(pending)} pending accessions, exceeding cap {max_filings}")
     byte_count = None
@@ -269,7 +264,6 @@ def recover_13f_vintages(
         if isinstance(packet, ReadFailure):
             raise RuntimeError(f"13F recovery stopped at {accession}: {packet.reason}")
         manifest, holdings = packet
-        saved += save_13f_filing(context.store, manifest, holdings)
-        save_hr_filing(context.store, manifest, holdings, lines, cmap)
+        saved += save_hr_filing(context.store, manifest, holdings, lines, cmap)
     preview["saved_rows"] = saved
     return preview

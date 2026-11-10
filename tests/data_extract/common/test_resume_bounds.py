@@ -4,7 +4,7 @@
 the phase-5 publish wrote: WBD ended on 2026-10-05 (prices stored to 2026-10-06, its completion 8-K filed 2026-10-06),
 AAPL open from 1995-10-09. Each planner yields nothing after WBD's end plus the U-65 grace of 10 trading sessions
 (2026-10-19 on the fixture's price calendar) and the same plan for AAPL as with no bounds:
-the series planner (`prices`, `sharadar_fundamentals_facts`), the EDGAR document planner, the DEF 14A (LLM) listing, the
+the series planner (`prices`, `sharadar_fundamentals_facts`), the EDGAR document planner, the DEF 14A (LLM) worklist, the
 earnings-call planner and the earnings-surprise plan.
 """
 
@@ -20,7 +20,6 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
-from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.resume import END_GRACE_SESSIONS, planner_bounds, series_windows
 from src.data_extract.utils.edgar_extract import document_resume
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
@@ -140,14 +139,28 @@ def test_edgar_document_planner_drops_filings_after_the_end(fixture: tuple[DataS
     print("  Validated: no WBD filing after its end + grace; AAPL and CHTR's predecessor history unchanged.")
 
 
-def test_def14a_listing_keeps_only_proxies_inside_the_bounds(fixture: tuple[DataStore, pd.DataFrame], monkeypatch: pytest.MonkeyPatch) -> None:
+def _def14a_worklist(context: Any, walked: pd.DataFrame, monkeypatch: pytest.MonkeyPatch) -> pd.DataFrame:
+    """The filings `fetch_def14a_llm` hands its ticker loop when `sec_def14a_text` holds `walked`, under the bounds of
+    `context` (the store read and the universe names are stubbed; nothing is extracted)."""
+    seen: list[pd.DataFrame] = []
+    monkeypatch.setattr(def14a_fetch, "planner_bounds", lambda ctx: planner_bounds(context))
+    monkeypatch.setattr(def14a_fetch, "universe_rows", lambda ctx, tickers: pd.DataFrame({"ticker": SAMPLE, "name": SAMPLE}))
+    monkeypatch.setattr(def14a_fetch, "ticker_works", lambda ctx, ticker, df_filings, floor: seen.append(df_filings) or [])
+    config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=40, llm_text_budget=types.SimpleNamespace(def14a=130_000)))
+    store = types.SimpleNamespace(load=lambda table, **kwargs: walked, create_declared=lambda table: None)
+    run = types.SimpleNamespace(store=store, log=logging.getLogger(__name__))
+    def14a_fetch.fetch_def14a_llm(run, config, SAMPLE, {})  # type: ignore[arg-type]
+    return pd.concat(seen, ignore_index=True) if seen else pd.DataFrame(columns=["ticker"])
+
+
+def test_def14a_worklist_keeps_only_proxies_inside_the_bounds(fixture: tuple[DataStore, pd.DataFrame], monkeypatch: pytest.MonkeyPatch) -> None:
     store, _ = fixture
     bounded, control = _contexts(fixture)
     stored = store.load(Tables.def14a_llm, columns=["ticker", "accession_number", "as_of"], where={"ticker": SAMPLE}).rename(
         columns={"as_of": "filing_date"}
     )
     stored["cik"] = stored["ticker"].map({"WBD": "0001437107", "AAPL": "0000320193"})
-    # known truth: one listed proxy of each ticker dated after WBD's end
+    # known truth: one walked proxy of each ticker dated after WBD's end
     late = pd.DataFrame(
         {
             "ticker": SAMPLE,
@@ -156,19 +169,17 @@ def test_def14a_listing_keeps_only_proxies_inside_the_bounds(fixture: tuple[Data
             "filing_date": ["2026-10-20", "2026-10-20"],
         }
     )
-    listing = pd.concat([stored, late], ignore_index=True).assign(filing_date=lambda f: pd.to_datetime(f["filing_date"]))
-    monkeypatch.setattr(def14a_fetch, "_list_scope_windows", lambda context, scope, company, years, since: listing[listing["ticker"] == scope.ticker])
-    kept = {
-        ticker: def14a_fetch._listed_proxies(bounded, ticker, FilingScope.roster_only(ticker, ""), "", 40, pd.Timestamp("1990-01-01"))
-        for ticker in SAMPLE
-    }
-    open_aapl = def14a_fetch._listed_proxies(control, "AAPL", FilingScope.roster_only("AAPL", ""), "", 40, pd.Timestamp("1990-01-01"))
+    walked = pd.concat([stored, late], ignore_index=True).assign(filing_date=lambda f: pd.to_datetime(f["filing_date"]), period="")
+    worklist = _def14a_worklist(bounded, walked, monkeypatch)
+    kept = {ticker: worklist[worklist["ticker"] == ticker].reset_index(drop=True) for ticker in SAMPLE}
+    open_list = _def14a_worklist(control, walked, monkeypatch)
+    open_aapl = open_list[open_list["ticker"] == "AAPL"].reset_index(drop=True)
 
     assert "late-wbd" not in set(kept["WBD"]["accession_number"]) and pd.to_datetime(kept["WBD"]["filing_date"]).max() <= WBD_GRACE_END
     assert kept["AAPL"].equals(open_aapl) and "late-aapl" in set(kept["AAPL"]["accession_number"])
-    print("\n=== SANITY CHECK: DEF 14A (LLM) listing bounds ===")
+    print("\n=== SANITY CHECK: DEF 14A (LLM) worklist bounds ===")
     print(
-        f"  WBD: {len(kept['WBD'])} of {int((listing['ticker'] == 'WBD').sum())} listed proxies kept; the 2026-10-20 proxy is past its end + grace (2026-10-19)"
+        f"  WBD: {len(kept['WBD'])} of {int((walked['ticker'] == 'WBD').sum())} walked proxies kept; the 2026-10-20 proxy is past its end + grace (2026-10-19)"
     )
     print(f"  AAPL: {len(kept['AAPL'])} kept, identical with and without bounds")
     print("  Validated.")

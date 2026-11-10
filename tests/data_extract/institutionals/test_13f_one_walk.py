@@ -1,8 +1,8 @@
 """
 test_13f_one_walk.py (tests/data_extract/institutionals/test_13f_one_walk.py)
 ------------------------------------------------------------------------------
-`fetch_13f` feeds both 13F tables from one parse, and `fetch_13f_managers` is a per-CIK catch-up
-from the stored `filing_date` frontier. Fake filings (no network) on a real SQLite `DataStore`;
+`fetch_13f` saves every book to `sec13f_hr` from one parse, and `fetch_13f_managers` is the per-CIK
+catch-up of the roster's books there. Fake filings (no network) on a real SQLite `DataStore`;
 known-truth infotables, plus the pre-P7 `_holdings_frame` + `_resolve_tickers` logic as the
 oracle for `sec13f_hr`.
 """
@@ -23,22 +23,41 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from src.data_aggregate.utils.common.availability import public_books
 from src.data_extract.utils.edgar_extract import parallel_fetch
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_managers as f13m
-from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
 from src.data_store.schema import Tables
+from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.institutional_vintages import public_books
 from src.utils.string import pad_cik
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
+
+#: The `sec13f_hr` columns these tests compare (the frame columns the walk stores).
+HR_COLS = [
+    "cik",
+    "period",
+    "filing_date",
+    "ticker",
+    "cusip",
+    "shares",
+    "value_usd",
+    "call_shares",
+    "call_value",
+    "put_shares",
+    "put_value",
+    "debt_prn",
+    "debt_value",
+    "other_value",
+]
 
 ROSTER = "0001067983"
 OTHER = "0000999999"
 UNIVERSE = ["AAPL", "MSFT"]
 CMAP = pd.DataFrame({"cusip": ["037833100", "594918104", "G0450A105"], "ticker": ["AAPL", "MSFT", "XNOTSP"]})
 _LOG = logging.getLogger("test_13f_one_walk")
+_NO_LINES = pd.DataFrame(columns=LINE_COLUMNS)
 
 
 def _line(cusip: str, name: str, value: float, shares: int, putcall: str = "") -> dict[str, Any]:
@@ -185,7 +204,7 @@ def _old_hr_rows(filing: _FakeFiling) -> pd.DataFrame:
     out["period"] = pd.Timestamp(filing.period_of_report)
     out["filing_date"] = pd.Timestamp(filing.filing_date)
     out = out.merge(CMAP, on="cusip", how="inner")
-    return out[out["ticker"].isin(set(UNIVERSE))][f13._HR_COLS]
+    return out[out["ticker"].isin(set(UNIVERSE))][HR_COLS]
 
 
 def _roster_original() -> _FakeFiling:
@@ -211,7 +230,7 @@ def _other_filer() -> _FakeFiling:
     )
 
 
-def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(filing_store, monkeypatch):
+def test_fetch_13f_writes_hr_as_before_and_keeps_the_whole_book(filing_store, monkeypatch):
     filings = [_other_filer(), _roster_original()]  # edgartools order: newest filing first
     _seed_roster(filing_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
@@ -221,23 +240,20 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(filing_sto
     hr = _stored(filing_store, Tables.sec13f_hr)
     expected = pd.concat([_old_hr_rows(f) for f in filings], ignore_index=True)
     keys = ["cik", "period", "ticker", "cusip"]
-    got = hr.loc[hr.ticker.isin(UNIVERSE), f13._HR_COLS].sort_values(keys).reset_index(drop=True)
+    got = hr.loc[hr.ticker.isin(UNIVERSE), HR_COLS].sort_values(keys).reset_index(drop=True)
     want = expected.sort_values(keys).reset_index(drop=True)
     pd.testing.assert_frame_equal(got, want, check_dtype=False)
 
-    book = _stored(filing_store, Tables.sec13f_manager_holdings)
-    assert set(book["cik"]) == {ROSTER}
+    book = hr.loc[hr.cik.eq(ROSTER)]
     assert set(book["cusip"]) == {"037833100", "G0450A105"}  # the non-S&P500 CUSIP stays in the book
     aapl = book[book["cusip"] == "037833100"].iloc[0]
     assert aapl["value_usd"] == 1_000_000.0 and aapl["shares"] == 5_000
-    print("\n=== SANITY: one 13F walk, two tables ===")
-    print(
-        f"  sec13f_hr {len(hr)} full-source rows; mapped universe slice == pre-P7 path; manager book {len(book)} rows, roster CIK only, non-S&P500 kept. Validated."
-    )
+    print("\n=== SANITY: one 13F walk, one table ===")
+    print(f"  sec13f_hr {len(hr)} full-source rows; mapped universe slice == pre-P7 path; roster book {len(book)} rows, non-S&P500 kept. Validated.")
 
 
 @pytest.mark.parametrize(("order", "save_every"), [("newest_first", 600), ("newest_first", 1), ("oldest_first", 1)])
-def test_amendment_wins_in_both_tables_whatever_the_listing_order(filing_store, monkeypatch, order, save_every):
+def test_amendment_wins_whatever_the_listing_order(filing_store, monkeypatch, order, save_every):
     filings = [_roster_amendment(), _other_filer(), _roster_original()]  # edgartools order: newest filing first
     if order == "oldest_first":
         filings.reverse()
@@ -246,19 +262,18 @@ def test_amendment_wins_in_both_tables_whatever_the_listing_order(filing_store, 
 
     f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
 
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        raw = _stored(filing_store, table)
-        roster = raw.loc[raw.cik.eq(ROSTER)]
-        assert len(roster) == 3
-        assert set(roster.accession_number) == {_roster_original().accession_number, _roster_amendment().accession_number}
-        before = _resolved(filing_store, table, "2026-05-20")
-        after = _resolved(filing_store, table)
-        assert set(before.loc[before.cik.eq(ROSTER), "cusip"]) == {"037833100", "G0450A105"}
-        latest = after.loc[after.cik.eq(ROSTER)]
-        assert len(latest) == 1 and latest.iloc[0].value_usd == 1_200_000
-    assert len(_stored(filing_store, Tables.sec13f_hr)) == 5
+    raw = _stored(filing_store, Tables.sec13f_hr)
+    roster = raw.loc[raw.cik.eq(ROSTER)]
+    assert len(roster) == 3
+    assert set(roster.accession_number) == {_roster_original().accession_number, _roster_amendment().accession_number}
+    before = _resolved(filing_store, Tables.sec13f_hr, "2026-05-20")
+    after = _resolved(filing_store, Tables.sec13f_hr)
+    assert set(before.loc[before.cik.eq(ROSTER), "cusip"]) == {"037833100", "G0450A105"}
+    latest = after.loc[after.cik.eq(ROSTER)]
+    assert len(latest) == 1 and latest.iloc[0].value_usd == 1_200_000
+    assert len(raw) == 5
     print(
-        f"SANITY: both tables retain original and restatement ({order}, save_every={save_every}); omissions become exits only after amendment publication."
+        f"SANITY: sec13f_hr retains original and restatement ({order}, save_every={save_every}); omissions become exits only after amendment publication."
     )
 
 
@@ -315,23 +330,10 @@ def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(filing_st
     print("  resumes before every unsaved filing. Validated.")
 
 
-def test_empty_roster_still_writes_hr_and_warns(filing_store, monkeypatch, caplog):
-    _patch_walk(monkeypatch, [_roster_original(), _other_filer()])
-
-    with caplog.at_level(logging.WARNING):
-        f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15)
-
-    assert len(filing_store.load(Tables.sec13f_hr)) == 4
-    assert filing_store.row_count(Tables.sec13f_manager_holdings.name) == 0
-    assert any("holds no CIK" in r.getMessage() for r in caplog.records)
-    print("\n=== SANITY: empty roster ===")
-    print("  sec13f_hr written (4 full-source rows), no manager book, one warning. Validated.")
-
-
 def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
-    """Store one AAPL manager-book row per `(cik, period, filing_date)`."""
+    """Store one legacy AAPL row and one complete AAPL accession per `(cik, period, filing_date)`."""
     store.save(
-        Tables.sec13f_manager_holdings,
+        Tables.sec13f_hr,
         (
             pd.DataFrame(
                 [
@@ -340,6 +342,7 @@ def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
                         "period": pd.Timestamp(period),
                         "filing_date": pd.Timestamp(filed),
                         "cusip": "037833100",
+                        "ticker": "AAPL",
                         "issuer_name": "APPLE INC",
                         "title_of_class": "COM",
                         "position_type": "common",
@@ -363,7 +366,7 @@ def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
         filing = _FakeFiling(cik, filed, period, [_line("037833100", "APPLE INC", 1000.0, 10)])
         packet = f13.read_filing_vintage(FilingStamp.of(filing, cik))
         assert not isinstance(packet, f13.ReadFailure)
-        save_13f_filing(store, *packet)
+        f13.save_hr_filing(store, *packet, _NO_LINES, CMAP)
 
 
 def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_FakeFiling]], down: set[str] | None = None) -> None:
@@ -384,7 +387,7 @@ def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_Fa
 
 
 def _stored_periods(store: Any, cik: str) -> list[str]:
-    df = store.load(Tables.sec13f_manager_holdings, columns=["cik", "period"], where={"cik": cik}, optional=True)
+    df = store.load(Tables.sec13f_hr, columns=["cik", "period"], where={"cik": cik}, optional=True)
     return [] if df is None else sorted(pd.to_datetime(df["period"]).dt.strftime("%Y-%m-%d").unique())
 
 
@@ -433,6 +436,27 @@ def test_a_new_cik_whose_newest_filing_was_written_inline_still_backfills(filing
     assert sorted(f.filing_date for f in listing if f.reads) == ["2025-11-14", "2026-02-14"]  # the inline filing is not re-read
     print("\n=== SANITY: new roster CIK back-fill ===")
     print("  day-1 listing failed, day-2 inline write of 2026-03-31; the catch-up still back-filled 2025-09-30 and 2025-12-31. Validated.")
+
+
+def test_catch_up_saves_to_and_resumes_on_sec13f_hr(filing_store, monkeypatch):
+    """A roster accession already complete in `sec13f_hr` (saved by the market walk) is not re-read; the
+    unstored one is saved there as a complete book."""
+    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
+    stored = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", aapl, accession="0000000001-26-000001")
+    pending = _FakeFiling(ROSTER, "2026-08-14", "2026-06-30", aapl, accession="0000000001-26-000002")
+    manifest, book = f13.read_filing_vintage(FilingStamp.of(stored, ROSTER))
+    f13.save_hr_filing(filing_store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), CMAP)
+    stored.reads.clear()
+    _seed_roster(filing_store, [ROSTER])
+    _patch_company(monkeypatch, {ROSTER: [pending, stored]})
+
+    saved = f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
+
+    complete = filing_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
+    assert stored.reads == [] and pending.reads == [pending.accession_number]
+    assert saved == 1 and set(complete.accession_number) == {stored.accession_number, pending.accession_number}
+    assert _stored_periods(filing_store, ROSTER) == ["2026-03-31", "2026-06-30"]
+    print(f"SANITY: catch-up skipped the accession complete in sec13f_hr, read only {pending.reads}, saved it there ({saved} row). Validated.")
 
 
 def test_stored_accession_and_verified_empty_book_are_never_reread(filing_store, monkeypatch, caplog):
@@ -521,14 +545,14 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(fil
             return list(listing)
 
     sent: list[pd.DataFrame] = []
-    real_save_book = f13m.save_13f_filing
+    real_save_book = f13m.save_hr_filing
 
-    def _spy_save_book(store: Any, manifest: pd.DataFrame, book: pd.DataFrame, **kwargs: Any) -> int:
+    def _spy_save_book(store: Any, manifest: pd.DataFrame, book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
         sent.append(book.copy())
-        return real_save_book(store, manifest, book, **kwargs)
+        return real_save_book(store, manifest, book, lines, cmap)
 
     monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
-    monkeypatch.setattr(f13m, "save_13f_filing", _spy_save_book)
+    monkeypatch.setattr(f13m, "save_hr_filing", _spy_save_book)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
     saved = f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
@@ -536,8 +560,8 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(fil
     df_sent = pd.concat(sent, ignore_index=True)
     assert not df_sent.duplicated(subset=["cik", "accession_number", "cusip"]).any()
     assert saved == 3
-    assert len(_stored(filing_store, Tables.sec13f_manager_holdings)) == 3
-    latest = _resolved(filing_store, Tables.sec13f_manager_holdings)
+    assert len(_stored(filing_store, Tables.sec13f_hr)) == 3
+    latest = _resolved(filing_store, Tables.sec13f_hr)
     assert len(latest) == 1 and latest.iloc[0].value_usd == 1_200_000
     print("SANITY: catch-up preserves all source accessions; original two-position book resolves to the one-position replacement only when public.")
 
@@ -563,16 +587,16 @@ def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(fili
         _patch_company(monkeypatch, {ROSTER: filings})
         f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
 
-    raw = _stored(filing_store, Tables.sec13f_manager_holdings)
+    raw = _stored(filing_store, Tables.sec13f_hr)
     assert len(raw.loc[raw.cusip.eq("037833100")]) == 2
-    latest = _resolved(filing_store, Tables.sec13f_manager_holdings)
+    latest = _resolved(filing_store, Tables.sec13f_hr)
     assert latest.loc[latest.cusip.eq("037833100"), "value_usd"].iloc[0] == 1_200_000
     print(f"SANITY: same-day amendment wins by source semantics ({path}); both accessions remain stored despite inverse accession order.")
 
 
 def _book_by_period(store: Any, cik: str) -> dict[str, tuple[float, str]]:
     """`{period: (AAPL value_usd, filing_date)}` of the CIK's stored book."""
-    df = store.load(Tables.sec13f_manager_holdings, columns=["period", "value_usd", "filing_date"], where={"cik": cik}, optional=True)
+    df = store.load(Tables.sec13f_hr, columns=["period", "value_usd", "filing_date"], where={"cik": cik}, optional=True)
     if df is None:
         return {}
     return {
@@ -829,7 +853,7 @@ def test_empty_cover_is_silent_and_marked_once(filing_store, monkeypatch, caplog
         return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), {ROSTER}, save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     with caplog.at_level(logging.WARNING):
         held = f13._first_pass([filing], saver)
@@ -838,13 +862,11 @@ def test_empty_cover_is_silent_and_marked_once(filing_store, monkeypatch, caplog
 
     loud = [f"{r.levelname}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
     assert not loud and not held, (loud, held)
-    counts = {}
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        marker = _markers(filing_store, table, filing.accession_number)
-        assert len(marker) == 1 and int(marker.iloc[0].source_row_count) == 0 and int(marker.iloc[0].declared_row_count) == 0, marker
-        positions = filing_store.load(table, optional=True)
-        assert positions is None or not positions.accession_number.eq(filing.accession_number).any()
-        counts[table.name] = len(marker)
+    marker = _markers(filing_store, Tables.sec13f_hr, filing.accession_number)
+    assert len(marker) == 1 and int(marker.iloc[0].source_row_count) == 0 and int(marker.iloc[0].declared_row_count) == 0, marker
+    positions = filing_store.load(Tables.sec13f_hr, optional=True)
+    assert positions is None or not positions.accession_number.eq(filing.accession_number).any()
+    counts = {Tables.sec13f_hr.name: len(marker)}
     assert first_reads == 1 and len(obj_calls) == 1, obj_calls  # the second walk never reads it
     print(
         f"SANITY: {'SYNTHETIC ' if kind in _ZERO_TOTAL_KINDS else ''}empty cover ({kind}) -> markers {counts}, 0 WARNING/ERROR, filing_obj calls {first_reads} then 0; recorded once, never refetched."
@@ -873,7 +895,7 @@ def test_zero_count_cover_with_a_positive_total_is_marked_once_keeping_the_total
         return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), {ROSTER}, save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     with caplog.at_level(logging.WARNING):
         held = f13._first_pass([filing], saver)
@@ -882,19 +904,17 @@ def test_zero_count_cover_with_a_positive_total_is_marked_once_keeping_the_total
 
     loud = [f"{r.levelname}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
     assert not loud and not held, (loud, held)
-    totals = {}
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        marker = _markers(filing_store, table, filing.accession_number)
-        assert len(marker) == 1, marker
-        row = marker.iloc[0]
-        assert int(row.source_row_count) == 0 and int(row.declared_row_count) == 0 and float(row.source_value_total) == 0.0, row
-        assert float(row.declared_value_total) == 1234.0, row.declared_value_total
-        positions = filing_store.load(table, optional=True)
-        assert positions is None or not positions.accession_number.eq(filing.accession_number).any()
-        totals[table.name] = float(row.declared_value_total)
+    marker = _markers(filing_store, Tables.sec13f_hr, filing.accession_number)
+    assert len(marker) == 1, marker
+    row = marker.iloc[0]
+    assert int(row.source_row_count) == 0 and int(row.declared_row_count) == 0 and float(row.source_value_total) == 0.0, row
+    assert float(row.declared_value_total) == 1234.0, row.declared_value_total
+    positions = filing_store.load(Tables.sec13f_hr, optional=True)
+    assert positions is None or not positions.accession_number.eq(filing.accession_number).any()
+    totals = {Tables.sec13f_hr.name: float(row.declared_value_total)}
     assert first_reads == 1 and len(obj_calls) == 1, obj_calls
     print(
-        f"SANITY: 0-entry cover worth 1,234 ({kind}) -> one complete marker per table, declared_value_total {totals} as filed, "
+        f"SANITY: 0-entry cover worth 1,234 ({kind}) -> one complete marker, declared_value_total {totals} as filed, "
         f"0 WARNING/ERROR, filing_obj calls {first_reads} then 0; an all-exits book, never refetched."
     )
 
@@ -929,8 +949,7 @@ def test_nonzero_cover_zero_lines_fails_loudly(filing_store, monkeypatch, caplog
     assert isinstance(failure, f13.ReadFailure) and not failure.transient, failure
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and accession in r.getMessage()]
     assert len(errors) == 1, errors
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        assert _markers(filing_store, table, accession).empty
+    assert _markers(filing_store, Tables.sec13f_hr, accession).empty
     print(f"SANITY: non-zero cover with zero lines ({kind}) -> ReadFailure {failure.reason[:70]!r}, one ERROR, nothing saved.")
 
 
@@ -950,10 +969,9 @@ def test_empty_cover_over_real_holding_rows_fails_loudly(filing_store, monkeypat
     assert "cover declares an empty book" in failure.reason and "67" in failure.reason, failure.reason
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and accession in r.getMessage()]
     assert len(errors) == 1, errors
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        assert _markers(filing_store, table, accession).empty
-        stored = filing_store.load(table, optional=True)
-        assert stored is None or not stored.accession_number.eq(accession).any()
+    assert _markers(filing_store, Tables.sec13f_hr, accession).empty
+    stored = filing_store.load(Tables.sec13f_hr, optional=True)
+    assert stored is None or not stored.accession_number.eq(accession).any()
     print(f"SANITY: real {accession} (0/0 cover, 67 holding lines) -> ReadFailure {failure.reason[:90]!r}, one ERROR, nothing saved.")
 
 
@@ -972,13 +990,13 @@ def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(filing_sto
     amendment = _FakeFiling(ROSTER, "2024-10-17", "2024-06-30", [_line("037833100", "APPLE INC", 1500, 150)], form="13F-HR/A")
     stamp = FilingStamp.of(amendment, ROSTER)
     manifest, book = f13.read_filing_vintage(stamp)
-    save_13f_filing(filing_store, manifest, book)
+    f13.save_hr_filing(filing_store, manifest, book, _NO_LINES, CMAP)
     amendment.reads.clear()
     _patch_company(monkeypatch, {ROSTER: [original, amendment]})
-    f13m._catch_up_cik("truth", ROSTER, context=ctx, since=pd.Timestamp("2024-01-01"))
-    stored = _stored(filing_store, Tables.sec13f_manager_holdings)
+    f13m._catch_up_cik("truth", ROSTER, context=ctx, since=pd.Timestamp("2024-01-01"), lines=_NO_LINES, cmap=CMAP)
+    stored = _stored(filing_store, Tables.sec13f_hr)
     assert stored.set_index("accession_number").shares.to_dict() == {amendment.accession_number: 150, original.accession_number: 100}
-    assert len(filing_store.load(Tables.sec13f_manager_holdings, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)) == 2
+    assert len(filing_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)) == 2
     assert len(original.reads) == 1 and amendment.reads == []
     print("SANITY: accession catch-up restores missing original without overwriting the already-preserved amended150 version.")
 
@@ -1001,59 +1019,51 @@ def _walk_filing(cik: str, day: int, accession: str, lines: list[dict[str, Any]]
     return _FakeFiling(cik, f"2026-05-{day:02d}", "2026-03-31", lines, accession=accession)
 
 
-def _store_in(store: Any, filing: _FakeFiling, tables: tuple[Any, ...]) -> None:
-    """Preserve `filing` as complete in only the given destinations (as an earlier walk may have)."""
+def _store(store: Any, filing: _FakeFiling) -> None:
+    """Preserve `filing` as complete in `sec13f_hr` (as an earlier walk may have)."""
     manifest, book = f13.read_filing_vintage(FilingStamp.of(filing, ""))
     filing.reads.clear()
-    for table in tables:
-        packet = book.assign(ticker=Tables.sec13f_hr.empty_marker[1]) if table == Tables.sec13f_hr else book
-        save_13f_filing(store, manifest, packet, table=table)
+    f13.save_hr_filing(store, manifest, book, _NO_LINES, None)
 
 
-def test_first_pass_reads_each_done_set_once_per_destination(filing_store, monkeypatch):
-    """N = 18 filings of M = 6 CIKs, 2 of them roster CIKs: one done read per destination, not M + 2."""
+def test_first_pass_reads_the_done_set_once(filing_store, monkeypatch):
+    """N = 18 filings of M = 6 CIKs: one table-wide done read, not M."""
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     ciks = [f"{i:010d}" for i in range(1, 7)]
     filings = [_walk_filing(cik, 10 + q, f"{cik}-26-{q:06d}") for cik in ciks for q in range(3)]
     calls = _spy_done_reads(monkeypatch)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), set(ciks[:2]), save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     held = f13._first_pass(filings, saver)
-
-    assert not held and all(len(f.reads) == 1 for f in filings)
-    destinations = sorted((table, scope) for table, scope, _ in calls)
-    assert destinations == [(Tables.sec13f_hr.name, "table"), (Tables.sec13f_manager_holdings.name, "table")], calls
+    first = list(calls)
     calls.clear()
-    f13._first_pass(filings, f13._Saver(_ctx(filing_store), set(UNIVERSE), set(), save_every=1))
+    f13._first_pass(filings, saver)
+
+    assert not held and all(len(f.reads) == 1 for f in filings)  # the second walk reads nothing
+    assert [(table, scope) for table, scope, _ in first] == [(Tables.sec13f_hr.name, "table")], first
     assert [(table, scope) for table, scope, _ in calls] == [(Tables.sec13f_hr.name, "table")], calls
-    assert all(len(f.reads) == 1 for f in filings)  # the second walk reads nothing
-    print(
-        f"SANITY: {len(filings)} filings of {len(ciks)} CIKs (2 roster) -> 1 sec13f_hr + 1 manager done read, not {len(ciks)} + 2; "
-        "no roster CIK -> 1 read; a re-walk reads 0 filings."
-    )
+    print(f"SANITY: {len(filings)} filings of {len(ciks)} CIKs -> 1 sec13f_hr done read per walk, not {len(ciks)}; a re-walk reads 0 filings.")
 
 
 def test_first_pass_done_semantics_match_the_per_cik_sets(filing_store, monkeypatch):
-    """Done = complete in sec13f_hr and, for a roster CIK, in the manager table; markers count, failures
-    do not; an accession listed under two filers is done per filer."""
+    """Done = complete in sec13f_hr; markers count, failures do not; an accession listed under two filers is
+    done per filer."""
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
-    hr, mgr = Tables.sec13f_hr, Tables.sec13f_manager_holdings
     cases = {
-        "roster_hr_only": (_walk_filing(ROSTER, 10, "0000000001-26-000010"), (hr,), True),
-        "roster_both": (_walk_filing(ROSTER, 11, "0000000001-26-000011"), (hr, mgr), False),
-        "other_hr": (_walk_filing(OTHER, 12, "0000000001-26-000012"), (hr,), False),
-        "other_manager_only": (_walk_filing(OTHER, 13, "0000000001-26-000013"), (mgr,), True),
-        "other_empty_marker": (_walk_filing(OTHER, 14, "0000000001-26-000014", lines=[]), (hr,), False),
-        "never_stored": (_walk_filing(OTHER, 15, "0000000001-26-000015"), (), True),
-        "joint_stored_filer": (_walk_filing(OTHER, 16, "0000000001-26-000016"), (hr,), False),
-        "joint_unstored_filer": (_walk_filing("0000888888", 16, "0000000001-26-000016"), (), True),
+        "roster_stored": (_walk_filing(ROSTER, 10, "0000000001-26-000010"), True, False),
+        "other_stored": (_walk_filing(OTHER, 12, "0000000001-26-000012"), True, False),
+        "other_empty_marker": (_walk_filing(OTHER, 14, "0000000001-26-000014", lines=[]), True, False),
+        "never_stored": (_walk_filing(OTHER, 15, "0000000001-26-000015"), False, True),
+        "joint_stored_filer": (_walk_filing(OTHER, 16, "0000000001-26-000016"), True, False),
+        "joint_unstored_filer": (_walk_filing("0000888888", 16, "0000000001-26-000016"), False, True),
     }
-    for filing, tables, _ in cases.values():
-        _store_in(filing_store, filing, tables)
+    for filing, stored, _ in cases.values():
+        if stored:
+            _store(filing_store, filing)
     failed = _FakeFiling(OTHER, "2026-05-17", "2026-03-31", [], accession="0000000001-26-000017", unparseable=True)
     listing = [filing for filing, _, _ in cases.values()] + [failed]
     calls = _spy_done_reads(monkeypatch)
-    saver = f13._Saver(_ctx(filing_store), set(UNIVERSE), {ROSTER}, save_every=1)
+    saver = f13._Saver(_ctx(filing_store), save_every=1)
 
     f13._first_pass(listing, saver)
     f13._first_pass(listing, saver)
@@ -1061,11 +1071,11 @@ def test_first_pass_done_semantics_match_the_per_cik_sets(filing_store, monkeypa
     reread = {name: len(filing.reads) for name, (filing, _, _) in cases.items()}
     assert reread == {name: int(expected) for name, (_, _, expected) in cases.items()}, reread
     assert len(failed.reads) == 2  # a failure is never done
-    hr_reads = [(scope, n) for table, scope, n in calls if table == hr.name]
+    hr_reads = [(scope, n) for table, scope, n in calls if table == Tables.sec13f_hr.name]
     assert hr_reads == [("table", 1), ("key", 2)] * 2, calls  # the per-filer read covers only the joint accession's 2 filers
     print(
         f"SANITY: re-read once {sorted(k for k, v in reread.items() if v)}; skipped {sorted(k for k, v in reread.items() if not v)}; "
-        "the failure is re-read on both walks; per walk 1 table-wide read per destination + 1 per-filer read for the joint accession."
+        "the failure is re-read on both walks; per walk 1 table-wide read + 1 per-filer read for the joint accession."
     )
 
 

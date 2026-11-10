@@ -42,6 +42,10 @@ RESUME_SNAPSHOT = "snapshot"
 
 # The sentinel a child-sequence or label column takes on an empty-filing marker row.
 _EMPTY = "_empty"
+#: The 10-K family the employees text walk reads and its LLM pass decides.
+_ANNUAL_REPORT_FORMS = ("10-K", "10-K/A", "10-K405", "10-K405/A")
+#: The proxy forms the DEF 14A text walk reads and its LLM pass extracts.
+_PROXY_FORMS = ("DEF 14A", "DEF 14C", "DEFC14A")
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,7 +532,7 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
     )
     # Accession-grain fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
@@ -857,40 +861,6 @@ class Tables:
         # cik and cusip '_empty', period = filing_date = the gap start. That day follows every
         # data-set row and precedes the nightly frontier, so neither max(filing_date) nor a
         # ticker's min(period) moves.
-        empty_marker=("cusip", _EMPTY),
-    )
-    # Complete accession books for the union of ever-listed roster managers; no ticker filter.
-    # Common, option and debt legs remain separate. Both 13F tables hide the inline completion
-    # marker (cusip=_empty); a completed empty book still retains its source metadata.
-    # Legacy _legacy rows are preserved for inspection, never proof of an original PIT filing.
-    sec13f_manager_holdings = Table(
-        "sec13f_manager_holdings",
-        ("cik", "period", "accession_number", "cusip"),
-        date_col="period",
-        ticker_col=None,
-        freshness="quarterly",
-        date_type_cols=("period", "filing_date"),
-        read_columns=(
-            "cik",
-            "period",
-            "accession_number",
-            "filing_date",
-            "cusip",
-            "issuer_name",
-            "title_of_class",
-            "position_type",
-            "shares",
-            "value_usd",
-            "call_shares",
-            "call_value",
-            "put_shares",
-            "put_value",
-            "debt_prn",
-            "debt_value",
-            "other_value",
-        ),
-        optional_columns=frozenset({"accession_number"}),
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR", "13F-HR/A")),
         empty_marker=("cusip", _EMPTY),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
@@ -1314,7 +1284,7 @@ class Tables:
             )
         ),
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
         empty_marker=("def14a_json", _EMPTY),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
@@ -1390,44 +1360,6 @@ class Tables:
         resume=def14a_llm.resume,
         empty_marker=("holder_name", _EMPTY),
     )
-    def14a_edgar = Table(
-        "sec_def14a",
-        ("ticker", "accession_number"),
-        date_col="filing_date",
-        date_type_cols=("filing_date", "period_of_report", "ecd_period_end"),
-        freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="2022-12-16"),
-        empty_marker=("form", _EMPTY),
-        desc="DEF 14A (ECD XBRL)",
-        retrieval_columns=(
-            "ticker",
-            "cik",
-            "accession_number",
-            "form",
-            "filing_date",
-            "period_of_report",
-            "company_name",
-            "has_individual_executive_data",
-            # The facts' fiscal year; period_of_report is the proxy meeting date.
-            "ecd_period_end",
-            "peo_name",
-            "peo_total_comp",
-            "peo_actually_paid_comp",
-            "n_peos",
-            "peo_names_all",
-            "neo_avg_total_comp",
-            "neo_avg_actually_paid_comp",
-            "total_shareholder_return",
-            "peer_group_tsr",
-            "net_income",
-            "company_selected_measure_name",
-            "company_selected_measure_value",
-            "insider_trading_policy_adopted",
-            "award_timing_mnpi_considered",
-            "award_dates_predetermined",
-            "mnpi_disclosure_timed_for_comp_value",
-        ),
-    )
     sec_8k = Table(
         "sec_8k",
         ("ticker", "accession_number", "item"),
@@ -1485,6 +1417,57 @@ class Tables:
             "section",
             "text",
             "n_words",
+        ),
+    )
+    # 10-K-family headcount text read by the EDGAR walk for `StepExtractLlm`'s employees step: one
+    # row per filing; `source_document` (main or EX-13 name), `windows` (JSON candidate `[start, end]`
+    # offsets in selection order) and `pieces` (JSON `[offset, text]` covering their union).
+    # Marker: `source_document` = '_empty' for a filing with no usable text.
+    sec_employees_text = Table(
+        "sec_employees_text",
+        ("ticker", "accession_number"),
+        date_col="filing_date",
+        date_type_cols=("filing_date", "period_of_report"),
+        freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
+        empty_marker=("source_document", _EMPTY),
+        desc="10-K employees text (EDGAR)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "period_of_report",
+            "source_document",
+            "windows",
+            "pieces",
+            "n_chars",
+        ),
+    )
+    # Proxy text read by the EDGAR walk for `StepExtractLlm`'s DEF 14A step: one row per carved
+    # section with its untruncated `payload` and the submissions `primary_document`.
+    # Marker `section` = '_empty' marks a subject-guard rejection; `section` = '_none' is a visible
+    # row for a walked filing with no payload.
+    sec_def14a_text = Table(
+        "sec_def14a_text",
+        ("ticker", "accession_number", "section"),
+        date_col="filing_date",
+        date_type_cols=("filing_date",),
+        freshness="yearly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
+        empty_marker=("section", _EMPTY),
+        desc="DEF 14A text (EDGAR)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "primary_document",
+            "section",
+            "payload",
+            "n_chars",
         ),
     )
 

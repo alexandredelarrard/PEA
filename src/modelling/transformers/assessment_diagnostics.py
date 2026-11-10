@@ -16,6 +16,8 @@ from src.modelling.transformers.linear_regression import LinearRegression
 from src.modelling.utils.assessment import balanced_sample_positions, write_json
 from src.modelling.utils.features import design_matrix
 
+logger = logging.getLogger(__name__)
+
 
 def _sample_idx(n_rows: int, sample: int, seed: int = 42) -> np.ndarray:
     """Row POSITIONS to diagnose, so the SHAP matrix can be joined back to date/ticker keys."""
@@ -54,9 +56,7 @@ def shap_score_scale(booster: Any) -> float:
     return 1.0 / booster.num_trees() if model["average_output"] and model["objective"] == "regression" else 1.0
 
 
-def shap_row_values(
-    booster: Any, x: np.ndarray, feature_cols: list[str], sample: int = 2000, seed: int = 42, logger: logging.Logger | None = None
-) -> tuple[np.ndarray, np.ndarray] | None:
+def shap_row_values(booster: Any, x: np.ndarray, feature_cols: list[str], sample: int = 2000, seed: int = 42) -> tuple[np.ndarray, np.ndarray] | None:
     """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; squared-error
     forests use prediction units, other objectives retain native TreeSHAP units."""
     try:
@@ -69,16 +69,15 @@ def shap_row_values(
             values = values[:, :-1]
         return values * shap_score_scale(booster), idx
     except Exception as exc:  # noqa: BLE001 - SHAP is a reporting library boundary
-        if logger is not None:
-            logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped", type(exc).__name__, exc)
+        logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped", type(exc).__name__, exc)
         return None
 
 
-def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: DictConfig, logger: logging.Logger, *, pdp: bool) -> dict[str, Any]:
+def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: DictConfig, *, pdp: bool) -> dict[str, Any]:
     """Persist all sampled signed contributions; plot sampling never changes importance or trends."""
     features = member.features
     matrix = design_matrix(panel, features, member.categoricals, downcast=False)
-    got = shap_row_values(member.model, matrix, features, sample=0, logger=logger)
+    got = shap_row_values(member.model, matrix, features, sample=0)
     if got is None:
         raise RuntimeError("Required SHAP explanation failed")
     phi, positions = got
@@ -153,9 +152,7 @@ def _binned_dependence(x: np.ndarray, phi: np.ndarray, categorical: bool) -> dic
     return {key: grouped[key].to_numpy() for key in ["x", "mean", "count"]}
 
 
-def explain_linear(
-    member: LinearRegression, panel: pd.DataFrame, output: Path, config: DictConfig, logger: logging.Logger, *, pdp: bool
-) -> dict[str, Any]:
+def explain_linear(member: LinearRegression, panel: pd.DataFrame, output: Path, config: DictConfig, *, pdp: bool) -> dict[str, Any]:
     """Explain saved standardized coefficients exactly, without fitting or conditional SHAP."""
     features = member.features
     matrix = panel[features].to_numpy(dtype=float)

@@ -2,7 +2,7 @@
 test_13f_cik_padding.py (tests/data_extract/institutionals/test_13f_cik_padding.py)
 ------------------------------------------------------------------------------------
 Every 13F writer stores the 10-digit padded CIK, whatever form reaches it: the nightly walk's batch
-save (both tables), the manager catch-up's book save, and the data-set backfill. Real SQLite store.
+save and the data-set backfill. Real SQLite store.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_store.schema import Tables
-from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _line
+from tests.data_extract.institutionals.test_13f_one_walk import CMAP, HR_COLS, ROSTER, _line
 from tests.support.store_identity import store_identity
 
 _UNPADDED = ROSTER.lstrip("0")  # "1067983", the legacy form
@@ -39,25 +39,18 @@ def _packet():
     )
 
 
-def test_the_walk_save_pads_the_cik_in_both_tables(filing_store, monkeypatch):
+def test_the_walk_save_pads_the_cik(filing_store, monkeypatch):
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     ctx: Any = SimpleNamespace(store=filing_store, _identity_resolver=store_identity(filing_store))
-    saver = f13._Saver(ctx, {"AAPL"}, {ROSTER}, save_every=1)
+    saver = f13._Saver(ctx, save_every=1)
     saver.save_packet(*_packet())
-    for table in [Tables.sec13f_hr, Tables.sec13f_manager_holdings]:
-        assert filing_store.load(table, columns=["cik"])["cik"].tolist() == [ROSTER]
-    print("SANITY: the actual saver stores padded source CIKs in both initialized destinations.")
-
-
-def test_the_manager_filing_save_preserves_the_padded_cik(filing_store):
-    f13.save_13f_filing(filing_store, *_packet())
-    assert filing_store.load(Tables.sec13f_manager_holdings, columns=["cik"])["cik"].tolist() == [ROSTER]
-    print("SANITY: manager persistence uses the same verified packet and padded source CIK.")
+    assert filing_store.load(Tables.sec13f_hr, columns=["cik"])["cik"].tolist() == [ROSTER]
+    print("SANITY: the actual saver stores the padded source CIK in sec13f_hr.")
 
 
 def test_the_hr_save_pads_the_cik(filing_store):
     ctx: Any = SimpleNamespace(store=filing_store)
-    hr = _book(_UNPADDED).merge(CMAP, on="cusip")[f13._HR_COLS]
+    hr = _book(_UNPADDED).merge(CMAP, on="cusip")[HR_COLS]
 
     f13.save_hr(ctx, hr.assign(accession_number="padding-direct"))
 

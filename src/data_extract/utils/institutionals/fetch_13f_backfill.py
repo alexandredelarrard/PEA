@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -40,6 +40,7 @@ from src.data_extract.utils.edgar_extract.edgar_index import index_filing
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.institutionals.fetch_13f import (
     ReadFailure,
+    _hr_rows,
     _pick,
     _Saver,
     _WalkState,
@@ -51,12 +52,15 @@ from src.data_extract.utils.institutionals.fetch_13f import (
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_store.schema import Resume, Tables
-from src.utils.identity_tables import universe_cusips
+from src.data_store.store import DataStore
+from src.utils.identity_tables import company_lines, universe_cusips
 from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 
 logger = logging.getLogger(__name__)
 
+#: Keys (and accessions) per statement of a 13F restatement: a full key list reads the primary key.
+_KEY_CHUNK = 5000
 _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
 _ZIP_URL = "https://www.sec.gov/files/{section}/data/form-13f-data-sets/{name}_form13f.zip"
 # Quarterly names through 2023 ("2013q2"), then rolling windows ("01jun2024-31aug2024").
@@ -127,13 +131,10 @@ def backfill_work(data_sets: list[DataSet], tickers: list[str]) -> list[tuple[Da
     ]
 
 
-def _completed_accessions(context: Context, ciks: set[str], roster_ciks: set[str]) -> frozenset[str]:
-    """Only a complete broad destination and any required roster destination certify an accession."""
-    broad = stored_accessions(context, Tables.sec13f_hr, sorted(ciks), DONE_PER_KEY, where={"parse_status": "complete"})
-    managers = stored_accessions(context, Tables.sec13f_manager_holdings, sorted(roster_ciks), DONE_PER_KEY, where={"parse_status": "complete"})
-    return frozenset(
-        accession for cik, accessions in broad.items() for accession in accessions if cik not in roster_ciks or accession in managers.get(cik, set())
-    )
+def _completed_accessions(context: Context, ciks: set[str]) -> frozenset[str]:
+    """The accessions of `ciks` complete in `sec13f_hr`; only a completion marker certifies one."""
+    done = stored_accessions(context, Tables.sec13f_hr, sorted(ciks), DONE_PER_KEY, where={"parse_status": "complete"})
+    return frozenset().union(*done.values())
 
 
 def _holds(chunk: pd.DataFrame, cusips: frozenset[str]) -> pd.Series:
@@ -205,7 +206,7 @@ def _backfill_data_set(
     completed: frozenset[str] = frozenset(),
 ) -> int:
     """Preserve full source accessions for a scope fixed across all recovery archives."""
-    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
+    saver = saver or _Saver(context, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     if submissions is None:
         scope = _archive_scope(path, target_cusips(cmap, saver.cusip_lines(), tickers))
         if scope is None:
@@ -226,7 +227,7 @@ def _backfill_data_set(
     ):
         saver.save_packet(manifest, holdings)
     saved = saver.walk.hr_saved - saved_before
-    logger.info("13F backfill %s: preserved %d source position(s) with accession/date in existing tables", data_set.name, saved)
+    logger.info("13F backfill %s: preserved %d source position(s) with accession/date in %s", data_set.name, saved, Tables.sec13f_hr)
     return saved
 
 
@@ -292,7 +293,7 @@ def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: 
 
 def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, *, full: bool = False) -> int:
     """Fill `sec13f_hr` from the 13F data sets for the tickers `backfill_targets` selects, then walk
-    EDGAR over their gap after the newest data set. Full roster books also enter their destination.
+    EDGAR over their gap after the newest data set. Roster managers' full books are saved too.
     Returns broad rows saved from the data sets. With no
     ticker due it reads nothing but the universe and downloads nothing."""
     targets = backfill_targets(context, tickers, as_of, full)
@@ -315,7 +316,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     cusips = target_cusips(cmap, lines, targets)
     relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cusip": sorted(cusips)}))
     for data_set, due in tqdm(work, desc="13F source scope"):
-        path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT, log=logger)
+        path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT)
         if path is None:
             continue
         scope = _archive_scope(path, cusips)
@@ -325,9 +326,9 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         submissions, holders = scope
         relevant_ciks |= holders
         archived.append((data_set, due, path, submissions))
-    completed = frozenset() if full else _completed_accessions(context, relevant_ciks, roster_ciks)
+    completed = frozenset() if full else _completed_accessions(context, relevant_ciks)
     saved = 0
-    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
+    saver = _Saver(context, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
@@ -396,12 +397,12 @@ def cached_filing_vintages(
     return packets
 
 
-def _reread(context: Context, filings: pd.DataFrame) -> list[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]]:
-    """`(accession, packet or failure)` of each stored accession of `filings`: from the 13F data-set zip it came from
-    (`source`, cached), else from its EDGAR archive through edgartools' cache."""
+def _reread(context: Context, filings: pd.DataFrame) -> Iterator[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]]:
+    """`(accession, packet or failure)` of each stored accession of `filings`, yielded one source at a time (one zip's
+    packets in memory): from the 13F data-set zip it came from (`source`, cached), else from its EDGAR archive through
+    edgartools' cache."""
     # load: the data-set accessions, one zip read each
     zipped = filings["source"].fillna("").astype(str).str.endswith("_form13f.zip")
-    reads: list[tuple[str, tuple[pd.DataFrame, pd.DataFrame] | ReadFailure]] = []
     cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets)) if zipped.any() else None
     for source, group in filings[zipped].groupby("source", sort=True):
         path = cast(Path, cache) / str(source)
@@ -410,7 +411,7 @@ def _reread(context: Context, filings: pd.DataFrame) -> list[tuple[str, tuple[pd
             if is_cached(path)
             else {}
         )
-        reads += [(a, packets.get(a, ReadFailure(False, f"not in the cached {source}"))) for a in group["accession_number"].astype(str)]
+        yield from ((a, packets.get(a, ReadFailure(False, f"not in the cached {source}"))) for a in group["accession_number"].astype(str))
 
     # load: every other accession from its archive (a stamp from the stored marker; nothing is listed)
     for row in filings[~zipped].itertuples(index=False):
@@ -424,23 +425,115 @@ def _reread(context: Context, filings: pd.DataFrame) -> list[tuple[str, tuple[pd
             None,
             filing,
         )
-        reads.append((str(row.accession_number), read_filing_vintage(stamp)))
-    return reads
+        yield str(row.accession_number), read_filing_vintage(stamp)
 
 
 def reread_hr_filings(context: Context, filings: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame) -> tuple[int, list[str]]:
     """Rewrite the `sec13f_hr` rows of stored accessions (`filings`: cik, accession_number, form, filing_date, source,
     one row each) from their re-read source under the published `lines` and the market map `cmap` (`replace_hr_filing`),
-    after an identity correction. Returns (rows saved, the accessions left as stored because their source could not be
-    re-read)."""
-    # load: each source book
+    after an identity correction, each written as it is read. Returns (rows saved, the accessions left as stored
+    because their source could not be re-read)."""
+    # load: each source book, streamed
     reads = _reread(context, filings)
 
     # save: one transaction per accession; an unreadable one keeps its stored rows
     saved, failed = 0, []
-    for accession, read in tqdm(reads, desc="13F re-read"):
+    for accession, read in tqdm(reads, desc="13F re-read", total=len(filings)):
         if isinstance(read, ReadFailure):
             failed.append(accession)
             continue
         saved += replace_hr_filing(context.store, read[0], read[1], lines, cmap)
     return saved, failed
+
+
+def restate_hr_moves(context: Context, moves: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame) -> tuple[int, int, list[str]]:
+    """Restate the out-of-place `sec13f_hr` groups `moves` (cusip, period, ticker, new_ticker) from the table: one pass
+    keeps each accession's moving rows and its new companies' own rows, restated by `company_rows`. An accession holding
+    a class already scaled on its own CUSIP is re-read from its source. Returns (rows saved, accessions re-read, left)."""
+    # load: one pass, accession by accession, over the moving CUSIPs' and the new companies' rows; then their markers
+    companies = sorted(set(moves["new_ticker"].astype(str)) & set(lines["canonical_company"].dropna().astype(str)))
+    where = [{"cusip": sorted(set(moves["cusip"].astype(str)))}, *([{"ticker": companies}] if companies else [])]
+    columns = context.store.columns(Tables.sec13f_hr)
+    rows = _restated_scope(
+        context.store.iter_load(Tables.sec13f_hr, columns=columns, where=where, order_by=["cik", "accession_number"]), moves, columns
+    )
+    keys = _marker_keys(rows)
+    found = [
+        context.store.load(Tables.sec13f_hr, where=keys.iloc[i : i + _KEY_CHUNK], markers=True, optional=True)
+        for i in range(0, len(keys), _KEY_CHUNK)
+    ]
+    markers = pd.concat([m for m in found if m is not None] or [pd.DataFrame(columns=columns)], ignore_index=True)
+
+    # compute: the accessions holding a class already in canonical-class shares go to their source
+    scaled = _scaled_accessions(rows, lines)
+
+    # save: the others restated from the table, then the scaled ones re-read
+    saved = _restate(context.store, rows[~rows["accession_number"].isin(scaled)], markers, lines, cmap)
+    filings = markers[markers["accession_number"].isin(scaled)].drop_duplicates(["cik", "accession_number"])
+    reread, failed = reread_hr_filings(context, filings, lines, cmap) if not filings.empty else (0, [])
+    return saved + reread, len(filings) - len(failed), failed
+
+
+def _restated_scope(chunks: Iterator[pd.DataFrame], moves: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Per accession of the ordered `chunks`: its moving rows and its new companies' own rows (an accession split across
+    two chunks is carried to the next)."""
+    wanted = moves.assign(day=pd.to_datetime(moves["period"]).dt.normalize())[["cusip", "day", "ticker", "new_ticker"]].drop_duplicates()
+    kept, carry = [], pd.DataFrame(columns=columns)
+    for chunk in chunks:
+        batch = pd.concat([carry, chunk], ignore_index=True) if not carry.empty else chunk.reset_index(drop=True)
+        tail = batch["cik"].eq(batch["cik"].iloc[-1]) & batch["accession_number"].eq(batch["accession_number"].iloc[-1])
+        kept.append(_accession_scope(batch[~tail], wanted))
+        carry = batch[tail]
+    kept.append(_accession_scope(carry, wanted))
+    return pd.concat(kept, ignore_index=True)
+
+
+def _accession_scope(batch: pd.DataFrame, wanted: pd.DataFrame) -> pd.DataFrame:
+    """The moving rows of `batch` (groups of `wanted`) and the rows of their new company in the same accession."""
+    keyed = batch.assign(day=pd.to_datetime(batch["period"]).dt.normalize()).reset_index(drop=True)
+    new = keyed[["cusip", "day", "ticker"]].merge(wanted, on=["cusip", "day", "ticker"], how="left")["new_ticker"]
+    moving = new.notna().to_numpy()
+    own = pd.MultiIndex.from_arrays([keyed["cik"], keyed["accession_number"], keyed["ticker"]])
+    targets = pd.MultiIndex.from_arrays([keyed["cik"][moving], keyed["accession_number"][moving], new[moving]])
+    return batch.reset_index(drop=True)[moving | own.isin(targets)]
+
+
+def _marker_keys(rows: pd.DataFrame) -> pd.DataFrame:
+    """The `sec13f_hr` primary keys of the completion markers of the accessions of `rows`."""
+    empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
+    keys = rows[["cik", "period", "accession_number"]].drop_duplicates().assign(ticker=empty, cusip=empty)
+    return keys[list(Tables.sec13f_hr.pk)].reset_index(drop=True)
+
+
+def _scaled_accessions(rows: pd.DataFrame, lines: pd.DataFrame) -> set[str]:
+    """The accessions holding a row tagged to its company on a line at a ratio and stored on its target CUSIP (how
+    `company_rows` saves a class it scaled): restating it from the table would apply the ratio twice. A tagged row on
+    another CUSIP was stored as filed."""
+    hits = company_lines(rows, lines)
+    scaled = hits["ratio"].ne(1.0) & hits["target"].eq(rows.loc[hits.index, "cusip"].astype(str).str.strip().str.upper())
+    return set(rows.loc[hits.index[scaled], "accession_number"].astype(str))
+
+
+def _restate(store: DataStore, rows: pd.DataFrame, markers: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame) -> int:
+    """`company_rows` of the stored `rows`, `_KEY_CHUNK` accessions per transaction: their keys deleted, the restated
+    rows and each changed accession's marker `parsed_row_count` saved. Returns rows saved."""
+    pk, accession = list(Tables.sec13f_hr.pk), ["cik", "accession_number"]
+    accessions = rows[accession].drop_duplicates()
+    saved = 0
+    for start in range(0, len(accessions), _KEY_CHUNK):
+        batch = rows.merge(accessions.iloc[start : start + _KEY_CHUNK], on=accession)
+        restated = _hr_rows(batch, lines, cmap)[list(rows.columns)]
+        delta = restated.groupby(accession).size().sub(batch.groupby(accession).size(), fill_value=0).rename("change")
+        marks = markers.merge(delta[delta.ne(0)].reset_index(), on=accession)
+        with store.transaction() as bound:
+            for i in range(0, len(batch), _KEY_CHUNK):
+                bound.delete(Tables.sec13f_hr, batch[pk].iloc[i : i + _KEY_CHUNK])
+            bound.insert(Tables.sec13f_hr, restated)
+            if not marks.empty:
+                bound.delete(Tables.sec13f_hr, marks[pk])
+                bound.insert(
+                    Tables.sec13f_hr,
+                    marks.drop(columns="change").assign(parsed_row_count=(marks["parsed_row_count"] + marks["change"]).astype("int64")),
+                )
+        saved += len(restated)
+    return saved

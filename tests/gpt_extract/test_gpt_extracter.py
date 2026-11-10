@@ -17,8 +17,10 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.gpt_extract.transformers import step_gpt_extracter as step_mod
-from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter, with_gpt_overrides
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter, with_provider
 from src.gpt_extract.utils.providers import OpenAIProvider
+from src.gpt_extract.utils.schemas_gpt import LlmTask
 from src.gpt_extract.utils.usage import UsageTracker
 from tests.gpt_extract.fakes import Answer, StubProvider, fake_context, gpt_config
 
@@ -58,7 +60,7 @@ def test_employee_cheap_variant_selects_luna_without_reasoning(monkeypatch: pyte
     config.gpt.llm_model.open_ai = base_model
     original_config = OmegaConf.to_container(config, resolve=True)
     assert config.gpt.llm_model.open_ai_cheap == "gpt-6-luna"
-    employee_config = with_gpt_overrides(config, "employees", provider="open_ai_cheap")
+    employee_config = with_provider(config, "open_ai_cheap")
     assert employee_config.gpt.default_api == "open_ai_cheap"
     extractor = GptExtracter(fake_context(), employee_config, action="employees")
     request = extractor.initialize_client().request_kwargs(Answer, "system", "filing text")
@@ -121,7 +123,7 @@ def test_prompt_cache_key_is_stable_per_model_and_schema():
 def test_the_payload_is_the_last_thing_in_the_prompt(monkeypatch):
     """The cached prefix is only stable while the payload stays LAST."""
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
+    ext.read_prompts("def14a_governance")
     _, user = ext.build_prompt("THE-PAYLOAD-MARKER", Answer)
 
     assert user.rstrip().endswith("THE-PAYLOAD-MARKER")
@@ -133,7 +135,7 @@ def test_the_payload_is_the_last_thing_in_the_prompt(monkeypatch):
 def test_a_brace_in_the_payload_does_not_raise(monkeypatch):
     """Filing text contains braces; `str.format` would raise on them mid-run."""
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
+    ext.read_prompts("def14a_governance")
     payload = 'a {brace} and a {"json": "fragment"} and a lone {'
     _, user = ext.build_prompt(payload, Answer)
 
@@ -147,7 +149,7 @@ def test_the_format_placeholder_names_the_schema_not_its_json(monkeypatch):
     """Structured output means the schema is enforced at decode time, so restating a
     16,861-char JSON Schema in the prompt would buy nothing and cost ~4,215 tokens/call."""
     ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
+    ext.read_prompts("def14a_governance")
     system, _ = ext.build_prompt("payload", Answer)
 
     assert "{_format}" not in system
@@ -169,17 +171,6 @@ def test_prompt_files_are_read_as_utf8(monkeypatch, tmp_path):
 
     print("\n=== SANITY: prompt encoding ===")
     print(f"  round-tripped {ascii(text)} through read_prompt_file. Validated.")
-
-
-def test_truncate_uses_the_action_budget(monkeypatch):
-    ext = _extracter(monkeypatch)
-    long_payload = "x" * 200_000
-
-    assert len(ext.truncate(long_payload, "def14a")) == 130_000
-    assert len(ext.truncate(long_payload, "sec8k_votes")) == 40_000
-
-    print("\n=== SANITY: per-action truncation ===")
-    print("  def14a 130,000 chars / sec8k_votes 40,000 chars, from config. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -282,16 +273,16 @@ def test_spend_estimate_treats_cached_tokens_as_a_subset():
     print(f"  1M input tokens: ${fresh.spend_estimate():.3f} fresh vs ${all_cached:.3f} fully cached -- the 10x the budget assumes. Validated.")
 
 
-def test_extract_records_usage_through_a_stub_provider(monkeypatch):
-    ext = _extracter(monkeypatch)
-    ext.read_prompts("def14a")
-    parsed = ext.extract(Answer, "some filing text", provider=StubProvider(), action="def14a")
+def test_run_records_usage_through_a_stub_provider(monkeypatch):
+    ext = LLMExtractor(fake_context(), gpt_config(), action="def14a_governance", threads=1)
+    monkeypatch.setattr(ext, "initialize_client", lambda methode=None, key_index=None: StubProvider())
+    parsed = ext.run([LlmTask(seq=0, payload="some filing text", schema=Answer)])[0].parsed
 
     assert isinstance(parsed, Answer)
     assert ext.usage.totals["calls"] == 1
     assert ext.usage.totals["cached_input_tokens"] == 40
 
-    print("\n=== SANITY: single-shot extract ===")
+    print("\n=== SANITY: one task through LLMExtractor.run ===")
     print(f"  filled {type(parsed).__name__} and recorded {ext.usage.totals}. Validated.")
 
 

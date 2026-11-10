@@ -1,4 +1,5 @@
-"""Offline fixtures for the EDGAR document driver: a fake `Context`, a seeded local index, fake filings.
+"""Offline fixtures for the EDGAR document driver: a fake `Context`, a seeded local index, fake filings, and the
+employees walk/LLM stand-ins (a 10-K, a fixture answer, a fake extractor).
 
 The index cache is written through `edgar_index`'s own parser and writer, so tests read it exactly
 as production does. Fake filings stand in for `edgar.Filing` by accession (`patch_index_filings`).
@@ -6,16 +7,21 @@ as production does. Fake filings stand in for `edgar.Filing` by accession (`patc
 
 from __future__ import annotations
 
+import queue
 import types
 from collections.abc import Iterable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.identity import FilingScope, Identity, build_identity
+from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
+from src.data_extract.utils.fundamentals.employee_guard import EmployeeAnswer, employee_task
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
@@ -33,6 +39,101 @@ Cloud HTTP:            https://www.sec.gov/Archives/
 CIK|Company Name|Form Type|Date Filed|Filename
 --------------------------------------------------------------------------------
 """
+
+
+class TenK:
+    """A 10-K family stand-in: `text()` returns `body` (no HTML, no exhibit); the first `fail` reads raise a transient
+    SEC error; `_sgml` stands for edgartools' cached submission."""
+
+    def __init__(
+        self, accession: str, filed: str, body: str, *, cik: int = 1, form: str = "10-K", report: str | None = "2020-12-31", fail: int = 0
+    ) -> None:
+        self.accession_number, self.cik, self.filing_date, self.form = accession, cik, filed, form
+        self.company, self.period_of_report, self.primary_document = "Fixture Co", report, None
+        self.attachments: list[object] = []
+        self._sgml: object | None = object()
+        self.body, self.fail = body, fail
+
+    def html(self) -> str:
+        if self.fail > 0:
+            self.fail -= 1
+            raise TransientReadError(f"{self.accession_number}: HTTP 503")
+        return ""
+
+    def text(self) -> str:
+        return self.body
+
+    def full_text_submission(self) -> str:
+        return ""
+
+
+def employee_answer(
+    total: int | None,
+    quote: str | None,
+    *,
+    full_time: int | None = None,
+    full_time_quote: str | None = None,
+    part_time: int | None = None,
+    part_time_quote: str | None = None,
+    is_fte: bool = False,
+    includes_contractors: bool = False,
+    status: str = "found",
+    measurement_period: str | None = "year end",
+) -> EmployeeAnswer:
+    """A fake LLM answer: `total` with `quote`, plus optional full-/part-time components with their own quotes."""
+    return EmployeeAnswer(
+        status=status,  # type: ignore[arg-type]
+        total=total,
+        total_quote=quote,
+        full_time=full_time,
+        full_time_quote=full_time_quote,
+        part_time=part_time,
+        part_time_quote=part_time_quote,
+        is_fte=is_fte,
+        includes_contractors=includes_contractors,
+        measurement_period=measurement_period,
+        qualifier=None,
+        reason="fixture",
+    )
+
+
+class FakeEmployeesLLM:
+    """No LLM: each task is answered with its accession's fixture answer (a string answer is a failed call carrying
+    that error); `tasks` records what was sent, `calls` their accessions."""
+
+    def __init__(self, answers: dict[str, Any]) -> None:
+        self.answers = answers
+        self.tasks: list[LlmTask] = []
+
+    @property
+    def calls(self) -> list[str]:
+        return [str(task.meta["stamp"].accession_number) for task in self.tasks]
+
+    def run(self, tasks: Iterable[LlmTask]) -> list[LlmResult]:
+        tasks = list(tasks)
+        self.tasks += tasks
+        results = []
+        for task in tasks:
+            reply = self.answers[str(task.meta["stamp"].accession_number)]
+            failed = isinstance(reply, str)
+            results.append(LlmResult(seq=task.seq, task=task, parsed=None if failed else reply, error=reply if failed else None))
+        return results
+
+
+def lent(*extractors: Any) -> queue.SimpleQueue:
+    """The extractor queue the employees per-ticker worker borrows from."""
+    pool: queue.SimpleQueue = queue.SimpleQueue()
+    for extractor in extractors:
+        pool.put(extractor)
+    return pool
+
+
+def sent_excerpt(row: Any, limit: int) -> str:
+    """The excerpt `employee_task` sends for a stored `sec_employees_text` row when `limit` characters are left after
+    its prefix (the prefix length read from an unbounded task)."""
+    probe = employee_task(0, "AAA", row, 10**9)
+    prefix = len(probe.payload) - len(str(probe.meta["source_text"]))
+    return str(employee_task(0, "AAA", row, limit + prefix).meta["source_text"])
 
 
 def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:
@@ -124,10 +225,29 @@ def identity_for(roster: dict[str, str]) -> Identity:
     )
 
 
+@dataclass(frozen=True)
+class RosterIdentity:
+    """An `Identity` stand-in for walks that read only the filing scope: each ticker's roster CIK alone (two tickers may
+    share a CIK, and a blank CIK scopes nothing), which a built `Identity` refuses."""
+
+    roster: dict[str, str]
+
+    def filing_scope(self, ticker: str) -> FilingScope:
+        """`ticker`'s roster CIK as its only window."""
+        return FilingScope.roster_only(ticker, self.roster[ticker])
+
+
+def roster_identity(roster: dict[str, str]) -> Identity:
+    """A `RosterIdentity` typed as the `Identity` the walks take."""
+    return cast(Identity, RosterIdentity({ticker: pad_cik(cik) if cik else "" for ticker, cik in roster.items()}))
+
+
 def roster_run(ctx: Any, tickers: list[str], years_history: int = 15, *, as_of: pd.Timestamp, full: bool = False, no_cap: bool = False) -> EdgarRun:
-    """`EdgarRun.load` with no identity layer: each key's filing scope is its roster CIK alone."""
+    """`EdgarRun.load` over a roster-only identity: each key's filing scope is its roster CIK alone."""
+    roster = edgar_driver.universe_rows(ctx, tickers)
+    identity = roster_identity(dict(zip(roster["ticker"], roster["cik"], strict=True)))
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(edgar_driver, "load_identity", lambda context: None)
+        patch.setattr(edgar_driver, "load_identity", lambda context: identity)
         return EdgarRun.load(ctx, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
 
 

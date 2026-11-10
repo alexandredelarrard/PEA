@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +10,6 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_store.schema import Table, Tables
 from tests.support import institutionals_feature_quality as quality
 
@@ -313,14 +311,17 @@ def _candidate_build_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, par
     _write_manifest(manifest, baseline, baseline_meta, store, "2024-01-03")
     calls: list[None] = []
 
+    def panel() -> pd.DataFrame:
+        calls.append(None)
+        future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
+        return pd.concat([source, future], ignore_index=True)
+
     class _Step:
         def __init__(self, context: object, config: object) -> None:
             self.context = context
 
-        def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
-            calls.append(None)
-            future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
-            return pd.concat([source, future], ignore_index=True)
+        def build_panel(self) -> pd.DataFrame:
+            return panel()
 
         def run(self, full: bool = False) -> None:
             raise AssertionError("run/write path must not be called")
@@ -328,6 +329,7 @@ def _candidate_build_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, par
     context = SimpleNamespace(store=store, paths={})
     monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (SimpleNamespace(), context))
     monkeypatch.setattr(quality, "StepCubeSecThirteen" if part == Tables.cube_part_sec_thirteen else "StepCubeInstitutionals", _Step)
+    monkeypatch.setattr(quality, "unsaved_panel", lambda step: panel())
     candidate = tmp_path / "candidate.parquet"
     out = tmp_path / "build"
     argv = [
@@ -371,7 +373,7 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     metadata = json.loads((out / "candidate-metadata.json").read_text(encoding="utf-8"))
     assert calls == [None]
     assert metadata["table"] == part.name
-    assert metadata["builder"] == "_Step.build_panel()"
+    assert metadata["builder"] == ("_Step.run() unsaved panel" if part == Tables.cube_part_sec_thirteen else "_Step.build_panel()")
     assert pd.read_parquet(candidate)["date"].max() == pd.Timestamp("2024-01-03")
     assert metadata["snapshot_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
     assert context.paths["SECTOR_PEERS_PATH"] == tmp_path / "peer-baskets.json"
@@ -420,7 +422,7 @@ def test_build_candidate_preserves_optional_comparison_artifacts_and_status(
     assert metadata["table"] == part.name
     assert metadata["snapshot_sha256"] == quality._sha256(candidate)
     assert metadata["manifest_sha256"] == quality._sha256(tmp_path / "input-manifest.json")
-    assert metadata["write_contract"] == "parquet artifact only; builder run/write_part not called"
+    assert metadata["write_contract"] == "parquet artifact only; write_part not called"
     assert set(context.store.calls) <= {"exists", "columns", "row_count", "bounds"}
     if mode == "mismatch":
         report = json.loads(comparison.read_text(encoding="utf-8"))

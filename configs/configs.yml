@@ -24,6 +24,14 @@ data_extract:
   # Per-fetch cap on documents read in one run, newest first; a larger work list logs an ERROR and
   # drains over later runs. The one-time backlog run lifts it with `--no-cap`.
   max_documents_per_run: 5000
+  # Characters of stored EDGAR text sent to the LLM per call (`StepExtractLlm`): `employees` is the
+  # 10-K excerpt budget, prefix included (e.g. 40000-80000); `def14a` the cut of each stored proxy
+  # section payload (e.g. 100000-130000); `votes` the cut of each stored Item 5.07 narrative (longest
+  # measured: 17,032 chars). Changing any needs no re-walk of the text tables.
+  llm_text_budget:
+    employees: 60000
+    def14a: 130000
+    votes: 40000
   # `modelling predict` refuses to score when the share of universe tickers whose own latest
   # prices / sharadar_fundamentals_facts / sharadar_fundamentals_history date is within the table's cadence
   # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.

@@ -81,7 +81,7 @@ class StepAssessLongShort(Step):
             "complete": False,
             "no_fitting": True,
         }
-        with assessment_workspace(self._output, self._log) as workspace:
+        with assessment_workspace(self._output) as workspace:
             self._analysis_path = workspace
             for horizon in training["horizons"]:
                 self._assess_horizon(int(horizon), training, cutoff, calendar, state)
@@ -89,7 +89,7 @@ class StepAssessLongShort(Step):
             write_json(workspace / METADATA_FILE, state)
             report = render_assessment(self._output, assessment_directory=workspace, report_path=workspace / "report.html")
             state["report_file"] = file_identity(report)
-            result = publish_assessment(self._output, workspace, state, self._log)
+            result = publish_assessment(self._output, workspace, state)
         self._log.info("Fresh saved-model assessment complete: %s", result)
         return result
 
@@ -255,8 +255,8 @@ class StepAssessLongShort(Step):
     def _explain_member(self, member: BaseModel, sample: pd.DataFrame, output: Path, *, pdp: bool) -> None:
         """Always compute explanations for this newly scored window."""
         if isinstance(member, LinearRegression):
-            explain_linear(member, sample, output, self._config, self._log, pdp=pdp)
+            explain_linear(member, sample, output, self._config, pdp=pdp)
         elif member.supports_shap:
-            explain_tree(member, sample, output, self._config, self._log, pdp=pdp)
+            explain_tree(member, sample, output, self._config, pdp=pdp)
         else:
             raise ValueError(f"Required explanations unavailable for {member.family}")

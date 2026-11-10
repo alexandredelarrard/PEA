@@ -29,10 +29,11 @@ from src.data_extract.transformers.step_extract_identity import IdentityOptions
 from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, purge_rows, rebuilt_since, retag_13f, thirteenf_moves
 from src.data_extract.utils.identity.lifecycle import Lifecycle
 from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_13f_filing, save_hr_filing
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_hr_filing
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
+from src.utils.identity_tables import LINE_COLUMNS
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
 from tests.data_extract.institutionals.test_13f_one_walk import _line as _info_line
 from tests.support.propagation import stub_propagation
@@ -90,8 +91,9 @@ def _seed(store: DataStore) -> None:
     over 29476L107 and BRK-B's two classes."""
     store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": [EQR_CUSIP, OTHER_CUSIP, BRK_A, BRK_B], "ticker": ["EQR", "ZZZ", "BRK-A", "BRK-B"]}))
     old = {EQR_CUSIP: "EQR", OTHER_CUSIP: "ZZZ", BRK_A: "BRK-B", BRK_B: "BRK-B"}
+    old_map = pd.DataFrame({"cusip": list(old), "ticker": list(old.values())})
     for manifest, book in PACKETS:
-        save_13f_filing(store, manifest, book, table=Tables.sec13f_hr, rows=book.assign(ticker=book["cusip"].map(old)))
+        save_hr_filing(store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), old_map)
     lines = [
         _line(EQR_CUSIP, "VMRK", "canonical_current", "EQR", 1.0, "1995-01-01"),
         _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31"),
@@ -103,6 +105,12 @@ def _seed(store: DataStore) -> None:
 def _rows(store: DataStore) -> pd.DataFrame:
     rows = store.load(Tables.sec13f_hr, columns=["accession_number", "ticker", "cusip", "shares", "value_usd"])
     return rows.sort_values(["accession_number", "cusip"], ignore_index=True)
+
+
+def _marker_counts(store: DataStore) -> dict[str, int]:
+    markers = store.load(Tables.sec13f_hr, columns=["accession_number", "parse_status", "parsed_row_count"], markers=True)
+    done = markers[markers["parse_status"].eq("complete")]
+    return {str(a): int(n) for a, n in zip(done["accession_number"], done["parsed_row_count"], strict=True)}
 
 
 def _offline_reread(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -133,19 +141,53 @@ def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_not
     moved = {(r.cusip, r.from_ticker, r.to_ticker): r.rows for r in dry.itertuples(index=False)}
     assert moved == {(EQR_CUSIP, "EQR", "VMRK"): 3, (BRK_A, "BRK-B", "BRK-B"): 1}, moved
     assert after_dry.equals(before), "a dry run writes nothing"
-    assert wet.equals(dry) and sorted(asked) == sorted(str(m.iloc[0].accession_number) for m, _ in PACKETS)
+    assert wet.equals(dry) and asked == [], "rows stored as filed are restated from the table, no source is read"
     brk = after[after["ticker"].eq("BRK-B")]
     assert brk[["cusip", "shares", "value_usd"]].values.tolist() == [[BRK_B, 3_100.0, 1_343_000.0]]
     assert set(after.loc[after["cusip"].eq(EQR_CUSIP), "ticker"]) == {"VMRK"}
     assert set(after.loc[after["cusip"].eq(OTHER_CUSIP), "ticker"]) == {"ZZZ"}, "a CUSIP outside every line keeps its market ticker"
     assert after["value_usd"].sum() == before["value_usd"].sum() and len(after) == len(before) - 1
+    counts = _marker_counts(filing_store)
+    assert counts == {"acc-0000000001-2024-03-31": 2, "acc-0000000001-2024-06-30": 2, "acc-0000000002-2024-06-30": 2}, counts
     assert again.empty and stale.empty, "a second run (and a stamp outside the window) finds nothing out of place"
-    print("\n=== SANITY CHECK: 13F rewrite of out-of-place accessions (AC-009, AC-013, U-67) ===")
+    print("\n=== SANITY CHECK: 13F restatement of out-of-place rows from the table (AC-009, AC-013, U-67) ===")
     print(f"  dry run: {dry.to_dict('records')}; stored rows unchanged ({len(after_dry)})")
     print(
-        f"  real run: {len(asked)} accession(s) re-read offline; rows {len(before)} -> {len(after)}; value {before['value_usd'].sum():,.0f} = {after['value_usd'].sum():,.0f}"
+        f"  real run: {len(asked)} source read(s); rows {len(before)} -> {len(after)}; value {before['value_usd'].sum():,.0f} = {after['value_usd'].sum():,.0f}; markers {counts}"
     )
     print(f"  BRK-B: one row of {brk['shares'].iloc[0]:,.0f} B shares (2 x 1,500 + 100); EQR -> VMRK; ZZZ unchanged; second run 0 group(s)")
+
+
+def test_a_class_already_scaled_on_its_own_cusip_is_reread_from_its_source_not_scaled_twice(
+    filing_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Known truth: with no canonical BRK-B line on 2024-06-30, `company_rows` stores the 2 BRK-A shares as 3,000
+    canonical shares on BRK-A's own CUSIP. The table cannot tell that row from one stored as filed, so its accession is
+    re-read from source: 3,000 shares again, never 2 x 1,500 x 1,500."""
+    manifest, book = PACKETS[1]
+    lines = pd.DataFrame(
+        [
+            _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "2025-01-01"),
+            _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
+        ]
+    )
+    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": [EQR_CUSIP, BRK_A, BRK_B], "ticker": ["EQR", "BRK-A", "BRK-B"]}))
+    filing_store.save(Tables.universe_cusip, lines)
+    save_hr_filing(filing_store, manifest, book, lines, filing_store.load(Tables.cusip_ticker_map))
+    context = _context(filing_store)
+    asked = _offline_reread(monkeypatch)
+
+    moves, tags = thirteenf_moves(context, ["BRK-B"], RUN_DATE, False)
+    retag_13f(context, moves, tags, False)
+    after = _rows(filing_store)
+
+    brk = after[after["cusip"].eq(BRK_A)]
+    assert asked == [str(manifest.iloc[0].accession_number)], asked
+    assert brk[["ticker", "shares"]].values.tolist() == [["BRK-B", 3_000.0]], brk
+    print("\n=== SANITY CHECK: an already-scaled class goes to its source ===")
+    print(
+        f"  moves {moves[['cusip', 'ticker', 'new_ticker']].values.tolist()}; source reads {asked}; BRK-A row {brk['shares'].iloc[0]:,.0f} canonical shares"
+    )
 
 
 def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_it(filing_store: DataStore) -> None:
@@ -165,7 +207,7 @@ def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_
     def marker_and_history() -> tuple[int, int]:
         stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
         packets = thirteen_inputs.iter_filing_vintages(filing_store, grid.max())
-        with closing(clean_public_batches(packets, None, ["BRK-B", "VMRK"], None, None)) as batches:
+        with closing(clean_public_batches(packets, ["BRK-B", "VMRK"], None, None)) as batches:
             history = prepare_institutional_book_history(batches, grid, settle_days=3)
         assert history is not None
         return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])

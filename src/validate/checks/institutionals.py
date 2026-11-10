@@ -10,7 +10,7 @@ import pandas as pd
 
 from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Tables
 from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.validate.result import CheckResult, Finding
 
@@ -23,9 +23,9 @@ def check_institutionals(
     end_period: str,
     filed_through: str,
     trading_index: pd.DatetimeIndex | None = None,
-    table: Table = Tables.sec13f_manager_holdings,
 ) -> CheckResult:
-    """Validate complete books, source totals, clocks and historical-prefix invariance."""
+    """Validate the `sec13f_hr` books of `ciks`: complete books, source totals, clocks and historical-prefix invariance."""
+    table = Tables.sec13f_hr
     manifest_columns = [
         "accession_number",
         "cik",

@@ -44,7 +44,7 @@ def test_equity_universe_is_the_universe_only(sqlite_store, monkeypatch):
             run=lambda tickers=None, **kwargs: received.setdefault(name, tickers),
             run_download=lambda: None,
             run_ingest=lambda: None,
-            run_def14a=lambda: None,
+            run_def14a_llm=lambda: None,
             run_8k_votes=lambda: None,
         )
 

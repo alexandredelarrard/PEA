@@ -45,12 +45,7 @@ def pin_dtypes(df: pd.DataFrame, *, dates: Sequence[str] = (), floats: Sequence[
     return df.assign(**pinned)
 
 
-def finalise_frame(table: Table, rows: list[dict], *, numeric: Sequence[str] = ()) -> pd.DataFrame:
-    """`rows` with `table.retrieval_columns`, de-duplicated on `table.pk` (last row wins), then `numeric` coerced.
-
-    The dedup is required: a Postgres upsert touching one primary key twice is an error.
-    """
-    df = pd.DataFrame(rows, columns=list(table.retrieval_columns)).drop_duplicates(subset=list(table.pk), keep="last")
-    for column in numeric:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
-    return df
+def finalise_frame(table: Table, rows: list[dict]) -> pd.DataFrame:
+    """`rows` with `table.retrieval_columns`, de-duplicated on `table.pk` (last row wins): a Postgres upsert touching
+    one primary key twice is an error."""
+    return pd.DataFrame(rows, columns=list(table.retrieval_columns)).drop_duplicates(subset=list(table.pk), keep="last")

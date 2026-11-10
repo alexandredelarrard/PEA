@@ -353,19 +353,6 @@ def sec_fundamentals_facts(config_path: str, tickers: str | None, years: int | N
 
 
 @cli.command(
-    name="fundamentals-employees",
-    help="SEC 10-K prose -> fundamentals_employees: total, full-time and part-time counts with basis, status, filer CIK, accession "
-    "and source quotes, one row per filing date over the registrant lineage. Dates that already have a row (NULL-status rows included) "
-    "are skipped unless --full. A failed LLM call or ticker is logged and retried next run; the task exits 0.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
-    _llm_step(config_path, tickers, full).run_employees()
-
-
-@cli.command(
     name="sec-fundamentals-history",
     help="sec_fundamentals_facts -> sec_fundamentals_history, on the publication-event grain of original 10-K and 10-Q "
     "filings. No network. A late original (filed on or before the newest stored row) rewrites that ticker's rows from its "
@@ -551,13 +538,16 @@ def identity(config_path: str, tickers: str | None, full: bool, as_of: datetime 
 
 
 # --- Structure (governance) ---
-@cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
+@cli.command(
+    name="sec-def14a-llm",
+    help="Stored sec_def14a_text -> def14a_llm and its four child tables (LLM): one call per section with a key gap and "
+    "fewer than two attempts, its payload cut at data_extract.llm_text_budget.def14a. No download. A section the walked proxy "
+    "lacks consumes its attempt; a proxy the subject guard rejected is never sent.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def def14a(config_path: str, tickers: str | None) -> None:
-    """Every run lists each ticker's whole `years_history`; `--full` also re-sends the saved proxies without
-    evidence, markers included (a proxy with stored evidence is never re-sent)."""
-    _llm_step(config_path, tickers).run_def14a()
+def sec_def14a_llm(config_path: str, tickers: str | None) -> None:
+    _llm_step(config_path, tickers).run_def14a_llm()
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
@@ -576,6 +566,20 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
     _llm_step(config_path, tickers).run_8k_votes()
+
+
+@cli.command(
+    name="sec-employees-llm",
+    help="Stored sec_employees_text -> fundamentals_employees (LLM): total, full-time and part-time counts with basis, status, "
+    "filer CIK, accession and source quotes, one row per filing date. No download. Dates that already have a row (NULL-status "
+    "rows included) are skipped unless --full; dates after a filing the text walk has not stored yet wait for it. A failed LLM "
+    "call or ticker is logged and retried next run; the task exits 0.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def sec_employees_llm(config_path: str, tickers: str | None, full: bool) -> None:
+    _llm_step(config_path, tickers, full).run_employees_llm()
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
@@ -612,15 +616,34 @@ def filing_text(config_path: str, tickers: str | None, years: int | None, full: 
     _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_filing_text()
 
 
-@cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
+@cli.command(
+    name="sec-employees-text",
+    help="10-K employees text: each annual filing's chosen document (primary or annual-report exhibit) as candidate "
+    "windows + their text, read by the employees LLM step. SEC-api.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def def14a_edgar(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_ecd()
+def sec_employees_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_employees_text()
+
+
+@cli.command(
+    name="sec-def14a-text",
+    help="DEF 14A text: each proxy (DEF 14A, DEF 14C, DEFC14A) carved into its five section payloads, untruncated, "
+    "read by the DEF 14A LLM step. A multi-window ticker's proxy about another entity is marked and never read again. SEC-api.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
+def sec_def14a_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_text()
 
 
 def _edgar_step(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> StepExtractEdgar:

@@ -247,12 +247,6 @@ class Catalogue:
     force_regime_by_sub_industry: dict[str, str]
     ticker_exceptions: dict[str, Any]
 
-    @cached_property
-    def all_column_names(self) -> frozenset[str]:
-        """Every name the contract declares (catalogue fields plus computed columns), the set `feeds` /
-        `components` references resolve against. Wider than `history_columns` (includes side-table fields)."""
-        return frozenset(self.fields) | frozenset(self.derived_columns)
-
     # ------------------------------------------------- the history contract --- #
     @cached_property
     def side_table_fields(self) -> list[str]:
@@ -299,39 +293,11 @@ class Catalogue:
             raise KeyError(f"{name!r} is not in the KPI catalogue ({len(self.fields)} fields declared)") from None
 
     @cached_property
-    def _by_tier(self) -> dict[int, list[str]]:
-        """Every tier's sorted field list, built in one pass over `fields`."""
-        out: dict[int, list[str]] = {}
-        for name in sorted(self.fields):
-            out.setdefault(self.fields[name].tier, []).append(name)
-        return out
-
-    def by_tier(self, tier: int) -> list[str]:
-        return list(self._by_tier.get(tier, ()))
-
-    @cached_property
-    def scored_fields(self) -> list[str]:
-        return sorted(n for n, s in self.fields.items() if s.is_scored)
-
-    @cached_property
-    def input_fields(self) -> list[str]:
-        return sorted(n for n, s in self.fields.items() if s.tier == INPUT_TIER)
-
-    @cached_property
     def extracted_fields(self) -> list[str]:
         """Fields resolved against XBRL, i.e. everything the facts layer must produce."""
         return sorted(n for n, s in self.fields.items() if s.is_extracted)
 
-    @cached_property
-    def unverified_fields(self) -> list[str]:
-        """Fields whose `authority` is still the placeholder; the schema test asserts on this list."""
-        return sorted(n for n, s in self.fields.items() if s.authority == UNVERIFIED)
-
     # --------------------------------------------------------------- regimes --- #
-    @cached_property
-    def regime_names(self) -> list[str]:
-        return sorted(self.regimes)
-
     def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None, sub_industry: str | None = None) -> str | None:
         """The GICS-implied regime, or None (never a guess) when nothing matches.
 

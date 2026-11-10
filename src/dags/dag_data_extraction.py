@@ -12,8 +12,8 @@ capped by Airflow POOLS (created in airflow-init):
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time (edgar_index and insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises, identity,
-                          superinvestors, earnings calls  (+ the one heavy yfinance pull:
-                          price_history)
+                          superinvestors, earnings calls, the employees and DEF 14A LLM passes and the 8-K
+                          vote parser (stored text only, no SEC read)  (+ the one heavy yfinance pull: price_history)
 
 Flow: [sec_company_tickers, sharadar_tickers, sharadar_actions, sec_submissions] -> universe_sync -> zips_download -> identity
 -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger the data_aggregation DAG. The four
@@ -28,12 +28,14 @@ the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_c
 manager books follow it) and the earnings calls included (price_history waits for identity: it reads the master's current
 secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
-stored master. edgar_index refreshes the EDGAR filing index once after identity; the seven EDGAR document walks
+stored master. edgar_index refreshes the EDGAR filing index once after identity; the eight EDGAR document walks
 (the SEC fundamentals facts walk included) wait for it and skip a refresh already done today (the insider walk still
-rebuilds its own inventory), and insider_edgar also waits for the insider zip ingest. Fundamentals are two independent
-producers, no path between them: identity -> edgar_index -> sec_fundamentals_facts -> sec_fundamentals_history, and
-identity -> fundamentals_sharadar (an identity consumer: its history is keyed through the lineage); fundamentals_check
-logs the SEC vs Sharadar comparison after both on ALL_DONE, so either side failing still runs it. After every fetcher, `extraction_status` prints the
+rebuilds its own inventory), and insider_edgar also waits for the insider zip ingest. Each LLM pass waits for the walk
+storing its text: sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec_8k_items] -> sec_def14a_llm ->
+sec_8k_votes. Fundamentals are two independent producers, no path between them: identity -> edgar_index ->
+sec_fundamentals_facts -> sec_fundamentals_history, and identity -> fundamentals_sharadar (an identity consumer: its
+history is keyed through the lineage); fundamentals_check logs the SEC vs Sharadar comparison after both on ALL_DONE,
+so either side failing still runs it. After every fetcher, `extraction_status` prints the
 per-table freshness report, logs a WARNING per RED table and exits 0; only `modelling predict` refuses stale
 inputs. Then `identity_check` (`python -m src validate identity`) fails on rows filed by a CIK outside the
 ticker's entity or a broken lineage invariant, which holds the aggregation trigger.
@@ -134,19 +136,22 @@ edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per nigh
 sec_fundamentals_facts = fetch("sec-fundamentals-facts", pool="sec_api")  # SEC XBRL facts walk
 sec_fundamentals_history = fetch("sec-fundamentals-history")  # offline: facts -> SEC publication-event history
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
-fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + Sharadar history
 # read-only SEC vs Sharadar log; runs whatever either producer did
 fundamentals_check = fetch("fundamentals-check", trigger_rule=TriggerRule.ALL_DONE)
-def14a = fetch("def14a", pool="sec_api")  # + LLM
-def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
-sec_8k_votes = fetch("sec-8k-votes", pool="sec_api")  # parses stored Item 5.07 narratives
 sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
-#   ^ EDGAR step: insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar, sec_fundamentals_facts;
-#     LLM step: def14a, sec_8k_votes, fundamentals_employees
+sec_employees_text = fetch("sec-employees-text", pool="sec_api")  # 10-K family employees windows -> sec_employees_text
+sec_def14a_text = fetch("sec-def14a-text", pool="sec_api")  # proxy section payloads -> sec_def14a_text
+#   ^ EDGAR step: insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_employees_text, sec_def14a_text,
+#     sec_fundamentals_facts
+
+# 4b) LLM step — read only the stored text tables (no SEC read), so they run in the default pool beside the walks
+sec_employees_llm = fetch("sec-employees-llm")  # reads sec_employees_text
+sec_def14a_llm = fetch("sec-def14a-llm")  # reads sec_def14a_text
+sec_8k_votes = fetch("sec-8k-votes")  # parses stored Item 5.07 narratives and the DEF 14A tables
 
 # 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")
@@ -188,16 +193,17 @@ all_fetchers = [
     insider_edgar,
     sec_fundamentals_facts,
     sec_fundamentals_history,
-    fundamentals_employees,
     fundamentals_sharadar,
     fundamentals_check,
-    def14a,
-    def14a_edgar,
     sec_8k_items,
     sec_8k_votes,
     sec_13d,
     sec_13g,
     filing_text,
+    sec_employees_text,
+    sec_def14a_text,
+    sec_employees_llm,
+    sec_def14a_llm,
     extract_earnings_calls,
     superinvestors,
     thirteen_f_managers,
@@ -211,16 +217,17 @@ identity_consumers = [
     extract_earnings_calls,  # resolves each call's symbol through the published lineage
     sec_fundamentals_facts,
     fundamentals_sharadar,  # keys the vendor history through the lineage
-    fundamentals_employees,
-    def14a,
-    def14a_edgar,
+    sec_employees_llm,  # plans the text walk's pending filings through the lineage
+    sec_def14a_llm,
     sec_8k_items,
     sec_13d,
     sec_13g,
     filing_text,
+    sec_employees_text,
+    sec_def14a_text,
     insider_edgar,
 ]
-edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar, sec_fundamentals_facts]
+edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_employees_text, sec_def14a_text, sec_fundamentals_facts]
 
 universe_evidence >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes
@@ -232,7 +239,8 @@ thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 sec_fundamentals_facts >> sec_fundamentals_history
 [sec_fundamentals_history, fundamentals_sharadar] >> fundamentals_check  # no edge between the producers
-[sec_8k_items, def14a] >> sec_8k_votes
+sec_employees_text >> sec_employees_llm  # the LLM decides what the walk stored tonight
+[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes  # votes read the 8-K narratives and the DEF 14A tables
 
 # every source done (failed or not) -> freshness report -> identity check -> aggregation only when the check passed
 all_fetchers >> extraction_status >> identity_check >> trigger_aggregation

@@ -457,7 +457,7 @@ def test_ftd_evidence_reads_symbols_then_the_voted_cusip6_from_cache_and_stores_
     )
     calls: list[str] = []
     read = ftd.read_zip_text
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: calls.append(path.stem.removeprefix("cnsfails")) or read(path, log=log))
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path: calls.append(path.stem.removeprefix("cnsfails")) or read(path))
     scope = sm.ftd_scope(_scope_lineage(), {}, SecurityManual.empty())
     assert scope.symbols == frozenset({"ABC"}) and not scope.prefixes
 

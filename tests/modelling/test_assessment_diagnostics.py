@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import pickle
 from pathlib import Path
 from typing import Any
@@ -37,7 +36,7 @@ def test_saved_linear_coefficients_reconstruct_signed_effects_and_pdp(tmp_path: 
         }
     )
     config = OmegaConf.create({"seed": 7, "model": {"diagnostics": {"dependence_sample": 4, "pdp_grid": 30, "pdp_background": 4}}})
-    result = assessment_diagnostics.explain_linear(member, panel, tmp_path, config, logging.getLogger(__name__), pdp=True)
+    result = assessment_diagnostics.explain_linear(member, panel, tmp_path, config, pdp=True)
     values = pd.read_parquet(tmp_path / "contributions.parquet")
     scaled = (panel[member.features].to_numpy() - member.mean_) / member.std_
     expected = np.nan_to_num(scaled, nan=0.0) * member.coef_
@@ -86,7 +85,7 @@ def test_original_fold_and_cutoff_signed_axes_use_each_serialized_scaler_without
         model_file.write_bytes(pickle.dumps(member))
         saved = LinearRegression.load(model_file)
         folder = tmp_path / f"fold{fold}"
-        result = assessment_diagnostics.explain_linear(saved, panel, folder, config, logging.getLogger(__name__), pdp=fold == 0)
+        result = assessment_diagnostics.explain_linear(saved, panel, folder, config, pdp=fold == 0)
         curve = result["features"]["x"]
         rows = curve["scatter"]["row"]
         np.testing.assert_allclose(curve["scatter"]["x"], (panel.x.to_numpy()[rows] - member.mean_[0]) / member.std_[0])

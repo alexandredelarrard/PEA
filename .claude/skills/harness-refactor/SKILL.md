@@ -25,7 +25,8 @@ The canonical rule text lives in [coding standards](../../../wiki/guides/coding-
 Every refactor spec carries these acceptance criteria for each touched function and module (rules: [coding standards](../../../wiki/guides/coding-standards.md)):
 
 - [ ] At most 90 lines, one job; a top-level orchestrator only calls step functions in order.
-- [ ] At most 3 nesting levels; 2 is the standard + 1 helper function if needed.
+- [ ] Control-flow nesting at most 2 inside a function.
+- [ ] Call depth: at most 3 levels of repository functions below a step's `run()`, plus one flat level-4 handler that calls only numpy, pandas, regex or stdlib; each function is counted at its deepest chain.
 - [ ] No pass-through functions.
 - [ ] No function input only used by tests + no logger passed as an input of any function.
 - [ ] No more than 6 inputs in a function or class method

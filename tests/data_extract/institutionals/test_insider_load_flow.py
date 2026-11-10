@@ -707,7 +707,7 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     run = edgar_driver.EdgarRun(
         ["AAA"],
         cik_map,
-        edgar_driver.EdgarScope(identity_two),
+        identity_two,
         pd.Timestamp("2026-07-08"),
         15,
     )

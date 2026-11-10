@@ -8,16 +8,18 @@ from contextlib import closing
 from typing import Any, cast
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
+from src.data_aggregate.utils.sec_thirteen import institutional_features as features_module
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
-from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_batches
+from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
 from src.data_store.schema import Tables
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags
+from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books, iter_snapshot_books, snapshot_feature_history
 
 
 def _payload() -> pd.DataFrame:
@@ -58,6 +60,7 @@ def _payload() -> pd.DataFrame:
 
 @pytest.mark.parametrize("chunksize", [1, 2, 200_000])
 def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, chunksize: int) -> None:
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", chunksize)
     payload = _payload()
     sqlite_store.save(Tables.sec13f_hr, payload)
     original = sqlite_store.iter_load
@@ -69,7 +72,7 @@ def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_stor
         yield from original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=chunksize)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"))
     assert packets is not None
     with closing(packets):
         result = list(packets)
@@ -98,9 +101,10 @@ def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_stor
     )
 
 
-def test_completed_packet_frames_are_released(sqlite_store: Any) -> None:
+def test_completed_packet_frames_are_released(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", 2)
     sqlite_store.save(Tables.sec13f_hr, _payload())
-    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=2)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"))
     assert packets is not None
     references: list[weakref.ReferenceType[pd.DataFrame]] = []
     alive: list[int] = []
@@ -130,9 +134,10 @@ def test_packet_stream_closes_on_processing_failure(sqlite_store: Any, monkeypat
         raise RuntimeError("packet processing failed")
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", 2)
     if not consumer_fails:
         monkeypatch.setattr(inputs, "_partition_packet", fail_partition)
-    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=2)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"))
     assert packets is not None
     with pytest.raises(RuntimeError, match="packet processing failed"), closing(packets):
         next(packets)
@@ -147,17 +152,23 @@ def test_streamed_value_repair_reuses_exact_age_bounded_quotes() -> None:
     raw = _payload().loc[lambda frame: frame.parse_status.eq("position")].iloc[:1].copy()
     raw["shares"], raw["value_usd"] = 2.0, 20.0
     periods = pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-12", "2024-05-18", "2024-05-25", "2024-05-28"])
-    expected = [clean_public_holdings(raw.assign(period=period), close, policy) for period in periods]
+    expected = [values.repair_value_basis(raw.assign(period=period), close, policy)[0] for period in periods]
 
     with patch.object(values, "period_close", wraps=values.period_close) as lookup:
         quotes = values.prepare_public_value_quotes(close, policy)
         assert lookup.call_count == 1
     with patch.object(values, "period_close", side_effect=AssertionError("quote history was rebuilt per book")):
-        actual = [clean_public_holdings(raw.assign(period=period), close, policy, period_quotes=quotes) for period in periods]
+        actual = [values.repair_value_basis(raw.assign(period=period), close, policy, period_quotes=quotes)[0] for period in periods]
 
     for before, after in zip(expected, actual, strict=True):
         pd.testing.assert_frame_equal(before, after)
     print("SANITY: one quote preparation preserves repair values/provenance before prices, on weekends, at expiry and after the final quote.")
+
+
+def _clean_union(raw: pd.DataFrame, universe: tuple[str, ...] | None, close: pd.DataFrame | None) -> pd.DataFrame:
+    """The whole position union cleaned as one batch."""
+    with closing(clean_public_batches(((pd.DataFrame(), raw) for _ in range(1)), universe, close, None)) as batches:
+        return next(batches)[1]
 
 
 def _version(cik: str, period: str, accession: str, filed: str, rows: list[dict[str, Any]], kind: str = "original") -> pd.DataFrame:
@@ -195,14 +206,39 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
         expected_packets = list(packets)
     manifests = pd.concat([packet[0] for packet in expected_packets], ignore_index=True)
     raw = pd.concat([packet[1] for packet in expected_packets], ignore_index=True)
-    prepared = clean_public_holdings(attach_tickers(raw, None, universe), close, None)
+    prepared = _clean_union(raw, universe, close)
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    with closing(holdings_clean.clean_public_batches(stream, None, universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(stream, universe, close, None)) as batches:
         history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
-    actual = list(books.iter_institutional_books(*history))
+    actual = list(iter_snapshot_books(*history))
+
+    # The production engine on the compact versions (unit basis F = 1) equals the snapshot engine on their daily replay.
+    unit_basis = pd.DataFrame(1.0, index=pd.DatetimeIndex(["1990-01-01"]), columns=list(universe))
+    with patch.object(features_module, "MIN_PRIOR_HOLDERS", 0):
+        features = compute_institutional_feature_history(*history, df_basis=unit_basis)
+    expected_features = snapshot_feature_history(iter(actual), df_basis=None, min_prior_holders=0)
+    pd.testing.assert_frame_equal(
+        features.sort_values(["as_of", "ticker"]).reset_index(drop=True),
+        expected_features.sort_values(["as_of", "ticker"]).reset_index(drop=True).astype({"ticker": features.ticker.dtype}),
+        check_exact=False,
+        rtol=1e-9,
+    )
+
+    # The universe-scoped read (universe positions + whole amended books) replays the same books.
+    scoped = inputs.iter_filing_vintages(sqlite_store, grid.max(), universe=universe)
+    assert scoped is not None
+    with closing(holdings_clean.clean_public_batches(scoped, universe, close, None)) as batches:
+        scoped_history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
+    assert scoped_history is not None
+    for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(actual, iter_snapshot_books(*scoped_history), strict=True):
+        assert day == scoped_day
+        pd.testing.assert_frame_equal(df_compact.sort_index(), df_scoped.sort_index())
+        pd.testing.assert_frame_equal(
+            states.sort_values(["cik", "period"]).reset_index(drop=True), scoped_states.sort_values(["cik", "period"]).reset_index(drop=True)
+        )
 
     assert [day for day, _, _ in actual] == [day for day, _, _ in expected]
     for (_, df_compact, states), (_, raw_books, expected_states) in zip(actual, expected, strict=True):
@@ -262,6 +298,42 @@ def test_compact_history_keeps_global_floor_stale_days_and_empty_replacements(sq
     )
 
 
+def test_universe_read_keeps_every_marker_universe_rows_and_whole_amended_books(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [{"cusip": "111111111", "ticker": "AAA", "shares": 1.0}, {"cusip": "999999999", "ticker": "OUT", "shares": 2.0}]
+    payload = pd.concat(
+        [
+            _version("0000000001", "2024-03-31", "single", "2024-05-14", rows),
+            _version("0000000002", "2024-03-31", "amended", "2024-05-14", rows),
+            _version("0000000002", "2024-03-31", "addition", "2024-06-14", rows[1:], "additions"),
+            _version("0000000003", "2024-03-31", "off-universe", "2024-05-14", rows[1:]),
+        ],
+        ignore_index=True,
+    )
+    sqlite_store.save(Tables.sec13f_hr, payload)
+    original = sqlite_store.load
+    keyed: list[dict[str, Any]] = []
+
+    def capture(table: Any, *args: Any, **kwargs: Any) -> Any:
+        keyed.append(kwargs["where"])
+        return original(table, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "load", capture)
+    packets = inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-06-30"), universe=("AAA",))
+    assert packets is not None
+    with closing(packets):
+        result = list(packets)
+    filings = pd.concat([packet[0] for packet in result], ignore_index=True)
+    holdings = pd.concat([packet[1] for packet in result], ignore_index=True)
+
+    read = sorted(zip(holdings.accession_number, holdings.cusip, strict=True))
+    assert sorted(filings.accession_number) == ["addition", "amended", "off-universe", "single"]
+    assert read == [("addition", "999999999"), ("amended", "111111111"), ("amended", "999999999"), ("single", "111111111")]
+    assert len(keyed) == 1 and keyed[0]["accession_number"] == ["addition", "amended"]
+    print(
+        "SANITY: the universe read keeps all 4 markers, drops the 2 off-universe rows of single books and reads the amended book whole in one keyed load."
+    )
+
+
 def test_unmapped_positions_still_establish_copied_majority(sqlite_store: Any) -> None:
     original = [{"cusip": f"{number:09d}", "shares": float(number), "value_usd": float(10 * number)} for number in range(1, 7)]
     amendment = [{**row, "shares": 20.0, "value_usd": 200.0} if row["cusip"] == "000000001" else row for row in original[:5]]
@@ -308,21 +380,12 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
-        batches = holdings_clean.clean_public_batches(
-            packets, None, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None
-        )
+        batches = holdings_clean.clean_public_batches(packets, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None)
         with closing(batches):
             history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
     assert history is not None
     assert (repair.call_count, max(len(call.args[0][["cik", "period"]].drop_duplicates()) for call in repair.call_args_list)) == (2, 2)
     print("SANITY: four complete manager-quarters use two batch repairs; empty books and multiple accessions retain their evidence.")
-
-
-@pytest.mark.parametrize("chunksize", [0, -1, 1.5, True])
-def test_chunk_budget_must_be_a_positive_integer(sqlite_store: Any, chunksize: Any) -> None:
-    with pytest.raises(ValueError, match="positive integer"):
-        inputs.iter_filing_vintages(sqlite_store, pd.Timestamp("2024-05-16"), chunksize=chunksize)
-    print(f"SANITY: unusable row budget{chunksize!r} is rejected before source access.")
 
 
 def test_empty_public_prefix_closes_the_stream(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,14 +409,26 @@ def test_empty_public_prefix_closes_the_stream(sqlite_store: Any, monkeypatch: p
 
 
 @pytest.mark.parametrize("chunksize", [1, 31, 500_000])
-def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlite_store: Any, chunksize: int) -> None:
+def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, chunksize: int
+) -> None:
     mapping = pd.DataFrame({"cusip": [f"{number:09d}" for number in range(15)], "ticker": [f"T{number:02d}" for number in range(15)]})
-    rows = [{"cusip": cusip, "shares": 100.0, "value_usd": 1000.0} for cusip in mapping.cusip]
+    rows = [
+        {"cusip": cusip, "ticker": ticker, "shares": 100.0, "value_usd": 1000.0} for cusip, ticker in zip(mapping.cusip, mapping.ticker, strict=True)
+    ]
     packets = [
         _version("0000000001", "2024-03-31", accession, "2024-05-14", [{**row, "value_usd": row["value_usd"] * scale} for row in rows])
         for accession, scale in (("dollars", 1.0), ("large", 1000.0), ("small", 0.001))
     ]
-    packets.append(_version("0000000002", "2024-03-31", "unmapped", "2024-05-14", [*rows, {"cusip": "999999999", "shares": 5.0, "value_usd": 50.0}]))
+    packets.append(
+        _version(
+            "0000000002",
+            "2024-03-31",
+            "unmapped",
+            "2024-05-14",
+            [*rows, {"cusip": "999999999", "ticker": "_empty", "shares": 5.0, "value_usd": 50.0}],
+        )
+    )
     packets.append(_version("0000000003", "2024-03-31", "empty", "2024-05-14", []))
     sqlite_store.save(Tables.sec13f_hr, pd.concat(packets, ignore_index=True))
     grid = pd.bdate_range("2024-01-02", "2024-05-16")
@@ -371,14 +446,13 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
         registers.append(df_register)
         return df_holdings, df_register
 
-    source = inputs.iter_filing_vintages(sqlite_store, grid.max(), chunksize=chunksize)
+    monkeypatch.setattr(inputs, "_CHUNKSIZE", chunksize)
+    source = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
-        expected = clean_public_holdings(attach_tickers(raw, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping)), close, None)
+        expected = _clean_union(raw, None, close)
         expected_register = registers.pop()
-        with closing(
-            holdings_clean.clean_public_batches(source, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), None, close, None)
-        ) as batches:
+        with closing(holdings_clean.clean_public_batches(source, None, close, None)) as batches:
             result = list(batches)
     # Empty books retain their manifests and contribute no position rows to the union.
     actual = pd.concat([packet[1] for packet in result if not packet[1].empty], ignore_index=True)
@@ -387,7 +461,8 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
         actual.sort_values(keys).reset_index(drop=True), expected.sort_values(keys).reset_index(drop=True), check_exact=True
     )
     keys.remove("cusip")
-    actual_register = pd.concat(registers, ignore_index=True)
+    # An empty batch passes through the repair with an empty register.
+    actual_register = pd.concat([register for register in registers if not register.empty], ignore_index=True)
     pd.testing.assert_frame_equal(
         actual_register.sort_values(keys).reset_index(drop=True), expected_register.sort_values(keys).reset_index(drop=True), check_exact=True
     )
@@ -399,22 +474,24 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     }
     assert actual.loc[actual.cusip.ne("999999999"), "shares"].eq(100.0).all()
     assert actual.cusip.eq("999999999").sum() == 1 and sum(len(packet[0]) for packet in result) == 5
+    assert actual.loc[actual.cusip.eq("999999999"), "ticker"].isna().all()
     print(
         f"SANITY: row budget{chunksize} preserves exact mixed-accession factors/registers, genuine shares, unmapped evidence and a complete empty book."
     )
 
 
 def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
-    mapping = pd.DataFrame({"cusip": ["000000001"], "ticker": ["OUT"]})
-    raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].drop(columns="ticker").reset_index(drop=True))
-    expected = clean_public_holdings(attach_tickers(raw, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), ("ABC",)), None, None)
+    raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].reset_index(drop=True))
+    raw.loc[raw.cusip.eq("000000001"), "ticker"] = "OUT"
+    raw.loc[raw.cusip.eq("000000002"), "ticker"] = "_empty"
+    expected, _ = values.repair_value_basis(attach_tickers(raw, ("ABC",)), None, None)
+    expected.loc[expected.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     packets = ((pd.DataFrame(), raw) for _ in range(1))
-    with closing(
-        holdings_clean.clean_public_batches(packets, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), mapping), ("ABC",), None, None)
-    ) as batches:
+    with closing(holdings_clean.clean_public_batches(packets, ("ABC",), None, None)) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-    print("SANITY: a universe-filtered mapping retains every raw row with the existing unknown ticker dtype and null mask.")
+    assert len(actual) == len(raw) and actual.ticker.isna().sum() == raw.ticker.ne("ABC").sum() > 0
+    print("SANITY: a universe-filtered read retains every raw row; off-universe and unmapped rows keep the unknown ticker dtype and null mask.")
 
 
 def test_compact_books_refuse_two_rows_of_one_manager_and_company() -> None:
@@ -427,5 +504,5 @@ def test_compact_books_refuse_two_rows_of_one_manager_and_company() -> None:
     with pytest.raises(ValueError, match="duplicate manager x company"):
         books.compact_institutional_books(rows)
     one = books.compact_institutional_books(rows.iloc[1:])
-    assert one["shares"].tolist() == [100.0] and one["_cusips"].tolist() == [frozenset({"084670702"})]
+    assert one["shares"].tolist() == [100.0] and one["_cusips"].tolist() == ["084670702"]
     print("SANITY: a pre-U-67 BRK-A + BRK-B pair is refused; one company row passes through as stored with its CUSIP identity.")

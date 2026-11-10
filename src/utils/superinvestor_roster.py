@@ -12,7 +12,7 @@ and `data_extract` itself (the per-manager 13F walk scope) -- and cross-imports 
 ticker universe for every step from one place.
 
 Point-in-time by construction: a snapshot row is what Dataroma published on
-`snapshot_date`, so `roster_as_of(q)` reads the most recent snapshot AT OR BEFORE
+`snapshot_date`, so `roster_map_as_of(q)` reads the most recent snapshot AT OR BEFORE
 `q` and never a later one. That is the only question a PIT manager selector asks,
 and the flat `{cik: name}` JSON this replaces could not answer it -- applying
 today's 81 names to 2013 silently drops the 23 managers Dataroma has since
@@ -25,7 +25,7 @@ Also owns the roster config under `<config_dir>/superinvestors/`: the hand resol
 
 MANAGER IDENTITY. A manager whose 13F filer CIK changed (Appaloosa, Ruane, Greenlight, Blue
 Ridge) is one manager: its ID is the OLDEST filer CIK of its chain (`manager_ciks` in the
-overrides), a singleton's ID is its own CIK. `roster_as_of` / `roster_map_as_of` return manager
+overrides), a singleton's ID is its own CIK. `roster_map_as_of` returns manager
 IDs, and `roster_cik_union` returns every filer CIK used to fetch their historical books.
 """
 
@@ -218,7 +218,7 @@ def config_dir_of(context: Context) -> str | Path | None:
 
 
 def roster_map_as_of(context: Context, as_of=None) -> dict[str, str]:
-    """`{manager_id: manager_name}` at `as_of` -- `roster_as_of` plus the display name, for
+    """`{manager_id: manager_name}` at `as_of`: the snapshot at or before it, plus the display name, for
     the callers that log it or weight by it. One entry per manager: the duplicate-code pair
     keeps the first name in `dataroma_code` order, so the map is deterministic."""
     snap = snapshot_as_of(_load_superinvestor_roster(context), as_of)

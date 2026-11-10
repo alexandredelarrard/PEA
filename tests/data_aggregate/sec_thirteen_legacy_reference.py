@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import _DATES, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import _DATES
 from src.data_aggregate.utils.sec_thirteen.institutional_books import compact_institutional_books
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     DELTA_FEATURES,
@@ -26,15 +27,119 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     INST_LEVEL_FLOOR_PERIOD,
     LEVEL_FEATURES,
     MIN_PRIOR_HOLDERS,
-    compute_institutional_feature_history,
     project_institutional_features,
 )
-from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
+from src.utils.institutional_vintages import availability_date, prepare_book_vintages, resolve_prepared_books
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import split_cum_product
+from src.utils.price.levels import convert_quantities, split_cum_product
 
 logger = logging.getLogger(__name__)
+
+
+# Retired per-day public-book cache (no production caller): legacy broad snapshots replay through it.
+@dataclass(frozen=True, slots=True)
+class _PublicationSources:
+    """Prepared source frames and their fixed filing, position and publication indices."""
+
+    df_manifest: pd.DataFrame
+    df_holdings: pd.DataFrame
+    filing_groups: Mapping[tuple[str, pd.Timestamp], NDArray[np.intp]]
+    position_indices: Mapping[str, NDArray[np.intp]]
+    publications: Mapping[pd.Timestamp, NDArray[np.intp]]
+
+
+def _publication_schedule(df_manifest: pd.DataFrame) -> tuple[dict, pd.DatetimeIndex]:
+    """Schedule public filings in chronological order."""
+    publications = cast(dict[pd.Timestamp, Any], df_manifest.groupby("_day", sort=True).indices)
+    days = pd.DatetimeIndex(sorted(publications))
+    return publications, days
+
+
+def _history_floor(active: Any) -> pd.Timestamp:
+    """The report quarter before the latest known one is the oldest dependency kept."""
+    return (active.to_period("Q") - 1).end_time.normalize() if pd.notna(active) else pd.Timestamp.min
+
+
+def _reconcile_publication(
+    sources: _PublicationSources,
+    cache: dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]],
+    active: Any,
+    day: pd.Timestamp,
+) -> tuple[dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]], Any, list[tuple[str, pd.Timestamp]]]:
+    """Resolve changed books and retain the dependency quarters of the latest known report."""
+    df_events = sources.df_manifest.iloc[sources.publications.get(day, np.array([], dtype=int))]
+    floor = _history_floor(active)
+    changed = []
+    for key in df_events[["cik", "period"]].drop_duplicates().itertuples(index=False, name=None):
+        if key[1] < floor:
+            continue
+        df_versions = sources.df_manifest.iloc[sources.filing_groups[key]]
+        indices = np.concatenate([sources.position_indices.get(accession, np.array([], dtype=int)) for accession in df_versions.accession_number])
+        cache[key] = resolve_prepared_books(df_versions, sources.df_holdings.iloc[indices], day)
+        changed.append(key)
+
+    usable = [key[1] for key, (_, df_state) in cache.items() if df_state.book_known.any()]
+    if usable:
+        active = max(usable)
+        floor = _history_floor(active)
+    cache = {key: value for key, value in cache.items() if key[1] >= floor}
+    return cache, active, changed
+
+
+def _cached_snapshot(cache: dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Combine retained books and their states in the cache's existing insertion order."""
+    df_books = pd.concat([value[0] for value in cache.values()], ignore_index=True)
+    df_states = pd.concat([value[1] for value in cache.values()], ignore_index=True)
+    return df_books, df_states
+
+
+def _iter_public_book_cache(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+) -> Iterator[
+    tuple[
+        pd.Timestamp,
+        dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]],
+        dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]],
+    ]
+]:
+    """Schedule prepared book replacements, retaining unchanged book objects."""
+    df_manifest = manifests.copy()
+    df_manifest["_day"] = df_manifest["public_at"]
+    df_manifest = df_manifest.loc[df_manifest["_day"].notna()]
+    filing_groups = df_manifest.groupby(["cik", "period"], sort=False).indices
+    position_indices = holdings.groupby("accession_number", sort=False).indices
+    publications, days = _publication_schedule(df_manifest)
+    sources = _PublicationSources(
+        df_manifest,
+        holdings,
+        cast(Mapping[tuple[str, pd.Timestamp], NDArray[np.intp]], filing_groups),
+        cast(Mapping[str, NDArray[np.intp]], position_indices),
+        publications,
+    )
+    cache: dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]] = {}
+    active = pd.NaT
+    for day in days:
+        cache, active, changed = _reconcile_publication(sources, cache, active, day)
+        if cache:
+            yield pd.Timestamp(day), cache, {key: cache[key] for key in changed if key in cache}
+
+
+def iter_public_books(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    *,
+    settle_days: int = F13_SETTLE_TRADING_DAYS,
+) -> Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]]:
+    """Adapt raw vintages to the existing full reconciled-book snapshot interface."""
+    df_manifest = prepare_book_vintages(manifests, holdings, trading_index, settle_days)
+    for day, cache, _ in _iter_public_book_cache(df_manifest, holdings):
+        df_books, df_states = _cached_snapshot(cache)
+        yield day, df_books, df_states
+
+
 F13_REVISION_MIN_MOVE = 0.001
 COVERAGE_BREAK_DEFAULT = 0.50
 
@@ -637,8 +742,14 @@ def _prepare_institutional_holdings(
     settle_trading_days: int,
 ) -> pd.DataFrame:
     """Preserve distinct immutable-vintage and legacy holdings preparation policies."""
+    if filings is not None and df_holdings.empty:
+        return df_holdings
     if filings is not None:
-        return clean_public_holdings(df_holdings, valuation_close, value_basis)
+        df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, value_basis)
+        log_register(df_register, float(df_holdings.value_usd.sum()))
+        if "value_basis_excluded" in df_holdings:
+            df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
+        return df_holdings
     df_holdings = clean_legacy_institutional_holdings(df_holdings, valuation_close, value_basis)
     if df_holdings.empty:
         return df_holdings
@@ -702,4 +813,162 @@ def _versioned_quarter_features(
         for day, books, states in iter_public_books(manifests, holdings, trading_index, settle_days=settle_days)
     )
     df_basis = split_basis_frame(splits, trading_index, holdings)
-    return compute_institutional_feature_history(snapshots, df_basis=df_basis, min_prior_holders=min_prior_holders)
+    return snapshot_feature_history(snapshots, df_basis=df_basis, min_prior_holders=min_prior_holders)
+
+
+def iter_snapshot_books(df_compact: pd.DataFrame, df_states: pd.DataFrame) -> Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]]:
+    """Replay compact replacements against the global active-quarter floor: the full public snapshot of each day."""
+    cache: dict[tuple[str, pd.Timestamp], int] = {}
+    active: Any = pd.NaT
+    if df_states.empty:
+        return
+
+    publications = df_states.groupby("_day", sort=True).indices
+    days = pd.DatetimeIndex(df_states["_day"].unique()).sort_values()
+    for day in days:
+        df_events = df_states.iloc[publications[day]]
+        floor = _history_floor(active)
+        for event in df_events.loc[df_events.period.ge(floor)].itertuples():
+            cache[(cast(str, event.cik), cast(pd.Timestamp, event.period))] = cast(int, event.Index)
+        df_current = df_states.iloc[list(cache.values())]
+        known = df_current.loc[df_current.book_known, "period"]
+        if not known.empty:
+            active = known.max()
+        floor = _history_floor(active)
+        cache = {key: index for key, index in cache.items() if key[1] >= floor}
+        if not cache:
+            continue
+        df_current = df_states.iloc[list(cache.values())]
+        bounds = df_current[["_start", "_stop"]].to_numpy(dtype=np.intp)
+        indices = np.concatenate([np.arange(start, stop, dtype=np.intp) for start, stop in bounds])
+        yield pd.Timestamp(day), df_compact.iloc[indices], df_current.drop(columns=["_day", "_start", "_stop"]).reset_index(drop=True)
+
+
+def _snapshot_levels(df_current: pd.DataFrame, df_states: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """Reduce numeric columns natively, preserving any unknown contributor."""
+    grouped = df_current.groupby("ticker")
+    numeric = ["shares", "value_usd", "call_value", "put_value"]
+    df_totals = grouped[numeric].sum(min_count=1).where(grouped[numeric].count().eq(grouped.size(), axis=0))
+    df_out = pd.DataFrame(index=pd.Index(names, name="ticker"))
+    df_out["inst_shares"] = df_totals.shares
+    df_out["inst_value"] = df_totals.value_usd
+    holders = df_current.shares.gt(0).groupby("ticker").sum()
+    df_out["ic_inst_holders"] = (holders / len(df_states)).where(df_totals.shares.notna())
+    if df_states.zero_eligible.all():
+        absent = ~df_out.index.isin(df_current.index.get_level_values("ticker"))
+        df_out.loc[absent, ["inst_shares", "inst_value", "ic_inst_holders"]] = 0.0
+    value_total = df_totals.value_usd.reindex(df_current.index.get_level_values("ticker")).set_axis(df_current.index)
+    concentration = (df_current.value_usd / value_total.where(value_total.gt(0))).pow(2).groupby("ticker").sum(min_count=1)
+    df_out["ic_inst_concentration"] = concentration.where(df_out.inst_value.notna())
+    investment = df_out.inst_value + df_totals.call_value + df_totals.put_value
+    df_out["ic_inst_net_options_ratio"] = (df_totals.call_value - df_totals.put_value) / investment.where(investment.gt(0))
+    return df_out
+
+
+def _snapshot_votes(df_matched: pd.DataFrame) -> pd.DataFrame:
+    """Share one native holder/trading reduction across the matched flow metrics."""
+    held, prior = df_matched.shares_current.gt(0), df_matched.shares_prior.gt(0)
+    return (
+        pd.DataFrame(
+            {
+                "held": held,
+                "prior": prior,
+                "new": held & df_matched.shares_prior.eq(0),
+                "exit": df_matched.shares_current.eq(0) & prior,
+                "increase": held & prior & df_matched.shares_current.gt(df_matched.shares_prior),
+                "decrease": held & prior & df_matched.shares_current.lt(df_matched.shares_prior),
+            }
+        )
+        .groupby("ticker")
+        .sum()
+    )
+
+
+def _quarter_basis_ratio(df_basis: pd.DataFrame | None, tickers: pd.Index, period: pd.Timestamp, prior_period: pd.Timestamp) -> pd.Series:
+    """`F_period / F_prior` per ticker: the factor carrying prior-quarter shares onto the current quarter's basis."""
+    if df_basis is None:
+        return pd.Series(1.0, index=tickers)
+    keys = pd.Series(tickers, index=tickers)
+    prior = lookup_asof(df_basis, keys, pd.Series(prior_period, index=tickers))
+    now = lookup_asof(df_basis, keys, pd.Series(period, index=tickers))
+    return convert_quantities(1.0, prior, now)
+
+
+def snapshot_feature_history(
+    snapshots: Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]],
+    *,
+    df_basis: pd.DataFrame | None,
+    min_prior_holders: int = MIN_PRIOR_HOLDERS,
+) -> pd.DataFrame:
+    """The replaced production engine: recompute levels and matched cohorts from the full snapshot of each public day."""
+    rows: list[pd.DataFrame] = []
+    seen: set[str] = set()
+    numeric = ["shares", "value_usd", "call_value", "put_value"]
+    split_period: pd.Timestamp | None = None
+    split_factors = pd.Series(dtype="float64")
+    for day, df_compact, states in snapshots:
+        known = states.loc[states.book_known]
+        if known.empty:
+            continue
+        period = known.period.max()
+        prior_period = (period.to_period("Q") - 1).end_time.normalize()
+        current_states = known.loc[known.period.eq(period)].set_index("cik")
+        prior_states = known.loc[known.period.eq(prior_period)].set_index("cik")
+        totals = df_compact.drop(columns="_cusips").sort_index()
+        securities = df_compact["_cusips"].dropna().sort_index()
+        current = (
+            cast(pd.DataFrame, totals.xs(period)).copy() if period in totals.index.get_level_values("period") else totals.droplevel("period").iloc[:0]
+        )
+        prior = cast(pd.DataFrame, totals.xs(prior_period)).copy() if prior_period in totals.index.get_level_values("period") else current.iloc[:0]
+        observed = current[["shares", "call_value", "put_value"]].gt(0).any(axis=1)
+        seen.update(current.loc[observed].index.get_level_values("ticker"))
+        names = sorted(seen)
+        if not names:
+            continue
+        out = _snapshot_levels(current, current_states, names)
+        paired = current_states.index[current_states.comparison_eligible & prior_states.comparison_eligible.reindex(current_states.index).eq(True)]
+        joined = current.add_suffix("_current").join(prior.add_suffix("_prior"), how="outer")
+        joined = joined.loc[joined.index.get_level_values("cik").isin(paired)]
+        for suffix, values, state in (("current", current, current_states), ("prior", prior, prior_states)):
+            absent = ~joined.index.isin(values.index)
+            zeros = state.zero_eligible.reindex(joined.index.get_level_values("cik")).eq(True).to_numpy()
+            joined.loc[absent & zeros, [col + "_" + suffix for col in numeric]] = 0.0
+        if split_period != period:
+            split_period, split_factors = period, pd.Series(dtype="float64")
+        tickers = joined.index.get_level_values("ticker")
+        missing = tickers.unique().difference(split_factors.index, sort=False)
+        if len(missing):
+            split_factors = pd.concat([split_factors, _quarter_basis_ratio(df_basis, missing, period, prior_period)])
+        joined["shares_prior"] *= split_factors.reindex(tickers).to_numpy()
+        if period in securities.index.get_level_values("period") and prior_period in securities.index.get_level_values("period"):
+            now_ids = securities.xs(period).reindex(joined.index)
+            old_ids = securities.xs(prior_period).reindex(joined.index)
+            changed = now_ids.notna() & old_ids.notna() & now_ids.ne(old_ids)
+            joined.loc[changed, ["shares_current", "shares_prior"]] = np.nan
+        supported = joined.shares_current.notna() & joined.shares_prior.notna()
+        matched = joined.loc[supported]
+        groups = matched.groupby("ticker")
+        df_share_totals = groups[["shares_current", "shares_prior"]].sum(min_count=1)
+        current_shares, previous_shares = df_share_totals.shares_current, df_share_totals.shares_prior
+        df_votes = _snapshot_votes(matched)
+        holder_count, prior_count = df_votes.held, df_votes.prior
+        out["ic_inst_shares_chg"] = current_shares / previous_shares.where(previous_shares.gt(0)) - 1
+        zero_books = current_states.zero_eligible.reindex(paired) & prior_states.zero_eligible.reindex(paired)
+        safe_absence = zero_books.reindex(joined.index.get_level_values("cik")).to_numpy(dtype=bool)
+        support_count = (
+            int(zero_books.sum())
+            + pd.Series(
+                (supported.to_numpy() & ~safe_absence).astype(int) - (~supported.to_numpy() & safe_absence).astype(int),
+                index=joined.index,
+            )
+            .groupby("ticker")
+            .sum()
+        )
+        out["ic_inst_breadth_chg"] = (holder_count - prior_count) / support_count.where(support_count.gt(0))
+        out["ic_inst_new_buyer_ratio"] = df_votes["new"] / holder_count.where(holder_count.gt(0))
+        out["ic_inst_exit_ratio"] = df_votes.exit / prior_count.where(prior_count.gt(0))
+        out["ic_inst_cluster_buying"] = (df_votes.increase - df_votes.decrease) / holder_count.where(holder_count.gt(0))
+        out.loc[prior_count.reindex(out.index).fillna(0).lt(min_prior_holders), list(DELTA_FEATURES)] = np.nan
+        out["period"], out["as_of"] = period, day
+        rows.append(out.reset_index())
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()

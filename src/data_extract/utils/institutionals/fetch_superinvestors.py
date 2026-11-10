@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime
 from functools import partial
-from typing import Any, NamedTuple, cast
+from typing import cast
 from urllib.parse import quote
 
 import pandas as pd
@@ -87,22 +87,8 @@ _STOP_TOKENS = {
 }
 
 DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
-# Every Wayback capture of the Dataroma home page, uncollapsed: one `timestamp status original` line each.
-WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx?url=dataroma.com/m/home.php&fl=timestamp,statuscode,original"
-# A capture's archived bytes as served (`id_`: no Wayback rewrite).
-_WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
 # A capture is valid only if it lists at least this share of the previous accepted snapshot's managers.
 ROSTER_CAPTURE_MIN_RATIO = 0.8
-ROSTER_HISTORY_README = [
-    "Dataroma superinvestor roster history: one snapshot per calendar quarter, the newest valid Wayback capture of "
-    "dataroma.com/m/home.php in that quarter.",
-    "captured_at is the capture instant (UTC); `data_extract superinvestors -F` dates the snapshot at its day. "
-    "source_url is the raw (id_) capture; managers maps Dataroma code -> name in page order.",
-    f"A capture is valid when it lists at least one manager and at least {ROSTER_CAPTURE_MIN_RATIO:.0%} of the previous "
-    "snapshot's count; a quarter with no valid capture is absent (a logged gap).",
-    "Generated file, do not hand-edit: scripts/build_dataroma_roster_history.py --cache-dir DIR --until YYYY-MM-DD.",
-]
-
 # Resolution provenance, stored per row.
 RESOLUTION_EDGAR = "edgar"
 RESOLUTION_OVERRIDE = "override"
@@ -125,23 +111,6 @@ class SuperinvestorResolutionError(RuntimeError):
 
 class EdgarListingError(RuntimeError):
     """The EDGAR 13F-HR listing of a CIK could not be read, so its activity is unknown (not evidence of a wrong CIK)."""
-
-
-class WaybackCapture(NamedTuple):
-    """One Wayback capture of the Dataroma home page: its UTC `YYYYMMDDhhmmss` timestamp and archived URL."""
-
-    timestamp: str
-    original: str
-
-    @property
-    def raw_url(self) -> str:
-        """The capture's unmodified archived bytes."""
-        return _WAYBACK_RAW_URL.format(timestamp=self.timestamp, original=self.original)
-
-    @property
-    def captured_at(self) -> str:
-        """The capture instant as `YYYY-MM-DDTHH:MM:SSZ`."""
-        return datetime.strptime(self.timestamp, "%Y%m%d%H%M%S").strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --------------------------------------------------------------------------- #
@@ -316,50 +285,6 @@ def assert_active(rows: list[dict], evidence: Evidence, inactive: Mapping[str, I
     return sorted(skipped)
 
 
-def quarterly_capture_candidates(cdx: str, since: date | None = None, until: date | None = None) -> dict[str, list[WaybackCapture]]:
-    """`{"YYYYQn": [capture, newest first]}` in chronological quarter order, over the status-200 lines of a
-    `timestamp status original` CDX captured on days in [since, until]; a repeated timestamp counts once."""
-    since = since if since is not None else date.fromisoformat(cast(str, cast(Resume, Tables.superinvestor_roster.resume).source_start))
-    by_quarter: dict[str, list[WaybackCapture]] = {}
-    seen: set[str] = set()
-    for line in filter(None, (raw.strip() for raw in cdx.splitlines())):
-        timestamp, status, original = line.split()
-        day = datetime.strptime(timestamp[:8], "%Y%m%d").date()
-        if status != "200" or timestamp in seen or day < since or (until is not None and day > until):
-            continue
-        seen.add(timestamp)
-        by_quarter.setdefault(str(pd.Period(day, "Q")), []).append(WaybackCapture(timestamp, original))
-    return {quarter: sorted(caps, key=lambda c: c.timestamp, reverse=True) for quarter, caps in sorted(by_quarter.items())}
-
-
-def _first_valid_capture(
-    quarter: str, captures: list[WaybackCapture], parse: Callable[[WaybackCapture], dict[str, str]], floor: float
-) -> tuple[WaybackCapture, dict[str, str]] | None:
-    """The first capture whose roster is non-empty and holds at least `floor` managers; each rejection is logged."""
-    for capture in captures:
-        managers = parse(capture)
-        if managers and len(managers) >= floor:
-            return capture, managers
-        logger.warning("Roster history %s: rejected capture %s (%d managers, floor %.1f)", quarter, capture.timestamp, len(managers), floor)
-    return None
-
-
-def history_from_captures(candidates: Mapping[str, list[WaybackCapture]], parse: Callable[[WaybackCapture], dict[str, str]]) -> dict[str, Any]:
-    """The committed roster history document: per quarter (chronological), the newest capture whose
-    `parse(capture) -> {code: name}` is valid (see `ROSTER_CAPTURE_MIN_RATIO`); a quarter without one is a logged gap."""
-    snapshots: list[dict[str, Any]] = []
-    for quarter in sorted(candidates):
-        floor = ROSTER_CAPTURE_MIN_RATIO * len(snapshots[-1]["managers"]) if snapshots else 0.0
-        accepted = _first_valid_capture(quarter, candidates[quarter], parse, floor)
-        if accepted is None:
-            logger.warning("Roster history %s: no valid capture among %d -- gap", quarter, len(candidates[quarter]))
-            continue
-        capture, managers = accepted
-        snapshots.append({"captured_at": capture.captured_at, "source_url": capture.raw_url, "managers": managers})
-    logger.info("Roster history: %d snapshots from %d quarters with captures", len(snapshots), len(candidates))
-    return {"_README": list(ROSTER_HISTORY_README), "snapshots": snapshots}
-
-
 # --------------------------------------------------------------------------- #
 # IO: Dataroma fetch (its cert chain is incomplete -> verified-then-relaxed)     #
 # --------------------------------------------------------------------------- #
@@ -461,18 +386,17 @@ def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], d
 
 
 def activity_evidence(context: Context, ciks: Iterable[str]) -> Evidence:
-    """(padded cik, period) 13F activity of `ciks` from `sec13f_hr` and `sec13f_manager_holdings`: projected,
-    CIK-scoped reads that match both padded and unpadded stored CIKs."""
+    """(padded cik, period) 13F activity of `ciks` from `sec13f_hr`: a projected, CIK-scoped read that matches both
+    padded and unpadded stored CIKs."""
     padded = sorted({p for c in ciks if (p := pad_cik(c))})
     if not padded:
         return set()
     forms = padded + [c.lstrip("0") for c in padded]
     out: Evidence = set()
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        for chunk in context.store.iter_load(table, columns=["cik", "period"], where={"cik": forms}):
-            pairs = chunk.drop_duplicates()
-            periods = pd.to_datetime(pairs["period"], errors="coerce")
-            out |= {(c, p.date()) for c, p in zip(pad_cik_series(pairs["cik"]), periods, strict=True) if c and pd.notna(p)}
+    for chunk in context.store.iter_load(Tables.sec13f_hr, columns=["cik", "period"], where={"cik": forms}):
+        pairs = chunk.drop_duplicates()
+        periods = pd.to_datetime(pairs["period"], errors="coerce")
+        out |= {(c, p.date()) for c, p in zip(pad_cik_series(pairs["cik"]), periods, strict=True) if c and pd.notna(p)}
     return out
 
 
@@ -482,7 +406,7 @@ def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
     context.ensure_edgar_identity()
     configure(context)
     try:
-        listing = company_filings(company(int(cik)), cast(Resume, Tables.sec13f_manager_holdings.resume).forms)
+        listing = company_filings(company(int(cik)), cast(Resume, Tables.sec13f_hr.resume).forms)
         frame = listing.to_pandas() if listing else pd.DataFrame(columns=["reportDate"])
     except Exception as e:
         raise EdgarListingError(

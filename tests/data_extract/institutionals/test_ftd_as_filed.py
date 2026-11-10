@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.security_lines import SecurityManual, ftd_scope
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
@@ -93,24 +94,52 @@ def test_ingest_keeps_the_class_c_line_under_the_alphabet_prefix_with_no_univers
     print(f"  class C line is stored as filed: {stored[['cusip', 'source_symbol', 'fails_quantity']].values.tolist()}; ZZZ is not.")
 
 
-def test_a_new_key_rereads_the_cached_periods_for_that_key_only(sqlite_store, tmp_path, caplog, monkeypatch):
-    """XYZ joins company ABC's lineage today and has no stored line: both cached periods are re-read for XYZ alone (a keyed
-    upsert); the stored ABC lines survive and nothing else is added. A stale key with no line is never re-read."""
+def test_the_ftd_scope_keeps_equity_symbols_not_notes_debt_or_noise_symbols() -> None:
+    """ABBV is a filed equity symbol; ABBV28B is a Notes cover-page (`dei`-only) bond symbol and TRUE a `dei` noise row:
+    only ABBV is an FTD scope symbol."""
+    rows = [("ABBV", "form345,roster", "corroborated"), ("ABBV28B", "dei", "single_source"), ("TRUE", "dei", "noise")]
+    lineage = pd.DataFrame(
+        [
+            {
+                "canonical_ticker": "ABBV",
+                "cik": "0001551152",
+                "role": "symbol",
+                "symbol": symbol,
+                "sources": sources,
+                "status": status,
+                "valid_from": pd.Timestamp("2013-01-02"),
+                "valid_to": None,
+            }
+            for symbol, sources, status in rows
+        ]
+    )
+
+    scope = ftd_scope(lineage, {}, SecurityManual.empty())
+
+    print(f"\nSANITY (FTD scope symbols): {sorted(scope.symbols)} from lineage symbols {[symbol for symbol, _, _ in rows]}")
+    assert scope.symbols == frozenset({"ABBV"}), "a Notes debt symbol and a noise symbol are not FTD scope keys"
+
+
+def test_a_key_changed_after_the_previous_period_is_reread_once_when_a_new_period_is_stored(sqlite_store, tmp_path, caplog, monkeypatch):
+    """202601a/b are stored; 202602a is new. XYZ joined ABC's lineage on 2026-02-03 (after 202601b ended, long before the
+    run) with no stored line and is not in 202602a, so the run that stores 202602a re-reads 202601a/b for XYZ alone. LATE
+    changed before 202601b ended: never re-read."""
     context = _context(sqlite_store, tmp_path, ("ABC",))
     _lineage(
         sqlite_store,
         [
             ("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01")),
-            ("ABC", "0000000778", "XYZ", RUN_DATE),
-            ("ABC", "0000000779", "OLD", pd.Timestamp("2020-01-01")),
+            ("ABC", "0000000778", "XYZ", pd.Timestamp("2026-02-03")),
+            ("ABC", "0000000779", "LATE", pd.Timestamp("2026-01-25")),
         ],
     )
     write_ftd_zips(
         tmp_path / "ftd",
         {
             "202601a": _HEADER
-            + "20260105|000111AAA|ABC|100|ABC CORP|10.0\n20260105|555555XXX|XYZ|7|XYZ CORP|2.0\n20260105|999999ZZZ|ZZZ|9|OTHER|3.0\n",
+            + "20260105|000111AAA|ABC|100|ABC CORP|10.0\n20260105|555555XXX|XYZ|7|XYZ CORP|2.0\n20260105|777777LLL|LATE|5|LATE CO|1.0\n",
             "202601b": _HEADER + "20260120|000111AAA|ABC|50|ABC CORP|10.0\n20260120|555555XXX|XYZ|8|XYZ CORP|2.0\n",
+            "202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n",
         },
     )
     stored_abc = pd.DataFrame(
@@ -132,24 +161,27 @@ def test_a_new_key_rereads_the_cached_periods_for_that_key_only(sqlite_store, tm
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: reads.append(path.stem.removeprefix("cnsfails")) or reader(path, log=log))
     with caplog.at_level(logging.INFO):
         ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+    first, reads[:] = list(reads), []
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
 
     stored = _stored(sqlite_store)
+    print(f"\nSANITY (growth on a new-period run): run 1 read {first}, run 2 read {reads} (expected none);")
+    print(f"  stored {stored[['period', 'cusip', 'fails_quantity']].values.tolist()}")
+    assert first == ["202602a", "202601a", "202601b"], "the new period, then each stored period once for XYZ"
+    assert reads == [], "a run storing no new period does no growth pass"
     assert stored[["period", "cusip", "fails_quantity"]].values.tolist() == [
         ["202601a", "000111AAA", 100.0],
         ["202601a", "555555XXX", 7.0],
         ["202601b", "000111AAA", 50.0],
         ["202601b", "555555XXX", 8.0],
-    ]
-    assert sorted(reads) == ["202601a", "202601b"], "each cached period is read once, for the new key only"
+        ["202602a", "000111AAA", 60.0],
+    ], "XYZ's history is upserted, LATE (changed before 202601b ended) is not re-read"
     assert any("re-read" in record.getMessage() for record in caplog.records), "one log line names the scope-growth re-read"
-    print(f"\nSANITY: new key XYZ (scope changed {RUN_DATE.date()}) re-read from {sorted(reads)}; 2 XYZ lines upserted, the 2 ABC lines")
-    print("  survive, ZZZ never stored; OLD (stale, no line) triggers nothing.")
 
 
-@pytest.mark.xfail(strict=True, reason="AC-004 follow-up: no table stores that a rowless growth key was re-read (DDL decision pending)")
 def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, tmp_path, monkeypatch):
-    """NEW joins ABC's lineage today and appears in no FTD file: the first run re-reads both cached periods for it, a second
-    run the same day (or any night of the window) re-reads none, as its scope has not changed since."""
+    """NEW joins ABC's lineage today and appears in no FTD file: the cold run reads both cached periods with the full scope
+    and no separate growth pass; a second run the same day stores no new period, so it reads nothing."""
     context = _context(sqlite_store, tmp_path, ("ABC",))
     _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01")), ("ABC", "0000000778", "NEW", RUN_DATE)])
     write_ftd_zips(
@@ -165,5 +197,5 @@ def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, t
     ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
 
     print(f"\nSANITY (rowless growth key): run 1 read {sorted(first)}, run 2 read {sorted(reads)} (expected none)")
-    assert sorted(first) == ["202601a", "202601b"], "the first run stores both new periods"
+    assert first == ["202601a", "202601b"], "the cold run reads each period once, with no separate growth pass"
     assert reads == [], "a never-matching growth key already re-read is not re-read on the next run"

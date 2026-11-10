@@ -4,7 +4,7 @@ fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches every listed
 ZIP; `fetch_fails_to_deliver` (`zips-ingest --only ftd`) stores the lines of each new cached period as filed in
 `sec_fails_to_deliver_security`, one row per (CUSIP, settlement date), source columns only. A line is kept when its
-squashed symbol is a universe lineage symbol (not noise), its CUSIP-6 is a prefix of a universe company's Sharadar or
+squashed symbol is a universe lineage equity symbol (not noise, not a Notes debt symbol), its CUSIP-6 is a prefix of a universe company's Sharadar or
 curated CUSIP, or its CUSIP-6 is on a symbol-matched line; the scope never reads `universe_cusip`. The identity step
 reads these lines as CUSIP evidence; the institutionals cube maps them to companies (`src/utils/security_series.py`).
 Values are cumulative net unsettled balances, not new fails. `full` re-reads every cached ZIP.
@@ -29,8 +29,15 @@ from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
 from src.data_extract.utils.common.identity_store import load_stored_lineage
-from src.data_extract.utils.common.resume import ARCHIVE_NEW_KEY_DAYS, archive_periods, period_end, recently_changed
-from src.data_extract.utils.common.security_lines import SHARADAR_CUSIP_COLUMNS, SecurityManual, ftd_scope, load_security_manual, sharadar_cusips
+from src.data_extract.utils.common.resume import archive_periods, period_end
+from src.data_extract.utils.common.security_lines import (
+    SHARADAR_CUSIP_COLUMNS,
+    SecurityManual,
+    equity_symbol_rows,
+    ftd_scope,
+    load_security_manual,
+    sharadar_cusips,
+)
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore
 from src.utils.security_series import trade_dates
@@ -237,14 +244,14 @@ def _rowless_keys(
     listed: dict[str, frozenset[str]],
     manual: SecurityManual,
     pairs: pd.DataFrame | None,
-    companies: Collection[str],
-    as_of: pd.Timestamp,
+    joined: Collection[str],
+    since: pd.Timestamp,
 ) -> tuple[frozenset[str], frozenset[str]]:
-    """The scope keys whose source changed within `ARCHIVE_NEW_KEY_DAYS` and that have no stored line: the lineage symbols of
-    recently changed rows, and the Sharadar / curated CUSIP-6 of `companies` (recently changed or joined)."""
-    rows = lineage.loc[lineage["role"].eq("symbol") & lineage["status"].ne("noise")].reset_index(drop=True)
-    recent = set(recently_changed({str(i): stamp for i, stamp in rows["scope_changed_at"].items()}, as_of, ARCHIVE_NEW_KEY_DAYS))
-    symbols = {key for i, key in rows["symbol"].map(squash).items() if str(i) in recent and key}
+    """The scope keys changed after `since` that have no stored line: the equity symbols of the lineage rows changed after
+    it, and the Sharadar / curated CUSIP-6 of the companies whose lineage changed after it or that `joined` the universe."""
+    changed = lineage.loc[pd.to_datetime(lineage["scope_changed_at"]) > since]
+    symbols = {key for key in equity_symbol_rows(changed)["symbol"].map(squash) if key}
+    companies = set(changed["canonical_ticker"].dropna()) | set(joined)
     curated = [
         *manual.boundaries.loc[manual.boundaries["ticker"].isin(companies), "cusip"],
         *manual.ratios.loc[manual.ratios["ticker"].isin(companies), "cusip"],
@@ -296,8 +303,9 @@ def _catch_up(context: Context, reads: _Reads) -> int:
 def fetch_fails_to_deliver(context: Context, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Store the in-scope lines of each new cached FTD period as filed (`full`: every cached period); returns lines written.
 
-    Scope growth: a key whose source changed within `ARCHIVE_NEW_KEY_DAYS` and that has no stored line, and a CUSIP-6 a
-    symbol-matched line adds during the run, re-read the cached periods for those keys only (a keyed upsert).
+    Scope growth, only in a run that stores a new period after an earlier one: a key that changed after the newest period
+    stored before the run ended and has no stored line, and a CUSIP-6 a symbol-matched line adds during the run, re-read
+    the cached periods for those keys only (a keyed upsert). A cold run reads every file with the full scope instead.
     """
     # load: the lineage, the Sharadar CUSIPs, the curation, the stored (CUSIP, symbol) keys and the planned periods
     table = Tables.sec_fails_to_deliver_security
@@ -315,15 +323,16 @@ def fetch_fails_to_deliver(context: Context, full: bool = False, as_of: pd.Times
     listed = sharadar_cusips(context.universe.frame, sharadar)
     scope = ftd_scope(lineage, listed, manual)
     reads = _Reads(cache, scope.prefixes | _seen_prefixes(pairs, scope.symbols))
-    day = run_date(as_of)
-    companies = set(recently_changed(lineage.groupby("canonical_ticker")["scope_changed_at"].max().to_dict(), day)) | context.universe.new_since(
-        ARCHIVE_NEW_KEY_DAYS, day
-    )
-    symbols, prefixes = _rowless_keys(lineage, listed, manual, pairs, companies, day)
 
     # save: each new period, then the scope growth over the other cached periods, then the periods read before a growth
     pending = listed_periods if full else [period for period in listed_periods if period not in stored]
     written = _read_periods(context, reads, pending, scope.symbols, reads.known, True)
+    symbols, prefixes = frozenset[str](), frozenset[str]()
+    if stored and any(period not in stored for period in reads.order):
+        # a run that stored a new period: the keys changed after the newest period stored before it ended
+        since = pd.Timestamp(period_end(max(stored)))
+        joined = {t for t, added in context.universe.added_on_dates(context.universe.tickers, run_date(as_of)).items() if added > since}
+        symbols, prefixes = _rowless_keys(lineage, listed, manual, pairs, joined, since)
     others = [period for period in listed_periods if period not in reads.order]
     grown = _read_periods(context, reads, others, symbols, prefixes, False) if others and (symbols or prefixes or reads.found) else 0
     grown += _catch_up(context, reads)

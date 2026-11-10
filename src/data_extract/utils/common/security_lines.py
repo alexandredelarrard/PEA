@@ -199,13 +199,19 @@ def load_security_manual(config_dir: str | None = None) -> SecurityManual:
     return parse_security_manual(json.loads(path.read_text(encoding="utf-8")))
 
 
+def equity_symbol_rows(lineage: pd.DataFrame) -> pd.DataFrame:
+    """The lineage symbol rows a tape may key on: not noise, and not evidenced by the Notes cover page (`dei`) alone, which
+    is how a company's debt and preferred listings (ABBV28B, BRK59) enter the lineage."""
+    sources = lineage["sources"].fillna("").astype(str).str.lower()
+    return lineage[lineage["role"].eq(ROLE_SYMBOL) & lineage["status"].ne("noise") & sources.ne(DEI_SOURCE)]
+
+
 def tape_intervals(lineage: pd.DataFrame) -> pd.DataFrame:
-    """`[key, cik, valid_from, valid_to]` of the symbol rows a tape may read: not noise or conflict, not `dei` alone."""
-    symbols = lineage[lineage["role"].eq(ROLE_SYMBOL)].copy()
+    """`[key, cik, valid_from, valid_to]` of the symbol rows a tape may read: equity symbol rows that are not conflict."""
+    symbols = equity_symbol_rows(lineage).copy()
     symbols["key"] = symbols["symbol"].map(squash)
     symbols["cik"] = pad_cik_series(symbols["cik"])
-    sources = symbols["sources"].fillna("").astype(str).str.lower()
-    tape_ok = ~symbols["status"].isin(("noise", "conflict")) & sources.ne(DEI_SOURCE) & symbols["key"].ne("")
+    tape_ok = symbols["status"].ne("conflict") & symbols["key"].ne("")
     tape = symbols.loc[tape_ok, ["key", "cik", "valid_from", "valid_to"]].copy()
     tape["valid_from"] = pd.to_datetime(tape["valid_from"])
     tape["valid_to"] = pd.to_datetime(tape["valid_to"]).fillna(_FAR)
@@ -222,9 +228,9 @@ class FtdScope:
 
 
 def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manual: SecurityManual) -> FtdScope:
-    """The FTD scope (REQ-003): the lineage's non-noise symbols, the CUSIP-6 of the universe companies' Sharadar CUSIPs and
+    """The FTD scope (REQ-003): the lineage's equity symbols, the CUSIP-6 of the universe companies' Sharadar CUSIPs and
     of the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
-    rows = lineage[lineage["role"].eq(ROLE_SYMBOL) & lineage["status"].ne("noise")]
+    rows = equity_symbol_rows(lineage)
     symbols = frozenset(key for key in rows["symbol"].map(squash) if key)
     curated = set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna()) | {c for group in cusips.values() for c in group}
     return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated if c), tape=tape_intervals(lineage))

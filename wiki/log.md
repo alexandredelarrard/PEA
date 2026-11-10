@@ -1103,3 +1103,17 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Profile: internal/standard; branch `harness/sec-sharadar-fundamentals-split`.
 - Pure moves, no logic change: the live `Company` listing walk (`resolve_registrant_filings` and its scope guard) and `header_subject_ciks` from `common/registrant.py` to `edgar_extract/edgar_driver.py`; the identity row contract (role and source labels, `SENTINEL_START`, identity errors, CIK -> `company_id` helpers, `DEI_SOURCE`) from `identity/cik_history.py` and `identity/symbol_tenure.py` to `common/identity_contract.py`; `period_end` from `common/bulk_cache.py` to `common/resume.py`. Importing `step_extract_fundamentals` now loads neither `edgar` nor `sec_io`.
 - Pages: [Data extraction](./modules/data-extract.md), [Data sources](./reference/data-sources.md).
+
+## 2026-11-09: refresh (sec13f-cube-speed Phase 8)
+
+- Profile: internal/standard
+- source_commit: harness/sec13f-cube-speed (Phase 8)
+- Coverage: 13F cube read scope (universe rows plus whole amended books; whole roster books by literal CIK list), event-difference broad engine, summarize-once superinvestor engine on `sec13f_hr`, implied-price whole-book pricing without a split rule, superinvestor start date at the `sec13f_hr` availability date; `sec13f_manager_holdings` retired in code (the user runs the live DROP after re-extraction); dead links to the deleted aggregate `institutional_vintages.py` and the deleted `roster_as_of` removed; call-depth rule (3 levels below `run()` plus one flat numpy/pandas/regex/stdlib handler, deepest chain) aligned in coding standards and the harness-refactor checklist
+- Pages: [Cube aggregation](./modules/data-aggregate.md), [Data extraction](./modules/data-extract.md), [Runtime and shared utilities](./modules/runtime-and-shared-utils.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Live database](./reference/live-database.md), [Data access](./guides/data-access.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Run the pipeline](./guides/run-the-pipeline.md), [Coding standards](./guides/coding-standards.md), [TODO](./TODO.md)
+
+## 2026-11-09: refresh (sec13f-cube-speed review 01)
+
+- Profile: internal/standard
+- source_commit: fix/sec13f-cube-speed/review-01
+- Coverage: one-table 13F wording (`sec13f_hr` is the only destination of the walk, the managers catch-up, the backfill resume and recovery; cube reads described per family); `roster_as_of` (deleted) references replaced by `roster_map_as_of`; cutover note: after merging, pause the DAG, run `build-sec-thirteen -F`, then `assemble-cube`, because an incremental run would keep older rows on the previous whole-book definitions (R-C-01)
+- Pages: [Data sources](./reference/data-sources.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Cube build](./flows/cube-build.md), [Configuration](./reference/configuration.md), [Table catalog](./reference/table-catalog.md), [Run the pipeline](./guides/run-the-pipeline.md)

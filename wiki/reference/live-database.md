@@ -124,7 +124,7 @@ Read-only closure inventory found 23,835,822 rows in `sec13f_hr` and 607,537 in 
 Important measured state:
 
 - 13F manager coverage contained historical holes that ticker counts did not reveal. A later refill closed the identified empty filing months; validation now scores this axis.
-- `sec13f_manager_holdings` covered the filing managers needed for denominator-quality analysis but not every roster code resolves to a filing CIK.
+- `sec13f_manager_holdings` is retired: no code reads or writes it, and the registry and `sql/schema.sql` no longer declare it. The live table stays until the user drops it (`DROP TABLE sec13f_manager_holdings`) after the Airflow re-extraction has filled roster books in `sec13f_hr`; until then, tooling that compares DB tables with `Tables` may list it. Not every roster code resolves to a filing CIK.
 - CIK-first insider identity repair relabelled valid predecessor rows, and admitted rows the symbol path missed. Mismatched entities are now excluded and counted in one warning per run rather than stored.
 - `symbol_tenure` contains overlapping observed intervals; overlap is expected and must not be collapsed into a one-row lookup.
 - `entity_lineage` is sparse by design: a missing CIK row means a singleton entity.

@@ -13,7 +13,6 @@ from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import BookSupport, PublicBook, PublicBookSnapshot
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     EMISSION,
-    SuperinvestorFeatureHistory,
     compute_superinvestor_feature_history,
     project_superinvestor_features,
 )
@@ -66,7 +65,6 @@ def _snapshot(books: list[PublicBook], day: str = "2024-08-15") -> PublicBookSna
     return PublicBookSnapshot(
         day=pd.Timestamp(day),
         common_period=max(book.period for book in books),
-        latest_period_by_manager={cik: book.period for cik, book in latest.items()},
         level_books=latest,
         archive=archive,
     )
@@ -95,15 +93,15 @@ def _market(split: bool = False) -> BehaviorMarket:
     return BehaviorMarket(index, quotes, security_basis_frame(basis, index, quotes.columns))
 
 
-def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> SuperinvestorFeatureHistory:
-    roster = frozenset(snapshot.latest_period_by_manager)
+def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> dict[str, pd.DataFrame]:
+    roster = frozenset(snapshot.level_books)
     cohorts = {"": roster, "topk": roster if topk is None else topk}
     return compute_superinvestor_feature_history((snapshot,), cohorts, ("AAA", "BBB"), market or _market())
 
 
-def _value(history: SuperinvestorFeatureHistory, metric: str, ticker: str = "AAA", cohort: str = "") -> float:
+def _value(history: dict[str, pd.DataFrame], metric: str, ticker: str = "AAA", cohort: str = "") -> float:
     prefix = f"ic_super_{cohort}_" if cohort else "ic_super_"
-    return float(history.levels[prefix + metric].iloc[-1][ticker])
+    return float(history[prefix + metric].iloc[-1][ticker])
 
 
 def test_equal_manager_weight_and_pooled_weight_have_distinct_denominators() -> None:
@@ -119,9 +117,9 @@ def test_equal_manager_weight_and_pooled_weight_have_distinct_denominators() -> 
 def test_identical_masks_have_all_13_identical_values_and_nulls() -> None:
     history = _compute(_snapshot([_book("1", "2024-06-30", {"AAA": (1, 10)})]))
     assert len(EMISSION) == 26
-    for name, values in history.levels.items():
+    for name, values in history.items():
         if not name.startswith("ic_super_topk_"):
-            pd.testing.assert_frame_equal(values, history.levels[name.replace("ic_super_", "ic_super_topk_")])
+            pd.testing.assert_frame_equal(values, history[name.replace("ic_super_", "ic_super_topk_")])
     print("SANITY: identical raw-CIK masks produce exact equality for every metric and unknown.")
 
 
@@ -158,7 +156,7 @@ def test_disappearing_manager_is_excluded_from_both_endpoints() -> None:
     history = _compute(snapshot)
     assert _value(history, "holders") == 1
     assert _value(history, "shares_chg") == pytest.approx(0.1)
-    assert history.diagnostics.quarter_pairs.tolist() == [1, 1]
+    assert _value(history, "shares_chg", cohort="topk") == pytest.approx(0.1)
     print("SANITY: the absent manager's1000shares never become a sale; the one genuine pair grows10%.")
 
 
@@ -258,8 +256,8 @@ def test_complete_restatement_restores_known_absence_after_unknown_common_leg(la
     breadth = "breadth_chg" if lag == 1 else "holders_yoy"
     for cohort in ("", "topk"):
         prefix = f"ic_super_{cohort}_" if cohort else "ic_super_"
-        assert np.isnan(history.levels[prefix + change].iloc[0].AAA)
-        assert np.isnan(history.levels[prefix + "holders"].iloc[0].AAA)
+        assert np.isnan(history[prefix + change].iloc[0].AAA)
+        assert np.isnan(history[prefix + "holders"].iloc[0].AAA)
         assert _value(history, "holders", cohort=cohort) == 0
         assert _value(history, "top10_holders", cohort=cohort) == 0
         assert _value(history, change, cohort=cohort) == -1
@@ -317,6 +315,20 @@ def test_off_universe_position_is_included_in_fixed_price_whole_book() -> None:
     assert _value(history, "relative_position_chg") == pytest.approx(0.25)
     assert _value(history, "pooled_weight_chg") == pytest.approx(0.10)
     print("SANITY: off-universe holdings remain in both whole-book denominators; output scope never shrinks the book.")
+
+
+def _unmapped(book: PublicBook) -> PublicBook:
+    book.df_positions["ticker"] = book.df_positions["ticker"].where(book.df_positions["cusip"].ne("OFF"), None)
+    return book
+
+
+@pytest.mark.parametrize("unmapped", [True, False], ids=["unmapped", "stored_off_universe_ticker"])
+def test_unquoted_position_is_valued_at_its_prior_implied_price(unmapped: bool) -> None:
+    books = [_book("1", "2024-03-31", {"AAA": (100, 1000), "OFF": (100, 1000)}), _book("1", "2024-06-30", {"AAA": (150, 1500), "OFF": (100, 3000)})]
+    history = _compute(_snapshot([_unmapped(book) if unmapped else book for book in books]))
+    assert _value(history, "relative_position_chg") == pytest.approx(0.25)
+    assert _value(history, "pooled_weight_chg") == pytest.approx(0.10)
+    print("SANITY: an unquoted holding is fixed at its prior value per share (10, not the current 30), so the book grows 25%.")
 
 
 def test_missing_reference_excludes_whole_book_only_and_never_fills() -> None:
@@ -414,7 +426,7 @@ def test_consensus_is_signed_and_excludes_unchanged_managers() -> None:
         ("missing_source", False),
         ("missing_unverified", True),
         ("null_unverified", False),
-        ("object_null_unverified", True),
+        ("object_null_unverified", False),
     ],
 )
 def test_duration_preserves_same_ticker_sibling_evidence(endpoint: str, evidence: str, verified: bool) -> None:
@@ -505,9 +517,9 @@ def test_duration_old_quarter_revisions_and_backfills_change_only_later_public_s
     prefix = _compute(_on(_history(packets[:2]), "2024-08-15"))
     for cohort in ("", "topk"):
         name = f"ic_super_{cohort}_quarters_held" if cohort else "ic_super_quarters_held"
-        assert history.levels[name].AAA.tolist() == [2, 1, 2, 3]
-    for name, values in prefix.levels.items():
-        pd.testing.assert_frame_equal(values, history.levels[name].iloc[:1])
+        assert history[name].AAA.tolist() == [2, 1, 2, 3]
+    for name, values in prefix.items():
+        pd.testing.assert_frame_equal(values, history[name].iloc[:1])
     assert len({snapshot.level_books["1"].first_public_at for snapshot in selected}) == 1
     print("SANITY: old-quarter restatements/backfills change later tenure2→1→2→3 without rewriting earlier features or current first-public age.")
 

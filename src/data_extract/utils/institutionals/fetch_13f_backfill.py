@@ -131,13 +131,10 @@ def backfill_work(data_sets: list[DataSet], tickers: list[str]) -> list[tuple[Da
     ]
 
 
-def _completed_accessions(context: Context, ciks: set[str], roster_ciks: set[str]) -> frozenset[str]:
-    """Only a complete broad destination and any required roster destination certify an accession."""
-    broad = stored_accessions(context, Tables.sec13f_hr, sorted(ciks), DONE_PER_KEY, where={"parse_status": "complete"})
-    managers = stored_accessions(context, Tables.sec13f_manager_holdings, sorted(roster_ciks), DONE_PER_KEY, where={"parse_status": "complete"})
-    return frozenset(
-        accession for cik, accessions in broad.items() for accession in accessions if cik not in roster_ciks or accession in managers.get(cik, set())
-    )
+def _completed_accessions(context: Context, ciks: set[str]) -> frozenset[str]:
+    """The accessions of `ciks` complete in `sec13f_hr`; only a completion marker certifies one."""
+    done = stored_accessions(context, Tables.sec13f_hr, sorted(ciks), DONE_PER_KEY, where={"parse_status": "complete"})
+    return frozenset().union(*done.values())
 
 
 def _holds(chunk: pd.DataFrame, cusips: frozenset[str]) -> pd.Series:
@@ -209,7 +206,7 @@ def _backfill_data_set(
     completed: frozenset[str] = frozenset(),
 ) -> int:
     """Preserve full source accessions for a scope fixed across all recovery archives."""
-    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
+    saver = saver or _Saver(context, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     if submissions is None:
         scope = _archive_scope(path, target_cusips(cmap, saver.cusip_lines(), tickers))
         if scope is None:
@@ -230,7 +227,7 @@ def _backfill_data_set(
     ):
         saver.save_packet(manifest, holdings)
     saved = saver.walk.hr_saved - saved_before
-    logger.info("13F backfill %s: preserved %d source position(s) with accession/date in existing tables", data_set.name, saved)
+    logger.info("13F backfill %s: preserved %d source position(s) with accession/date in %s", data_set.name, saved, Tables.sec13f_hr)
     return saved
 
 
@@ -296,7 +293,7 @@ def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: 
 
 def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, *, full: bool = False) -> int:
     """Fill `sec13f_hr` from the 13F data sets for the tickers `backfill_targets` selects, then walk
-    EDGAR over their gap after the newest data set. Full roster books also enter their destination.
+    EDGAR over their gap after the newest data set. Roster managers' full books are saved too.
     Returns broad rows saved from the data sets. With no
     ticker due it reads nothing but the universe and downloads nothing."""
     targets = backfill_targets(context, tickers, as_of, full)
@@ -329,9 +326,9 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         submissions, holders = scope
         relevant_ciks |= holders
         archived.append((data_set, due, path, submissions))
-    completed = frozenset() if full else _completed_accessions(context, relevant_ciks, roster_ciks)
+    completed = frozenset() if full else _completed_accessions(context, relevant_ciks)
     saved = 0
-    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
+    saver = _Saver(context, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap, lines=lines))
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))

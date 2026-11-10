@@ -112,7 +112,7 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # The fixture was also HOLLOW. `synthetic_13f` carries no `cusip`/`position_type`, so the elite
 # builder tripped its `need.issubset(holdings.columns)` guard and returned an EMPTY frame: the
 # baseline was pinning a hole, exactly as `f_say_on_pay_support` did before the fourth
-# regeneration. `synthetic_manager_book` now mirrors `sec13f_manager_holdings` for real -- CUSIP
+# regeneration. `synthetic_manager_book` now mirrors a roster manager's 13F book for real -- CUSIP
 # grain, the manager's WHOLE book, off-universe positions appended -- and draws from its own
 # `rng_for` stream so no other fixture's draws shift.
 #

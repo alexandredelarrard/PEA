@@ -24,9 +24,10 @@ from src.data_aggregate.utils.common.inputs import load_source
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_backfill as fb
-from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
+from src.data_extract.utils.institutionals.fetch_13f import save_hr_filing
 from src.data_extract.utils.institutionals.fetch_superinvestors import activity_evidence
 from src.data_store.schema import Tables
+from src.utils.identity_tables import LINE_COLUMNS
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _seed_roster
 from tests.support.store_identity import store_identity
@@ -239,7 +240,10 @@ def _stored_hr(store: Any, ticker: str) -> pd.DataFrame:
 def _save_oracle_book(store: Any, filing: tuple, scale: float = 1.0) -> None:
     book = _edgartools_book(filing)
     value_cols = ["value_usd", "call_value", "put_value", "debt_value", "other_value"]
-    store.save(Tables.sec13f_manager_holdings, (book.assign(**{c: book[c] * scale for c in value_cols})).assign(accession_number="_legacy"))
+    legacy = book.assign(**{c: book[c] * scale for c in value_cols}).assign(
+        accession_number="_legacy", ticker=book["cusip"].map(_MAP).fillna(_SENTINEL)
+    )
+    store.save(Tables.sec13f_hr, legacy)
 
 
 def test_zip_preserves_raw_units_and_complete_source_books(tmp_path, filing_store, monkeypatch):
@@ -335,7 +339,7 @@ def test_legacy_unit_error_cannot_block_verified_source_packets(tmp_path, filing
     with caplog.at_level("ERROR"):
         fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     got = _stored_hr(filing_store, _NEW)
-    assert len(got) == 3
+    assert len(got.loc[got.accession_number.ne("_legacy")]) == 3
     assert got.loc[got.accession_number.eq(_A2[1]), "value_usd"].iloc[0] == 3000000
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
     print("SANITY: a previously mis-scaled legacy book cannot veto reconciled source accessions; P1 determines economic scaling.")
@@ -667,7 +671,7 @@ def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, filing_store):
     path = tmp_path / "replay.zip"
     _write_zip(path, [_A1])
     packet = fb.cached_filing_vintages(path, [_A1[1]])[0]
-    save_13f_filing(filing_store, *packet)
+    save_hr_filing(filing_store, *packet, pd.DataFrame(columns=LINE_COLUMNS), None)
     cover = (
         "<edgarSubmission><isAmendment>false</isAmendment><amendmentNo>0</amendmentNo>"
         "<reportCalendarOrQuarter>2023-03-31</reportCalendarOrQuarter>"
@@ -676,8 +680,8 @@ def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, filing_store):
     )
     xml = _xml(_A1[5]).replace("<titleOfClass>COM</titleOfClass>", "<titleOfClass>  COM  </titleOfClass>")
     parsed = f13.xml_filing_vintage(cover, xml, cik=_A1[0], accession_number=_A1[1], period=_A1[4], filing_date=_A1[3], source="edgar")
-    assert save_13f_filing(filing_store, *parsed) == 0
-    assert len(filing_store.load(Tables.sec13f_manager_holdings)) == 2
+    assert save_hr_filing(filing_store, *parsed, pd.DataFrame(columns=LINE_COLUMNS), None) == 0
+    assert len(filing_store.load(Tables.sec13f_hr)) == 2
     print("SANITY: actual ZIP and XML parsers produce equivalent accession content despite source whitespace/transport differences.")
 
 
@@ -720,9 +724,8 @@ def test_backfill_reuses_one_map_load_across_archives(tmp_path: Any, filing_stor
     monkeypatch.setattr(filing_store, "load", counted)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
     assert len(map_loads) == 1
-    assert filing_store.load(Tables.sec13f_hr) is not None
-    assert set(filing_store.load(Tables.sec13f_manager_holdings).accession_number) == {_A2[1]}
-    print("SANITY: the actual two-archive backfill saver loads the map once and writes full broad and roster books.")
+    assert _A2[1] in set(filing_store.load(Tables.sec13f_hr).accession_number)
+    print("SANITY: the actual two-archive backfill saver loads the map once and writes the broad and roster books to sec13f_hr.")
 
 
 def test_completed_backfill_skips_decode_but_keeps_discovery(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -741,25 +744,6 @@ def test_completed_backfill_skips_decode_but_keeps_discovery(tmp_path: Any, fili
     assert fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF) == 0
     assert discovered == ["01jun2024-31aug2024_form13f.zip", "2023q2_form13f.zip"]
     print("SANITY: completed ordinary rerun still discovers possible holders but performs no second decode/map/save pass.")
-
-
-def test_missing_roster_destination_remains_pending(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
-    _offline(monkeypatch)
-    fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
-    filing_store.delete(Tables.sec13f_manager_holdings, where={"accession_number": _A2[1]})
-    original = fb.cached_filing_vintages
-    decoded = []
-
-    def decode(path: Any, accessions: list[str], **kwargs: Any) -> Any:
-        decoded.extend(accessions)
-        return original(path, accessions, **kwargs)
-
-    monkeypatch.setattr(fb, "cached_filing_vintages", decode)
-    fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF)
-    assert decoded == [_A2[1]]
-    assert set(filing_store.load(Tables.sec13f_manager_holdings).accession_number) == {_A2[1]}
-    print("SANITY: broad completion cannot hide a missing roster destination; only that accession is decoded and repaired.")
 
 
 def test_full_backfill_rechecks_completed_sources(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -786,7 +770,7 @@ def test_cusip_scope_keeps_unmapped_stored_holder_for_omission(tmp_path: Any, fi
     source = tmp_path / "original.zip"
     _write_zip(source, [original])
     manifest, positions = fb.cached_filing_vintages(source, [original[1]])[0]
-    save_13f_filing(filing_store, manifest, positions.assign(ticker="_empty"), table=Tables.sec13f_hr)
+    save_hr_filing(filing_store, manifest, positions, pd.DataFrame(columns=LINE_COLUMNS), None)  # unmapped: the sentinel
     omission = ("42", "later-omission", "13F-HR/A", "2024-08-20", "2024-06-30", [("037833100", "APPLE", 500, 5, "")])
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
     for name in _DATA_SETS:

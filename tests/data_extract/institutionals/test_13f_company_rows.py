@@ -5,7 +5,7 @@ Known-truth fixtures (the dated `universe_cusip` lines of BRK-B and GOOGL as pub
   (1 x 30 + 100); the value is the sum as filed;
 - GOOG + GOOGL in 2020 make one GOOGL row on Alphabet's Class A CUSIP;
 - a holding outside the universe keeps its own CUSIP row and market ticker;
-- the nightly walk saves the collapsed rows in `sec13f_hr` and the whole per-CUSIP book in `sec13f_manager_holdings`.
+- the nightly walk saves the collapsed rows in `sec13f_hr`.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_a_book_without_a_second_class_is_unchanged() -> None:
     print("\n=== SANITY CHECK: a one-class book is stored row for row as before (ticker added only). Validated. ===")
 
 
-def test_the_walk_saves_company_rows_in_sec13f_hr_and_the_whole_book_for_managers(filing_store, monkeypatch) -> None:
+def test_the_walk_saves_company_rows_in_sec13f_hr(filing_store, monkeypatch) -> None:
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     packet = f13.filing_vintage(
         pd.DataFrame([_line(BRK_A, "BERKSHIRE A", 1_400_000.0, 2), _line(BRK_B, "BERKSHIRE B", 47_000.0, 100), _line(AVB, "AVALONBAY", 2_000.0, 10)]),
@@ -108,14 +108,14 @@ def test_the_walk_saves_company_rows_in_sec13f_hr_and_the_whole_book_for_manager
         declared_value=1_449_000.0,
     )
     ctx: Any = SimpleNamespace(store=filing_store)
-    saver = f13._Saver(ctx, {"BRK-B"}, {ROSTER}, save_every=1)
+    saver = f13._Saver(ctx, save_every=1)
     saver.walk.lines = LINES
     saver.save_packet(*packet)
 
     hr = filing_store.load(Tables.sec13f_hr, columns=["ticker", "cusip", "shares", "value_usd"]).set_index("ticker")
-    book = filing_store.load(Tables.sec13f_manager_holdings, columns=["cusip", "shares"])
     assert sorted(hr.index) == ["AVB", "BRK-B"] and hr.loc["BRK-B", "shares"] == 3_100.0 and hr.loc["BRK-B", "cusip"] == BRK_B
-    assert hr["value_usd"].sum() == 1_449_000.0 and len(book) == 3
+    assert hr["value_usd"].sum() == 1_449_000.0
     print("\n=== SANITY CHECK: the walk save of 2 BRK-A + 100 BRK-B + 10 AVB (2026) ===")
-    print(f"  sec13f_hr: {len(hr)} rows, BRK-B {hr.loc['BRK-B', 'shares']:,.0f} B shares; value total {hr['value_usd'].sum():,.0f} = filed")
-    print(f"  sec13f_manager_holdings: {len(book)} per-CUSIP rows (the whole book). Validated.")
+    print(
+        f"  sec13f_hr: {len(hr)} rows, BRK-B {hr.loc['BRK-B', 'shares']:,.0f} B shares; value total {hr['value_usd'].sum():,.0f} = filed. Validated."
+    )

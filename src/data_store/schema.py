@@ -859,40 +859,6 @@ class Tables:
         # ticker's min(period) moves.
         empty_marker=("cusip", _EMPTY),
     )
-    # Complete accession books for the union of ever-listed roster managers; no ticker filter.
-    # Common, option and debt legs remain separate. Both 13F tables hide the inline completion
-    # marker (cusip=_empty); a completed empty book still retains its source metadata.
-    # Legacy _legacy rows are preserved for inspection, never proof of an original PIT filing.
-    sec13f_manager_holdings = Table(
-        "sec13f_manager_holdings",
-        ("cik", "period", "accession_number", "cusip"),
-        date_col="period",
-        ticker_col=None,
-        freshness="quarterly",
-        date_type_cols=("period", "filing_date"),
-        read_columns=(
-            "cik",
-            "period",
-            "accession_number",
-            "filing_date",
-            "cusip",
-            "issuer_name",
-            "title_of_class",
-            "position_type",
-            "shares",
-            "value_usd",
-            "call_shares",
-            "call_value",
-            "put_shares",
-            "put_value",
-            "debt_prn",
-            "debt_value",
-            "other_value",
-        ),
-        optional_columns=frozenset({"accession_number"}),
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR", "13F-HR/A")),
-        empty_marker=("cusip", _EMPTY),
-    )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
     # that table). One table for both sources: EDGAR daily rows are authoritative
     # (`source='edgar'`); quarterly zips add only filings EDGAR lacks (`source='zip'`).

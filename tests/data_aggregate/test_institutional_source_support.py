@@ -17,7 +17,7 @@ from src.data_store.store import DataStore
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel
 from tests.data_aggregate.test_insider_features import _txn
-from tests.data_aggregate.test_institutional_step_contract import ftd_lines, market_lines
+from tests.data_aggregate.test_institutional_step_contract import ftd_lines, lineage_rows, market_lines, short_lines
 
 
 def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
@@ -144,7 +144,7 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     )
     sqlite_store.save(Tables.insider_transactions, transactions)
     dates = pd.bdate_range("2015-01-01", "2015-12-31")
-    sqlite_store.save(Tables.short_interest, pd.DataFrame({"ticker": "AAA", "date": dates[:21], "short_volume": 0.0, "total_volume": 2.0}))
+    sqlite_store.save(Tables.sec_short_volume_security, short_lines("AAA", dates[:21], 0.0, 2.0))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([(f"{dates[0]:%Y-%m-%d}", "000000001", "AAA", 12.0, "201501a")]))
     source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"], None)
     assert source is not None and source.complete_through == pd.Timestamp(transactions["filing_date"].max())
@@ -159,17 +159,17 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
     assert ratio.loc[(pd.Timestamp("2015-06-01"), "AAA")] == pytest.approx(1.0 / 3.0)
     assert pd.isna(ratio.loc[(pd.Timestamp("2015-12-01"), "AAA")]) and ratio.xs("BBB", level="ticker").isna().all()
-    short_rows = sqlite_store.load(Tables.short_interest, project=True)
-    assert short_rows is not None
+    lines = market_lines(["AAA"], pd.Timestamp("2014-01-01"))
+    short_rows, _ = inputs.load_short_volume(sqlite_store, ["AAA", "BBB"], lines, lineage_rows(["AAA", "BBB"]))
+    assert short_rows is not None and set(short_rows["ticker"]) == {"AAA"} and list(short_rows.columns) == ["date", "ticker", "short_volume", "total_volume"]
     short_volume = short_rows.pivot(index="date", columns="ticker", values="short_volume")
     total = short_rows.pivot(index="date", columns="ticker", values="total_volume")
     ratios, _ = short._shortvol_window_fields(short_volume, total, total.notna(), pd.DatetimeIndex(short_volume.index), None)
     assert ratios[20].iloc[-1, 0] == 0.0
-    fails_rows, coverage = inputs.load_fails(sqlite_store, ["AAA", "BBB"], market_lines(["AAA"], pd.Timestamp("2014-01-01")), {})
+    fails_rows, coverage = inputs.load_fails(sqlite_store, ["AAA", "BBB"], lines, {})
     assert fails_rows is not None and coverage is not None
     fails = short.prepare_fails_quantities(fails_rows, coverage, dates, pd.Index(["AAA", "BBB"]), None).quantities
     assert fails.loc[dates[0], "AAA"] == 12.0 and fails["BBB"].isna().all()
-    assert "source_checked_at" not in sqlite_store.columns(Tables.short_interest)
     print(
         "SANITY: physically legacy schemas keep explicit paired insider/FINRA operands and explicit FTD quantities, create no absent-ticker zeros, and execute no read-triggered schema evolution."
     )

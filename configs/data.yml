@@ -22,7 +22,7 @@ data_availability:
       __all__: "1996-01-26"  # First usable historical Schedule 13G event.
       percent_of_class: "2024-12-17"  # Earlier isolated values do not establish coverage.
 
-    sec_short_interest:
+    sec_short_volume_security:
       __all__: "2018-08-01"  # First continuously retrievable FINRA RegSHO history.
 
     sec_fails_to_deliver_security:

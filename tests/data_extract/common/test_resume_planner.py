@@ -303,7 +303,7 @@ def test_m1_a_three_session_hole_becomes_a_three_session_window(tmp_path, sqlite
 
 def test_m1_zero_row_units_do_not_apply():
     """A daily series has no 'read but empty' unit: a session with no bar is a hole and is re-fetched, never marked."""
-    assert all(t.empty_marker is None for t in (Tables.prices, Tables.dividends, Tables.prices_splits, Tables.short_interest))
+    assert all(t.empty_marker is None for t in (Tables.prices, Tables.dividends, Tables.prices_splits, Tables.sec_short_volume_security))
     print("\n=== SANITY CHECK: M1 zero-row unit ===")
     print("  not applicable: no M1 table declares an empty-filing marker.")
 

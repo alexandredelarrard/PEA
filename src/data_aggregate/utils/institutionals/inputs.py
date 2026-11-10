@@ -20,12 +20,14 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.security_series import LINE_COLUMNS, fails_series, load_fails_basis, prepare_master
+from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, load_fails_basis, prepare_master, short_volume_series
 from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+#: The `universe_cik_symbol` columns the short-volume lineage fallback reads.
+LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
 #: The share-class letter of an insider `security_title` ("Class A Common Stock", "Series B").
 _CLASS_LETTER = r"(?i)\b(?:CLASS|SERIES)\s+([A-Z])\b"
 
@@ -37,18 +39,22 @@ def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.Da
     return df_bars if df_bars is not None else pd.DataFrame(columns=["ticker", "date", "volume"])
 
 
-def load_finra_tenure(store: DataStore, universe: Sequence[str]) -> pd.DataFrame | None:
-    """Observed fallback stamps already resolved by FINRA's dated owner/class mapper; missing dates stay unknown."""
-    if not universe or not store.exists(Tables.sec_short_volume_security):
-        return None
-    columns = ("date", "ticker", "security_id", "lineage_role", "security_class")
-    chunks = []
-    for chunk in store.iter_load(
-        Tables.sec_short_volume_security, columns=columns, where={"ticker": sorted(set(universe)), "lineage_role": list(CANONICAL_ROLES)}
-    ):
-        selected = chunk["security_id"].fillna("").str.fullmatch(r"S\d{10}:[A-Z0-9][A-Z0-9.-]*")
-        chunks.append(chunk.loc[selected].drop_duplicates())
-    return pd.concat(chunks, ignore_index=True).drop_duplicates() if chunks else None
+def load_short_volume(
+    store: DataStore, universe: Sequence[str], lines: pd.DataFrame | None, lineage: pd.DataFrame | None
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """The short-volume series of the `universe` companies and the lineage-fallback stamps the tenure mask reads, built
+    from the as-filed FINRA lines, the step's `universe_cusip` lines and its `universe_cik_symbol` rows
+    (`security_series.short_volume_series`)."""
+    # one read of the stored lines
+    stored = store.load(Tables.sec_short_volume_security, columns=list(SHORT_LINE_COLUMNS), optional=True)
+    if stored is None or stored.empty or lines is None or lineage is None or not universe:
+        logger.warning("%s or the identity tables are absent -> short-volume features are skipped.", Tables.sec_short_volume_security.name)
+        return None, None
+
+    # every universe company's series and its fallback stamps
+    series, fallback = short_volume_series(stored, lines, lineage, universe)
+    logger.info("Loaded %s: %s lines -> %s series rows", Tables.sec_short_volume_security.name, len(stored), len(series))
+    return series, (fallback if not fallback.empty else None)
 
 
 @dataclass(frozen=True)

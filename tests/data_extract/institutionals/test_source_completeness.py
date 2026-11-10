@@ -12,7 +12,6 @@ from zipfile import ZipFile
 
 import pandas as pd
 import pytest
-from sqlalchemy import event
 
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, load_source_identity
@@ -26,11 +25,11 @@ from src.data_extract.utils.zips import fetch_insider_transactions as insider_zi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.price.adjustments import ShareBasis
-from src.utils.security_series import fails_series, prepare_master
+from src.utils.security_series import fails_series, prepare_master, short_volume_series
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
-from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
+from tests.data_extract.institutionals.test_short_volume_security import _identity, _lineage, _master
 from tests.support.propagation import run_propagation
 from tests.support.universe import seed_universe
 
@@ -45,7 +44,6 @@ def sqlite_store(sqlite_store: DataStore) -> DataStore:
             Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_short_volume_security,
-            Tables.short_interest,
         ],
     )
     return sqlite_store
@@ -83,15 +81,9 @@ def _file(short: str = "1", total: str = "2", count: int = 1) -> str:
 @pytest.mark.parametrize("payload", ["not|a source", _file("9", "10", 2), _file("1e999", "10")], ids=["header", "count", "overflow"])
 def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, payload: str) -> None:
     day = pd.Timestamp("2026-07-01")
-    identity = _identity(store=sqlite_store)
-    raw = finra.stamp_short_volume(finra._parse_regsho(_file()), identity, ["LEN"])
-    sqlite_store.save(Tables.sec_short_volume_security, raw[list(finra.SECURITY_COLUMNS)])
-    expected = pd.DataFrame({"ticker": ["LEN"], "date": [day], "short_volume": [1.0], "total_volume": [2.0]})
-    sqlite_store.save(Tables.short_interest, expected)
+    sqlite_store.save(Tables.sec_short_volume_security, finra._parse_regsho(_file()))
     before_raw = sqlite_store.load(Tables.sec_short_volume_security)
     assert before_raw is not None
-    before = sqlite_store.load(Tables.short_interest)
-    assert before is not None
     context = cast(
         Any,
         SimpleNamespace(
@@ -105,15 +97,12 @@ def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, m
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: payload)
 
-    finra.fetch_short_interest(context, ["LEN"], pause=0.0, identity=identity)
+    finra.fetch_short_interest(context, ["LEN"], pause=0.0)
 
-    stored_frame = sqlite_store.load(Tables.short_interest, optional=True)
-    assert stored_frame is not None
-    pd.testing.assert_frame_equal(stored_frame, before)
     stored_frame = sqlite_store.load(Tables.sec_short_volume_security, optional=True)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before_raw)
-    print("SANITY: malformed/truncated/nonfinite FINRA source preserves both last good tables and cannot certify an absence.")
+    print("SANITY: a malformed/truncated/nonfinite FINRA source writes nothing; the last good as-filed lines stay.")
 
 
 def test_ftd_same_key_conflicting_source_periods_refuse() -> None:
@@ -164,7 +153,7 @@ def test_malformed_ftd_lines_cannot_be_a_complete_source(row: str) -> None:
     print("SANITY: an FTD malformed or nonfinite source row refuses the complete period before absence certification.")
 
 
-def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_an_empty_finra_file_stores_no_fabricated_line(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     day = pd.Timestamp("2026-07-01")
     context = cast(
         Any,
@@ -178,16 +167,9 @@ def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, 
     )
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: _file().splitlines()[0] + "\n0\n")
-    identity = _identity(store=sqlite_store)
-    for table, frame in identity.source_cohort.items():
-        if not frame.empty:
-            sqlite_store.save(table, frame)
-    finra.fetch_short_interest(context, ["LEN"], pause=0.0, identity=identity)
-    rows = sqlite_store.load(Tables.short_interest)
-    assert rows is not None and rows["short_volume"].tolist() == [0.0]
-    assert rows["total_volume"].isna().all() and rows["source_checked_at"].notna().all()
+    finra.fetch_short_interest(context, ["LEN"], pause=0.0)
     assert sqlite_store.row_count(Tables.sec_short_volume_security) == 0
-    print("SANITY: fully parsed mapped FINRA absence is short flow zero, denominator NULL and no fabricated raw row.")
+    print("SANITY: a fully parsed empty FINRA file stores no raw line; a checked absence is the cube's (short 0, total NULL).")
 
 
 @pytest.mark.parametrize("holding_value", [None, "1234.5"])
@@ -238,24 +220,20 @@ def test_finra_staged_quantities_must_remain_finite_and_within_total(payload: st
     print("SANITY: a short quantity above total or a finite-input duplicate-symbol overflow cannot receive source proof.")
 
 
-def test_finra_class_conversion_overflow_refuses_before_source_commit() -> None:
+def test_finra_class_conversion_overflow_refuses_in_the_cube() -> None:
     master = _master()
     master.loc[master["source_symbol"].eq("LEN"), "conversion_ratio"] = 10.0
-    identity = _identity(master)
-    stamped = finra.stamp_short_volume(finra._parse_regsho(_file("1e308", "1e308")), identity, ["LEN"])
     with pytest.raises(ValueError):
-        finra.ticker_rows(stamped, ["LEN"])
+        short_volume_series(finra._parse_regsho(_file("1e308", "1e308")), master, _lineage(), ["LEN"])
     print("SANITY: finite source quantities cannot become certified infinite class-converted aggregate quantities.")
 
 
 def test_unresolved_relevant_class_cannot_create_checked_company_absence() -> None:
     master = _master()
     clash = master.loc[master["source_symbol"].eq("LENB")].assign(security_id="C999999999", cusip="999999999")
-    identity = _identity(pd.concat([master, clash], ignore_index=True))
     rows = finra._parse_regsho(_file().replace("|LEN|", "|LENB|"))
-    stamped = finra.stamp_short_volume(rows, identity, ["LEN"])
-    grain = finra._checked_regsho_grain(stamped, [pd.Timestamp("2026-07-01")], identity, ["LEN"])
-    assert grain.empty or grain.loc[grain["ticker"].eq("LEN"), "source_checked_at"].isna().all()
+    series, _ = short_volume_series(rows, pd.concat([master, clash], ignore_index=True), _lineage(), ["LEN"])
+    assert series.loc[series["ticker"].eq("LEN")].empty
     print("SANITY: a mapped absent canonical class plus an ambiguous present secondary class cannot certify zero or a partial company total.")
 
 
@@ -294,9 +272,9 @@ def test_ftd_class_ratio_and_raw_quantity_use_settlement_basis() -> None:
 def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio: float) -> None:
     master = _master()
     master.loc[master["source_symbol"].eq("LENB"), "conversion_ratio"] = ratio
-    identity = _identity(master)
-    empty = pd.DataFrame(columns=[*finra.SECURITY_COLUMNS, "conversion_ratio"])
-    assert finra._checked_regsho_grain(empty, [pd.Timestamp("2026-07-01")], identity, ["LEN"]).empty
+    served = finra._parse_regsho(_file().replace("|LEN|", "|BAC|"))
+    series, _ = short_volume_series(served, master, _lineage(), ["LEN", "BAC"])
+    assert series.loc[series["ticker"].eq("LEN")].empty and series.loc[series["ticker"].eq("BAC"), "short_volume"].tolist() == [1.0]
     source = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|000000000|OTHER|1|OTHER|1\n").assign(
         period="202607a"
     )
@@ -460,71 +438,6 @@ def test_real_2026q1_insider_zip_validates_on_a_copy(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("fail", [False, True], ids=["unchanged", "rollback"])
-def test_finra_restamp_preserves_or_atomically_rolls_back_source_pair(sqlite_store: DataStore, tmp_path: Path, fail: bool) -> None:
-    context = cast(
-        Any,
-        SimpleNamespace(
-            store=sqlite_store,
-            paths={"DATA_STORE": tmp_path},
-            config=extract_config(),
-            log=logging.getLogger(__name__),
-            universe=_len_universe(sqlite_store),
-        ),
-    )
-    identity = _identity(store=sqlite_store)
-    for table, frame in identity.source_cohort.items():
-        if not frame.empty:
-            sqlite_store.save(table, frame)
-    raw = finra.stamp_short_volume(finra._parse_regsho(_file()), identity, ["LEN"])[list(finra.SECURITY_COLUMNS)]
-    if fail:
-        raw["security_id"] = "known-stale-stamp"
-    sqlite_store.save(Tables.sec_short_volume_security, raw)
-    sqlite_store.save(
-        Tables.short_interest,
-        pd.DataFrame(
-            {
-                "ticker": ["LEN"],
-                "date": pd.to_datetime(["2026-07-01"]),
-                "short_volume": [1.0],
-                "total_volume": [2.0],
-                "source_checked_at": pd.to_datetime(["2026-07-03"]),
-            }
-        ),
-    )
-    before_raw = sqlite_store.load(Tables.sec_short_volume_security)
-    assert before_raw is not None
-    before = sqlite_store.load(Tables.short_interest)
-    assert before is not None
-    writes: list[str] = []
-
-    def reject(conn: Any, cursor: Any, statement: str, parameters: Any, execution: Any, many: bool) -> None:
-        if statement.startswith("INSERT INTO"):
-            writes.append(statement)
-        if fail and statement.startswith(f"INSERT INTO {Tables.short_interest.name}"):
-            raise RuntimeError("controlled derived insertion failure")
-
-    event.listen(sqlite_store.engine, "before_cursor_execute", reject)
-    try:
-        if fail:
-            with pytest.raises(RuntimeError, match="controlled"):
-                finra.restamp_short_volume(context, ["LEN"], ["LEN"], identity=identity)
-        else:
-            assert finra.restamp_short_volume(context, ["LEN"], ["LEN"], identity=identity) == []
-            assert not writes, "Unchanged normal restamp must preserve its already joint-certified source cohort without rewriting."
-    finally:
-        event.remove(sqlite_store.engine, "before_cursor_execute", reject)
-    stored_frame = sqlite_store.load(Tables.sec_short_volume_security)
-    assert stored_frame is not None
-    pd.testing.assert_frame_equal(stored_frame, before_raw)
-    stored_frame = sqlite_store.load(Tables.short_interest)
-    assert stored_frame is not None
-    pd.testing.assert_frame_equal(stored_frame, before)
-    print(
-        "SANITY: the actual FINRA restamp skips an unchanged source cohort and a derived-write failure rolls back raw stamps and existing proof together."
-    )
-
-
 def test_captured_brkb_settlement_units_and_previous_close_notional_are_conserved() -> None:
     # Captured original rows qualified by f005-brk2010-qualified-source-control.json; no new source read.
     raw = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n" + (
@@ -636,8 +549,7 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     monkeypatch.setattr(step_module, "PURGE_TABLES", (spec,))
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(step_module, name, lambda *args: {})
-    for name in ("refresh_insider", "refresh_short_volume"):
-        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
+    monkeypatch.setattr(step_module, "refresh_insider", lambda *args, **kwargs: [])
     run_propagation(context, identity, monkeypatch, ["LEN"], full=True, as_of=pd.Timestamp("2026-10-08"))
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None

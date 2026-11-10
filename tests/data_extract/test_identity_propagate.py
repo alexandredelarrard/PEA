@@ -169,15 +169,10 @@ def _seed(store) -> None:
 
 @pytest.fixture
 def stubs(monkeypatch) -> dict[str, list]:
-    """Bulk re-parsers, the short-volume re-stamp and the derived rebuilds recorded instead of run."""
-    calls: dict[str, list] = {"notes": [], "insider": [], "short": [], "history": []}
+    """Bulk re-parsers and the derived rebuilds recorded instead of run."""
+    calls: dict[str, list] = {"notes": [], "insider": [], "history": []}
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: calls["notes"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: calls["insider"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(
-        prop,
-        "restamp_short_volume",
-        lambda context, companies, tickers, identity=None, dry_run=False: calls["short"].append(sorted(companies)) or [],
-    )
     monkeypatch.setattr(
         prop,
         "build_fundamentals_history",
@@ -394,22 +389,21 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
     print("  notes and insider bulk re-parsed for MSFT only")
 
 
-def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
-    """Short volume is no purge table: companies whose master rows changed recently are re-stamped from stored rows."""
+def test_short_volume_lines_are_stored_as_filed_and_never_propagated(sqlite_store, tmp_path, monkeypatch, stubs):
+    """Short volume is no purge table and carries no stamp: a changed master leaves its stored lines untouched."""
     context = _context(sqlite_store, tmp_path)
     sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER}))
-    sqlite_store.save(
-        Tables.sec_short_volume_security,
-        pd.DataFrame({"date": pd.to_datetime(["2024-02-01"]), "source_symbol": ["ALB"], "short_volume": [1.0], "ticker": ["ALB"]}),
-    )
+    line = pd.DataFrame({"date": pd.to_datetime(["2024-02-01"]), "source_symbol": ["ALB"], "short_volume": [1.0]})
+    sqlite_store.save(Tables.sec_short_volume_security, line)
+    before = sqlite_store.load(Tables.sec_short_volume_security)
     resolver = _identity({})
 
     run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
 
-    assert Tables.short_interest.name not in filer_tables.PURGE_TABLES_BY_NAME
-    assert stubs["short"] == [["ALB"]], stubs["short"]
-    print("\n=== SANITY CHECK: short volume re-stamp ===")
-    print("  ALB's master rows changed inside the re-check window: its stored short-volume rows are re-stamped; nothing is purged by CIK")
+    assert Tables.sec_short_volume_security.name not in filer_tables.PURGE_TABLES_BY_NAME
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.sec_short_volume_security), before)
+    print("\n=== SANITY CHECK: short volume needs no propagation ===")
+    print("  ALB's master rows changed inside the re-check window: the stored as-filed ALB line is unchanged; the cube re-maps it")
 
 
 def _master(owner_of_old: str, stamps: dict[str, pd.Timestamp]) -> pd.DataFrame:

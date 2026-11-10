@@ -560,17 +560,20 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     # The FTD line is stored as filed (CUSIP grain); `universe_cusip` maps its CUSIP to AAA.
     ftd = pd.DataFrame({"cusip": ["000000001"], "date": [SESSIONS[10]], "fails_quantity": [1.0]})
     ftd.to_sql("sec_fails_to_deliver_security", sqlite_store.engine, index=False)
-    lines = pd.DataFrame({"cusip": ["000000001"], "canonical_company": ["AAA"], "source": ["ftd"]})
+    # The FINRA lines too (symbol grain): `BRK/A`-style spellings meet the FTD key (`BBBA` here) through `finra_key`.
+    lines = pd.DataFrame(
+        {"cusip": ["000000001", "000000002"], "canonical_company": ["AAA", "BBB"], "source": ["ftd", "ftd"], "source_symbol": ["AAA", "BBBA"]}
+    )
     lines.to_sql("universe_cusip", sqlite_store.engine, index=False)
     short = pd.DataFrame(
         {
-            "ticker": ["AAA", "BBB"],
+            "source_symbol": ["AAA", "BBB/A"],
             "date": [SESSIONS[10], SESSIONS[0]],
             "short_volume": [1.0, 2.0],
             "total_volume": [10.0, 20.0],
         }
     )
-    short.to_sql("sec_short_interest", sqlite_store.engine, index=False)
+    short.to_sql("sec_short_volume_security", sqlite_store.engine, index=False)
 
     early_panel = _panel(
         ["AAA", "BBB"],

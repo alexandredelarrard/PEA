@@ -44,7 +44,7 @@ def stub_propagation(monkeypatch: pytest.MonkeyPatch, module: Any = step_module)
         lambda scopes, as_of, every: calls["recheck"].append({"tickers": sorted(scopes), "as_of": as_of, "every": every}) or [],
     )
     monkeypatch.setattr(module, "owned_scopes", lambda identity: ({}, {}))
-    for name in ("purge_rows", "refresh_insider", "refresh_short_volume"):
+    for name in ("purge_rows", "refresh_insider"):
         monkeypatch.setattr(module, name, lambda *args, **kwargs: [])
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(module, name, lambda *args, **kwargs: {})

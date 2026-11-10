@@ -216,8 +216,8 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 
 
 @cli.command(
-    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from universe_cusip, "
-    "summed per ticker by class into sec_short_interest. Day files: business days from the earlier of the latest stored "
+    help="FINRA RegSHO daily short volume: the lines of the universe companies' symbols and of the stored FTD symbols, "
+    "as filed per symbol (sec_short_volume_security); the cube sums them per ticker. Day files: business days from the earlier of the latest stored "
     "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
     "a fetch error."
 )

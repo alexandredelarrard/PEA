@@ -1,9 +1,9 @@
-"""The shared contract of `universe_cusip` lines: their role vocabulary, the change stamps of the FTD lines prepared for
-stamping (`src/utils/security_series.py` holds the FTD rules), the tape intervals a line is voted by, the FTD scope the
-ingest stores and the CUSIP history reads (lineage symbols, Sharadar / curated CUSIP-6), the co-registrant
-CIKs it leaves out and the curated `configs/sec/security_master_manual.json`.
+"""The shared contract of `universe_cusip` lines: their role vocabulary (`src/utils/security_series.py` holds the FTD and
+short-volume rules), the tape intervals a line is voted by, the FTD scope the ingest stores and the CUSIP history reads
+(lineage symbols, Sharadar / curated CUSIP-6), the co-registrant CIKs it leaves out and the curated
+`configs/sec/security_master_manual.json`.
 
-Read by the identity step (which builds the lines), the FTD and short-interest tapes, the insider lineage stamp, the
+Read by the identity step (which builds the lines), the FTD tape, the insider lineage stamp, the
 `Identity` reader and the fundamentals merges (merger metadata, reverse acquisitions, vendor exchanges).
 """
 
@@ -19,15 +19,15 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.common.identity_contract import DEI_SOURCE, ROLE_SYMBOL
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import cik_activity, cik_items, flag_rows
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
+from src.utils.security_series import ACQUIRED_CONSTITUENT as ACQUIRED_CONSTITUENT
+from src.utils.security_series import EXCLUDED as EXCLUDED
 from src.utils.security_series import SOURCE_FTD as SOURCE_FTD
+from src.utils.security_series import equity_symbol_rows as equity_symbol_rows
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash
 
-ACQUIRED_CONSTITUENT = "acquired_constituent"
-EXCLUDED = "excluded"
 ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS, ACQUIRED_CONSTITUENT, EXCLUDED)
 
 #: Two tape intervals of one symbol overlapping by more than this are concurrent, not a former listing.
@@ -45,12 +45,6 @@ _OVERRIDE_COLUMNS = ("cusip", "ticker", "source")
 
 class SecurityManualError(ValueError):
     """A `security_master_manual.json` entry without a URL or accession, or with an unknown role."""
-
-
-def master_stamps(master: pd.DataFrame) -> dict[str, pd.Timestamp]:
-    """`{canonical company: latest scope_changed_at}` over its master rows."""
-    stamps = master.dropna(subset=["canonical_company"]).groupby("canonical_company")["scope_changed_at"].max()
-    return {str(company): pd.Timestamp(stamp) for company, stamp in stamps.items() if pd.notna(stamp)}
 
 
 @dataclass(frozen=True)
@@ -197,13 +191,6 @@ def load_security_manual(config_dir: str | None = None) -> SecurityManual:
     if not path.exists():
         return SecurityManual.empty()
     return parse_security_manual(json.loads(path.read_text(encoding="utf-8")))
-
-
-def equity_symbol_rows(lineage: pd.DataFrame) -> pd.DataFrame:
-    """The lineage symbol rows a tape may key on: not noise, and not evidenced by the Notes cover page (`dei`) alone, which
-    is how a company's debt and preferred listings (ABBV28B, BRK59) enter the lineage."""
-    sources = lineage["sources"].fillna("").astype(str).str.lower()
-    return lineage[lineage["role"].eq(ROLE_SYMBOL) & lineage["status"].ne("noise") & sources.ne(DEI_SOURCE)]
 
 
 def tape_intervals(lineage: pd.DataFrame) -> pd.DataFrame:

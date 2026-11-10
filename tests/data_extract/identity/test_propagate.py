@@ -116,8 +116,7 @@ def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propaga
     published_store.save(Tables.sec_8k, frame.assign(filing_date=pd.to_datetime(frame["filing_date"])))
     tenure = {"symbol": "AAA", "issuer_cik": own, "valid_from": pd.Timestamp("2006-01-03"), "valid_to": end, "n_filings": 3}
     published_store.save(Tables.symbol_tenure, pd.DataFrame([{**tenure, "source": "form345", "evidence_period": "", "evidence": "seed"}]))
-    for name in ("refresh_insider", "refresh_short_volume"):
-        monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
+    monkeypatch.setattr(step_module, "refresh_insider", lambda *args, **kwargs: [])
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(step_module, name, lambda *args, **kwargs: {})
     monkeypatch.setattr(step_module, "rebuild_history", lambda *args, **kwargs: ())

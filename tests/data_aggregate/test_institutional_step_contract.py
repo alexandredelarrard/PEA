@@ -130,7 +130,29 @@ def ftd_lines(rows: Sequence[tuple[str, str, str, float, str]]) -> pd.DataFrame:
     return frame.assign(trade_date=trade_dates(frame["date"]), description="", price=1.0, fails_value=frame["fails_quantity"])
 
 
+def short_lines(symbol: str, days: pd.DatetimeIndex, short: Any, total: Any) -> pd.DataFrame:
+    """As-filed `sec_short_volume_security` lines of one symbol."""
+    return pd.DataFrame(
+        {"date": days, "source_symbol": symbol, "market": "Q", "short_volume": short, "short_exempt_volume": 0.0, "total_volume": total}
+    )
+
+
+def lineage_rows(tickers: Sequence[str], extra: Sequence[tuple[str, str, str, str, str | None, str | None]] = ()) -> pd.DataFrame:
+    """`universe_cik_symbol` rows: one open window per ticker, plus `extra` (ticker, cik, role, symbol, valid_from, valid_to)."""
+    rows = [(ticker, f"{number:010d}", "cik_window", "", None, None) for number, ticker in enumerate(tickers, start=1)] + list(extra)
+    frame = pd.DataFrame(rows, columns=["canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to"])
+    return frame.assign(
+        company_id="E" + frame["canonical_ticker"],
+        valid_from=pd.to_datetime(frame["valid_from"].fillna("1900-01-01")),
+        valid_to=pd.to_datetime(frame["valid_to"]),
+        status="corroborated",
+        sources="form345",
+    )
+
+
 def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AAA has no FTD line: its FINRA symbols OLD (predecessor window CIK 123 until 01-03) and NEW (CIK 456 after) map
+    through the lineage; OTHER is no AAA symbol."""
     idx = pd.date_range("2024-01-02", periods=3)
     sqlite_store.save(
         Tables.sec_short_volume_security,
@@ -138,31 +160,38 @@ def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monke
             {
                 "date": idx,
                 "source_symbol": ["OLD", "OTHER", "NEW"],
-                "ticker": ["AAA", "OTHER", "AAA"],
-                "security_id": ["S0000000123:OLD", "S0000000999:OTHER", "S0000000456:NEW"],
-                "lineage_role": "canonical_current",
-                "security_class": "common",
+                "market": "Q",
+                "short_volume": 1.0,
+                "short_exempt_volume": 0.0,
+                "total_volume": 2.0,
             }
         ),
     )
-    calls: list[dict[str, Any]] = []
-    original = sqlite_store.iter_load
+    lineage = lineage_rows(
+        [],
+        [
+            ("AAA", "0000000123", "cik_window", "", None, "2024-01-03"),
+            ("AAA", "0000000456", "cik_window", "", "2024-01-03", None),
+            ("AAA", "0000000123", "symbol", "OLD", "2020-01-02", "2024-01-03"),
+            ("AAA", "0000000456", "symbol", "NEW", "2024-01-03", None),
+        ],
+    )
+    calls: list[tuple[Any, dict[str, Any]]] = []
+    original = sqlite_store.load
 
     def capture(table: Any, **kwargs: Any) -> Any:
-        assert table is Tables.sec_short_volume_security
-        calls.append(kwargs)
+        calls.append((table, kwargs))
         return original(table, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    observed = institutional_step.institutional_inputs.load_finra_tenure(sqlite_store, ["AAA"])
+    monkeypatch.setattr(sqlite_store, "load", capture)
+    _, observed = institutional_step.institutional_inputs.load_short_volume(sqlite_store, ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage)
     support = institutional_step.short_flow._proven_tenure_mask(idx, pd.Index(["AAA"]), None, observed)
     assert support["AAA"].tolist() == [True, False, True]
-    assert len(calls) == 1
-    assert calls[0]["columns"] == ("date", "ticker", "security_id", "lineage_role", "security_class")
-    assert calls[0]["where"] == {"ticker": ["AAA"], "lineage_role": ["canonical_predecessor", "canonical_current"]}
-    print(
-        "SANITY: one projected/company-scoped FINRA stream preserves observed predecessor/current support without bridging an unsupported date or requiring operational stamps."
-    )
+    assert observed is not None and observed["security_id"].tolist() == ["S0000000123:OLD", "S0000000456:NEW"]
+    assert [table for table, _ in calls] == [Tables.sec_short_volume_security]
+    assert calls[0][1]["columns"] == ["date", "source_symbol", "short_volume", "total_volume"]
+    print("SANITY: one projected read of the as-filed FINRA lines; the lineage fallback supports AAA on its OLD (predecessor) and NEW (current)")
+    print("  dates only, never bridging the OTHER date.")
 
 
 @pytest.mark.parametrize("conflict", [False, True], ids=["observed-legacy-control", "outside-universe-conflict"])
@@ -175,7 +204,8 @@ def test_public_step_checks_market_owners_outside_its_universe(
         competing = primary.assign(canonical_company="OTHER", market_symbol="OTHER", source_symbol="OLD")
         primary = pd.concat([primary, competing], ignore_index=True)
     sqlite_store.save(Tables.universe_cusip, primary)
-    sqlite_store.save(Tables.short_interest, pd.DataFrame({"ticker": "AAA", "date": idx, "short_volume": 400.0, "total_volume": 1_000.0}))
+    sqlite_store.save(Tables.universe_cik_symbol, lineage_rows(["AAA"]))
+    sqlite_store.save(Tables.sec_short_volume_security, short_lines("AAA", idx, 400.0, 1_000.0))
     frames = PriceFrames(
         trading_index=idx,
         universe=("AAA",),
@@ -316,7 +346,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     assert all(kwargs == {"columns": ["date", "ticker", *step._FIELDS], "since": None} for kwargs in price_reads)
     assert all(kwargs["where"] == {"ticker": list(names)} and kwargs["markers"] and "since" not in kwargs for kwargs in insider_reads)
     assert all({"issuer_cik", "lineage_role"}.issubset(kwargs["columns"]) for kwargs in insider_reads)
-    for table in (Tables.short_interest, Tables.sec_13d, Tables.sec_13g):
+    for table in (Tables.sec_13d, Tables.sec_13g):
         projected = [kwargs for source, kwargs in reads if source is table]
         assert len(projected) == 5 and all(kwargs == {"project": True, "where": {"ticker": list(names)}} for kwargs in projected)
     print("SANITY: 491 calculation names/982 owner-history rows reach five public builds; 15 deliveries match exactly across batches/order, NULLs and counts.")
@@ -720,10 +750,8 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
     )
     sqlite_store.save(Tables.universe_cusip, market_lines(["AAA"], days[0]))
     as_traded = pd.Series([4.0 if after else 1.0 for after in split], index=days)
-    sqlite_store.save(
-        Tables.short_interest,
-        pd.DataFrame({"ticker": "AAA", "date": days, "short_volume": 100.0 * as_traded.values, "total_volume": 1_000.0 * as_traded.values}),
-    )
+    sqlite_store.save(Tables.universe_cik_symbol, lineage_rows(["AAA"]))
+    sqlite_store.save(Tables.sec_short_volume_security, short_lines("AAA", days, 100.0 * as_traded.values, 1_000.0 * as_traded.values))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-25", "000000001", "AAA", 100.0, "202401b")]))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)

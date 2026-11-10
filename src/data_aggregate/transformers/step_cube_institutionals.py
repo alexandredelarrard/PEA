@@ -161,13 +161,12 @@ class StepCubeInstitutionals(Step):
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)
 
     def _short_flow_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
-        # Load observed fallback only for companies without any adjudicated master evidence; clean the raw class tape once.
-        known = set(lines["canonical_company"].dropna()) if lines is not None else set()
+        # Build the short-volume series and its lineage-fallback evidence and the FTD series from the as-filed lines; clean the raw class tape once.
+        lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_classes = (
             lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)] if lines is not None else None
         )
-        df_finra = institutional_inputs.load_finra_tenure(self._store, sorted(set(frames.universe) - known))
-        df_short = capital_inputs.load_source(self._store, Tables.short_interest, frames.universe)
+        df_short, df_finra = institutional_inputs.load_short_volume(self._store, frames.universe, lines, lineage)
         df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe, lines, self._bugfix)
         df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._store, df_classes), self._bugfix)
 

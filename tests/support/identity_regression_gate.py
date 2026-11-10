@@ -31,12 +31,13 @@ from src.data_extract.utils.common.identity import FilingScope, Identity, Unknow
 from src.data_extract.utils.common.identity_contract import entity_by_cik_map, entity_or_singleton  # noqa: E402
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
-from src.data_extract.utils.identity.cik_history import d19_allowlist, manual_lineage_blob
-from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
 from src.utils.predecessor_series import load_predecessor_series  # noqa: E402
-from src.utils.security_series import SUMMED_ROLES  # noqa: E402
+from src.utils.security_series import (
+    SUMMED_ROLES,  # noqa: E402
+    finra_key,  # noqa: E402
+)
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol  # noqa: E402
 
 log = logging.getLogger("identity_regression_gate")
@@ -1039,17 +1040,14 @@ _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
     "universe_cik_symbol": (Tables.universe_cik_symbol, None),
     "symbol_tenure": (Tables.symbol_tenure, None),
     "roster": (Tables.universe_tickers, ("ticker", "cik")),
-    "short_interest": (Tables.short_interest, ("ticker", "date", "short_volume", "total_volume")),
     "insider": (Tables.insider_transactions, (*_INSIDER_KEY, "ticker", "issuer_cik", "filing_date")),
     "merged": (Tables.sharadar_fundamentals_history, tuple(Tables.sharadar_fundamentals_history.read_columns)),
     "prices": (Tables.prices, ("ticker", "date", "open", "high", "low", "close_split", "close_total", "volume")),
 }
 _UNSCOPED = {"universe_cik_symbol", "symbol_tenure", "roster"}
 _MASTER_COLUMNS = ("security_id", "valid_from", "valid_to", "lineage_role", "lineage_reason", "conversion_ratio", "issuer_cik", "exchange")
-#: The stamped tape's before stamps and the master behind them, dumped unscoped when the store has them: name -> (table, columns,
-#: raw-line key).
+#: The master behind the snapshot, dumped unscoped when the store has it: name -> (table, columns, raw-line key).
 _STAMPS: dict[str, tuple[Any, tuple[str, ...], tuple[str, ...]]] = {
-    "finra_stamps": (Tables.sec_short_volume_security, ("source_symbol", "date", "security_id", "ticker", "lineage_role"), ("source_symbol", "date")),
     "master": (Tables.universe_cusip, _MASTER_COLUMNS, ()),
 }
 
@@ -1121,74 +1119,6 @@ def _old_ciks(lineage: pd.DataFrame, roster: pd.DataFrame) -> dict[str, frozense
     return out
 
 
-def _raw_tape(store: Any, table: Any, values: Sequence[str]) -> pd.DataFrame:
-    """Every stored raw line of one tape (`quantity` = its first value column)."""
-    columns = ["date", "source_symbol", "security_id", "ticker", "lineage_role", "security_class", *values]
-    present = set(store.columns(table))
-    columns += [c for c in ("cusip", "trade_date") if c in present]
-    frame = _stream(store, table, columns, None) if present else pd.DataFrame(columns=columns)
-    frame["date"] = pd.to_datetime(frame["date"])
-    frame["trade_date"] = pd.to_datetime(frame["trade_date"]) if "trade_date" in frame.columns else frame["date"]
-    for column in values:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame["quantity"] = frame[values[0]]
-    return frame
-
-
-def _tape_section(
-    store: Any, snap_dir: Path, master: pd.DataFrame, resolver: LegacyTapeResolver, universe: list[str], tickers: Sequence[str] | None
-) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Per raw row diff of the stamped tape (FINRA; the FTD lines are stored as filed, with no stamp or ticker grain),
-    the ticker-grain residual against the stored before table (every before day), and the
-    stored after ticker table against the sum of the new stamps."""
-    specs = (("finra", Tables.sec_short_volume_security, "short_interest", ("short_volume", "total_volume")),)
-    frames, stats = [], {}
-    scope = set(tickers) if tickers else None
-    judged = set(universe) & scope if scope is not None else set(universe)
-    stamped = (snap_dir / "master.parquet").is_file()
-    for source, table, before_name, values in specs:
-        before = _snap(snap_dir, before_name)
-        if not store.exists(table) and not before.empty:
-            raise FileNotFoundError(f"the after store has no `{table.name}` while the snapshot holds {len(before):,} `{before_name}` row(s)")
-        stored = _raw_tape(store, table, values)
-        frontier = pd.to_datetime(before["date"]).max() if not before.empty else pd.NaT
-        new_rows = stored["date"] > frontier if not pd.isna(frontier) else pd.Series(False, index=stored.index)
-        raw = stored[~new_rows].reset_index(drop=True)
-        stats[f"{source}_raw_rows"], stats[f"{source}_rows_after_snapshot"] = len(raw), int(new_rows.sum())
-        before_scoped = before if scope is None else before[before["ticker"].isin(scope)]
-        stamps_name = f"{source}_stamps"
-        if stamped and (snap_dir / f"{stamps_name}.parquet").is_file():
-            raw_before = stamped_view(raw, _snap(snap_dir, stamps_name), _STAMPS[stamps_name][2])
-            old_master = _snap(snap_dir, "master")
-            summed = raw_before["lineage_role"].isin(SUMMED_ROLES) & raw_before["ticker"].isin(set(universe))
-            old = _text(raw_before["ticker"].where(summed))
-            old_ratio = master_facts(raw_before, old_master)["conversion_ratio"].astype("float64")
-            diff = tape_diff(raw, master, resolver, universe, source, old, old_ratio)
-            residual = after_grain_residual(raw_before, old_master, before_scoped, values, judged, source, side="before")
-        else:
-            old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe)
-            diff = tape_diff(raw, master, resolver, universe, source, old)
-            residual = grain_residual(raw, old.where(old.isin(scope), "") if scope else old, before_scoped, values, source)
-        if scope is not None:
-            diff = diff[diff["old_canonical_issuer"].isin(scope) | diff["new_canonical_issuer"].isin(scope)]
-        after = _read(store, before_name, tickers)
-        after_residual = after_grain_residual(stored, master, after, values, judged, source)
-        stats[f"{source}_after_ticker_rows"] = len(after)
-        frames += [diff, residual, after_residual]
-    return pd.concat(frames, ignore_index=True), stats
-
-
-def stamped_view(raw: pd.DataFrame, stamps: pd.DataFrame, key: Sequence[str]) -> pd.DataFrame:
-    """The raw lines as the snapshot stamped them: its `ticker`, `lineage_role` and `security_id` by raw-line key (a line
-    the snapshot lacks carries no stamp)."""
-    columns = list(key)
-    keys = raw[columns].assign(date=pd.to_datetime(raw["date"]))
-    before = stamps.assign(date=pd.to_datetime(stamps["date"])).drop_duplicates(columns)
-    joined = keys.merge(before, on=columns, how="left").set_axis(raw.index)
-    security = joined["security_id"].where(joined["security_id"].notna(), raw["security_id"])
-    return raw.assign(ticker=joined["ticker"], lineage_role=joined["lineage_role"], security_id=security)
-
-
 SECTIONS = ("filing", "tape", "insider", "merged", "prices")
 
 
@@ -1208,7 +1138,7 @@ def run_diff(
     scope = [normalise_ticker(t) for t in tickers] if tickers else None
     _check_scope(snap_dir, scope)
     identity = load_identity(context, refresh=True)
-    old_lineage, old_tenure, old_roster = _snap(snap_dir, "universe_cik_symbol"), _snap(snap_dir, "symbol_tenure"), _snap(snap_dir, "roster")
+    old_lineage, old_roster = _snap(snap_dir, "universe_cik_symbol"), _snap(snap_dir, "roster")
     master = store.load(Tables.universe_cusip, optional=True)
     master = (
         master
@@ -1232,11 +1162,8 @@ def run_diff(
     if "filing" in sections:
         frames["filing"] = _filing_section(store, snap_dir, identity, _old_ciks(old_lineage, old_roster), scope)
     if "tape" in sections:
-        resolver = LegacyTapeResolver(
-            old_lineage, old_tenure, old_roster, allowlist=d19_allowlist(manual_lineage_blob(config_dir)), redundant=context.universe.alias_symbols
-        )
-        tape, stats = _tape_section(store, snap_dir, master, resolver, context.universe.tickers, scope)
-        frames["tape"] = explain_listed_rows(tape, load_hypotheses(config_dir))
+        # no stamped market tape is left: the FTD and FINRA lines are stored as filed and the cube maps them (P4, P5)
+        frames["tape"] = pd.DataFrame(columns=TAPE_COLUMNS)
     if "insider" in sections:
         frames["insider"] = _insider_section(store, snap_dir, identity, scope)
     if "merged" in sections:

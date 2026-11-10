@@ -288,16 +288,6 @@ class Tables:
     # its own frontier rather than the price one.
     # NOT a market-cap input -- see the table comment in sql/schema.sql.
     prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
-    short_interest = Table(
-        "sec_short_interest",
-        ("ticker", "date"),
-        date_col="date",
-        freshness="daily",
-        read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume", "source_checked_at"),
-        optional_columns=frozenset({"short_interest", "avg_daily_volume", "source_checked_at"}),
-        # The first day FINRA serves; earlier never-stored days are not requested.
-        resume=Resume(RESUME_SERIES, "ticker", "date", 7, source_start="2018-08-01"),
-    )
     # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line as filed (no summing),
     # keyed on the CUSIP the file reports, source columns only. `zips-ingest --only ftd` stores
     # the lines of the universe companies' lineage symbols and CUSIP-6 prefixes and resumes on the
@@ -327,31 +317,20 @@ class Tables:
         ),
     )
     # FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
-    # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities. The four
-    # stamp columns come from `universe_cusip` (a symbol never seen in FTD: the P21 lineage fallback,
-    # `security_id` `S<cik>:<symbol>`); NULL when the symbol's security is known but not on that date.
-    # `short-interest` rebuilds the ticker-grain `short_interest` from these rows and plans its day files
-    # on that table's per-ticker windows; one day file serves every symbol, so this table has one
-    # market-wide frontier (no key) from FINRA's first served day.
+    # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities, source
+    # columns only. `short-interest` stores the lines of the universe companies' symbols and of the
+    # stored FTD symbols; the institutionals cube maps them to companies and sums the classes. One day
+    # file serves every symbol, so this table has one market-wide frontier (no key) from FINRA's first
+    # served day; earlier never-stored days are not requested.
     sec_short_volume_security = Table(
         "sec_short_volume_security",
         ("source_symbol", "date"),
+        ticker_col=None,
         date_col="date",
         date_type_cols=("date",),
         freshness="daily",
         resume=Resume(RESUME_SERIES, None, "date", 7, source_start="2018-08-01"),
-        read_columns=(
-            "date",
-            "source_symbol",
-            "market",
-            "short_volume",
-            "short_exempt_volume",
-            "total_volume",
-            "security_id",
-            "ticker",
-            "lineage_role",
-            "security_class",
-        ),
+        read_columns=("date", "source_symbol", "market", "short_volume", "short_exempt_volume", "total_volume"),
     )
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two
     # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,

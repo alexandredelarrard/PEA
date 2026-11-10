@@ -898,7 +898,7 @@ def _trading_days(*spans: tuple[str, str, str]) -> pd.DataFrame:
 
 
 def _finra_hit(build: CusipHistory, lineage: pd.DataFrame, roster_pair: tuple[str, str], symbol: str, day: str):
-    """How a stored FINRA row of `symbol` on trade date `day` is stamped (`stamp_short_volume` resolves by FTD symbol)."""
+    """How a stored FINRA row of `symbol` on trade date `day` maps to a security (the cube resolves it by FTD symbol)."""
     return _identity(lineage, roster_pair, build.rows).security_on(symbol=symbol, source="ftd", day=pd.Timestamp(day))
 
 

@@ -84,12 +84,12 @@ def test_q2c_short_volume_security_table_is_registered_and_spliced() -> None:
         '"source_symbol" TEXT NOT NULL',
         '"market" TEXT',
         '"short_exempt_volume" DOUBLE PRECISION',
-        '"security_class" TEXT',
     ):
         assert column in persisted, column
-    assert "sec_short_interest" in blocks and "ix_sec_short_volume_security_ticker" in schema_sql
+    assert '"ticker"' not in persisted and '"security_class"' not in persisted, "the FINRA lines are stored as filed: no identity stamp"
+    assert "sec_short_interest" not in blocks and "ix_sec_short_volume_security_ticker" not in schema_sql
     print("\n=== SANITY CHECK: Q2c DDL ===")
-    print("  sec_short_volume_security registered with PK (source_symbol, date) and hand-spliced; sec_short_interest's block kept")
+    print("  sec_short_volume_security registered with PK (source_symbol, date), source columns only; sec_short_interest removed")
 
 
 def test_price_owner_windows_is_registered_and_spliced() -> None:

@@ -300,22 +300,10 @@ CREATE TABLE IF NOT EXISTS "prices_splits" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] sec_short_interest  (pk: ticker, date)
-
-CREATE TABLE IF NOT EXISTS "sec_short_interest" (
-    "source_checked_at" TIMESTAMP,
-    "date" TIMESTAMP NOT NULL,
-    "ticker" TEXT NOT NULL,
-    "short_volume" DOUBLE PRECISION,
-    "total_volume" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "date")
-);
-
 -- [extract] sec_short_volume_security  (pk: source_symbol, date)
 -- FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
--- (case kept), `market` the reporting facilities. The four stamp columns come from universe_cusip;
--- NULL when the symbol's security is known but not on that date. short-interest rebuilds
--- sec_short_interest from these rows.
+-- (case kept), `market` the reporting facilities, source columns only. The institutionals cube maps
+-- the lines to companies and sums the classes.
 
 CREATE TABLE IF NOT EXISTS "sec_short_volume_security" (
     "date" DATE NOT NULL,
@@ -324,13 +312,8 @@ CREATE TABLE IF NOT EXISTS "sec_short_volume_security" (
     "short_volume" DOUBLE PRECISION,
     "short_exempt_volume" DOUBLE PRECISION,
     "total_volume" DOUBLE PRECISION,
-    "security_id" TEXT,
-    "ticker" TEXT,
-    "lineage_role" TEXT,
-    "security_class" TEXT,
     PRIMARY KEY ("source_symbol", "date")
 );
-CREATE INDEX IF NOT EXISTS ix_sec_short_volume_security_ticker ON "sec_short_volume_security" ("ticker");
 
 -- [extract] sec_fails_to_deliver_security  (pk: cusip, date)
 -- SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line as filed, no summing, source columns only.

@@ -34,7 +34,6 @@ def sqlite_store(sqlite_store):
             Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
             Tables.sec_short_volume_security,
-            Tables.short_interest,
         ],
     )
     return sqlite_store

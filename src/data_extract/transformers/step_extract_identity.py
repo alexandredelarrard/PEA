@@ -89,7 +89,6 @@ from src.data_extract.utils.identity.identity_propagate import (
     rebuilt_since,
     recheck_tickers,
     refresh_insider,
-    refresh_short_volume,
     reparse_insider,
     reparse_notes,
 )
@@ -416,7 +415,7 @@ class StepExtractIdentity(Step):
 
     def run_propagate(self) -> PropagationResult:
         """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
-        scope, re-parse, re-stamp the insider and short-volume rows, rebuild purged histories. A first build or
+        scope, re-parse, re-stamp the insider rows, rebuild purged histories. A first build or
         `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
         # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49), bound to
         # the universe re-read after the publish (the cached one predates this run's end dates, symbols and CIKs)
@@ -437,12 +436,11 @@ class StepExtractIdentity(Step):
         records = [record for spec in PURGE_TABLES for record in purge_rows(self._context, spec, changed, owned, identity.bounds, dry_run)]
 
         # expansion and re-stamps: the bulk re-parse of the scopes this run changed (X90: every cached zip, so once per change;
-        # not on a dry run), then the insider, FTD and short-volume rows
+        # not on a dry run), then the insider rows
         reparsed = changed if every else rebuilt_since(scopes, self._started)
         notes = {} if dry_run else reparse_notes(self._context, reparsed, scopes, identity)
         insider = {} if dry_run else reparse_insider(self._context, reparsed, scopes, identity, self._run_date)
         records += refresh_insider(self._context, identity, changed, dry_run)
-        records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)
 
         # post-process: the history of every ticker whose facts were purged; one summary
         removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))

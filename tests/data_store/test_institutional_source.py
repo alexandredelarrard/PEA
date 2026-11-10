@@ -24,7 +24,6 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
             Tables.universe_cusip,
             Tables.insider_transactions,
             Tables.insider_footnotes,
-            Tables.short_interest,
             Tables.sec_short_volume_security,
             Tables.sec_fails_to_deliver_security,
         ],
@@ -118,13 +117,12 @@ def test_source_pair_rolls_back_payload_and_retained_proof(sqlite_store: DataSto
 
 
 def test_legacy_projection_does_not_add_proof_columns(sqlite_store: DataStore) -> None:
-    sqlite_store.save(
-        Tables.short_interest, pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2026-07-01"]), "short_volume": [1.0], "total_volume": [2.0]})
-    )
-    rows = sqlite_store.load(Tables.short_interest, project=True)
+    line = pd.DataFrame({"date": pd.to_datetime(["2026-07-01"]), "source_symbol": ["AAA"], "short_volume": [1.0], "total_volume": [2.0]})
+    sqlite_store.save(Tables.sec_short_volume_security, line)
+    rows = sqlite_store.load(Tables.sec_short_volume_security, project=True)
     assert rows is not None and rows["short_volume"].tolist() == [1.0]
-    assert "source_checked_at" not in rows and "source_checked_at" not in sqlite_store.columns(Tables.short_interest)
-    print("SANITY: physically absent legacy proof columns preserve explicit observations and projection performs no DDL.")
+    assert "source_checked_at" not in rows and "source_checked_at" not in sqlite_store.columns(Tables.sec_short_volume_security)
+    print("SANITY: the projection of an as-filed source table preserves explicit observations and performs no DDL.")
 
 
 def test_partial_patch_and_deleted_accession_keep_full_payload_atomic(sqlite_store: DataStore) -> None:

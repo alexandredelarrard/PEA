@@ -386,18 +386,17 @@ def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], d
 
 
 def activity_evidence(context: Context, ciks: Iterable[str]) -> Evidence:
-    """(padded cik, period) 13F activity of `ciks` from `sec13f_hr` and `sec13f_manager_holdings`: projected,
-    CIK-scoped reads that match both padded and unpadded stored CIKs."""
+    """(padded cik, period) 13F activity of `ciks` from `sec13f_hr`: a projected, CIK-scoped read that matches both
+    padded and unpadded stored CIKs."""
     padded = sorted({p for c in ciks if (p := pad_cik(c))})
     if not padded:
         return set()
     forms = padded + [c.lstrip("0") for c in padded]
     out: Evidence = set()
-    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-        for chunk in context.store.iter_load(table, columns=["cik", "period"], where={"cik": forms}):
-            pairs = chunk.drop_duplicates()
-            periods = pd.to_datetime(pairs["period"], errors="coerce")
-            out |= {(c, p.date()) for c, p in zip(pad_cik_series(pairs["cik"]), periods, strict=True) if c and pd.notna(p)}
+    for chunk in context.store.iter_load(Tables.sec13f_hr, columns=["cik", "period"], where={"cik": forms}):
+        pairs = chunk.drop_duplicates()
+        periods = pd.to_datetime(pairs["period"], errors="coerce")
+        out |= {(c, p.date()) for c, p in zip(pad_cik_series(pairs["cik"]), periods, strict=True) if c and pd.notna(p)}
     return out
 
 
@@ -407,7 +406,7 @@ def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
     context.ensure_edgar_identity()
     configure(context)
     try:
-        listing = company_filings(company(int(cik)), cast(Resume, Tables.sec13f_manager_holdings.resume).forms)
+        listing = company_filings(company(int(cik)), cast(Resume, Tables.sec13f_hr.resume).forms)
         frame = listing.to_pandas() if listing else pd.DataFrame(columns=["reportDate"])
     except Exception as e:
         raise EdgarListingError(

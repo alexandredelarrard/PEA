@@ -567,7 +567,7 @@ def _synth_fundamentals_rich():
     need. Hand-computable so the ratios can be checked exactly.
 
     ⚠ THE COLUMN NAMES ARE THE LIVE ONES, and that is the point of this fixture. It used to
-    carry `acquisitions` and `goodwill`, neither of which `fundamentals_history` has: the
+    carry `acquisitions` and `goodwill`, neither of which `sharadar_fundamentals_history` has: the
     cash-flow leg is `businessAcquisitionsNet` and the balance is Sharadar's COMBINED
     `intangibles`. A synthetic frame that invents column names cannot fail when the builder
     reads a column no producer writes -- which is exactly how 65 features emitted nothing

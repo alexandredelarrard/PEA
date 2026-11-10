@@ -1090,6 +1090,33 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Scope: `sec13f_hr` rows keep the company-level ticker stored at extraction; manager books are tagged through `CusipTags`; `common/class_lines.py` removed (class lines read from `universe_cusip`); the price identity reads `universe_cik_symbol`. P1 removed from the TODO.
 - Pages: [Cube aggregation](./modules/data-aggregate.md), [Table catalog](./reference/table-catalog.md), [TODO](./TODO.md).
 
+## 2026-11-08: refresh — independent SEC and Sharadar fundamentals
+
+- Profile: internal/standard; branch `harness/sec-sharadar-fundamentals-split`.
+- source_commit: 39b261e8 (was 1c36d16f)
+- Scope: tables `sec_fundamentals_facts`, `sec_fundamentals_history`, `sharadar_fundamentals_facts` and `sharadar_fundamentals_history`; the facts walk is the seventh `StepExtractEdgar` walk (original 10-K and 10-Q only); SEC history 66 columns, originals only, fast replay; Sharadar history 77 columns with no SEC read; `fundamentals-check` (thresholds in `data_extract.fundamentals_check`); the cube joins three `sec_*` columns on the exact `(ticker, as_of)` key with no buffer; DAG `identity >> edgar_index >> sec_fundamentals_facts >> sec_fundamentals_history`, `identity >> fundamentals_sharadar`, both histories `>> fundamentals_check`; commands `sec-fundamentals-facts`, `sec-fundamentals-history`, `fundamentals-check`; runbook notes for a facts `-F` re-read and for a lineage change; reason-code output, override register, gap check and the sweep, sweep-report, cube-evidence, basis-baseline and table-recreation scripts removed. TODO: facts-walk P2, gap-check P3, TRS-3 and replay-cost P1 closed; DF-1 to DF-6 and five follow-ups added.
+- Pages: [Table catalog](./reference/table-catalog.md), [Data extraction](./modules/data-extract.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Point-in-time data](./concepts/point-in-time-data.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Data access](./guides/data-access.md), [TODO](./TODO.md).
+
+## 2026-11-09: refresh — offline import chain for the SEC history (P9b)
+
+- Profile: internal/standard; branch `harness/sec-sharadar-fundamentals-split`.
+- Pure moves, no logic change: the live `Company` listing walk (`resolve_registrant_filings` and its scope guard) and `header_subject_ciks` from `common/registrant.py` to `edgar_extract/edgar_driver.py`; the identity row contract (role and source labels, `SENTINEL_START`, identity errors, CIK -> `company_id` helpers, `DEI_SOURCE`) from `identity/cik_history.py` and `identity/symbol_tenure.py` to `common/identity_contract.py`; `period_end` from `common/bulk_cache.py` to `common/resume.py`. Importing `step_extract_fundamentals` now loads neither `edgar` nor `sec_io`.
+- Pages: [Data extraction](./modules/data-extract.md), [Data sources](./reference/data-sources.md).
+
+## 2026-11-09: refresh (sec13f-cube-speed Phase 8)
+
+- Profile: internal/standard
+- source_commit: harness/sec13f-cube-speed (Phase 8)
+- Coverage: 13F cube read scope (universe rows plus whole amended books; whole roster books by literal CIK list), event-difference broad engine, summarize-once superinvestor engine on `sec13f_hr`, implied-price whole-book pricing without a split rule, superinvestor start date at the `sec13f_hr` availability date; `sec13f_manager_holdings` retired in code (the user runs the live DROP after re-extraction); dead links to the deleted aggregate `institutional_vintages.py` and the deleted `roster_as_of` removed; call-depth rule (3 levels below `run()` plus one flat numpy/pandas/regex/stdlib handler, deepest chain) aligned in coding standards and the harness-refactor checklist
+- Pages: [Cube aggregation](./modules/data-aggregate.md), [Data extraction](./modules/data-extract.md), [Runtime and shared utilities](./modules/runtime-and-shared-utils.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Live database](./reference/live-database.md), [Data access](./guides/data-access.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Run the pipeline](./guides/run-the-pipeline.md), [Coding standards](./guides/coding-standards.md), [TODO](./TODO.md)
+
+## 2026-11-09: refresh (sec13f-cube-speed review 01)
+
+- Profile: internal/standard
+- source_commit: fix/sec13f-cube-speed/review-01
+- Coverage: one-table 13F wording (`sec13f_hr` is the only destination of the walk, the managers catch-up, the backfill resume and recovery; cube reads described per family); `roster_as_of` (deleted) references replaced by `roster_map_as_of`; cutover note: after merging, pause the DAG, run `build-sec-thirteen -F`, then `assemble-cube`, because an incremental run would keep older rows on the previous whole-book definitions (R-C-01)
+- Pages: [Data sources](./reference/data-sources.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Cube build](./flows/cube-build.md), [Configuration](./reference/configuration.md), [Table catalog](./reference/table-catalog.md), [Run the pipeline](./guides/run-the-pipeline.md)
+
 ## 2026-11-09: refresh — EDGAR text tables feed the employees and DEF 14A LLM steps
 
 - Profile: internal/standard; branch `harness/edgar-text-llm-split` from `dev` @ `46a5ec05`.
@@ -1112,3 +1139,9 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Scope: D-05 (domain libraries with uncapped depth) replaced by the 4-level rule: shared code (`src/utils`, `src/data_store`, `sec_io`, identity/resume/index/worklist, HTML and table parsers, `gpt_extract`, the drivers) is a leaf; step-flow and domain modules are counted. The shape test gates the EDGAR text and LLM text step flows (no allowlist, green); `employee_guard.ticker_rows` is flat; the domain modules' remaining depth is a P2 [TODO](./TODO.md#edgar-text-tables-follow-ups-2026-11-09).
 - Parity: replay goldens 0 diffs vs `p2a` apart from the run-date floor line; evidence in the local run dir `reports/validate/2026-11-09-edgar-text-followup/` (`fixes/F-003.md`).
 - Pages: [Coding standards](./guides/coding-standards.md), [Testing and validation](./guides/testing.md), [TODO](./TODO.md).
+
+## 2026-11-10: refresh — merge `dev` into `harness/edgar-text-followup`
+
+- Profile: internal/standard; `dev` @ `18d1259e` merged into `harness/edgar-text-followup` @ `2ab79e0b` (base `46a5ec05`).
+- Scope: both sides kept. `StepExtractEdgar` runs eight walks (insider, 13D, 13G, 8-K, filing text, employees text, DEF 14A text, SEC fundamentals facts); the DAG adds `sec_fundamentals_facts >> sec_fundamentals_history`, `[sec_fundamentals_history, fundamentals_sharadar] >> fundamentals_check` and keeps the text walks and LLM passes. Table creation has two coherent paths: `managed=False` tables (cube parts, the four fundamentals tables) are created by `ensure_table` from the producer's frame; the EDGAR text tables and DEF 14A output tables are created from their `sql/schema.sql` block by `create_declared`. The live `Company` listing walk that `dev` moved into `edgar_driver` is dropped (no caller after the text split); `header_subject_ciks` stays in `edgar_driver`, so `registrant.py` imports no SEC client. `dev` code adapted to this branch's rules: `EdgarScope` -> `Identity` in the facts parser and its tests. The call-depth rule kept is this branch's 4-level rule with shared code a leaf.
+- Pages: [Coding standards](./guides/coding-standards.md), [Configuration](./reference/configuration.md), [Table catalog](./reference/table-catalog.md), [Data store](./modules/data-store.md), [Data extraction](./modules/data-extract.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Data sources](./reference/data-sources.md), [TODO](./TODO.md).

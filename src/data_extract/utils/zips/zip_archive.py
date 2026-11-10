@@ -10,7 +10,8 @@ from pathlib import Path
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached, period_end, stored_period_clock
+from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached, stored_period_clock
+from src.data_extract.utils.common.resume import period_end
 from src.data_store.schema import Table
 
 

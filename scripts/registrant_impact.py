@@ -59,8 +59,8 @@ IMPACTED: dict[str, tuple[str | None, str | None, str | None]] = {
     "sec_13g": ("ticker", "filing_date", "cik"),
     "sec_filing_text": ("ticker", "filed", "cik"),
     # tier B -- dated-split consumers
-    "fundamentals_facts": ("ticker", "filing_date", "cik"),
-    "fundamentals_history_sec": ("ticker", "as_of", None),
+    "sec_fundamentals_facts": ("ticker", "filing_date", "cik"),
+    "sec_fundamentals_history": ("ticker", "as_of", None),
     "def14a_llm": ("ticker", "as_of", None),
     "def14a_directors": ("ticker", "as_of", "cik"),
     "def14a_executive_comp": ("ticker", "as_of", "cik"),
@@ -72,7 +72,7 @@ IMPACTED: dict[str, tuple[str | None, str | None, str | None]] = {
     "notes_num": ("ticker", "filed", "cik"),
     "notes_text": ("ticker", "filed", "cik"),
     # the merged fundamentals table every cube consumer actually reads
-    "fundamentals_history": ("ticker", "as_of", None),
+    "sharadar_fundamentals_history": ("ticker", "as_of", None),
 }
 
 #: The eight cube parts plus the assembled cube. Measured separately because their delta is

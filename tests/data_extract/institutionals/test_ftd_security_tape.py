@@ -359,7 +359,7 @@ def _fixture_share_events(store: DataStore) -> None:
     )
     create_canonical(store.engine, [Tables.sharadar_actions])  # Sharadar has no JCI 2016 action, as the policy expects
     store.save(  # the JCI policy's 10-K share anchor, as Sharadar reports it
-        Tables.sharadar_fundamentals,
+        Tables.sharadar_fundamentals_facts,
         pd.DataFrame(
             {
                 "ticker": ["JCI"],

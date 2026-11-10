@@ -49,7 +49,7 @@ rtk "$PY" -c "from src.data_store.schema import resolve; t = resolve('<table>');
 
 `MSYS_NO_PATHCONV=1` is required — Git Bash otherwise mangles container-side paths; for a frame,
 wrap the query in `COPY (...) TO STDOUT WITH CSV HEADER`. Date columns are **not** uniformly named
-(cube parts key on `(date, ticker)`, `fundamentals_history` on `(ticker, as_of)`), and
+(cube parts key on `(date, ticker)`, `sharadar_fundamentals_history` on `(ticker, as_of)`), and
 `freshness_col` differs from `date_col` on the four tables publishing on a different clock than the
 period they describe — validate PIT against the **publication** clock.
 
@@ -160,7 +160,7 @@ Example of questions to cover with deep data extraction and analysis are (non ex
 > **`validate bounds`** asserts the `[lo, hi]` a table declares, and abstains when it declares none.
 
 `data_profile.py` covers a normal-width table. For a wide one, generate the `UNION ALL` block
-programmatically the way `cube_fundamentals_evidence.profile()` does — never type 250 columns:
+programmatically from the column list — never type 250 columns:
 
 ```sql
 SELECT '<col>' AS col, count(*) AS n, count(<col>) AS n_ok, min(<col>) AS lo,
@@ -209,7 +209,7 @@ clipped.
 
 ```sql
 -- a fundamentals-derived daily feature must never precede its own publication date
-SELECT count(*) FROM <daily_table> d JOIN fundamentals_history f USING (ticker)
+SELECT count(*) FROM <daily_table> d JOIN sharadar_fundamentals_history f USING (ticker)
 WHERE  f.as_of > d.date AND <the feature is sourced from that row>;
 
 -- a forward label must RECEDE as the horizon grows, and never reach the last price
@@ -341,9 +341,8 @@ fundamentals rebuild came from scratchpad scripts that no longer exist; numbers 
 the next rebuild are evidence, and are what makes this report useful to the next pass that greps
 for it.
 
-**Rendering the PDF.** Write `_scripts/render_pdf.py` following
-[cube_fundamentals_evidence.py](../../scripts/cube_fundamentals_evidence.py) (`_meta` / `_pdf_rows`
-/ a `narrative` module of `(kind, payload)` blocks: `h1`, `h2`, `p`, `table`, `spacer`,
+**Rendering the PDF.** Write `_scripts/render_pdf.py` with a `meta` dict, the
+feature rows and a `narrative` module of `(kind, payload)` blocks: `h1`, `h2`, `p`, `table`, `spacer`,
 `pagebreak`), reusing the helpers in
 [cube_evidence_pdf.py](../../scripts/cube_evidence_pdf.py) — whose `render()` hardcodes its own
 title and footer, so parameterise those. Keep the two things it got right the hard way:

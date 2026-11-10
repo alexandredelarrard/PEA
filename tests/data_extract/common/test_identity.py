@@ -35,11 +35,7 @@ from src.data_extract.utils.common.identity import (
     load_identity,
     tickers_for_ciks,
 )
-from src.data_extract.utils.identity.cik_history import (
-    CikInTwoEntitiesError,
-    IdentityError,
-    TwoUniverseTickersOneEntityError,
-)
+from src.data_extract.utils.common.identity_contract import CikInTwoEntitiesError, IdentityError, TwoUniverseTickersOneEntityError
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik, pad_cik_series
 from tests.support.universe import as_roster, universe_of
@@ -432,7 +428,9 @@ def test_dei_tenure_rows_do_not_reach_the_tenure_resolver():
         ],
         ignore_index=True,
     )
-    identity = build_identity(lineage=_lineage([("0000000200", "E0000000200", "roster")]), tenure=tenure, roster_cik=as_roster(_roster([("AAA", "0000000200")])))
+    identity = build_identity(
+        lineage=_lineage([("0000000200", "E0000000200", "roster")]), tenure=tenure, roster_cik=as_roster(_roster([("AAA", "0000000200")]))
+    )
     assert identity.entity_for("AAA", "2020-01-01") == "E0000000200"
     assert identity.filing_scope("AAA").event_ciks == ("0000000200",)
 
@@ -483,7 +481,9 @@ def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
     )
     rows["sources"] = ["", "dei,form345,roster", "dei"]
     identity = build_identity(
-        lineage=rows, tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]), roster_cik=as_roster(_roster([("AAA", "0000000100")]))
+        lineage=rows,
+        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]),
+        roster_cik=as_roster(_roster([("AAA", "0000000100")])),
     )
     assert identity.tape_interval("AAA", "2020-01-02") is not None
     assert identity.tape_interval("AAA-PR-C", "2020-01-02") is None

@@ -4,11 +4,9 @@ cube_governance_catalogue.py  (tests/support/)
 The PROSE half of `cube_part_governance`, in the same shape `cube_feature_catalogue.py` holds
 for `cube_part_fundamentals`: characteristic -> (family, what, why, tail).
 
-⚠ WHY THIS IS A SECOND DICT RATHER THAN MORE ENTRIES IN `CATALOGUE`. The fundamentals
-generator asserts BOTH directions against ONE table and exits non-zero on either failure
-(`cube_fundamentals_evidence.py`: `return 1 if (missing or unused) else 0`). Adding 85
-governance names to the dict it reads would put 85 entries in its `unused` list and fail every
-future fundamentals run. Both directions are only assertable PER PART, so the catalogue is
+⚠ WHY THIS IS A SECOND DICT RATHER THAN MORE ENTRIES IN `CATALOGUE`. A catalogue is
+checked in BOTH directions against ONE table. Adding 85 governance names to the fundamentals
+dict would read as 85 dead catalogued names on every fundamentals check. Both directions are only assertable PER PART, so the catalogue is
 per part and `cube_feature_catalogue.CATALOGUES` is the registry that maps one to the other.
 
 ⚠ KEYED ON THE CHARACTERISTIC -- the column minus its `f_` prefix and minus any

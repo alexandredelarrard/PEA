@@ -1,6 +1,6 @@
 """`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, anchor,
-CIK / symbol / CUSIP history, propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> fundamentals -> `StepExtractEdgar`
--> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
+CIK / symbol / CUSIP history, propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> `StepExtractEdgar`
+(the SEC facts walk included) -> SEC fundamentals history + check -> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from tests.support.universe import seed_universe
 #: an empty published lineage, as the stubbed resolver inputs carry
 _NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
 
-PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
-EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
+PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar")
+EDGAR_AND_LLM = ("edgar", "fundamentals", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
 UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions", "universe_sync")
 IDENTITY_STAGE = (
@@ -32,7 +32,6 @@ IDENTITY_STAGE = (
     "notes_download",
     "ftd_download",
     "dei_capture",
-    "ftd_capture",
     "form345_scan",
     "symbol_tenure",
     "company_anchor",
@@ -74,7 +73,6 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(identity_module, "pending_dei_periods", lambda context, cache, full: mark("dei_capture", [])())
-    monkeypatch.setattr(identity_module, "capture_ftd_lines", lambda context, plan, scope, changed: mark("ftd_capture", (pd.DataFrame(), []))())
 
     def form345_scan(cache):
         assert cache == Path("cache") / "sec_insider_transactions"
@@ -113,8 +111,6 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
-    # a stored lineage: the daily identity flow, no cold start
-    monkeypatch.setattr(identity_module, "load_stored_lineage", lambda context: pd.DataFrame({"cik": ["0000000001"]}))
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_company_anchor", lambda step: mark("company_anchor")())
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_cik_history", cik_history)
     monkeypatch.setattr(identity_module.StepExtractIdentity, "run_symbol_history", universe_cik_symbol)
@@ -140,7 +136,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     step._context = SimpleNamespace(config=config, config_dir="./configs", store=store, universe=seed_universe(store, ["AAA", "BBB"]))
     step._config = config
     step._log = logging.getLogger("test_step_extract_all_data_order")
-    for name in (*PRE_EDGAR_STEPS, "behavioral"):
+    for name in (*PRE_EDGAR_STEPS, "fundamentals", "behavioral"):
         setattr(step, f"_{name}", SimpleNamespace(run=mark(name)))
 
     def edgar_step(context, config, options):
@@ -168,7 +164,9 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch, sqlite_store)
     print(f"  universe: {' -> '.join(UNIVERSE_STAGE)}, then identity stage: {' -> '.join(IDENTITY_STAGE)}")
     print(f"  then zip ingests: {' -> '.join(ZIP_INGESTS)}")
     print(f"  then domain steps: {' -> '.join(DOMAIN_STEPS)}")
-    print("  OK: decision-1 order; the LLM step is built after the EDGAR step; every consumer reads the propagated lineage")
+    print(
+        "  OK: decision-1 order; Sharadar -> EDGAR (facts walk) -> SEC history + check; the LLM step is built after; every consumer reads the propagated lineage"
+    )
 
 
 @pytest.mark.parametrize("boom", ["universe_cik_symbol", "universe_cusip", "propagate"])

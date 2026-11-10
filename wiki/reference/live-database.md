@@ -93,19 +93,18 @@ The earnings-call tables were cut over to the defeatbeta paragraph grain on 2026
 
 The fundamentals layer was intentionally asymmetric during the recorded migration:
 
-- `fundamentals_sharadar` and merged `fundamentals_history` had been rebuilt over roughly 489 tickers.
-- `fundamentals_facts` and `fundamentals_history_sec` represented a narrower SEC replay roster.
-- The merged table is the consumer surface; the SEC replay is the validation surface.
-- SEC contribution to the merged table is smaller than Sharadar coverage by design.
+- The Sharadar facts and the then merged history had been rebuilt over roughly 489 tickers.
+- The SEC facts and SEC history represented a narrower SEC replay roster.
+- The Sharadar history is the consumer surface; the SEC replay is the validation surface.
 - Publication-event grain and the enumerated SEC history contract reduced both row and column counts compared with a retired legacy table.
-- Every SEC history null is expected to have an accompanying reason-code record.
+- 2026-11-08: the code now names the four tables `sec_fundamentals_facts`, `sec_fundamentals_history`, `sharadar_fundamentals_facts` and `sharadar_fundamentals_history`, drops the reason-code table and the history's SEC columns, and keeps SEC amendments out. The live database keeps the pre-split tables until the user's rebuild (phase 10 of the local run dir `reports/validate/2026-11-08-sec-sharadar-fundamentals-split/`).
 
 The older warning that Sharadar data reflected a free-tier subset became stale after the subscription upgrade and re-extraction work. Treat individual counts here as dated evidence, not current entitlement.
 
 ## Employee headcount migration (2026-10-08)
 
 - `fundamentals_employees` was dropped and recreated in the component shape on 2026-10-07 (the old 11,735 rows over 487 tickers are backed up in the local run dir `reports/validate/2026-10-07-employee-headcount-coverage/_cache/`). It holds 1,471 rows over 51 tickers: the 50 focus tickers of that run and A. Every other ticker's filing dates are undecided until the user's universe run ([runbook](../guides/large-backfills-and-recovery.md#employee-headcount-universe-run)).
-- `fundamentals_history` has no `employees_sec` column (92 columns, 51,856 rows unchanged). Code older than the `harness/employee-headcount-coverage` merge fails loudly on the merged build and the cube's fundamentals part.
+- The then merged history has no `employees_sec` column (92 columns, 51,856 rows unchanged). Code older than the `harness/employee-headcount-coverage` merge fails loudly on the merged build and the cube's fundamentals part.
 
 ## Extraction resume cutover (2026-10-05)
 
@@ -125,11 +124,11 @@ Read-only closure inventory found 23,835,822 rows in `sec13f_hr` and 607,537 in 
 Important measured state:
 
 - 13F manager coverage contained historical holes that ticker counts did not reveal. A later refill closed the identified empty filing months; validation now scores this axis.
-- `sec13f_manager_holdings` covered the filing managers needed for denominator-quality analysis but not every roster code resolves to a filing CIK.
+- `sec13f_manager_holdings` is retired: no code reads or writes it, and the registry and `sql/schema.sql` no longer declare it. The live table stays until the user drops it (`DROP TABLE sec13f_manager_holdings`) after the Airflow re-extraction has filled roster books in `sec13f_hr`; until then, tooling that compares DB tables with `Tables` may list it. Not every roster code resolves to a filing CIK.
 - CIK-first insider identity repair relabelled valid predecessor rows, and admitted rows the symbol path missed. Mismatched entities are now excluded and counted in one warning per run rather than stored.
 - `symbol_tenure` contains overlapping observed intervals; overlap is expected and must not be collapsed into a one-row lookup.
 - `entity_lineage` is sparse by design: a missing CIK row means a singleton entity.
-- Until the user runs the identity cutover ([run guide](../guides/run-the-pipeline.md)), the live `symbol_tenure` (primary key without `source`/`evidence_period`, no `dei` rows) and `entity_lineage` (one row per CIK, no `role`) keep the old shape. The accessor reads the old `entity_lineage` as membership rows (roster window plus event-only CIKs), so register chains reach consolidating listings only after the cutover, and the `identity` step needs the recreated tables. Measured read-only on 2026-10-04 before the cutover: foreign filer rows only in `sec_8k` (1,749 accessions, 3,795 rows, 10 tickers) and `fundamentals_facts` (349 accessions, 31,280 rows, 8 tickers).
+- Until the user runs the identity cutover ([run guide](../guides/run-the-pipeline.md)), the live `symbol_tenure` (primary key without `source`/`evidence_period`, no `dei` rows) and `entity_lineage` (one row per CIK, no `role`) keep the old shape. The accessor reads the old `entity_lineage` as membership rows (roster window plus event-only CIKs), so register chains reach consolidating listings only after the cutover, and the `identity` step needs the recreated tables. Measured read-only on 2026-10-04 before the cutover: foreign filer rows only in `sec_8k` (1,749 accessions, 3,795 rows, 10 tickers) and the SEC facts table (349 accessions, 31,280 rows, 8 tickers).
 - On SEC-derived tables, `cik` means the filer that actually submitted the document, not the current roster CIK. Group company history by ticker and apply registrant policy.
 - A targeted 2026-09-30 FTD audit read 1,079,328 stored rows and found 413 source ZIP periods, all with estimated vintage availability after metadata backfill. Exactly 36,299 rows (3.36%) have day-15 settlements carried by a `b` ZIP; no settlement date spans two stored ZIP periods. Feature publication must use persisted `period`, never infer the half from the settlement day. The [short-flow builder](../../src/data_aggregate/utils/institutionals/short_flow_features.py) enforces the persisted-period and single-ZIP-per-date contracts.
 

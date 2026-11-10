@@ -70,13 +70,18 @@ def validate_tape_frames(frames: dict[Table, pd.DataFrame], scopes: dict[Table, 
 
 
 def load_tape_cohorts(store: DataStore, queries: dict[Table, Where | None]) -> dict[Table, pd.DataFrame]:
-    """Load each complete projected candidate cohort once on the guarded store."""
+    """Load each complete projected candidate cohort once on the guarded store, one query per OR branch: Postgres reads a
+    key list inside an OR as one filter per key over every row, while a key list alone uses the primary key."""
     cohorts = {}
     for table, where in queries.items():
         # an absent table (first build) is an empty cohort with its declared key and read columns
         columns = store.columns(table) or list(dict.fromkeys([*table.pk, *table.read_columns]))
-        df_rows = store.load(table, columns=columns, where=where, markers=True, optional=True)
-        cohorts[table] = df_rows if df_rows is not None else pd.DataFrame(columns=columns)
+        branches = where if isinstance(where, list) else [where]
+        loaded = [
+            df_rows for branch in branches if (df_rows := store.load(table, columns=columns, where=branch, markers=True, optional=True)) is not None
+        ]
+        rows = pd.concat(loaded, ignore_index=True).drop_duplicates(list(table.pk), ignore_index=True) if loaded else None
+        cohorts[table] = rows if rows is not None else pd.DataFrame(columns=columns)
     return cohorts
 
 

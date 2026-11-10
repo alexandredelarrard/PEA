@@ -57,7 +57,6 @@ from typing import Any, cast
 
 import pandas as pd
 
-from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.build_history import (
     GROSS_PROFIT_IDENTITY_TOLERANCE,
     TTM_STALENESS_DAYS,
@@ -298,14 +297,6 @@ def test_an_unknown_fiscal_end_refuses_nothing():
     assert not _is_stale(pd.Series({"period_end": pd.NaT, "value": 1.0}), pd.Timestamp("2020-01-31"))
     print("\n=== SANITY CHECK: NaT on either side refuses nothing ===")
     print("  no fiscal_end -> no refusal; no period_end -> no refusal. Validated.")
-
-
-def test_the_stale_code_is_an_absence_not_a_qualifier():
-    """A `stale_ttm` cell is NULL by construction, so it must not sit in `IS_QUALIFIER` --
-    a qualifier means a value is present and a gate would stop looking for one."""
-    assert rc.STALE_TTM in rc.ALL_CODES and rc.STALE_TTM not in rc.IS_QUALIFIER
-    print("\n=== SANITY CHECK: stale_ttm is an absence code ===")
-    print(f"  in ALL_CODES={rc.STALE_TTM in rc.ALL_CODES}, in IS_QUALIFIER={rc.STALE_TTM in rc.IS_QUALIFIER}. Validated.")
 
 
 # --------------------------------------------------------------------------- #

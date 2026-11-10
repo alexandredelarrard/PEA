@@ -51,7 +51,7 @@ def test_a_mixed_policy_list_raises_at_the_call_site():
         (["SC 13D", "SCHEDULE 13D/A"], Combine.SPLIT),
         (["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"], Combine.SPLIT),
         (["3", "4", "5"], Combine.UNION),
-        (["10-K", "10-K/A", "10-Q", "10-Q/A"], Combine.SPLIT),
+        (["10-K", "10-K/A", "10-K405"], Combine.SPLIT),
         (["10-K", "10-Q"], Combine.SPLIT),
         (["DEF 14A", "DEF 14C", "DEFC14A"], Combine.SPLIT),
     ],

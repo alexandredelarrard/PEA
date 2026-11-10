@@ -130,7 +130,7 @@ def assets_ex_lease(get):
 
     Resolved in three steps so it works on ANY history vintage: the extractor's precomputed
     column, else derived here as totalAssets - ROU asset, else plain totalAssets. Without the
-    fallback, a `fundamentals_history` built before the column existed would silently return
+    fallback, a `sharadar_fundamentals_history` built before the column existed would silently return
     NaN for every ratio above."""
     precomputed = get("totalAssetsExLease")
     if _has(precomputed):
@@ -223,7 +223,7 @@ def off_balance_sheet_obligations(get: Getter, pension: pd.DataFrame | None = No
 
     The deficit arrives ONLY as the caller's already-coalesced `pension` frame, built from
     the bulk SEC data sets. There is no field-getter fallback: this used to read a
-    `pensionDeficit` column, but `fundamentals_history` has never carried one on the
+    `pensionDeficit` column, but `sharadar_fundamentals_history` has never carried one on the
     Sharadar-first schema (an `information_schema` match on `%pension%`/`%opeb%`/`%benefit%`
     returns nothing), so that leg contributed exactly zero on every live row."""
     deficit = pension

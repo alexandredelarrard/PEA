@@ -18,7 +18,7 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 
 # The tables `predict` refuses to score without; targets and every other source only warn.
-PREDICTION_INPUTS: tuple[Table, ...] = (Tables.prices, Tables.sharadar_fundamentals, Tables.fundamentals_history)
+PREDICTION_INPUTS: tuple[Table, ...] = (Tables.prices, Tables.sharadar_fundamentals_facts, Tables.sharadar_fundamentals_history)
 
 
 class StaleInputsError(RuntimeError):

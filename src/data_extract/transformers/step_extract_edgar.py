@@ -1,8 +1,9 @@
 """EDGAR step: the per-filing EDGAR walks, one `EdgarFetch` each, through the shared driver.
 
 Order: insider Forms 3/4/5 (EDGAR rows after the last stored zip quarter, then the zip reconcile; the insider run
-enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, 10-K employees text, DEF 14A text.
-The window, run date, ticker scope and CIK mapping are declared once and shared by every walk. Consumes the identity built and propagated
+enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, 10-K employees text, DEF 14A text, 10-K/10-Q
+XBRL facts (the facts run binds its catalogue and GICS parser on entry). The window, run date, ticker scope and CIK
+mapping are declared once and shared by every walk. Consumes the identity built and propagated
 upstream; the identity scope, document cap and retry policy are read once too. The local EDGAR index is refreshed
 once per step: `run()` refreshes it over the widest window of the walks before them (`run_index`); a walk run
 alone refreshes its own window, unless the step already did or today's refresh (the nightly `edgar-index` task,
@@ -28,6 +29,7 @@ from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.utils.string import run_date
@@ -54,6 +56,7 @@ _WALKS: tuple[EdgarFetch, ...] = (
     FILING_TEXT_FETCH,
     EMPLOYEES_TEXT_FETCH,
     DEF14A_TEXT_FETCH,
+    SEC_FUNDAMENTALS_FETCH,
 )
 
 
@@ -129,6 +132,10 @@ class StepExtractEdgar(Step):
         self._context.store.create_declared(Tables.sec_def14a_text)
         return self._run_fetch(DEF14A_TEXT_FETCH)
 
+    def run_fundamentals_facts(self) -> FetchSummary:
+        """Walk the 10-K/10-Q XBRL facts into `sec_fundamentals_facts`, created by its first write."""
+        return self._run_fetch(SEC_FUNDAMENTALS_FETCH)
+
     def run(self) -> None:
         """Refresh the index once, then run every walk in order."""
         self.run_index()
@@ -139,3 +146,4 @@ class StepExtractEdgar(Step):
         self.run_filing_text()
         self.run_employees_text()
         self.run_def14a_text()
+        self.run_fundamentals_facts()

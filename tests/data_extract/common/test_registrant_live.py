@@ -72,7 +72,7 @@ def consolidating(edgar_ready, registrants) -> dict[str, dict[str, dict]]:
         per_cik: dict[str, dict] = {}
         for cik in reg.all_ciks():
             try:
-                filings = list(Company(int(cik)).get_filings(form=list(cast(Resume, Tables.fundamentals_facts.resume).forms)))
+                filings = list(Company(int(cik)).get_filings(form=list(cast(Resume, Tables.sec_fundamentals_facts.resume).forms)))
             except Exception as exc:  # noqa: BLE001
                 pytest.skip(f"EDGAR unreachable for {ticker} CIK {cik}: {exc}")
             # (date, accession) PAIRS, never two independently sorted lists -- the date
@@ -267,7 +267,7 @@ def test_the_register_recovers_history_the_ticker_walk_cannot_reach(edgar_ready,
     fundamentals, so this walk gains nothing -- measured 64 -> 64. For such an entry the
     requirement is the stronger one and it is the whole point of adding it safely: the walk
     must be provably UNCHANGED, accession for accession. XOM's non-governance history was
-    already clean (fundamentals_history 124, fundamentals_facts 6,185, sec_8k 521, prices
+    already clean (sharadar_fundamentals_history 124, sec_fundamentals_facts 6,185, sec_8k 521, prices
     7,803) and a register entry added for one pipeline must not disturb another.
 
     Stated as a rule rather than a ticker list, so a future proxy-path entry is covered on the
@@ -279,12 +279,12 @@ def test_the_register_recovers_history_the_ticker_walk_cannot_reach(edgar_ready,
     gained_total = 0
     for ticker, reg in sorted(registrants.items()):
         try:
-            plain = {f.accession_number for f in Company(ticker).get_filings(form=list(cast(Resume, Tables.fundamentals_facts.resume).forms))}
+            plain = {f.accession_number for f in Company(ticker).get_filings(form=list(cast(Resume, Tables.sec_fundamentals_facts.resume).forms))}
             walked: set[str] = set()
             for segment in reg.segments:
                 walked |= {
                     f.accession_number
-                    for f in Company(int(segment.cik)).get_filings(form=list(cast(Resume, Tables.fundamentals_facts.resume).forms))
+                    for f in Company(int(segment.cik)).get_filings(form=list(cast(Resume, Tables.sec_fundamentals_facts.resume).forms))
                     if segment.covers(pd.Timestamp(f.filing_date))
                 }
         except Exception as exc:  # noqa: BLE001

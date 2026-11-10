@@ -23,7 +23,7 @@ from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_store import ddl
 from src.data_store.schema import (
     ALL,
@@ -41,6 +41,7 @@ from src.data_store.schema import (
 )
 from src.data_store.store import DataStore
 from tests.data_extract.edgar_fixtures import identity_for
+from tests.support.fundamentals_frames import sec_facts_frame, sharadar_facts_frame
 from tests.support.universe import seed_universe
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
@@ -49,9 +50,8 @@ _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 # the same unit as a parent table, and caches derived from another table.
 SIDE_TABLES = frozenset(
     {
-        Tables.fundamentals_history.name,
-        Tables.fundamentals_history_sec.name,
-        Tables.fundamentals_reason_codes.name,
+        Tables.sharadar_fundamentals_history.name,
+        Tables.sec_fundamentals_history.name,
         Tables.cusip_ticker_map.name,
         Tables.insider_footnotes.name,
         Tables.sec_13d_transactions.name,
@@ -67,11 +67,17 @@ _MODES = {RESUME_SERIES, RESUME_DOCUMENTS, RESUME_ARCHIVE, RESUME_MARKET, RESUME
 _NUMERIC_SQL = {"BIGINT", "DOUBLE PRECISION"}
 
 
-def _column_types() -> dict[str, dict[str, str]]:
-    """{table: {column: SQL type}} parsed from the hand-maintained `sql/schema.sql`."""
+def _column_types(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, str]]:
+    """{table: {column: SQL type}} parsed from the hand-maintained `sql/schema.sql`, plus the two resumed fundamentals
+    facts tables, which have no block there: their DDL is what `ensure_table` derives from the producer's typed frame."""
     blocks = ddl.existing_blocks(_SCHEMA_SQL.read_text(encoding="utf-8"))
     pattern = re.compile(r'^\s+"([^"]+)" ([A-Z ]+?)(?: NOT NULL)?,?$', re.MULTILINE)
-    return {name: dict(pattern.findall(block)) for name, block in blocks.items()}
+    types = {name: dict(pattern.findall(block)) for name, block in blocks.items()}
+    produced = {Tables.sec_fundamentals_facts: sec_facts_frame(monkeypatch), Tables.sharadar_fundamentals_facts: sharadar_facts_frame()}
+    for table, frame in produced.items():
+        assert table.name not in types, f"{table.name} owns its DDL and must not be in sql/schema.sql"
+        types[table.name] = dict(ddl.columns_from_frame(table, frame))
+    return types
 
 
 def test_every_extract_table_resumes_or_is_a_side_table() -> None:
@@ -109,19 +115,19 @@ def test_every_resumed_extract_table_has_a_cadence() -> None:
     print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")
 
 
-def test_contract_and_marker_columns_exist_with_compatible_types() -> None:
-    types = _column_types()
+def test_contract_and_marker_columns_exist_with_compatible_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    types = _column_types(monkeypatch)
     for table in resume_tables():
         resume = table.resume
         assert resume is not None
         cols = types[table.name]
         for col in (resume.key, resume.frontier_col, resume.period_col):
-            assert col is None or col in cols, f"{table.name}: contract column {col!r} is not in sql/schema.sql"
+            assert col is None or col in cols, f"{table.name}: contract column {col!r} is not in its DDL"
     for table in marker_tables():
         assert table.empty_marker is not None
         col, sentinel = table.empty_marker
         sql_type = types[table.name].get(col)
-        assert sql_type is not None, f"{table.name}: marker column {col!r} is not in sql/schema.sql"
+        assert sql_type is not None, f"{table.name}: marker column {col!r} is not in its DDL"
         if isinstance(sentinel, str):
             assert sql_type == "TEXT", f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r} needs TEXT"
         else:
@@ -151,8 +157,8 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
     print("  rp_seq -> -1 (sequence starts at 0), proposal_seq -> 0 (starts at 1): no marker can overwrite a real row. Validated.")
 
 
-def test_edgar_text_tables_declare_their_layout_markers_and_ddl() -> None:
-    types = _column_types()
+def test_edgar_text_tables_declare_their_layout_markers_and_ddl(monkeypatch: pytest.MonkeyPatch) -> None:
+    types = _column_types(monkeypatch)
     expected = {
         Tables.sec_employees_text: (("ticker", "accession_number"), ("source_document", "_empty"), {"windows": "TEXT", "pieces": "TEXT"}),
         Tables.sec_def14a_text: (("ticker", "accession_number", "section"), ("section", "_empty"), {"primary_document": "TEXT", "payload": "TEXT"}),
@@ -187,7 +193,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         DEF14A_TEXT_FETCH,
         EMPLOYEES_TEXT_FETCH,
         FILING_TEXT_FETCH,
-        fundamentals_fetch(context),
+        SEC_FUNDAMENTALS_FETCH,
     )
     planned: list[tuple[Table, Sequence[str]]] = []
 
@@ -195,7 +201,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         planned.append((table, request.forms))
 
     monkeypatch.setattr(edgar_driver, "document_worklist", capture_worklist)
-    column_types = _column_types()
+    column_types = _column_types(monkeypatch)
     for fetch in fetched:
         keys = cik_map.assign(cik="1")
         plan_fetch(

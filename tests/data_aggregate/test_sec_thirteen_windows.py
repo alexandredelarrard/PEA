@@ -15,9 +15,10 @@ from omegaconf import OmegaConf
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.incremental import PartWindow
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
+from tests.support.sec_thirteen_panel import unsaved_panel
 
 
 def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[StepCubeSecThirteen, pd.DatetimeIndex]:
@@ -31,9 +32,15 @@ def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[Ste
     return StepCubeSecThirteen(ctx, ctx.config), days
 
 
-def _full(step: StepCubeSecThirteen, store: Any) -> pd.DataFrame:
+def _full(step: StepCubeSecThirteen) -> pd.DataFrame:
     """The panel `run(full=True)` builds: the whole window over the saved schema."""
-    return step.build_panel(PartWindow(None, None), existing_columns=store.columns(Tables.cube_part_sec_thirteen))
+    return unsaved_panel(step)
+
+
+def _tail(step: StepCubeSecThirteen, store: Any, saved: pd.DataFrame, window: PartWindow) -> pd.DataFrame:
+    """The panel `run()` builds for `window` once `saved` is the stored part."""
+    store.replace(Tables.cube_part_sec_thirteen, _saved(saved))
+    return unsaved_panel(step, window)
 
 
 def _facts(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> pd.DataFrame:
@@ -50,17 +57,17 @@ def _facts(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[fl
     )
 
 
-def _elite(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> SuperinvestorFeatureHistory:
+def _elite(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> dict[str, pd.DataFrame]:
     levels = {name: pd.DataFrame({"AAA": [np.nan] * len(offsets)}, index=days[list(offsets)]) for name in EMISSION}
     levels.update({name: pd.DataFrame({"AAA": values}, index=days[list(offsets)]) for name, values in fields.items()})
-    return SuperinvestorFeatureHistory(levels, pd.DataFrame())
+    return levels
 
 
 def _prepare(
     step: StepCubeSecThirteen,
     monkeypatch: pytest.MonkeyPatch,
     facts: pd.DataFrame | None,
-    levels: SuperinvestorFeatureHistory | None,
+    levels: dict[str, pd.DataFrame] | None,
 ) -> tuple[Mock, Mock]:
     broad, elite = Mock(return_value=facts), Mock(return_value=levels)
     monkeypatch.setattr(step, "_institutional_features", broad)
@@ -69,8 +76,8 @@ def _prepare(
 
 
 def _projections(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock]:
-    broad, elite = Mock(wraps=step._project_institutional_panel), Mock(wraps=step_module.project_superinvestor_features)
-    monkeypatch.setattr(step, "_project_institutional_panel", broad)
+    broad, elite = Mock(wraps=step_module.project_institutional_features), Mock(wraps=step_module.project_superinvestor_features)
+    monkeypatch.setattr(step_module, "project_institutional_features", broad)
     monkeypatch.setattr(step_module, "project_superinvestor_features", elite)
     return broad, elite
 
@@ -112,7 +119,7 @@ def _bounded(projections: tuple[Mock, Mock], days: pd.DatetimeIndex, maximum: in
                 pd.testing.assert_index_equal(getattr(frames, field).index, frames.trading_index)
             assert frames.universe == ("AAA",)
             if family == 0:
-                pd.testing.assert_index_equal(call.args[2].frames.trading_index, days)
+                pd.testing.assert_index_equal(call.kwargs["trading_calendar"], days)
 
 
 def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -123,12 +130,12 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
         _facts(days, (5, 90), ic_inst_concentration=[0.25, 0.5]),
         _elite(days, (8,), ic_super_holders=[0.5], ic_super_pooled_weight_chg=[0.1]),
     )
-    full = _full(step, sqlite_store)
+    full = _full(step)
     for source in prepared:
         source.reset_mock()
     projections = _projections(step, monkeypatch)
     window = PartWindow(days[-1], days[-8], days[-8])
-    tail = step.build_panel(window, existing_columns=list(full.columns))
+    tail = _tail(step, sqlite_store, full, window)
 
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= window.since]))
     assert [source.call_count for source in prepared] == [1, 1]
@@ -163,8 +170,8 @@ def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, mon
     )
     facts = _facts(days, (0,), ic_inst_concentration=[0.25]).assign(period=pd.Timestamp("2013-06-30"))
     _prepare(step, monkeypatch, facts, _elite(days, ()))
-    full = _full(step, sqlite_store)
-    tail = step.build_panel(PartWindow(days[-1], pd.Timestamp("2013-08-15")), existing_columns=list(full.columns))
+    full = _full(step)
+    tail = _tail(step, sqlite_store, full, PartWindow(days[-1], pd.Timestamp("2013-08-15")))
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= "2013-08-15"]))
     values = tail.set_index("date").f_ic_inst_concentration
     assert values.loc[["2013-08-15", "2013-08-16"]].isna().all()
@@ -178,7 +185,7 @@ def test_run_refreshes_same_day_or_new_dates_without_changing_prefix(
 ) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     prepared = _prepare(step, monkeypatch, _facts(days, (5, 95), ic_inst_concentration=[0.25, 0.5]), _elite(days, (5,), ic_super_holders=[0.5]))
-    expected = _saved(_full(step, sqlite_store))
+    expected = _saved(_full(step))
     last = len(days) - 1 - new_sessions
     cutoff = days[last - 7]
     initial = expected.loc[expected.date <= days[last]].copy()
@@ -206,7 +213,7 @@ def test_run_refreshes_same_day_or_new_dates_without_changing_prefix(
 def test_unknown_tail_clears_stale_rows_and_preserves_historical_schema(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, (5,), ic_super_holders=[0.5]))
-    initial = _saved(_full(step, sqlite_store))
+    initial = _saved(_full(step))
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     cutoff = days[-8]
     broad.return_value = _facts(days, (5, 112), ic_inst_concentration=[0.25, np.nan], inst_shares=[20, np.nan], inst_value=[2000, np.nan])
@@ -349,11 +356,11 @@ def test_schema_change_reprojects_full_once_from_prepared_facts(
     if change == "removal":
         old["ic_inst_holders"] = 0.5
     broad, elite = _prepare(step, monkeypatch, old, _elite(days, (5,), ic_super_holders=[0.5]))
-    sqlite_store.replace(Tables.cube_part_sec_thirteen, _saved(_full(step, sqlite_store)))
+    sqlite_store.replace(Tables.cube_part_sec_thirteen, _saved(_full(step)))
     broad.return_value = _facts(days, (5, 112), ic_inst_concentration=[0.25, 0.5])
     if change != "removal":
         broad.return_value["ic_inst_holders"] = [0.5, np.nan if change == "historical_addition" else 0.75]
-    expected = _saved(_full(step, sqlite_store))
+    expected = _saved(_full(step))
     broad.reset_mock()
     elite.reset_mock()
     projections = _projections(step, monkeypatch)
@@ -383,11 +390,11 @@ def test_historical_only_saved_column_uses_bounded_probe_and_float32_padding(
 ) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     prepared = _prepare(step, monkeypatch, _facts(days, (5, 110), ic_inst_concentration=[0.25, 0.5], ic_inst_holders=[0.5, np.nan]), _elite(days, ()))
-    full = _full(step, sqlite_store)
+    full = _full(step)
     for source in prepared:
         source.reset_mock()
     projections = _projections(step, monkeypatch)
-    tail = step.build_panel(PartWindow(days[-1], days[-8], days[-8]), existing_columns=list(full.columns))
+    tail = _tail(step, sqlite_store, full, PartWindow(days[-1], days[-8], days[-8]))
 
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= days[-8]]))
     assert tail.f_ic_inst_holders.isna().all() and tail.f_ic_inst_holders.dtype == np.dtype("float32")
@@ -413,7 +420,7 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
         )
         _shares(sqlite_store, days, (0, 112), (100.0, 0.0))
         days = days.insert(0, pd.Timestamp("2023-09-29"))
-    current = _full(step, sqlite_store)
+    current = _full(step)
     initial = _saved(current).copy()
     initial["f_ic_inst_ownership_pct"] = 0.2
     initial["f_ic_inst_value_to_mcap"] = 0.2
@@ -472,8 +479,8 @@ def test_observation_before_first_price_remains_supported_after_listing(sqlite_s
         ),
     )
     _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, (5,), ic_super_holders=[0.5]))
-    full = _full(step, sqlite_store)
-    tail = step.build_panel(PartWindow(days[-1], days[-8], days[-8]), existing_columns=list(full.columns))
+    full = _full(step)
+    tail = _tail(step, sqlite_store, full, PartWindow(days[-1], days[-8], days[-8]))
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= days[-8]]))
     listed = tail.loc[tail.ticker.eq("AAA")]
     assert len(listed) == 8 and listed.f_ic_inst_concentration.eq(0.25).all() and listed.f_ic_super_holders.eq(0.5).all()
@@ -485,7 +492,7 @@ def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     _shares(sqlite_store, days, (0,), (100.0,))
     broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], inst_shares=[300.0]), _elite(days, ()))
-    expected = _saved(_full(step, sqlite_store))
+    expected = _saved(_full(step))
     assert "f_ic_inst_ownership_pct" not in expected and "f_ic_inst_value_to_mcap" in expected
     sqlite_store.replace(Tables.cube_part_sec_thirteen, expected.assign(f_ic_inst_ownership_pct=0.5))
     broad.reset_mock()
@@ -504,7 +511,8 @@ def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store
 def test_valid_empty_preparation_is_not_a_source_failure(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     prepared = _prepare(step, monkeypatch, pd.DataFrame(), _elite(days, ()))
-    panel = step.build_panel(PartWindow(days[-1], days[-8], days[-8]), existing_columns=["date", "ticker", "f_ic_inst_holders", "f_ic_super_holders"])
+    saved = pd.DataFrame({"date": days[:1], "ticker": "AAA", "f_ic_inst_holders": 1.0, "f_ic_super_holders": 1.0})
+    panel = _tail(step, sqlite_store, saved, PartWindow(days[-1], days[-8], days[-8]))
     assert set(panel.columns) == {"date", "ticker"} | {"f_" + name for name in EMISSION}
     assert panel.filter(like="f_").isna().all().all()
     assert [source.call_count for source in prepared] == [1, 1]

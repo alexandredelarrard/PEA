@@ -298,17 +298,17 @@ validate:
       pit_sources:
         f_reported_expected_: earnings_surprises
         f_earnings_abret_: earnings_surprises
-        f_earnings_sue_: fundamentals_history
-        f_earnings_improvement_streak: fundamentals_history
-        f_profit_improvement_to_assets: fundamentals_history
-        f_roa_vol_8q: fundamentals_history
-        f_fcf_positive_fraction_8q: fundamentals_history
-        f_ocf_yield: fundamentals_history
-        f_revenue_cagr_3y: fundamentals_history
-        f_y_earnings_growth_signed: fundamentals_history
-        f_cash_runway_months: fundamentals_history
-        f_fcf_to_ev_vs_peers: fundamentals_history
-        f_roic_incl_intangibles_vs_peers: fundamentals_history
+        f_earnings_sue_: sharadar_fundamentals_history
+        f_earnings_improvement_streak: sharadar_fundamentals_history
+        f_profit_improvement_to_assets: sharadar_fundamentals_history
+        f_roa_vol_8q: sharadar_fundamentals_history
+        f_fcf_positive_fraction_8q: sharadar_fundamentals_history
+        f_ocf_yield: sharadar_fundamentals_history
+        f_revenue_cagr_3y: sharadar_fundamentals_history
+        f_y_earnings_growth_signed: sharadar_fundamentals_history
+        f_cash_runway_months: sharadar_fundamentals_history
+        f_fcf_to_ev_vs_peers: sharadar_fundamentals_history
+        f_roic_incl_intangibles_vs_peers: sharadar_fundamentals_history
       # ⚠ QUARTERLY -- SEC filings held flat on a daily grid between filing dates, so a frozen
       # run inside a quarter is the feature working. No `ffill_horizon_days` is declared
       # because none has been measured, so FROZEN abstains here exactly as it does on

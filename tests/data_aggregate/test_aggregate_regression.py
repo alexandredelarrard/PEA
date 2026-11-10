@@ -2,7 +2,7 @@
 The aggregation refactor guard: `src/data_aggregate/` must produce byte-identical numbers.
 
 `aggregate_fingerprint.py` runs every public panel builder AND every primitive that the
-refactor deduplicates, over frozen inputs (a saved `fundamentals_history` slice + seeded
+refactor deduplicates, over frozen inputs (a saved `sharadar_fundamentals_history` slice + seeded
 synthetic sources), and hashes every output column. This test replays it and diffs
 against the baseline captured BEFORE the refactor.
 
@@ -112,7 +112,7 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # The fixture was also HOLLOW. `synthetic_13f` carries no `cusip`/`position_type`, so the elite
 # builder tripped its `need.issubset(holdings.columns)` guard and returned an EMPTY frame: the
 # baseline was pinning a hole, exactly as `f_say_on_pay_support` did before the fourth
-# regeneration. `synthetic_manager_book` now mirrors `sec13f_manager_holdings` for real -- CUSIP
+# regeneration. `synthetic_manager_book` now mirrors a roster manager's 13F book for real -- CUSIP
 # grain, the manager's WHOLE book, off-universe positions appended -- and draws from its own
 # `rng_for` stream so no other fixture's draws shift.
 #
@@ -509,7 +509,7 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # code regression spread across every fundamentals-derived panel
     assert baseline["input.fundamentals_slice"]["rows"] > 0
     # A bare width threshold is what this used to be (`> 100`, written against a 237-column
-    # vintage), and it went stale silently when `fundamentals_history` moved to the
+    # vintage), and it went stale silently when `sharadar_fundamentals_history` moved to the
     # Sharadar-first 93-column shape: the assertion still passed for a whole vintage because
     # the FROZEN PARQUET had not been regenerated, so it was measuring a file, not the table.
     # Name the columns that must be there instead -- a width is a proxy for coverage, these

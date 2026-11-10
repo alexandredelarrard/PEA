@@ -7,7 +7,7 @@ written, and NOTHING ELSE.
 ## Why the guards live in the builder and not in the validator
 
 Decision 40. v2's design had the validator null impossible values with a post-hoc UPDATE on
-`fundamentals_history_sec`. That contradicts the table's append-only contract in the most damaging
+`sec_fundamentals_history`. That contradicts the table's append-only contract in the most damaging
 possible way -- a historical row would change value after publication, so yesterday's cube and
 today's would disagree about the same event, and `diff_against_stored` would start reporting
 drift it had itself caused. So the guards run before the write, and the validator only reports.
@@ -30,14 +30,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.build_history import HARD_GUARDS, _hard_guard, build_ticker
 
 _FLOW, _LEVEL = "totalRevenue", "totalAssets"
 
 
 def _fact(**kwargs) -> dict:
-    """One `fundamentals_facts` row with every column the build reads defaulted."""
+    """One `sec_fundamentals_facts` row with every column the build reads defaulted."""
     row = {
         "ticker": "TST",
         "accession_number": "a-1",
@@ -47,7 +46,6 @@ def _fact(**kwargs) -> dict:
         "duration_type": "quarterly",
         "form": "10-Q",
         "filing_date": "2023-05-01",
-        "is_amendment": False,
         "period_of_report": "2023-03-31",
         "regime": "industrial",
         "period_start": "2023-01-01",
@@ -56,8 +54,6 @@ def _fact(**kwargs) -> dict:
         "value": 100.0,
         "unit": "USD",
         "source_concept": "us-gaap:Revenues",
-        "dc_code": None,
-        "adjustment": None,
     }
     row.update(kwargs)
     return row
@@ -123,14 +119,12 @@ def test_an_hca_shaped_negative_ratio_reaches_the_table_untouched() -> None:
         "stockholdersEquity": -2_000_000_000.0,
         "sharesOutstanding": 270_000_000.0,
     }
-    codes: list[dict] = []
-    _hard_guard("HCA", pd.Timestamp("2024-02-15"), row, codes)
+    before = dict(row)
+    _hard_guard(row)
 
     print("\nplanted the HCA shape: debtToEquity=-3.4, stockholdersEquity=-$2bn")
     print(
-        f"  after the guards: debtToEquity={row['debtToEquity']}, "
-        f"stockholdersEquity={row['stockholdersEquity']:,.0f}, "
-        f"reason codes written={len(codes)}"
+        f"  after the guards: debtToEquity={row['debtToEquity']}, stockholdersEquity={row['stockholdersEquity']:,.0f}, row unchanged={row == before}"
     )
     print(
         "  SANITY: NOTHING was nulled. A negative equity is a real accounting position, "
@@ -139,7 +133,7 @@ def test_an_hca_shaped_negative_ratio_reaches_the_table_untouched() -> None:
     )
     assert row["debtToEquity"] == -3.4
     assert row["stockholdersEquity"] == -2_000_000_000.0
-    assert not codes
+    assert row == before
 
 
 def test_a_shell_footing_to_exactly_zero_assets_survives() -> None:
@@ -150,43 +144,26 @@ def test_a_shell_footing_to_exactly_zero_assets_survives() -> None:
     report the value and be right, and zero fails that test.
     """
     row = {"ticker": "VRT", "totalAssets": 0.0}
-    codes: list[dict] = []
-    _hard_guard("VRT", pd.Timestamp("2019-05-01"), row, codes)
+    _hard_guard(row)
 
-    print(f"\nplanted totalAssets = 0.0 (a pre-merger shell) -> totalAssets={row['totalAssets']}, codes={len(codes)}")
+    print(f"\nplanted totalAssets = 0.0 (a pre-merger shell) -> totalAssets={row['totalAssets']}")
     print("  SANITY: survives. `< 0` and not `<= 0` -- exactly zero is a real balance sheet.")
-    assert row["totalAssets"] == 0.0 and not codes
+    assert row["totalAssets"] == 0.0
 
 
 # --------------------------------------------------------------------------- #
-# what MUST be nulled, and what the row records about it                       #
+# what MUST be nulled                                                          #
 # --------------------------------------------------------------------------- #
 
 
-def test_a_negative_totalassets_is_nulled_and_the_value_is_recorded() -> None:
-    """The rejected number goes onto the reason-code row as `rejected_value`.
-
-    Not into a log line. A DERIVED cell -- a TTM, a `derived_identity` total -- has no fact row
-    anywhere, so without this the refused number is simply gone and "did this guard null
-    something correct?" becomes archaeology rather than a query.
-    """
+def test_a_negative_totalassets_is_nulled() -> None:
+    """A negative balance-sheet total no filer could report and be right: nulled before the write."""
     row = {"ticker": "TST", "totalAssets": -1.0}
-    codes: list[dict] = []
-    _hard_guard("TST", pd.Timestamp("2024-02-15"), row, codes)
+    _hard_guard(row)
 
-    print(
-        f"\nplanted totalAssets = -1 -> value is now {row['totalAssets']}, "
-        f"{len(codes)} code row: dc_code={codes[0]['dc_code']!r}, "
-        f"rejected_value={codes[0]['rejected_value']}"
-    )
-    print(
-        "  SANITY: nulled, AND the refused number is on the record. A derived cell has no "
-        "fact row to go back to, so the reason-code row is the only place it can live."
-    )
+    print(f"\nplanted totalAssets = -1 -> value is now {row['totalAssets']}")
+    print("  SANITY: nulled before the write, so the append-only row never carries it.")
     assert row["totalAssets"] is None
-    assert len(codes) == 1
-    assert codes[0]["dc_code"] == rc.FAILED_HARD_GUARD
-    assert codes[0]["rejected_value"] == -1.0
 
 
 def test_a_zero_share_count_is_nulled() -> None:
@@ -196,10 +173,9 @@ def test_a_zero_share_count_is_nulled() -> None:
     a zero share count is a filing error, and every ratio built on it is a division by zero.
     """
     row = {"ticker": "TST", "sharesOutstanding": 0.0, "basicShares": -5.0, "dilutedShares": 1_000.0}
-    codes: list[dict] = []
-    _hard_guard("TST", pd.Timestamp("2024-02-15"), row, codes)
+    _hard_guard(row)
 
-    nulled = sorted(c["field"] for c in codes)
+    nulled = sorted(field for field in ("sharesOutstanding", "basicShares", "dilutedShares") if row[field] is None)
     print(f"\nplanted sharesOutstanding=0, basicShares=-5, dilutedShares=1000 -> nulled {nulled}; dilutedShares survived at {row['dilutedShares']}")
     print(
         "  SANITY: `<= 0` for the counts, and only the offending fields move. A guard that "
@@ -209,92 +185,29 @@ def test_a_zero_share_count_is_nulled() -> None:
     assert row["dilutedShares"] == 1_000.0
 
 
-def test_the_guard_replaces_an_absence_code_rather_than_accumulating_one() -> None:
-    """A value that was PRESENT and refused is not `not_disclosed`. One code, not two.
-
-    A row asserting both "the filer did not disclose it" and "we threw the number away" is
-    incoherent, and a consumer reading the first would draw the wrong conclusion about our
-    coverage.
-    """
-    row = {"ticker": "TST", "totalAssets": -1.0}
-    codes = [
-        {
-            "ticker": "TST",
-            "as_of": pd.Timestamp("2024-02-15"),
-            "field": "totalAssets",
-            "dc_code": rc.NOT_DISCLOSED,
-            "combined_into": None,
-            "rejected_value": None,
-        }
-    ]
-    _hard_guard("TST", pd.Timestamp("2024-02-15"), row, codes)
-
-    print(
-        f"\na stale not_disclosed code was present -> after the guard the field carries "
-        f"{[c['dc_code'] for c in codes if c['field'] == 'totalAssets']}"
-    )
-    print("  SANITY: replaced, not accumulated. The cell is not absent; it was refused.")
-    assert [c["dc_code"] for c in codes] == [rc.FAILED_HARD_GUARD]
-
-
 # --------------------------------------------------------------------------- #
 # the guards on the real build path                                            #
 # --------------------------------------------------------------------------- #
 
 
 def test_the_guards_run_inside_build_ticker_and_leave_the_grain_intact() -> None:
-    """End to end: a filer whose `totalAssets` is negative in every filing.
+    """End to end: a filer whose `totalAssets` is negative in every filing, through the real builder, so the
+    guard also leaves the column contract and the grain assertions intact."""
+    history = build_ticker("TST", _facts_with(-1000.0))
 
-    Through the real builder, so this also proves the guard does not break the column contract,
-    the grain assertions, or the `rejected_value` dtype -- an all-None float column that infers
-    as `object` becomes TEXT in Postgres, which is how a real number once landed in the
-    database as the string '1997000000.0'.
-    """
-    built = build_ticker("TST", _facts_with(-1000.0))
-    guarded = built.reason_codes[built.reason_codes["dc_code"] == rc.FAILED_HARD_GUARD]
-
-    print(
-        f"\n{len(built.history)} publication event(s) built; "
-        f"totalAssets non-null: {int(built.history['totalAssets'].notna().sum())}; "
-        f"failed_hard_guard rows: {len(guarded)} carrying rejected_value "
-        f"{sorted(set(guarded['rejected_value']))}"
-    )
-    print(f"  rejected_value dtype: {built.reason_codes['rejected_value'].dtype}")
-    print(
-        "  SANITY: every negative level was nulled at build time with its number recorded, "
-        "and the guards did not disturb the grain or the column contract."
-    )
-    assert built.history["totalAssets"].isna().all()
-    assert len(guarded) == len(built.history)
-    assert set(guarded["rejected_value"]) == {-1000.0}
-    assert built.reason_codes["rejected_value"].dtype == float
+    print(f"\n{len(history)} publication event(s) built; totalAssets non-null: {int(history['totalAssets'].notna().sum())}")
+    print("  SANITY: every negative level was nulled at build time, and the guards did not disturb the grain or the column contract.")
+    assert len(history) == 4 and history["totalAssets"].isna().all()
+    assert history["totalAssets"].dtype == float
 
 
-def test_a_clean_filer_earns_no_hard_guard_rows_and_keeps_the_float_dtype() -> None:
-    """The other side: a normal filer, zero guard rows, and `rejected_value` still float64.
+def test_a_clean_filer_keeps_its_values() -> None:
+    """The other side: a normal filer keeps every level."""
+    history = build_ticker("TST", _facts_with(1000.0))
 
-    The dtype half is not cosmetic. `store.ensure_table` infers a missing table's column types
-    from the FIRST frame it is handed, and almost every ticker produces an entirely-null
-    `rejected_value` -- so if that column ever infers as `object`, the column is TEXT forever
-    and the first real rejection is stored as a string.
-    """
-    built = build_ticker("TST", _facts_with(1000.0))
-    guarded = built.reason_codes[built.reason_codes["dc_code"] == rc.FAILED_HARD_GUARD]
-
-    print(
-        f"\nclean filer: {len(built.history)} event(s), "
-        f"totalAssets non-null {int(built.history['totalAssets'].notna().sum())}, "
-        f"failed_hard_guard rows {len(guarded)}, "
-        f"rejected_value dtype {built.reason_codes['rejected_value'].dtype} "
-        f"(all null: {built.reason_codes['rejected_value'].isna().all()})"
-    )
-    print(
-        "  SANITY: no guard fires on correct data, and the all-null payload column is "
-        "still float64 -- an object column here becomes TEXT in Postgres, permanently."
-    )
-    assert guarded.empty
-    assert built.history["totalAssets"].notna().all()
-    assert built.reason_codes["rejected_value"].dtype == float
+    print(f"\nclean filer: {len(history)} event(s), totalAssets non-null {int(history['totalAssets'].notna().sum())}")
+    print("  SANITY: no guard fires on correct data.")
+    assert history["totalAssets"].notna().all() and set(history["totalAssets"]) == {1000.0}
 
 
 def test_the_guard_set_is_exactly_the_four_decision_46_names() -> None:

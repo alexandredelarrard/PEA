@@ -14,7 +14,6 @@ from tests.canonical_schema import create_canonical
 def test_canonical_source_keys_and_retry_fields(sqlite_store: DataStore) -> None:
     tables = [
         Tables.sec13f_hr,
-        Tables.sec13f_manager_holdings,
         Tables.def14a_llm,
         Tables.def14a_executive_comp,
         Tables.def14a_director_comp,
@@ -24,12 +23,12 @@ def test_canonical_source_keys_and_retry_fields(sqlite_store: DataStore) -> None
     create_canonical(sqlite_store.engine, tables)
     for table in tables:
         assert inspect(sqlite_store.engine).get_pk_constraint(table.name)["constrained_columns"] == list(table.pk)
-        if table in tables[2:]:
+        if table in tables[1:]:
             assert "retry" in sqlite_store.columns(table)
         else:
             assert "accession_number" in sqlite_store.columns(table)
             assert "content_checksum" in sqlite_store.columns(table)
-    print("SANITY: both accession keys and all five retry fields exist on a fresh canonical schema.")
+    print("SANITY: the 13F accession key and all five retry fields exist on a fresh canonical schema.")
 
 
 def test_bound_writer_does_not_adopt_missing_fields(sqlite_store: DataStore) -> None:

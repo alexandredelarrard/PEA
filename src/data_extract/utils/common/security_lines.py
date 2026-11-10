@@ -17,10 +17,9 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.identity.cik_history import ROLE_SYMBOL
-from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE, ROLE_SYMBOL
 from src.utils.cutover_continuity import ShareExchange
-from src.utils.identity_flags import cik_activity, identity_flags
+from src.utils.identity_flags import cik_activity, cik_items, flag_rows
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
 
@@ -261,10 +260,10 @@ def co_registrant_ciks(lineage: pd.DataFrame, evidence: pd.DataFrame | None, dec
     listed = frozenset(pad_cik(cik) for cik in declared)
     if evidence is None or evidence.empty or not {"role", "sources"} <= set(lineage.columns):  # membership rows only: nothing to judge
         return listed
-    flags = identity_flags(lineage, cik_activity(evidence))
+    items = cik_items(flag_rows(lineage), cik_activity(evidence))
     tape = tape_intervals(lineage)
     out = set()
-    for value in flags.loc[flags["kind"].eq("co_registrant"), "ciks"]:
+    for value in (item["ciks"] for item in items if item["kind"] == "co_registrant"):
         other, home = (str(value).split(",") + [""])[:2]
         if not _former_listing(tape, other, home):
             out.add(other)

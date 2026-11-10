@@ -90,9 +90,11 @@ class Table:
     vector_col: str | None = None
     vector_prefix: str | None = None
 
-    # False -> the owning step creates the table from its own frame's dtypes, and it is
-    # EXCLUDED from sql/schema.sql. Also selects DROP-and-recreate over DELETE in
-    # `replace` (see the warning on `is_unmanaged` below).
+    # False -> the owning step creates the table from its own frame's dtypes on its first
+    # write (every night run can start from an empty database), it is EXCLUDED from
+    # sql/schema.sql, and a new frame column is added to it rather than refused. Also selects
+    # DROP-and-recreate over DELETE in `replace` (see the warning on `is_unmanaged` below).
+    # The cube parts and the four fundamentals tables.
     managed: bool = True
 
     # Freshness cadence key (see constants.DATA_FRESHNESS_MAX_AGE_DAYS). None -> the table
@@ -397,67 +399,44 @@ class Tables:
     # Extract -- fundamentals                                           #
     # ----------------------------------------------------------------- #
     # The SEC producer's output. PUBLICATION-EVENT grain: `as_of` is a FILING DATE, one row
-    # per date on which >=1 extracted value became newly public, each row a COMPLETE snapshot
-    # of every column's latest-known value. Append-only -- an earlier row keeps its as-filed
-    # numbers forever, which is where the no-leakage property lives. Exactly 69 columns,
+    # per date on which an original 10-K or 10-Q was filed, each row a COMPLETE snapshot of
+    # every column's latest-known value. Append-only -- an earlier row keeps its as-filed
+    # numbers forever, which is where the no-leakage property lives. Exactly 66 columns,
     # enumerated by `Catalogue.history_columns`. See fundamentals/build_history.py.
     #
-    # RENAMED from `fundamentals_history` on 2026-08-26 (Sharadar-integration phase 0). The
-    # bare name now belongs to the MERGED table below, so that every consumer of "the
-    # fundamentals history" keeps reading the strongest available dataset without being
-    # re-pointed. This entry is the SEC half of that merge and nothing else: it is what
-    # `build_history.py` writes, what `src/validate/` reads, and what
-    # `fundamentals_reason_codes` explains.
-    fundamentals_history_sec = Table(
-        "fundamentals_history_sec",
-        ("ticker", "as_of"),
-        date_col="as_of",
-        date_type_cols=("as_of", "fiscal_end", "amended_fiscal_end"),
-        freshness="quarterly",
-    )
-    # THE MERGED TABLE, and the one every consumer should read: Sharadar owns a declared
-    # block of columns for all history, the SEC table above owns the rest, and no column ever
-    # switches source mid-series (D14/D15).
-    #
-    # ⚠ DECLARED HERE, BUILT IN PHASE 4. Nothing writes it yet, so every read returns empty
-    # until then -- that is deliberate and visible rather than silent. It is declared now so
-    # that `src/data_aggregate/` (all 12 files) is ALREADY pointed at the right name: phase 4
-    # then only has to populate it, instead of re-pointing every consumer a second time.
-    #
-    # NOT carried over from the SEC table: `is_amendment` / `amended_fiscal_end` /
-    # `amended_fields` are pure SEC reconciliation columns and stay there, since Sharadar has
-    # no amendment events and they would be permanently null here (D15). There is no `source`
-    # column either -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
-    #
-    # `read_columns` IS the column contract, declared here rather than only in the builder:
-    # 3 keys + the 60 `HISTORY_STATEMENT_ORDER` names + `stockholdersEquityInclNci` +
-    # `regime` + `sharesOutstandingPit` + the 26 Sharadar extras = 92 (headcount is read from
-    # `fundamentals_employees` directly, not merged here). `merge_history` asserts its own
-    # frame against this tuple, so a drift on either side fails the build instead of
-    # surfacing as an empty feature -- `pit.fundamentals_to_daily` returns an EMPTY FRAME for
-    # a column it cannot find rather than raising, which makes silent column loss invisible
-    # all the way to the model.
-    #
-    # ⚠ `regime` is the ONE non-float column among the 89 values (a label). Anything casting
-    # "the value columns" must exclude it by NAME, never by a looks-numeric heuristic.
-    fundamentals_history = Table(
-        "fundamentals_history",
+    # It is what `build_history.py` writes and what `src/validate/` reads; nothing here joins it to
+    # `sharadar_fundamentals_history` below.
+    sec_fundamentals_history = Table(
+        "sec_fundamentals_history",
         ("ticker", "as_of"),
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
         freshness="quarterly",
+        managed=False,
+    )
+    # The Sharadar producer's output, built from Sharadar's own inputs only (no SEC table).
+    # There is no `publication_form` (Sharadar ships no form) and no `source` column.
+    #
+    # `read_columns` IS the column contract, declared here rather than only in the builder:
+    # 3 keys + the 47 `HISTORY_STATEMENT_ORDER` names Sharadar serves + `sharesOutstandingPit`
+    # + the 26 Sharadar extras = 77 (headcount is read from `fundamentals_employees` directly).
+    # `sharadar_history` asserts its own frame against this tuple, so a drift on either side
+    # fails the build instead of surfacing as an empty feature -- `pit.fundamentals_to_daily`
+    # returns an EMPTY FRAME for a column it cannot find rather than raising, which makes
+    # silent column loss invisible all the way to the model. Every value column is float.
+    sharadar_fundamentals_history = Table(
+        "sharadar_fundamentals_history",
+        ("ticker", "as_of"),
+        date_col="as_of",
+        date_type_cols=("as_of", "fiscal_end"),
+        freshness="quarterly",
+        managed=False,
         read_columns=(
             "ticker",
             "as_of",
             "fiscal_end",
-            # -- the 60 contract columns, in HISTORY_STATEMENT_ORDER
+            # -- the HISTORY_STATEMENT_ORDER columns Sharadar serves, in that order
             "totalRevenue",
-            "premiumsEarned_sec",
-            "netInterestIncome_sec",
-            "noninterestIncome_sec",
-            "netInvestmentIncome_sec",
-            "realizedInvestmentGains_sec",
-            "rentalIncome_sec",
             "costOfRevenue",
             "grossProfit",
             "grossMargins",
@@ -486,11 +465,7 @@ class Tables:
             "accountsReceivable",
             "inventory",
             "currentAssets",
-            "ppeGross_sec",
-            "accumulatedDepreciation_sec",
             "ppeNet",
-            "goodwill_sec",
-            "intangiblesExGoodwill_sec",
             "totalAssets",
             "accountsPayable",
             "currentLiabilities",
@@ -498,12 +473,9 @@ class Tables:
             "shortTermBorrowingsOnly",
             "longTermDebt",
             "longTermDebtCurrentOnly",
-            "operatingLeaseLiability_sec",
-            "financeLeaseLiability_sec",
             "totalDebt",
             "totalLiabilities",
             "retainedEarnings",
-            "minorityInterest_sec",
             "stockholdersEquity",
             "returnOnEquity",
             "debtToEquity",
@@ -511,18 +483,14 @@ class Tables:
             "dilutedShares",
             "sharesOutstanding",
             "optionOverhang",
-            # -- the roll-up that needs BOTH sources, then the SEC-owned added column,
-            #    then the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
+            # -- the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
             #    sharadar_field_map.json -- it is the ONLY de-adjusted column, and only
             #    `ic_inst_ownership_pct` and the insider %-of-shares leg may read it)
-            "stockholdersEquityInclNci",
-            "regime_sec",
             "sharesOutstandingPit",
             # -- the 26 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
             #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents).
             #    `intangibles` is goodwill AND other intangibles COMBINED -- the only basis
-            #    Sharadar delivers, and the substrate for the ex-goodwill ROIC pair, whose
-            #    SEC-owned split legs are too thin (10.2% / 7.1%) to subtract.
+            #    Sharadar delivers, and the substrate for the ex-goodwill ROIC pair.
             "cashAndEquivalents",
             "accumulatedOtherComprehensiveIncome",
             "intangibles",
@@ -551,27 +519,6 @@ class Tables:
             "netCashFlow",
         ),
     )
-    # WHY a `fundamentals_history_sec` cell is null, or why its value is off-basis. DENSE -- one
-    # row per null-or-qualified cell at every publication event -- so the
-    # zero-unexplained-nulls gate is a LEFT JOIN on (ticker, as_of, field) rather than a
-    # reconstruction. The code vocabulary is closed and lives in fundamentals/reason_codes.py.
-    #
-    # Two PAYLOAD columns, both NULL for every code but the one that owns them:
-    # `combined_into` names the destination field for `combined_into`, and `rejected_value`
-    # carries the number a `failed_hard_guard` refused (plan-5b decision 46). The second one
-    # exists because a nulled DERIVED value -- a TTM, a `derived_identity` total -- has no
-    # fact row anywhere, so without it the rejected number is simply lost and "what did the
-    # guard actually throw away?" becomes unanswerable after the fact. That question is the
-    # whole lesson of the 745 correct rows an over-strict guard once nulled.
-    #
-    # ⚠ THIS EXPLAINS `fundamentals_history_sec`, NOT the merged `fundamentals_history`
-    # (decision D24). Reason codes are a property of the SEC resolution layer -- they name
-    # which SEC concept was combined, derived or rejected -- and Sharadar has no equivalent.
-    # Accepted consequence: `unexplained_null` stops being a universal zero-ceiling gate on
-    # the merged table; the phase-4 gap check is that table's instrument instead.
-    fundamentals_reason_codes = Table(
-        "fundamentals_reason_codes", ("ticker", "as_of", "field", "dc_code"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly"
-    )
     # Headcount, read from 10-K prose by `fundamentals_employees.py`. One row per 10-K filing date
     # (`as_of`), from the filing `accession_number` filed by `cik`: the stated `employees_total`,
     # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
@@ -587,7 +534,7 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
     )
-    # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
+    # Accession-grain fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
     # data_extract/utils/fundamentals/xbrl_linkbase.py) rather than from a priority-ordered
     # candidate-tag list.
@@ -596,9 +543,9 @@ class Tables:
     # period shape it tagged it with; nothing here is derived. Q4 = FY - YTD9 and the YTD
     # decumulation happen in memory during the history build, so this table stays a
     # faithful record of what was published -- which is what makes the publication-event
-    # grain and the no-leakage property of `fundamentals_history_sec` provable rather than
-    # asserted. ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows and
-    # are never overwritten, so "what was knowable on date D" is answerable by filtering
+    # grain and the no-leakage property of `sec_fundamentals_history` provable rather than
+    # asserted. Only the ORIGINAL 10-K and 10-Q are read (no amendment); rows are never
+    # overwritten, so "what was knowable on date D" is answerable by filtering
     # `filing_date <= D`.
     #
     # THE PK IS THE CALENDAR WINDOW, not the filer's fiscal LABEL. edgartools tags a 10-K's
@@ -614,13 +561,14 @@ class Tables:
     # start date. `fiscal_year` / `fiscal_period` stay as PAYLOAD, which is what periods.py
     # already assumes -- "Nothing in this module reads `fiscal_period`"; every input there is
     # selected by its calendar window.
-    fundamentals_facts = Table(
-        "fundamentals_facts",
+    sec_fundamentals_facts = Table(
+        "sec_fundamentals_facts",
         ("ticker", "accession_number", "field", "duration_type", "period_end"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-K/A", "10-Q", "10-Q/A"), source_start="2009-04-15"),
+        managed=False,
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-Q"), source_start="2009-04-15"),
         empty_marker=("field", _EMPTY),
         desc="fundamentals (linkbase)",
         retrieval_columns=(
@@ -633,7 +581,6 @@ class Tables:
             "cik",
             "form",
             "filing_date",
-            "is_amendment",
             "period_of_report",
             "regime",
             "period_start",
@@ -646,10 +593,8 @@ class Tables:
             "source_concept",
             "roll_up_children",
             "root_anchor",
-            "adjustment",
             "role_uri",
             "is_extension",
-            "dc_code",
         ),
     )
     # Not index-diffed: the source lists no documents, so its units come from the stored dates.
@@ -685,7 +630,7 @@ class Tables:
         freshness_date_col="available_at",
         resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01", observed_from="2026-09-01"),
     )
-    # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history_sec."employees"`
+    # NOTE: `employees_history` was RETIRED, and so was the `sec_fundamentals_history."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
     # table above (decision 35) -- one producer, `fundamentals_employees.py`, parsing the
     # 10-K prose inside the walk the fundamentals fetch already performs.
@@ -711,14 +656,15 @@ class Tables:
     # the schema. The projection is the 7 identifiers plus the line items the field map
     # consumes, and deliberately EXCLUDES the 35 vendor-computed ratios (`pe`, `roe`, `de`,
     # `ev`, `marketcap`, ...) and the 8 `*usd` conversions -- those live in the raw table
-    # only and never reach `fundamentals_history` (D21). A consumer needing one passes
+    # only and never reach `sharadar_fundamentals_history` (D21). A consumer needing one passes
     # `columns=` explicitly.
-    sharadar_fundamentals = Table(
-        "fundamentals_sharadar",
+    sharadar_fundamentals_facts = Table(
+        "sharadar_fundamentals_facts",
         ("ticker", "dimension", "date", "reportperiod"),
         date_col="date",
         date_type_cols=("date", "reportperiod", "calendardate", "lastupdated"),
         freshness="quarterly",
+        managed=False,
         read_columns=(
             "ticker",
             "dimension",
@@ -915,40 +861,6 @@ class Tables:
         # cik and cusip '_empty', period = filing_date = the gap start. That day follows every
         # data-set row and precedes the nightly frontier, so neither max(filing_date) nor a
         # ticker's min(period) moves.
-        empty_marker=("cusip", _EMPTY),
-    )
-    # Complete accession books for the union of ever-listed roster managers; no ticker filter.
-    # Common, option and debt legs remain separate. Both 13F tables hide the inline completion
-    # marker (cusip=_empty); a completed empty book still retains its source metadata.
-    # Legacy _legacy rows are preserved for inspection, never proof of an original PIT filing.
-    sec13f_manager_holdings = Table(
-        "sec13f_manager_holdings",
-        ("cik", "period", "accession_number", "cusip"),
-        date_col="period",
-        ticker_col=None,
-        freshness="quarterly",
-        date_type_cols=("period", "filing_date"),
-        read_columns=(
-            "cik",
-            "period",
-            "accession_number",
-            "filing_date",
-            "cusip",
-            "issuer_name",
-            "title_of_class",
-            "position_type",
-            "shares",
-            "value_usd",
-            "call_shares",
-            "call_value",
-            "put_shares",
-            "put_value",
-            "debt_prn",
-            "debt_value",
-            "other_value",
-        ),
-        optional_columns=frozenset({"accession_number"}),
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR", "13F-HR/A")),
         empty_marker=("cusip", _EMPTY),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
@@ -1627,7 +1539,7 @@ def _collect() -> tuple[Table, ...]:
 ALL: tuple[Table, ...] = _collect()
 BY_NAME: dict[str, Table] = {t.name: t for t in ALL}
 
-# `ddl.py` iterates this: the parts own their own DDL and must not reach sql/schema.sql.
+# `ddl.py` iterates this: `managed=False` tables own their own DDL and must not reach sql/schema.sql.
 MANAGED: tuple[Table, ...] = tuple(t for t in ALL if t.managed)
 PARTS: tuple[Table, ...] = tuple(t for t in ALL if t.kind == KIND_PART)
 

@@ -24,7 +24,7 @@ import pytest
 import src.data_extract.utils.zips.fetch_financial_notes as fn
 import src.data_extract.utils.zips.zip_archive as zip_archive
 from src.constants.constants import MARKET_TIMEZONE, SEC_NET_PENSION_LIABILITY_TAGS
-from src.data_extract.utils.common import bulk_cache
+from src.data_extract.utils.common import bulk_cache, resume
 from src.data_extract.utils.common.resume import ArchiveWork
 from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Resume, Tables
@@ -328,7 +328,7 @@ def test_notes_periods_falls_back_to_generator(monkeypatch):
 def test_historical_archive_available_at_is_next_month_twelfth_or_monday(period: str, expected: date, tmp_path: Path) -> None:
     assert (
         bulk_cache.archive_available_at(
-            bulk_cache.period_end(period),
+            resume.period_end(period),
             tmp_path / f"{period}_notes.zip",
             observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
             downloaded=False,
@@ -346,14 +346,14 @@ def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> 
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
     assert bulk_cache.archive_available_at(
-        bulk_cache.period_end("2026_09"),
+        resume.period_end("2026_09"),
         path,
         observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
         downloaded=False,
     ) == date(2026, 10, 15)
     assert (
         bulk_cache.archive_available_at(
-            bulk_cache.period_end("2026_09"),
+            resume.period_end("2026_09"),
             tmp_path / "missing.zip",
             observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
             downloaded=False,

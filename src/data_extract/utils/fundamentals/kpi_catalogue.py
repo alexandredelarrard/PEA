@@ -21,8 +21,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
-import pandas as pd
-
 from src.constants.constants import (
     DEFAULT_CONFIG_DIR,
     FUNDAMENTALS_CATALOGUE_SUBDIR,
@@ -145,7 +143,7 @@ class FieldSpec:
         return self.raw.get("regimes", {}).get(regime, {})
 
 
-#: `fundamentals_history_sec`'s key columns. `fiscal_quarter` labels which quarter of the issuer's own
+#: `sec_fundamentals_history`'s key columns. `fiscal_quarter` labels which quarter of the issuer's own
 #: fiscal year `fiscal_end` closes, on every row including TTM and instant values. Sector / industry
 #: are not carried: they join from the universe (`context.universe`).
 HISTORY_KEYS: tuple[str, ...] = ("ticker", "as_of", "fiscal_end", "fiscal_quarter")
@@ -227,16 +225,15 @@ HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
     "optionOverhang",
 )
 
-#: Publication-event provenance, scalar per row: `publication_form` is the highest-precedence form filed
-#: that day (`10-K` > `10-K/A` > `10-Q` > `10-Q/A`), `is_amendment` an OR, `amended_fiscal_end` the latest
-#: restated period, `amended_fields` the union. Accession detail stays in `fundamentals_facts`.
-HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form", "is_amendment", "amended_fiscal_end", "amended_fields")
+#: Publication-event provenance, scalar per row: `publication_form` is the original form filed that day, a `10-K`
+#: winning over a `10-Q`. Accession detail stays in `sec_fundamentals_facts`.
+HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form",)
 
-#: The filing's resolution regime, as stamped per filing on `fundamentals_facts`.
+#: The filing's resolution regime, as stamped per filing on `sec_fundamentals_facts`.
 HISTORY_REGIME = "regime"
 
 #: Declared columns computed at CUBE time, not by the history build: year-on-year ratios need a 365-day
-#: `as_of` offset, which the publication-event grain (amendment rows) cannot give as a row offset.
+#: `as_of` offset, which the publication-event grain (one row per filing date) cannot give as a row offset.
 CUBE_TIME_COLUMNS: frozenset[str] = frozenset({"revenueGrowth", "earningsGrowth"})
 
 
@@ -250,7 +247,6 @@ class Catalogue:
     regime_exceptions: dict[str, Any]
     force_regime_by_sub_industry: dict[str, str]
     ticker_exceptions: dict[str, Any]
-    ticker_periodicity: dict[str, Any]
 
     # ------------------------------------------------- the history contract --- #
     @cached_property
@@ -261,7 +257,7 @@ class Catalogue:
 
     @cached_property
     def history_fields(self) -> list[str]:
-        """The catalogue fields `fundamentals_history_sec` carries, ordered tier then name.
+        """The catalogue fields `sec_fundamentals_history` carries, ordered tier then name.
 
         One column per field under its bare name: the TTM for a `duration` field, the latest instant for an
         `instant` one.
@@ -276,8 +272,8 @@ class Catalogue:
 
     @cached_property
     def history_columns(self) -> list[str]:
-        """The `fundamentals_history_sec` column contract in table order: keys, `HISTORY_STATEMENT_ORDER`,
-        `regime`, provenance (4 + 60 + 1 + 4 = 69). `build_history` builds its frame from it.
+        """The `sec_fundamentals_history` column contract in table order: keys, `HISTORY_STATEMENT_ORDER`,
+        `regime`, provenance (4 + 60 + 1 + 1 = 66). `build_history` builds its frame from it.
 
         Asserts `HISTORY_STATEMENT_ORDER` matches the history fields plus derived columns exactly.
         """
@@ -382,29 +378,6 @@ class Catalogue:
                 cached = ((), frozenset())
             self._filer_leaves_memo[key] = cached
         return cached
-
-    def combined_into(self, regime: str | None, ticker: str | None, field: str) -> str | None:
-        """The field this one is folded into for this filer or regime, or None. A ticker cell wins over a regime cell."""
-        for register, key in ((self.ticker_exceptions, ticker), (self.regime_exceptions, regime)):
-            block = register.get(key or "", {}).get(field)
-            if isinstance(block, dict) and block.get("combined_into"):
-                return str(block["combined_into"])
-        return None
-
-    def regime_break_effective(self, field: str) -> pd.Timestamp | None:
-        """The date a definitional discontinuity (`regime_break.effective`, e.g. ASC 842) took effect for
-        `field`, or None. Values on either side are real but not comparable."""
-        block = self.field(field).raw.get("regime_break") or {}
-        effective = block.get("effective")
-        return pd.Timestamp(effective) if effective else None
-
-    def measured_absent_rate(self, regime: str, field: str) -> float | None:
-        """The share of the regime's tickers with no fact for this field, or None where not measured.
-
-        A frozen historical record from a dropped source table: it cannot be re-derived from `fundamentals_facts`.
-        """
-        block = self.regime_exceptions.get(regime, {}).get(field)
-        return block.get("measured_absent_rate") if isinstance(block, dict) else None
 
 
 # --------------------------------------------------------------------------- #
@@ -519,5 +492,4 @@ def _catalogue_at(config_dir: str) -> Catalogue:
         regime_exceptions=regime_exceptions,
         force_regime_by_sub_industry=force,
         ticker_exceptions=ticker_exceptions,
-        ticker_periodicity=periodicity,
     )

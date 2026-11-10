@@ -18,9 +18,8 @@ import pandas as pd
 
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import Identity
-from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj
-from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, num_or_null
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, header_subject_ciks, num_or_null
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_store.schema import Table
 from src.utils.string import pad_cik

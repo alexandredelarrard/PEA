@@ -6,7 +6,7 @@ not re-check a frame the entry already validated and nothing has mutated.
 
 ⚠ THIS FILE EXISTS BECAUSE A BLANKET `.empty` SWEEP PRODUCED A LIVE CRASH. The entry guard on
 `build_superinvestor_feature_panel` was removed as "redundant" while `attach_tickers` still
-opens with `holdings.copy()` — so an absent or cold `sec13f_manager_holdings` was an
+opens with `holdings.copy()` — so an absent or cold roster-manager book table was an
 `AttributeError` two frames deep, on the one code path nothing in the suite covered. The immutable SEC13F step now owns missing-source protection and is exercised in
 test_sec_thirteen_step_contract and test_sec_thirteen_windows. A guard
 is only redundant when NOTHING between it and the previous check can have changed the frame;

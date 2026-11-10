@@ -482,8 +482,10 @@ class DataStore:
     def columns(self, table) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""
         name = name_of(table)
-        if name in self._metadata.tables:
-            return list(self._metadata.tables[name].c.keys())
+        # `_table` registers a table before its columns are reflected; read under the same lock.
+        with _CREATE_LOCK:
+            if name in self._metadata.tables:
+                return list(self._metadata.tables[name].c.keys())
         inspector = inspect(self._database)
         return [column["name"] for column in inspector.get_columns(name)] if inspector.has_table(name) else []
 

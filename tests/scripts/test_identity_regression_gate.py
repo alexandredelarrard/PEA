@@ -19,11 +19,11 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from tests.support import identity_regression_gate as gate
 from src.data_extract.utils.common.identity import CikWindow, FilingScope
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
 from tests.data_extract.fake_context import extract_config
+from tests.support import identity_regression_gate as gate
 from tests.support.universe import seed_universe, universe_config
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
@@ -422,7 +422,7 @@ def test_every_filing_rule_explains_its_accession_and_an_own_filing_lost_is_unex
             ("JCI", "j-margin", JCI_INC, "10-K", "2016-09-20", "2016-06-30"),
         ]
     )
-    facts = gate.filing_diff("fundamentals_facts", before_facts, after_facts, SCOPES, OLD_CIKS)
+    facts = gate.filing_diff("sec_fundamentals_facts", before_facts, after_facts, SCOPES, OLD_CIKS)
     assert {r.accession: r.reason for r in facts.itertuples(index=False)} == {
         "t-2015": "register_window",
         "j-2015": "register_window",
@@ -529,73 +529,41 @@ def test_insider_rows_leave_canonical_history_only_by_role_or_purge() -> None:
 
 
 def test_merged_rows_change_only_inside_a_predecessor_window_with_a_stored_owner_series() -> None:
-    def frame(rows: list[tuple[str, str, str, float, float]]) -> pd.DataFrame:
-        out = pd.DataFrame(rows, columns=["ticker", "as_of", "fiscal_end", "totalRevenue", "netIncome_sec"])
+    def frame(rows: list[tuple[str, str, str, float]]) -> pd.DataFrame:
+        out = pd.DataFrame(rows, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"])
         return out.assign(as_of=pd.to_datetime(out["as_of"]), fiscal_end=pd.to_datetime(out["fiscal_end"]))
 
     before = frame(
         [
-            ("PLD", "2011-02-10", "2010-12-31", 164.5, 1.0),
-            ("PLD", "2011-08-09", "2011-06-30", 170.0, 1.0),
-            ("PLD", "2012-05-01", "2012-03-31", 400.0, 2.0),
-            ("PLD", "2012-08-01", "2012-06-30", 410.0, 2.0),
-            ("MRK", "2015-05-01", "2015-03-31", 9.0, 3.0),
+            ("PLD", "2011-02-10", "2010-12-31", 164.5),
+            ("PLD", "2011-08-09", "2011-06-30", 170.0),
+            ("PLD", "2012-05-01", "2012-03-31", 400.0),
+            ("PLD", "2012-08-01", "2012-06-30", 410.0),
+            ("MRK", "2015-05-01", "2015-03-31", 9.0),
         ]
     )
     after = frame(
         [
-            ("PLD", "2011-02-10", "2010-12-31", 238.8, 1.0),
-            ("PLD", "2011-08-09", "2011-06-30", 171.0, 1.0),
-            ("PLD", "2012-05-01", "2012-03-31", 400.0, 2.5),
-            ("PLD", "2012-08-01", "2012-06-30", 411.0, 2.0),
-            ("PLD", "2026-08-01", "2026-06-30", 900.0, 4.0),
-            ("MRK", "2015-05-01", "2015-03-31", 9.5, 3.0),
+            ("PLD", "2011-02-10", "2010-12-31", 238.8),
+            ("PLD", "2011-08-09", "2011-06-30", 171.0),
+            ("PLD", "2012-05-01", "2012-03-31", 400.0),
+            ("PLD", "2012-08-01", "2012-06-30", 411.0),
+            ("PLD", "2026-08-01", "2026-06-30", 900.0),
+            ("MRK", "2015-05-01", "2015-03-31", 9.5),
         ]
     )
     windows = [gate.Window("PLD", "PLD1", None, pd.Timestamp("2011-06-03"))]
-    diff = gate.merged_diff(before, after, windows, {"netIncome_sec"}, {"PLD"})
+    diff = gate.merged_diff(before, after, windows)
     assert {(r.ticker, r.fiscal_end): r.reason for r in diff.itertuples(index=False)} == {
         ("PLD", "2010-12-31"): "predecessor_vendor_series",
         ("PLD", "2011-06-30"): "predecessor_vendor_series",  # trailing quarters after the window
-        ("PLD", "2012-03-31"): "sec_block_changed",
         ("PLD", "2012-06-30"): "",  # a vendor change more than a year after the window: no rule
         ("PLD", "2026-06-30"): "new_period",
         ("MRK", "2015-03-31"): "",
     }
     print(
-        "sanity: PLD's AMB-era quarter is replaced by old ProLogis's series, a quarter within a year after it changes through trailing figures, a changed SEC block and a new period are explained, a vendor change elsewhere is not"
+        "sanity: PLD's AMB-era quarter is replaced by old ProLogis's series, a quarter within a year after it changes through trailing figures, an unchanged row is not listed, a new period is explained, a vendor change elsewhere is not"
     )
-
-
-def test_a_column_the_merge_derives_from_an_sec_owned_input_moves_with_the_sec_block(sqlite_store: Any, tmp_path: Path) -> None:
-    """P7 shape (DD after old DuPont's SEC history leaves): `stockholdersEquityInclNci` = vendor equity + the SEC-owned
-    `minorityInterest`, so a merged row whose only changes are SEC columns and that derived column is `sec_block_changed`;
-    a vendor column changing on the same ticker stays unexplained."""
-    snap = tmp_path / "before"
-    snap.mkdir()
-    day = pd.Timestamp("2012-05-02")
-    merged_before = pd.DataFrame(
-        {
-            "ticker": ["DD", "DD"],
-            "as_of": [day, day + pd.Timedelta(days=91)],
-            "fiscal_end": [pd.Timestamp("2012-03-31"), pd.Timestamp("2012-06-30")],
-            "totalRevenue": [10.0, 11.0],
-            "minorityInterest_sec": [0.5, 0.5],
-            "stockholdersEquityInclNci": [9.5, 9.6],
-        }
-    )
-    merged_after = merged_before.assign(minorityInterest_sec=[None, None], stockholdersEquityInclNci=[None, None], totalRevenue=[10.0, 12.0])
-    merged_before.to_parquet(snap / "merged.parquet", index=False)
-    pd.DataFrame({"ticker": ["DD"], "as_of": [day], "minorityInterest": [0.5]}).to_parquet(snap / "history_sec.parquet", index=False)
-    sqlite_store.save(Tables.fundamentals_history, merged_after)
-    sqlite_store.save(Tables.fundamentals_history_sec, pd.DataFrame({"ticker": ["DOW"], "as_of": [day], "minorityInterest": [0.1]}))
-
-    diff = gate._merged_section(_Context(sqlite_store), snap, ["DD"])
-
-    reasons = dict(zip(diff["fiscal_end"], diff["reason"], strict=True))
-    print(diff[["ticker", "fiscal_end", "change", "columns", "reason"]].to_string(index=False))
-    assert reasons == {"2012-03-31": "sec_block_changed", "2012-06-30": ""}, reasons
-    print("sanity: the SEC-derived stockholdersEquityInclNci moves with DD's SEC block; a vendor revenue change is still unexplained")
 
 
 def test_prices_may_only_gain_secondary_class_symbols_and_new_dates() -> None:
@@ -631,7 +599,7 @@ def test_prices_may_only_gain_secondary_class_symbols_and_new_dates() -> None:
 def test_a_hypothesis_that_does_not_hold_fails_and_a_skipped_one_is_reported() -> None:
     tape = gate.tape_diff(_raw(TAPE_ROWS), _master(), _resolver(), UNIVERSE, "ftd")
     filing = gate.filing_diff(
-        "fundamentals_facts", _filings([("JCI", "t-2015", TYCO, "10-Q", "2015-05-01", "2015-03-31")]), _filings([]), SCOPES, OLD_CIKS
+        "sec_fundamentals_facts", _filings([("JCI", "t-2015", TYCO, "10-Q", "2015-05-01", "2015-03-31")]), _filings([]), SCOPES, OLD_CIKS
     )
     filing["table"] = gate.HISTORY_TABLE
     hypotheses = [

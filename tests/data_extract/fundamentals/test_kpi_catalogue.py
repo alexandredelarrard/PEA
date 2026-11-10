@@ -256,14 +256,14 @@ def test_regime_overrides_and_exceptions_name_real_regimes(cat):
     print(f"  {len(overrides)} argued exception(s) below that bar: {', '.join(overrides) or 'none'}")
     print(
         f"  bank/insurer currentAssets absence: "
-        f"{cat.measured_absent_rate('bank', 'currentAssets'):.0%} / "
-        f"{cat.measured_absent_rate('insurer', 'currentAssets'):.0%} -- structural, per "
+        f"{cat.regime_exceptions['bank']['currentAssets']['measured_absent_rate']:.0%} / "
+        f"{cat.regime_exceptions['insurer']['currentAssets']['measured_absent_rate']:.0%} -- structural, per "
         "17 CFR 210.1-02(bb)(1)(i)"
     )
     print(
         f"  utility/energy currentAssets absence: "
-        f"{cat.measured_absent_rate('utility', 'currentAssets'):.0%} / "
-        f"{cat.measured_absent_rate('energy', 'currentAssets'):.0%} -- they DO file "
+        f"{cat.regime_exceptions['utility']['currentAssets']['measured_absent_rate']:.0%} / "
+        f"{cat.regime_exceptions['energy']['currentAssets']['measured_absent_rate']:.0%} -- they DO file "
         "classified balance sheets, so absence there stays a finding. Validated."
     )
 

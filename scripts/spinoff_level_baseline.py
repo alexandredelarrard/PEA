@@ -6,7 +6,7 @@ fix, so every claim in the plan is checkable rather than asserted.
 
 ## The gap this measures
 
-`scripts/basis_baseline.py` put price and share count on one basis for SPLITS. It could not
+The split basis puts price and share count on one basis for SPLITS. It cannot
 do so for SPINOFFS, and the residual has a closed form:
 
     S(d)  =  PROD{ prices_splits.ratio    : date > d }
@@ -124,8 +124,7 @@ def level_factor(tickers: pd.Series, dates: pd.Series, yf_splits: pd.DataFrame, 
 
 def _digest(series: pd.Series) -> str:
     """Order-independent SHA-256 over a float series, rounded to 6 significant figures so an
-    unrelated pandas last-ulp change does not read as a basis change. Same recipe as
-    `scripts/basis_baseline.py`, so the two scripts' digests are comparable."""
+    unrelated pandas last-ulp change does not read as a basis change."""
     s = pd.to_numeric(series, errors="coerce").dropna().sort_values()
     return hashlib.sha256(",".join(f"{v:.6g}" for v in s).encode()).hexdigest()[:16]
 
@@ -310,7 +309,7 @@ def dividend_leg_question(store, panel: pd.DataFrame) -> dict:
     means they do not.
     """
     div = store.load(Tables.dividends, columns=["ticker", "date", "dividends"], optional=True)
-    vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "dps", "price"], where={"dimension": "ART"})
+    vendor = store.load(Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "dimension", "dps", "price"], where={"dimension": "ART"})
     if div is None or div.empty or vendor is None or vendor.empty:
         return {"skipped": "prices_dividends or the ART dimension is empty"}
     div = _as_ns(div, "date")
@@ -359,7 +358,7 @@ def earnings_leg_question(store, panel: pd.DataFrame) -> dict:
     than an agreement rate.
     """
     earn = store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date", "eps_actual"], optional=True)
-    vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "epsdil"], where={"dimension": "ARQ"})
+    vendor = store.load(Tables.sharadar_fundamentals_facts, columns=["ticker", "date", "dimension", "epsdil"], where={"dimension": "ARQ"})
     if earn is None or earn.empty:
         return {"skipped": "earnings_surprises is empty"}
     earn = _as_ns(earn, "earnings_date").rename(columns={"earnings_date": "date"})

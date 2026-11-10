@@ -2,7 +2,7 @@
 
 The item stages are pure: `universe_cik_symbol` rows, each CIK's filing activity (`cik_activity`), optionally the
 `universe_cusip` lines (which decide tape-mix pairs they already stamp) and, from the build only, its grey-band backlog
-and refused merges. `identity_flags` composes them for the validator and the co-registrant reading of `security_lines`.
+and refused merges. `identity_flags` composes them for the validator; `security_lines` reads the co-registrants off `cik_items`.
 The build's `run_publish` matches each item to the reviewed `resolutions` of the owning JSONs (REQ-031) and logs a
 WARNING block of the unreviewed action items only, everything else in one INFO summary (REQ-032).
 """
@@ -47,7 +47,7 @@ _SYMBOLS = "configs/sec/symbol_tenure_manual.json"
 _ACTIVITY_SOURCES = ("dei", "form345")
 _TAPE_SOURCES = ("form345", "manual")
 _FAR = pd.Timestamp("2262-01-01")
-#: The stored open start of a window (`identity.cik_history.SENTINEL_START`).
+#: The stored open start of a window (`common.identity_contract.SENTINEL_START`).
 _SENTINEL = pd.Timestamp("1900-01-01")
 #: The `universe_cusip` columns the tape-mix rule reads.
 MASTER_COLUMNS = ("canonical_company", "source_symbol", "lineage_role", "lineage_reason", "valid_from", "valid_to")
@@ -98,16 +98,21 @@ def cik_activity(evidence: pd.DataFrame) -> pd.DataFrame:
 
     `dei` rows are cover-page (10-K/10-Q) symbols, `form345` rows issuer-side Form 3/4/5 symbols (`symbol_tenure` shape).
     """
+    # reduce to one row per stored CIK spelling and source before padding (many rows per CIK)
     rows = evidence[evidence["source"].isin(_ACTIVITY_SOURCES)]
     frame = pd.DataFrame(
         {
-            "cik": pad_cik_series(rows["issuer_cik"]),
+            "cik": rows["issuer_cik"],
             "source": rows["source"].astype(str),
             "first": pd.to_datetime(rows["valid_from"]),
             "last": pd.to_datetime(rows["valid_to"]).fillna(_FAR),
         }
     )
-    out = frame.groupby(["cik", "source"], as_index=False).agg(first=("first", "min"), last=("last", "max"))
+    spelled = frame.groupby(["cik", "source"], as_index=False, dropna=False).agg(first=("first", "min"), last=("last", "max"))
+
+    # one row per padded CIK and source, the open end restored
+    spelled["cik"] = pad_cik_series(spelled["cik"])
+    out = spelled.groupby(["cik", "source"], as_index=False).agg(first=("first", "min"), last=("last", "max"))
     out["last"] = out["last"].where(out["last"].ne(_FAR))
     return out
 
@@ -142,7 +147,8 @@ def master_lines(master: pd.DataFrame | None) -> pd.DataFrame | None:
 # The item stages
 def cik_items(rows: pd.DataFrame, activity: pd.DataFrame, backlog: pd.DataFrame | None = None) -> list[dict[str, object]]:
     """Uncurated extra CIKs, disputed register seams, the build's grey-band links and automatically dated windows."""
-    # the filing spans of every CIK (all sources, cover pages alone) and the tape symbol rows
+    # the filing spans of the lineage CIKs (all sources, cover pages alone): no item reads another CIK's span
+    activity = activity[activity["cik"].isin(rows["cik"])]
     spans, cover = _spans(activity), _spans(activity[activity["source"].eq("dei")])
     tape = _tape(rows[rows["role"].eq("symbol")])
 
@@ -381,15 +387,15 @@ def _item_line(row: dict[str, Any]) -> str:
 # Flat helpers: filing spans and tape rows
 def _spans(activity: pd.DataFrame) -> SpanMap:
     """`{cik: (first, last or far future, evidence text)}` over every source."""
-    out: SpanMap = {}
-    for cik, group in activity.groupby("cik", sort=True):
-        last = group["last"].fillna(_FAR)
-        text = ", ".join(
-            f"{'10-K/10-Q cover' if source == 'dei' else 'Form 3/4/5'} {first.date()}..{'open' if pd.isna(end) else end.date()}"
-            for source, first, end in zip(group["source"], group["first"], group["last"], strict=True)
-        )
-        out[str(cik)] = (group["first"].min(), last.max(), text)
-    return out
+    first, last = pd.to_datetime(activity["first"]), pd.to_datetime(activity["last"])
+    label = activity["source"].map(lambda source: "10-K/10-Q cover" if source == "dei" else "Form 3/4/5").astype(object)
+    pieces = label + " " + first.dt.strftime("%Y-%m-%d").astype(object) + ".."
+    pieces += last.dt.strftime("%Y-%m-%d").astype(object).where(last.notna(), "open")
+    frame = pd.DataFrame({"cik": activity["cik"], "first": first, "last": last.fillna(_FAR), "text": pieces})
+    grouped = frame.groupby("cik", sort=True).agg(first=("first", "min"), last=("last", "max"), text=("text", ", ".join))
+    return {
+        str(cik): (start, end, text) for cik, start, end, text in zip(grouped.index, grouped["first"], grouped["last"], grouped["text"], strict=True)
+    }
 
 
 def _tape(symbols: pd.DataFrame) -> pd.DataFrame:
@@ -401,16 +407,15 @@ def _tape(symbols: pd.DataFrame) -> pd.DataFrame:
 # Flat helpers: CIK items
 def _extra_ciks(rows: pd.DataFrame) -> list[tuple[str, str, str, str]]:
     """`(company, ticker, extra CIK, roster CIK)` for each uncurated extra CIK of a company with a roster-only window."""
-    out: list[tuple[str, str, str, str]] = []
-    cik_rows = rows[rows["role"].ne("symbol")]
-    for entity, group in cik_rows.groupby("company_id", sort=True):
-        home_rows = group[group["role"].eq("cik_window") & group["sources"].eq("roster")]
-        if home_rows.empty:
-            continue
-        ticker, home = str(home_rows["canonical_ticker"].iloc[0]), str(home_rows["cik"].iloc[0])
-        others = sorted(set(group.loc[group["cik"].ne(home) & ~group["oracle"].isin(("register", "manual")), "cik"]))
-        out += [(str(entity), ticker, other, home) for other in others]
-    return out
+    cik_rows = rows[rows["role"].ne("symbol") & rows["company_id"].notna()]
+    homes = cik_rows[cik_rows["role"].eq("cik_window") & cik_rows["sources"].eq("roster")].drop_duplicates("company_id")
+    home_of = homes[["company_id", "canonical_ticker", "cik"]].rename(columns={"canonical_ticker": "ticker", "cik": "home"})
+    others = cik_rows.loc[~cik_rows["oracle"].isin(("register", "manual")), ["company_id", "cik"]].merge(home_of, on="company_id")
+    others = others[others["cik"].ne(others["home"])].drop_duplicates(["company_id", "cik"]).sort_values(["company_id", "cik"])
+    return [
+        (str(entity), str(ticker), other, str(home))
+        for entity, ticker, other, home in zip(others["company_id"], others["ticker"], others["cik"], others["home"], strict=True)
+    ]
 
 
 def _takeover(tape: pd.DataFrame, ticker: str, other: str, home: str) -> str | None:

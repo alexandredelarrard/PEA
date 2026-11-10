@@ -1,6 +1,6 @@
 {
   "_README": [
-    "PER-(FIELD, TICKER) CORRECTIONS applied to `fundamentals_sharadar` in the SHARADAR LAYER,",
+    "PER-(FIELD, TICKER) CORRECTIONS applied to `sharadar_fundamentals_facts` in the SHARADAR LAYER,",
     "BEFORE the field map runs. Three defects phase 2 measured cannot be expressed as a zero",
     "rule, because none of them is a zero: a positive `capex`, a net-basis `intexp`, and a",
     "split-adjusted share count. This file is where they live.",
@@ -26,7 +26,7 @@
     "",
     "Keys starting with _ are documentation and must be skipped by the reader.",
     "generated: 2026-08-26",
-    "scope: 30 ticker(s), 2021-08-27..2026-08-10, `fundamentals_sharadar` ARQ/ART/ARY"
+    "scope: 30 ticker(s), 2021-08-27..2026-08-10, `sharadar_fundamentals_facts` ARQ/ART/ARY"
   ],
   "_APPROVED": {
     "on": "2026-08-26",

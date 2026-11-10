@@ -22,10 +22,9 @@ from edgar import Filing
 
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity
-from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, header_subject_ciks, parse_filing_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url, list_filings
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS

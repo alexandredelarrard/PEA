@@ -1,10 +1,9 @@
-"""The `fundamentals_history_sec` CONTRACT: the 69 columns, the reason-code vocabulary, the
-publication-event grain and the append-only guard.
+"""The `sec_fundamentals_history` CONTRACT: the 66 columns, the publication-event grain of original
+filings and the append-only guard.
 
-Synthetic where the question is arithmetic or grain (a known-truth fixture is the only way to
-assert "this window was refused for THIS reason"), and real where the question is whether the
+Synthetic where the question is arithmetic or grain (a known-truth fixture), and real where the question is whether the
 contract survives an actual filer -- the sweep ledgers in `data/fundamentals_sweep/` are
-genuine `fundamentals_facts` rows and are used as the real substrate, so these tests need no
+genuine `sec_fundamentals_facts` rows and are used as the real substrate, so these tests need no
 network and no populated DB.
 """
 
@@ -16,13 +15,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.build_history import (
     _FORMULAS,
-    FORM_PRECEDENCE,
-    MAX_AMENDMENT_LAG_DAYS,
+    _total_liabilities_identity,
     build_ticker,
-    build_ticker_history,
     diff_against_stored,
     publication_events,
 )
@@ -39,7 +35,7 @@ _FLOW, _LEVEL = "totalRevenue", "totalAssets"
 
 
 def _fact(**kwargs) -> dict:
-    """One `fundamentals_facts` row with every column the build reads defaulted."""
+    """One `sec_fundamentals_facts` row with every column the build reads defaulted."""
     row = {
         "ticker": "TST",
         "accession_number": "a-1",
@@ -49,7 +45,6 @@ def _fact(**kwargs) -> dict:
         "duration_type": "quarterly",
         "form": "10-Q",
         "filing_date": "2023-05-01",
-        "is_amendment": False,
         "period_of_report": "2023-03-31",
         "regime": "industrial",
         "period_start": "2023-01-01",
@@ -58,8 +53,6 @@ def _fact(**kwargs) -> dict:
         "value": 100.0,
         "unit": "USD",
         "source_concept": "us-gaap:Revenues",
-        "dc_code": None,
-        "adjustment": None,
     }
     row.update(kwargs)
     return row
@@ -111,13 +104,12 @@ def _four_quarters(*, ticker: str = "TST") -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # 1. The column contract                                                       #
 # --------------------------------------------------------------------------- #
-def test_the_column_contract_is_exactly_69_and_every_column_is_traceable():
-    """ "Column count is exactly as contracted" was a verification item against a plan that
-    said "~71" twice and "68" once with no enumeration behind either. This test IS the
-    enumeration: 4 keys + 52 catalogue fields + 8 derived + regime + 4 provenance."""
+def test_the_column_contract_is_exactly_66_and_every_column_is_traceable():
+    """The enumeration of the contract: 4 keys + 52 catalogue fields + 8 derived + regime + `publication_form`."""
     columns = CATALOGUE.history_columns
-    assert len(columns) == 69, f"{len(columns)} columns, not 69"
+    assert len(columns) == 66, f"{len(columns)} columns, not 66"
     assert len(columns) == len(set(columns)), "a column is declared twice"
+    assert HISTORY_PROVENANCE == ("publication_form",)
 
     families = {
         "keys": [c for c in columns if c in HISTORY_KEYS],
@@ -127,23 +119,22 @@ def test_the_column_contract_is_exactly_69_and_every_column_is_traceable():
         "provenance": [c for c in columns if c in HISTORY_PROVENANCE],
     }
     assert len(families["keys"]) == 4 and len(families["catalogue"]) == 52
-    assert len(families["derived"]) == 8 and len(families["provenance"]) == 4
-    assert sum(len(v) for v in families.values()) == 69, "a column belongs to no family"
+    assert len(families["derived"]) == 8 and len(families["provenance"]) == 1
+    assert sum(len(v) for v in families.values()) == 66, "a column belongs to no family"
 
-    # The two named casualties, and the two columns decision 32 removed.
-    for gone in ("employees", "revenueGrowth", "earningsGrowth", "sector", "industry_group", "ebitda_q", "freeCashflow_q", "capexGlobal"):
+    # The two named casualties and the two columns decision 32 removed; provenance is `publication_form` alone.
+    gone_columns = ("employees", "revenueGrowth", "earningsGrowth", "sector", "industry_group", "ebitda_q", "freeCashflow_q", "capexGlobal")
+    for gone in gone_columns:
         assert gone not in columns, f"{gone} is still in the contract"
     assert CATALOGUE.side_table_fields == ["employees"]
     assert CUBE_TIME_COLUMNS == {"revenueGrowth", "earningsGrowth"}
+    history = build_ticker("TST", _four_quarters(), catalogue=CATALOGUE)
+    assert list(history.columns) == columns
 
-    print("\n=== SANITY CHECK: the 69-column contract ===")
+    print("\n=== SANITY CHECK: the 66-column contract ===")
     for family, members in families.items():
         print(f"  {family:11s} {len(members):2d}")
-    print(
-        "  dropped on purpose: employees (own table), revenueGrowth/earningsGrowth "
-        "(pit.py, 365-day offset), sector/industry_group (join the universe), "
-        "ebitda_q/freeCashflow_q/capexGlobal (declared casualties). Validated."
-    )
+    print("  the builder's frame has exactly these 66 columns in this order; no amendment provenance column. Validated.")
 
 
 def test_every_formula_matches_the_one_declared_in_the_config():
@@ -172,30 +163,11 @@ def test_every_formula_matches_the_one_declared_in_the_config():
     print(f"  {checked} formulas cross-checked against their `derived_from` prose; revenue_q / netIncome_q are discrete-quarter reads. Validated.")
 
 
-def test_the_reason_code_vocabulary_is_closed_and_singly_defined():
-    """A typo in a reason code is worse than no code: the null-gate's LEFT JOIN still finds a
-    row, so the cell reads as explained while nothing can interpret the explanation."""
-    assert len(rc.ALL_CODES) == 22, sorted(rc.ALL_CODES)
-    assert rc.IS_QUALIFIER < rc.ALL_CODES
-    assert rc.NOT_DISCLOSED in rc.ALL_CODES and rc.NOT_DISCLOSED not in rc.IS_QUALIFIER
-    # Both are ABSENCES, not qualifiers: each names a cell that has no value precisely
-    # BECAUSE the code fired. Cluster 876ab8a57bd8 added them together.
-    for code in (rc.SEGMENT_ONLY_CONCEPT, rc.STALE_TTM):
-        assert code in rc.ALL_CODES and code not in rc.IS_QUALIFIER
-    # ...while `derived_fallback` is a QUALIFIER: the cell HAS a value, computed from two
-    # that resolved, so a null gate must not go looking for one.
-    assert rc.DERIVED_FALLBACK in rc.IS_QUALIFIER
-    print("\n=== SANITY CHECK: the dc_code vocabulary ===")
-    print(f"  {len(rc.ALL_CODES)} codes, {len(rc.IS_QUALIFIER)} of them QUALIFIERS (a value is present): {sorted(rc.IS_QUALIFIER)}")
-    print(f"  absences: {sorted(rc.ALL_CODES - rc.IS_QUALIFIER)}")
-    print("  Imported from periods.py / xbrl_linkbase.py rather than restated, so each code has exactly one definition. Validated.")
-
-
 # --------------------------------------------------------------------------- #
 # 2. The publication-event grain                                               #
 # --------------------------------------------------------------------------- #
 def test_one_row_per_filing_date_and_the_snapshot_is_complete():
-    history = build_ticker_history("TST", _four_quarters(), catalogue=CATALOGUE)
+    history = build_ticker("TST", _four_quarters(), catalogue=CATALOGUE)
     assert list(history.columns) == CATALOGUE.history_columns
     assert len(history) == 4, "one row per filing date"
     assert list(pd.to_datetime(history["as_of"]).dt.strftime("%Y-%m-%d")) == ["2023-05-01", "2023-08-01", "2023-11-01", "2024-02-15"]
@@ -211,8 +183,8 @@ def test_one_row_per_filing_date_and_the_snapshot_is_complete():
 
 
 def test_two_filings_on_one_day_collapse_to_one_row_by_form_precedence():
-    """A 10-K and a 10-Q filed the same day are ONE publication event. The precedence rule
-    keeps `publication_form` scalar, so a `== '10-K'` filter cannot silently miss the day."""
+    """A 10-K and a 10-Q filed the same day are ONE publication event. The 10-K wins
+    `publication_form`, so a `== '10-K'` filter cannot silently miss the day."""
     facts = _four_quarters()
     same_day = _fact(
         accession_number="acc-extra",
@@ -232,7 +204,7 @@ def test_two_filings_on_one_day_collapse_to_one_row_by_form_precedence():
     assert len(events) == 4, "the same-day pair did not collapse"
     row = events[events["as_of"] == pd.Timestamp("2023-08-01")].iloc[0]
     assert row["publication_form"] == "10-K", "precedence did not pick the 10-K"
-    assert FORM_PRECEDENCE == ("10-K", "10-K/A", "10-Q", "10-Q/A")
+    assert list(events.columns) == ["as_of", "publication_form"]
     print("\n=== SANITY CHECK: same-day collapse ===")
     print(
         f"  5 accessions on 4 dates -> {len(events)} events; the 2023-08-01 pair reports "
@@ -240,21 +212,24 @@ def test_two_filings_on_one_day_collapse_to_one_row_by_form_precedence():
     )
 
 
-def test_a_no_op_amendment_publishes_nothing():
-    """The 88 Part-III / cover-only amendments must produce ZERO rows. Tested by value, not
-    by fact count: this amendment re-tags every fact to the SAME number."""
+def test_amendment_facts_are_ignored_and_the_history_is_built_from_originals_only():
+    """A restating amendment, a same-value echo and a 10-K/A: none adds a row or moves a value -- the
+    history equals the build without them, like Sharadar's originals-only rows."""
     facts = _four_quarters()
-    echo = facts[facts["accession_number"] == "acc-0"].copy()
-    echo["accession_number"] = "amd-noop"
-    echo["form"] = "10-Q/A"
-    echo["is_amendment"] = True
-    echo["filing_date"] = "2023-06-01"
-    both = pd.concat([facts, echo], ignore_index=True)
-    assert len(build_ticker_history("TST", both, catalogue=CATALOGUE)) == 4
-    print("\n=== SANITY CHECK: a no-op amendment ===")
+    restated = facts[facts["accession_number"] == "acc-1"].assign(accession_number="amd-1", form="10-Q/A", filing_date="2023-09-01", value=9_999.0)
+    echo = facts[facts["accession_number"] == "acc-0"].assign(accession_number="amd-0", form="10-Q/A", filing_date="2023-06-01")
+    annual = facts[facts["accession_number"] == "acc-3"].assign(accession_number="amd-3", form="10-K/A", filing_date="2024-03-01", value=1.0)
+    with_amendments = pd.concat([facts, restated, echo, annual], ignore_index=True)
+
+    originals = build_ticker("TST", facts, catalogue=CATALOGUE)
+    built = build_ticker("TST", with_amendments, catalogue=CATALOGUE)
+
+    pd.testing.assert_frame_equal(built, originals)
+    assert len(built) == 4 and not built["publication_form"].str.endswith("/A").any()
+    print("\n=== SANITY CHECK: amendment facts are ignored ===")
     print(
-        "  an amendment re-tagging every fact to an identical value -> 0 extra rows "
-        "(4 -> 4). A fact-count threshold would have admitted it. Validated."
+        f"  4 originals + 3 amendments (a restatement to 9,999, a same-value echo, a 10-K/A) -> {len(built)} rows, "
+        f"forms {sorted(set(built['publication_form']))}; identical to the originals-only build. Validated."
     )
 
 
@@ -264,7 +239,7 @@ def test_a_no_op_amendment_publishes_nothing():
 def test_a_changed_stored_row_is_detected_exactly():
     """`store.save` is an upsert, so immutability is only real if a drifted row is DETECTED.
     Compared exactly: if it ever trips on floating-point noise we want to know."""
-    history = build_ticker_history("TST", _four_quarters(), catalogue=CATALOGUE)
+    history = build_ticker("TST", _four_quarters(), catalogue=CATALOGUE)
     assert diff_against_stored(history, history).empty, "a frame drifted against itself"
 
     tampered = history.copy()
@@ -296,39 +271,15 @@ def real_build():
     """One roster ticker's real facts, off the committed sweep ledger. No network, no DB."""
     path = SWEEP / "AAPL.parquet"
     if not path.exists():
-        pytest.skip(f"{path} not present -- the committed fundamentals sweep ledger is missing")
+        pytest.skip(f"{path} not present (real `sec_fundamentals_facts` ledger, main checkout only)")
     facts = pd.read_parquet(path)
     prefer_structure = facts["prefer_structure"].astype(bool) if "prefer_structure" in facts else pd.Series(True, index=facts.index)
     facts = facts[prefer_structure]
     return build_ticker("AAPL", facts, catalogue=CATALOGUE)
 
 
-def test_every_null_on_a_real_filer_carries_a_reason_code(real_build):
-    """The gate items 7, 9 and B.6.6 exist to make passable: no cell may be NULL without a
-    row in `fundamentals_reason_codes` for its own `(ticker, as_of, field)`."""
-    history, codes = real_build.history, real_build.reason_codes
-    value_columns = [c for c in history.columns if c not in (*HISTORY_KEYS, "regime", *HISTORY_PROVENANCE)]
-    explained = set(zip(codes["as_of"], codes["field"], strict=False))
-    unexplained = [
-        (row.as_of, column)
-        for row in history.itertuples()
-        for column in value_columns
-        if pd.isna(getattr(row, column)) and (row.as_of, column) not in explained
-    ]
-
-    print("\n=== SANITY CHECK: zero unexplained nulls (AAPL, real facts) ===")
-    print(f"  {len(history)} publication events x {len(value_columns)} value columns = {len(history) * len(value_columns):,} cells")
-    nulls = int(history[value_columns].isna().sum().sum())
-    print(f"  nulls {nulls:,} ({nulls / (len(history) * len(value_columns)):.1%}) | reason-code rows {len(codes):,} | UNEXPLAINED {len(unexplained)}")
-    print(f"  code mix: {codes['dc_code'].value_counts().head(8).to_dict()}")
-    if unexplained:
-        print(f"  first few: {unexplained[:5]}")
-    assert not unexplained, f"{len(unexplained)} null cells carry no reason code"
-    print("  Validated.")
-
-
 def test_the_real_grain_holds_and_a_rebuild_is_idempotent(real_build):
-    history = real_build.history
+    history = real_build
     assert not history.duplicated(["ticker", "as_of"]).any()
     ends = pd.to_datetime(history["fiscal_end"])
     assert (ends.diff().dropna() >= pd.Timedelta(0)).all(), "fiscal_end is not monotone"
@@ -343,8 +294,7 @@ def test_the_real_grain_holds_and_a_rebuild_is_idempotent(real_build):
         f"min {lag.min():.0f}d | max {lag.max():.0f}d "
         f"| beyond 200d {int((lag > 200).sum())}"
     )
-    print(f"  amendment rows {int(history['is_amendment'].sum())} | forms {history['publication_form'].value_counts().to_dict()}")
-    print(f"  MAX_AMENDMENT_LAG_DAYS = {MAX_AMENDMENT_LAG_DAYS}; a re-run over unchanged facts diffs to 0 cells. Validated.")
+    print(f"  forms {history['publication_form'].value_counts().to_dict()}; a re-run over unchanged facts diffs to 0 cells. Validated.")
 
 
 @pytest.mark.parametrize("ticker", ["APA", "WMT"])
@@ -357,14 +307,9 @@ def test_total_liabilities_falls_back_to_the_identity_and_says_so(ticker):
     if not path.exists():
         pytest.skip(f"{path} not present")
     facts = pd.read_parquet(path)
-    built = build_ticker(ticker, facts[facts["prefer_structure"].astype(bool)], catalogue=CATALOGUE)
-    history = built.history
+    history = build_ticker(ticker, facts[facts["prefer_structure"].astype(bool)], catalogue=CATALOGUE)
     filled = int(history["totalLiabilities"].notna().sum())
     assert filled == len(history), "the identity did not close the gap"
-
-    codes = built.reason_codes.query("field == 'totalLiabilities'")
-    assert set(codes["dc_code"]) == {"derived_identity"}, set(codes["dc_code"])
-    assert len(codes) == len(history), "not every derived cell is stamped"
 
     # The NCI bridge, read off the ROW rather than off the concept priority list -- because
     # priority-first is not the same as what actually won for a given filing. Both of these
@@ -380,10 +325,7 @@ def test_total_liabilities_falls_back_to_the_identity_and_says_so(ticker):
     assert abs(latest["totalLiabilities"] - (latest["totalAssets"] - latest["stockholdersEquity"] - latest["minorityInterest"])) > 1.0
 
     print(f"\n=== SANITY CHECK: totalLiabilities identity ({ticker}) ===")
-    print(
-        f"  coverage 0/{len(history)} tagged -> {filled}/{len(history)} derived, all "
-        "stamped `derived_identity` (a QUALIFIER: the number is right, it is not evidence)"
-    )
+    print(f"  coverage 0/{len(history)} tagged -> {filled}/{len(history)} derived from the balance-sheet identity")
     print(f"  equity resolved on {concept.split(':')[-1]}, so NO NCI is added:")
     print(
         f"  assets {latest['totalAssets']:,.0f} - equity "
@@ -411,13 +353,12 @@ def test_every_value_column_is_float64_even_when_the_ticker_never_populates_it()
     which is the append-only guard earning its keep -- but the frame must not offer the
     ambiguity in the first place.
     """
-    history = build_ticker_history("TST", _four_quarters(), catalogue=CATALOGUE)
+    history = build_ticker("TST", _four_quarters(), catalogue=CATALOGUE)
     value_columns = [c for c in history.columns if c not in (*HISTORY_KEYS, "regime", *HISTORY_PROVENANCE)]
     wrong = {c: str(history[c].dtype) for c in value_columns if history[c].dtype != "float64"}
     assert not wrong, f"non-float value column(s): {wrong}"
     all_null = [c for c in value_columns if history[c].isna().all()]
     assert all_null, "the fixture populates every column, so it cannot test the null case"
-    assert history["is_amendment"].dtype == bool
 
     print("\n=== SANITY CHECK: value-column dtypes ===")
     print(f"  {len(value_columns)} value columns, all float64; {len(all_null)} of them entirely NULL for this fixture and still float64")
@@ -429,8 +370,6 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
     must be ADDED back or liabilities are understated by the whole of it. Synthetic because
     the branch is chosen by the resolved concept, and every measured filer took the other one.
     """
-    from src.data_extract.utils.fundamentals.build_history import _split_by_field, _total_liabilities_identity
-
     _incl = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
 
     def equity_row(concept: str) -> pd.DataFrame:
@@ -439,23 +378,18 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
         )
 
     def visible(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
-        """The per-field split `_snapshot` hands the identity, not the raw visible frame."""
-        return _split_by_field(frame)
+        """The per-field split `_snapshot` hands the identity (`_Visible.by_field`), not the raw visible frame."""
+        return {str(field): group for field, group in frame.groupby("field", sort=False)}
 
     row = {"totalAssets": 1000.0, "stockholdersEquity": 800.0, "minorityInterest": 50.0}
-    ex_nci, ex_code = _total_liabilities_identity(row, visible(equity_row("StockholdersEquity")))
-    incl_nci, incl_code = _total_liabilities_identity(
-        row, visible(equity_row("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"))
-    )
+    ex_nci = _total_liabilities_identity(row, visible(equity_row("StockholdersEquity")))
+    incl_nci = _total_liabilities_identity(row, visible(equity_row(_incl)))
     assert ex_nci == 150.0, "the NCI was not bridged into an ex-NCI equity row"
     assert incl_nci == 200.0, "the NCI was double-counted on an incl-NCI equity row"
-    assert ex_code == incl_code == rc.DERIVED_IDENTITY
 
-    # An ex-NCI basis, no NCI resolved, and the filer has NEVER tagged one: absence IS zero,
-    # so derive -- but say so with its own code, because that rests on a second inference.
-    silent, silent_code = _total_liabilities_identity({**row, "minorityInterest": None}, visible(equity_row("StockholdersEquity")))
+    # An ex-NCI basis, no NCI resolved, and the filer has NEVER tagged one: absence IS zero, so derive.
+    silent = _total_liabilities_identity({**row, "minorityInterest": None}, visible(equity_row("StockholdersEquity")))
     assert silent == 200.0, "a filer that tags no NCI anywhere should still get the identity"
-    assert silent_code == rc.DERIVED_IDENTITY_NCI_ZERO, "the weaker basis is not distinguished"
 
     # Same shape, but this filer HAS tagged an NCI somewhere visible -- so a NULL at this event
     # means UNKNOWN, not zero, and the identity must refuse rather than understate liabilities.
@@ -468,12 +402,11 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
         ],
         ignore_index=True,
     )
-    assert _total_liabilities_identity({**row, "minorityInterest": None}, visible(has_nci)) == (None, None)
-    assert _total_liabilities_identity({**row, "totalAssets": None}, visible(equity_row("StockholdersEquity"))) == (None, None)
+    assert _total_liabilities_identity({**row, "minorityInterest": None}, visible(has_nci)) is None
+    assert _total_liabilities_identity({**row, "totalAssets": None}, visible(equity_row("StockholdersEquity"))) is None
 
-    # BOTH bases at one period_end -> the NCI is the difference, which is two FILED facts and
-    # not an assumption, so the plain `derived_identity` code applies. Preferred over the
-    # assumed zero: here the filer HAS an NCI and assuming zero would understate liabilities.
+    # BOTH bases at one period_end -> the NCI is the difference of two FILED facts, not an
+    # assumption. Preferred over the assumed zero: here the filer HAS an NCI and assuming zero would understate liabilities.
     # The INCL row first and the EX row last, so the EX basis is the one that wins for the
     # column and the deduction is actually the path under test. (With the order reversed the
     # incl basis wins and the answer is the same 170 by a different route -- which is a nice
@@ -487,16 +420,15 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
         ],
         ignore_index=True,
     )
-    deduced, deduced_code = _total_liabilities_identity({**row, "minorityInterest": None}, visible(both))
+    deduced = _total_liabilities_identity({**row, "minorityInterest": None}, visible(both))
     assert deduced == 170.0, "the NCI was not deduced from the two equity bases (830-800=30)"
-    assert deduced_code == rc.DERIVED_IDENTITY, "a deduced NCI is evidence, not an assumption"
 
     print("\n=== SANITY CHECK: the NCI bridge, all four branches ===")
     print("  assets 1000, equity 800, NCI 50")
-    print(f"  EX-NCI equity,   NCI resolved      -> 1000 - (800 + 50) = {ex_nci}  [{ex_code}]")
-    print(f"  INCL-NCI equity, NCI resolved      -> 1000 -  800       = {incl_nci}  [{incl_code}]")
-    print(f"  EX-NCI equity,   filer tags NO NCI -> 1000 -  800       = {silent}  [{silent_code}]")
-    print(f"  EX-NCI equity,   BOTH bases filed   -> 1000 - (800 + 30) = {deduced}  [{deduced_code}]")
+    print(f"  EX-NCI equity,   NCI resolved      -> 1000 - (800 + 50) = {ex_nci}")
+    print(f"  INCL-NCI equity, NCI resolved      -> 1000 -  800       = {incl_nci}")
+    print(f"  EX-NCI equity,   filer tags NO NCI -> 1000 -  800       = {silent}")
+    print(f"  EX-NCI equity,   BOTH bases filed   -> 1000 - (800 + 30) = {deduced}")
     print("  EX-NCI equity,   filer HAS NCI      -> None (refused: a NULL means UNKNOWN here)")
     print("  Deduction is preferred over the assumption wherever both bases are filed, so the weakest branch is a last resort.")
     print(
@@ -549,7 +481,7 @@ def test_fiscal_quarter_labels_every_row_including_the_ttm_ones():
     calendar month either: the roster carries 52/53-week and non-December filers whose Q1 ends
     in the month another filer's Q3 does.
     """
-    history = build_ticker_history("TST", _quarters_with_a_calendar())
+    history = build_ticker("TST", _quarters_with_a_calendar())
     assert "fiscal_quarter" in history.columns
     labelled = history.dropna(subset=["fiscal_end"])
     assert labelled["fiscal_quarter"].notna().all(), "a dated row carries no quarter label"
@@ -620,13 +552,13 @@ def test_the_value_columns_are_in_statement_order():
         assert at[earlier] < at[later], f"{earlier} sits after {later}"
     # The keys lead and the provenance trails, with the values between them.
     assert columns[:4] == list(HISTORY_KEYS)
-    assert columns[-4:] == list(HISTORY_PROVENANCE)
+    assert columns[-1:] == list(HISTORY_PROVENANCE)
     # And the resolution order is deliberately NOT this one -- the field loop still needs
     # tier-3 `minorityInterest` resolved before the tier-1 `totalLiabilities` identity runs.
     assert CATALOGUE.history_fields != [c for c in columns if c in CATALOGUE.fields]
 
     print("\n=== SANITY CHECK: statement order ===")
-    values = columns[4:-5]
+    values = columns[4:-2]
     print(f"  {len(values)} value columns, {values[0]} -> {values[-1]}")
     print(
         "  income statement -> cash flow -> assets -> liabilities -> equity -> shares, "

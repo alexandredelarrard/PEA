@@ -19,7 +19,16 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from tests.data_extract.edgar_fixtures import walk_call
 from tests.support.universe import universe_of
 
-RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_employees_text", "run_def14a_text")
+RUNS = (
+    "run_insider",
+    "run_13d",
+    "run_13g",
+    "run_8k",
+    "run_filing_text",
+    "run_employees_text",
+    "run_def14a_text",
+    "run_fundamentals_facts",
+)
 FETCHES = {
     "run_insider": step_mod.INSIDER_EDGAR_FETCH,
     "run_13d": step_mod.SEC_13D_FETCH,
@@ -28,6 +37,7 @@ FETCHES = {
     "run_filing_text": step_mod.FILING_TEXT_FETCH,
     "run_employees_text": step_mod.EMPLOYEES_TEXT_FETCH,
     "run_def14a_text": step_mod.DEF14A_TEXT_FETCH,
+    "run_fundamentals_facts": step_mod.SEC_FUNDAMENTALS_FETCH,
 }
 COMMANDS = {
     "insider-edgar": "run_insider",
@@ -37,6 +47,7 @@ COMMANDS = {
     "filing-text": "run_filing_text",
     "sec-employees-text": "run_employees_text",
     "sec-def14a-text": "run_def14a_text",
+    "sec-fundamentals-facts": "run_fundamentals_facts",
 }
 CIK_MAP = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]})
 

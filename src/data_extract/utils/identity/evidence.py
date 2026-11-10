@@ -11,9 +11,10 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE
 from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
-from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, captured_dei_periods, parse_symbol_field
+from src.data_extract.utils.identity.symbol_tenure import aggregate_dei_symbols, captured_dei_periods, parse_symbol_field
 from src.data_extract.utils.zips.fetch_financial_notes import CHUNK_ROWS, cached_notes_periods
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series

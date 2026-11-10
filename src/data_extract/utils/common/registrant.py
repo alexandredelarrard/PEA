@@ -5,7 +5,8 @@ Filings follow the legal registrant, whose CIK changes on a reorganisation or do
 `[valid_from, valid_to)` segments, validated strictly at load; a `fresh_start` entry is one CIK counted
 only from its `valid_from`. The lineage build turns it into dated CIK windows. `FORM_POLICY` decides per
 form whether filings UNION across a ticker's event CIKs (insider forms) or SPLIT by its CIK windows (everything
-else); `resolve_registrant_entries` applies it to local EDGAR index rows, by CIK only, never by symbol.
+else); `resolve_registrant_entries` applies it to local EDGAR index rows, by CIK only, never by symbol. Config and
+local rows only: this module imports no SEC client.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
-from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
@@ -221,7 +221,7 @@ FORM_POLICY: dict[str, Combine] = {
         (Tables.sec_13d, Combine.SPLIT),
         (Tables.sec_13g, Combine.SPLIT),
         (Tables.insider_transactions, Combine.UNION),
-        (Tables.fundamentals_facts, Combine.SPLIT),
+        (Tables.sec_fundamentals_facts, Combine.SPLIT),
         (Tables.filing_risk_text, Combine.SPLIT),
         (Tables.sec_employees_text, Combine.SPLIT),
         (Tables.sec_def14a_text, Combine.SPLIT),
@@ -297,16 +297,6 @@ def resolve_registrant_entries(scope: FilingScope, df_entries: pd.DataFrame, for
             ", ".join(f"{n} from {cik}" for cik, n in contributions.items()),
         )
     return kept.drop(columns=["_owned", "_rank"]).sort_values(["filed", "accession"], ignore_index=True)
-
-
-def header_subject_ciks(filing: object) -> frozenset[str]:
-    """Read schedule subject CIKs from the SGML header, before ``filing.obj()``.
-
-    An unreadable header raises (`sec_io.TransientReadError` when SEC served an error page)."""
-    header = sec_io.filing_header(filing)
-    companies = getattr(header, "subject_companies", ()) or ()
-    raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
-    return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
 
 
 def _stamp(ticker: str, i: int, value: Any) -> pd.Timestamp | None:

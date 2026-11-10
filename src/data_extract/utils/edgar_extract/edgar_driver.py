@@ -25,8 +25,10 @@ from operator import attrgetter
 from typing import Any, Protocol, cast
 
 import pandas as pd
+from pandas.api.types import is_object_dtype
 
 from src.context import Context
+from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.resume import DONE_TABLE
@@ -44,6 +46,16 @@ logger = logging.getLogger(__name__)
 #: Accessions named per key in the coverage log.
 _MISSING_SHOWN = 20
 _UNIT_COLUMNS = ["cik", "company", "form", "filed", "accession"]
+
+
+def header_subject_ciks(filing: object) -> frozenset[str]:
+    """Read schedule subject CIKs from the SGML header, before ``filing.obj()``.
+
+    An unreadable header raises (`sec_io.TransientReadError` when SEC served an error page)."""
+    header = sec_io.filing_header(filing)
+    companies = getattr(header, "subject_companies", ()) or ()
+    raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
+    return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
 
 
 @dataclass(frozen=True)
@@ -301,6 +313,16 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     return marker_frame(table, row, dict(table.marker_key_fill))
 
 
+def _marker_in_layout(marker: pd.DataFrame, parsed: pd.DataFrame | None) -> pd.DataFrame:
+    """`marker` in the parser's empty frame's columns and typed dtypes; a marker-only first write then creates the whole table."""
+    if parsed is None or parsed.columns.empty:
+        return marker
+    columns = [*parsed.columns, *(c for c in marker.columns if c not in parsed.columns)]
+    # the parser's dtype for every column the marker leaves NULL; a stamp column keeps its own unless the parser typed it
+    typed = {column: dtype for column, dtype in parsed.dtypes.items() if column not in marker.columns or not is_object_dtype(dtype)}
+    return marker.reindex(columns=columns).astype(typed)
+
+
 def _has_key_rows(df: pd.DataFrame, table: Table, ticker: str) -> bool:
     """Whether `df` holds a row of `ticker` under the table's resume key column."""
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
@@ -327,7 +349,7 @@ def _read_unit(fetch: EdgarFetch, identity: Identity, ticker: str, cik: str, sta
         return None, False
     done = frames.get(fetch.done)
     if done is None or done.empty:
-        return {**frames, fetch.done: pd.concat([marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True
+        return {**frames, fetch.done: _marker_in_layout(marker_row(fetch.done, ticker, stamp), done)}, True
     if _has_key_rows(done, fetch.done, ticker):
         return frames, False
     return {**frames, fetch.done: pd.concat([done, marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True

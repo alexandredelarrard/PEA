@@ -73,7 +73,6 @@ IDENTITY = Flow(
         "src.data_extract.utils.common.identity",
     ),
     run_order=(
-        "run_cold_start",
         "run_capture_evidence",
         "run_company_anchor",
         "run_cik_history",
@@ -105,6 +104,7 @@ EDGAR_TEXT = Flow(
         "run_filing_text",
         "run_employees_text",
         "run_def14a_text",
+        "run_fundamentals_facts",
     ),
 )
 LLM_TEXT = Flow(

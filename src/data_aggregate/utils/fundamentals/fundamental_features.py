@@ -178,8 +178,7 @@ def _da_realism_fields(daily) -> dict:
     `intangible_amortization_share` -- the D&A-realism family, which asked whether reported
     depreciation is believable given the gross asset base. All four need `ppeGross`,
     `accumulatedDepreciation` or `amortizationIntangibles`. Sharadar delivers none of the
-    three, and the SEC-owned `_sec` twins sit at 4.7% and 6.4% coverage, far too thin to
-    rank a universe on. They return with the SEC extraction path."""
+    three, and their `sec_fundamentals_history` columns are far too thin to rank a universe on. They return with the SEC extraction path."""
     F: dict[str, pd.DataFrame] = {}
     sbc = daily("stockBasedComp")
     buyback = capital.share_repurchases(daily)  # positive magnitude; see capital.py
@@ -412,7 +411,7 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:
     # It was the off-balance-sheet-inclusive twin of `net_debt_to_ebitda`: borrowings +
     # capitalized leases + pension/OPEB deficit + asset-retirement obligations - liquid
     # assets, over EBITDA. THREE of those four distinguishing legs do not exist on the
-    # Sharadar substrate -- `fundamentals_history` has no `operatingLeaseLiability`,
+    # Sharadar substrate -- `sharadar_fundamentals_history` has no `operatingLeaseLiability`,
     # `financeLeaseLiability` or `assetRetirementObligation` column at all -- and the
     # fourth, the pension pool, reaches 199 of 491 tickers.
     #
@@ -446,9 +445,8 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy
 
     ⚠ THE DEDUCTION IS GOODWILL **AND** OTHER INTANGIBLES, COMBINED, and the feature names
     say so. Sharadar's `intangibles` is the only intangibles basis SF1 delivers and it does
-    not split the two; the SEC-owned split legs (`goodwill_sec` 10.2%,
-    `intangiblesExGoodwill_sec` 7.1%) are far too thin to subtract from a universe-wide
-    denominator. Reading the bare `goodwill` -- which no producer writes -- is what made the
+    not split the two; the SEC split legs (`goodwill`, `intangiblesExGoodwill` in
+    `sec_fundamentals_history`) are far too thin to subtract from a universe-wide denominator. Reading the bare `goodwill` -- which no producer writes -- is what made the
     "ex-goodwill" ROIC subtract NOTHING and correlate 1.0000 with its incl-goodwill twin,
     with `goodwill_roic_drag` identically zero across 3.04 M rows.
 
@@ -1436,7 +1434,7 @@ def _derived_fields(
     """Compose saved-capital, financial and comparison-unit characteristics."""
     df_history = history.normalized_share_history if history.normalized_share_history is not None else history.raw_history
     if df_history is None:
-        raise ValueError("Need to build fundamentals_history table first")
+        raise ValueError("Need to build sharadar_fundamentals_history table first")
     df_history = null_invalid_gross_profit_sentinels(df_history)
     idx = prices.trading_index
     supplement = supplement if supplement is not None else FundamentalSupplement()
@@ -1475,7 +1473,7 @@ def build_fundamental_feature_panel(
     """Build financial feature views from explicit histories and saved capital."""
     df_history = history.normalized_share_history if history.normalized_share_history is not None else history.raw_history
     if df_history is None or df_history.empty:
-        raise ValueError("Need to build fundamentals_history table first")
+        raise ValueError("Need to build sharadar_fundamentals_history table first")
     settings = settings if settings is not None else FundamentalFeatureSettings()
 
     # Preserve financial cadence, mathematical ordering and persisted precision.

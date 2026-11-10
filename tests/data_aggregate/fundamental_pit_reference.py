@@ -46,7 +46,7 @@ def legacy_capital_frames(
 
 
 def legacy_fundamentals_to_daily(
-    fundamentals_history: pd.DataFrame,
+    fundamentals: pd.DataFrame,
     field: str,
     trading_index: pd.DatetimeIndex,
     max_age_days: int | None = None,
@@ -58,9 +58,9 @@ def legacy_fundamentals_to_daily(
     field, forward-filled point-in-time: value on date d is the most recent
     as_of <= d. No look-ahead.
     """
-    if field not in fundamentals_history.columns:
+    if field not in fundamentals.columns:
         return pd.DataFrame(index=trading_index)
-    df = fundamentals_history[["ticker", "as_of", field]].copy()
+    df = fundamentals[["ticker", "as_of", field]].copy()
     if share_basis is None or field != "sharesOutstandingPit":
         return _observations_to_daily(df, field, trading_index, max_age_days=max_age_days)
     configured = df["ticker"].isin(share_basis.policies)
@@ -72,7 +72,7 @@ def legacy_fundamentals_to_daily(
 
 
 def legacy_daily_market_cap(
-    fundamentals_history: pd.DataFrame,
+    fundamentals: pd.DataFrame,
     close_split: pd.DataFrame,
     *,
     level_factor: pd.DataFrame | None,
@@ -108,7 +108,7 @@ def legacy_daily_market_cap(
     Requires a `sharesOutstanding` column (the VENDOR-basis one, not `sharesOutstandingPit`).
     """
     shares = fundamentals_to_daily(
-        fundamentals_history,
+        fundamentals,
         "sharesOutstanding",
         close_split.index,
         max_age_days=max_age_days,

@@ -221,18 +221,18 @@ def _rows_for(context, ticker: str) -> int:
     """Row count for ONE ticker, not the whole table. A whole-table count makes this test
     fail whenever anything else writes concurrently (a parallel `fundamentals-sharadar` run
     counts as 45 phantom new rows) -- and the property under test is per-ticker anyway."""
-    frame = context.store.load(Tables.sharadar_fundamentals, columns=["ticker"], where={"ticker": ticker})
+    frame = context.store.load(Tables.sharadar_fundamentals_facts, columns=["ticker"], where={"ticker": ticker})
     return 0 if frame is None else len(frame)
 
 
-@pytest.mark.live  # live Sharadar GETs + upserts into live sharadar_tickers / fundamentals_sharadar
+@pytest.mark.live  # live Sharadar GETs + upserts into live sharadar_tickers / sharadar_fundamentals_facts
 def test_resume_is_incremental(context):
     """The second run must write nothing and must never ask for a date before the stored max
     minus the contract overlap -- it resumes per ticker rather than re-pulling the window."""
     fetch_sharadar_tickers(context)  # the USD assertion needs this dimension
     fetch_sharadar_fundamentals(context, tickers=[ENTITLED], years_history=int(context.config.data_extract.sharadar_years_history))
     after_first = _rows_for(context, ENTITLED)
-    stored_max = context.store.max_date_by(Tables.sharadar_fundamentals, "ticker").get(ENTITLED)
+    stored_max = context.store.max_date_by(Tables.sharadar_fundamentals_facts, "ticker").get(ENTITLED)
 
     requested: list[str] = []
     import src.data_extract.utils.fundamentals_sharadar.fetch_sharadar as fetch_mod
@@ -251,7 +251,7 @@ def test_resume_is_incremental(context):
         fetch_mod.sharadar_get = real_get
     after_second = _rows_for(context, ENTITLED)
 
-    overlap = pd.Timedelta(days=cast(Resume, Tables.sharadar_fundamentals.resume).overlap_days)
+    overlap = pd.Timedelta(days=cast(Resume, Tables.sharadar_fundamentals_facts.resume).overlap_days)
     too_early = [d for d in requested if pd.Timestamp(d) < stored_max - overlap]
 
     print("\n=== SANITY CHECK: the second run is incremental ===")
@@ -273,9 +273,9 @@ def test_resume_is_incremental(context):
 def test_dimensions_stored(context):
     """MRQ/MRY/MRT RESTATE IN PLACE, so their rows would mutate under an unchanged primary
     key and `diff_against_stored` could not tell an amendment from a bug. None must exist."""
-    if context.store.row_count(Tables.sharadar_fundamentals) == 0:
-        pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
-    frame = context.store.load(Tables.sharadar_fundamentals, columns=["ticker", "dimension", "date"])
+    if context.store.row_count(Tables.sharadar_fundamentals_facts) == 0:
+        pytest.skip(f"{Tables.sharadar_fundamentals_facts} is empty -- run fundamentals-sharadar")
+    frame = context.store.load(Tables.sharadar_fundamentals_facts, columns=["ticker", "dimension", "date"])
     counts = frame["dimension"].value_counts().to_dict()
     stored = set(counts)
     mutating = sorted(d for d in stored if d.startswith("MR"))

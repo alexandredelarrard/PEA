@@ -240,7 +240,8 @@ Important data, model, or output work ends with the appropriate read-only valida
 - [ ] Step/Strategy boundary preserved.
 - [ ] Full annotations and top-level imports.
 - [ ] Flow ordered load → clean → merge → compute features or steps → post-process →  log → save.
-- [ ] Each function does one thing in at most 90 lines and 3 nesting levels.
+- [ ] Each function does one thing in at most 90 lines and control-flow nesting at most 2.
+- [ ] At most 4 levels from `run()` (level 1) down to one flat helper (stdlib/pandas/numpy/regex only), counted along the deepest chain; shared code is a leaf.
 - [ ] No pass-through functions.
 - [ ] No more than 6 inputs in each function
 - [ ] Functions logical blocks visible with 1 line comment per block

@@ -17,7 +17,7 @@ from sqlalchemy import event
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
-from src.data_extract.utils.common.security_lines import prepare_master
+from src.data_extract.utils.common.security_lines import prepare_master, tape_intervals
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
@@ -31,7 +31,6 @@ from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
-from tests.data_extract.institutionals.test_fails_to_deliver import download_and_capture
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
 from tests.support.propagation import run_propagation
 from tests.support.universe import seed_universe
@@ -410,8 +409,11 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(cusip_history, "changed_ftd_scope", lambda *args: cusip_history.FtdScope())
-    assert download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 0
+    scope = cusip_history.FtdScope(
+        symbols=frozenset({"LEN"}), prefixes=frozenset(), tape=tape_intervals(sqlite_store.load(Tables.universe_cik_symbol))
+    )
+    assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
+    assert cusip_history.read_ftd_evidence(context, path.parent, scope).empty, "the bad cached period is skipped"
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before_raw)
@@ -420,8 +422,9 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
     pd.testing.assert_frame_equal(stored_frame, before)
     assert path.exists() and not requests
     path.unlink()
-    assert download_and_capture(context, as_of=pd.Timestamp("2026-07-30")) == 0
+    assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
     assert len(requests) == 1 and path.exists()
+    assert cusip_history.read_ftd_evidence(context, path.parent, scope)["cusip"].tolist() == ["526057104"]
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before_raw)
@@ -429,99 +432,7 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before)
     print(
-        "SANITY: a valid ZIP with malformed/wrong-period FTD content preserves both good tables, proof and the cached file; once removed, the next download caches it again and the stored period is not re-captured."
-    )
-
-
-@pytest.mark.parametrize("concurrent", [False, True], ids=["coherent", "stale-copy"])
-@pytest.mark.parametrize("proof_column", [False, True], ids=["physical-legacy", "proof-column"])
-def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
-    sqlite_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    concurrent: bool,
-    proof_column: bool,
-) -> None:
-    context = cast(
-        Any,
-        SimpleNamespace(
-            store=sqlite_store,
-            paths={"DATA_STORE": tmp_path},
-            config=extract_config(),
-            log=logging.getLogger(__name__),
-            universe=_len_universe(sqlite_store),
-        ),
-    )
-    for table, frame in _identity(store=sqlite_store).source_cohort.items():
-        if not frame.empty:
-            sqlite_store.save(table, frame)
-    # X14: the capture scope is the lineage's symbols and the universe companies' CUSIP-6 (no stored `universe_cusip` read): LEN's symbol row
-    lineage = sqlite_store.load(Tables.universe_cik_symbol)
-    assert lineage is not None
-    home = lineage[lineage["canonical_ticker"].eq("LEN")].iloc[[0]]
-    sqlite_store.save(
-        Tables.universe_cik_symbol,
-        home.assign(role="symbol", symbol="LEN", valid_from=pd.Timestamp("2006-01-03"), status="corroborated", sources="form345,roster"),
-    )
-    text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
-    raw = ftd.stamp_lines(ftd._parse_ftd_lines(text).assign(period="202607a"), prepare_master(_master()))[list(ftd.SECURITY_COLUMNS)]
-    grain = pd.DataFrame(
-        {
-            "ticker": ["LEN"],
-            "date": pd.to_datetime(["2026-07-01"]),
-            "fails_quantity": [12.0],
-            "fails_value": [120.0],
-            "period": ["202607a"],
-            "source_checked_at": pd.to_datetime(["2026-07-03"]),
-        }
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw)
-    sqlite_store.save(Tables.sec_fails_to_deliver, grain if proof_column else grain.drop(columns="source_checked_at"))
-    path = tmp_path / context.config.local.paths.fails_deliver / "cnsfails202607a.zip"
-    _archive(path, {"fails.txt": text})
-    newer_raw = pd.concat([raw.assign(fails_quantity=99.0), raw.assign(date=pd.Timestamp("2026-07-02"), fails_quantity=7.0)], ignore_index=True)
-    newer_grain = pd.concat(
-        [grain.assign(fails_quantity=99.0, fails_value=990.0), grain.assign(date=pd.Timestamp("2026-07-02"), fails_quantity=7.0, fails_value=70.0)],
-        ignore_index=True,
-    )
-    load = sqlite_store.load
-    changed = False
-    recovered: dict[Any, pd.DataFrame] = {}
-
-    def interleaved(table: Any, **kwargs: Any) -> pd.DataFrame | None:
-        nonlocal changed
-        observed = load(table, **kwargs)
-        if concurrent and table == Tables.sec_fails_to_deliver and not changed:
-            changed = True
-            ftd.replace_fails_source(
-                sqlite_store,
-                {Tables.sec_fails_to_deliver_security: newer_raw, Tables.sec_fails_to_deliver: newer_grain},
-                {Tables.sec_fails_to_deliver_security: {"period": "202607a"}, Tables.sec_fails_to_deliver: {"period": "202607a"}},
-            )
-            for member in (Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver):
-                recovered_rows = load(member)
-                assert recovered_rows is not None
-                recovered[member] = recovered_rows
-        return observed
-
-    monkeypatch.setattr(sqlite_store, "load", interleaved)
-    monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(cusip_history, "changed_ftd_scope", lambda *args: cusip_history.FtdScope())
-    if concurrent:
-        with pytest.raises(ValueError, match="source cohort changed"):
-            download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30"))
-        for member, expected in recovered.items():
-            stored_frame = load(member)
-            assert stored_frame is not None
-            pd.testing.assert_frame_equal(stored_frame, expected)
-            assert expected["fails_quantity"].tolist() == [99.0, 7.0]
-    else:
-        assert download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 1
-        pending_rows = load(Tables.sec_fails_to_deliver)
-        assert pending_rows is not None
-        assert pending_rows["source_checked_at"].isna().all()
-    print(
-        "SANITY: the normal pending download commits a coherent raw/unknown pair, but refuses a stale derived copy and preserves every newer recovered row and proof."
+        "SANITY: a valid ZIP with malformed/wrong-period FTD content preserves both good tables, proof and the cached file; once removed, the next download caches it again and the evidence read finds its LEN line; no FTD table is written."
     )
 
 

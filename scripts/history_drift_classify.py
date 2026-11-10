@@ -1,9 +1,9 @@
-"""READ-ONLY: classify what `fundamentals-history-sec` would change, per ticker.
+"""READ-ONLY: classify what `sec-fundamentals-history` would change, per ticker.
 
 The append-only guard refuses any run that would alter a stored cell, and it cannot tell a
 NULL being FILLED from a published number being REWRITTEN. A register backfill always produces
 the first and must never produce the second, so this answers which one it is before anyone
-passes fundamentals-history-sec --full.
+passes sec-fundamentals-history --full.
 
 It writes NOTHING: `diff_against_stored` is wrapped to capture the drift frame, and the guard's
 own ValueError is allowed to fire, which happens before any save.

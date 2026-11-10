@@ -25,19 +25,9 @@ Run expensive or destructive historical repairs without defeating resume logic, 
 - Run from the repository root with the explicit Python 3.13 virtual-environment executable described in [run the pipeline](./run-the-pipeline.md).
 - Prefix every shell command with `rtk`.
 - Chunk edgartools workloads into separate processes. Process exit is the reliable way to release its per-filing caches.
-- Use `-F` / `--full` to process the command's complete input window. `fundamentals --rebuild` additionally deletes stored facts before refetching. Read command help for the source and write behavior.
+- Use `-F` / `--full` to process the command's complete input window. Read command help for the source and write behavior.
 - Stop a long-running process by PID. Never terminate every `python.exe` process.
 - Capture a before/after artifact and run validation. A larger table can still contain a coverage cliff, duplicated identity history, or stale cube rows.
-
-## Fundamentals resolution sweep
-
-The offline [sweep report](../../scripts/report_fundamentals_sweep.py) reads the existing per-ticker Parquet ledgers under `data/fundamentals_sweep` (two resolution variants per filing) and measures route mix, before/after agreement, duplicate facts, regime coverage, debt basis, form coverage, and annual footing.
-
-~~~bash
-rtk "$PY" scripts/report_fundamentals_sweep.py --roster both
-~~~
-
-No script in the repository writes new ledgers. Each ledger resolves every filing both with and without the statement-role guard. Do not compare ledgers that used different roster, catalogue, GICS, or registrant inputs.
 
 ## Registrant-boundary recovery
 
@@ -52,7 +42,8 @@ Then apply the approved register change and recover each source according to its
 ~~~bash
 rtk "$PY" -m src data_extract zips-ingest --only insider -F
 rtk "$PY" -m src data_extract zips-ingest --only notes --full
-rtk "$PY" -m src data_extract fundamentals-facts -t TICKER1,TICKER2
+rtk "$PY" -m src data_extract sec-fundamentals-facts -t TICKER1,TICKER2
+rtk "$PY" -m src data_extract fundamentals-sharadar -F -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-employees-text -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-employees-llm -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2
@@ -60,7 +51,7 @@ rtk "$PY" -m src data_extract sec-def14a-text -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-def14a-llm -t TICKER1,TICKER2
 ~~~
 
-The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers list each ticker's filings from the local filing index over its current registrant lineage on every run, so a newly declared CIK's filings enter the work list with no flag. Run those walks serially because SEC rate limiting is process-local; use `-F` only to re-read filings already stored.
+The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers list each ticker's filings from the local filing index over its current registrant lineage on every run, so a newly declared CIK's filings enter the work list with no flag. Run those walks serially because SEC rate limiting is process-local; use `-F` only to re-read filings already stored. The SEC history picks up a newly listed back-dated original on its next run (full replay of that ticker). The Sharadar history is keyed through the lineage too, so after a lineage change rebuild it with `fundamentals-sharadar -F -t <tickers>`.
 
 After rebuilding affected cube parts, compare the frozen state:
 
@@ -75,8 +66,8 @@ Use the comparison to prove that earlier filing dates and recovered rows reached
 The extraction CLI separates network resolution from local history replay:
 
 ~~~bash
-rtk "$PY" -m src data_extract fundamentals-facts -F -t AAPL,CSCO,KR,XOM,APA,EOG
-rtk "$PY" -m src data_extract fundamentals-history-sec --verify-history -t AAPL,CSCO,KR,XOM,APA,EOG
+rtk "$PY" -m src data_extract sec-fundamentals-facts -F -t AAPL,CSCO,KR,XOM,APA,EOG
+rtk "$PY" -m src data_extract sec-fundamentals-history --verify-history -t AAPL,CSCO,KR,XOM,APA,EOG
 ~~~
 
 The SEC history build sorts each ticker before any replay:
@@ -85,10 +76,10 @@ The SEC history build sorts each ticker before any replay:
 | --- | --- |
 | no filing newer than its newest stored row | skipped; facts not read |
 | filings only after its newest stored row | snapshots of the new events only |
-| no stored history, a back-dated or `-F` re-read handed over by `fundamentals`, an event list that disagrees with the stored rows, or `--verify-history` | full replay with the append-only guard |
+| no stored history, a back-dated original, an event list that disagrees with the stored rows, or `--verify-history` | full replay with the append-only guard |
 | `--full` | delete, then full replay |
 
-Full replays run in a process pool of `fundamentals_workers`. The combined `fundamentals` command hands its fetched filings to the history build; a standalone `fundamentals-facts -F` does not, so follow it with `--verify-history` as above.
+Full replays run in a process pool of `fundamentals_workers` and take seconds per ticker. Facts and history are separate commands with no hand-off between them: the triage reads only stored facts and stored rows, so a `sec-fundamentals-facts -F` re-read of already-stored filings must be followed by `sec-fundamentals-history --full` (or `--verify-history`, as above) on the same tickers.
 
 Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings. A chunk larger than `max_documents_per_run` drains over several runs unless `--no-cap` is given.
 
@@ -96,10 +87,10 @@ Choose the narrowest repair:
 
 | Defect | Command |
 | --- | --- |
-| Stored facts are correct; replay/history logic changed | `fundamentals-history-sec --full -t ...` |
-| Fact resolution itself is wrong | `fundamentals --rebuild -t ...` |
+| Stored facts are correct; replay/history logic changed | `sec-fundamentals-history --full -t ...` |
+| Fact resolution itself is wrong | `sec-fundamentals-facts -F -t ...`, then `sec-fundamentals-history --full -t ...` |
 | Employee parser missed or rejected headcount | `sec-employees-llm -F -t ...` (after a text-selection change, `sec-employees-text -F -t ...` first) |
-| Vendor inputs changed; rebuild merged consumer history | `fundamentals-history-merged -F -t ...` |
+| Vendor inputs or the lineage changed; rebuild the Sharadar history | `fundamentals-sharadar -F -t ...` |
 
 A ticker with no stored accession lists its whole window on the next ordinary run. A filing that was read and has no XBRL facts is stored as a marker and is not listed again.
 
@@ -107,10 +98,7 @@ Employee repair is independent of facts and SEC-history replay. To re-decide spe
 
 ## Employee headcount universe run
 
-The component-shape `fundamentals_employees` (components, basis, status, provenance) replaced the old table on the live database on 2026-10-07, and `fundamentals_history.employees_sec` was dropped. The table holds only the 50 focus tickers of that run and A; every other universe filing date is undecided. The local, gitignored run dir `reports/validate/2026-10-07-employee-headcount-coverage/` holds the backups and scripts named below.
-
-> [!WARNING]
-> Until `harness/employee-headcount-coverage` merges into `dev`, `dev`'s merged build (`fundamentals-sharadar`, `fundamentals-history-merged`) and the cube's fundamentals part fail loudly: that code still reads the old `employees` column and the dropped `employees_sec`. Do not run them from `dev` in that window.
+The component-shape `fundamentals_employees` (components, basis, status, provenance) replaced the old table on the live database on 2026-10-07, and the then merged history's `employees_sec` column was dropped. The table holds only the 50 focus tickers of that run and A; every other universe filing date is undecided. The local, gitignored run dir `reports/validate/2026-10-07-employee-headcount-coverage/` holds the backups and scripts named below.
 
 1. **Backups and rollback.** `_cache/fundamentals_employees_2026-10-07.parquet` holds the old table (11,735 rows) and `_cache/fundamentals_history_employees_sec_2026-10-07.parquet` the dropped column (`ticker`, `as_of`, `fiscal_end`, `employees_sec`; 51,856 rows). `_scripts/p8_restore.py` prints the rollback plan; `--execute` runs it in one `psql -1` transaction (drop the new table, recreate the old one, copy the rows back), and `--history` also re-adds and refills `employees_sec`. Roll back only together with the pre-merge code.
 2. **Run the universe without `-F`.** Decided dates make no call, so only undecided filings reach the LLM. Expect about $0.0014 per filing, roughly $17 for the about 12,600 undecided owned filing dates.
@@ -129,18 +117,13 @@ The component-shape `fundamentals_employees` (components, basis, status, provena
    ~~~
 
    From a worktree, set `ROOT_PATH=<main repo root>/` so it finds `data/sec_edgar_index`. It writes `employees.json` and `employees_{per_ticker,missing_dates,stale_rows,scope_jumps,basis_switches}.csv`. Targets: no owned original 10-K date without a row, 0 foreign rows, 0 stale rows, complete provenance on `found` rows. Known false positives are listed under [Employee headcount follow-ups](../TODO.md#employee-headcount-follow-ups).
-6. **Rebuild the cube after the merge.** `build-fundamentals -F`, then `assemble-cube` and `cube-status` (see [run the pipeline](./run-the-pipeline.md#peers-and-cube)). The merged history needs no rebuild for headcount.
+6. **Rebuild the cube after the merge.** `build-fundamentals -F`, then `assemble-cube` and `cube-status` (see [run the pipeline](./run-the-pipeline.md#peers-and-cube)). The Sharadar history needs no rebuild for headcount.
 
 ## Applying a fundamentals schema change
 
-PostgreSQL initialization DDL runs only for a new volume. On a live volume, inferred creation from an all-null first frame can produce the wrong physical type. The inspected [recreation script](../../scripts/recreate_fundamentals_tables.py) deliberately drops and recreates its declared table set from committed DDL:
+The four fundamentals tables have no `CREATE TABLE` block in [schema.sql](../../sql/schema.sql): their producers create them on the first write, typed from frames whose dtypes the producers pin, so an all-null column keeps its float, integer or boolean type. A new column is added by the next write. For a change a new column cannot absorb (a type, a key or a removed column), rename the old table and its indexes to `_old_*` first (index names are schema-global in PostgreSQL); the next producer run creates the new table. Then rerun facts and history and drop `_old_*` once validated.
 
-~~~bash
-rtk "$PY" scripts/recreate_fundamentals_tables.py --dry-run
-rtk "$PY" scripts/recreate_fundamentals_tables.py --yes
-~~~
-
-This is destructive. Request approval, verify the exact table set printed by the dry run, take backups, and be prepared to rerun facts and history. Do not substitute an ad-hoc `DELETE`.
+This is destructive. Request approval, take backups, and be prepared to rerun facts and history. Do not substitute an ad-hoc `DELETE`.
 
 ## Schedule 13D and 13G
 
@@ -177,9 +160,9 @@ The nightly `thirteen-f` walk starts at the newest stored `filing_date` minus th
 rtk "$PY" -m src data_extract thirteen-f --filing-window 2024-01-01:2024-03-01
 ~~~
 
-`thirteen-f-backfill` fills the history of tickers added within the last 7 days from the eligible SEC ZIP windows, then runs the existing EDGAR gap walk after the newest cached window. `-t X` narrows recent additions; an established X requires `-t X -F`. ZIP discovery retains all relevant managers across history. Ordinary reruns skip only verified complete accessions, requiring both destinations for roster managers; missing/failed/legacy packets remain pending. A completed archive needs no second information-table read, but the first discovery scan remains necessary to find unpreserved holders. Explicit `-F` revalidates source and immutable checksums. Cached downloads alone do not eliminate decompression/scanning.
+`thirteen-f-backfill` fills the history of tickers added within the last 7 days from the eligible SEC ZIP windows, then runs the existing EDGAR gap walk after the newest cached window. `-t X` narrows recent additions; an established X requires `-t X -F`. ZIP discovery retains all relevant managers across history. Ordinary reruns skip only verified complete accessions in `sec13f_hr`; missing/failed/legacy packets remain pending. A completed archive needs no second information-table read, but the first discovery scan remains necessary to find unpreserved holders. Explicit `-F` revalidates source and immutable checksums. Cached downloads alone do not eliminate decompression/scanning.
 
-The backfill writes full source books to `sec13f_hr` and copies roster managers into `sec13f_manager_holdings`; it reads the roster created by `superinvestors`. One full CUSIP map and saver are reused across archives. Writer preparation is cached per DataStore lifecycle; atomic per-accession writes and integrity checks remain. Source-unit admission uses declared units and the shared count/value reconciliation, with the aggregate market check retained. Run the first historical backfill outside the scheduled extraction window and inspect pending-accession errors. No source-table or cube rebuild is needed solely to adopt this performance refactor; restart the running extraction process to load the changed code. Recovery of older overwritten versions is a separate source reload.
+The backfill writes full source books, roster managers included, to `sec13f_hr`; it reads the roster created by `superinvestors` to widen the archive scope. One full CUSIP map and saver are reused across archives. Writer preparation is cached per DataStore lifecycle; atomic per-accession writes and integrity checks remain. Source-unit admission uses declared units and the shared count/value reconciliation, with the aggregate market check retained. Run the first historical backfill outside the scheduled extraction window and inspect pending-accession errors. No source-table or cube rebuild is needed solely to adopt this performance refactor; restart the running extraction process to load the changed code. Recovery of older overwritten versions is a separate source reload.
 
 The material legacy-parser fixes recover formerly rejected intact books through the same thirteen-f reader and saver. Rebuilding only a cube cannot recover a source filing that extraction skipped. For the named early-2013 failures, the bounded existing recovery command is:
 
@@ -250,10 +233,10 @@ It streams bounded projections and reports distinct source coverage by year plus
 The current validation CLI is table-oriented. Pull a reusable snapshot, then run the checks relevant to the contract:
 
 ~~~bash
-rtk "$PY" -m src validate pull -T fundamentals_history_sec -o reports/validate/YYYY-MM-DD-fundamentals
-rtk "$PY" -m src validate grain -T fundamentals_history_sec -o reports/validate/YYYY-MM-DD-fundamentals
-rtk "$PY" -m src validate coverage -T fundamentals_history_sec -o reports/validate/YYYY-MM-DD-fundamentals
-rtk "$PY" -m src validate profile -T fundamentals_history_sec -o reports/validate/YYYY-MM-DD-fundamentals
+rtk "$PY" -m src validate pull -T sec_fundamentals_history -o reports/validate/YYYY-MM-DD-fundamentals
+rtk "$PY" -m src validate grain -T sec_fundamentals_history -o reports/validate/YYYY-MM-DD-fundamentals
+rtk "$PY" -m src validate coverage -T sec_fundamentals_history -o reports/validate/YYYY-MM-DD-fundamentals
+rtk "$PY" -m src validate profile -T sec_fundamentals_history -o reports/validate/YYYY-MM-DD-fundamentals
 rtk "$PY" -m src validate leakage -T cube_part_fundamentals -o reports/validate/YYYY-MM-DD-cube-fundamentals
 rtk "$PY" -m src validate timeseries -T cube_part_fundamentals -o reports/validate/YYYY-MM-DD-cube-fundamentals
 ~~~

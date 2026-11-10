@@ -98,7 +98,7 @@ def test_quote_anchor_loader_uses_repaired_close_and_bounded_history(repair: str
             if table == Tables.prices:
                 assert pd.Timestamp(kwargs["until"]) >= pd.Timestamp("2020-01-06")
                 return prices.copy()
-            assert table == Tables.sharadar_fundamentals
+            assert table == Tables.sharadar_fundamentals_facts
             return pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "price": [10.0]})
 
     context = cast(Any, SimpleNamespace(store=AnchorStore(), log=SimpleNamespace(info=lambda *args: None)))

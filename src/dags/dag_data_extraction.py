@@ -28,10 +28,14 @@ the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_c
 manager books follow it) and the earnings calls included (price_history waits for identity: it reads the master's current
 secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
-stored master. edgar_index refreshes the EDGAR filing index once after identity; the seven EDGAR document walks
-wait for it and skip a refresh already done today (the insider walk still rebuilds its own inventory), and
-insider_edgar also waits for the insider zip ingest. Each LLM pass waits for the walk storing its text:
-sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec_8k_items] -> sec_def14a_llm -> sec_8k_votes. After every fetcher, `extraction_status` prints the
+stored master. edgar_index refreshes the EDGAR filing index once after identity; the eight EDGAR document walks
+(the SEC fundamentals facts walk included) wait for it and skip a refresh already done today (the insider walk still
+rebuilds its own inventory), and insider_edgar also waits for the insider zip ingest. Each LLM pass waits for the walk
+storing its text: sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec_8k_items] -> sec_def14a_llm ->
+sec_8k_votes. Fundamentals are two independent producers, no path between them: identity -> edgar_index ->
+sec_fundamentals_facts -> sec_fundamentals_history, and identity -> fundamentals_sharadar (an identity consumer: its
+history is keyed through the lineage); fundamentals_check logs the SEC vs Sharadar comparison after both on ALL_DONE,
+so either side failing still runs it. After every fetcher, `extraction_status` prints the
 per-table freshness report, logs a WARNING per RED table and exits 0; only `modelling predict` refuses stale
 inputs. Then `identity_check` (`python -m src validate identity`) fails on rows filed by a CIK outside the
 ticker's entity or a broken lineage invariant, which holds the aggregation trigger.
@@ -129,16 +133,20 @@ thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster boo
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per night, before the EDGAR walks
-fundamentals = fetch("fundamentals", pool="sec_api")
+sec_fundamentals_facts = fetch("sec-fundamentals-facts", pool="sec_api")  # SEC XBRL facts walk
+sec_fundamentals_history = fetch("sec-fundamentals-history")  # offline: facts -> SEC publication-event history
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
-fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
+fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + Sharadar history
+# read-only SEC vs Sharadar log; runs whatever either producer did
+fundamentals_check = fetch("fundamentals-check", trigger_rule=TriggerRule.ALL_DONE)
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
 sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 sec_employees_text = fetch("sec-employees-text", pool="sec_api")  # 10-K family employees windows -> sec_employees_text
 sec_def14a_text = fetch("sec-def14a-text", pool="sec_api")  # proxy section payloads -> sec_def14a_text
-#   ^ EDGAR step: insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_employees_text, sec_def14a_text
+#   ^ EDGAR step: insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_employees_text, sec_def14a_text,
+#     sec_fundamentals_facts
 
 # 4b) LLM step — read only the stored text tables (no SEC read), so they run in the default pool beside the walks
 sec_employees_llm = fetch("sec-employees-llm")  # reads sec_employees_text
@@ -183,8 +191,10 @@ all_fetchers = [
     thirteen_f_backfill,
     edgar_index,
     insider_edgar,
-    fundamentals,
+    sec_fundamentals_facts,
+    sec_fundamentals_history,
     fundamentals_sharadar,
+    fundamentals_check,
     sec_8k_items,
     sec_8k_votes,
     sec_13d,
@@ -205,7 +215,8 @@ identity_consumers = [
     short_interest,
     thirteen_f,  # tags universe CUSIPs by `universe_cusip`; the backfill, superinvestors and manager books follow it
     extract_earnings_calls,  # resolves each call's symbol through the published lineage
-    fundamentals,
+    sec_fundamentals_facts,
+    fundamentals_sharadar,  # keys the vendor history through the lineage
     sec_employees_llm,  # plans the text walk's pending filings through the lineage
     sec_def14a_llm,
     sec_8k_items,
@@ -216,7 +227,7 @@ identity_consumers = [
     sec_def14a_text,
     insider_edgar,
 ]
-edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_employees_text, sec_def14a_text]
+edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_employees_text, sec_def14a_text, sec_fundamentals_facts]
 
 universe_evidence >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes
@@ -226,7 +237,8 @@ zips_ingest_insider >> insider_edgar  # zips fill first; EDGAR resumes after the
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
-fundamentals >> fundamentals_sharadar  # headcount is read by the cube, not merged
+sec_fundamentals_facts >> sec_fundamentals_history
+[sec_fundamentals_history, fundamentals_sharadar] >> fundamentals_check  # no edge between the producers
 sec_employees_text >> sec_employees_llm  # the LLM decides what the walk stored tonight
 [sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes  # votes read the 8-K narratives and the DEF 14A tables
 

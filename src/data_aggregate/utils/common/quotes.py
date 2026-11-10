@@ -47,9 +47,3 @@ def terminal_rows(df_rows: pd.DataFrame, columns: tuple[str, ...], df_factor: pd
     """Dated source rows with `columns` carried into terminal units, `q * F_T / F_d` as of each row's `date`."""
     factor = lookup_asof(df_factor, df_rows["ticker"], df_rows["date"])
     return df_rows.assign(**{column: df_rows[column] * factor for column in columns})
-
-
-def period_bases(df_basis: pd.DataFrame, tickers: pd.Series, prior_period: pd.Timestamp, period: pd.Timestamp) -> tuple[pd.Series, pd.Series]:
-    """F per ticker as of the prior and the current quarter end."""
-    prior = lookup_asof(df_basis, tickers, pd.Series(prior_period, index=tickers.index))
-    return prior, lookup_asof(df_basis, tickers, pd.Series(period, index=tickers.index))

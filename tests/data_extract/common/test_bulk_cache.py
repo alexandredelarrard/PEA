@@ -17,10 +17,10 @@ from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     cached_periods,
     ensure_zip,
-    period_end,
     read_zip_tables,
     stored_period_clock,
 )
+from src.data_extract.utils.common.resume import period_end
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_store.schema import Tables
 

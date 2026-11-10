@@ -2,10 +2,10 @@
 fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches
-the ZIPs; the identity step (`utils/identity/cusip_history.py`) stores their in-scope source lines raw,
-per CUSIP, in `sec_fails_to_deliver_security`. `fetch_fails_to_deliver` stamps those lines from
-`universe_cusip` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
-`sec_fails_to_deliver`, its own table so its publication lag never moves `short_interest`'s frontier:
+every listed ZIP; the identity step (`utils/identity/cusip_history.py`) reads their in-scope lines as
+CUSIP evidence and stores nothing. `fetch_fails_to_deliver` stores the in-scope source lines per CUSIP in
+`sec_fails_to_deliver_security`, stamped from `universe_cusip` (security, canonical company, lineage role,
+class), and rebuilds the ticker-grain `sec_fails_to_deliver`, its own table so its publication lag never moves `short_interest`'s frontier:
 per (ticker, settlement date) the sum over the canonical and secondary-class lines of quantity x
 conversion ratio, and of quantity x the file's PRICE (NULL when a summed line has no price). Values
 are cumulative net unsettled balances, not new fails. `full` rebuilds both tables from every cached ZIP.
@@ -13,6 +13,8 @@ are cumulative net unsettled balances, not new fails. `full` rebuilds both table
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import re
 from collections.abc import Collection, Sequence
@@ -25,9 +27,9 @@ from tqdm import tqdm
 
 from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SHARADAR_ACTION_SPLIT
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
-from src.data_extract.utils.common.identity import identity_published, load_identity
-from src.data_extract.utils.common.resume import archive_periods
+from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
+from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.resume import period_end
 from src.data_extract.utils.common.security_lines import master_stamps, prepare_master, trade_dates
 from src.data_extract.utils.institutionals.security_tape import (
     assert_tape_owners,
@@ -103,7 +105,8 @@ def _ftd_column(df: pd.DataFrame, cols: dict[str, str], name: str) -> pd.Series:
 def _strip_ftd_trailer(lines: list[str]) -> list[str]:
     """The file's lines without the SEC `Trailer ...` lines; a stated record count must equal the data lines."""
     body = [row for row in lines if not row.startswith("Trailer ")]
-    counts = [match.group(1) for row in lines if (match := re.fullmatch(r"Trailer record count\s+(\d+)\s*", row))]
+    trailers = [row for row in lines if row.startswith("Trailer ")]
+    counts = [match.group(1) for row in trailers if (match := re.fullmatch(r"Trailer record count\s+(\d+)\s*", row))]
     if counts and int(counts[-1]) != len(body) - 1:
         raise ValueError(f"FTD trailer record count {counts[-1]} != {len(body) - 1} data lines")
     return body
@@ -118,12 +121,20 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
     columns = list(SECURITY_COLUMNS[:8])
     lines = _strip_ftd_trailer(raw.strip().splitlines())
     header = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"
-    rows = [row.split("|") for row in lines[1:]]
-    if not lines or lines[0].strip().lstrip("\ufeff").upper() != header or any(len(fields) < 6 for fields in rows):
+    if not lines or lines[0].strip().lstrip("\ufeff").upper() != header:
         raise ValueError("FTD invalid header or source line width")
-    # A description can itself hold a '|' (cnsfails202104b): the first four fields and the price stay fixed.
-    df = pd.DataFrame([[*fields[:4], "|".join(fields[4:-1]), fields[-1]] for fields in rows], columns=header.split("|"), dtype=str)
+    body = "\n".join(lines[1:])
+    if body.count("|") == 5 * (len(lines) - 1):
+        # every line has exactly six fields: the C reader, every field kept as filed text
+        df = pd.read_csv(io.StringIO(body), sep="|", header=None, names=header.split("|"), dtype=str, na_filter=False, quoting=csv.QUOTE_NONE)
+    else:
+        # A description can itself hold a '|' (cnsfails202104b): the first four fields and the price stay fixed.
+        rows = [row.split("|") for row in lines[1:]]
+        if any(len(fields) < 6 for fields in rows):
+            raise ValueError("FTD invalid header or source line width")
+        df = pd.DataFrame([[*fields[:4], "|".join(fields[4:-1]), fields[-1]] for fields in rows], columns=header.split("|"), dtype=str)
     cols = {c.strip().upper(): c for c in df.columns}
+    symbol = _ftd_column(df, cols, "SYMBOL")
     price = pd.to_numeric(_ftd_column(df, cols, "PRICE").where(lambda s: s != "."), errors="coerce")
     qty = pd.to_numeric(_ftd_column(df, cols, "QUANTITY (FAILS)"), errors="coerce")
     valid_price = _ftd_column(df, cols, "PRICE").eq(".") | (np.isfinite(price) & price.ge(0))
@@ -134,7 +145,7 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
         {
             "date": pd.to_datetime(_ftd_column(df, cols, "SETTLEMENT DATE"), format="%Y%m%d", errors="coerce"),
             "cusip": _ftd_column(df, cols, "CUSIP").str.upper(),
-            "source_symbol": _ftd_column(df, cols, "SYMBOL").map(normalise_ticker),
+            "source_symbol": symbol.map({value: normalise_ticker(value) for value in symbol.unique()}),
             "description": _ftd_column(df, cols, "DESCRIPTION"),
             "price": price,
             "fails_quantity": qty,
@@ -146,7 +157,8 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
     if np.isinf(out["fails_value"].to_numpy(dtype=float, na_value=np.nan)).any():
         raise ValueError("FTD source notional overflows finite storage")
     out = out.drop_duplicates(ignore_index=True)
-    out["trade_date"] = trade_dates(out["date"])
+    settled = out["date"].drop_duplicates()
+    out["trade_date"] = out["date"].map(pd.Series(trade_dates(settled).to_numpy(), index=settled))
     return out[columns]
 
 
@@ -367,7 +379,7 @@ def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:
     splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     vendor = (
         context.store.load(
-            Tables.sharadar_fundamentals,
+            Tables.sharadar_fundamentals_facts,
             columns=["ticker", "date", "sharesbas", "price"],
             where={"ticker": sorted(policies), "dimension": "ARQ"},
             optional=True,
@@ -634,34 +646,17 @@ def read_ftd_period(context: Context, cache: Path, period: str, *, download: boo
     return parsed
 
 
-def pending_ftd_periods(context: Context, cache: Path, years_history: int, *, full: bool, as_of: pd.Timestamp) -> list[str]:
-    """The periods the raw capture reads: every listed period under `full`, else those no stored line carries or not cached."""
-    periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, as_of)))
-    listed, stored = archive_periods(context, (Tables.sec_fails_to_deliver_security,), periods)
-    cached = cached_ftd_periods(cache)
-    return listed if full else [p for p in listed if p not in stored or p not in cached]
-
-
 def ensure_ftd_zip(context: Context, cache: Path, period: str) -> Path | None:
     """The cached ZIP of `period`, downloaded once when absent; None when no location serves it."""
     return ensure_zip(context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180)
 
 
-def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
-    """Cache the FTD ZIPs the identity capture reads; returns the ZIPs available.
-
-    Before the first `universe_cik_symbol` build every listed period is cached (cold start); afterwards only the
-    periods the capture will read (`pending_ftd_periods`). Writes no table.
-    """
+def download_fails_to_deliver(context: Context, years_history: int = 31, as_of: pd.Timestamp | None = None) -> int:
+    """Cache every listed FTD ZIP, as the identity CUSIP history reads them all on every run (a cached ZIP is never
+    downloaded again); returns the ZIPs available. Writes no table."""
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    start_date = run_date(as_of)
-    if not identity_published(context):
-        periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, start_date)))
-        cached = [period for period in periods if ensure_ftd_zip(context, cache, period)]
-        logger.warning("FTD download: no universe_cik_symbol yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
-        return len(cached)
-    pending = pending_ftd_periods(context, cache, years_history, full=full, as_of=start_date)
-    return sum(ensure_ftd_zip(context, cache, period) is not None for period in tqdm(pending, desc="FTD download"))
+    periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, run_date(as_of))))
+    return sum(ensure_ftd_zip(context, cache, period) is not None for period in tqdm(periods, desc="FTD download"))
 
 
 def fetch_fails_to_deliver(

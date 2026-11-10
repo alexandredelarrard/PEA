@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.data_store import ddl
-from src.data_store.schema import Tables
+from src.data_store.schema import MANAGED, Tables
 
 
 def test_available_at_is_a_registry_directed_sql_date():
@@ -114,3 +114,38 @@ def test_price_owner_windows_is_registered_and_spliced() -> None:
     assert "security_master" in blocks and "ix_entity_lineage_entity_id" in schema_sql
     print("\n=== SANITY CHECK: owner table DDL ===")
     print("  price_owner_windows registered with PK (ticker, valid_from), DATE windows, and its spliced block equals the generator's output")
+
+
+#: The four fundamentals tables: source-prefixed name -> its PK and the indexes the registry DDL gives it.
+FUNDAMENTALS_TABLES = {
+    "sec_fundamentals_facts": (("ticker", "accession_number", "field", "duration_type", "period_end"), ("ix_sec_fundamentals_facts_filing_date",)),
+    "sec_fundamentals_history": (("ticker", "as_of"), ()),
+    "sharadar_fundamentals_facts": (("ticker", "dimension", "date", "reportperiod"), ()),
+    "sharadar_fundamentals_history": (("ticker", "as_of"), ()),
+}
+
+
+def test_fundamentals_tables_own_their_ddl_and_stay_out_of_schema_sql() -> None:
+    """D18: no `sql/schema.sql` block for the four; the pipeline creates them (`managed=False`), and regenerating the
+    file from a database that holds them still emits no block, while every other block is carried over."""
+    schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_sql)
+    names = set(FUNDAMENTALS_TABLES)
+    for name, (pk, indexes) in FUNDAMENTALS_TABLES.items():
+        table = getattr(Tables, name)
+        assert table.name == name and table.pk == pk and not table.managed, (name, table.pk, table.managed)
+        assert table not in MANAGED and name not in schema_sql, name
+        created = ddl.table_ddl_from_frame(table, pd.DataFrame(columns=list(pk)))
+        assert f"PRIMARY KEY ({', '.join(chr(34) + c + chr(34) for c in pk)})" in created, created
+        assert all(f'"{c}" ' in line and line.endswith("NOT NULL,") for c, line in zip(pk, created.splitlines()[1:], strict=False)), created
+        assert [line.split()[5] for line in created.splitlines() if line.startswith("CREATE INDEX")] == list(indexes), created
+    reflected = {name: [("ticker", "TEXT")] for name in names}
+    regenerated = ddl.existing_blocks(ddl.generate_schema_sql(reflected, previous=schema_sql))
+    assert not names & set(regenerated) and set(blocks) <= set(regenerated), names & set(regenerated)
+    old = ("fundamentals_facts", "fundamentals_history_sec", "fundamentals_history", "fundamentals_sharadar", "sharadar_fundamentals")
+    assert not [n for n in old if hasattr(Tables, n) or n in blocks], [n for n in old if hasattr(Tables, n) or n in blocks]
+    print("\n=== SANITY CHECK: fundamentals tables own their DDL ===")
+    print(
+        f"  {', '.join(FUNDAMENTALS_TABLES)}: managed=False, PKs as declared (NOT NULL), indexes {[i for _, ix in FUNDAMENTALS_TABLES.values() for i in ix]}"
+    )
+    print(f"  from the registry DDL; none in sql/schema.sql, a regeneration emits none and keeps all {len(blocks)} other blocks. Validated.")

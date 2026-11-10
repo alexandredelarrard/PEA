@@ -46,7 +46,9 @@ REQUIRED_COMMANDS = {
     "insider-edgar",
     "superinvestors",
     "thirteen-f-managers",
-    "fundamentals",
+    "sec-fundamentals-facts",
+    "sec-fundamentals-history",
+    "fundamentals-check",
     "sec-employees-llm",
     "fundamentals-sharadar",
     "sec-def14a-llm",
@@ -103,10 +105,21 @@ def test_freshness_inventory_comes_only_from_schema():
 IDENTITY_DOWNLOADS = {"zips_download"}
 #: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
 ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
-#: the seven EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
-EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text", "sec_employees_text", "sec_def14a_text"}
+#: the eight EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
+EDGAR_WALKS = {
+    "insider_edgar",
+    "sec_13d",
+    "sec_13g",
+    "sec_8k_items",
+    "filing_text",
+    "sec_employees_text",
+    "sec_def14a_text",
+    "sec_fundamentals_facts",
+}
 #: the LLM passes over the stored text tables (no SEC read): default pool, after the walk storing their text (D-05, M4).
 LLM_TEXT_TASKS = {"sec_employees_llm": {"sec_employees_text"}, "sec_def14a_llm": {"sec_def14a_text", "sec_8k_items"}}
+#: the SEC fundamentals producer; no path may join it to `fundamentals_sharadar` (AC-009).
+SEC_FUNDAMENTALS = {"sec_fundamentals_facts", "sec_fundamentals_history"}
 #: every task that reads the lineage; each must start after `identity`.
 IDENTITY_CONSUMERS = {
     *ZIP_INGESTS,
@@ -114,7 +127,8 @@ IDENTITY_CONSUMERS = {
     "short_interest",
     "thirteen_f",
     "extract_earnings_calls",
-    "fundamentals",
+    "sec_fundamentals_facts",
+    "fundamentals_sharadar",  # D16: the vendor history is keyed through the lineage
     "sec_employees_llm",
     "sec_def14a_llm",
     "sec_8k_items",
@@ -128,7 +142,8 @@ IDENTITY_CONSUMERS = {
 DERIVED_PARENTS = {
     "sec_8k_votes": {"sec_def14a_llm"},
     **LLM_TEXT_TASKS,
-    "fundamentals_sharadar": {"fundamentals"},
+    "sec_fundamentals_history": {"sec_fundamentals_facts"},
+    "fundamentals_check": {"sec_fundamentals_history", "fundamentals_sharadar"},
     "thirteen_f_backfill": {"thirteen_f"},
     "superinvestors": {"thirteen_f"},
     "thirteen_f_managers": {"superinvestors"},
@@ -225,7 +240,7 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
     assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
     assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
-    assert "fundamentals >> fundamentals_sharadar" in source
+    assert "fundamentals >> fundamentals_sharadar" not in source  # the two producers are independent (AC-009)
     assert "sec_employees_llm] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
     assert "[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
@@ -291,14 +306,35 @@ def test_the_edgar_index_refreshes_once_before_the_seven_edgar_walks(monkeypatch
     print(f"  identity -> edgar_index (sec_api, 2 slots) -> {sorted(EDGAR_WALKS)}")
 
 
-def test_the_sharadar_merge_does_not_wait_for_headcount(monkeypatch):
-    """Headcount is read by the cube from `fundamentals_employees`, so the merged history does not wait for it."""
-    graph, _ = _load_dag_graph(monkeypatch)
-    assert "fundamentals_sharadar" in graph["fundamentals"]
-    assert "fundamentals_sharadar" not in _descendants(graph, "sec_employees_llm"), "the merge still waits for headcount"
+def test_sec_and_sharadar_fundamentals_are_independent_producers(monkeypatch):
+    """AC-009 / D16: no path joins `fundamentals_sharadar` to an SEC fundamentals task in either direction; both wait for
+    identity; the check runs after both histories on ALL_DONE; headcount stays off both producers."""
+    graph, params = _load_dag_graph(monkeypatch)
+    after_sharadar = _descendants(graph, "fundamentals_sharadar")
+    joined = {task for task in SEC_FUNDAMENTALS if task in after_sharadar or "fundamentals_sharadar" in _descendants(graph, task)}
+    assert not joined, f"a path joins fundamentals_sharadar and {sorted(joined)}"
+    assert "fundamentals" not in graph, "the combined fundamentals task is gone"
+    assert {"fundamentals_sharadar", "sec_fundamentals_facts"} <= graph["identity"], "both producers wait for identity"
+    assert "sec_fundamentals_facts" in graph["edgar_index"] and "sec_fundamentals_history" in graph["sec_fundamentals_facts"]
+    assert params["sec_fundamentals_facts"]["pool"] == "sec_api" and params["sec_fundamentals_history"]["pool"] == "default_pool"
+    check_parents = {task for task in graph if "fundamentals_check" in graph[task]}
+    assert check_parents == {"universe_sync", "sec_fundamentals_history", "fundamentals_sharadar"}, sorted(check_parents)
+    assert params["fundamentals_check"]["trigger_rule"] == "all_done" and graph["fundamentals_check"] == {"extraction_status"}
+    assert " fundamentals-check -c " in str(params["fundamentals_check"]["bash_command"])
+    assert " sec-fundamentals-history -c " in str(params["sec_fundamentals_history"]["bash_command"])
+    assert not {"fundamentals_sharadar", *SEC_FUNDAMENTALS} & _descendants(graph, "sec_employees_llm"), "a producer waits for headcount"
     assert graph["sec_employees_llm"] == {"extraction_status"}
-    print("\n=== SANITY CHECK: headcount is not a merge input ===")
-    print("  fundamentals -> fundamentals_sharadar; sec_employees_llm -> extraction_status only")
+
+    dag = load_dag(DAG_FILE)
+    sec_down, sharadar_down = replay(dag, ["sec_fundamentals_facts"]), replay(dag, ["fundamentals_sharadar"])
+    assert sec_down["fundamentals_sharadar"] == "success" and sec_down["sec_fundamentals_history"] == "upstream_failed"
+    assert sharadar_down["sec_fundamentals_history"] == "success"
+    assert sec_down["fundamentals_check"] == sharadar_down["fundamentals_check"] == "success", "the check runs whatever either side did"
+
+    print("\n=== SANITY CHECK: independent fundamentals producers (AC-009, D16) ===")
+    print("  identity -> edgar_index -> sec_fundamentals_facts (sec_api) -> sec_fundamentals_history -> fundamentals_check")
+    print("  identity -> fundamentals_sharadar -> fundamentals_check (ALL_DONE); no path between the two producers")
+    print("  replay: facts failed -> Sharadar still succeeds; Sharadar failed -> SEC history still succeeds; the check runs both times. Validated.")
 
 
 def test_the_llm_passes_run_in_the_default_pool_after_the_walk_storing_their_text(monkeypatch):
@@ -372,7 +408,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
-    lenient = {"identity", "price_history"}
+    lenient = {"identity", "price_history", "fundamentals_check"}
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
@@ -380,14 +416,17 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
         states = replay(dag, failed)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     states = replay(dag, ["identity"])
-    assert states["fundamentals"] == states["zips_ingest_datasets"] == "upstream_failed" and states["extraction_status"] == "success"
+    assert states["sec_fundamentals_facts"] == states["fundamentals_sharadar"] == states["zips_ingest_datasets"] == "upstream_failed"
+    assert states["extraction_status"] == "success"
     assert states["price_history"] == "success", "prices read the stored master when the build fails"
     for download in sorted(IDENTITY_DOWNLOADS):
         states = replay(dag, [download])
-        assert states["price_history"] == states["identity"] == states["zips_ingest_insider"] == states["fundamentals"] == "success", download
+        assert states["price_history"] == states["identity"] == states["zips_ingest_insider"] == states["sec_fundamentals_facts"] == "success", (
+            download
+        )
     for evidence in ("sharadar_actions", "sec_submissions"):
         states = replay(dag, [evidence])
-        assert states["universe_sync"] == states["identity"] == states["fundamentals"] == "success", evidence
+        assert states["universe_sync"] == states["identity"] == states["sec_fundamentals_facts"] == "success", evidence
     held = replay(dag, ["identity_check"])
     assert held["trigger_data_aggregation"] == "upstream_failed", held
     assert held["extraction_status"] == "success" and all(held[task_id] == "success" for task_id in fetchers), (
@@ -396,7 +435,9 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
 
     print("\n=== SANITY CHECK: extraction never blocked, aggregation gated on identity (AC-015, P37) ===")
     print(f"  {len(fetchers)} fetchers -> extraction_status (ALL_DONE) -> identity_check (ALL_DONE) -> trigger_data_aggregation (ALL_SUCCESS)")
-    print("  replay: price_history / identity (its 12 consumers upstream_failed) / 13F + insider zips + the report / the index failed")
+    print(
+        f"  replay: price_history / identity (its {len(IDENTITY_CONSUMERS)} consumers upstream_failed) / 13F + insider zips + the report / the index failed"
+    )
     print("  -> aggregation triggered every time; identity_check failed -> every fetcher and the report succeed, the trigger is upstream_failed")
     print("  F-106: a failed zip download still runs identity, the consumers and price_history; a failed build still runs prices")
 
@@ -447,7 +488,7 @@ def test_every_edgar_walk_runs_in_the_sec_api_pool():
         command = bash.split(" data_extract ", 1)[1].split()[0]
         if _command_names(command) & walk_names:
             walks[task_id] = str(task.kwargs.get("pool"))
-    assert {"thirteen_f", "fundamentals", "sec_13d"} <= set(walks), f"the walk detection lost known walks: {sorted(walks)}"
+    assert {"thirteen_f", "sec_fundamentals_facts", "sec_13d"} <= set(walks), f"the walk detection lost known walks: {sorted(walks)}"
     outside = {task_id: pool for task_id, pool in walks.items() if pool != "sec_api"}
     assert not outside, f"EDGAR walks outside the sec_api pool: {outside}"
     # insiders: the zip leg is no walk; the EDGAR leg follows it, the identity step and the nightly index refresh
@@ -529,7 +570,7 @@ def test_the_evidence_lands_before_the_universe_sync_and_never_stops_the_night()
 
     for failed in EVIDENCE_TASKS[2:]:
         states = replay(dag, [failed])
-        assert states["universe_sync"] == states["identity"] == states["fundamentals"] == "success", (failed, states)
+        assert states["universe_sync"] == states["identity"] == states["sec_fundamentals_facts"] == "success", (failed, states)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     agg = _source(AGG_DAG_FILE)
     assert "sharadar_actions" not in agg and "sec_submissions" not in agg, "the aggregation DAG is untouched"

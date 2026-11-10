@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.sec_thirteen import institutional_vintages
+from src.data_aggregate.utils.sec_thirteen import superinvestor_books
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import (
     PublicBookSnapshot,
-    prepare_superinvestor_batches,
     prepare_superinvestor_book_history,
 )
 from src.utils.institutional_vintages import prepare_book_vintages
+from tests.data_aggregate import sec_thirteen_legacy_reference as institutional_vintages
 
 
 def _packet(
@@ -46,8 +45,7 @@ def _history(packets: list[tuple[pd.DataFrame, pd.DataFrame]], grid: pd.Datetime
     grid = pd.bdate_range("2023-01-02", "2026-03-31") if grid is None else grid
     df_filings = pd.concat([packet[0] for packet in packets], ignore_index=True)
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
-    df_manifest = prepare_book_vintages(df_filings, df_holdings, grid, settle_days=0)
-    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90)
+    history = prepare_superinvestor_book_history(((df_filings, df_holdings) for _ in range(1)), grid, 90)
     assert history is not None
     return history
 
@@ -56,7 +54,7 @@ def _on(history: tuple[PublicBookSnapshot, ...], day: str) -> PublicBookSnapshot
     return max((snapshot for snapshot in history if snapshot.day <= pd.Timestamp(day)), key=lambda snapshot: snapshot.day)
 
 
-def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None:
+def test_many_book_batches_keep_the_whole_table_revision_history() -> None:
     packets = [
         _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 100}),
         _packet("0000000002", "2024-03-31", "2024-05-15", {"111111111": 200}),
@@ -71,18 +69,17 @@ def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None
     batches = [
         tuple(pd.concat([packet[index] for packet in selected], ignore_index=True) for index in (0, 1)) for selected in (packets[:2], packets[2:])
     ]
-    prepared = prepare_superinvestor_batches(((batch[0], batch[1]) for batch in batches), grid)
-    actual = prepare_superinvestor_book_history(prepared, grid, 90)
+    actual = prepare_superinvestor_book_history(((batch[0], batch[1]) for batch in batches), grid, 90)
     assert actual is not None and [state.day for state in actual] == [state.day for state in expected]
     for old, new in zip(expected, actual, strict=True):
-        assert old.common_period == new.common_period and dict(old.latest_period_by_manager) == dict(new.latest_period_by_manager)
+        assert old.common_period == new.common_period
         assert set(old.level_books) == set(new.level_books) and set(old.archive) == set(new.archive)
         for key in old.archive:
             before, after = old.archive[key], new.archive[key]
             assert before.support == after.support and before.first_public_at == after.first_public_at
             pd.testing.assert_frame_equal(before.df_positions, after.df_positions)
     print(
-        "SANITY: guarded many-book batches preserve exact positions, public/expiry dates, amendment history, complete-empty support and all archive states."
+        "SANITY: many-book batches, each prepared on its own, preserve exact positions, public/expiry dates, amendment history, complete-empty support and all archive states."
     )
 
 
@@ -145,9 +142,8 @@ def test_newer_unusable_books_are_barriers_and_old_backfills_do_not_replace_them
     assert book.period == pd.Timestamp("2024-06-30")
     assert not book.support.zero_eligible and not book.support.comparison_eligible
     assert current.common_period == pd.Timestamp("2024-06-30")
-    assert current.latest_period_by_manager["0000000001"] == book.period
     assert not _on(history, "2024-11-13").level_books
-    assert _on(history, "2024-11-13").latest_period_by_manager["0000000001"] == pd.Timestamp("2024-06-30")
+    assert _on(history, "2024-11-13").common_period == pd.Timestamp("2024-06-30")
     print(f"SANITY: the latest {scope} quarter remains the support barrier; an older late original cannot replace or refresh it.")
 
 
@@ -242,7 +238,6 @@ def test_future_vintages_cannot_change_historical_snapshots_or_leak_archive_keys
     assert [snapshot.day for snapshot in early_prefix] == [snapshot.day for snapshot in early_full]
     for before, after in zip(early_prefix, early_full, strict=True):
         assert before.common_period == after.common_period
-        assert dict(before.latest_period_by_manager) == dict(after.latest_period_by_manager)
         assert set(before.archive) == set(after.archive)
         assert len(after.archive) == len(before.archive)
         assert after.archive.get(("0000000001", pd.Timestamp("2024-06-30"))) is None
@@ -250,9 +245,9 @@ def test_future_vintages_cannot_change_historical_snapshots_or_leak_archive_keys
     print("SANITY: adding future vintages changes neither historical events/current support nor the archive's visible keys or values.")
 
 
-def test_unchanged_books_share_resolver_objects_and_resolve_only_changed_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    resolver = Mock(wraps=institutional_vintages.resolve_prepared_books)
-    monkeypatch.setattr(institutional_vintages, "resolve_prepared_books", resolver)
+def test_unchanged_books_share_resolver_objects_and_replay_only_amended_quarters(monkeypatch: pytest.MonkeyPatch) -> None:
+    resolver = Mock(wraps=superinvestor_books.resolve_prepared_books)
+    monkeypatch.setattr(superinvestor_books, "resolve_prepared_books", resolver)
     history = _history(
         [
             _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 100}),
@@ -265,70 +260,52 @@ def test_unchanged_books_share_resolver_objects_and_resolve_only_changed_keys(mo
     later = _on(history, "2024-06-04").level_books["0000000001"]
     assert earlier is later
     assert earlier.df_positions is later.df_positions
-    assert len(resolver.call_args_list) == 3
-    assert [set(call.args[0].cik) for call in resolver.call_args_list] == [{"0000000001"}, {"0000000002"}, {"0000000002"}]
+    assert len(resolver.call_args_list) == 2
+    assert [set(call.args[0].cik) for call in resolver.call_args_list] == [{"0000000002"}, {"0000000002"}]
+    assert [_on(history, day).level_books["0000000002"].df_positions.shares.sum() for day in ("2024-05-21", "2024-06-04")] == [200, 250]
     assert earlier.df_positions.shares_provenance.eq("filed").all()
     assert earlier.df_positions.value_provenance.eq("filed").all()
-    print("SANITY: three publications resolve only their changed manager-quarter; unchanged positions/provenance are shared across snapshots.")
+    print("SANITY: the single filing is resolved without a replay; the amended quarter replays once per public day; positions/provenance are shared.")
 
 
-def test_unlimited_cache_resolves_changes_without_scanning_retained_books(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_amended_quarters_replay_once_per_public_day_rank(monkeypatch: pytest.MonkeyPatch) -> None:
     packets = [
         _packet("0000000002", "2024-03-31", "2024-05-15", {"111111111": 200}),
         _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 100}),
         _packet("0000000001", "2024-03-31", "2024-06-03", {"111111111": 120}, "restatement"),
         _packet("0000000003", "2023-12-31", "2024-06-03", {"111111111": 30}),
+        _packet("0000000003", "2023-12-31", "2024-07-01", {"111111111": 5}, "additions"),
         _packet("0000000001", "2024-06-30", "2024-08-14", {}),
     ]
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
-    df_manifest = prepare_book_vintages(
-        pd.concat([packet[0] for packet in packets], ignore_index=True), df_holdings, pd.bdate_range("2024-01-01", "2024-12-31"), settle_days=0
-    )
+    grid = pd.bdate_range("2024-01-01", "2024-12-31")
+    df_manifest = pd.concat([packet[0] for packet in packets], ignore_index=True)
     original_manifest, original_holdings = df_manifest.copy(deep=True), df_holdings.copy(deep=True)
-    resolve = institutional_vintages.resolve_prepared_books
-    getitem = pd.DataFrame.__getitem__
-    retained_states: set[int] = set()
+    resolver = Mock(wraps=superinvestor_books.resolve_prepared_books)
+    monkeypatch.setattr(superinvestor_books, "resolve_prepared_books", resolver)
+    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90)
+    assert history is not None
 
-    def checked_resolve(manifests: pd.DataFrame, holdings: pd.DataFrame, as_of: object) -> tuple[pd.DataFrame, pd.DataFrame]:
-        result = resolve(manifests, holdings, as_of)
-        retained_states.add(id(result[1]))
-        return result
-
-    def checked_getitem(frame: pd.DataFrame, key: Any) -> Any:
-        if id(frame) in retained_states and isinstance(key, str) and key == "book_known":
-            raise AssertionError("unlimited archive scanned retained book support")
-        return getitem(frame, key)
-
-    resolver = Mock(side_effect=checked_resolve)
-    monkeypatch.setattr(institutional_vintages, "resolve_prepared_books", resolver)
-    monkeypatch.setattr(pd.DataFrame, "__getitem__", checked_getitem)
-    updates = institutional_vintages._iter_public_book_cache(df_manifest, df_holdings, history_quarters=None)
-    key2, key1, old_key, new_key = [
-        (cik, pd.Timestamp(period))
-        for cik, period in [("0000000002", "2024-03-31"), ("0000000001", "2024-03-31"), ("0000000003", "2023-12-31"), ("0000000001", "2024-06-30")]
+    # Two amended quarters with two public days each: one resolver call per day rank, each cut to its own day.
+    assert resolver.call_count == 2
+    assert [sorted(set(call.args[0].accession_number)) for call in resolver.call_args_list] == [
+        ["00000000012024-03-312024-05-15original", "00000000032023-12-312024-06-03original"],
+        sorted(
+            set(
+                df_manifest.loc[
+                    df_manifest.cik.isin(["0000000001", "0000000003"]) & df_manifest.period.ne(pd.Timestamp("2024-06-30")), "accession_number"
+                ]
+            )
+        ),
     ]
-
-    day, cache, first_changed = next(updates)
-    assert day == pd.Timestamp("2024-05-16") and list(cache) == list(first_changed) == [key2, key1]
-    assert first_changed is not cache
-    unchanged, original = cache[key2], cache[key1]
-    day, revised_cache, revised = next(updates)
-    assert day == pd.Timestamp("2024-06-04") and revised_cache is cache
-    assert list(cache) == [key2, key1, old_key] and list(revised) == [key1, old_key]
-    assert cache[key2] is unchanged and cache[key1] is not original and first_changed[key1] is original
-    assert original[0].shares.sum() == 100 and revised[key1][0].shares.sum() == 120
-    day, final_cache, changed = next(updates)
-    assert day == pd.Timestamp("2024-08-15") and final_cache is cache
-    assert list(cache) == [key2, key1, old_key, new_key] and list(changed) == [new_key]
-    assert changed[new_key][0].empty and changed[new_key][1].iloc[0]["book_known"]
-    with pytest.raises(StopIteration):
-        next(updates)
-    assert resolver.call_count == 5
+    archive = history[-1].archive
+    keys = [("0000000002", "2024-03-31"), ("0000000001", "2024-03-31"), ("0000000003", "2023-12-31"), ("0000000001", "2024-06-30")]
+    assert list(archive) == [(cik, pd.Timestamp(period)) for cik, period in keys]
+    assert [archive[(cik, pd.Timestamp(period))].df_positions.shares.sum() for cik, period in keys] == [200, 120, 35, 0]
+    assert archive[("0000000001", pd.Timestamp("2024-06-30"))].support.book_known
     pd.testing.assert_frame_equal(df_manifest, original_manifest)
     pd.testing.assert_frame_equal(df_holdings, original_holdings)
-    print(
-        "SANITY: unlimited history resolves every changed key in event order, shares its complete cache and never scans retained support or mutates source facts."
-    )
+    print("SANITY: two amended quarters replay in two resolver calls, single filings in none; keys keep first-publication order; sources unmutated.")
 
 
 def test_bounded_cache_uses_known_watermark_and_keeps_event_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -358,10 +335,7 @@ def test_bounded_cache_uses_known_watermark_and_keeps_event_order(monkeypatch: p
             ("0000000001", "2024-09-30"),
         ]
     ]
-    events = [
-        (day, list(cache), list(changed))
-        for day, cache, changed in institutional_vintages._iter_public_book_cache(df_manifest, df_holdings, history_quarters=1)
-    ]
+    events = [(day, list(cache), list(changed)) for day, cache, changed in institutional_vintages._iter_public_book_cache(df_manifest, df_holdings)]
     assert events == [
         (pd.Timestamp("2024-05-16"), [first, second], [first, second]),
         (pd.Timestamp("2024-08-15"), [first, second, current], [current]),

@@ -17,7 +17,7 @@ import pytest
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
 from src.data_extract.utils.common.identity import Identity
-from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, PropagationResult
+from src.data_extract.utils.identity.identity_propagate import PropagationResult
 from tests.support.universe import universe_of
 
 #: an empty published lineage, as the stubbed resolver inputs carry
@@ -31,8 +31,8 @@ def _config() -> SimpleNamespace:
 
 def stub_propagation(monkeypatch: pytest.MonkeyPatch, module: Any = step_module) -> dict[str, list[Any]]:
     """Every stage `run_propagate` calls recorded instead of run, over a resolver whose tickers carry no scope stamp:
-    `reload` (the rebuild from the published tables), `recheck` (tickers, as_of, every), `retag` (dry run)."""
-    calls: dict[str, list[Any]] = {"reload": [], "recheck": [], "retag": []}
+    `reload` (the rebuild from the published tables), `recheck` (tickers, as_of, every)."""
+    calls: dict[str, list[Any]] = {"reload": [], "recheck": []}
     inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     resolver = SimpleNamespace(filing_scope=lambda ticker: SimpleNamespace(scope_changed_at=None), bounds={})
     monkeypatch.setattr(module, "identity_inputs", lambda context: calls["reload"].append(context) or inputs)
@@ -48,10 +48,6 @@ def stub_propagation(monkeypatch: pytest.MonkeyPatch, module: Any = step_module)
         monkeypatch.setattr(module, name, lambda *args, **kwargs: [])
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(module, name, lambda *args, **kwargs: {})
-    monkeypatch.setattr(module, "thirteenf_moves", lambda *args, **kwargs: (pd.DataFrame(), None))
-    monkeypatch.setattr(
-        module, "retag_13f", lambda context, moves, tags, dry_run: calls["retag"].append(dry_run) or pd.DataFrame(columns=list(RESTAMP_COLUMNS))
-    )
     monkeypatch.setattr(module, "rebuild_history", lambda *args, **kwargs: ())
     monkeypatch.setattr(module, "log_propagation", lambda *args, **kwargs: None)
     return calls

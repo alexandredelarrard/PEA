@@ -27,7 +27,6 @@ CLASSIFIED = {
     "symbol_tenure.scan_form345_cache": "operational: fewer cached Form 3/4/5 quarters than expected, a partial history",
     "symbol_tenure._unreadable_quarter": "operational: a cached Form 3/4/5 zip without its submission member is skipped",
     "symbol_tenure._aggregate_submission": "operational: a cached Form 3/4/5 zip missing columns is skipped",
-    "identity_propagate.retag_13f": "operational: a 13F accession whose source cannot be re-read keeps its stored rows",
 }
 
 

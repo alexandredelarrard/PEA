@@ -1085,9 +1085,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
             declared_rows=len(info),
             declared_value=float(info.VALUE.sum()),
         )
-        save_hr_filing(
-            sqlite_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
-        )
+        save_hr_filing(sqlite_store, manifest, holdings, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
 
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)

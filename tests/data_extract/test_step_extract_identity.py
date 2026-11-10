@@ -163,6 +163,8 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
     _stub_operations(monkeypatch, [])
     monkeypatch.setattr(module, "pending_dei_periods", lambda context, cache, full: calls.setdefault("dei", {"full": full}) and [])
     stages = stub_propagation(monkeypatch, module)
+    dry_runs: list[bool] = []
+    monkeypatch.setattr(module, "purge_rows", lambda context, spec, changed, owned, bounds, dry_run: dry_runs.append(dry_run) or [])
     options = IdentityOptions(tickers=["AAA"], full=True, dry_run=True, as_of=pd.Timestamp("2026-10-30"))
     step = StepExtractIdentity(_context(), _config(), options)  # type: ignore[arg-type]
 
@@ -171,7 +173,7 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
 
     assert calls["dei"] == {"full": True}
     recheck = stages["recheck"][0]
-    assert recheck["tickers"] == ["AAA"] and stages["retag"] == [True]
+    assert recheck["tickers"] == ["AAA"] and dry_runs and all(dry_runs)
     assert recheck["every"] and recheck["as_of"] == pd.Timestamp("2026-10-30")
     print("\n=== SANITY CHECK: identity options ===")
     print("  --full reaches the capture; -t, --full, --dry-run and --as-of reach the propagation")

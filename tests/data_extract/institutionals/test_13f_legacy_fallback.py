@@ -32,10 +32,8 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     parse_legacy_information_table,
 )
 from src.data_extract.utils.institutionals.value_units import FEW_ROWS_PRICE, NO_EVIDENCE
-from src.utils.identity_tables import LINE_COLUMNS
 from src.utils.institutional_vintages import public_books
 
-_NO_LINES = pd.DataFrame(columns=LINE_COLUMNS)
 _HEADER = "ISSUER                 TYPE           CUSIP     VALUE     SHS      INVEST"
 _AFLAC = "Aflac, Inc.             Com         001055102 145,462  3,362,515   DEFINED      1   SOLE"
 _AMGEN = "Amgen Inc.              Com         031162100  12,000    100,000   DEFINED      1   SOLE"
@@ -120,7 +118,7 @@ def test_legacy_edgar_preserves_accession_and_reconciled_book(filing_store: Any)
     # Two share rows, no caption and a ratio-1 cover: only the few-rows implied price ($43 and $120 at x1000) decides.
     assert len(holdings) == 2 and holdings.value_usd.sum() == 157462000
     assert manifest.iloc[0].value_unit_evidence.endswith(FEW_ROWS_PRICE)
-    save_hr_filing(filing_store, manifest, holdings, _NO_LINES, None)
+    save_hr_filing(filing_store, manifest, holdings, None)
     assert len(filing_store.load(f13.Tables.sec13f_hr)) == 2
     amendment = _Filing(_Report(None, txt=raw), form="13F-HR/A", accession_number="missing-type")
     failed = f13.read_filing_vintage(FilingStamp.of(amendment, amendment.cik))
@@ -596,8 +594,8 @@ def test_intact_legacy_missing_summary_is_truthful_and_replayable(filing_store: 
     assert pd.isna(manifest.iloc[0].declared_value_total) == (missing in {"value", "both"})
     assert manifest.iloc[0].source_row_count == 1
     assert rows.iloc[0].shares == 3362515 and rows.iloc[0].raw_value_usd == 145462
-    assert save_hr_filing(filing_store, manifest, rows, _NO_LINES, None) == 1
-    assert save_hr_filing(filing_store, manifest, rows, _NO_LINES, None) == 0
+    assert save_hr_filing(filing_store, manifest, rows, None) == 1
+    assert save_hr_filing(filing_store, manifest, rows, None) == 0
     marker = filing_store.load(f13.Tables.sec13f_hr, where={"cusip": "_empty"}, markers=True)
     assert pd.isna(marker.iloc[0].declared_row_count) == (missing in {"count", "both"})
     print(f"SANITY: intact source with missing {missing} reaches sec13f_hr without invented declarations; replay is idempotent.")
@@ -761,7 +759,7 @@ def test_missing_declarations_require_source_accounting_at_writer(filing_store: 
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
     unaccounted = manifest.assign(value_unit_evidence="filing_date_default")
     with pytest.raises(ValueError, match="does not reconcile"):
-        save_hr_filing(filing_store, unaccounted, rows, _NO_LINES, None)
+        save_hr_filing(filing_store, unaccounted, rows, None)
     assert filing_store.row_count(f13.Tables.sec13f_hr) == 0
     print("SANITY: nullable cover fields alone cannot waive source validation or create completion markers.")
 
@@ -770,12 +768,12 @@ def test_missing_declarations_replay_null_types_and_preserve_conflicts(filing_st
     raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
     filing = _Filing(_Report(None, txt=raw))
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
-    assert save_hr_filing(filing_store, manifest, rows, _NO_LINES, None) == 1
+    assert save_hr_filing(filing_store, manifest, rows, None) == 1
     for missing in (None, float("nan"), pd.NA):
         replay = manifest.assign(declared_row_count=missing, declared_value_total=missing)
-        assert save_hr_filing(filing_store, replay, rows, _NO_LINES, None) == 0
+        assert save_hr_filing(filing_store, replay, rows, None) == 0
     with pytest.raises(ValueError, match="conflict"):
-        save_hr_filing(filing_store, manifest.assign(declared_row_count=1), rows, _NO_LINES, None)
+        save_hr_filing(filing_store, manifest.assign(declared_row_count=1), rows, None)
     print("SANITY: SQL null, NaN and pandas NA replay identically; adding an observed declaration conflicts with immutable source metadata.")
 
 
@@ -787,7 +785,7 @@ def test_private_identifier_and_inferred_scope_reach_public_books(filing_store: 
     assert manifest.iloc[0].report_type == f13.SEC_13F_INFERRED_HOLDINGS_REPORT
     calendar = pd.bdate_range("2010-03-01", "2010-06-01")
     table = f13.Tables.sec13f_hr
-    save_hr_filing(filing_store, manifest, rows, _NO_LINES, None)
+    save_hr_filing(filing_store, manifest, rows, None)
     saved = filing_store.load(table)
     markers = filing_store.load(table, where={"cusip": table.empty_marker[1]}, markers=True)
     book, states = public_books(markers, saved, "2010-06-01", calendar)
@@ -820,10 +818,10 @@ def test_next_line_entry_count_is_preserved(count: str, filing_store: Any) -> No
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
     assert manifest.iloc[0].declared_row_count == 2
     assert manifest.iloc[0].source_row_count == 2
-    assert save_hr_filing(filing_store, manifest, rows, _NO_LINES, None) == 2
+    assert save_hr_filing(filing_store, manifest, rows, None) == 2
     marker = filing_store.load(f13.Tables.sec13f_hr, where={"cusip": "_empty"}, markers=True)
     assert marker.iloc[0].declared_row_count == 2
-    assert save_hr_filing(filing_store, manifest, rows, _NO_LINES, None) == 0
+    assert save_hr_filing(filing_store, manifest, rows, None) == 0
     print("SANITY: a numeric count on the next line remains an observed declaration in sec13f_hr; replay preserves all economic facts.")
 
 

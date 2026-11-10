@@ -94,8 +94,6 @@ from src.data_extract.utils.identity.identity_propagate import (
     refresh_short_volume,
     reparse_insider,
     reparse_notes,
-    retag_13f,
-    thirteenf_moves,
 )
 from src.data_extract.utils.identity.lifecycle import (
     LIFE_COLUMNS,
@@ -435,7 +433,7 @@ class StepExtractIdentity(Step):
 
     def run_propagate(self) -> PropagationResult:
         """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
-        scope, re-parse, re-stamp the insider, FTD, short-volume and 13F rows, rebuild purged histories. A first build or
+        scope, re-parse, re-stamp the insider, FTD and short-volume rows, rebuild purged histories. A first build or
         `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
         # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49), bound to
         # the universe re-read after the publish (the cached one predates this run's end dates, symbols and CIKs)
@@ -456,18 +454,17 @@ class StepExtractIdentity(Step):
         records = [record for spec in PURGE_TABLES for record in purge_rows(self._context, spec, changed, owned, identity.bounds, dry_run)]
 
         # expansion and re-stamps: the bulk re-parse of the scopes this run changed (X90: every cached zip, so once per change;
-        # not on a dry run), then the insider, FTD, short-volume and 13F rows
+        # not on a dry run), then the insider, FTD and short-volume rows
         reparsed = changed if every else rebuilt_since(scopes, self._started)
         notes = {} if dry_run else reparse_notes(self._context, reparsed, scopes, identity)
         insider = {} if dry_run else reparse_insider(self._context, reparsed, scopes, identity, self._run_date)
         records += refresh_insider(self._context, identity, changed, dry_run)
         records += refresh_fails(self._context, tickers, self._run_date, dry_run, every)
         records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)
-        restamped = retag_13f(self._context, *thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
 
         # post-process: the history of every ticker whose facts were purged; one summary
         removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
-        result = PropagationResult(removals, restamped, {**notes, **insider}, rebuild_history(self._context, removals, dry_run))
+        result = PropagationResult(removals, {**notes, **insider}, rebuild_history(self._context, removals, dry_run))
         log_propagation(self._context, changed, result, dry_run)
         return result
 
@@ -480,5 +477,5 @@ class StepExtractIdentity(Step):
         self.run_symbol_history()
         self.run_cusip_history()
         self.run_lifecycle()
-        self.run_publish()      
+        self.run_publish()
         self.run_propagate()

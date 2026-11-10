@@ -1,246 +1,36 @@
-"""Propagation stage (phase 7, REQ-014): the 13F re-stamp, the first-build full re-check (PD-13) and the dry run (AC-013).
-
-Known truth on SQLite: the accessions holding a CUSIP whose dated `universe_cusip` line names VMRK, or a second class
-stored apart from its company row (U-67), are re-read (offline stub) and rewritten: EQR's rows move to VMRK (AC-009),
-BRK-A + BRK-B make one BRK-B row in B shares, a non-universe CUSIP keeps its map ticker, a dry run reports without
-writing and a second run moves nothing. On the phase-0 fixture store (a read-only copy published by the phase-5 parity): the real
-EQR -> VMRK move of CUSIP 29476L107. The publish of a store without a lineage marks a first build, which re-checks every
-ticker; the next publish does not.
+"""Propagation stage (phase 7, REQ-014): the first-build full re-check (PD-13), the bulk re-parse scope (X90) and the
+purge around a company end. The publish of a store without a lineage marks a first build, which re-checks every ticker;
+the next publish does not. `sec13f_hr` is stored as filed, so the propagation no longer touches it (REQ-005).
 """
 
 from __future__ import annotations
 
 import logging
-from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
 
 from src.context import Context
-from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
-from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions
-from src.data_extract.utils.identity.identity_propagate import RESTAMP_COLUMNS, purge_rows, rebuilt_since, retag_13f, thirteenf_moves
+from src.data_extract.utils.identity.identity_propagate import purge_rows, rebuilt_since
 from src.data_extract.utils.identity.lifecycle import Lifecycle
-from src.data_extract.utils.institutionals import fetch_13f_backfill as backfill
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, replace_hr_filing, save_hr_filing
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
-from tests.data_extract.institutionals.test_13f_one_walk import _line as _info_line
 from tests.support.propagation import stub_propagation
 from tests.support.universe import universe_config
 
 ROOT = Path(__file__).resolve().parents[3]
-RUN = Path("reports") / "validate" / "2026-11-03-identity-security-master" / "_cache"
 RUN_DATE = pd.Timestamp("2026-11-05")
-EQR_CUSIP, OTHER_CUSIP, BRK_A, BRK_B = "29476L107", "999999105", "084670108", "084670702"
 
 
 def _context(store: DataStore) -> SimpleNamespace:
     return SimpleNamespace(store=store, log=logging.getLogger("test.identity.propagate"), config_dir=str(ROOT / "configs"))
-
-
-def _line(cusip: str, company: str, role: str, symbol: str, ratio: float, start: str) -> dict[str, Any]:
-    return {
-        "security_id": f"C{cusip}", "canonical_company": company, "cusip": cusip, "source": "ftd", "source_symbol": symbol,
-        "market_symbol": symbol, "security_class": "common", "conversion_ratio": ratio, "lineage_role": role,
-        "valid_from": pd.Timestamp(start), "valid_to": pd.NaT, "scope_changed_at": RUN_DATE - pd.Timedelta(days=1),
-    }  # fmt: skip
-
-
-def _packet(cik: str, period: str, positions: list[tuple[str, str, float, int]]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """One accession's source packet (dollars era); positions are (cusip, issuer, value, shares)."""
-    info = pd.DataFrame([_info_line(cusip, name, value, shares) for cusip, name, value, shares in positions])
-    filed = (pd.Timestamp(period) + pd.Timedelta(days=40)).strftime("%Y-%m-%d")
-    return filing_vintage(
-        info,
-        cik=cik,
-        accession_number=f"acc-{cik}-{period}",
-        period=period,
-        filing_date=filed,
-        amendment_type="original",
-        source=f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/acc-{cik}-{period}.txt",
-        declared_rows=len(info),
-        declared_value=float(info["VALUE"].sum()),
-    )
-
-
-#: Three books as the pre-U-67 rule stored them: one row per CUSIP, EQR on its market ticker, BRK-A beside BRK-B.
-PACKETS = [
-    _packet("0000000001", "2024-03-31", [(EQR_CUSIP, "EQUITY RESIDENTIAL", 7_000.0, 100), (OTHER_CUSIP, "ZZZ CORP", 500.0, 50)]),
-    _packet(
-        "0000000001",
-        "2024-06-30",
-        [(EQR_CUSIP, "EQUITY RESIDENTIAL", 7_000.0, 100), (BRK_A, "BERKSHIRE A", 1_300_000.0, 2), (BRK_B, "BERKSHIRE B", 43_000.0, 100)],
-    ),
-    _packet("0000000002", "2024-06-30", [(EQR_CUSIP, "EQUITY RESIDENTIAL", 7_000.0, 100), (OTHER_CUSIP, "ZZZ CORP", 500.0, 50)]),
-]
-
-
-def _seed(store: DataStore) -> None:
-    """The market map and the three books stored one row per CUSIP, then the published lines (stamped yesterday): VMRK
-    over 29476L107 and BRK-B's two classes."""
-    store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": [EQR_CUSIP, OTHER_CUSIP, BRK_A, BRK_B], "ticker": ["EQR", "ZZZ", "BRK-A", "BRK-B"]}))
-    old = {EQR_CUSIP: "EQR", OTHER_CUSIP: "ZZZ", BRK_A: "BRK-B", BRK_B: "BRK-B"}
-    old_map = pd.DataFrame({"cusip": list(old), "ticker": list(old.values())})
-    for manifest, book in PACKETS:
-        save_hr_filing(store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), old_map)
-    lines = [
-        _line(EQR_CUSIP, "VMRK", "canonical_current", "EQR", 1.0, "1995-01-01"),
-        _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31"),
-        _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
-    ]
-    store.save(Tables.universe_cusip, pd.DataFrame(lines))
-
-
-def _rows(store: DataStore) -> pd.DataFrame:
-    rows = store.load(Tables.sec13f_hr, columns=["accession_number", "ticker", "cusip", "shares", "value_usd"])
-    return rows.sort_values(["accession_number", "cusip"], ignore_index=True)
-
-
-def _marker_counts(store: DataStore) -> dict[str, int]:
-    markers = store.load(Tables.sec13f_hr, columns=["accession_number", "parse_status", "parsed_row_count"], markers=True)
-    done = markers[markers["parse_status"].eq("complete")]
-    return {str(a): int(n) for a, n in zip(done["accession_number"], done["parsed_row_count"], strict=True)}
-
-
-def _offline_reread(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """The re-read serves each accession's source packet as filed (no network); returns the accessions asked."""
-    packets = {str(m.iloc[0].accession_number): (m, b) for m, b in PACKETS}
-    asked: list[str] = []
-    monkeypatch.setattr(backfill, "read_filing_vintage", lambda stamp: asked.append(stamp.accession_number) or packets[stamp.accession_number])
-    return asked
-
-
-def test_13f_accessions_are_rewritten_as_company_rows_and_a_second_run_moves_nothing(
-    filing_store: DataStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """AC-009 + U-67 known truth: EQR's 3 rows of 29476L107 move to VMRK; the 2 BRK-A + 100 BRK-B of one book become one
-    BRK-B row of 3,100 B shares; ZZZ keeps its map ticker; a dry run writes nothing; a second run finds nothing."""
-    _seed(filing_store)
-    context = _context(filing_store)
-    asked = _offline_reread(monkeypatch)
-    before = _rows(filing_store)
-
-    dry = retag_13f(context, *thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), True)
-    after_dry = _rows(filing_store)
-    wet = retag_13f(context, *thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False), False)
-    after = _rows(filing_store)
-    again, _ = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE, False)
-    stale, _ = thirteenf_moves(context, ["VMRK", "BRK-B"], RUN_DATE + pd.Timedelta(days=60), False)
-
-    moved = {(r.cusip, r.from_ticker, r.to_ticker): r.rows for r in dry.itertuples(index=False)}
-    assert moved == {(EQR_CUSIP, "EQR", "VMRK"): 3, (BRK_A, "BRK-B", "BRK-B"): 1}, moved
-    assert after_dry.equals(before), "a dry run writes nothing"
-    assert wet.equals(dry) and asked == [], "rows stored as filed are restated from the table, no source is read"
-    brk = after[after["ticker"].eq("BRK-B")]
-    assert brk[["cusip", "shares", "value_usd"]].values.tolist() == [[BRK_B, 3_100.0, 1_343_000.0]]
-    assert set(after.loc[after["cusip"].eq(EQR_CUSIP), "ticker"]) == {"VMRK"}
-    assert set(after.loc[after["cusip"].eq(OTHER_CUSIP), "ticker"]) == {"ZZZ"}, "a CUSIP outside every line keeps its market ticker"
-    assert after["value_usd"].sum() == before["value_usd"].sum() and len(after) == len(before) - 1
-    counts = _marker_counts(filing_store)
-    assert counts == {"acc-0000000001-2024-03-31": 2, "acc-0000000001-2024-06-30": 2, "acc-0000000002-2024-06-30": 2}, counts
-    assert again.empty and stale.empty, "a second run (and a stamp outside the window) finds nothing out of place"
-    print("\n=== SANITY CHECK: 13F restatement of out-of-place rows from the table (AC-009, AC-013, U-67) ===")
-    print(f"  dry run: {dry.to_dict('records')}; stored rows unchanged ({len(after_dry)})")
-    print(
-        f"  real run: {len(asked)} source read(s); rows {len(before)} -> {len(after)}; value {before['value_usd'].sum():,.0f} = {after['value_usd'].sum():,.0f}; markers {counts}"
-    )
-    print(f"  BRK-B: one row of {brk['shares'].iloc[0]:,.0f} B shares (2 x 1,500 + 100); EQR -> VMRK; ZZZ unchanged; second run 0 group(s)")
-
-
-def test_a_class_already_scaled_on_its_own_cusip_is_reread_from_its_source_not_scaled_twice(
-    filing_store: DataStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Known truth: with no canonical BRK-B line on 2024-06-30, `company_rows` stores the 2 BRK-A shares as 3,000
-    canonical shares on BRK-A's own CUSIP. The table cannot tell that row from one stored as filed, so its accession is
-    re-read from source: 3,000 shares again, never 2 x 1,500 x 1,500."""
-    manifest, book = PACKETS[1]
-    lines = pd.DataFrame(
-        [
-            _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "2025-01-01"),
-            _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
-        ]
-    )
-    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": [EQR_CUSIP, BRK_A, BRK_B], "ticker": ["EQR", "BRK-A", "BRK-B"]}))
-    filing_store.save(Tables.universe_cusip, lines)
-    save_hr_filing(filing_store, manifest, book, lines, filing_store.load(Tables.cusip_ticker_map))
-    context = _context(filing_store)
-    asked = _offline_reread(monkeypatch)
-
-    moves, tags = thirteenf_moves(context, ["BRK-B"], RUN_DATE, False)
-    retag_13f(context, moves, tags, False)
-    after = _rows(filing_store)
-
-    brk = after[after["cusip"].eq(BRK_A)]
-    assert asked == [str(manifest.iloc[0].accession_number)], asked
-    assert brk[["ticker", "shares"]].values.tolist() == [["BRK-B", 3_000.0]], brk
-    print("\n=== SANITY CHECK: an already-scaled class goes to its source ===")
-    print(
-        f"  moves {moves[['cusip', 'ticker', 'new_ticker']].values.tolist()}; source reads {asked}; BRK-A row {brk['shares'].iloc[0]:,.0f} canonical shares"
-    )
-
-
-def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_it(filing_store: DataStore) -> None:
-    """R-01 (U-67): an accession holding BRK-A and BRK-B is stored as one BRK-B row, so its `sec13f_hr` marker counts
-    the 2 position rows stored (not the 3 filed) on save and on replace, and the cube's book history reads it."""
-    manifest, book = PACKETS[1]
-    lines = pd.DataFrame(
-        [
-            _line(EQR_CUSIP, "VMRK", "canonical_current", "EQR", 1.0, "1995-01-01"),
-            _line(BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31"),
-            _line(BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21"),
-        ]
-    )
-    cmap = pd.DataFrame({"cusip": [], "ticker": []})
-    grid = pd.bdate_range("2024-06-01", "2024-12-31")
-
-    def marker_and_history() -> tuple[int, int]:
-        stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
-        packets = thirteen_inputs.iter_filing_vintages(filing_store, grid.max())
-        with closing(clean_public_batches(packets, CusipTags(lines, cmap), ["BRK-B", "VMRK"], None, None)) as batches:
-            history = prepare_institutional_book_history(batches, grid, settle_days=3)
-        assert history is not None
-        return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])
-
-    saved = save_hr_filing(filing_store, manifest, book, lines, cmap)
-    saved_count, saved_events = marker_and_history()
-    replaced = replace_hr_filing(filing_store, manifest, book, lines, cmap)
-    replaced_count, replaced_events = marker_and_history()
-
-    assert len(book) == 3 and saved == replaced == 2
-    assert saved_count == replaced_count == 2, (saved_count, replaced_count)
-    assert saved_events == replaced_events > 0
-    print("\n=== SANITY CHECK: collapsed 13F accession reaches the cube (R-01) ===")
-    print(f"  filed CUSIPs {len(book)} -> stored position rows {saved}; marker parsed_row_count save={saved_count}, replace={replaced_count}")
-    print(f"  cube book history built: {saved_events} event row(s) after save, {replaced_events} after replace -> no 'Incomplete stored 13F book'")
-
-
-def test_fixture_eqr_rows_move_to_vmrk_on_the_published_lines() -> None:
-    """AC-009 on real data: the fixture's 39,575 EQR rows of 29476L107 move to VMRK (39,573) or unmapped (2, 1998-Q2/Q3,
-    before the line's first confirmed 13F period); read-only, dry run."""
-    path = next((base / RUN / "parity" / "fixture_copy_5.sqlite" for base in (ROOT, *ROOT.parents) if (base / RUN).exists()), None)
-    if path is None or not path.exists():
-        pytest.skip("the phase-5 parity copy of the fixture store is not reachable from this checkout")
-    store = DataStore(create_engine(f"sqlite:///file:{path.as_posix()}?mode=ro&uri=true"))
-    context = _context(store)
-
-    report = retag_13f(context, *thirteenf_moves(context, ["VMRK"], RUN_DATE, True), True)
-
-    moved = {(r.from_ticker, r.to_ticker): r.rows for r in report.itertuples(index=False)}
-    assert moved == {("EQR", "VMRK"): 39573, ("EQR", "_empty"): 2}, moved
-    print("\n=== SANITY CHECK: fixture 13F re-stamp, VMRK (dry run) ===")
-    print(report.to_string(index=False))
-    print("  OK: every EQR row of 29476L107 leaves EQR; 0 rows would stay under the market ticker")
 
 
 def test_a_first_build_rechecks_every_ticker_and_the_next_publish_does_not(published_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811 (fixture)
@@ -256,7 +46,7 @@ def test_a_first_build_rechecks_every_ticker_and_the_next_publish_does_not(publi
         everies.append(calls["recheck"][-1]["every"])
 
     assert everies == [True, False], everies
-    assert calls["recheck"][0]["tickers"] == ["AAA"] and calls["retag"] == [False, False]
+    assert calls["recheck"][0]["tickers"] == ["AAA"]
     print("\n=== SANITY CHECK: first-build propagation (PD-13) ===")
     print(f"  publish 1 (no stored lineage): every={everies[0]}; publish 2: every={everies[1]}")
 
@@ -330,8 +120,6 @@ def test_an_end_first_published_this_run_keeps_the_post_end_rows_through_propaga
         monkeypatch.setattr(step_module, name, lambda *args, **kwargs: [])
     for name in ("reparse_notes", "reparse_insider"):
         monkeypatch.setattr(step_module, name, lambda *args, **kwargs: {})
-    monkeypatch.setattr(step_module, "thirteenf_moves", lambda *args, **kwargs: (pd.DataFrame(), None))
-    monkeypatch.setattr(step_module, "retag_13f", lambda *args, **kwargs: pd.DataFrame(columns=list(RESTAMP_COLUMNS)))
     monkeypatch.setattr(step_module, "rebuild_history", lambda *args, **kwargs: ())
 
     seen_before = context.universe.bounds["AAA"][1]

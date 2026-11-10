@@ -28,7 +28,6 @@ from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_managers as f13m
 from src.data_store.schema import Tables
-from src.utils.identity_tables import LINE_COLUMNS
 from src.utils.institutional_vintages import public_books
 from src.utils.string import pad_cik
 from tests.support.store_identity import store_identity
@@ -39,7 +38,6 @@ OTHER = "0000999999"
 UNIVERSE = ["AAPL", "MSFT"]
 CMAP = pd.DataFrame({"cusip": ["037833100", "594918104", "G0450A105"], "ticker": ["AAPL", "MSFT", "XNOTSP"]})
 _LOG = logging.getLogger("test_13f_one_walk")
-_NO_LINES = pd.DataFrame(columns=LINE_COLUMNS)
 
 
 def _line(cusip: str, name: str, value: float, shares: int, putcall: str = "") -> dict[str, Any]:
@@ -348,7 +346,7 @@ def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
         filing = _FakeFiling(cik, filed, period, [_line("037833100", "APPLE INC", 1000.0, 10)])
         packet = f13.read_filing_vintage(FilingStamp.of(filing, cik))
         assert not isinstance(packet, f13.ReadFailure)
-        f13.save_hr_filing(store, *packet, _NO_LINES, CMAP)
+        f13.save_hr_filing(store, *packet, CMAP)
 
 
 def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_FakeFiling]], down: set[str] | None = None) -> None:
@@ -427,7 +425,7 @@ def test_catch_up_saves_to_and_resumes_on_sec13f_hr(filing_store, monkeypatch):
     stored = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", aapl, accession="0000000001-26-000001")
     pending = _FakeFiling(ROSTER, "2026-08-14", "2026-06-30", aapl, accession="0000000001-26-000002")
     manifest, book = f13.read_filing_vintage(FilingStamp.of(stored, ROSTER))
-    f13.save_hr_filing(filing_store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), CMAP)
+    f13.save_hr_filing(filing_store, manifest, book, CMAP)
     stored.reads.clear()
     _seed_roster(filing_store, [ROSTER])
     _patch_company(monkeypatch, {ROSTER: [pending, stored]})
@@ -529,9 +527,9 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(fil
     sent: list[pd.DataFrame] = []
     real_save_book = f13m.save_hr_filing
 
-    def _spy_save_book(store: Any, manifest: pd.DataFrame, book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
+    def _spy_save_book(store: Any, manifest: pd.DataFrame, book: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
         sent.append(book.copy())
-        return real_save_book(store, manifest, book, lines, cmap)
+        return real_save_book(store, manifest, book, cmap)
 
     monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
     monkeypatch.setattr(f13m, "save_hr_filing", _spy_save_book)
@@ -972,10 +970,10 @@ def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(filing_sto
     amendment = _FakeFiling(ROSTER, "2024-10-17", "2024-06-30", [_line("037833100", "APPLE INC", 1500, 150)], form="13F-HR/A")
     stamp = FilingStamp.of(amendment, ROSTER)
     manifest, book = f13.read_filing_vintage(stamp)
-    f13.save_hr_filing(filing_store, manifest, book, _NO_LINES, CMAP)
+    f13.save_hr_filing(filing_store, manifest, book, CMAP)
     amendment.reads.clear()
     _patch_company(monkeypatch, {ROSTER: [original, amendment]})
-    f13m._catch_up_cik("truth", ROSTER, context=ctx, since=pd.Timestamp("2024-01-01"), lines=_NO_LINES, cmap=CMAP)
+    f13m._catch_up_cik("truth", ROSTER, context=ctx, since=pd.Timestamp("2024-01-01"), cmap=CMAP)
     stored = _stored(filing_store, Tables.sec13f_hr)
     assert stored.set_index("accession_number").shares.to_dict() == {amendment.accession_number: 150, original.accession_number: 100}
     assert len(filing_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)) == 2
@@ -1005,7 +1003,7 @@ def _store(store: Any, filing: _FakeFiling) -> None:
     """Preserve `filing` as complete in `sec13f_hr` (as an earlier walk may have)."""
     manifest, book = f13.read_filing_vintage(FilingStamp.of(filing, ""))
     filing.reads.clear()
-    f13.save_hr_filing(store, manifest, book, _NO_LINES, None)
+    f13.save_hr_filing(store, manifest, book, None)
 
 
 def test_first_pass_reads_the_done_set_once(filing_store, monkeypatch):

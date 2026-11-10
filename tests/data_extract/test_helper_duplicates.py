@@ -37,7 +37,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         _DRIVER,
     ),
     "src.data_extract.utils.edgar_extract.edgar_fillings": (frozenset({"list_filings"}), _DRIVER),
-    "src.data_extract.utils.edgar_extract.edgar_index": (frozenset({"index_filing"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.empty_markers": (frozenset({"marker_frame", "marker_mask"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.html_text": (frozenset({"html_to_text"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.parallel_fetch": (frozenset({"run_per_ticker"}), _DRIVER),
@@ -58,7 +57,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"captured_dei_periods"}),
         "the DEI period ledger owned by identity; the Notes reader skips periods it holds",
     ),
-    "src.data_extract.utils.institutionals.fetch_13f_backfill": (frozenset({"restate_hr_moves"}), _PROPAGATE),
     "src.data_extract.utils.institutionals.fetch_short_interest": (frozenset({"change_stamps", "restamp_short_volume"}), _PROPAGATE),
     "src.data_extract.utils.institutionals.security_tape": (
         frozenset(

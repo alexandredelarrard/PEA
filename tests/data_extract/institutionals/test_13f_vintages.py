@@ -38,12 +38,11 @@ from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
-_NO_LINES = pd.DataFrame(columns=LINE_COLUMNS)
 
 
 def _save_book(store: DataStore, manifest: pd.DataFrame, rows: pd.DataFrame) -> int:
     """Save one accession to `sec13f_hr`, every CUSIP on the unmapped sentinel."""
-    return save_hr_filing(store, manifest, rows, _NO_LINES, None)
+    return save_hr_filing(store, manifest, rows, None)
 
 
 def vintage_changes(
@@ -1377,7 +1376,7 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     revised = packet("amend", "2024-12-01", {"111111111": 90, "222222222": 100}, kind="restatement")
     cmap = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
     for m, h in (original, new, revised):
-        save_hr_filing(filing_store, m, h, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
+        save_hr_filing(filing_store, m, h, cmap)  # stored as filed, tagged by the market map
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
@@ -1416,7 +1415,7 @@ def ordinary_step(
     packets: tuple[tuple[pd.DataFrame, pd.DataFrame], ...],
 ) -> tuple[StepCubeSecThirteen, PriceFrames]:
     for manifest, holdings in packets:
-        save_hr_filing(filing_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), ORDINARY_CMAP)  # tagged at extraction (U-67)
+        save_hr_filing(filing_store, manifest, holdings, ORDINARY_CMAP)  # stored as filed, tagged by the market map
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None

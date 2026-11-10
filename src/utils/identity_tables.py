@@ -4,9 +4,9 @@
 `universe_cik_symbol`, `universe_cusip`, `symbol_tenure` or `cusip_ticker_map` (the static test
 `test_identity_reads_only.py` enforces it); the identity build and the `Identity` resolver own their own reads.
 
-`tag_company_lines` tags each filed 13F row and puts a company's share classes in canonical-class shares, one row per
-filed row; `sum_company_rows` then merges a company's rows onto its canonical CUSIP (the extraction per accession, the
-cube per resolved book). `tag_cusips` is the two-layer 13F rule (user decision X2 + the superinvestor-book correction): a CUSIP of a
+`sec13f_hr` stores each book as filed, tagged by `cusip_ticker_map` alone (`tag_cusips` with no lines). The cube's
+`tag_company_lines` tags each filed row and puts a company's share classes in canonical-class shares, one row per
+filed row; `sum_company_rows` then merges a company's rows onto its canonical CUSIP per resolved book. `tag_cusips` is the two-layer 13F rule (user decision X2 + the superinvestor-book correction): a CUSIP of a
 universe company is tagged by its dated `universe_cusip` line (canonical, predecessor or secondary class) with the
 company's universe ticker, so every share class of a company lands on one ticker; any other CUSIP keeps its
 market-wide `cusip_ticker_map` ticker, so a manager book keeps its holdings outside the universe.
@@ -28,14 +28,12 @@ from src.data_store.store import DataStore
 IDENTITY_TABLES = (Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure, Tables.cusip_ticker_map)
 #: `universe_cusip` roles whose dated line tags a 13F CUSIP with its company (every share class of the company).
 TAGGED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
-#: The `universe_cusip` columns `tag_cusips` and `company_rows` read.
+#: The `universe_cusip` columns `tag_cusips` and `tag_company_lines` read.
 LINE_COLUMNS = ["cusip", "canonical_company", "lineage_role", "market_symbol", "conversion_ratio", "valid_from", "valid_to"]
 #: 13F share legs counted in the canonical class (x the dated ratio); every other amount is summed as filed.
 SHARE_LEGS = ("shares", "call_shares", "put_shares")
 #: 13F amounts of one position row.
 AMOUNT_LEGS = (*SHARE_LEGS, "value_usd", "call_value", "put_value", "debt_prn", "debt_value", "other_value")
-#: The 13F company row's key: one row per manager x accession x company (U-67).
-COMPANY_KEY = ["cik", "accession_number", "ticker"]
 #: The column `tag_company_lines` adds: the company's canonical CUSIP on the row's period (null off the company lines).
 COMPANY_CUSIP = "company_cusip"
 
@@ -107,12 +105,6 @@ def tag_cusips(holdings: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame |
     pairs["ticker"] = pairs["company"].where(pairs["company"].notna(), fallback.where(~fallback.isin(company_names) & ~own))
     out = keys.merge(pairs[["cusip", "day", "ticker"]], on=["cusip", "day"], how="left")["ticker"]
     return pd.Series(out.to_numpy(dtype=object), index=holdings.index).astype("str")
-
-
-def company_rows(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
-    """`book` (one 13F accession, one row per CUSIP) as stored in `sec13f_hr` (U-67): `tag_company_lines`, then
-    `sum_company_rows` per manager x accession x company. Every row no company line tags keeps its CUSIP and ticker."""
-    return sum_company_rows(tag_company_lines(book, lines, cmap), COMPANY_KEY)
 
 
 def tag_company_lines(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:

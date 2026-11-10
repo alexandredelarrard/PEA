@@ -69,7 +69,7 @@ def test_a_superinvestor_book_keeps_its_non_universe_holdings(fixture: tuple[Dat
     book = book[book["cusip"].str.len().eq(9)].drop_duplicates("cusip").reset_index(drop=True)
     known = set(tags.lines["cusip"])
 
-    # extraction tags a whole book with no universe filter (`company_rows` -> `tag_cusips`); superinvestors read that ticker
+    # the cube tags a whole superinvestor book with no universe filter (`tag_company_lines` -> `tag_cusips`)
     tagged = book.assign(ticker=tags.tag(book))
     old = book.merge(tags.cmap.dropna().drop_duplicates("cusip"), on="cusip", how="left")["ticker"]
     outside = ~book["cusip"].isin(known)

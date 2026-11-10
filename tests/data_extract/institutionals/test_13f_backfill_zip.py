@@ -27,7 +27,6 @@ from src.data_extract.utils.institutionals import fetch_13f_backfill as fb
 from src.data_extract.utils.institutionals.fetch_13f import save_hr_filing
 from src.data_extract.utils.institutionals.fetch_superinvestors import activity_evidence
 from src.data_store.schema import Tables
-from src.utils.identity_tables import LINE_COLUMNS
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _seed_roster
 from tests.support.store_identity import store_identity
@@ -671,7 +670,7 @@ def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, filing_store):
     path = tmp_path / "replay.zip"
     _write_zip(path, [_A1])
     packet = fb.cached_filing_vintages(path, [_A1[1]])[0]
-    save_hr_filing(filing_store, *packet, pd.DataFrame(columns=LINE_COLUMNS), None)
+    save_hr_filing(filing_store, *packet, None)
     cover = (
         "<edgarSubmission><isAmendment>false</isAmendment><amendmentNo>0</amendmentNo>"
         "<reportCalendarOrQuarter>2023-03-31</reportCalendarOrQuarter>"
@@ -680,7 +679,7 @@ def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, filing_store):
     )
     xml = _xml(_A1[5]).replace("<titleOfClass>COM</titleOfClass>", "<titleOfClass>  COM  </titleOfClass>")
     parsed = f13.xml_filing_vintage(cover, xml, cik=_A1[0], accession_number=_A1[1], period=_A1[4], filing_date=_A1[3], source="edgar")
-    assert save_hr_filing(filing_store, *parsed, pd.DataFrame(columns=LINE_COLUMNS), None) == 0
+    assert save_hr_filing(filing_store, *parsed, None) == 0
     assert len(filing_store.load(Tables.sec13f_hr)) == 2
     print("SANITY: actual ZIP and XML parsers produce equivalent accession content despite source whitespace/transport differences.")
 
@@ -770,7 +769,7 @@ def test_cusip_scope_keeps_unmapped_stored_holder_for_omission(tmp_path: Any, fi
     source = tmp_path / "original.zip"
     _write_zip(source, [original])
     manifest, positions = fb.cached_filing_vintages(source, [original[1]])[0]
-    save_hr_filing(filing_store, manifest, positions, pd.DataFrame(columns=LINE_COLUMNS), None)  # unmapped: the sentinel
+    save_hr_filing(filing_store, manifest, positions, None)  # unmapped: the sentinel
     omission = ("42", "later-omission", "13F-HR/A", "2024-08-20", "2024-06-30", [("037833100", "APPLE", 500, 5, "")])
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
     for name in _DATA_SETS:

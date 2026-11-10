@@ -174,7 +174,7 @@ class _Replay:
         self._catalogue = catalogue
         self._guards = guards
         self._filed = frame["filing_date"].to_numpy()
-        # Ascending positions per field; a field's duration facts are the subset `build_periods` would group.
+        # Ascending positions per field; a field's duration facts are its `is_duration` subset.
         self._positions: dict[str, np.ndarray] = {str(name): positions for name, positions in frame.groupby("field", sort=False).indices.items()}
         durations = is_duration(self._narrow).to_numpy()
         self._durations = {name: positions[durations[positions]] for name, positions in sorted(self._positions.items())}
@@ -456,7 +456,7 @@ def _assert_grain(ticker: str, history: pd.DataFrame) -> None:
     assert (lag >= 0).all(), f"{ticker}: as_of precedes fiscal_end -- look-ahead leak"
 
 
-#: The only columns `build_periods` reads; the replay projects to them because every engine filter copies its frame.
+#: The only columns the period engine reads; the replay projects to them because every engine filter copies its frame.
 PERIOD_COLUMNS: tuple[str, ...] = (
     "ticker",
     "field",

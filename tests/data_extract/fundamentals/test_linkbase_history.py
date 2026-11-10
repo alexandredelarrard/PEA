@@ -444,7 +444,7 @@ def test_noncurrent_debt_never_steps_by_an_order_of_magnitude(ledger):
 
     # One value per BALANCE DATE, latest vintage. Every filing restates the prior-year
     # comparatives, so a raw shift() would difference two vintages of the same date and
-    # measure restatement instead of the series -- and `quarterize` keeps the latest
+    # measure restatement instead of the series -- and the period engine keeps the latest
     # vintage, so the latest is also what production stores.
     series = (
         debt[debt["duration_type"] == "instant"]

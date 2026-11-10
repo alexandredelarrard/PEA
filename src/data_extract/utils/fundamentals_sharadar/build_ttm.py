@@ -14,7 +14,7 @@ Two rules, and they are the SEC path's, not new ones:
 
 And a third the two share counts need: a WEIGHTED-AVERAGE count is not additive. Summing four
 quarterly averages gives four times the year's average, not a trailing twelve, so `basicShares`
-and `dilutedShares` take the four-quarter MEAN -- the SEC path's `TTM_FOUR_QUARTER_MEAN`. The
+and `dilutedShares` take the four-quarter MEAN, as the SEC path's `periods._ttm_value` does. The
 catalogue already declares them `not_additive`; `field_map._basis_for` reads that flag, so the
 two layers cannot drift.
 

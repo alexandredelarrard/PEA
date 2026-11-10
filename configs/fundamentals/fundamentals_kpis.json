@@ -599,7 +599,6 @@
     "basis_choice": "ONE basis universe-wide: `ResearchAndDevelopmentExpense`. Chosen over the economically cleaner ex-IPR&D basis purely on coverage -- 10,429 undimensioned facts against 1,284, so mandating the narrow concept would collapse the field to ~4% of filers.",
     "total_concept": "ResearchAndDevelopmentExpense",
     "fallback_concepts": ["ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
-    "dc_code_on_fallback": {"ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost": "basis_ex_iprd"},
     "no_bridge": "Do NOT attempt an IPR&D bridge. `ResearchAndDevelopmentInProcess` (130 facts) was co-tagged in 0 of the 21 overlap pairs, so the two bases cannot be reconciled from a third element. With co-tagging at 1.0% of ticker-years there is no overlap year to reconcile against either, so a concept switch is an unreconcilable level step -- exactly as for revenue and capex. The 14 switchers get a tag_switch_break flag from the validator.",
     "coverage": "225 of 491 tickers; universal only in Info Tech (65/72), Materials (17/26) and Health Care (42/57).",
     "never_use": {

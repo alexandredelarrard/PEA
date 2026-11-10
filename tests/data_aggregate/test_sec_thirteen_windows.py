@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.incremental import PartWindow
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 from tests.support.sec_thirteen_panel import unsaved_panel
@@ -57,17 +57,17 @@ def _facts(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[fl
     )
 
 
-def _elite(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> SuperinvestorFeatureHistory:
+def _elite(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> dict[str, pd.DataFrame]:
     levels = {name: pd.DataFrame({"AAA": [np.nan] * len(offsets)}, index=days[list(offsets)]) for name in EMISSION}
     levels.update({name: pd.DataFrame({"AAA": values}, index=days[list(offsets)]) for name, values in fields.items()})
-    return SuperinvestorFeatureHistory(levels, pd.DataFrame())
+    return levels
 
 
 def _prepare(
     step: StepCubeSecThirteen,
     monkeypatch: pytest.MonkeyPatch,
     facts: pd.DataFrame | None,
-    levels: SuperinvestorFeatureHistory | None,
+    levels: dict[str, pd.DataFrame] | None,
 ) -> tuple[Mock, Mock]:
     broad, elite = Mock(return_value=facts), Mock(return_value=levels)
     monkeypatch.setattr(step, "_institutional_features", broad)

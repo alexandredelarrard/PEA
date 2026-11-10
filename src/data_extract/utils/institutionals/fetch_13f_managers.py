@@ -53,12 +53,6 @@ def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
 
 
-def _pending_filings(context: Context, cik: str, listed: list[tuple[FilingStamp, pd.Timestamp]]) -> list[tuple[FilingStamp, pd.Timestamp]]:
-    """Only a verified completed accession can remove that accession from the pending set."""
-    pending = set(pending_vintages(context, cik, [stamp.accession_number for stamp, _ in listed]))
-    return [(stamp, period) for stamp, period in listed if stamp.accession_number in pending]
-
-
 def _log_read_failure(context: Context, cik: str, stamp: FilingStamp, period: pd.Timestamp, failure: ReadFailure) -> None:
     """WARNING for a transient failure (only this accession remains pending), ERROR for a deterministic one."""
     if failure.transient:
@@ -84,7 +78,10 @@ def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp
     the stored `cmap`; failed siblings remain pending. Returns (rows saved, suspect-price rows, transient failures)."""
     frames: list[pd.DataFrame] = []
     held_periods: list[pd.Timestamp] = []
-    for stamp, period in _pending_filings(context, cik, _listed_filings(cik, since)):
+    # Only a verified completed accession leaves the pending set.
+    listed = _listed_filings(cik, since)
+    pending = set(pending_vintages(context, cik, [stamp.accession_number for stamp, _ in listed]))
+    for stamp, period in (item for item in listed if item[0].accession_number in pending):
         rows = read_filing_vintage(stamp)
         if isinstance(rows, ReadFailure):
             _log_read_failure(context, cik, stamp, period, rows)

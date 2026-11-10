@@ -2,56 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Generator, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
 import pandas as pd
 
-from src.utils.institutional_vintages import full_13f_report, prepare_book_vintages, resolve_prepared_books
+from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
 
 type BookKey = tuple[str, pd.Timestamp]
-
-_log = logging.getLogger(__name__)
-
-
-def _trailing_holding_keys(
-    df_filings: pd.DataFrame, df_holdings: pd.DataFrame, manager: str | None, keys: set[tuple[str, str]]
-) -> tuple[str | None, set[tuple[str, str]]]:
-    """Reject holding vintages repeated across batches; only the trailing manager can straddle the ordered source."""
-    df_keys = df_holdings[["cik", "accession_number", "cusip"]]
-    if manager is not None and keys.intersection(
-        df_keys.loc[df_keys.cik.eq(manager), ["accession_number", "cusip"]].itertuples(index=False, name=None)
-    ):
-        raise ValueError("13F holding vintages must be unique")
-    ciks: set[str] = set(df_filings["cik"]).union(df_keys["cik"])
-    if not ciks:
-        return manager, keys
-    trailing = max(ciks)
-    rows = set(df_keys.loc[df_keys.cik.eq(trailing), ["accession_number", "cusip"]].itertuples(index=False, name=None))
-    return trailing, keys | rows if trailing == manager else rows
-
-
-def prepare_superinvestor_batches(
-    packets: Iterable[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex
-) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
-    """Preserve global uniqueness on the source's ordered, complete CIK-quarter batches."""
-    accessions: set[str] = set()
-    manager: str | None = None
-    keys: set[tuple[str, str]] = set()
-    peak_keys = 0
-    for df_filings, df_holdings in packets:
-        if df_filings["accession_number"].isin(accessions).any():
-            raise ValueError("13F manifest accessions must be unique")
-        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days=0)
-        manager, keys = _trailing_holding_keys(df_filings, df_holdings, manager, keys)
-        accessions.update(df_filings["accession_number"])
-        peak_keys = max(peak_keys, len(keys))
-        yield df_manifest, df_holdings
-    _log.info("13F identity validation: %s manifest accessions; peak trailing-manager holding keys=%s", len(accessions), peak_keys)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,14 +74,10 @@ class _PublicBookArchive(Mapping[BookKey, PublicBook]):
         return sum(versions[0].public_at <= self.day for versions in self._revisions.values())
 
 
-def _single_version_books(
-    df_manifest: pd.DataFrame, df_holdings: pd.DataFrame, full_report: pd.Series
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+def _single_version_books(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """The resolver's positions and states, without a replay, of quarters whose only version is a complete public
     original/restatement, and the mask of their manifest rows."""
-    versions = df_manifest.groupby(["cik", "period"])["accession_number"].transform("size")
-    single = versions.eq(1) & df_manifest["amendment_type"].isin(["original", "restatement"]) & df_manifest["parse_status"].eq("complete")
-    single &= df_manifest["public_at"].notna()
+    single = single_version_books(df_manifest) & df_manifest["parse_status"].eq("complete") & df_manifest["public_at"].notna()
     df_single = df_manifest.loc[single].set_index("accession_number")
     df_rows = df_holdings.loc[df_holdings["accession_number"].isin(df_single.index)]
     incomplete = df_rows["accession_number"].value_counts().reindex(df_single.index, fill_value=0).ne(df_single["parsed_row_count"].astype(int))
@@ -130,20 +87,12 @@ def _single_version_books(
     # Positions take their quarter from the filing, in the resolver's (cik, period, cusip) order.
     filing = df_single.index.get_indexer(pd.Index(df_rows["accession_number"]))
     df_rows = df_rows.assign(period=df_single["period"].array.take(filing), cik=df_single["cik"].array.take(filing))
-    restricted = df_single["restricted"].astype(bool)
-    eligible = ~restricted & full_report.loc[single].astype(bool).to_numpy()
-    df_states = df_single[["cik", "period"]].assign(
-        book_known=True, zero_eligible=eligible, comparison_eligible=eligible, restricted=restricted, resolution_status="resolved"
-    )
+    df_states = df_single[["cik", "period"]].assign(**single_version_support(df_single))
     return df_rows.sort_values(["cik", "period", "cusip"], kind="stable"), df_states, single
 
 
-def _publication_rounds(
-    df_manifest: pd.DataFrame, single: pd.Series, revisions: Mapping[BookKey, list[PublicBook]]
-) -> tuple[list[BookKey], pd.DataFrame]:
+def _publication_rounds(df_manifest: pd.DataFrame, single: pd.Series) -> tuple[list[BookKey], pd.DataFrame]:
     """Every public quarter in first-publication order, and the amended quarters' distinct public days numbered per quarter."""
-    if not set(df_manifest[["cik", "period"]].itertuples(index=False, name=None)).isdisjoint(revisions):
-        raise ValueError("13F prepared batches must contain complete disjoint CIK-quarters")
     df_events = df_manifest[["cik", "period", "public_at"]].assign(_single=single).dropna(subset=["public_at"])
     df_events = df_events.drop_duplicates(["cik", "period", "public_at"]).sort_values("public_at", kind="stable")
     df_events = df_events.assign(_round=df_events.groupby(["cik", "period"], sort=False).cumcount())
@@ -200,10 +149,9 @@ def _advance_latest_books(latest: dict[str, PublicBook], published: list[PublicB
 def prepare_superinvestor_book_history(
     packets: Iterable[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, max_age_days: int
 ) -> tuple[PublicBookSnapshot, ...] | None:
-    """Prepare causal public/expiry states from already cleaned, prepared whole books.
+    """Prepare causal public/expiry states from already cleaned whole books, batched by complete CIK-quarters.
 
-    The caller owns cleaning and prepare_book_vintages. Freshness limits current
-    candidates only; archival lag/tenure evidence remains available at its public prefix.
+    Freshness limits current candidates only; archival lag/tenure evidence remains available at its public prefix.
     """
     if max_age_days < 0:
         raise ValueError("Superinvestor book age must be nonnegative")
@@ -213,10 +161,11 @@ def prepare_superinvestor_book_history(
 
     # A quarter's book at a day depends only on its own versions: one resolver call serves the n-th public day of
     # every amended quarter in the batch, each quarter cut to its own day.
-    for df_manifest, df_holdings in packets:
-        filings_count += len(df_manifest)
-        df_rows, df_states, single = _single_version_books(df_manifest, df_holdings, df_manifest["report_type"].map(full_13f_report))
-        order, df_events = _publication_rounds(df_manifest, single, revisions)
+    for df_filings, df_holdings in packets:
+        filings_count += len(df_filings)
+        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days=0)
+        df_rows, df_states, single = _single_version_books(df_manifest, df_holdings)
+        order, df_events = _publication_rounds(df_manifest, single)
         books: dict[BookKey, list[PublicBook]] = {}
         _append_revisions(books, df_manifest.loc[single, ["cik", "period", "public_at"]], df_rows, df_states)
         df_replayed = df_holdings.loc[~df_holdings["accession_number"].isin(df_manifest.loc[single, "accession_number"])]

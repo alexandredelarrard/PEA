@@ -3,42 +3,29 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
+from src.utils.institutional_vintages import availability_date
 from src.utils.price.levels import convert_quantities
 
 logger = logging.getLogger(__name__)
 
-#: The first period whose all-filer coverage describes the market rather than the fetch
-#: (measured above: 63 -> 2,938 in-universe filers, post-band).
+#: The first period whose all-filer coverage describes the market rather than the fetch.
 INST_LEVEL_FLOOR_PERIOD = pd.Timestamp(cast(str, cast(Resume, Tables.sec13f_hr.resume).coverage_start))
 
 #: The first period whose PREDECESSOR is also post-break, so a QoQ delta is meaningful.
 INST_DELTA_FLOOR_PERIOD = INST_LEVEL_FLOOR_PERIOD + pd.offsets.QuarterEnd(1)
 
-#: Minimum number of holders a ticker must have in the PREVIOUS quarter for its
-#: quarter-over-quarter features to be considered meaningful.
-#:
-#: This is the per-ticker counterpart to the universe-wide D16/D17 coverage
-#: guards. A newly covered stock can move from a handful of holders to hundreds,
-#: causing mechanically extreme share growth, buyer, exit, and flow measures
-#: that describe coverage onset rather than institutional activity.
-#:
-#: When the prior quarter has fewer than this threshold, all `DELTA_FEATURES`
-#: are nulled. Level features remain valid: a stock may
-#: genuinely have few institutional holders in that quarter.
-#:
-#: The threshold of 100 is based on the measured break in delta stability. It is
-#: treated as a fixed data-quality boundary, not a research parameter.
+#: Prior-quarter holders below which every `DELTA_FEATURES` value is nulled: a newly covered stock's jump from a
+#: handful of holders to hundreds describes coverage onset, not activity. Levels stay valid.
 MIN_PRIOR_HOLDERS = 100
 
 #: The quarter-over-quarter features. Nulled before `INST_DELTA_FLOOR_PERIOD` (D16) and on a
@@ -52,10 +39,8 @@ DELTA_FEATURES: tuple[str, ...] = (
     "ic_inst_cluster_buying",
 )
 
-#: `ic_inst_ownership_pct` above this many times shares outstanding is a denominator defect,
-#: not a holder, and the cell is NULLED (never clipped -- see `_capped_ownership`). 2.0 rather
-#: than 1.0 because securities lending double-counts a position and 100-130% is a real, widely
-#: published reading; 9.68x is not.
+#: `ic_inst_ownership_pct` above this many times shares outstanding is a denominator defect and is nulled, never
+#: clipped; above 1.0 because securities lending double-counts a position.
 OWNERSHIP_CEILING = 2.0
 
 #: The level features. Nulled before `INST_LEVEL_FLOOR_PERIOD` (D16).
@@ -67,20 +52,22 @@ LEVEL_FEATURES: tuple[str, ...] = (
     "ic_inst_value_to_mcap",
 )
 
-#: Preserve interpretable economic units. Peer variants are not emitted: the fixed candidate
-#: has no target/OOS evidence with which to pass the approved retention gate.
-EMISSION: dict[str, str] = {
-    "ic_inst_holders": "raw",  # D28 share of the quarter's filers, in [0, 1]
-    "ic_inst_breadth_chg": "raw",  # a difference of that share
-    "ic_inst_shares_chg": "raw",  # an interpretable growth rate
-    "ic_inst_new_buyer_ratio": "raw",  # bounded [0, 1]
-    "ic_inst_exit_ratio": "raw",  # bounded [0, 1]
-    "ic_inst_cluster_buying": "raw",  # bounded [-1, 1]
-    "ic_inst_concentration": "raw",  # Herfindahl concentration
-    "ic_inst_net_options_ratio": "raw",  # bounded [-1, 1]
-    "ic_inst_ownership_pct": "raw",
-    "ic_inst_value_to_mcap": "raw",
-}
+#: Every feature is emitted raw, in its interpretable economic unit; peer variants are not emitted.
+EMISSION: dict[str, str] = dict.fromkeys(
+    (
+        "ic_inst_holders",
+        "ic_inst_breadth_chg",
+        "ic_inst_shares_chg",
+        "ic_inst_new_buyer_ratio",
+        "ic_inst_exit_ratio",
+        "ic_inst_cluster_buying",
+        "ic_inst_concentration",
+        "ic_inst_net_options_ratio",
+        "ic_inst_ownership_pct",
+        "ic_inst_value_to_mcap",
+    ),
+    "raw",
+)
 
 
 def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
@@ -100,9 +87,9 @@ def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
     return ratio.mask(over)
 
 
-def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, df_basis: pd.DataFrame | None) -> pd.DataFrame:
+def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, df_basis: pd.DataFrame) -> pd.DataFrame:
     """Carry report-date quantities to each day's basis (`q * F_d / F_period`) without changing publication clocks."""
-    if df_basis is None or trading_index.empty:
+    if trading_index.empty:
         df_daily = nullable_value_to_daily(qf, "inst_shares", trading_index)
         return df_daily.where(df_daily.eq(0))
 
@@ -113,32 +100,26 @@ def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, df_ba
     return convert_quantities(df_daily, 1.0, df_basis.reindex(index=trading_index, columns=df_daily.columns))
 
 
-def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFrames) -> pd.DataFrame | None:
+def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFrames) -> pd.DataFrame:
     """Scale historical institutional dollars by the supported saved issuer cap."""
-    if frames.mcap_pit is None or frames.mcap_pit.empty or "inst_value" not in df_features:
-        return None
     df_market_cap = frames.mcap_pit.reindex(frames.trading_index)
     df_positive_cap = df_market_cap.where(np.isfinite(df_market_cap) & df_market_cap.gt(0))
     df_value = nullable_value_to_daily(df_features, "inst_value", frames.trading_index)
-    df_weight = (df_value / df_positive_cap).replace([np.inf, -np.inf], np.nan)
-    return df_weight if df_weight.notna().any().any() else None
+    return (df_value / df_positive_cap).replace([np.inf, -np.inf], np.nan)
 
 
 def _mask_daily_institutional_fields(fields: dict[str, pd.DataFrame], floors: pd.Series) -> dict[str, pd.DataFrame]:
-    """Apply the publication-dated level and delta floors to every daily field; drop empty fields."""
-    level_floor = pd.Timestamp(cast(Any, floors.get(INST_LEVEL_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))))
-    delta_floor = pd.Timestamp(cast(Any, floors.get(INST_DELTA_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))))
-    if pd.isna(level_floor):
-        level_floor = INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    if pd.isna(delta_floor):
-        delta_floor = INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    for name, df_field in list(fields.items()):
-        if df_field is None or df_field.empty:
-            fields.pop(name)
-            continue
-        floor = delta_floor if name in DELTA_FEATURES else level_floor
-        fields[name] = df_field.where(pd.Series(df_field.index >= floor, index=df_field.index), axis=0)
-    return {name: df_field for name, df_field in fields.items() if df_field.notna().any().any()}
+    """Apply the publication-dated level and delta floors (the filing deadline before the calendar starts) to every
+    daily field; drop empty fields."""
+    level_floor, delta_floor = (
+        pd.Timestamp(floor) if pd.notna(floor) else period + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+        for period, floor in zip(pd.DatetimeIndex(floors.index), floors, strict=True)
+    )
+    masked = {
+        name: df_field.where(pd.Series(df_field.index >= (delta_floor if name in DELTA_FEATURES else level_floor), index=df_field.index), axis=0)
+        for name, df_field in fields.items()
+    }
+    return {name: df_field for name, df_field in masked.items() if df_field.notna().any().any()}
 
 
 def project_institutional_features(
@@ -151,15 +132,13 @@ def project_institutional_features(
     """Project quarter features and the existing ownership/value denominators onto daily dates."""
     features = [column for column in EMISSION if column in df_features.columns]
     fields = {feature: nullable_value_to_daily(df_features, feature, frames.trading_index) for feature in features}
-    if frames.shares_outstanding_pit is not None and not frames.shares_outstanding_pit.empty and "inst_shares" in df_features:
+    if "inst_shares" in df_features:
         df_owned = _daily_owned_shares(df_features, frames.trading_index, frames.security_basis)
         df_shares = frames.shares_outstanding_pit.reindex(frames.trading_index)
-        if not df_shares.empty and df_shares.notna().any().any():
-            df_supported_shares = df_shares.where(np.isfinite(df_shares) & df_shares.gt(0))
-            fields["ic_inst_ownership_pct"] = _capped_ownership((df_owned / df_supported_shares).replace([np.inf, -np.inf], np.nan))
-    df_weight = _daily_institutional_value_weight(df_features, frames)
-    if df_weight is not None:
-        fields["ic_inst_value_to_mcap"] = df_weight
+        df_supported_shares = df_shares.where(np.isfinite(df_shares) & df_shares.gt(0))
+        fields["ic_inst_ownership_pct"] = _capped_ownership((df_owned / df_supported_shares).replace([np.inf, -np.inf], np.nan))
+    if "inst_value" in df_features:
+        fields["ic_inst_value_to_mcap"] = _daily_institutional_value_weight(df_features, frames)
 
     # Level and delta floors at their publication dates.
     floors = availability_date(
@@ -297,7 +276,7 @@ def _accumulate(df_items: pd.DataFrame, window: tuple[int, int], n_slots: int) -
 
 
 def _window_features(
-    state: dict[str, np.ndarray], seen: np.ndarray, tickers: pd.Index, as_of: pd.DatetimeIndex, period: pd.Timestamp, min_prior_holders: int
+    state: dict[str, np.ndarray], seen: np.ndarray, tickers: pd.Index, as_of: pd.DatetimeIndex, period: pd.Timestamp
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """Levels and matched-quarter changes of every ticker ever observed, on each day of one active-quarter window."""
     s = {name: values[:, :-1] for name, values in state.items()}
@@ -315,7 +294,7 @@ def _window_features(
     matched = s["matched"] > 0
     held, was = np.where(matched, s["held"], np.nan), np.where(matched, s["prior"], np.nan)
     support = zero_pairs + s["support"]
-    thin = np.nan_to_num(was) < min_prior_holders
+    thin = np.nan_to_num(was) < MIN_PRIOR_HOLDERS
     with np.errstate(divide="ignore", invalid="ignore"):
         flows = {
             "ic_inst_shares_chg": np.where(matched & (s["prior"] > 0), s["shares_current"] / s["shares_prior"] - 1, np.nan),
@@ -339,13 +318,7 @@ def _window_features(
     return df_window, seen_days[-1]
 
 
-def compute_institutional_feature_history(
-    df_compact: pd.DataFrame,
-    df_states: pd.DataFrame,
-    *,
-    df_basis: pd.DataFrame | None,
-    min_prior_holders: int = MIN_PRIOR_HOLDERS,
-) -> pd.DataFrame:
+def compute_institutional_feature_history(df_compact: pd.DataFrame, df_states: pd.DataFrame, *, df_basis: pd.DataFrame) -> pd.DataFrame:
     """Accumulate each public book version's per-ticker statistics from its public day until a later version of the
     same manager-quarter supersedes it, then reduce each active quarter's daily totals to levels and matched changes."""
     if df_states.empty:
@@ -359,19 +332,15 @@ def compute_institutional_feature_history(
         # Rows of the active quarter and its predecessor; F_period / F_prior carries prior shares onto this quarter.
         prior = (period.to_period("Q") - 1).end_time.normalize()
         df_rows = _quarter_rows(df_compact, df_versions, [period, prior], tickers)
-        factors = np.ones(len(tickers))
-        if df_basis is not None:
-            keys = pd.Series(tickers, index=tickers)
-            prior_basis, basis = (
-                lookup_asof(df_basis, keys, pd.Series(quarter, index=tickers)).to_numpy(dtype="float64") for quarter in (prior, period)
-            )
-            factors = np.asarray(convert_quantities(factors, prior_basis, basis), dtype="float64")
+        keys = pd.Series(tickers, index=tickers)
+        prior_basis, basis = (lookup_asof(df_basis, keys, pd.Series(quarter, index=tickers)).to_numpy(dtype="float64") for quarter in (prior, period))
+        factors = np.asarray(convert_quantities(np.ones(len(tickers)), prior_basis, basis), dtype="float64")
 
         # Each day's totals are the running sum of contributions added when public and removed when superseded.
         df_levels = _level_items(df_rows.loc[df_rows["period"].eq(period)], df_versions.loc[df_versions["period"].eq(period)], len(tickers))
         df_pairs = _pair_items(df_rows, _pair_segments(df_versions, period, prior, len(days)), factors, len(tickers))
         state = {**_accumulate(df_levels, (lo, hi), len(tickers) + 1), **_accumulate(df_pairs, (lo, hi), len(tickers) + 1)}
-        df_window, seen = _window_features(state, seen, tickers, days[lo : hi + 1], period, min_prior_holders)
+        df_window, seen = _window_features(state, seen, tickers, days[lo : hi + 1], period)
         frames.append(df_window)
 
     df_history = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

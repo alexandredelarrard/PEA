@@ -12,7 +12,6 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.quotes import lookup_asof
@@ -31,7 +30,7 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     project_institutional_features,
 )
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
-from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
+from src.utils.institutional_vintages import availability_date, prepare_book_vintages, resolve_prepared_books
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.levels import convert_quantities, split_cum_product
 

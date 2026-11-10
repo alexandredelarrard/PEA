@@ -16,7 +16,7 @@ from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.institutional_vintages import prepare_book_vintages
@@ -38,7 +38,15 @@ def _manager_batch_owner(
     df_close = pd.DataFrame(100.0, index=grid, columns=["AAA"])
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", "2024-12-31"), columns=["AAA"])
     frames = PriceFrames(
-        trading_index=grid, universe=("AAA",), peers={"AAA": {"AAA": 1.0}}, close_split=df_close, level_factor=df_close / 100.0, security_basis=basis
+        trading_index=grid,
+        universe=("AAA",),
+        peers={"AAA": {"AAA": 1.0}},
+        close_split=df_close,
+        close_pit=df_close,
+        level_factor=df_close / 100.0,
+        shares_outstanding_pit=df_close * 1e7,
+        mcap_pit=df_close * 1e9,
+        security_basis=basis,
     )
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
     resources = SecThirteenResources(frames, {"": ciks})
@@ -60,49 +68,6 @@ def _manager_batch_owner(
     return step, grid, closed, save
 
 
-@pytest.mark.parametrize("first_state", ["public", "unpublished", "failed", "orphan"])
-@pytest.mark.parametrize("same_manager", [False, True], ids=["different-manager", "different-quarter"])
-def test_manager_duplicate_accession_across_batches_refuses_before_save(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, first_state: str, same_manager: bool
-) -> None:
-    first = _packet("0000000001", "2024-03-31", "2024-12-31" if first_state == "unpublished" else "2024-05-15", {"111111111": 10})
-    second = _packet("0000000001" if same_manager else "0000000002", "2024-06-30", "2024-08-14", {"222222222": 20})
-    for df_rows in (*first, *second):
-        df_rows["accession_number"] = "same-accession"
-    if first_state == "failed":
-        first[0]["parse_status"] = "failed"
-    elif first_state == "orphan":
-        first[0]["amendment_type"] = "additions"
-    packets = [first, second]
-    step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
-    message = "^13F manifest accessions must be unique$"
-    with pytest.raises(ValueError, match=message):
-        prepare_book_vintages(pd.concat([first[0], second[0]]), pd.concat([first[1], second[1]]), grid, settle_days=0)
-    with pytest.raises(ValueError, match=message):
-        step.run(full=True)
-    assert closed == [True] and save.call_count == 0
-    print(f"SANITY: {first_state=} {same_manager=}; duplicate accession keeps the old exact refusal, closes upstream and saves nothing.")
-
-
-@pytest.mark.parametrize("orphan_first", [False, True])
-def test_manager_duplicate_holding_vintage_across_quarters_refuses_before_save(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, orphan_first: bool
-) -> None:
-    first = _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 10})
-    second = _packet("0000000001", "2024-06-30", "2024-08-14", {"111111111": 20})
-    for df_rows in (*first, *second):
-        df_rows["accession_number"] = "same-accession"
-    packets = [(first[0].iloc[:0] if orphan_first else first[0], first[1]), (second[0].iloc[:0], second[1])]
-    step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
-    message = "^13F holding vintages must be unique$"
-    with pytest.raises(ValueError, match=message):
-        prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
-    with pytest.raises(ValueError, match=message):
-        step.run(full=True)
-    assert closed == [True] and save.call_count == 0
-    print(f"SANITY: {orphan_first=} repeated CIK/accession/CUSIP across quarters keeps the exact holding-key refusal before any save.")
-
-
 def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     first = _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 10})
     second = _packet("0000000001", "2024-06-30", "2024-08-14", {"222222222": 20})
@@ -120,22 +85,6 @@ def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest
     print("SANITY: distinct orphan CUSIPs retain the old acceptance and one checked save; accession-only holding rejection would be too broad.")
 
 
-def test_manager_validation_releases_prior_manager_holding_keys(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    packets = [
-        _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 10, "222222222": 20}),
-        _packet("0000000002", "2024-03-31", "2024-05-15", {"111111111": 30, "222222222": 40, "333333333": 50}),
-        _packet("0000000003", "2024-03-31", "2024-05-15", {}),
-    ]
-    step, _, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
-    with caplog.at_level("INFO", logger="src.data_aggregate.utils.sec_thirteen.superinvestor_books"):
-        step.run(full=True)
-    assert closed == [True] and save.call_count == 1
-    assert "peak trailing-manager holding keys=3" in caplog.text
-    print("SANITY: unique books and complete empty markers save once; validation retains at most3keys for one manager rather than5across managers.")
-
-
 def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
@@ -146,7 +95,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     )
     levels = {name: pd.DataFrame({"AAA": [float("nan")]}, index=days[:1]) for name in EMISSION}
     levels["ic_super_holders"].iloc[0, 0] = 1.0
-    elite = Mock(return_value=SuperinvestorFeatureHistory(levels, pd.DataFrame()))
+    elite = Mock(return_value=levels)
     monkeypatch.setattr(step, "_institutional_features", broad)
     monkeypatch.setattr(step, "_superinvestor_history", elite)
     result = unsaved_panel(step)
@@ -256,7 +205,7 @@ def _hr_book(cik: str, period: str, filed: str, rows: list[tuple[str, str, float
 
 def _roster_history(
     store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, quotes: dict[str, float], books: list[pd.DataFrame]
-) -> SuperinvestorFeatureHistory:
+) -> dict[str, pd.DataFrame]:
     """The step's own roster read and superinvestor path over `sec13f_hr` books; only market and roster loaders are supplied."""
     store.save(Tables.sec13f_hr, pd.concat(books, ignore_index=True))
     ctx = context(store, tmp_path)
@@ -265,7 +214,15 @@ def _roster_history(
     close = pd.DataFrame([quotes] * len(grid), index=grid)
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", "2024-12-31"), columns=list(quotes))
     frames = PriceFrames(
-        trading_index=grid, universe=tuple(quotes), peers={}, close_split=close, close_pit=close, level_factor=close / close, security_basis=basis
+        trading_index=grid,
+        universe=tuple(quotes),
+        peers={},
+        close_split=close,
+        close_pit=close,
+        level_factor=close / close,
+        shares_outstanding_pit=close * 1e7,
+        mcap_pit=close * 1e9,
+        security_basis=basis,
     )
     ciks = sorted({str(cik) for book in books for cik in book.cik})
     monkeypatch.setattr(step_module, "load_price_frames", lambda *args, **kwargs: frames)
@@ -279,9 +236,9 @@ def _roster_history(
     return history
 
 
-def _on(history: SuperinvestorFeatureHistory, name: str, day: str) -> pd.Series:
+def _on(history: dict[str, pd.DataFrame], name: str, day: str) -> pd.Series:
     """The event row of `name` in force on `day`."""
-    df_level = history.levels[name]
+    df_level = history[name]
     return df_level.loc[df_level.index[df_level.index <= pd.Timestamp(day)].max()]
 
 

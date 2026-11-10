@@ -20,15 +20,11 @@ from click.testing import CliRunner
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
-import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
+import src.data_aggregate.utils.sec_thirteen.institutional_features as features_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-    compute_institutional_feature_history,
-)
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_hr_filing
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
@@ -36,7 +32,7 @@ from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS
-from src.utils.institutional_vintages import reconcile_13f_source
+from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
@@ -1388,10 +1384,7 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
-    def arithmetic(*args: Any, **kw: Any) -> pd.DataFrame:
-        return compute_institutional_feature_history(*args, min_prior_holders=0, **kw)
-
-    monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
+    monkeypatch.setattr(features_module, "MIN_PRIOR_HOLDERS", 0)
     frames = PriceFrames(
         GRID,
         ("AAA", "BBB"),
@@ -1427,10 +1420,7 @@ def ordinary_step(
     step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
-    def arithmetic(*args: Any, **kw: Any) -> pd.DataFrame:
-        return compute_institutional_feature_history(*args, min_prior_holders=0, **kw)
-
-    monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
+    monkeypatch.setattr(features_module, "MIN_PRIOR_HOLDERS", 0)
     frames = PriceFrames(
         GRID,
         ("AAA", "BBB", "CCC"),
@@ -1445,7 +1435,8 @@ def ordinary_step(
 def normal_resources(frames: PriceFrames) -> SecThirteenResources:
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(replace(frames, security_basis=basis), {"": cohort, "topk": cohort})
+    capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": cast(pd.DataFrame, frames.close_pit) * 1e9}
+    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:

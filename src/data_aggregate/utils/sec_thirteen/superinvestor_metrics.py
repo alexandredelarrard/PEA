@@ -20,7 +20,7 @@ class BehaviorMarket:
     """Saved as-traded quotes (`close_pit`), authoritative sessions and the forward quantity basis F (`security_basis`)."""
 
     trading_index: pd.DatetimeIndex
-    close_pit: pd.DataFrame | None
+    close_pit: pd.DataFrame
     basis: pd.DataFrame
 
 
@@ -32,7 +32,6 @@ class BookTable:
     previous: Mapping[pd.Timestamp, pd.Timestamp]
     df_positions: pd.DataFrame
     starts: np.ndarray
-    has_class: np.ndarray
     held: np.ndarray
     top: np.ndarray
     value: np.ndarray
@@ -78,7 +77,6 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     frames = [book.df_positions.reindex(columns=columns) for book in books]
     df_positions = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
     df_positions["_book"] = np.repeat(np.arange(len(books)), [len(book.df_positions) for book in books])
-    has_class = np.array(["class_evidence" in book.df_positions for book in books], dtype=bool)
 
     # A missing flag column is verified; a null flag is unverified.
     flag = "value_basis_inverse_unit_unverified"
@@ -124,7 +122,7 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     comparison = df_positions[kept].sort_values("_book", kind="stable")
     codes = {book: code for code, book in enumerate(books)}
     previous = {period: (period.to_period("Q") - 1).end_time.normalize() for period in {book.period for book in books}}
-    return BookTable(codes, previous, comparison.reset_index(drop=True), starts, has_class, levels["held"], levels["top"], levels["value"], total)
+    return BookTable(codes, previous, comparison.reset_index(drop=True), starts, levels["held"], levels["top"], levels["value"], total)
 
 
 def holding_duration(book: PublicBook, archive: Mapping[BookKey, PublicBook], table: BookTable) -> np.ndarray:
@@ -158,14 +156,14 @@ def prepare_level_sample(snapshot: PublicBookSnapshot, table: BookTable, duratio
     )
 
 
-def level_metrics(sample: LevelSample, cohort: frozenset[str], universe: pd.Index) -> tuple[dict[str, pd.Series], dict[str, int]]:
+def level_metrics(sample: LevelSample, cohort: frozenset[str], universe: pd.Index) -> dict[str, pd.Series]:
     """Reduce the same prepared manager rows under each fixed cohort mask."""
     names = ("holders", "conviction_weight", "max_conviction", "top10_holders", "quarters_held", "pooled_weight")
     result = {name: pd.Series(np.nan, index=universe, dtype="float64") for name in names}
     df_held = sample.df_held.loc[sample.df_held.index.isin(cohort)]
     totals = sample.totals.loc[sample.totals.index.isin(cohort)]
     if df_held.empty:
-        return result, {"observed": 0, "valued": 0}
+        return result
     result["holders"] = df_held.sum(min_count=1)
     result["quarters_held"] = sample.df_durations.loc[df_held.index].median()
     df_top = sample.df_top.loc[sample.df_top.index.isin(cohort)]
@@ -176,7 +174,7 @@ def level_metrics(sample: LevelSample, cohort: frozenset[str], universe: pd.Inde
         result["conviction_weight"] = df_weights.mean()
         result["max_conviction"] = df_weights.where(df_weights.gt(0)).max()
         result["pooled_weight"] = sample.df_values.loc[totals.index].sum(min_count=1) / sum(totals)
-    return result, {"observed": len(df_held), "valued": len(totals)}
+    return result
 
 
 def comparable_pairs(snapshot: PublicBookSnapshot, lag: int) -> list[BookPair]:
@@ -209,9 +207,8 @@ def join_pairs(pairs: Sequence[tuple[PublicBook, PublicBook]], table: BookTable)
 
     # A changed identity/class is not an evidenced split or a verified round trip.
     both = df_pair._merge.eq("both")
-    classed = np.array([table.has_class[table.codes[current]] and table.has_class[table.codes[prior]] for current, prior in pairs], dtype=bool)
     df_pair["known"] &= ~both | df_pair.ticker_current.fillna("").eq(df_pair.ticker_prior.fillna(""))
-    df_pair["known"] &= ~both | ~classed[df_pair["_pair"].to_numpy()] | df_pair.class_evidence_current.eq(df_pair.class_evidence_prior)
+    df_pair["known"] &= ~both | df_pair.class_evidence_current.eq(df_pair.class_evidence_prior)
     keys = [df_pair["_pair"], df_pair["ticker"]]
     grouped = df_pair.groupby(keys, sort=False)
     changed = df_pair.current.gt(0).ne(df_pair.prior.gt(0)).groupby(keys, sort=False).any()
@@ -242,13 +239,13 @@ def prepare_pair_sample(selected: list[BookPair], pairs: PairTable, market: Beha
     # Prior shares move onto the current basis (`F_period / F_prior`) and the reference price inversely: universe tickers
     # use F and the exact reference-session quote, other positions their implied price at F = 1. No quote is filled.
     tickers = df_positions.ticker
-    quoted = tickers.isin(market.close_pit.columns if market.close_pit is not None else [])
+    quoted = tickers.isin(market.close_pit.columns)
     prior_basis = lookup_asof(market.basis, tickers, pd.Series(prior.period, index=tickers.index)).where(quoted, 1.0)
     basis_now = lookup_asof(market.basis, tickers, pd.Series(current.period, index=tickers.index)).where(quoted, 1.0)
     df_positions["prior"] = convert_quantities(df_positions.prior, prior_basis, basis_now)
     position = int(market.trading_index.searchsorted(prior.period, side="right")) - 1
     prices = pd.Series(dtype="float64")
-    if position >= 0 and market.close_pit is not None:
+    if position >= 0:
         prices = market.close_pit.reindex(index=[market.trading_index[position]]).iloc[0]
     df_positions["price"] = convert_quantities(tickers.map(prices).where(quoted, _implied_price(df_positions)), basis_now, prior_basis)
     df_positions["known"] &= np.isfinite(df_positions.prior) & df_positions.prior.ge(0)
@@ -306,16 +303,16 @@ def prepare_whole_book_sample(sample: PairSample) -> WholeBookSample:
     return WholeBookSample(df_tickers, df_books)
 
 
-def whole_book_metrics(sample: WholeBookSample, cohort: frozenset[str], universe: pd.Index) -> tuple[dict[str, pd.Series], int]:
+def whole_book_metrics(sample: WholeBookSample, cohort: frozenset[str], universe: pd.Index) -> dict[str, pd.Series]:
     """Remove endpoint price moves with one common fixed-price whole-book union."""
     result = {name: pd.Series(np.nan, index=universe, dtype="float64") for name in ("relative_position_chg", "pooled_weight_chg")}
     df_books = sample.df_books.loc[sample.df_books.index.isin(cohort)]
     if df_books.empty:
-        return result, 0
+        return result
     df_tickers = sample.df_tickers.loc[sample.df_tickers.index.get_level_values("cik").isin(cohort)]
     prior_total, current_total = df_books.prior_value.sum(), df_books.current_value.sum()
     result["relative_position_chg"] = df_tickers.relative.groupby(level="ticker").mean().reindex(universe)
     if prior_total > 0 and current_total > 0:
         pooled = df_tickers.groupby(level="ticker")[["prior_value", "current_value"]].sum().reindex(universe, fill_value=0)
         result["pooled_weight_chg"] = pooled.current_value / current_total - pooled.prior_value / prior_total
-    return result, len(df_books)
+    return result

@@ -15,10 +15,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
@@ -32,6 +30,7 @@ from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfig
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.institutional_vintages import availability_date
 from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
@@ -183,7 +182,8 @@ def test_a_filer_count_jump_past_the_threshold_nulls_the_delta_anyway():
 
 def test_filing_lag_point_in_time():
     idx = pd.bdate_range("2022-01-03", "2023-06-30")
-    build_institutional_feature_panel(make_frames(idx, {}), _holdings())
+    capital = pd.DataFrame(index=idx)
+    build_institutional_feature_panel(make_frames(idx, {}, shares_outstanding_pit=capital, mcap_pit=capital), _holdings())
     # rebuild the daily field directly to check the lag boundary
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 
@@ -1089,12 +1089,6 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
             sqlite_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
         )
 
-    compute_history = step_module.compute_institutional_feature_history
-
-    def arithmetic(*args: Any, **kwargs: Any) -> pd.DataFrame:
-        # Three known-truth managers prove exact math after checking the production floor below.
-        return compute_history(*args, min_prior_holders=0, **kwargs)
-
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
     step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
@@ -1102,7 +1096,17 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2024-06-28", "2024-12-06"), columns=["AAA"])
-    frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10, close_pit=quotes, security_basis=basis)
+    capital = pd.DataFrame(index=grid)
+    frames = make_frames(
+        grid,
+        {},
+        close_split=quotes,
+        level_factor=quotes / 10,
+        close_pit=quotes,
+        shares_outstanding_pit=capital,
+        mcap_pit=capital,
+        security_basis=basis,
+    )
     resources = SecThirteenResources(frames, None)
 
     def panel() -> pd.DataFrame | None:
@@ -1118,7 +1122,8 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     assert guarded is not None
     assert "f_ic_inst_shares_chg" not in guarded
     assert guarded.f_ic_inst_concentration.notna().any()
-    monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
+    # Three known-truth managers prove exact math after checking the production floor above.
+    monkeypatch.setattr(_features, "MIN_PRIOR_HOLDERS", 0)
     prefix = panel()
     assert prefix is not None
     save_packet("c-new", "3", "2024-09-30", "2024-11-20", 500)
@@ -1189,7 +1194,8 @@ def _compact_rows(period: pd.Timestamp, cik: str, rows: dict[str, tuple[float, f
     return df_rows.astype({"shares": "float64", "value_usd": "float64", "call_value": "float64", "put_value": "float64", "_cusips": "object"})
 
 
-def test_active_reductions_preserve_unknowns_and_restate_prior_shares() -> None:
+def test_active_reductions_preserve_unknowns_and_restate_prior_shares(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_features, "MIN_PRIOR_HOLDERS", 1)
     periods = pd.to_datetime(["2024-03-31", "2024-06-30"])
     books = []
     for period, day in zip(periods, pd.to_datetime(["2024-05-15", "2024-08-15"]), strict=True):
@@ -1201,7 +1207,7 @@ def test_active_reductions_preserve_unknowns_and_restate_prior_shares() -> None:
     df_compact, df_states = _book_states(books)
     df_basis = pd.DataFrame(1.0, index=pd.bdate_range("2024-03-29", "2024-08-16"), columns=["AAA", "UNK"])
     df_basis.loc["2024-06-01":, "AAA"] = 2.0  # a 2:1 split between the quarter ends
-    result = _features.compute_institutional_feature_history(df_compact, df_states, df_basis=df_basis, min_prior_holders=1)
+    result = _features.compute_institutional_feature_history(df_compact, df_states, df_basis=df_basis)
     current = result.loc[result.period.eq(periods[1])].set_index("ticker")
     assert len(current) == 2 and current.loc[["UNK"], ["inst_value", "ic_inst_concentration", "ic_inst_net_options_ratio"]].isna().all().all()
     assert _as_float(current.loc["AAA", "inst_value"]) == 2000.0 and _as_float(current.loc["UNK", "inst_shares"]) == 200.0
@@ -1256,12 +1262,13 @@ def _random_book_history(rng: np.random.Generator) -> tuple[pd.DataFrame, pd.Dat
     return df_compact, df_states, df_basis
 
 
-def test_accumulated_versions_equal_the_replaced_snapshot_engine() -> None:
+def test_accumulated_versions_equal_the_replaced_snapshot_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     """Randomized old-vs-new equivalence of the broad engine on synthetic book histories."""
+    monkeypatch.setattr(_features, "MIN_PRIOR_HOLDERS", 2)
     cases = rows = deltas = zero_filled = 0
     for seed in range(5):
         df_compact, df_states, df_basis = _random_book_history(np.random.default_rng(seed))
-        new = _features.compute_institutional_feature_history(df_compact, df_states, df_basis=df_basis, min_prior_holders=2)
+        new = _features.compute_institutional_feature_history(df_compact, df_states, df_basis=df_basis)
         old = _mod.snapshot_feature_history(_mod.iter_snapshot_books(df_compact, df_states), df_basis=df_basis, min_prior_holders=2)
         new, old = (frame.sort_values(["as_of", "ticker"]).reset_index(drop=True) for frame in (new, old))
         pd.testing.assert_frame_equal(new, old.astype({"ticker": new.ticker.dtype}), check_exact=False, rtol=1e-9, atol=1e-12)

@@ -1,34 +1,5 @@
-"""
-availability.py  (src/data_aggregate/utils/common/availability.py)
---------------------------------------------------------------------------
-THE ONE DECLARATION OF WHEN A 13F PERIOD BECOMES PUBLIC.
-
-A 13F-HR reports positions as of the quarter END and is not public until it is filed, which
-the statute puts within `period + 45 calendar days`. Turning that into a date the panel can
-be stamped on needs two corrections the statute does not make, and both are measured:
-
-  1. THE 45TH DAY IS OFTEN NOT A TRADING DAY -- 13 of 53 quarters (6 Saturdays, 7 Sundays,
-     measured 2026-09-15 against `cube_part_prices`' own calendar). The deadline crowd then
-     files on the next session, so the date is SNAPPED FORWARD onto the trading calendar.
-     Snapping BACKWARDS would be a look-ahead; the next session is the first day the
-     information can be acted on, which is the same rule `decay.snap_to_grid` applies to any
-     event date that misses a session.
-  2. THE DEADLINE ITSELF IS NOT WHEN THE DOLLARS ARRIVE. Filer COUNT completes early and
-     SHARES do not -- small filers file early, the mega-filers file at the deadline and
-     settle over the following sessions. So the snapped deadline is advanced
-     `F13_SETTLE_TRADING_DAYS` trading days, a buffer sized by sweep; its constant carries
-     the table.
-
-⚠ SNAP ON THE TRADING CALENDAR, NOT ON `BDay`. A market holiday is a business day and is not
-a session, so `BDay` lands the availability date on a day the panel has no row for and the
-stamp is then silently carried by the following `reindex`.
-
-⚠ THIS FUNCTION IS IMPORTED, NEVER RESTATED. `validate/institutionals.py` used to re-derive
-the snap itself (`grid[np.clip(grid.searchsorted(deadlines))]`), which made the availability
-rule two declarations that had to be kept in step by hand -- and the settle buffer existed in
-only one of them. The builder stamps with this function and the leakage checks score against
-it, so a change to the rule cannot move one without the other.
-"""
+"""Per-table source availability starts declared in `data_availability`; the 13F publication clock itself is
+`src.utils.institutional_vintages.availability_date`."""
 
 from __future__ import annotations
 
@@ -40,9 +11,6 @@ import numpy as np
 import pandas as pd
 
 from src.data_store.schema import Table, Tables
-from src.utils.institutional_vintages import availability_date as availability_date
-from src.utils.institutional_vintages import filing_public_dates as filing_public_dates
-from src.utils.institutional_vintages import public_books as public_books
 
 _DERIVED_FEATURES = frozenset(
     {

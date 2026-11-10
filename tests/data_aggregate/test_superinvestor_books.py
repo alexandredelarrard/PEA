@@ -10,7 +10,6 @@ import pytest
 from src.data_aggregate.utils.sec_thirteen import superinvestor_books
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import (
     PublicBookSnapshot,
-    prepare_superinvestor_batches,
     prepare_superinvestor_book_history,
 )
 from src.utils.institutional_vintages import prepare_book_vintages
@@ -46,8 +45,7 @@ def _history(packets: list[tuple[pd.DataFrame, pd.DataFrame]], grid: pd.Datetime
     grid = pd.bdate_range("2023-01-02", "2026-03-31") if grid is None else grid
     df_filings = pd.concat([packet[0] for packet in packets], ignore_index=True)
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
-    df_manifest = prepare_book_vintages(df_filings, df_holdings, grid, settle_days=0)
-    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90)
+    history = prepare_superinvestor_book_history(((df_filings, df_holdings) for _ in range(1)), grid, 90)
     assert history is not None
     return history
 
@@ -56,7 +54,7 @@ def _on(history: tuple[PublicBookSnapshot, ...], day: str) -> PublicBookSnapshot
     return max((snapshot for snapshot in history if snapshot.day <= pd.Timestamp(day)), key=lambda snapshot: snapshot.day)
 
 
-def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None:
+def test_many_book_batches_keep_the_whole_table_revision_history() -> None:
     packets = [
         _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 100}),
         _packet("0000000002", "2024-03-31", "2024-05-15", {"111111111": 200}),
@@ -71,8 +69,7 @@ def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None
     batches = [
         tuple(pd.concat([packet[index] for packet in selected], ignore_index=True) for index in (0, 1)) for selected in (packets[:2], packets[2:])
     ]
-    prepared = prepare_superinvestor_batches(((batch[0], batch[1]) for batch in batches), grid)
-    actual = prepare_superinvestor_book_history(prepared, grid, 90)
+    actual = prepare_superinvestor_book_history(((batch[0], batch[1]) for batch in batches), grid, 90)
     assert actual is not None and [state.day for state in actual] == [state.day for state in expected]
     for old, new in zip(expected, actual, strict=True):
         assert old.common_period == new.common_period
@@ -82,7 +79,7 @@ def test_guarded_manager_batches_keep_the_whole_table_revision_history() -> None
             assert before.support == after.support and before.first_public_at == after.first_public_at
             pd.testing.assert_frame_equal(before.df_positions, after.df_positions)
     print(
-        "SANITY: guarded many-book batches preserve exact positions, public/expiry dates, amendment history, complete-empty support and all archive states."
+        "SANITY: many-book batches, each prepared on its own, preserve exact positions, public/expiry dates, amendment history, complete-empty support and all archive states."
     )
 
 
@@ -282,7 +279,7 @@ def test_amended_quarters_replay_once_per_public_day_rank(monkeypatch: pytest.Mo
     ]
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
     grid = pd.bdate_range("2024-01-01", "2024-12-31")
-    df_manifest = prepare_book_vintages(pd.concat([packet[0] for packet in packets], ignore_index=True), df_holdings, grid, settle_days=0)
+    df_manifest = pd.concat([packet[0] for packet in packets], ignore_index=True)
     original_manifest, original_holdings = df_manifest.copy(deep=True), df_holdings.copy(deep=True)
     resolver = Mock(wraps=superinvestor_books.resolve_prepared_books)
     monkeypatch.setattr(superinvestor_books, "resolve_prepared_books", resolver)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from typing import cast
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -25,13 +26,9 @@ from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_ba
 from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
-from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_batches, prepare_superinvestor_book_history
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
-    SuperinvestorFeatureHistory,
-    compute_superinvestor_feature_history,
-    project_superinvestor_features,
-)
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
@@ -50,7 +47,7 @@ class SecThirteenResources:
 @dataclass(frozen=True)
 class PreparedSecThirteen:
     institutional: pd.DataFrame | None
-    superinvestor: SuperinvestorFeatureHistory | None
+    superinvestor: dict[str, pd.DataFrame] | None
 
 
 class StepCubeSecThirteen(Step):
@@ -76,13 +73,11 @@ class StepCubeSecThirteen(Step):
         window = plan_window(
             self._store,
             Tables.cube_part_sec_thirteen,
-            full=False,
+            full=full,
             warmup=self._warmup(),
             trading_index=calendar,
             refresh=PART_REFRESH_TRADING_DAYS,
         )
-        if full:
-            window = PartWindow(None, None)
         self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
 
         # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
@@ -139,6 +134,7 @@ class StepCubeSecThirteen(Step):
     def _load_resources(self) -> SecThirteenResources:
         # Read the shared dependencies once before any cleaning or feature work.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
+        frames.require(*self._FIELDS)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
@@ -164,15 +160,13 @@ class StepCubeSecThirteen(Step):
         compact, states = history
 
         # Quantities count only where the saved basis F supports the ticker on the report date.
-        compact = compact.copy()
         keys = compact.index.to_frame(index=False)
-        df_basis = resources.frames.security_basis
+        df_basis = cast(pd.DataFrame, resources.frames.security_basis)
         if not compact.empty:
-            compact["shares"] = compact["shares"].where(lookup_asof(df_basis, keys["ticker"], keys["period"]).notna().to_numpy())
+            compact = compact.assign(shares=compact["shares"].where(lookup_asof(df_basis, keys["ticker"], keys["period"]).notna().to_numpy()))
         return compute_institutional_feature_history(compact, states, df_basis=df_basis)
 
-    def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
-
+    def _superinvestor_history(self, resources: SecThirteenResources) -> dict[str, pd.DataFrame] | None:
         if resources.cohorts is None:
             return None
 
@@ -185,8 +179,7 @@ class StepCubeSecThirteen(Step):
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
         with closing(clean_public_batches(packets, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
-            prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
-            books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
+            books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
         if books is None:
             return None
         market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis)
@@ -248,6 +241,6 @@ class StepCubeSecThirteen(Step):
         fields.update(
             name
             for df_denominator, source, name in denominators
-            if df_denominator is not None and df_denominator.gt(0).any().any() and source in broad and broad[source].notna().any()
+            if cast(pd.DataFrame, df_denominator).gt(0).any().any() and source in broad and broad[source].notna().any()
         )
         return {"f_" + name for name in fields}

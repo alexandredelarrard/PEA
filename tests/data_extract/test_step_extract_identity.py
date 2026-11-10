@@ -181,7 +181,9 @@ def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.Monke
 def test_cold_start_run_builds_universe_cusip_from_the_stored_ftd_lines(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """D-15 / Q4: one `identity` run on a store with no lineage but with the FTD lines an ingest stored builds and publishes
     `universe_cusip` from the lineage it just built; the lines come from the table, and identity writes none."""
-    create_canonical(sqlite_store.engine, [Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure, Tables.sec_fails_to_deliver_security])
+    create_canonical(
+        sqlite_store.engine, [Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure, Tables.sec_fails_to_deliver_security]
+    )
     context, config = _context(sqlite_store, tmp_path), _config()
     context.universe = seed_universe(sqlite_store, ["ABC"], rows={"ABC": {"cik": "0000000777"}})
     text = _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|999999ZZZ|ZZZ|9|OTHER CO|3.0\n"

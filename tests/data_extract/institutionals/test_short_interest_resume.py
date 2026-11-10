@@ -39,9 +39,7 @@ def sqlite_store(sqlite_store):
 
 
 def _context(store, tmp_path: Path | None = None) -> Any:
-    return SimpleNamespace(
-        store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={})
-    )
+    return SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={}))
 
 
 def _raw(rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:

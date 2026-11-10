@@ -296,5 +296,3 @@ def test_parse_ftd_lines_keeps_every_source_line_raw():
     assert lines.iloc[2]["source_symbol"] == "ABC/PR"
     print("\n=== SANITY CHECK: raw FTD lines ===")
     print("  description and PRICE kept, '.' -> NULL dollars, symbol as filed, trade date by the T+3/T+2/T+1 cycle; no summing")
-
-

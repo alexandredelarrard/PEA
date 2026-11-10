@@ -405,7 +405,10 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(
     """OTHER's 2024-01-12 line (a CUSIP no master row carries) serves the date; AAA is zero there only when its master
     row covers the trade date."""
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-02", "000000001", "AAA", 100.0, "202401a"), ("2024-01-12", "999999999", "OTHER", 50.0, "202401a")]))
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver_security,
+        ftd_lines([("2024-01-02", "000000001", "AAA", 100.0, "202401a"), ("2024-01-12", "999999999", "OTHER", 50.0, "202401a")]),
+    )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     frames = PriceFrames(

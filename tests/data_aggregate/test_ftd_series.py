@@ -109,12 +109,17 @@ def test_real_stored_lines_reach_the_builder_as_company_series() -> None:
 
     assert not fails.duplicated(["ticker", "date"]).any() and set(fails["ticker"]) <= set(multi)
     assert set(pd.to_datetime(fails["date"])) <= set(pd.to_datetime(coverage["date"])), "a series row lies on a served date"
-    raw = store.load(Tables.sec_fails_to_deliver_security, columns=["date", "cusip", "fails_quantity"], where={"cusip": sorted(summed["cusip"])})
+    raw = store.load(
+        Tables.sec_fails_to_deliver_security, columns=["date", "trade_date", "cusip", "fails_quantity"], where={"cusip": sorted(summed["cusip"])}
+    )
     assert raw is not None
     day = pd.to_datetime(raw.groupby("date")["cusip"].nunique().idxmax())
+    # each line on `day` with the master row covering its trade date (BRK-A is 30 before 2010-01-21, 1,500 after)
     own = raw.loc[pd.to_datetime(raw["date"]).eq(day)].merge(
-        summed[["cusip", "canonical_company", "conversion_ratio"]].drop_duplicates("cusip"), on="cusip"
+        summed[["cusip", "canonical_company", "conversion_ratio", "valid_from", "valid_to"]], on="cusip"
     )
+    trade = pd.to_datetime(own["trade_date"])
+    own = own.loc[trade.ge(pd.to_datetime(own["valid_from"])) & (trade.lt(pd.to_datetime(own["valid_to"])) | own["valid_to"].isna())]
     expected = (own["fails_quantity"] * own["conversion_ratio"]).groupby(own["canonical_company"]).sum()
     on_day = fails.loc[pd.to_datetime(fails["date"]).eq(day)].set_index("ticker")["fails_quantity"]
     checked = [t for t in expected.index if t in on_day.index]

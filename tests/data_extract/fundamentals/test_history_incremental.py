@@ -370,11 +370,12 @@ def test_triage_classifies_tickers(sqlite_store: Any, snapshots: list[str], monk
 
     seen = _spy_loads(monkeypatch, sqlite_store)
     context = _context(sqlite_store)
-    work = mod._history_work(context, list(names), seams={}, recent=frozenset({"RECENT"}))
+    work = mod._history_work(context, list(names), seams={}, windows={}, recent=frozenset({"RECENT"}))
     paths = {ticker: item.path for ticker, item in work.items()}
-    verify = {ticker: item.path for ticker, item in mod._history_work(context, list(names), seams={}, verify=True).items()}
+    verify = {ticker: item.path for ticker, item in mod._history_work(context, list(names), seams={}, windows={}, verify=True).items()}
 
-    assert paths == {"NEW": "full", "GROW": "incremental", "CUR": "skip", "RECENT": "check", "MOVED": "late", "AMENDED": "skip"}, paths
+    # MOVED is the late path: a full replay that rewrites its rows from `rewrite_from`.
+    assert paths == {"NEW": "full", "GROW": "incremental", "CUR": "skip", "RECENT": "check", "MOVED": "full", "AMENDED": "skip"}, paths
     assert set(verify.values()) == {"full"}
     assert work["GROW"].newest == pd.Timestamp("2023-11-01") and work["NEW"].newest is None
     assert work["MOVED"].rewrite_from == pd.Timestamp("2023-06-15") and work["GROW"].rewrite_from is None
@@ -547,6 +548,64 @@ def test_a_late_10q_rewrites_only_its_tickers_rows_from_its_date(sqlite_store: A
         f"  rows before it byte-identical ({int(kept.sum())}), OTH byte-identical ({len(other)}), {len(after) - int(kept.sum())} row(s) from it rewritten"
     )
     print(f"  10-K TTM revenue {ttm[1]} -> {ttm[0]}; the next night: 0 snapshots. Validated.")
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_a_ticker_whose_drift_guard_raises_does_not_stop_the_others(
+    sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, workers: int
+) -> None:
+    """AAA's late original meets a changed stored row before it: AAA is logged and left untouched, BBB (late) and
+    CCC (incremental) are still built, and the task then raises one error naming AAA only."""
+    monkeypatch.setattr(mod, "ProcessPoolExecutor", _CountingPool)
+    tickers = ["AAA", "BBB", "CCC"]
+    for ticker in tickers:
+        sqlite_store.save(Tables.sec_fundamentals_facts, _quarters(ticker, _WINDOWS[:3]))
+    mod.build_fundamentals_history(_context(sqlite_store), tickers)
+    _tamper(sqlite_store, "AAA", "2023-05-01", totalAssets=999.0)
+    tampered = _stored(sqlite_store, "AAA")
+    for ticker in ("AAA", "BBB"):
+        late = _quarters(ticker, [("2023-01-01", "2023-03-31", "Q1", "2023-09-15")]).assign(accession_number=f"{ticker}-late")
+        sqlite_store.save(Tables.sec_fundamentals_facts, late)
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters("CCC", _WINDOWS[3:]))
+
+    _CountingPool.submitted = []
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=workers)))
+    with caplog.at_level(logging.INFO, logger=LOGGER), pytest.raises(ValueError, match="append-only") as raised:
+        mod.build_fundamentals_history(context, tickers)
+    built = {ticker: len(_stored(sqlite_store, ticker)) for ticker in tickers}
+
+    assert built == {"AAA": 3, "BBB": 4, "CCC": 4}, built
+    pd.testing.assert_frame_equal(_stored(sqlite_store, "AAA"), tampered)
+    assert "1 ticker(s)" in str(raised.value) and "AAA" in str(raised.value) and "BBB" not in str(raised.value), raised.value
+    assert "BBB late filing 2023-09-15" in caplog.text and "CCC +1 event row(s)" in caplog.text, caplog.text
+    assert _CountingPool.submitted == ([] if workers == 1 else ["AAA", "BBB"]), _CountingPool.submitted
+    print(f"\n=== SANITY CHECK: a per-ticker drift guard failure (workers={workers}) ===")
+    print(f"  stored rows after the run: {built}; AAA untouched (its tampered row kept), pool submissions {_CountingPool.submitted}")
+    print(f"  the task raised once at the end: {str(raised.value).splitlines()[0]}. Validated.")
+
+
+def test_a_stored_event_the_replay_no_longer_consumes_is_checked(sqlite_store: Any, snapshots: list[str], caplog: pytest.LogCaptureFixture) -> None:
+    """A stored `as_of` whose filing the facts no longer hold, with no new date, routes to `check`, not `skip`: the full
+    replay then meets the 10-K row whose TTM needed that filing, and the drift guard refuses it."""
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
+    _built(sqlite_store, snapshots)
+    stored = _stored(sqlite_store, "TST")
+    sqlite_store.delete(Tables.sec_fundamentals_facts, {"accession_number": ["TST-acc-2023-08-01"]})
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        try:
+            mod.build_fundamentals_history(_context(sqlite_store), ["TST"])
+            refused = ""
+        except ValueError as exc:
+            refused = str(exc)
+    triage = next(line for line in caplog.messages if line.startswith("history: triage"))
+
+    assert "1 check" in triage and "0 current" in triage, triage
+    assert "append-only" in refused, refused
+    pd.testing.assert_frame_equal(_stored(sqlite_store, "TST"), stored)
+    print("\n=== SANITY CHECK: a stored event the replay no longer consumes (R2-C-004) ===")
+    print(f"  4 rows stored, the 2023-08-01 filing's facts gone, no new date -> {triage}")
+    print(f"  full replay refused, rows untouched: {refused.splitlines()[0]}. Validated.")
 
 
 PROLOGIS, OLD_PROLOGIS = "0001045609", "0000899881"

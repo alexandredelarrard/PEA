@@ -474,15 +474,13 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
 
 @lru_cache(maxsize=256)
 def _bounds_of(year_ends: tuple[pd.Timestamp, ...]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
-    """`_fiscal_bounds` cached on the calendar tuple; returns immutable tuples because callers share them."""
+    """The fiscal years as `(ends, starts)`: each starts the day after the previous end, the first 364 days back.
+
+    Cached on the calendar tuple; returns immutable tuples because callers share them.
+    """
     ends = tuple(sorted(pd.Timestamp(e) for e in year_ends))
     starts = (ends[0] - pd.Timedelta(days=364), *(e + pd.Timedelta(days=1) for e in ends[:-1]))
     return ends, starts
-
-
-def _fiscal_bounds(year_ends: list[pd.Timestamp]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
-    """The fiscal years as `(ends, starts)`: each starts the day after the previous end, the first 364 days back."""
-    return _bounds_of(tuple(year_ends))
 
 
 def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
@@ -493,7 +491,7 @@ def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
     """
     if not year_ends or end is None or pd.isna(end):
         return None
-    ends, starts = _fiscal_bounds(year_ends)
+    ends, starts = _bounds_of(tuple(year_ends))
     end = pd.Timestamp(end)
     # side='left' puts a period ending exactly ON a year end into that year, where Q4 lives.
     position = int(pd.Series(ends).searchsorted(end, side="left"))
@@ -514,7 +512,7 @@ def _ttm_value(
     if i + 1 - low < TTM_QUARTERS or not _bounds_are_contiguous(starts[low : i + 1], ends[low : i + 1]):
         return None
     window = values[low : i + 1]
-    if not spec.is_additive and not _one_share_basis_values(window, guards):
+    if not spec.is_additive and not _one_share_basis(window, guards):
         return None
     # A twelve-month weighted average is share-days over days, not the mean of four means.
     weights = days[low : i + 1]
@@ -561,7 +559,7 @@ def newest_periods(facts: FieldFacts, spec: FieldSpec, guards: PeriodGuards) -> 
     return {"period_end": last["period_end"], "value": value}, quarter
 
 
-def _one_share_basis_values(values: np.ndarray, guards: PeriodGuards) -> bool:
+def _one_share_basis(values: np.ndarray, guards: PeriodGuards) -> bool:
     """Are the window's share counts on ONE split basis (max/min within `share_basis_max_ratio`)? NaN is skipped, an
     all-NaN window is refused; a window straddling a split is refused, not repaired."""
     present = np.abs(values[~np.isnan(values)])

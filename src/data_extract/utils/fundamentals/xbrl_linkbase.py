@@ -350,10 +350,9 @@ class Resolution:
     #: rather than vanishing into a null.
     segment_rejected: tuple[str, ...] = ()
     #: The field resolved ONLY after those rejections were put back in play, i.e. the
-    #: note-level concept is the filer's whole answer for this field. The value is kept --
-    #: a narrow real number beats a null, and 745 correct rows nulled by an over-strict
-    #: guard is this repo's own most expensive precedent -- but it is flagged, because a
-    #: note-level basis is narrower than the statement line.
+    #: note-level concept is the filer's whole answer for this field. A narrow real number
+    #: beats a null, but it is flagged because a note-level basis is narrower than the
+    #: statement line.
     role_only_retained: bool = False
     #: Candidates route 1 DECLINED because the filer does not declare them in its statement
     #: linkbase at all, while it DOES declare this field's own statement lines -- so route 3b

@@ -121,8 +121,9 @@ class FieldSpec:
         return list(spec.get("sum", []))
 
     @cached_property
-    def _never_use_by_regime(self) -> dict[str | None, MappingProxyType]:
-        """`never_use`'s per-regime memo (an instance dict: `raw` makes this frozen dataclass unhashable)."""
+    def _never_use_by_regime(self) -> dict[str | None, dict[str, Any]]:
+        """`never_use`'s per-regime memo of plain dicts, so the catalogue pickles (an instance dict: `raw` makes this
+        frozen dataclass unhashable)."""
         return {}
 
     def never_use(self, regime: str | None = None) -> MappingProxyType:
@@ -132,16 +133,8 @@ class FieldSpec:
         """
         cached = self._never_use_by_regime.get(regime)
         if cached is None:
-            merged = dict(self.raw.get("never_use", {}))
-            merged.update(self._regime_block(regime).get("never_use", {}))
-            cached = self._never_use_by_regime[regime] = MappingProxyType(merged)
-        return cached
-
-    def __getstate__(self) -> dict[str, Any]:
-        """Pickle without the `never_use` memo: its read-only views do not pickle, and the replay pool ships the catalogue."""
-        state = dict(self.__dict__)
-        state.pop("_never_use_by_regime", None)
-        return state
+            cached = self._never_use_by_regime[regime] = {**self.raw.get("never_use", {}), **self._regime_block(regime).get("never_use", {})}
+        return MappingProxyType(cached)
 
     def _regime_block(self, regime: str | None) -> dict[str, Any]:
         if not regime:

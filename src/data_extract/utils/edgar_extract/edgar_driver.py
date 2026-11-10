@@ -568,7 +568,7 @@ def _save_key(
 
     `rewrite` replaces the key's stored rows of each filing read this pass: delete and save share one
     transaction per table, so a row the parser no longer emits is gone and a filing that failed to read keeps its rows."""
-    read = _read_accessions(fetch, ticker, frames) if rewrite else []
+    read = sorted({str(a) for df in frames.get(fetch.done, []) for a in df["accession_number"]}) if rewrite else []
     order = [t for t in frames if t != fetch.done] + ([fetch.done] if fetch.done in frames else [])
     counts: dict[Table, int] = {}
     failed_save = False
@@ -598,15 +598,14 @@ def _save_key(
     return counts, failed_save
 
 
-def _read_accessions(fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> list[str]:
-    """The accessions read for `ticker` this pass: every read filing leaves a done-table row (data or marker)."""
-    done = pd.concat(frames.get(fetch.done, []) or [pd.DataFrame(columns=["ticker", "accession_number"])], ignore_index=True)
-    return sorted(set(done.loc[done["ticker"].astype(str).eq(ticker), "accession_number"].astype(str)))
-
-
 def _replace_filings(context: Context, table: Table, ticker: str, accessions: list[str], df: pd.DataFrame) -> None:
-    """Delete `ticker`'s rows of `accessions` from `table` and save `df`, in one transaction."""
-    if table.is_unmanaged:
+    """Delete `ticker`'s rows of `accessions` from `table` and save `df`, in one transaction. An absent table has
+    nothing to delete and is created by a plain save, keeping its `CREATE TABLE` out of a per-key transaction."""
+    stored = context.store.columns(table)
+    if not stored:
+        context.store.save(table, df)
+        return
+    if table.is_unmanaged and set(df.columns) - set(stored):
         context.store.ensure_columns(table, df)
     with context.store.transaction() as bound:
         bound.delete(table, {"ticker": ticker, "accession_number": accessions})

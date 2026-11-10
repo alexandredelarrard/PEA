@@ -112,8 +112,7 @@ class WorklistRequest:
 
 def _cold_keys(context: Context, table: Table, keys: Sequence[str]) -> frozenset[str]:
     """The `keys` with no row in `table` (markers included); all of them when the table is absent."""
-    key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
-    return frozenset(keys) - stored_values(context, table, key_col, where={key_col: list(keys)})
+    return frozenset(keys) - stored_values(context, table, "ticker", where={"ticker": list(keys)})
 
 
 def document_worklist(context: Context, table: Table, request: WorklistRequest) -> DocumentWork:
@@ -161,16 +160,17 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
             counts[name] = counts.get(name, 0) + n
         if not df_units.empty:
             units[ticker] = df_units
-    capped, uncapped = _cap({key: df for key, df in units.items() if key not in cold}, request.cap, table.name)
-    n_cold = sum(len(df) for key, df in units.items() if key in cold)
+    cold_units = {key: df for key, df in units.items() if key in cold}
+    warm, uncapped = _cap({key: df for key, df in units.items() if key not in cold}, request.cap, table.name)
+    n_cold = sum(map(len, cold_units.values()))
     if n_cold:
         logger.info(
             "%s: %d cold key(s) with no stored row list all %d of their document(s), outside the per-run cap",
             table.name,
-            len(cold & set(units)),
+            len(cold_units),
             n_cold,
         )
-    units = {key: df if key in cold else capped[key] for key, df in units.items() if key in cold or key in capped}
+    units = {**warm, **cold_units}
     uncapped += n_cold
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
     return DocumentWork(units=units, counts=counts, uncapped=uncapped, timings=timings)

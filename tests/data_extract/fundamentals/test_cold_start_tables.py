@@ -329,8 +329,8 @@ def test_an_empty_database_gets_both_sharadar_tables_from_the_nightly_writers(
 # --------------------------------------------------------------------------- #
 # Cold tickers fill in full on the nightly run (per-run cap)                  #
 # --------------------------------------------------------------------------- #
-def _nightly_walk(ctx: Any, tickers: list[str], monkeypatch: pytest.MonkeyPatch, accessions: dict[str, list[int]]) -> Any:
-    """One nightly facts walk (default `-F`-less, capped run) over an index holding `accessions[ticker]`'s quarters,
+def _nightly_walk(ctx: Any, tickers: list[str], monkeypatch: pytest.MonkeyPatch, accessions: dict[str, list[int]], *, full: bool = False) -> Any:
+    """One nightly facts walk (capped; `full` is `-F`) over an index holding `accessions[ticker]`'s quarters,
     CIKs as `fake_context` seeded them (universe position + 1)."""
     universe = ctx.universe.frame.set_index("ticker")["cik"].astype(int).to_dict()
     rows: list[tuple[int | str, str, str, str, str]] = []
@@ -344,7 +344,7 @@ def _nightly_walk(ctx: Any, tickers: list[str], monkeypatch: pytest.MonkeyPatch,
     seed_index(ctx, rows)
     monkeypatch.setattr(facts_mod, "filing_rows", _filing_rows(set(), quarter_of))
     fetch = dataclasses.replace(SEC_FUNDAMENTALS_FETCH, run_scope=None, parse=partial(parse_fundamentals, catalogue=None, gics_by_ticker={}))
-    return run_edgar_fetch(ctx, fetch, roster_run(ctx, tickers, as_of=_AS_OF), max_workers=1)
+    return run_edgar_fetch(ctx, fetch, roster_run(ctx, tickers, as_of=_AS_OF, full=full), max_workers=1)
 
 
 def _stored_filings(store: DataStore) -> dict[str, int]:
@@ -467,3 +467,78 @@ def test_a_full_re_read_drops_the_facts_the_resolver_no_longer_emits(
     print(f"  stored {len(before)} rows + 3 stale AAA rows; a plain night listed 0 and kept all {len(before) + 3}")
     print(f"  -F -t AAA read 3/4 (Q3 failed to parse): Q1 now empty -> {by_filing[q1]}; Q2 retired field gone; Q4 moved-key row gone;")
     print("  Q3's old rows (stale one included) kept; Q2/Q4 rows and all of BBB equal the pre-run rows. Validated.")
+
+
+def _counted(monkeypatch: pytest.MonkeyPatch, store: DataStore, method: str) -> list[str]:
+    """Record each call of `store.<method>` (the table name when the first argument is a table)."""
+    calls: list[str] = []
+    original = getattr(store, method)
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls.append(str(args[0]) if args else method)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, method, counted)
+    return calls
+
+
+def test_a_full_re_read_on_an_absent_facts_table_creates_it_outside_a_transaction(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-F` on an empty database: the first key has nothing to delete, so its save creates the table without a
+    transaction (a `CREATE TABLE` inside one per-key transaction can deadlock the threaded walk on PostgreSQL); the
+    second key then replaces through one transaction on the existing table. The table has the registry schema,
+    every filing is stored and the next plain night lists nothing."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+    opened_on_existing: list[bool] = []
+    transaction = sqlite_store.transaction
+
+    def counted() -> Any:
+        opened_on_existing.append(sqlite_store.exists(Tables.sec_fundamentals_facts))
+        return transaction()
+
+    monkeypatch.setattr(sqlite_store, "transaction", counted)
+
+    summary = _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every, full=True)
+
+    assert opened_on_existing == [True], opened_on_existing
+    assert not ctx.warnings, ctx.warnings
+    _assert_created(sqlite_store, Tables.sec_fundamentals_facts, FACT_TYPES)
+    stored = sqlite_store.load(Tables.sec_fundamentals_facts)
+    assert stored.groupby("ticker").size().to_dict() == {"AAA": 12, "BBB": 12}
+    assert {t: o.saved.get(Tables.sec_fundamentals_facts, 0) for t, o in summary.outcomes.items()} == {"AAA": 12, "BBB": 12}
+    assert _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every).work.size == 0
+    print("\n=== SANITY CHECK: `-F` on an absent facts table ===")
+    print(f"  2 keys x 4 filings re-read: AAA created the table with no transaction; transactions opened on an existing table {opened_on_existing}")
+    print("  (BBB); registry schema, 12 rows per key stored and the next plain night lists 0 documents. Validated.")
+
+
+def test_a_full_re_read_adds_columns_only_when_the_frame_has_new_ones(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stored facts table lacks `role_uri`. The first `-F` adds it once (AAA, the first key) and BBB's save does
+    not call `ensure_columns`; a second `-F` calls it for no key. Each key still replaces through one transaction."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    every = {"AAA": [0, 1, 2, 3], "BBB": [0, 1, 2, 3]}
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every)
+    rows = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True)
+    sqlite_store.drop(Tables.sec_fundamentals_facts)
+    sqlite_store.save(Tables.sec_fundamentals_facts, rows.drop(columns="role_uri"))
+    assert "role_uri" not in sqlite_store.columns(Tables.sec_fundamentals_facts)
+    added = _counted(monkeypatch, sqlite_store, "ensure_columns")
+    transactions = _counted(monkeypatch, sqlite_store, "transaction")
+
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every, full=True)
+    first = (list(added), len(transactions))
+    _nightly_walk(ctx, ["AAA", "BBB"], monkeypatch, every, full=True)
+    second = (added[len(first[0]) :], len(transactions) - first[1])
+
+    assert first == ([str(Tables.sec_fundamentals_facts)], 2), first
+    assert second == ([], 2), second
+    assert "role_uri" in sqlite_store.columns(Tables.sec_fundamentals_facts)
+    after = sqlite_store.load(Tables.sec_fundamentals_facts, markers=True)
+    assert after.groupby("ticker").size().to_dict() == {"AAA": 12, "BBB": 12}
+    print("\n=== SANITY CHECK: `ensure_columns` guard on `-F` ===")
+    print(f"  table without role_uri: 1st -F ensure_columns calls {first[0]} (AAA only), {first[1]} transactions;")
+    print(f"  2nd -F: {len(second[0])} ensure_columns calls, {second[1]} transactions; 12 rows per key kept. Validated.")

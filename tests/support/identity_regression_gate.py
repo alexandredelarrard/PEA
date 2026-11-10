@@ -1,7 +1,7 @@
 """Explained-difference regression gate for the identity cutover (decision P22).
 
 `snapshot <dir>` dumps the before state, read-only and projected, as parquet files. The FTD and FINRA lines are stored
-as filed and mapped by the cube, so no market tape is diffed; the shipped `market_tape` hypotheses are reported retired.
+as filed and mapped by the cube, so no market tape is diffed.
 `diff <dir>` compares it with the current store, writes one explained-difference CSV per surface plus `gate_hypotheses.csv` and
 `gate_summary.txt`, and exits 1 when a row has no reason or a hypothesis of
 `configs/sec/expected_lineage_changes.json` does not hold, 2 when the run itself fails.
@@ -113,8 +113,6 @@ REASONS = frozenset(
 )
 #: Each hypothesis kind and the gate section whose rows it explains.
 HYPOTHESIS_KINDS = {"filing_lineage": "filing", "insider": "insider"}
-#: Kinds whose section is gone (the stamped FTD / FINRA tape, P4/P5): their shipped hypotheses are reported, never checked.
-RETIRED_KINDS = frozenset({"market_tape"})
 
 
 def _text(values: pd.Series) -> pd.Series:
@@ -740,7 +738,6 @@ def run_diff(
     if "prices" in sections:
         frames["prices"] = _prices_section(store, snap_dir, master, scope)
     shipped = load_hypotheses(config_dir)
-    retired = sum(h["kind"] in RETIRED_KINDS for h in shipped)
     listed = [h for h in shipped if HYPOTHESIS_KINDS.get(h["kind"]) in frames]
     outside = {h["id"] for h in listed if scope is not None and not set(h.get("tickers") or ()) <= set(scope)}
     hypotheses = check_hypotheses(
@@ -761,7 +758,7 @@ def run_diff(
     for name, frame in frames.items():
         counts = frame["reason"].replace("", "UNEXPLAINED").value_counts().to_dict()
         lines.append(f"{OUTPUTS[name]}: {len(frame):,} row(s); by reason {counts}")
-    lines.append(f"hypotheses: {hypotheses['status'].value_counts().to_dict()}; {retired} retired market_tape hypothesis(es) not checked")
+    lines.append(f"hypotheses: {hypotheses['status'].value_counts().to_dict()}")
     lines += [f"  FAIL {r.id}: expected {r.expected}, observed {r.observed} ({r.reason})" for r in failed.itertuples(index=False)]
     verdict = "PASS" if not any(unexplained.values()) and failed.empty else "FAIL"
     lines.append(f"unexplained rows {unexplained}; verdict {verdict}")

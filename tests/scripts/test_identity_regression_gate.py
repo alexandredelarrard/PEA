@@ -334,8 +334,8 @@ def test_a_hypothesis_that_does_not_hold_fails_and_a_skipped_one_is_reported() -
         "tyco_any": (1, "pass"),
         "dd": (0, "skipped"),
     }
-    shipped = [h for h in gate.load_hypotheses(CONFIGS) if h["kind"] not in gate.RETIRED_KINDS]
-    assert all(h["reason"] in gate.REASONS for h in shipped), "every checked shipped hypothesis names a gate reason"
+    shipped = gate.load_hypotheses(CONFIGS)
+    assert all(h["reason"] in gate.REASONS for h in shipped), "every shipped hypothesis names a gate reason"
     print(f"sanity: a matching count passes, a wrong count fails, a skipped id is reported; the {len(shipped)} shipped hypotheses name gate reasons")
 
 
@@ -475,7 +475,7 @@ def test_snapshot_reads_only_and_diff_exits_non_zero_on_an_unexplained_row(sqlit
 def test_hypotheses_config_round_trips(tmp_path: Path) -> None:
     data = json.loads((CONFIGS / gate.HYPOTHESES_FILE).read_text(encoding="utf-8"))
     ids = [h["id"] for h in data["hypotheses"]]
-    assert len(ids) == len(set(ids)) and all(h["kind"] in gate.HYPOTHESIS_KINDS or h["kind"] in gate.RETIRED_KINDS for h in data["hypotheses"])
+    assert len(ids) == len(set(ids)) and all(h["kind"] in gate.HYPOTHESIS_KINDS for h in data["hypotheses"])
     print(f"sanity: {len(ids)} hypotheses, unique ids, known kinds")
 
 
@@ -552,7 +552,6 @@ def test_the_shipped_hypotheses_describe_the_traded_security_realignment_only() 
     assert hypotheses and all(h["change_set"] == "traded_security_realignment" for h in hypotheses)
     named = {t for h in hypotheses for t in h["tickers"]}
     assert named == {"PLD", "JCI", "DD", "DOW"}, named
-    checked = [h for h in hypotheses if h["kind"] not in gate.RETIRED_KINDS]
-    assert checked and all(h["reason"] in gate.REASONS and h["kind"] in gate.HYPOTHESIS_KINDS for h in checked)
+    assert all(h["reason"] in gate.REASONS and h["kind"] in gate.HYPOTHESIS_KINDS for h in hypotheses)
     by_kind = pd.Series([h["kind"] for h in hypotheses]).value_counts().to_dict()
     print(f"sanity: {len(hypotheses)} hypotheses {by_kind}, all under traded_security_realignment, naming only {sorted(named)}")

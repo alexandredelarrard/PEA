@@ -20,6 +20,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.security_series import LINE_COLUMNS, fails_series, load_fails_basis, prepare_master
 from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -162,16 +163,18 @@ def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.Da
     return df_proxy
 
 
-def load_fails(store: DataStore, universe: Sequence[str]) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Keep global ZIP/date coverage while retaining only requested economic rows."""
-    coverage_chunks, ticker_chunks = [], []
-
-    # Preserve market-wide observed dates before discarding other tickers' rows.
-    for df_chunk in store.iter_load(Tables.sec_fails_to_deliver, project=True):
-        coverage_chunks.append(df_chunk[["date", "period"]].drop_duplicates())
-        ticker_chunks.append(df_chunk.loc[df_chunk["ticker"].isin(universe)])
-    if not coverage_chunks:
+def load_fails(
+    store: DataStore, universe: Sequence[str], lines: pd.DataFrame | None, bugfix: dict
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """The FTD series of the `universe` companies and the market-wide served calendar, built from the as-filed security
+    lines and the step's `universe_cusip` lines (`security_series.fails_series`)."""
+    # one read of the stored lines and of the share basis of the FTD lines' classes and companies
+    stored = store.load(Tables.sec_fails_to_deliver_security, columns=list(LINE_COLUMNS), optional=True)
+    master = prepare_master(lines) if lines is not None else None
+    if stored is None or stored.empty or master is None or master.empty:
         return None, None
+    basis = load_fails_basis(store, bugfix, master)
 
-    # Assemble the scoped economics and compact global coverage independently.
-    return pd.concat(ticker_chunks, ignore_index=True), pd.concat(coverage_chunks, ignore_index=True).drop_duplicates()
+    # every company's series and the served dates; the economics of the universe only
+    series, coverage = fails_series(stored, master, basis)
+    return series.loc[series["ticker"].isin(set(universe))].reset_index(drop=True), coverage

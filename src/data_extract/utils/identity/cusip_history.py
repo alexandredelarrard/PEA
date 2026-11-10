@@ -1,56 +1,48 @@
 """CUSIP history of `universe_cusip`: which security a market-tape line is, its issuer CIK, class and role, dated from the
 first evidence of its CUSIP.
 
-FTD evidence: the cached FTD lines of the universe companies' lineage symbols and CUSIP-6 prefixes (their Sharadar CUSIPs,
-the curated CUSIPs and the prefixes the lineage votes for on the FTD lines), read from the zips every run and never stored.
-Lines: one per (CUSIP, FTD symbol). The issuer of each CUSIP-9 comes from lineage symbol-interval votes (inherited across a
-CUSIP-6 within the voters' era); a line runs over the FINRA days of its symbol and back to its CUSIP's first 13F period
-when the company's Sharadar CUSIPs or its dated names confirm it (a name never confirms a foreign CUSIP-6). The class needs
-positive evidence; the role follows the issuer CIK's windows: one canonical line per company and date.
+FTD evidence: the stored FTD lines (`sec_fails_to_deliver_security`, as filed) of the universe companies' lineage symbols and
+CUSIP-6 prefixes (their Sharadar CUSIPs, the curated CUSIPs and the prefixes the lineage votes for on the FTD lines); the
+FTD ingest stores a superset of them. Lines: one per (CUSIP, FTD symbol). The issuer of each CUSIP-9 comes from lineage
+symbol-interval votes (inherited across a CUSIP-6 within the voters' era); a line runs from its first FTD line over the
+FINRA days of its symbol. The class needs positive evidence; the role follows the issuer CIK's windows: one canonical line
+per company and date.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
-from tqdm import tqdm
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
-from src.context import Context
 from src.data_extract.utils.common.identity_contract import ROLE_SYMBOL, ROLE_WINDOW, SENTINEL_START, entity_or_singleton
 from src.data_extract.utils.common.security_lines import (
     ACQUIRED_CONSTITUENT,
     EXCLUDED,
-    SOURCE_FTD,
     SecurityManual,
     tape_intervals,
-    trade_dates,
 )
-from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd_zip
+from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 from src.utils.identity_flags import FLAG_COLUMNS
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
+from src.utils.security_series import SOURCE_FTD, trade_dates
 from src.utils.string import normalise_ticker, pad_cik_series, squash
 
 logger = logging.getLogger(__name__)
 
-#: The FTD line columns the CUSIP lines derive from: the only ones kept from each zip.
+#: The stored FTD line columns the CUSIP lines derive from.
 OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
-#: The Sharadar ticker columns read for a company's CUSIPs and names; the SEC profile columns read for its dated names.
+#: The Sharadar ticker columns read for a company's CUSIPs.
 SHARADAR_CUSIP_COLUMNS = ("permaticker", "name", "cusips")
-PROFILE_NAME_COLUMNS = ("cik", "name", "former_names")
 #: The `symbol_tenure` columns the co-registrant classification reads.
 EVIDENCE_COLUMNS = ("issuer_cik", "source", "valid_from", "valid_to")
-#: The 13F holdings grain the back-extension reads (one count per CUSIP, period and issuer spelling).
-HOLDING_GROUPS = ("cusip", "period", "issuer_name")
-
 NON_COMMON_KINDS = ("preferred", "debt", "warrant", "unit", "right")
 #: A security first (last) seen this close after (before) a window bound was created (ended) at that seam.
 SEAM_TOLERANCE = pd.Timedelta(days=7)
@@ -69,19 +61,6 @@ SIBLING_OVERLAP = 0.5
 RATIO_WINDOW = 9
 RATIO_STEP = 1.5
 RATIO_MATCH_DAYS = pd.Timedelta(days=30)
-#: 13F evidence (X3): periods from the first EDGAR 13F year up to the run date, with at least this many holder rows; a
-#: name confirms periods from a year before it was adopted to two years after it was dropped (filers rename late).
-FIRST_13F_PERIOD = pd.Timestamp("1998-01-01")
-MIN_13F_HOLDERS = 2
-NAME_LEAD = pd.Timedelta(days=365)
-NAME_LAG = pd.Timedelta(days=730)
-#: Words a holder's issuer spelling and a company name share without naming the company.
-_NAME_STOP = frozenset(
-    "INC INCORPORATED CORP CORPORATION CO COMPANY COS LTD LIMITED PLC LP L P LLC HLDGS HLDG HOLDINGS HOLDING GROUP GRP THE NEW DEL DE "
-    "COM CL CLASS A B C SHS SH SHARES BEN INT TR TRUST NV N V SA AG SE ORD CAP STK COMMON STOCK PAR USD REIT ADR SPONSORED SPON "
-    "MD PA NY NJ OH VA IND N".split()
-)
-
 TABLE_COLUMNS = (
     "security_id",
     "canonical_company",
@@ -114,7 +93,6 @@ FLAG_DETAIL_COLUMNS = (
     "description",
     "detail",
 )
-REFUSED_COLUMNS = ("cusip", "company", "issuer_name", "first", "n_rows")
 #: Flag kinds: (action, suggested action) for the WARNING block.
 FLAG_KINDS: dict[str, tuple[bool, str]] = {
     "security_issuer_conflict": (True, "lineage symbol intervals of two companies vote for one CUSIP: add an issuer override"),
@@ -220,14 +198,6 @@ class Finra:
     days: Mapping[str, Any]
 
 
-@dataclass(frozen=True)
-class ThirteenF:
-    """The 13F back-extension: the first confirmed period of each line CUSIP with how, and the refused name matches (X4)."""
-
-    starts: Mapping[str, tuple[pd.Timestamp, str]]
-    refused: pd.DataFrame
-
-
 @dataclass
 class CusipFlags:
     """The per-line flags of the build, in the order they are found."""
@@ -260,8 +230,7 @@ class _Segment:
 
 @dataclass(frozen=True)
 class _Candidate:
-    """A span a CUSIP may hold as its company's canonical line: traded spans before 13F-only (`early`) ones, then lower
-    priority wins, later start first within one."""
+    """A span a CUSIP may hold as its company's canonical line: lower priority wins, later start first within one."""
 
     priority: int
     start: pd.Timestamp
@@ -269,19 +238,17 @@ class _Candidate:
     issuer: str
     spans: tuple[Span, ...]
     source: str | None = None
-    early: bool = False
 
 
 @dataclass(frozen=True)
 class CusipFact:
-    """Per-CUSIP facts the roles read: `start`..`end` its life (13F included), `order_start` its first traded day."""
+    """Per-CUSIP facts the roles read: `start`..`end` its traded life."""
 
     cusip: str
     issuer: Issuer
     company: str
     start: pd.Timestamp
     end: pd.Timestamp
-    order_start: pd.Timestamp
     kind: str | None
     letter: str | None
     priority: int | None
@@ -324,12 +291,11 @@ class RowContext:
 
 @dataclass(frozen=True)
 class CusipHistory:
-    """The `universe_cusip` rows, the per-line flags, the WARNING-block items and the 13F back-extension."""
+    """The `universe_cusip` rows, the per-line flags and the WARNING-block items."""
 
     rows: pd.DataFrame
     flags: pd.DataFrame
     items: pd.DataFrame
-    thirteenf: ThirteenF
 
 
 # Small flat helpers
@@ -401,36 +367,27 @@ def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manua
     return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated if c), tape=tape_intervals(lineage))
 
 
-def read_ftd_evidence(context: Context, cache: Path, scope: FtdScope) -> pd.DataFrame:
-    """The in-scope lines of every cached FTD period, observation columns only, read from the zips and never stored; a
-    CUSIP-6 the lineage tape votes for on them is read again from the periods that hold it."""
-    # every period, filtered as it is read (one raw period in memory at a time), with the CUSIP-6 prefixes it holds
-    periods = sorted(ftd_zip.cached_ftd_periods(cache))
-    kept, held, keys = [], {}, {}
-    for period in tqdm(periods, desc="FTD evidence"):
-        if (raw := ftd_zip.read_ftd_period(context, cache, period, download=False)) is not None:
-            keys.update({value: squash(value) for value in raw["source_symbol"].unique() if value not in keys})
-            held[period] = frozenset(raw["cusip"].str[:6].unique())
-            kept.append(_in_scope(raw, keys, scope.symbols, scope.prefixes))
-    lines = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
+def read_ftd_evidence(store: DataStore, scope: FtdScope) -> pd.DataFrame:
+    """The in-scope stored FTD lines, observation columns only: the lineage symbols and CUSIP-6 prefixes, then every line of
+    a CUSIP-6 the lineage tape votes for on them."""
+    # one read of the stored lines (the ingest scope is a superset), each symbol keyed once
+    stored = store.load(Tables.sec_fails_to_deliver_security, columns=list(OBSERVATION_COLUMNS), optional=True)
+    if stored is None or stored.empty:
+        return pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
+    keys = {value: squash(value) for value in stored["source_symbol"].dropna().unique()}
+    lines = _in_scope(stored, keys, scope.symbols, scope.prefixes)
 
-    # the prefixes the tape votes for, re-read from the periods holding one
+    # the prefixes the tape votes for, then the lines they add
     keyed = pd.DataFrame({"cusip": lines["cusip"], "key": lines["source_symbol"].map(keys), "trade_date": pd.to_datetime(lines["trade_date"])})
     added = frozenset(str(c)[:6] for c in _votes(keyed.drop_duplicates(ignore_index=True), scope.tape)["cusip"]) - scope.prefixes
-    again = [period for period, prefixes in held.items() if added & prefixes]
-    if again:
-        logger.info("FTD evidence: %d voted CUSIP-6 prefix(es) re-read from %d period(s)", len(added), len(again))
-    for period in again:
-        kept.append(_in_scope(ftd_zip.read_ftd_period(context, cache, period, download=False), keys, frozenset(), added))
-
-    # the unique lines
-    lines = ftd_zip.unique_ftd_keys(pd.concat(kept, ignore_index=True) if kept else lines, "FTD evidence")
+    lines = _in_scope(stored, keys, scope.symbols, scope.prefixes | added).reset_index(drop=True)
     logger.info(
-        "FTD evidence: %d period(s), %d in-scope line(s) (%d symbol(s), %d CUSIP-6 prefix(es))",
-        len(periods),
+        "FTD evidence: %d stored line(s), %d in scope (%d symbol(s), %d CUSIP-6 prefix(es), %d voted)",
+        len(stored),
         len(lines),
         len(scope.symbols),
         len(scope.prefixes | added),
+        len(added),
     )
     return lines
 
@@ -754,140 +711,6 @@ def extend_lines(lines: pd.DataFrame, finra: Finra, manual: SecurityManual, issu
     return out
 
 
-# The 13F back-extension (X3, X4)
-def _tokens(name: object) -> tuple[str, ...]:
-    """The significant words of a company or issuer name (legal, class and place words and numbers dropped)."""
-    text = re.sub(r"[^A-Z0-9&]+", " ", str(name or "").upper())
-    return tuple(t for t in text.split() if t not in _NAME_STOP and not re.fullmatch(r"\d+(\.\d+)?", t))
-
-
-def _compatible(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
-    """One name up to 13F abbreviation: same first word (or the first two swapped, `DISNEY WALT`), the second word a prefix
-    or same-initial subsequence of the other (`INTL` ~ `INTERNATIONAL`); a one-word name needs 5 letters."""
-    if not a or not b or a == b:
-        return bool(a) and a == b
-    if len(a) >= 2 and len(b) >= 2 and a[0] == b[1] and a[1] == b[0]:
-        return True
-    if a[0] != b[0] or len(a[0]) < 2:
-        return False
-    if len(a) < 2 or len(b) < 2:
-        return len(a[0]) >= 5
-    short, long_ = sorted((a[1], b[1]), key=len)
-    letters = iter(long_)
-    return long_.startswith(short) or (short[0] == long_[0] and len(short) >= 3 and all(ch in letters for ch in short))
-
-
-def company_names(view: LineageView, universe: pd.DataFrame, sharadar: pd.DataFrame | None, profile: pd.DataFrame | None) -> pd.DataFrame:
-    """`[company, tokens, valid_from, valid_to]`: each universe company's names, undated (universe, Sharadar) or dated by
-    the SEC profile of each of its CIKs (the current name from the latest former name's end)."""
-    # the undated names of each universe ticker: its own, its Sharadar spelling, every Sharadar row of its permaticker
-    rows = [
-        (t, n, _NEAR, _FAR)
-        for column in ("name", "sharadar_name")
-        if column in universe.columns
-        for t, n in zip(universe["ticker"], universe[column], strict=True)
-    ]
-    if sharadar is not None and "permaticker" in universe.columns:
-        named = universe[["ticker", "permaticker"]].dropna().merge(sharadar[["permaticker", "name"]].dropna(), on="permaticker", how="inner")
-        rows += [(t, n, _NEAR, _FAR) for t, n in zip(named["ticker"], named["name"], strict=True)]
-
-    # the dated SEC names of each CIK of a universe company
-    for cik, name, former in [] if profile is None else profile[list(PROFILE_NAME_COLUMNS)].to_numpy().tolist():
-        ticker = view.ticker(str(cik))
-        dated = [
-            (f.get("name"), pd.Timestamp(f["from"]) if f.get("from") else _NEAR, pd.Timestamp(f["to"]) if f.get("to") else _FAR)
-            for f in (json.loads(former) if isinstance(former, str) and former else [])
-        ]
-        rows += [(ticker, n, a, b) for n, a, b in dated if ticker] + (
-            [(ticker, name, max((b for *_, b in dated), default=_NEAR), _FAR)] if ticker else []
-        )
-
-    # each name's significant words
-    frame = pd.DataFrame(rows, columns=["company", "name", "valid_from", "valid_to"]).dropna(subset=["company", "name"])
-    frame["tokens"] = frame["name"].map(_tokens)
-    return frame[frame["tokens"].map(bool)].drop_duplicates(["company", "tokens", "valid_from", "valid_to"], ignore_index=True)
-
-
-def thirteenf_starts(
-    holdings: pd.DataFrame | None, owners: Mapping[str, str], names: pd.DataFrame, listed: Mapping[str, frozenset[str]], as_of: pd.Timestamp
-) -> ThirteenF:
-    """Per CUSIP of a company's line, its first 13F period (from 1998, `MIN_13F_HOLDERS` holder rows) that the company's
-    Sharadar CUSIPs or a name of the company valid then confirms (X3). A name never confirms a CUSIP whose CUSIP-6 the
-    company does not own (X4): those matches are returned as refused."""
-    # the 13F rows of a plausible period, each with the company owning its CUSIP's line
-    if holdings is None or holdings.empty:
-        return ThirteenF({}, pd.DataFrame(columns=list(REFUSED_COLUMNS)))
-    rows = holdings.assign(
-        period=pd.to_datetime(holdings["period"], errors="coerce"),
-        cusip=holdings["cusip"].astype(str).str.upper(),
-        issuer_name=holdings["issuer_name"].fillna("").astype(str),
-    )
-    holders = rows.groupby(["cusip", "period"])["n_rows"].transform("sum")
-    rows = rows[rows["period"].between(FIRST_13F_PERIOD, as_of) & holders.ge(MIN_13F_HOLDERS)]
-    rows = rows.assign(owner=rows["cusip"].map(owners))
-
-    # each holder spelling with every company name it is compatible with (looked up by either of its first two words)
-    index: dict[str, list[tuple[str, tuple[str, ...], pd.Timestamp, pd.Timestamp]]] = {}
-    for company, tokens, start, end in names[["company", "tokens", "valid_from", "valid_to"]].to_numpy().tolist():
-        for word in dict.fromkeys(tokens[:2]):
-            index.setdefault(word, []).append((company, tokens, start, end))
-    spellings = {spelling: _tokens(spelling) for spelling in rows["issuer_name"].unique()}
-    candidates = {
-        spelling: dict.fromkeys(entry for word in dict.fromkeys(words[:2]) for entry in index.get(word, [])) for spelling, words in spellings.items()
-    }
-    pairs = pd.DataFrame(
-        [
-            (spelling, company, start, end)
-            for spelling, found in candidates.items()
-            for company, tokens, start, end in found
-            if _compatible(spellings[spelling], tokens)
-        ],
-        columns=["issuer_name", "company", "valid_from", "valid_to"],
-    )
-
-    # confirmed: the owner's Sharadar CUSIP list, or one of the owner's names valid at the period
-    named = rows.merge(pairs, on="issuer_name", how="inner")
-    named = named[(named["period"] >= named["valid_from"] - NAME_LEAD) & (named["period"] <= named["valid_to"] + NAME_LAG)]
-    by_name = named[named["company"].eq(named["owner"])]
-    by_name = by_name.assign(how="13F name '" + by_name["issuer_name"] + "'")
-    on_list = pd.Series([c in listed.get(str(o), ()) for c, o in zip(rows["cusip"], rows["owner"], strict=True)], index=rows.index, dtype=bool)
-    by_list = rows[on_list].assign(how="Sharadar cusips")
-    confirmed = pd.concat([by_list, by_name], ignore_index=True).sort_values(["cusip", "period", "how"], kind="mergesort").drop_duplicates("cusip")
-
-    # refused (X4): a name matching a company that owns no line of this CUSIP-6
-    prefixes = {(ticker, cusip[:6]) for cusip, ticker in owners.items()}
-    unowned = pd.Series([(t, c[:6]) not in prefixes for t, c in zip(named["company"], named["cusip"], strict=True)], index=named.index, dtype=bool)
-    foreign = named[named["company"].ne(named["owner"]) & unowned]
-    refused = foreign.groupby(["cusip", "company"], as_index=False).agg(
-        issuer_name=("issuer_name", "first"), first=("period", "min"), n_rows=("n_rows", "sum")
-    )
-    return ThirteenF(
-        {c: (p, h) for c, p, h in zip(confirmed["cusip"], confirmed["period"], confirmed["how"], strict=True)}, refused[list(REFUSED_COLUMNS)]
-    )
-
-
-def line_owners(issuers: Mapping[str, Issuer], view: LineageView) -> dict[str, str]:
-    """`{cusip: universe ticker}` of every CUSIP whose issuer is a universe company."""
-    owners = {cusip: view.ticker(issuer.primary) for cusip, issuer in issuers.items()}
-    return {cusip: ticker for cusip, ticker in owners.items() if ticker}
-
-
-def back_extend(lines: pd.DataFrame, starts: Mapping[str, tuple[pd.Timestamp, str]]) -> pd.DataFrame:
-    """The earliest real line of each CUSIP starts at the CUSIP's first confirmed 13F period, never before an earlier CUSIP
-    of its symbol ends; `ftd_start` keeps the traded start (the canonical order), `thirteenf` the evidence."""
-    # the earliest real line of each CUSIP with 13F evidence before it
-    out = lines.assign(ftd_start=lines["start"], thirteenf=None)
-    first = out[~out["placeholder"] & out["cusip"].isin(set(starts))].sort_values(["cusip", "start"], kind="mergesort").groupby("cusip").head(1)
-
-    # each starts at its evidence, floored at the end of an earlier CUSIP of its symbol
-    for i, line in zip(first.index, _records(first), strict=True):
-        earlier = out[out["key"].eq(line.key) & out["cusip"].ne(line.cusip) & out["start"].lt(line.start)]
-        begin = max(starts[line.cusip][0], max((min(end, line.start) for end in earlier["end"]), default=_NEAR))
-        if begin < line.start:
-            out.at[i, "start"], out.at[i, "thirteenf"] = begin, f"13F from {begin.date()} ({starts[line.cusip][1]})"
-    return out
-
-
 # Facts and roles
 def _cusip_fact(cusip: str, group: pd.DataFrame, issuer: Issuer, company: str, ctx: _FactContext) -> CusipFact:
     """One attributed CUSIP's facts: class letter, canonical priority, non-common kind and class evidence from its lines,
@@ -929,9 +752,7 @@ def _cusip_fact(cusip: str, group: pd.DataFrame, issuer: Issuer, company: str, c
         else None
     )  # fmt: skip
     manual = tuple((a, b, role, reason, source, cik or issuer.primary) for a, b, role, reason, source, cik in ctx.bounds.get(cusip, []))
-    return CusipFact(
-        cusip, issuer, company, group["start"].min(), max(group["end"]), group["ftd_start"].min(), kind, letter, priority, evidence, manual
-    )
+    return CusipFact(cusip, issuer, company, group["start"].min(), max(group["end"]), kind, letter, priority, evidence, manual)
 
 
 def cusip_facts(
@@ -988,17 +809,14 @@ def _window_spans(windows: tuple[Span, ...], start: pd.Timestamp, end: pd.Timest
     return out
 
 
-def _span_roles(
-    fact: CusipFact, cik: str, has_window: bool, inside: list[Span], outside: list[Span], early: bool
-) -> tuple[list[_Segment], list[_Candidate]]:
+def _span_roles(fact: CusipFact, cik: str, has_window: bool, inside: list[Span], outside: list[Span]) -> tuple[list[_Segment], list[_Candidate]]:
     """One issuer span's roles: acquired outside the CIK's windows (all of it for an event-only CIK); inside, a canonical
-    candidate by priority (`early` for the 13F-only life), else excluded by kind, a secondary class with class evidence,
-    or excluded as unclassified."""
+    candidate by priority, else excluded by kind, a secondary class with class evidence, or excluded as unclassified."""
     if not has_window:
         return [_Segment(lo, hi, ACQUIRED_CONSTITUENT, "event_only_cik", cik) for lo, hi in outside], []
     if fact.priority is not None and not fact.kind:
-        cands = [_Candidate(fact.priority, fact.order_start, fact.cusip, cik, tuple(inside), early=early)] if inside else []
-        return [], cands + ([_Candidate(FALLBACK_PRIORITY, fact.order_start, fact.cusip, cik, tuple(outside), early=early)] if outside else [])
+        cands = [_Candidate(fact.priority, fact.start, fact.cusip, cik, tuple(inside))] if inside else []
+        return [], cands + ([_Candidate(FALLBACK_PRIORITY, fact.start, fact.cusip, cik, tuple(outside))] if outside else [])
     role, why = (EXCLUDED, fact.kind) if fact.kind else (SECONDARY_CLASS, fact.class_evidence) if fact.class_evidence else (EXCLUDED, "unclassified")
     acquired = [_Segment(lo, hi, ACQUIRED_CONSTITUENT, "outside_window", cik) for lo, hi in outside]
     return [_Segment(lo, hi, role, cast(str, why), cik) for lo, hi in inside] + acquired, []
@@ -1008,31 +826,26 @@ def role_segments(
     facts: list[CusipFact], view: LineageView, co_registrants: frozenset[str]
 ) -> tuple[dict[str, list[_Segment]], dict[str, list[_Candidate]]]:
     """Each CUSIP's non-canonical segments (manual roles, acquired outside its issuers' windows, excluded by kind, secondary
-    classes) and each company's canonical candidates, over its traded life and, apart, its 13F-only life before it (X3);
-    a co-registrant's CUSIPs get none."""
-    # the traded life of each CUSIP, then the 13F-only life before it (the seam rules read each life's own edges)
+    classes) and each company's canonical candidates, over its traded life; a co-registrant's CUSIPs get none."""
     kept = [fact for fact in facts if fact.issuer.primary not in co_registrants]
-    lives = [(fact, (fact.order_start, fact.end), False) for fact in kept]
-    lives += [(fact, (fact.start, fact.order_start), True) for fact in kept if fact.start < fact.order_start]
 
-    # each life: its manual roles, then each issuer span's roles inside and outside the CIK's windows
+    # each CUSIP's life: its manual roles, then each issuer span's roles inside and outside the CIK's windows
     segments: dict[str, list[_Segment]] = {fact.cusip: [] for fact in kept}
     candidates: dict[str, list[_Candidate]] = {}
-    for fact, bounds, early in lives:
+    for fact in kept:
+        bounds = (fact.start, fact.end)
         manual = [(lo, hi, role, reason, source, cik) for a, b, role, reason, source, cik in fact.manual for lo, hi in _intersect([bounds], a, b)]
         segments[fact.cusip] += [
             _Segment(lo, hi, role, reason, cik, source) for lo, hi, role, reason, source, cik in manual if role not in CANONICAL_ROLES
         ]
         cands = [
-            _Candidate(-1, fact.order_start, fact.cusip, cik, ((lo, hi),), source, early)
-            for lo, hi, role, _, source, cik in manual
-            if role in CANONICAL_ROLES
+            _Candidate(-1, fact.start, fact.cusip, cik, ((lo, hi),), source) for lo, hi, role, _, source, cik in manual if role in CANONICAL_ROLES
         ]
         free = _subtract([bounds], [(a, b) for a, b, *_ in fact.manual])
         for cik, a, b in fact.issuer.spans:
             part, windows = _intersect(free, a, b), view.windows.get(cik)
             inside = [piece for lo, hi in part for piece in _window_spans(windows, lo, hi)] if windows is not None else []
-            more, found = _span_roles(fact, cik, windows is not None, inside, _subtract(part, inside), early)
+            more, found = _span_roles(fact, cik, windows is not None, inside, _subtract(part, inside))
             segments[fact.cusip] += more
             cands += found
         candidates.setdefault(fact.company, []).extend(cands)
@@ -1046,13 +859,13 @@ def canonical_segments(
     segments: dict[str, list[_Segment]],
     horizon: pd.Timestamp,
 ) -> None:
-    """Per company, traded spans before 13F-only ones, best priority first and later start first within a priority: each
-    candidate takes the dates no better line holds. One overlapping better lines over most of its life is a sibling
+    """Per company, best priority first and later start first within a priority: each candidate takes the dates no better
+    line holds. One overlapping better lines over most of its life is a sibling
     class; a fallback part not taken stays acquired."""
     for company, cands in candidates.items():
         covered: list[Span] = []
         roster_cik = view.roster_cik_by_ticker.get(company)
-        for cand in sorted(cands, key=lambda c: (c.early, c.priority, -c.start.value, c.cusip, c.issuer)):
+        for cand in sorted(cands, key=lambda c: (c.priority, -c.start.value, c.cusip, c.issuer)):
             evidence = facts[cand.cusip].class_evidence
             free, whole = _subtract(cand.spans, covered), _length(cand.spans, horizon)
             sibling = 0 <= cand.priority < FALLBACK_PRIORITY and whole > 0 and 1 - _length(free, horizon) / whole >= SIBLING_OVERLAP
@@ -1150,7 +963,6 @@ def _finish_rows(merged: list[dict[str, Any]], line: Any, issuer: Issuer, days: 
         traded = (f"; FINRA from {line.finra_from.date()}" if pd.notna(line.finra_from) else "") + (
             f"; FINRA to {line.finra_to.date()}" if pd.notna(line.finra_to) else ""
         )
-        traded += f"; {line.thirteenf}" if isinstance(line.thirteenf, str) else ""
         row["evidence"] = (
             f"issuer {issuer.primary} by {issuer.how}; FTD {line.first.date()}..{line.last.date()} n={line.n_obs}{traded}; {line.description}"
         )
@@ -1333,18 +1145,14 @@ def ratio_step_flags(obs: pd.DataFrame, rows: pd.DataFrame, ratios: pd.DataFrame
     return pd.DataFrame(flags.rows, columns=list(FLAG_DETAIL_COLUMNS))
 
 
-def log_cusip_history(rows: pd.DataFrame, detail: pd.DataFrame, thirteenf: ThirteenF, co_registrants: frozenset[str]) -> None:
-    """One INFO summary: rows, CUSIPs, companies, roles, the 13F back-extension, co-registrant CIKs and flag counts."""
-    extended = rows[rows["evidence"].str.contains("; 13F from ", regex=False)]
+def log_cusip_history(rows: pd.DataFrame, detail: pd.DataFrame, co_registrants: frozenset[str]) -> None:
+    """One INFO summary: rows, CUSIPs, companies, roles, co-registrant CIKs and flag counts."""
     logger.info(
-        "universe_cusip: %d row(s) over %d CUSIP(s) and %d company(ies); roles %s; %d CUSIP(s) run back to their first confirmed 13F period "
-        "(%d refused name match(es) on a foreign CUSIP-6); %d co-registrant CIK(s) not stored; flags %s",
+        "universe_cusip: %d row(s) over %d CUSIP(s) and %d company(ies); roles %s; %d co-registrant CIK(s) not stored; flags %s",
         len(rows),
         rows["security_id"].nunique(),
         rows["canonical_company"].nunique(),
         rows.groupby("lineage_role")["security_id"].nunique().to_dict(),
-        extended["cusip"].nunique(),
-        thirteenf.refused["cusip"].nunique(),
         len(co_registrants),
         detail["kind"].value_counts().sort_index().to_dict(),
     )

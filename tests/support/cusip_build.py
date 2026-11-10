@@ -1,8 +1,8 @@
 """The `universe_cusip` build on in-memory inputs, through the production stage functions.
 
-`derive_cusip_history` is the compute of `StepExtractIdentity.run_cusip_history` (clean -> lines -> 13F -> facts -> roles
--> rows -> flags) on frames instead of store reads: the FTD lines, the lineage, the roster, the curation, and optionally the
-SEC listing, the FINRA days, the 13F holder names, the company names and Sharadar CUSIPs. No DB, no network.
+`derive_cusip_history` is the compute of `StepExtractIdentity.run_cusip_history` (clean -> lines -> facts -> roles -> rows
+-> flags) on frames instead of store reads: the FTD lines, the lineage, the roster, the curation, and optionally the SEC
+listing and the FINRA days. No DB, no network.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from src.data_extract.utils.identity.cusip_history import (
     CusipFlags,
     CusipHistory,
     CusipRoles,
-    back_extend,
     canonical_segments,
     cusip_facts,
     cusip_flags,
@@ -36,18 +35,16 @@ from src.data_extract.utils.identity.cusip_history import (
     flag_items,
     ftd_lines,
     line_ends,
-    line_owners,
     lineage_view,
     prepare_observations,
     ratio_step_flags,
     role_segments,
     row_context,
     sec_listing,
-    thirteenf_starts,
 )
+from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
+from src.data_store.schema import Tables
 from src.utils.string import pad_cik, run_date
-
-NAME_COLUMNS = ["company", "name", "valid_from", "valid_to", "tokens"]
 
 
 def derive_cusip_history(
@@ -61,14 +58,10 @@ def derive_cusip_history(
     finra_presence: pd.DataFrame | None = None,
     co_registrant_ciks: Collection[str] = (),
     existing: pd.DataFrame | None = None,
-    holdings: pd.DataFrame | None = None,
-    names: pd.DataFrame | None = None,
-    listed: Mapping[str, frozenset[str]] | None = None,
-    as_of: pd.Timestamp | None = None,
     ended_on: Mapping[str, pd.Timestamp] | None = None,
 ) -> CusipHistory:
-    """`run_cusip_history`'s compute on these inputs (`holdings` = 13F `[cusip, period, issuer_name, n_rows]`; `names` =
-    `company_names` rows; `ended_on` = the anchor's end dates, none by default); deterministic for fixed inputs and `built_at`."""
+    """`run_cusip_history`'s compute on these inputs (`ended_on` = the anchor's end dates, none by default); deterministic
+    for fixed inputs and `built_at`."""
     obs = prepare_observations(observations)
     view = lineage_view(lineage, roster_cik, tape_intervals(lineage))
     listing, finra, flags = sec_listing(sec_tickers), finra_evidence(finra_presence), CusipFlags()
@@ -76,9 +69,6 @@ def derive_cusip_history(
     lines, spans = ftd_lines(obs)
     issuers = cusip_issuers(spans, obs, view, manual, flags)
     lines = extend_lines(line_ends(lines, obs, listing, issuers), finra, manual, issuers, view)
-    name_rows = names if names is not None else pd.DataFrame(columns=NAME_COLUMNS)
-    thirteenf = thirteenf_starts(holdings, line_owners(issuers, view), name_rows, listed or {}, as_of or built_at)
-    lines = back_extend(lines, thirteenf.starts)
 
     facts = cusip_facts(lines, issuers, view, manual, listing, finra)
     segments, candidates = role_segments(facts, view, frozenset(pad_cik(c) for c in co_registrant_ciks))
@@ -87,7 +77,7 @@ def derive_cusip_history(
 
     rows = finalise_rows(cusip_rows(lines, obs, roles, issuers, row_context(view, manual, listing)), existing, built_at, ended_on or {})
     detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
-    return CusipHistory(rows=rows, flags=detail, items=items, thirteenf=thirteenf)
+    return CusipHistory(rows=rows, flags=detail, items=items)
 
 
 #: The header line of an SEC FTD file.
@@ -116,10 +106,14 @@ def ftd_texts(observations: pd.DataFrame) -> dict[str, str]:
 
 
 def run_cusip_stage(context: Any, lineage: pd.DataFrame, ftd_cache: Path, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
-    """`StepExtractIdentity.run_cusip_history` itself over `context`'s store and the FTD zips cached in `ftd_cache`, with
-    `lineage` as this run's symbol history."""
+    """`StepExtractIdentity.run_cusip_history` itself over `context`'s store, with every line of the FTD zips cached in
+    `ftd_cache` stored first (a superset of the ingest scope) and `lineage` as this run's symbol history."""
+    for path in sorted(ftd_cache.glob("cnsfails*.zip")):
+        with ZipFile(path) as archive:
+            text = archive.read(archive.namelist()[0]).decode("latin-1")
+        context.store.save(Tables.sec_fails_to_deliver_security, ftd._parse_ftd_lines(text).assign(period=path.stem.removeprefix("cnsfails")))
     step = cast(Any, object.__new__(StepExtractIdentity))
     step._context, step._config_dir, step._log = context, str(context.config_dir), logging.getLogger("tests.cusip_build")
-    step._symbols, step._run_date, step._ftd_cache = SimpleNamespace(rows=lineage), run_date(as_of), ftd_cache
+    step._symbols, step._run_date = SimpleNamespace(rows=lineage), run_date(as_of)
     step._anchor = CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik=dict(context.universe.cik_by_ticker))
     return step.run_cusip_history()

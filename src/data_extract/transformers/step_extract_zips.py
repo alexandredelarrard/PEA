@@ -84,7 +84,7 @@ class StepExtractZips(Step):
 
     def run_ingest_fails_to_deliver(self) -> int:
         scope = self._scope
-        return fetch_fails_to_deliver(self._context, scope.tickers, scope.full, scope.run_date)
+        return fetch_fails_to_deliver(self._context, scope.full, scope.run_date)
 
     def run_ingest(self) -> None:
         self.run_ingest_insider()

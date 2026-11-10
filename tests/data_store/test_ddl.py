@@ -49,7 +49,7 @@ Q2A_TABLES = {
     "sec_company_tickers": (("cik", "ticker"), ('"cik" TEXT NOT NULL', '"exchange" TEXT', '"fetched_at" TIMESTAMP')),
     "sec_fails_to_deliver_security": (
         ("cusip", "date"),
-        ('"date" DATE NOT NULL', '"trade_date" DATE', '"price" DOUBLE PRECISION', '"description" TEXT', '"lineage_role" TEXT'),
+        ('"date" DATE NOT NULL', '"trade_date" DATE', '"price" DOUBLE PRECISION', '"description" TEXT', '"period" TEXT'),
     ),
 }
 
@@ -66,7 +66,8 @@ def test_q2a_tables_are_registered_and_spliced_into_schema_sql() -> None:
             assert column in persisted, (name, column)
         generated = ddl.table_ddl(table, [(c, "TEXT") for c in table.read_columns])
         assert generated.split("(", 1)[0] == persisted.split("(", 1)[0]
-    assert "universe_cik_symbol" in blocks and "sec_fails_to_deliver" in blocks and "ix_universe_cik_symbol_company_id" in schema_sql
+    assert "universe_cik_symbol" in blocks and "sec_fails_to_deliver" not in blocks and "ix_universe_cik_symbol_company_id" in schema_sql
+    assert '"ticker"' not in blocks["sec_fails_to_deliver_security"], "the FTD lines are stored as filed: no identity stamp"
     print("\n=== SANITY CHECK: Q2a DDL ===")
     print(f"  {', '.join(Q2A_TABLES)} registered with their PKs and hand-spliced into sql/schema.sql; existing blocks and indexes kept")
 

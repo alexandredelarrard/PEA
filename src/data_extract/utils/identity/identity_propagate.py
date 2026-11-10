@@ -9,8 +9,8 @@ runs inside the window costs reads only.
   proxies) whose CIK holds no window of the ticker: the event-only CIKs (DD, DOW, JCI, PLD).
 - Expansion (`reparse_notes`, `reparse_insider`): the bulk families re-parse, from their cached zips, the changed
   tickers whose table holds their rows but none from a scope CIK it can hold.
-- Re-stamps: insider rows in place (co-registrant rows purged), FTD and short-volume lines of companies whose
-  `universe_cusip` rows changed. `sec13f_hr` is stored as filed and mapped to companies by the cube, so it needs none.
+- Re-stamps: insider rows in place (co-registrant rows purged), short-volume lines of companies whose `universe_cusip`
+  rows changed. `sec13f_hr` and the FTD lines are stored as filed and mapped to companies by the cube, so they need none.
 - A ticker whose facts were purged has its SEC history rebuilt. A dry run only reports.
 """
 
@@ -22,18 +22,17 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity import FilingScope, Identity, load_source_identity
+from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.resume import recently_changed
-from src.data_extract.utils.common.security_lines import master_stamps, prepare_master
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_extract.utils.institutionals.security_tape import restamp_targets
-from src.data_extract.utils.zips.fetch_fails_to_deliver import restamp_fails
 from src.data_extract.utils.zips.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.zips.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import FilerTable, ListedWindow, delete_filer_rows, foreign_filer_rows, removal_records
+from src.utils.security_series import prepare_master
 from src.utils.string import pad_cik_series
 from src.utils.tickers_universe.universe import Bounds, before_end
 
@@ -149,24 +148,6 @@ def refresh_insider(context: Context, identity: Identity, changed: Sequence[str]
         return []
     records = restamp_insider_lineage(context, changed, identity=identity, dry_run=dry_run)
     _log_records(context, Tables.insider_transactions.name, records, dry_run)
-    return records
-
-
-def refresh_fails(context: Context, tickers: Sequence[str], as_of: pd.Timestamp, dry_run: bool, every: bool) -> list[dict]:
-    """Re-stamp the stored FTD lines of companies whose `universe_cusip` rows changed recently; rebuild their rows."""
-    # load: the published cohort and its CUSIP lines
-    if not context.store.exists(Tables.sec_fails_to_deliver_security):
-        return []
-    cohort = load_source_identity(context.store)
-    master = prepare_master(cohort[Tables.universe_cusip])
-
-    # save: the companies to re-stamp, then their lines
-    changed = [] if master.empty else restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of, every=every)
-    if not changed:
-        return []
-    context.log.info(f"identity propagate: re-stamping FTD lines for {len(changed)} company(ies): {', '.join(changed)}")
-    records = restamp_fails(context, changed, tickers, identity=cohort, dry_run=dry_run)
-    _log_records(context, Tables.sec_fails_to_deliver.name, records, dry_run)
     return records
 
 

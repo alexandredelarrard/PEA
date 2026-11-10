@@ -298,31 +298,18 @@ class Tables:
         # The first day FINRA serves; earlier never-stored days are not requested.
         resume=Resume(RESUME_SERIES, "ticker", "date", 7, source_start="2018-08-01"),
     )
-    # SEC Fails-to-Deliver: settlement fails per ticker x date. Same grain as
-    # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files don't
-    # pollute short_interest's global-max-date incremental; combined at the feature layer.
-    # First usable date 2009-07-01 (measured), which is where SEC's own published series
-    # begins -- unlike RegSHO above, this one is a fixed start, not a rolling window.
-    sec_fails_to_deliver = Table(
-        "sec_fails_to_deliver",
-        ("ticker", "date"),
-        date_col="date",
-        date_type_cols=("date",),
-        freshness="biweekly",
-        read_columns=("date", "ticker", "fails_quantity", "period", "source_checked_at"),
-        optional_columns=frozenset({"source_checked_at"}),
-        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 31, period_col="period", source_start="2009-07-01"),
-    )
-    # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
-    # on the CUSIP the file reports. `identity --only capture-ftd` stores the in-scope lines (lineage symbols
-    # and the CUSIP-6 of their voted issuers) with `security_id`, `ticker`, `lineage_role` and
-    # `security_class` NULL; the security master is derived from these rows. `date` is the
+    # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line as filed (no summing),
+    # keyed on the CUSIP the file reports, source columns only. `zips-ingest --only ftd` stores
+    # the lines of the universe companies' lineage symbols and CUSIP-6 prefixes and resumes on the
+    # cached periods no stored line carries: one market-wide frontier (no key). `date` is the
     # settlement date as filed, `trade_date` its settlement-cycle conversion; `price` is NULL
-    # where the file has '.', and so is `fails_value`. `identity --only capture-ftd` resumes on the periods no stored
-    # line carries; one market-wide frontier (no key), the ticker grain is rebuilt from these rows.
+    # where the file has '.', and so is `fails_value`. The identity step reads these lines as
+    # CUSIP evidence; the institutionals cube builds the per-ticker series from them. First
+    # usable date 2009-07-01 (measured), where the SEC's published series begins.
     sec_fails_to_deliver_security = Table(
         "sec_fails_to_deliver_security",
         ("cusip", "date"),
+        ticker_col=None,
         date_col="date",
         date_type_cols=("date", "trade_date"),
         freshness="biweekly",
@@ -337,10 +324,6 @@ class Tables:
             "fails_quantity",
             "fails_value",
             "period",
-            "security_id",
-            "ticker",
-            "lineage_role",
-            "security_class",
         ),
     )
     # FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed

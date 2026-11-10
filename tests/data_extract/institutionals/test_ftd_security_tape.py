@@ -1,33 +1,30 @@
-"""FTD per security (Q2b): raw lines stamped from `universe_cusip`, the ticker-grain table rebuilt from them.
+"""FTD per security (Q2b, identity-security-grain P4): the lines stored as filed, stamped from `universe_cusip` and summed
+into the per-ticker series by the institutionals cube (`src/utils/security_series.py`).
 
-The cached-ZIP lines below are real (copied verbatim from the SEC files of the named periods) and so are the
-master rows (the Q2a build over the whole cache; PLD and JCI from the traded-security build of 2026-10-07) and the
-lineage rows (the q1 lineage, PLD and JCI realigned) of the companies they pin: P21 (AC-104, AC-003) and the edge
-cases E6-E11, E15, E31, E32, AC-106 and AC-108.
+The FTD lines below are real (copied verbatim from the SEC files of the named periods) and so are the master rows (the
+Q2a build over the whole cache; PLD and JCI from the traded-security build of 2026-10-07) and the lineage rows (the q1
+lineage, PLD and JCI realigned) of the companies they pin: P21 (AC-104, AC-003) and the edge cases E6-E11, E15, AC-106.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
 import pytest
-from sqlalchemy import event
 
-from src.data_extract.utils.common import security_lines as sl
-from src.data_extract.utils.common.identity import build_identity, load_source_identity
+from src.data_aggregate.utils.institutionals.inputs import load_fails
+from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils import security_series as series
+from src.utils.price.adjustments import load_bugfix
 from tests.canonical_schema import create_canonical
-from tests.data_extract.fake_context import extract_config
-from tests.support.store_identity import store_identity
-from tests.support.universe import as_roster, seed_universe
+from tests.support.universe import as_roster
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
@@ -220,9 +217,6 @@ def sqlite_store(sqlite_store):
             Tables.symbol_tenure,
             Tables.universe_cusip,
             Tables.sec_fails_to_deliver_security,
-            Tables.sec_fails_to_deliver,
-            Tables.sec_short_volume_security,
-            Tables.short_interest,
         ],
     )
     return sqlite_store
@@ -245,7 +239,7 @@ def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.
         ],
     )
     frame["security_id"] = "C" + frame["cusip"]
-    frame["source"] = sl.SOURCE_FTD
+    frame["source"] = series.SOURCE_FTD
     frame["market_symbol"] = frame["source_symbol"]
     frame["exchange"] = None
     frame["source_accession"] = None
@@ -302,53 +296,24 @@ def _identity() -> Any:
     return build_identity(_lineage(), tenure, as_roster(roster), master=_master())
 
 
-def _context(store, tmp_path: Path) -> Any:
-    return SimpleNamespace(
-        store=store,
-        log=logging.getLogger("test.ftd_security"),
-        paths={"DATA_STORE": tmp_path},
-        config=extract_config(data_extract={"years_history": 15}),
-        config_dir=str(REPO / "configs"),
-        universe=seed_universe(store, UNIVERSE, rows={t: {"cik": ROSTER[t]} for t in UNIVERSE}),
-        _identity_resolver=store_identity(store),
-    )
-
-
-def _serve(monkeypatch: pytest.MonkeyPatch, lines: dict[str, list[str]]) -> list[str]:
-    """Serve `lines` as the cached FTD files; returns the periods read."""
-    read: list[str] = []
-
-    def _read(path: Path, log: Any = None) -> str:
-        period = path.stem.removeprefix("cnsfails")
-        read.append(period)
-        return "\n".join([HEADER, *lines[period]]) + "\n"
-
-    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(lines))
-    monkeypatch.setattr(ftd, "ftd_periods", lambda *a, **k: sorted(lines))
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
-    monkeypatch.setattr(ftd, "read_zip_text", _read)
-    return read
-
-
-def _rebuild(
-    store,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    lines: dict[str, list[str]] = REAL_LINES,
-    master: pd.DataFrame | None = None,
-    events: bool = True,
-) -> Any:
-    """A full rebuild from `lines` as the whole cache, over a fresh source pair (with the closed event history unless `events` is False)."""
+def _rebuild(store: DataStore, lines: dict[str, list[str]] = REAL_LINES, master: pd.DataFrame | None = None, events: bool = True) -> None:
+    """`lines` stored as filed over a fresh security table, `master` as `universe_cusip` (with the closed event history
+    unless `events` is False)."""
     store.drop(Tables.sec_fails_to_deliver_security)
-    store.drop(Tables.sec_fails_to_deliver)
-    create_canonical(store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
+    create_canonical(store.engine, [Tables.sec_fails_to_deliver_security])
     store.replace(Tables.universe_cusip, _master() if master is None else master)
     if events:
         _fixture_share_events(store)
-    _serve(monkeypatch, lines)
-    context = _context(store, tmp_path)
-    ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], full=True)
-    return context
+    filed = [ftd._parse_ftd_lines("\n".join([HEADER, *rows]) + "\n").assign(period=period) for period, rows in lines.items()]
+    store.save(Tables.sec_fails_to_deliver_security, pd.concat(filed, ignore_index=True))
+
+
+def _series(store: DataStore) -> pd.DataFrame:
+    """The cube's FTD series of every master company, built by the institutionals loader."""
+    master = store.load(Tables.universe_cusip)
+    fails, _ = load_fails(store, sorted(set(master["canonical_company"].dropna())), master, load_bugfix(str(REPO / "configs")))
+    assert fails is not None
+    return fails
 
 
 def _fixture_share_events(store: DataStore) -> None:
@@ -374,12 +339,13 @@ def _fixture_share_events(store: DataStore) -> None:
 
 
 def _grain(store) -> dict[tuple[str, str], float]:
-    frame = store.load(Tables.sec_fails_to_deliver)
+    frame = _series(store)
     return {(str(t), str(pd.Timestamp(d).date())): float(q) for t, d, q in zip(frame["ticker"], frame["date"], frame["fails_quantity"], strict=True)}
 
 
 def _security(store) -> pd.DataFrame:
-    frame = store.load(Tables.sec_fails_to_deliver_security)
+    """The stored lines with their dated security (`stamp_lines`, as the cube reads them)."""
+    frame = series.stamp_lines(store.load(Tables.sec_fails_to_deliver_security), series.prepare_master(store.load(Tables.universe_cusip)))
     frame["day"] = pd.to_datetime(frame["date"]).dt.strftime("%Y-%m-%d")
     return frame
 
@@ -392,8 +358,8 @@ def _role(security: pd.DataFrame, cusip: str, day: str) -> tuple[Any, Any]:
 # --------------------------------------------------------------------------- AC-104 (P21)
 
 
-def test_ac104_p21_acquired_and_event_only_lines_never_reach_the_canonical_ticker(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
+def test_ac104_p21_acquired_and_event_only_lines_never_reach_the_canonical_ticker(sqlite_store):
+    _rebuild(sqlite_store)
     grain = _grain(sqlite_store)
     assert grain.get(("CB", "2015-06-01")) == 0.0 and grain.get(("CB", "2015-06-02")) == 293.0, (
         f"old Chubb counted for CB: {grain.get(('CB', '2015-06-02'))}"
@@ -401,25 +367,21 @@ def test_ac104_p21_acquired_and_event_only_lines_never_reach_the_canonical_ticke
     security = _security(sqlite_store)
 
     # CB: ACE `H0023R105` in, old Chubb `171232101` out before 2016-01-14, then Chubb Ltd `H1467J104`.
-    assert grain[("CB", "2015-06-01")] == 0.0, "old Chubb's excluded line cannot contribute positive fails to CB"
-    checked = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "CB", "date": pd.Timestamp("2015-06-01")})
-    assert checked is not None and checked["source_checked_at"].notna().all()
+    assert grain[("CB", "2015-06-01")] == 0.0, "old Chubb's excluded line cannot contribute positive fails to CB: a supported zero"
     assert grain[("CB", "2015-06-02")] == 293.0, "ACE only, not ACE + old Chubb (2,661)"
     assert grain[("CB", "2016-01-04")] == 1408.0
     assert grain[("CB", "2016-01-19")] == 284787.0, "Chubb Ltd only: ACE's tail is superseded, CBXXXX a placeholder"
     assert _role(security, "171232101", "2015-06-02") == ("CB", "acquired_constituent")
     # DOC: PEAK `42250P103` in, Physicians Realty `71943U104` out before 2024-03.
-    assert grain[("DOC", "2024-02-23")] == 0.0, "the acquired DOC line contributes no canonical fails"
-    checked = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "DOC", "date": pd.Timestamp("2024-02-23")})
-    assert checked is not None and checked["source_checked_at"].notna().all()
+    assert grain[("DOC", "2024-02-23")] == 0.0, "the acquired DOC line contributes no canonical fails: a supported zero"
     assert _role(security, "71943U104", "2024-02-23") == ("DOC", "acquired_constituent")
     assert grain[("DOC", "2024-03-01")] == 651072.0 and grain[("DOC", "2024-03-04")] == 6321311.0
     assert _role(security, "71943U104", "2024-03-01") == ("DOC", "acquired_constituent")
-    # Old GM: MTLQQ `62010A105` kept raw as acquired; `370442105` (GMGMQ) is no master security, never stored.
-    gm = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "GM"})
-    assert gm is not None and not gm.empty and gm["fails_quantity"].eq(0).all() and gm["source_checked_at"].notna().all()
+    # Old GM: MTLQQ `62010A105` stored as filed, acquired; `370442105` (GMGMQ) is no master security, never counted.
+    gm = [q for (t, _), q in grain.items() if t == "GM"]
+    assert gm and all(q == 0.0 for q in gm)
     assert _role(security, "62010A105", "2010-01-04") == ("GM", "acquired_constituent")
-    assert "370442105" not in set(security["cusip"])
+    assert security.loc[security["cusip"].eq("370442105"), "security_id"].isna().all()
     # SGP is an acquired constituent of MRK before its merger.
     assert grain[("MRK", "2009-11-03")] == 3647.0 and grain[("MRK", "2009-11-04")] == 804174.0 and grain[("MRK", "2009-11-05")] == 373679.0
     assert _role(security, "806605101", "2009-11-03") == ("MRK", "acquired_constituent")
@@ -467,20 +429,20 @@ def test_p21_tape_symbol_resolves_only_through_window_ciks_inside_their_windows(
 # --------------------------------------------------------------------------- edge cases
 
 
-def test_e6_same_day_cusip_change_placeholder_is_excluded(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
+def test_e6_same_day_cusip_change_placeholder_is_excluded(sqlite_store):
+    _rebuild(sqlite_store)
     grain, security = _grain(sqlite_store), _security(sqlite_store)
     assert grain[("XOM", "2026-07-02")] == 60803.0 and grain[("XOM", "2026-07-06")] == 22242.0
     assert _role(security, "30233Q108", "2026-07-02") == ("XOM", "excluded")
-    value = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "XOM"})
-    day = value[pd.to_datetime(value["date"]).eq(pd.Timestamp("2026-07-02"))].iloc[0]
+    value = _series(sqlite_store)
+    day = value[value["ticker"].eq("XOM") & pd.to_datetime(value["date"]).eq(pd.Timestamp("2026-07-02"))].iloc[0]
     assert day["fails_value"] == pytest.approx(60803 * 136.28)
     print("\n=== SANITY CHECK: E6 XOM 2026-07-02 ===")
     print("  old CUSIP 60,803 canonical; XOMZZZZ 560,223 @ $0.01 on the new CUSIP excluded (transition placeholder)")
 
 
-def test_e7_the_role_boundary_compares_trade_dates_not_settlement_dates(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
+def test_e7_the_role_boundary_compares_trade_dates_not_settlement_dates(sqlite_store):
+    _rebuild(sqlite_store)
     security = _security(sqlite_store)
     # MRK seam 2009-11-02 (trade): settled 2009-11-04 but traded 2009-10-30 (T+3) -> the predecessor line still.
     assert _role(security, "589331107", "2009-11-04") == ("MRK", "canonical_predecessor")
@@ -498,7 +460,7 @@ def test_e7_the_role_boundary_compares_trade_dates_not_settlement_dates(sqlite_s
         "202003a": ["20200305|000000AA1|OLD|10|OLD CO|1.0", "20200306|000000AA1|OLD|20|OLD CO|1.0"],
         "202503a": ["20250304|000000AA1|OLD|30|OLD CO|1.0", "20250305|000000AA1|OLD|40|OLD CO|1.0"],
     }
-    _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master)
+    _rebuild(sqlite_store, lines=lines, master=master)
     security = _security(sqlite_store)
     assert _role(security, "000000AA1", "2020-03-05")[1] == "canonical_current", "settled after the boundary, traded 2020-03-03 (T+2)"
     assert _role(security, "000000AA1", "2020-03-06")[1] == "acquired_constituent"
@@ -508,13 +470,11 @@ def test_e7_the_role_boundary_compares_trade_dates_not_settlement_dates(sqlite_s
     print("  roles switch on the trade date (T+3, T+2, T+1); a row settling after a seam but traded before keeps the old role")
 
 
-def test_e8_half_open_market_boundary(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
+def test_e8_half_open_market_boundary(sqlite_store):
+    _rebuild(sqlite_store)
     grain = _grain(sqlite_store)
     assert grain[("APTV", "2017-12-04")] == 19475.0 and grain[("APTV", "2017-12-05")] == 37966.0
     assert grain[("APTV", "2017-12-06")] == 0.0, "known excluded 3106PS and superseded APTV lines contribute no canonical fails"
-    checked = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "APTV", "date": pd.Timestamp("2017-12-06")})
-    assert checked is not None and checked["source_checked_at"].notna().all()
     assert grain[("APTV", "2017-12-07")] == 706207.0
     master = _master(
         [
@@ -530,7 +490,7 @@ def test_e8_half_open_market_boundary(sqlite_store, tmp_path, monkeypatch):
             "20171207|G6095L109|APTV|5|APTIV PLC SHS (JEY)|1.0",
         ]
     }
-    _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master)
+    _rebuild(sqlite_store, lines=lines, master=master)
     grain = _grain(sqlite_store)
     assert grain == {("APTV", "2017-12-06"): 1.0, ("APTV", "2017-12-07"): 5.0}, "DLPH traded 2017-12-04 in, 2017-12-05 out"
     assert _role(_security(sqlite_store), "G27823106", "2017-12-07") == ("APTV", "excluded")
@@ -538,8 +498,8 @@ def test_e8_half_open_market_boundary(sqlite_store, tmp_path, monkeypatch):
     print("  DLPH traded 2017-12-04 counts; traded 2017-12-05 it is out and Aptiv's line takes over")
 
 
-def test_e9_e10_open_start_and_bankruptcy_overlap(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
+def test_e9_e10_open_start_and_bankruptcy_overlap(sqlite_store):
+    _rebuild(sqlite_store)
     grain, security = _grain(sqlite_store), _security(sqlite_store)
     assert grain[("EXE", "2009-07-01")] == 1625.0, "CHK covered back to the first FTD row"
     assert grain[("EXE", "2021-02-11")] == 1564892.0
@@ -549,16 +509,16 @@ def test_e9_e10_open_start_and_bankruptcy_overlap(sqlite_store, tmp_path, monkey
     print("  CHK from 2009-07-01; CHKAQ ends at the 2021-02-10 cancellation, its later rows excluded, never added to new CHK")
 
 
-def test_e11_a_symbol_reused_by_another_issuer_is_not_stored(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
+def test_e11_a_symbol_reused_by_another_issuer_is_not_stored(sqlite_store):
+    _rebuild(sqlite_store)
     security = _security(sqlite_store)
-    assert {"02520N106", "370442105"}.isdisjoint(set(security["cusip"]))
+    assert security.loc[security["cusip"].isin(["02520N106", "370442105"]), "security_id"].isna().all()
     assert not any(t == "APO" for t, _ in _grain(sqlite_store))
     print("\n=== SANITY CHECK: E11 symbol reuse ===")
-    print("  APO 2009 (American Community Properties, 02520N106) has no master security: not stored, never counted")
+    print("  APO 2009 (American Community Properties, 02520N106) has no master security: never counted")
 
 
-def test_e15_a_summed_line_without_price_makes_the_ticker_day_dollars_null(sqlite_store, tmp_path, monkeypatch):
+def test_e15_a_summed_line_without_price_makes_the_ticker_day_dollars_null(sqlite_store):
     master = _master(
         [
             ("000000BB1", "CB", "0000896159", "CB", "common", 1.0, "canonical_current", "2019-01-01", None, "x"),
@@ -574,10 +534,11 @@ def test_e15_a_summed_line_without_price_makes_the_ticker_day_dollars_null(sqlit
             "20200304|000000BB3|CBPRA|7|CB CORP PFD|.",
         ]
     }
+    _rebuild(sqlite_store, lines=lines, master=master, events=False)
     with pytest.raises(ValueError, match="settlement quantity basis is unavailable"):
-        _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master, events=False)
-    _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master)
-    rows = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("date").reset_index(drop=True)
+        _series(sqlite_store)
+    _rebuild(sqlite_store, lines=lines, master=master)
+    rows = _series(sqlite_store).sort_values("date").reset_index(drop=True)
     assert rows["fails_quantity"].tolist() == [150.0, 100.0]
     assert pd.isna(rows.loc[0, "fails_value"]), "a summed line with fails and no PRICE -> NULL dollars (D-Q2-4)"
     assert rows.loc[1, "fails_value"] == pytest.approx(1000.0), "an excluded preferred without price changes nothing"
@@ -587,7 +548,7 @@ def test_e15_a_summed_line_without_price_makes_the_ticker_day_dollars_null(sqlit
     print("  Unknown event source refuses; the known no-event interval gives 150 shares/NULL dollars, then $1,000 with the preferred excluded")
 
 
-def test_ac106_brk_a_enters_in_b_equivalent_shares_and_dollars_take_no_ratio(sqlite_store, tmp_path, monkeypatch):
+def test_ac106_brk_a_enters_in_b_equivalent_shares_and_dollars_take_no_ratio(sqlite_store):
     master = _master(
         [
             ("084670207", "BRK-B", "0001067983", "BRKB", "class_B", 1.0, "canonical_current", "2009-06-29", "2010-01-19", "ticker_symbol"),
@@ -606,9 +567,8 @@ def test_ac106_brk_a_enters_in_b_equivalent_shares_and_dollars_take_no_ratio(sql
             "20100201|084670108|BRKA|2|BERKSHIRE HATHWY INC(HLDG CO)A|105000.0",
         ],
     }
-    _fixture_share_events(sqlite_store)
-    _rebuild(sqlite_store, tmp_path, monkeypatch, lines=lines, master=master)
-    rows = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("date").reset_index(drop=True)
+    _rebuild(sqlite_store, lines=lines, master=master)
+    rows = _series(sqlite_store).sort_values("date").reset_index(drop=True)
     assert rows["ticker"].tolist() == ["BRK-B", "BRK-B"]
     assert rows["fails_quantity"].tolist() == [100 + 30 * 2, 100 + 1500 * 2]
     assert rows["fails_value"].tolist() == pytest.approx([100 * 3300 + 2 * 99000, 100 * 70 + 2 * 105000])
@@ -616,258 +576,10 @@ def test_ac106_brk_a_enters_in_b_equivalent_shares_and_dollars_take_no_ratio(sql
     print("  B-equivalent shares B + 30*A before 2010-01-21 and B + 1,500*A after; dollars are each line's own quantity x PRICE")
 
 
-def test_ac108_stored_rows_equal_the_zip_lines_and_the_key_holds(sqlite_store, tmp_path, monkeypatch):
-    _rebuild(sqlite_store, tmp_path, monkeypatch)
-    security = _security(sqlite_store)
-    assert not security.duplicated(["cusip", "date"]).any()
-    stored = {
-        (r.day.replace("-", ""), r.cusip, r.source_symbol, int(r.fails_quantity), r.description, float(r.price))
-        for r in security[security["period"].eq("201601b")].itertuples()
-    }
-    expected = {(d, c, s, int(q), desc.strip(), float(p)) for d, c, s, q, desc, p in (line.split("|") for line in REAL_LINES["201601b"])}
-    assert stored == expected
-    print("\n=== SANITY CHECK: AC-108 raw rows ===")
-    print("  201601b: every in-scope line stored as filed (symbol, CUSIP, quantity, description, price); PK (cusip, date) unique")
-
-
-def test_the_ticker_grain_table_keeps_its_consumer_schema():
+def test_the_security_table_stores_source_columns_only():
     ddl = (REPO / "sql" / "schema.sql").read_text(encoding="utf-8")
-    block = re.search(r'CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" \((.*?)\);', ddl, re.S)
-    assert block is not None
+    block = re.search(r'CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver_security" \((.*?)\);', ddl, re.S)
+    assert block is not None and 'CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (' not in ddl
     columns = re.findall(r'^\s*"(\w+)"', block.group(1), re.M)
-    assert columns == ["source_checked_at", "ticker", "date", "fails_quantity", "fails_value", "period"]
-    assert list(ftd.TICKER_COLUMNS) == ["ticker", "date", "fails_quantity", "fails_value", "period"]
-    assert Tables.sec_fails_to_deliver.pk == ("ticker", "date")
-    assert Tables.sec_fails_to_deliver.read_columns == ("date", "ticker", "fails_quantity", "period", "source_checked_at")
-    assert Tables.sec_fails_to_deliver.optional_columns == frozenset({"source_checked_at"})
-    print("\n=== SANITY CHECK: consumer schema ===")
-    print(
-        "  sec_fails_to_deliver keeps PK (ticker, date) and five economic columns; the optional operational proof column may be absent in legacy stores"
-    )
-
-
-# --------------------------------------------------------------------------- incremental stamp, E31, E32
-
-
-def _seed_unstamped(store, lines: dict[str, list[str]]) -> None:
-    frames = [ftd._parse_ftd_lines("\n".join([HEADER, *rows]) + "\n").assign(period=period) for period, rows in lines.items()]
-    raw = pd.concat(frames, ignore_index=True).assign(security_id=None, ticker=None, lineage_role=None, security_class=None)
-    store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
-
-
-def test_incremental_run_stamps_only_unstamped_rows_and_builds_their_periods(sqlite_store, tmp_path, monkeypatch):
-    sqlite_store.replace(Tables.universe_cusip, _master())
-    _fixture_share_events(sqlite_store)
-    source = {p: REAL_LINES[p] for p in ("201506a", "200907b")}
-    _seed_unstamped(sqlite_store, source)
-    initial_raw = _security(sqlite_store)
-    unknown_before = initial_raw.loc[initial_raw["cusip"].eq("370442105")].reset_index(drop=True)
-    context = _context(sqlite_store, tmp_path)
-    reads = _serve(monkeypatch, source)
-
-    assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE, as_of=RUN_DATE) > 0
-    security = _security(sqlite_store)
-    unknown = security.loc[security["cusip"].eq("370442105")].reset_index(drop=True)
-    pd.testing.assert_frame_equal(unknown, unknown_before, check_dtype=False, check_exact=True)
-    assert unknown["fails_quantity"].tolist() == [15884302.0] and unknown["price"].tolist() == [1.15]
-    assert unknown[["security_id", "ticker", "lineage_role", "security_class"]].isna().all().all()
-    assert security.loc[security["cusip"].ne("370442105"), "security_id"].notna().all()
-    grain = _grain(sqlite_store)
-    assert grain[("CB", "2015-06-02")] == 293.0
-    assert all(value == 0.0 for key, value in grain.items() if key != ("CB", "2015-06-02"))
-    checked = sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert checked is not None and checked["source_checked_at"].notna().all()
-    assert reads == ["200907b", "201506a"], "quiet zero requires the successfully served complete originals"
-
-    writes: list[str] = []
-    for name in ("save", "delete", "replace"):
-        original = getattr(sqlite_store, name)
-        monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, _o=original, **k: writes.append(_n) or _o(*a, **k))
-    original_pair = ftd.replace_fails_source
-    monkeypatch.setattr(ftd, "replace_fails_source", lambda *a, **k: writes.append("replace_fails_source") or original_pair(*a, **k))
-    assert ftd.fails_source_periods(sqlite_store)[1] == {"200907b"}, "a legacy raw row without a dated target owner stays pending"
-    assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE, as_of=RUN_DATE) > 0
-    assert writes == ["replace_fails_source"] and reads == ["200907b", "201506a", "200907b"]
-    pd.testing.assert_series_equal(pd.Series(_grain(sqlite_store)).sort_index(), pd.Series(grain).sort_index())
-    retried_raw = _security(sqlite_store)
-    pd.testing.assert_frame_equal(
-        retried_raw.loc[retried_raw["cusip"].eq("370442105")].reset_index(drop=True), unknown_before, check_dtype=False, check_exact=True
-    )
-    assert ftd.fails_source_periods(sqlite_store)[1] == {"200907b"}
-    print("\n=== SANITY CHECK: incremental FTD stamp ===")
-    print(
-        "  complete originals justify checked zeros and CB293; unowned legacy GMGMQ stays exact, uncounted and pending, so its period retries; coherent idempotence is checked separately"
-    )
-
-
-def _stamped_store(store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    context = _rebuild(store, tmp_path, monkeypatch)
-    return context
-
-
-def test_e31_a_moved_boundary_restamps_exactly_the_affected_rows(sqlite_store, tmp_path, monkeypatch):
-    context = _stamped_store(sqlite_store, tmp_path, monkeypatch)
-    before = _security(sqlite_store)
-    master = _master()
-    old = master["cusip"].eq("806605101")
-    master.loc[old, "valid_to"] = pd.Timestamp("2009-10-30")  # SGP's acquired line ends one day earlier
-    master.loc[master["canonical_company"].eq("MRK"), "scope_changed_at"] = LATER
-    master = pd.concat(
-        [
-            master,
-            _master([("806605101", "MRK", "0000310158", "SGP", "common", 1.0, "canonical_current", "2009-10-30", "2009-10-31", "x")], stamp=LATER),
-        ]
-    )
-    sqlite_store.replace(Tables.universe_cusip, master)
-    saved: list[tuple[dict[Table, pd.DataFrame], dict[Table, dict[str, object] | None]]] = []
-    original = ftd.replace_fails_source
-
-    def observe_pair(
-        store: DataStore,
-        frames: dict[Table, pd.DataFrame],
-        scopes: dict[Table, dict[str, object] | None],
-        expected_identity: dict[Table, pd.DataFrame] | None = None,
-        expected_source: dict[Table, pd.DataFrame] | None = None,
-    ) -> dict[Table, int]:
-        saved.append((frames, scopes))
-        return original(store, frames, scopes, expected_identity, expected_source)
-
-    monkeypatch.setattr(ftd, "replace_fails_source", observe_pair)
-
-    derived_before = sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert derived_before is not None
-    assert (
-        ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=load_source_identity(context.store), dry_run=True, as_of=RUN_DATE) == []
-    )
-    pd.testing.assert_frame_equal(_security(sqlite_store), before)
-    derived_preview = sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert derived_preview is not None
-    pd.testing.assert_frame_equal(derived_preview, derived_before)
-    assert saved == [], "dry-run prepares complete cached periods without committing source pairs"
-    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=load_source_identity(context.store), as_of=RUN_DATE)
-
-    after = _security(sqlite_store)
-    changed = before.merge(after, on=["cusip", "date"], suffixes=("_b", "_a"))
-    changed = changed[changed["lineage_role_b"].ne(changed["lineage_role_a"])]
-    assert changed[["cusip", "day_a"]].values.tolist() == [["806605101", "2009-11-04"]], "SGP traded 2009-10-30 only"
-    pair = {Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver}
-    assert saved and all(set(frames) == set(scopes) == pair for frames, scopes in saved)
-    assert all(
-        scope is not None and scope["ticker"] == ["MRK"] and isinstance(scope["period"], list) and len(scope["period"]) == 1
-        for _, scopes in saved
-        for scope in scopes.values()
-    )
-    stamp_columns = ["security_id", "ticker", "lineage_role", "security_class"]
-    pd.testing.assert_frame_equal(
-        before.drop(columns=stamp_columns).sort_values(["cusip", "date"], ignore_index=True),
-        after.drop(columns=stamp_columns).sort_values(["cusip", "date"], ignore_index=True),
-    )
-    pd.testing.assert_frame_equal(
-        before.loc[before["ticker"].ne("MRK")].sort_values(["cusip", "date"], ignore_index=True),
-        after.loc[after["ticker"].ne("MRK")].sort_values(["cusip", "date"], ignore_index=True),
-    )
-    assert _grain(sqlite_store)[("MRK", "2009-11-04")] == 804174.0 + 4163.0
-    assert records == []
-    print("\n=== SANITY CHECK: E31 master role flip ===")
-    print(
-        "  exactly one CUSIP/day changes role; bounded MRK source pairs reconcile together while all source payload and every other company stay unchanged"
-    )
-
-
-def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkeypatch):
-    context = _stamped_store(sqlite_store, tmp_path, monkeypatch)
-    cohort = load_source_identity(context.store)
-    for name in ("save", "delete", "replace", "load"):
-        monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, **k: pytest.fail(f"unchanged master must not {_n}"))
-    assert ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=cohort, as_of=RUN_DATE) == []
-    print("\n=== SANITY CHECK: E32 unchanged master ===")
-    print("  every company's stamp predates the last run: no read, no re-stamp, no purge, no write")
-
-
-def _with_universe(context: Any, store) -> Any:
-    """`context` over a universe holding BRK-B too, so a run on fewer tickers is a scoped (`-t`) run."""
-    rows = {t: {"cik": ROSTER[t]} for t in UNIVERSE} | {"BRK-B": {"cik": "0001067983"}}
-    context.universe = seed_universe(store, [*UNIVERSE, "BRK-B"], rows=rows)
-    return context
-
-
-def test_f103_a_scoped_incremental_run_stamps_only_its_own_lines_and_saves_stamps_after_the_rebuild(sqlite_store, tmp_path, monkeypatch):
-    sqlite_store.replace(Tables.universe_cusip, _master())
-    _fixture_share_events(sqlite_store)
-    _seed_unstamped(sqlite_store, {"201506a": REAL_LINES["201506a"]})
-    context = _with_universe(_context(sqlite_store, tmp_path), sqlite_store)
-    reads = _serve(monkeypatch, {"201506a": REAL_LINES["201506a"]})
-
-    ftd.fetch_fails_to_deliver(context, tickers=["MRK"], as_of=RUN_DATE)
-    security = _security(sqlite_store)
-    assert security.loc[security["cusip"].eq("H0023R105"), "security_id"].isna().all(), "ACE's line stays pending for an unscoped run"
-    assert not sqlite_store.exists(Tables.sec_fails_to_deliver) or ("CB", "2015-06-02") not in _grain(sqlite_store)
-
-    before_raw, before_grain = _security(sqlite_store), _grain(sqlite_store)
-
-    def _fail_grain(_conn: Any, _cursor: Any, statement: str, _parameters: Any, _context: Any, _executemany: bool) -> None:
-        if statement.startswith(f"INSERT INTO {Tables.sec_fails_to_deliver.name} "):
-            raise RuntimeError("crash while rebuilding the ticker rows")
-
-    event.listen(sqlite_store.engine, "before_cursor_execute", _fail_grain)
-    try:
-        with pytest.raises(RuntimeError, match="crash while rebuilding"):
-            ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], as_of=RUN_DATE)
-    finally:
-        event.remove(sqlite_store.engine, "before_cursor_execute", _fail_grain)
-    pd.testing.assert_frame_equal(_security(sqlite_store), before_raw)
-    assert _grain(sqlite_store) == before_grain
-    assert _security(sqlite_store).loc[lambda f: f["cusip"].eq("H0023R105"), "security_id"].isna().all(), "a failed rebuild leaves the lines pending"
-    ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], as_of=RUN_DATE)
-    assert _grain(sqlite_store)[("CB", "2015-06-02")] == 293.0
-    assert reads == ["201506a"] * 3
-    print("\n=== SANITY CHECK: F-103 scoped incremental FTD ===")
-    print("  a MRK-scoped run leaves ACE's 201506a line pending; a crashed rebuild stamps nothing; the next unscoped run builds CB 2015-06-02 = 293")
-
-
-def test_f101_a_scoped_restamp_never_touches_another_companys_lines(sqlite_store, tmp_path, monkeypatch):
-    context = _with_universe(_stamped_store(sqlite_store, tmp_path, monkeypatch), sqlite_store)
-    before, grain_before = _security(sqlite_store), sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert grain_before is not None
-    master = _master()
-    master.loc[master["cusip"].eq("806605101"), "valid_to"] = pd.Timestamp("2009-10-30")
-    master.loc[master["canonical_company"].eq("MRK"), "scope_changed_at"] = LATER
-    master = pd.concat(
-        [
-            master,
-            _master([("806605101", "MRK", "0000310158", "SGP", "common", 1.0, "canonical_current", "2009-10-30", "2009-10-31", "x")], stamp=LATER),
-        ]
-    )
-    sqlite_store.replace(Tables.universe_cusip, master)
-
-    assert ftd.restamp_fails(context, companies=None, tickers=["CB"], identity=load_source_identity(context.store), as_of=RUN_DATE) == []
-
-    pd.testing.assert_frame_equal(
-        _security(sqlite_store).sort_values(["cusip", "date"], ignore_index=True), before.sort_values(["cusip", "date"], ignore_index=True)
-    )
-    grain_after = sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert grain_after is not None
-    pd.testing.assert_frame_equal(
-        grain_after.sort_values(["ticker", "date"], ignore_index=True), grain_before.sort_values(["ticker", "date"], ignore_index=True)
-    )
-    ftd.restamp_fails(context, companies=None, tickers=[*UNIVERSE, "BRK-B"], identity=load_source_identity(context.store), as_of=RUN_DATE)
-    assert _grain(sqlite_store)[("MRK", "2009-11-04")] == 804174.0 + 4163.0
-    print("\n=== SANITY CHECK: F-101 scoped FTD re-stamp ===")
-    print("  MRK's master moved; a CB-scoped re-stamp leaves every line and ticker row; the unscoped one re-stamps MRK 2009-11-04")
-
-
-def test_f113_a_company_whose_master_rows_all_vanished_is_restamped(sqlite_store, tmp_path, monkeypatch):
-    context = _stamped_store(sqlite_store, tmp_path, monkeypatch)
-    before = _grain(sqlite_store)
-    gone = "CB"
-    assert any(t == gone for t, _ in before), "the fixture builds CB ticker rows"
-    master = _master()
-    sqlite_store.replace(Tables.universe_cusip, master[master["canonical_company"].ne(gone)])  # every other stamp is old
-
-    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=load_source_identity(context.store), as_of=RUN_DATE)
-
-    assert not _security(sqlite_store)["ticker"].eq(gone).any(), "no stored line is still stamped with the vanished company"
-    assert not any(t == gone for t, _ in _grain(sqlite_store)) and [r["ticker"] for r in records] == [gone]
-    assert {k: v for k, v in _grain(sqlite_store).items() if k[0] != gone} == {k: v for k, v in before.items() if k[0] != gone}
-    print("\n=== SANITY CHECK: F-113 vanished company ===")
-    print("  CB's master rows all removed (no stamp moved): its lines are re-stamped away and its ticker rows deleted (one WARNING record)")
+    assert columns == list(ftd.SECURITY_COLUMNS) == list(Tables.sec_fails_to_deliver_security.read_columns)
+    print(f"\nSANITY: sec_fails_to_deliver_security holds the {len(columns)} source columns {columns}; no ticker-grain table.")

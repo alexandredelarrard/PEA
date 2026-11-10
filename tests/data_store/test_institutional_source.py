@@ -1,18 +1,14 @@
-"""Disposable contracts for exact source pairs and identity-driven proof invalidation."""
+"""Disposable contracts for exact source pairs (the identity commit invalidates no source proof since identity-security-grain P4)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import event
 
-from src.data_aggregate.utils.institutionals import inputs
-from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_extract.utils.common.identity import load_source_identity
-from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, replace_insider_source
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
@@ -29,7 +25,6 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
             Tables.insider_transactions,
             Tables.insider_footnotes,
             Tables.short_interest,
-            Tables.sec_fails_to_deliver,
             Tables.sec_short_volume_security,
             Tables.sec_fails_to_deliver_security,
         ],
@@ -120,123 +115,6 @@ def test_source_pair_rolls_back_payload_and_retained_proof(sqlite_store: DataSto
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, old_notes)
     print("SANITY: a notes failure rolls back transaction rows and notes together.")
-
-
-def _tape_observations(store: DataStore) -> dict[Table, pd.DataFrame]:
-    dates = pd.bdate_range("2026-06-01", periods=4)
-    checked = pd.to_datetime(pd.Series(["2026-06-05", "2026-06-05", None, "2026-06-05"]))
-    frames = {
-        Tables.short_interest: pd.DataFrame(
-            {
-                "ticker": "AAA",
-                "date": dates,
-                "short_volume": [0.0, 2.0, 0.0, 0.0],
-                "total_volume": [np.nan, 4.0, 6.0, 7.0],
-                "source_checked_at": checked,
-            }
-        ),
-        Tables.sec_fails_to_deliver: pd.DataFrame(
-            {
-                "ticker": "AAA",
-                "date": dates,
-                "fails_quantity": [0.0, 3.0, 0.0, 0.0],
-                "fails_value": [0.0, 30.0, 0.0, 0.0],
-                "period": "202606a",
-                "source_checked_at": checked,
-            }
-        ),
-        Tables.sec_short_volume_security: pd.DataFrame(
-            {"source_symbol": "AAA", "ticker": "AAA", "date": dates[[1, 3]], "short_volume": [2.0, 0.0], "total_volume": [4.0, 7.0]}
-        ),
-        Tables.sec_fails_to_deliver_security: pd.DataFrame(
-            {"cusip": "000000001", "ticker": "AAA", "date": dates[[1, 3]], "fails_quantity": [3.0, 0.0], "price": 10.0, "period": "202606a"}
-        ),
-    }
-    for table, frame in frames.items():
-        store.save(table, frame)
-    return frames
-
-
-def test_identity_replacement_clears_proof_in_same_commit(sqlite_store: DataStore) -> None:
-    transactions, _, identities = _inventory(sqlite_store)
-    originals = _tape_observations(sqlite_store)
-    raw_before = {
-        table: sqlite_store.load(table, columns=[str(column) for column in originals[table]])
-        for table in (Tables.sec_short_volume_security, Tables.sec_fails_to_deliver_security)
-    }
-    changed = identities[Tables.universe_cik_symbol].assign(valid_from=pd.Timestamp("2019-01-01"))
-    save_identity(sqlite_store, Tables.universe_cik_symbol, changed)
-    actual = sqlite_store.load(Tables.insider_transactions, markers=True)
-    assert actual is not None and len(actual) == len(transactions)
-    for table, quantity in ((Tables.short_interest, "short_volume"), (Tables.sec_fails_to_deliver, "fails_quantity")):
-        rows = sqlite_store.load(table)
-        assert rows is not None
-        rows = rows.sort_values("date").reset_index(drop=True)
-        assert pd.isna(rows.loc[0, quantity]) and rows.loc[1, quantity] == originals[table].loc[1, quantity] and rows.loc[2, quantity] == 0.0
-        assert rows["source_checked_at"].isna().all()
-        if table == Tables.sec_fails_to_deliver:
-            assert pd.isna(rows.loc[0, "fails_value"]) and pd.isna(rows.loc[3, quantity]) and pd.isna(rows.loc[3, "fails_value"])
-        else:
-            assert rows.loc[3, quantity] == 0.0, "a real FINRA zero with a reported total remains an observation"
-    for table in (Tables.sec_short_volume_security, Tables.sec_fails_to_deliver_security):
-        rows = sqlite_store.load(table, columns=[str(column) for column in originals[table]])
-        expected = raw_before[table]
-        assert rows is not None and expected is not None
-        pd.testing.assert_frame_equal(rows, expected)
-    print(
-        "SANITY: semantic identity changes clear proof and checked quiet operands atomically; positives, legacy zeros, real FINRA zero/total pairs and raw payload survive."
-    )
-
-
-@pytest.mark.parametrize("metric", ["finra", "ftd"])
-def test_invalidated_quiet_rows_cannot_become_legacy_cube_observations(sqlite_store: DataStore, metric: str) -> None:
-    _, _, identities = _inventory(sqlite_store)
-    _tape_observations(sqlite_store)
-    save_identity(sqlite_store, Tables.universe_cik_symbol, identities[Tables.universe_cik_symbol].assign(valid_from=pd.Timestamp("2019-01-01")))
-    rows = sqlite_store.load(Tables.short_interest, project=True)
-    assert rows is not None
-    dates = pd.bdate_range("2026-06-01", periods=4)
-    prepared = rows.sort_values("date").reset_index(drop=True)
-    assert prepared.loc[1, "short_volume"] == 2.0 and prepared.loc[2, "short_volume"] == 0.0
-    fails, coverage = inputs.load_fails(sqlite_store, ["AAA"])
-    assert fails is not None and coverage is not None
-    operands = short.prepare_fails_quantities(fails, coverage, dates, pd.Index(["AAA"]), None).quantities
-    assert operands.loc[dates[1], "AAA"] == 3.0 and operands.loc[dates[2], "AAA"] == 0.0
-    if metric == "finra":
-        assert pd.isna(prepared.loc[0, "short_volume"]), "invalidated inferred FINRA zero reached the cube as an explicit operand"
-    else:
-        assert pd.isna(operands.loc[dates[0], "AAA"]) and pd.isna(operands.loc[dates[3], "AAA"]), (
-            "invalidated checked FTD zero reached the cube as an explicit operand"
-        )
-    print(
-        "SANITY: actual cube preparation consumes invalidated checked quiet rows as unknown, while explicit positive and genuine legacy-zero operands remain usable."
-    )
-
-
-@pytest.mark.parametrize("failed_table", [Tables.short_interest, Tables.sec_fails_to_deliver], ids=["finra", "ftd"])
-def test_identity_invalidation_rolls_back_quiet_payloads_and_proof(sqlite_store: DataStore, failed_table: Table) -> None:
-    _, _, identities = _inventory(sqlite_store)
-    originals = _tape_observations(sqlite_store)
-    originals[Tables.universe_cik_symbol] = identities[Tables.universe_cik_symbol]
-    before = {table: sqlite_store.load(table, columns=[str(column) for column in frame]) for table, frame in originals.items()}
-
-    def refuse_stamp(_conn: Any, _cursor: Any, statement: str, _parameters: Any, _context: Any, _executemany: bool) -> None:
-        if statement.startswith(f"UPDATE {failed_table.name} SET source_checked_at"):
-            raise RuntimeError("controlled failure after quiet invalidation")
-
-    event.listen(sqlite_store.engine, "before_cursor_execute", refuse_stamp)
-    try:
-        with pytest.raises(RuntimeError, match="controlled failure"):
-            save_identity(
-                sqlite_store, Tables.universe_cik_symbol, identities[Tables.universe_cik_symbol].assign(valid_from=pd.Timestamp("2019-01-01"))
-            )
-    finally:
-        event.remove(sqlite_store.engine, "before_cursor_execute", refuse_stamp)
-    for table, expected in before.items():
-        actual = sqlite_store.load(table, columns=[str(column) for column in originals[table]])
-        assert expected is not None and actual is not None
-        pd.testing.assert_frame_equal(actual, expected)
-    print("SANITY: a failure after quiet-operand invalidation rolls back identity, source values, raw payload and proof in the same transaction.")
 
 
 def test_legacy_projection_does_not_add_proof_columns(sqlite_store: DataStore) -> None:

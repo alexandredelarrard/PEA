@@ -120,7 +120,7 @@ class StepCubeInstitutionals(Step):
         df_lines = read_identity(
             self._store,
             Tables.universe_cusip,
-            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role"),
+            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role", "cusip"),
             where={"source": "ftd"},
             optional=True,
         )
@@ -168,7 +168,7 @@ class StepCubeInstitutionals(Step):
         )
         df_finra = institutional_inputs.load_finra_tenure(self._store, sorted(set(frames.universe) - known))
         df_short = capital_inputs.load_source(self._store, Tables.short_interest, frames.universe)
-        df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe)
+        df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe, lines, self._bugfix)
         df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._store, df_classes), self._bugfix)
 
         # Put FINRA, FTD and outstanding quantities in each ticker's last saved security units (`q * F_T / F_d`).

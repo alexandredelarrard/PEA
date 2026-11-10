@@ -319,7 +319,7 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
         values = stored_values(context, table, _period_column(table))
         stored = values if stored is None else stored & values
     required = list(published)
-    if tuple(tables) in ((Tables.insider_transactions,), (Tables.sec_fails_to_deliver_security,)):
+    if tuple(tables) == (Tables.insider_transactions,):
         required.extend(sorted(stored or ()))
     listed = [p for p in dict.fromkeys(required) if floor is None or period_end(p) >= floor]
     return listed, stored or frozenset()

@@ -390,7 +390,7 @@ def test_notes_period_counts_only_when_in_both_tables(tmp_path, sqlite_store):
 def test_m3_absent_tables_list_every_published_period_from_the_source_start(tmp_path, sqlite_store):
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAPL"])
 
-    ftd = _archive(ctx, (Tables.sec_fails_to_deliver,), ["200906b", "200907a", "202609a"], ["AAPL"])
+    ftd = _archive(ctx, (Tables.sec_fails_to_deliver_security,), ["200906b", "200907a", "202609a"], ["AAPL"])
     notes = _archive(ctx, _NOTES, ["2026_07", "2026_08"], ["AAPL"])
 
     assert ftd.pending == ["200907a", "202609a"]  # 200906b ends before the 2009-07-01 source start

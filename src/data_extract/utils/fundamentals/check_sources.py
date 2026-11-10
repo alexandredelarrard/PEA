@@ -18,9 +18,9 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity_contract import entity_by_cik_map
+from src.data_extract.utils.common.identity import load_entity_by_cik
+from src.data_extract.utils.common.identity_contract import sharadar_outside
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
-from src.data_extract.utils.identity.cik_history import sharadar_outside
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import secfilings_cik
 from src.utils.string import pad_cik, yahoo_symbol
@@ -64,7 +64,7 @@ def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_
     sec = context.store.load(Tables.sec_fundamentals_history, columns=[*_KEYS, *shared], where=scope, optional=True)
     sharadar = context.store.load(Tables.sharadar_fundamentals_history, columns=[*_KEYS, *shared], where=scope, optional=True)
     vendor = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings"], optional=True)
-    lineage = context.store.load(Tables.universe_cik_symbol, columns=["company_id", "cik"], optional=True)
+    entity_by_cik = load_entity_by_cik(context)
 
     # an absent table is an empty one: the check reports it instead of stopping
     empty = pd.DataFrame(columns=_KEYS)
@@ -72,7 +72,7 @@ def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_
         empty if sec is None else sec,
         empty if sharadar is None else sharadar,
         pd.DataFrame(columns=["ticker", "secfilings"]) if vendor is None else vendor,
-        {} if lineage is None else entity_by_cik_map(lineage),
+        entity_by_cik,
         context.universe.cik_by_ticker,
         tickers,
         gap_pct=gap_pct,

@@ -33,7 +33,6 @@ from src.data_extract.utils.common.identity_contract import (
     ROLE_WINDOW,
     SENTINEL_START,
     IdentityError,
-    entity_or_singleton,
 )
 from src.data_extract.utils.common.registrant import Registrant
 from src.utils.identity_flags import RESOLUTIONS_KEY
@@ -798,14 +797,6 @@ def blocked_frame(membership: Membership, roster_cik: Mapping[str, str]) -> pd.D
         for a, b, source, conf in membership.blocked
     ]
     return pd.DataFrame(rows, columns=list(BLOCKED_COLUMNS))
-
-
-def sharadar_outside(sharadar: Mapping[str, str], entity_of: Mapping[str, str], roster_cik: Mapping[str, str]) -> list[str]:
-    """The universe tickers whose Sharadar `secfilings` CIK is not one of their company's CIKs (AC-004); `entity_of` maps
-    each padded CIK to its company, and a CIK it does not hold is its own company."""
-    return sorted(
-        t for t, cik in sharadar.items() if t in roster_cik and entity_or_singleton(entity_of, cik) != entity_or_singleton(entity_of, roster_cik[t])
-    )
 
 
 def log_cik_history(history: CikHistory, membership: Membership, n_candidates: int, outside: list[str]) -> None:

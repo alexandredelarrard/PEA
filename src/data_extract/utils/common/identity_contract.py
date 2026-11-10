@@ -40,6 +40,14 @@ def entity_or_singleton(entity_by_cik: Mapping[str, str], cik: str) -> str:
     return entity_by_cik.get(cik, f"E{cik}")
 
 
+def sharadar_outside(sharadar: Mapping[str, str], entity_of: Mapping[str, str], roster_cik: Mapping[str, str]) -> list[str]:
+    """The universe tickers whose Sharadar `secfilings` CIK is not one of their company's CIKs (AC-004); `entity_of` maps
+    each padded CIK to its company, and a CIK it does not hold is its own company."""
+    return sorted(
+        t for t, cik in sharadar.items() if t in roster_cik and entity_or_singleton(entity_of, cik) != entity_or_singleton(entity_of, roster_cik[t])
+    )
+
+
 def entity_by_cik_map(lineage: pd.DataFrame) -> dict[str, str]:
     """`{cik: company_id}` from `universe_cik_symbol` rows with padded CIKs (several rows per CIK share one entity)."""
     return dict(zip(lineage["cik"].astype(str), lineage["company_id"].astype(str), strict=False))

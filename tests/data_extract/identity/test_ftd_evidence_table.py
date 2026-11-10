@@ -6,7 +6,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.security_lines import SecurityManual
+from src.data_extract.utils.common.security_lines import SecurityManual, ftd_scope
 from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
@@ -48,7 +48,7 @@ def test_cusip_history_reads_the_stored_lines_and_opens_no_zip(sqlite_store, tmp
 
     monkeypatch.setattr(ftd, "read_zip_text", _refuse)
     monkeypatch.setattr(ftd, "read_ftd_period", _refuse)
-    scope = sm.ftd_scope(_lineage(), {}, SecurityManual.empty())
+    scope = ftd_scope(_lineage(), {}, SecurityManual.empty())
     assert any(cache.iterdir()), "the zips are cached: reading them would raise"
 
     evidence = sm.read_ftd_evidence(sqlite_store, scope).sort_values("cusip", ignore_index=True)

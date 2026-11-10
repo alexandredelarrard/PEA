@@ -1,5 +1,6 @@
 """The shared contract of `universe_cusip` lines: their role vocabulary, the change stamps of the FTD lines prepared for
-stamping (`src/utils/security_series.py` holds the FTD rules), the tape intervals a line is voted by, the co-registrant
+stamping (`src/utils/security_series.py` holds the FTD rules), the tape intervals a line is voted by, the FTD scope the
+ingest stores and the CUSIP history reads (lineage symbols, Sharadar / curated CUSIP-6), the co-registrant
 CIKs it leaves out and the curated `configs/sec/security_master_manual.json`.
 
 Read by the identity step (which builds the lines), the FTD and short-interest tapes, the insider lineage stamp, the
@@ -32,6 +33,8 @@ ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS, ACQUIRED_CONSTITUENT, EXCLUDED)
 #: Two tape intervals of one symbol overlapping by more than this are concurrent, not a former listing.
 _LISTING_OVERLAP = pd.Timedelta(days=31)
 _FAR = pd.Timestamp("2262-01-01")
+#: The Sharadar ticker columns read for a company's CUSIPs.
+SHARADAR_CUSIP_COLUMNS = ("permaticker", "name", "cusips")
 _RATIO_COLUMNS = ("ticker", "cusip", "ratio", "valid_from", "valid_to", "source")
 _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "valid_to", "reason", "source")
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
@@ -207,6 +210,33 @@ def tape_intervals(lineage: pd.DataFrame) -> pd.DataFrame:
     tape["valid_from"] = pd.to_datetime(tape["valid_from"])
     tape["valid_to"] = pd.to_datetime(tape["valid_to"]).fillna(_FAR)
     return tape.sort_values(["key", "cik", "valid_from"], ignore_index=True)
+
+
+@dataclass(frozen=True)
+class FtdScope:
+    """What the FTD lines keep: the squashed lineage symbols, the CUSIP-6 prefixes and the tape intervals that vote."""
+
+    symbols: frozenset[str]
+    prefixes: frozenset[str]
+    tape: pd.DataFrame
+
+
+def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manual: SecurityManual) -> FtdScope:
+    """The FTD scope (REQ-003): the lineage's non-noise symbols, the CUSIP-6 of the universe companies' Sharadar CUSIPs and
+    of the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
+    rows = lineage[lineage["role"].eq(ROLE_SYMBOL) & lineage["status"].ne("noise")]
+    symbols = frozenset(key for key in rows["symbol"].map(squash) if key)
+    curated = set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna()) | {c for group in cusips.values() for c in group}
+    return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated if c), tape=tape_intervals(lineage))
+
+
+def sharadar_cusips(universe: pd.DataFrame, sharadar: pd.DataFrame | None) -> dict[str, frozenset[str]]:
+    """`{universe ticker: the CUSIPs every Sharadar row of its permaticker lists}` (`sharadar`: `SHARADAR_CUSIP_COLUMNS`)."""
+    if sharadar is None or sharadar.empty or "permaticker" not in universe.columns:
+        return {}
+    rows = universe[["ticker", "permaticker"]].dropna().merge(sharadar[["permaticker", "cusips"]].dropna(), on="permaticker", how="inner")
+    listed = rows.assign(cusip=rows["cusips"].astype(str).str.upper().str.split()).explode("cusip").dropna(subset=["cusip"])
+    return {str(ticker): frozenset(group) for ticker, group in listed.groupby("ticker")["cusip"]}
 
 
 def co_registrant_ciks(lineage: pd.DataFrame, evidence: pd.DataFrame | None, declared: Collection[str] = ()) -> frozenset[str]:

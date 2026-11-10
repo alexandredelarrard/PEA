@@ -25,8 +25,8 @@ from src.data_extract.utils.common.identity_contract import ROLE_SYMBOL, ROLE_WI
 from src.data_extract.utils.common.security_lines import (
     ACQUIRED_CONSTITUENT,
     EXCLUDED,
+    FtdScope,
     SecurityManual,
-    tape_intervals,
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -39,8 +39,6 @@ logger = logging.getLogger(__name__)
 
 #: The stored FTD line columns the CUSIP lines derive from.
 OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
-#: The Sharadar ticker columns read for a company's CUSIPs.
-SHARADAR_CUSIP_COLUMNS = ("permaticker", "name", "cusips")
 #: The `symbol_tenure` columns the co-registrant classification reads.
 EVIDENCE_COLUMNS = ("issuer_cik", "source", "valid_from", "valid_to")
 NON_COMMON_KINDS = ("preferred", "debt", "warrant", "unit", "right")
@@ -147,15 +145,6 @@ Bound = tuple[pd.Timestamp, pd.Timestamp, str, str, str, str]
 
 
 # The build's records
-@dataclass(frozen=True)
-class FtdScope:
-    """What the FTD evidence keeps: the squashed lineage symbols, the CUSIP-6 prefixes and the tape intervals that vote."""
-
-    symbols: frozenset[str]
-    prefixes: frozenset[str]
-    tape: pd.DataFrame
-
-
 @dataclass(frozen=True)
 class LineageView:
     """The lineage facts the lines read: each CIK's company, each company's ticker, CIK windows and symbols, the tape."""
@@ -358,15 +347,6 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
 
 
 # The FTD evidence
-def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manual: SecurityManual) -> FtdScope:
-    """The evidence scope: the lineage's non-noise symbols, the CUSIP-6 of the universe companies' Sharadar CUSIPs and of
-    the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
-    rows = lineage[lineage["role"].eq(ROLE_SYMBOL) & lineage["status"].ne("noise")]
-    symbols = frozenset(key for key in rows["symbol"].map(squash) if key)
-    curated = set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna()) | {c for group in cusips.values() for c in group}
-    return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated if c), tape=tape_intervals(lineage))
-
-
 def read_ftd_evidence(store: DataStore, scope: FtdScope) -> pd.DataFrame:
     """The in-scope stored FTD lines, observation columns only: the lineage symbols and CUSIP-6 prefixes, then every line of
     a CUSIP-6 the lineage tape votes for on them."""
@@ -452,15 +432,6 @@ def finra_evidence(presence: pd.DataFrame | None) -> Finra:
     classes = frozenset(squash(s) for s in symbols[unmarked].unique() if _FINRA_CLASS.fullmatch(s))
     frame = pd.DataFrame({"key": symbols.map(squash), "date": pd.to_datetime(presence["date"])})[unmarked.to_numpy()]
     return Finra(classes, {str(key): group.drop_duplicates().sort_values().to_numpy() for key, group in frame.groupby("key")["date"]})
-
-
-def sharadar_cusips(universe: pd.DataFrame, sharadar: pd.DataFrame | None) -> dict[str, frozenset[str]]:
-    """`{universe ticker: the CUSIPs every Sharadar row of its permaticker lists}`."""
-    if sharadar is None or sharadar.empty or "permaticker" not in universe.columns:
-        return {}
-    rows = universe[["ticker", "permaticker"]].dropna().merge(sharadar[["permaticker", "cusips"]].dropna(), on="permaticker", how="inner")
-    listed = rows.assign(cusip=rows["cusips"].astype(str).str.upper().str.split()).explode("cusip").dropna(subset=["cusip"])
-    return {str(ticker): frozenset(group) for ticker, group in listed.groupby("ticker")["cusip"]}
 
 
 # Lines and issuers

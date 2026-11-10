@@ -144,3 +144,26 @@ def test_a_new_key_rereads_the_cached_periods_for_that_key_only(sqlite_store, tm
     assert any("re-read" in record.getMessage() for record in caplog.records), "one log line names the scope-growth re-read"
     print(f"\nSANITY: new key XYZ (scope changed {RUN_DATE.date()}) re-read from {sorted(reads)}; 2 XYZ lines upserted, the 2 ABC lines")
     print("  survive, ZZZ never stored; OLD (stale, no line) triggers nothing.")
+
+
+@pytest.mark.xfail(strict=True, reason="AC-004 follow-up: no table stores that a rowless growth key was re-read (DDL decision pending)")
+def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, tmp_path, monkeypatch):
+    """NEW joins ABC's lineage today and appears in no FTD file: the first run re-reads both cached periods for it, a second
+    run the same day (or any night of the window) re-reads none, as its scope has not changed since."""
+    context = _context(sqlite_store, tmp_path, ("ABC",))
+    _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01")), ("ABC", "0000000778", "NEW", RUN_DATE)])
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {"202601a": _HEADER + "20260105|000111AAA|ABC|100|ABC CORP|10.0\n", "202601b": _HEADER + "20260120|000111AAA|ABC|50|ABC CORP|10.0\n"},
+    )
+    reads: list[str] = []
+    reader = ftd.read_zip_text
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: reads.append(path.stem.removeprefix("cnsfails")) or reader(path, log=log))
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+    first, reads[:] = list(reads), []
+
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+
+    print(f"\nSANITY (rowless growth key): run 1 read {sorted(first)}, run 2 read {sorted(reads)} (expected none)")
+    assert sorted(first) == ["202601a", "202601b"], "the first run stores both new periods"
+    assert reads == [], "a never-matching growth key already re-read is not re-read on the next run"

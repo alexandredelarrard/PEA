@@ -29,7 +29,6 @@ _INSIDER = "the insider Form 4 pipeline shared by the EDGAR fetch and the bulk z
 _DEF14A = "a DEF 14A / 8-K vote parser owned by its structure package; the EDGAR fetch calls it on each filing"
 _TAPE = "the short-volume tape's re-stamp targets, also read by identity propagation (goes with propagation, P5/P6)"
 _PROPAGATE = "a source's own re-stamp / re-parse entry point, called by identity propagation"
-_FTD_SCOPE = "the FTD scope rule owned by the CUSIP history; the FTD ingest stores the lines of the same scope (REQ-003)"
 #: Accepted placement exceptions: owner module -> (names, reason). Phase 9b measured these; moving the shared ones
 #: into `common/` is a separate decision (02-plan Phase 9b record).
 PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
@@ -54,8 +53,6 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"Catalogue", "load_catalogue"}),
         "the KPI catalogue owned by fundamentals; the Sharadar merge reads the same catalogue",
     ),
-    "src.data_extract.utils.identity.cusip_history": (frozenset({"ftd_scope", "sharadar_cusips"}), _FTD_SCOPE),
-    "src.data_extract.utils.identity.symbol_history": (frozenset({"load_stored_lineage"}), _FTD_SCOPE),
     "src.data_extract.utils.identity.symbol_tenure": (
         frozenset({"captured_dei_periods"}),
         "the DEI period ledger owned by identity; the Notes reader skips periods it holds",

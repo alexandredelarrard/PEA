@@ -1,11 +1,27 @@
-"""Load the source identity cohort and commit one identity table (or symbol-tenure partition) atomically."""
+"""Load the stored identity tables (the source cohort, the parsed lineage) and commit one identity table (or symbol-tenure
+partition) atomically."""
 
 from __future__ import annotations
 
 import pandas as pd
 
+from src.context import Context
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+
+
+def parse_stored_rows(existing: pd.DataFrame | None) -> pd.DataFrame | None:
+    """The stored table with its date and timestamp columns parsed (a store may return them as text or `date`)."""
+    if existing is None:
+        return None
+    return existing.assign(
+        **{column: pd.to_datetime(existing[column]) for column in ("valid_from", "valid_to", "scope_changed_at") if column in existing.columns}
+    )
+
+
+def load_stored_lineage(context: Context) -> pd.DataFrame | None:
+    """The stored `universe_cik_symbol` with its dates parsed, as the CUSIP history reads a lineage just built; None when absent."""
+    return parse_stored_rows(context.store.load(Tables.universe_cik_symbol, project=True, optional=True))
 
 
 def load_source_identity(store: DataStore) -> dict[Table, pd.DataFrame]:

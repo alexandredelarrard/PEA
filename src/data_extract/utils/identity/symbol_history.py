@@ -29,7 +29,6 @@ from src.data_extract.utils.common.identity_contract import (
     entity_or_singleton,
 )
 from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS, EVIDENCE_SOURCES, ROSTER_SOURCE, TABLE_COLUMNS, CikHistory
-from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series, yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -495,17 +494,3 @@ def log_changed_assignments(context: Context, old_map: Mapping[str, str], new_ma
         f"universe_cik_symbol: {len(changed)} changed CIK assignment(s): {', '.join(changed) if changed else 'none'}; "
         f"affected current ticker(s): {', '.join(affected) if affected else 'none'}"
     )
-
-
-def parse_stored_rows(existing: pd.DataFrame | None) -> pd.DataFrame | None:
-    """The stored table with its date and timestamp columns parsed (a store may return them as text or `date`)."""
-    if existing is None:
-        return None
-    return existing.assign(
-        **{column: pd.to_datetime(existing[column]) for column in ("valid_from", "valid_to", "scope_changed_at") if column in existing.columns}
-    )
-
-
-def load_stored_lineage(context: Context) -> pd.DataFrame | None:
-    """The stored `universe_cik_symbol` with its dates parsed, as the CUSIP history reads a lineage just built; None when absent."""
-    return parse_stored_rows(context.store.load(Tables.universe_cik_symbol, project=True, optional=True))

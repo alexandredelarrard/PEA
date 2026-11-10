@@ -157,11 +157,12 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 ## Document backlogs and markers
 
-A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. The first fill of `sec_employees_text` and `sec_def14a_text` is one. First create both tables from their `CREATE TABLE` blocks in `sql/schema.sql` (a table created from the first saved frame takes that frame's dtypes), and run `edgar-index` once on the merged code so the index holds every listed form (`10-K405/A` is new). Then `sec-employees-text --no-cap`, then `sec-def14a-text --no-cap`, then `sec-employees-llm` and `sec-def14a-llm`. Before it, read the work list without touching SEC:
+A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`: the nightly run drains it over several nights, or run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. The first fill of `sec_employees_text` and `sec_def14a_text` is one and needs no one-time step: the nightly DAG creates each table on its first save with its `sql/schema.sql` layout (an empty-filing marker carries the whole layout) and runs each LLM pass after its walk. Measured 2026-11-09: ~14.0k 10-K-family filings and ~12.9k proxies, about 3 nights each at the cap of 5000.
+
+Expected first-fill LLM spend: about 5 employee calls (~$0.01) and up to ~10.4k DEF 14A section calls over ~6.4k proxies (~$150 upper bound at $0.023 per proxy; a section the proxy lacks makes no call). Nearly all are the one further attempt the retry contract owes a gapped section of a proxy answered by the legacy whole-proxy call; the code before the text split owed the same calls. At the cap the spend follows the walk, about a third a night; `--no-cap` puts it on one night. Before a `--no-cap` run, read the work list without touching SEC:
 
 ~~~bash
-rtk "$PY" -m src data_extract edgar-index
-rtk "$PY" -m src data_extract resume-plan --table sec_13g --timings
+rtk "$PY" -m src data_extract resume-plan --table sec_def14a_text --timings
 ~~~
 
 `edgar-index --full` downloads every quarter of the index again. A filing that was read and holds no data for its key is stored once as an empty-filing marker. `markers --count` counts them per table; `markers --delete` removes every marker by its sentinel and is a rollback tool only, because the next run lists those filings again.

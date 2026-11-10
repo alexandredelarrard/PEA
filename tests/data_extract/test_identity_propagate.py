@@ -557,8 +557,12 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     print("  2 published rows (one from AB's filing) -> 1 row after the purge and the SEC history rebuild")
 
 
-def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_run(sqlite_store, tmp_path, monkeypatch):
-    """Expansion: predecessor facts change published rows; the replay rebuilds instead of refusing."""
+def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_run(sqlite_store, tmp_path, monkeypatch, caplog):
+    """Expansion: predecessor facts change published rows; the replay rebuilds instead of refusing.
+
+    With the scope unchanged, the verifying full replay refuses the changed row (the default run would take the
+    back-dated own-CIK filing as a late original). With the scope changed recently, the default run is a `check`, not
+    a late rewrite, and the moved history is rebuilt."""
     context = _context(sqlite_store, tmp_path)
     sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01")]))
 
@@ -570,15 +574,22 @@ def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_
     build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
     sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("pred-1", ALB, "2010-02-01")]))
 
-    with pytest.raises(ValueError, match="append-only"):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(ValueError, match="append-only"):
+            build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE, verify_history=True)
+        untouched = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
+        assert list(untouched["totalRevenue"]) == [2.0], untouched
+        caplog.clear()
+        monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
         build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
-    monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
-    build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
 
+    triage = [line for line in caplog.messages if line.startswith("history: triage")]
+    assert triage == ["history: triage of 1 ticker(s): 0 full, 0 incremental, 0 late, 1 check, 0 current (skipped, no replay)"], triage
+    assert any("ALB REBUILT" in line for line in caplog.messages), caplog.messages
     history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
     assert list(history["totalRevenue"]) == [4.0]
     print("\n=== SANITY CHECK: history expansion rebuild ===")
-    print("  unchanged scope: a changed published row still refuses; scope changed inside the re-check window: ALB rebuilt (2 -> 4 fact rows)")
+    print("  unchanged scope: verifying replay refuses the changed row (2.0 kept); scope changed: check, not late -> ALB REBUILT (2 -> 4)")
 
 
 def test_f105_the_bulk_reparse_compares_each_table_only_with_the_ciks_it_can_hold(sqlite_store, tmp_path, monkeypatch, stubs):

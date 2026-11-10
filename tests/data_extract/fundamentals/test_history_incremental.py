@@ -591,6 +591,7 @@ def test_a_stored_event_the_replay_no_longer_consumes_is_checked(sqlite_store: A
     _built(sqlite_store, snapshots)
     stored = _stored(sqlite_store, "TST")
     sqlite_store.delete(Tables.sec_fundamentals_facts, {"accession_number": ["TST-acc-2023-08-01"]})
+    caplog.clear()  # the setup build's triage line is captured too when the root logger is already at INFO
 
     with caplog.at_level(logging.INFO, logger=LOGGER):
         try:

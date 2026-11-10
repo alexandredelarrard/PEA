@@ -7,7 +7,8 @@ ZIP; `fetch_fails_to_deliver` (`zips-ingest --only ftd`) stores the lines of eac
 squashed symbol is a universe lineage equity symbol (not noise, not a Notes debt symbol), its CUSIP-6 is a prefix of a universe company's Sharadar or
 curated CUSIP, or its CUSIP-6 is on a symbol-matched line; the scope never reads `universe_cusip`. The identity step
 reads these lines as CUSIP evidence; the institutionals cube maps them to companies (`src/utils/security_series.py`).
-Values are cumulative net unsettled balances, not new fails. `full` re-reads every cached ZIP.
+Values are cumulative net unsettled balances, not new fails. A run that stores a new period also re-reads the cached
+periods once for scope keys changed since the previous stored period and still lineless. `full` re-reads every cached ZIP.
 """
 
 from __future__ import annotations

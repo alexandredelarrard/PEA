@@ -63,4 +63,4 @@ def test_domain_steps_contain_no_identity_stage():
 
     print("\n=== SANITY CHECK: consume-only domain steps (AC-011, AC-038) ===")
     print(f"  {len(steps)} step modules scanned for {len(IDENTITY_STAGE_NAMES)} identity-stage names: none found")
-    print("  OK: institutionals, fundamentals and EDGAR only read the lineage built and propagated upstream")
+    print("  OK: institutionals, fundamentals and EDGAR only read the lineage built and synced upstream")

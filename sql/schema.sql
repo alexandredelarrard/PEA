@@ -360,7 +360,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- `status`, the `source_document` read (primary or an exhibit type) and `source_quote`, a
 -- JSON object holding one verbatim quote per kept component. A filing with no usable count
 -- is a row with NULL components and its status, so the row marks the date decided.
--- `identity --only propagate` purges rows by `cik`.
+-- `identity --only sync` moves and purges rows by `cik`.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
     "ticker" TEXT NOT NULL,

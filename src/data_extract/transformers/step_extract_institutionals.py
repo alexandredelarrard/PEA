@@ -1,7 +1,7 @@
 """Who owns and shorts each name: 13F, the superinvestor roster, the 13F managers' books and RegSHO short volume.
 The EDGAR walks (insiders, 13D/13G, 8-K) are `StepExtractEdgar`; the zip quarters and fails-to-deliver are
 `StepExtractZips`. The window is resolved here and passed into every fetcher. Consumes the identity built and
-propagated upstream (`StepExtractAllData`, the DAG's identity stage); never rebuilds it.
+synced upstream (`StepExtractAllData`, the DAG's identity stage); never rebuilds it.
 """
 
 from omegaconf import DictConfig

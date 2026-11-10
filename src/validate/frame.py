@@ -7,7 +7,7 @@ grain, which are the numeric legs under test, and how to compare two dates witho
 `as_ts` is not defensive tidying. Postgres DATE round-trips through psycopg2 as
 `datetime.date` while TIMESTAMP arrives as `pd.Timestamp`, and `datetime.date(2024, 1, 1) <
 pd.Timestamp("2024-01-01")` raises rather than comparing -- so a PIT check that reads
-`sec_fails_to_deliver.date` (DATE) against `cube_part_*.date` (TIMESTAMP) crashes, and one
+`sec_fails_to_deliver_security.date` (DATE) against `cube_part_*.date` (TIMESTAMP) crashes, and one
 that reads two DATE columns silently compares day-resolution values against nanosecond ones.
 Both sides go through here.
 """

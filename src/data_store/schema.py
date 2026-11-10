@@ -482,8 +482,8 @@ class Tables:
     # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
     # `source_document` read and `source_quote` (JSON, one verbatim quote per component).
     # A filing with no usable count is a row with NULL components and its status, so the row
-    # itself marks the date decided and the table declares no marker. `identity --only propagate`
-    # purges rows by `cik` (`filer_tables.PURGE_TABLES`).
+    # itself marks the date decided and the table declares no marker. `identity --only sync`
+    # moves and purges rows by `cik` (`filer_tables.PURGE_TABLES`).
     fundamentals_employees = Table(
         "fundamentals_employees",
         ("ticker", "as_of"),

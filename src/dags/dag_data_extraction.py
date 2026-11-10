@@ -12,8 +12,8 @@ capped by Airflow POOLS (created in airflow-init):
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time (edgar_index and insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises, identity,
-                          superinvestors, earnings calls, the employees and DEF 14A LLM passes (stored
-                          text only, no SEC read)  (+ the one heavy yfinance pull: price_history)
+                          superinvestors, earnings calls, the employees and DEF 14A LLM passes and the 8-K
+                          vote parser (stored text only, no SEC read)  (+ the one heavy yfinance pull: price_history)
 
 Flow: [sec_company_tickers, sharadar_tickers, sharadar_actions, sec_submissions] -> universe_sync -> zips_download -> identity
 -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger the data_aggregation DAG. The four
@@ -133,7 +133,6 @@ fundamentals = fetch("fundamentals", pool="sec_api")
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
-sec_8k_votes = fetch("sec-8k-votes", pool="sec_api")  # parses stored Item 5.07 narratives
 sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
@@ -144,6 +143,7 @@ sec_def14a_text = fetch("sec-def14a-text", pool="sec_api")  # proxy section payl
 # 4b) LLM step — read only the stored text tables (no SEC read), so they run in the default pool beside the walks
 sec_employees_llm = fetch("sec-employees-llm")  # reads sec_employees_text
 sec_def14a_llm = fetch("sec-def14a-llm")  # reads sec_def14a_text
+sec_8k_votes = fetch("sec-8k-votes")  # parses stored Item 5.07 narratives and the DEF 14A tables
 
 # 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")

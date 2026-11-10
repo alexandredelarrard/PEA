@@ -32,7 +32,7 @@ from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payload
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
-from tests.data_extract.edgar_fixtures import TenK, fake_context, patch_index_filings, roster_run, seed_index, sent_excerpt
+from tests.data_extract.edgar_fixtures import TenK, fake_context, identity_for, patch_index_filings, roster_run, seed_index, sent_excerpt
 
 #: Real 10-K document texts (the base code's chosen document), keyed `<ticker>_<accession>`.
 REAL: dict[str, str] = json.loads((Path(__file__).resolve().parents[2] / "fixtures" / "employees_text" / "real_10k_texts.json").read_text("utf-8"))
@@ -202,7 +202,7 @@ def test_parse_drops_the_submission_and_stamps_the_listed_period(monkeypatch: py
     stamp = edgar_driver.FilingStamp.of(filing, "0000000001")
     assert EMPLOYEES_TEXT_FETCH.parse is not None
 
-    frames = EMPLOYEES_TEXT_FETCH.parse("AAA", "0000000001", stamp, edgar_driver.EdgarScope())
+    frames = EMPLOYEES_TEXT_FETCH.parse("AAA", "0000000001", stamp, identity_for({"AAA": "1"}))
 
     row = frames[TABLE].iloc[0]
     assert filing._sgml is None and row["period_of_report"] == "2020-12-31" and row["form"] == "10-K"

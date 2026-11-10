@@ -12,9 +12,10 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_MIN_CHARS
 from src.data_store.schema import Tables
+from tests.data_extract.edgar_fixtures import identity_for
 
 
 class _RaisingPeriodFiling:
@@ -42,7 +43,7 @@ def test_filing_text_parse_stores_none_when_period_of_report_raises() -> None:
     body = "Revenue increased because demand grew. " * (FILING_TEXT_MIN_CHARS // 20)
     filing = _RaisingPeriodFiling(form="10-K", accession="0000320193-24-000010", filing_date="2024-05-03", cik="320193")
     filing.obj = lambda: SimpleNamespace(risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
-    df = FILING_TEXT_FETCH.parse("AAPL", "0000320193", _stamp(filing, "0000320193"), EdgarScope())[Tables.filing_risk_text]
+    df = FILING_TEXT_FETCH.parse("AAPL", "0000320193", _stamp(filing, "0000320193"), identity_for({"AAPL": "320193"}))[Tables.filing_risk_text]
 
     assert len(df) == 1
     row = df.iloc[0]

@@ -16,6 +16,8 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 
 def json_value(value: Any) -> Any:
     """JSON evidence uses null for unavailable numbers, never non-standard NaN/Infinity tokens."""
@@ -49,7 +51,7 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 @contextmanager
-def assessment_workspace(run: Path, logger: logging.Logger) -> Iterator[Path]:
+def assessment_workspace(run: Path) -> Iterator[Path]:
     """Serialize same-run refreshes and allocate a fresh same-filesystem analysis directory."""
     lock = run / ".assessment.lock"
     with lock.open("x", encoding="utf-8") as handle:
@@ -60,11 +62,11 @@ def assessment_workspace(run: Path, logger: logging.Logger) -> Iterator[Path]:
         yield workspace
     finally:
         if workspace is not None:
-            _discard_assessment_directory(workspace, run, logger)
+            _discard_assessment_directory(workspace, run)
         lock.unlink(missing_ok=True)
 
 
-def _discard_assessment_directory(directory: Path, run: Path, logger: logging.Logger) -> None:
+def _discard_assessment_directory(directory: Path, run: Path) -> None:
     """Remove owned scratch output without turning a completed publication into a failure."""
     if directory.resolve().parent != run.resolve():
         raise ValueError("Assessment scratch directory escaped its run")
@@ -87,7 +89,7 @@ def _replace(source: Path, destination: Path) -> None:
             time.sleep(0.1 * 2**attempt)
 
 
-def publish_assessment(run: Path, workspace: Path, state: dict[str, Any], logger: logging.Logger) -> Path:
+def publish_assessment(run: Path, workspace: Path, state: dict[str, Any]) -> Path:
     """Replace a complete analysis/report with bounded backup and rollback; mark completion last."""
     backup = run / f".assessment-backup-{uuid4().hex}"
     backup.mkdir()
@@ -119,7 +121,7 @@ def publish_assessment(run: Path, workspace: Path, state: dict[str, Any], logger
     finally:
         if backup.exists() and not any(backup.iterdir()):
             backup.rmdir()
-    _discard_assessment_directory(backup, run, logger)
+    _discard_assessment_directory(backup, run)
     return report
 
 

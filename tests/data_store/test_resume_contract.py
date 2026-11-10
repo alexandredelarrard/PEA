@@ -14,7 +14,7 @@ import pytest
 from src.context import Context
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, plan_fetch
 from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
@@ -40,6 +40,7 @@ from src.data_store.schema import (
     resume_tables,
 )
 from src.data_store.store import DataStore
+from tests.data_extract.edgar_fixtures import identity_for
 from tests.support.universe import seed_universe
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
@@ -154,7 +155,7 @@ def test_edgar_text_tables_declare_their_layout_markers_and_ddl() -> None:
     types = _column_types()
     expected = {
         Tables.sec_employees_text: (("ticker", "accession_number"), ("source_document", "_empty"), {"windows": "TEXT", "pieces": "TEXT"}),
-        Tables.sec_def14a_text: (("ticker", "accession_number", "section"), ("section", "_empty"), {"period": "TEXT", "payload": "TEXT"}),
+        Tables.sec_def14a_text: (("ticker", "accession_number", "section"), ("section", "_empty"), {"primary_document": "TEXT", "payload": "TEXT"}),
     }
     for table, (pk, marker, data_types) in expected.items():
         resume = cast(Resume, table.resume)
@@ -200,7 +201,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         plan_fetch(
             context,
             fetch,
-            EdgarRun(list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10),
+            EdgarRun(list(keys["ticker"]), keys, identity_for(dict(zip(keys["ticker"], keys["cik"], strict=True))), pd.Timestamp("2026-10-13"), 10),
         )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms

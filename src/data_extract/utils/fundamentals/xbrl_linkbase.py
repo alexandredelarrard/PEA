@@ -221,9 +221,6 @@ SEGMENT_ONLY_CONCEPT = "segment_only_concept"
 #: therefore worth naming: 1 row in 144,131 on the in-sample ledger.
 NO_USABLE_PERIOD = "no_usable_period"
 
-#: Routes where the FILER'S OWN declared structure chose the concept.
-LINKBASE_METHODS: frozenset[str] = frozenset({LINKBASE_TOTAL, LINKBASE_ROOT, LINKBASE_SUM, STATEMENT_LEAF_SUM})
-
 #: `roll_up.anchor_role` values -> the role-URI pattern that names that statement. An
 #: EXCLUSION-free positive test is safe here in a way it is not for `NON_STATEMENT_ROLE`,
 #: because the vocabulary for "this is the cash-flow statement" is short and filers do not

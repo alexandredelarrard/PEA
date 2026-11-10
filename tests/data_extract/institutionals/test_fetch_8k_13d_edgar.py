@@ -20,7 +20,7 @@ from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_8k_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, parse_filing_rows
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import (
     _ITEM_ANCHORS,
@@ -35,6 +35,7 @@ from src.data_extract.utils.edgar_extract.fetch_13d_edgar import (
 from src.data_extract.utils.edgar_extract.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
+from tests.data_extract.edgar_fixtures import identity_for
 
 
 def _rows(filing: object) -> list[dict]:
@@ -902,7 +903,7 @@ def test_parse_13d_rejects_filings_where_ticker_is_filer_not_issuer():
         accession="0001-bad",
         obj=_obj("0001199004", "Federated Hermes Premier Municipal Income Fund", "Apple Inc."),
     )
-    scope = EdgarScope()
+    scope = identity_for({"AAPL": "320193"})
     good = parse_13d("AAPL", "0000320193", FilingStamp.of(good_filing, "0000320193"), scope)[Tables.sec_13d]
     bad = parse_13d("AAPL", "0000320193", FilingStamp.of(bad_filing, "0000320193"), scope)
     assert list(good["accession_number"]) == ["0001-good"]
@@ -920,7 +921,7 @@ def test_known_13d_parse_failure_is_a_deterministic_parse_failure():
 
     filing.obj = fail_parse
     with pytest.raises(ParseFailureError, match="0001-broken"):
-        parse_13d("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), EdgarScope())
+        parse_13d("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), identity_for({"AAPL": "320193"}))
     print("\n=== SANITY CHECK: known 13D parse failure ===")
     print("  the accession raises ParseFailureError naming it: the driver logs it and lists it again next run")
 

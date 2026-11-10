@@ -66,13 +66,10 @@ def _key_frame(table: Table, df: pd.DataFrame) -> pd.DataFrame:
     return df_keys
 
 
-def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log: logging.Logger | None = None) -> pd.DataFrame:
-    """`df` without the marker rows whose primary key already holds a real row, stored or in `df`.
-
-    Only tables whose marker shares the real row's key can collide; any other frame is returned
-    unchanged without a read. The stored check is one read projected on the key and scoped to the
-    markers' own key values (markers excluded).
-    """
+def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame) -> pd.DataFrame:
+    """`df` without the marker rows whose primary key already holds a real row, stored or in `df`. Only a table whose
+    marker shares the real row's key can collide (any other frame is returned without a read); the stored check is one
+    read projected on the key and scoped to the markers' own key values."""
     if df is None or df.empty or not marker_shares_data_key(table) or not set(table.pk) <= set(df.columns):
         return df
     is_marker = marker_mask(table, df)
@@ -87,7 +84,7 @@ def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log
     over_data = is_marker & pd.Series(pd.MultiIndex.from_frame(df_keys).isin(taken), index=df.index)
     if not over_data.any():
         return df
-    (log or logger).info(
+    logger.info(
         "%s: %d empty-filing marker(s) not written: their key already holds data (e.g. %s)",
         table.name,
         int(over_data.sum()),

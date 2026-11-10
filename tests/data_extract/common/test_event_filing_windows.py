@@ -23,7 +23,7 @@ from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import Combine, combine_for, resolve_registrant_entries
 from src.data_extract.utils.common.security_lines import ACQUIRED_CONSTITUENT
 from src.data_extract.utils.edgar_extract import schedule_rows
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
 from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
@@ -160,16 +160,15 @@ def test_an_acquired_targets_schedule_filings_are_not_the_acquirers(monkeypatch:
     assert _listed(identity, "CB", df, cast(Resume, Tables.sec_13g.resume).forms) == ["g-ace"]
     assert _listed(identity, "CB", df, cast(Resume, Tables.sec_13d.resume).forms) == []
     assert _listed(identity, "MRK", df, cast(Resume, Tables.sec_13g.resume).forms) == ["g-merck"]
-    scope = EdgarScope(identity)
     stamp = FilingStamp("g-joint", "SC 13G", ACE, pd.Timestamp("2015-02-10"), False, None, filing=SimpleNamespace())
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({OLD_CHUBB}))
     monkeypatch.setattr(schedule_rows, "schedule_filing_rows", lambda stamp, spec: [{"cik": OLD_CHUBB, "rp_seq": 0}])
-    assert not schedule_rows.schedule_is_subject("CB", ACE, stamp, scope)
-    assert schedule_rows.schedule_ticker_rows("CB", ACE, stamp, scope, SCHEDULE_13G) == []
+    assert not schedule_rows.schedule_is_subject("CB", ACE, stamp, identity)
+    assert schedule_rows.schedule_ticker_rows("CB", stamp, identity, SCHEDULE_13G) == []
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({ACE}))
     monkeypatch.setattr(schedule_rows, "schedule_filing_rows", lambda stamp, spec: [{"cik": ACE, "rp_seq": 0}])
-    assert schedule_rows.schedule_is_subject("CB", ACE, stamp, scope)
-    assert [row["ticker"] for row in schedule_rows.schedule_ticker_rows("CB", ACE, stamp, scope, SCHEDULE_13G)] == ["CB"]
+    assert schedule_rows.schedule_is_subject("CB", ACE, stamp, identity)
+    assert [row["ticker"] for row in schedule_rows.schedule_ticker_rows("CB", stamp, identity, SCHEDULE_13G)] == ["CB"]
     print("\nsanity: schedules whose subject is old Chubb never reach CB (not listed, subject and issuer guards refuse); ACE's own 13G is kept")
 
 

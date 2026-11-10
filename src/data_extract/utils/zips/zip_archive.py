@@ -42,7 +42,7 @@ def ensure_archive(context: Context, cache: Path, source: ArchiveSource, period:
     path = cache / source.file_template.format(period=period)
     downloaded = not is_cached(path)
     url = source.url_template.format(period=period, quarter=period)
-    found = ensure_zip(context, path, url, label=f"{source.label} {period}", timeout=source.timeout, log=logger)
+    found = ensure_zip(context, path, url, label=f"{source.label} {period}", timeout=source.timeout)
     if found is None:
         return None
     return found, archive_available_at(period_end(period), found, observed_from=source.observed_from, downloaded=downloaded)

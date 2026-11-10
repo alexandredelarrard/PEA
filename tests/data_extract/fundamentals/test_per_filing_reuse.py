@@ -99,7 +99,7 @@ def test_route_3b_is_entered_only_by_the_fields_that_declare_it():
 
     by_regime = {
         regime: sorted(name for name in CATALOGUE.extracted_fields if xl._roll_up(CATALOGUE.field(name), regime).get("any_of"))
-        for regime in CATALOGUE.regime_names
+        for regime in sorted(CATALOGUE.regimes)
     }
     for regime, names in by_regime.items():
         assert ROUTE_3B_FIELDS <= set(names), f"regime {regime!r} would skip {sorted(ROUTE_3B_FIELDS - set(names))}"

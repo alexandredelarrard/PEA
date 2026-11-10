@@ -28,7 +28,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
-from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
+from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.resume import DONE_TABLE
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.edgar_extract import edgar_index
@@ -44,21 +44,6 @@ logger = logging.getLogger(__name__)
 #: Accessions named per key in the coverage log.
 _MISSING_SHOWN = 20
 _UNIT_COLUMNS = ["cik", "company", "form", "filed", "accession"]
-
-
-@dataclass(frozen=True)
-class EdgarScope:
-    """What every per-ticker EDGAR walk of one run checks filings against.
-
-    `identity` gives each ticker's `FilingScope` (event CIKs and seam-widened CIK windows); without it
-    a ticker's scope is its roster CIK alone.
-    """
-
-    identity: Identity | None = None
-
-    def filing_scope(self, ticker: str, cik: str) -> FilingScope:
-        """`ticker`'s filing scope from the identity layer, else its roster CIK alone."""
-        return self.identity.filing_scope(ticker) if self.identity is not None else FilingScope.roster_only(ticker, cik)
 
 
 @dataclass(frozen=True)
@@ -140,28 +125,34 @@ def num_or_null(value, trust_value: bool) -> float:
 
 
 class ParseFn(Protocol):
-    def __call__(self, ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]: ...
+    def __call__(self, ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> dict[Table, pd.DataFrame]:
+        """One filing's frames per table."""
+        ...
 
 
 class SubjectFn(Protocol):
-    def __call__(self, ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool: ...
+    def __call__(self, ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> bool:
+        """False when the filing's subject is not the key's company."""
+        ...
 
 
 class FilingsFn(Protocol):
-    def __call__(self, ticker: str, df_units: pd.DataFrame) -> dict[str, Any]: ...
+    def __call__(self, ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
+        """The fetch's own `Filing` objects by accession."""
+        ...
 
 
 class SaveFn(Protocol):
-    def __call__(
-        self, context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]
-    ) -> tuple[dict[Table, int], bool]: ...
+    def __call__(self, context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
+        """`(rows per table, failed_save)` of one key's save."""
+        ...
 
 
 @dataclass(frozen=True)
 class EdgarFetch:
     """One per-filing EDGAR fetch, declared once and walked by `run_edgar_fetch`.
 
-    `parse(ticker, cik, stamp, scope)` returns `{table: frame}` for one filing; `is_subject` (same
+    `parse(ticker, cik, stamp, identity)` returns `{table: frame}` for one filing; `is_subject` (same
     arguments) rejects a filing on which the key is only a filer or owner. `done_table` (default
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
     key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
@@ -216,12 +207,12 @@ class RetryRounds:
 @dataclass(frozen=True, eq=False)
 class EdgarRun:
     """What every walk of one EDGAR run shares, declared once: the requested `tickers`, their `cik_map`, the
-    identity `scope`, the `run_date`, the `years_history` window, `full` re-read,
+    run's `identity`, the `run_date`, the `years_history` window, `full` re-read,
     the document `cap` (None: uncapped) and the `retry` policy."""
 
     tickers: list[str]
     cik_map: pd.DataFrame
-    scope: EdgarScope
+    identity: Identity
     run_date: pd.Timestamp
     years_history: int
     full: bool = False
@@ -245,7 +236,7 @@ class EdgarRun:
         return cls(
             tickers=tickers,
             cik_map=universe_rows(context, tickers),
-            scope=EdgarScope(load_identity(context)),
+            identity=load_identity(context),
             run_date=day,
             years_history=int(years_history if years_history is not None else context.config.data_extract.years_history),
             full=full,
@@ -285,17 +276,10 @@ _sleep: Callable[[float], None] = time.sleep
 
 
 def parse_filing_rows(
-    ticker: str,
-    cik: str,
-    stamp: FilingStamp,
-    scope: EdgarScope,
-    *,
-    table: Table,
-    row_fn: Callable[[str, FilingStamp], list[dict]],
-    numeric: tuple[str, ...] = (),
+    ticker: str, cik: str, stamp: FilingStamp, identity: Identity, *, table: Table, row_fn: Callable[[str, FilingStamp], list[dict]]
 ) -> dict[Table, pd.DataFrame]:
     """A single-table fetch's `parse`: `row_fn(ticker, stamp)` rows as one `table` frame finalised by `finalise_frame`."""
-    return {table: finalise_frame(table, row_fn(ticker, stamp), numeric=numeric)}
+    return {table: finalise_frame(table, row_fn(ticker, stamp))}
 
 
 def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
@@ -320,13 +304,13 @@ def _has_key_rows(df: pd.DataFrame, table: Table, ticker: str) -> bool:
     return key_col in df.columns and bool(df[key_col].astype(str).eq(ticker).any())
 
 
-def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stamp: FilingStamp) -> tuple[dict[Table, pd.DataFrame] | None, bool]:
+def _read_unit(fetch: EdgarFetch, identity: Identity, ticker: str, cik: str, stamp: FilingStamp) -> tuple[dict[Table, pd.DataFrame] | None, bool]:
     """`(frames, is_marker)` for one filing; frames are None when it failed and must be listed again."""
     assert fetch.parse is not None
     try:
-        if fetch.is_subject is not None and not fetch.is_subject(ticker, cik, stamp, scope):
+        if fetch.is_subject is not None and not fetch.is_subject(ticker, cik, stamp, identity):
             return {fetch.done: marker_row(fetch.done, ticker, stamp)}, True
-        frames = fetch.parse(ticker, cik, stamp, scope)
+        frames = fetch.parse(ticker, cik, stamp, identity)
     except TransientReadError as exc:
         logger.info("%s: %s %s not read (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
         return None, False
@@ -358,7 +342,7 @@ def _unit_filings(fetch: EdgarFetch, ticker: str, df_units: pd.DataFrame) -> dic
 
 
 def _read_key(
-    fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, df_units: pd.DataFrame
+    fetch: EdgarFetch, identity: Identity, ticker: str, cik: str, df_units: pd.DataFrame
 ) -> tuple[dict[Table, list[pd.DataFrame]], pd.DataFrame, int]:
     """Read every listed filing of one key: `(frames per table, failed index rows, markers)`."""
     filings = _unit_filings(fetch, ticker, df_units)
@@ -369,7 +353,7 @@ def _read_key(
     markers = 0
     for position, unit in enumerate(df_units.itertuples(index=False)):
         filing = filings.get(str(unit.accession)) or edgar_index.index_filing(unit.cik, unit.company, unit.form, unit.filed, unit.accession)
-        outcome, is_marker = _read_unit(fetch, scope, ticker, cik, FilingStamp.of(filing, cik))
+        outcome, is_marker = _read_unit(fetch, identity, ticker, cik, FilingStamp.of(filing, cik))
         if outcome is None:
             failed.append(position)
             continue
@@ -399,7 +383,7 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
             context.log.warning("%s: %s built undeclared table '%s'", fetch.done.desc, ticker, table)
             failed_save = True
             continue
-        df = drop_markers_over_data(context.store, table, pd.concat(frames[table], ignore_index=True), log=context.log)
+        df = drop_markers_over_data(context.store, table, pd.concat(frames[table], ignore_index=True))
         df = df.drop_duplicates(subset=[c for c in table.pk if c in df.columns], keep="last")
         if df.empty:
             counts[table] = 0
@@ -414,10 +398,10 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
     return counts, failed_save
 
 
-def _walk_key(context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dict[str, pd.DataFrame], ticker: str, cik: str) -> KeyOutcome:
+def _walk_key(context: Context, fetch: EdgarFetch, identity: Identity, units: dict[str, pd.DataFrame], ticker: str, cik: str) -> KeyOutcome:
     """The pool worker: read then save one key's listed documents."""
     df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
-    frames, failed, markers = _read_key(fetch, scope, ticker, cik, df_units)
+    frames, failed, markers = _read_key(fetch, identity, ticker, cik, df_units)
     saved, failed_save = (fetch.save or _save_key)(context, fetch, ticker, frames)
     if failed_save:
         return KeyOutcome(listed=len(df_units), failed=df_units, saved=saved)
@@ -427,13 +411,13 @@ def _walk_key(context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dic
 def _run_pass(
     context: Context,
     fetch: EdgarFetch,
-    scope: EdgarScope,
+    identity: Identity,
     cik_map: pd.DataFrame,
     units: dict[str, pd.DataFrame],
     max_workers: int | None,
 ) -> dict[str, KeyOutcome]:
     """One pool pass over `cik_map`'s keys; a key whose worker failed outright keeps all its documents failed."""
-    worker = partial(_walk_key, context, fetch, scope, units)
+    worker = partial(_walk_key, context, fetch, identity, units)
     results = run_per_ticker(cik_map, worker, desc=fetch.done.desc, max_workers=max_workers)
     outcomes: dict[str, KeyOutcome] = {}
     for ticker, result in zip(cik_map["ticker"].astype(str), results, strict=True):
@@ -463,7 +447,7 @@ def _retry_rounds(
             "%s: retry round %d/%d for %d key(s), %d document(s), after %.0fs", fetch.done.desc, round_no, policy.rounds, len(due), n_documents, wait
         )
         _sleep(wait)
-        again = _run_pass(context, fetch, run.scope, cik_map[cik_map["ticker"].astype(str).isin(due)], retry, max_workers)
+        again = _run_pass(context, fetch, run.identity, cik_map[cik_map["ticker"].astype(str).isin(due)], retry, max_workers)
         for ticker, outcome in again.items():
             previous = outcomes[ticker]
             saved = {t: previous.saved.get(t, 0) + outcome.saved.get(t, 0) for t in {*previous.saved, *outcome.saved}}
@@ -516,7 +500,7 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
         keys=run.cik_map[["ticker", "cik"]],
         as_of=run.run_date,
         forms=cast(Resume, fetch.done.resume).forms,
-        identity=run.scope.identity,
+        identity=run.identity,
         years_history=run.years_history,
         runtime_floor=fetch.runtime_floor(context, run.run_date) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
@@ -562,7 +546,7 @@ def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_w
         work = plan_fetch(context, prepared, run)
         context.log.info("%s: %d document(s) to read for %d key(s) %s", prepared.done.desc, work.size, len(work.units), work.counts)
         keys = run.cik_map[run.cik_map["ticker"].astype(str).isin(work.units)]
-        outcomes = _run_pass(context, prepared, run.scope, keys, work.units, max_workers)
+        outcomes = _run_pass(context, prepared, run.identity, keys, work.units, max_workers)
         _retry_rounds(context, prepared, run, keys, outcomes, max_workers)
         _log_coverage(context, prepared, work, outcomes)
         return FetchSummary(work=work, outcomes=outcomes)

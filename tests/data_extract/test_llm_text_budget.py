@@ -7,7 +7,7 @@ from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_
 from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, employee_task
 from src.data_store.schema import Tables
 from src.utils.config import read_config
-from tests.data_extract.edgar_fixtures import TenK
+from tests.data_extract.edgar_fixtures import TenK, identity_for
 
 FILLER = "The Company designs and sells measurement instruments to laboratories in many markets. "  # no workforce word
 #: A long 10-K: 200 generic workforce mentions, then the workforce sentence.
@@ -30,7 +30,7 @@ def test_a_larger_employees_budget_changes_the_excerpt_from_stored_rows() -> Non
     filing = TenK("acc-1", "2025-03-01", LONG_10K, report="2024-12-31")
     stamp = edgar_driver.FilingStamp.of(filing, "0000000001")
     assert EMPLOYEES_TEXT_FETCH.parse is not None
-    row = next(EMPLOYEES_TEXT_FETCH.parse("AAA", "0000000001", stamp, edgar_driver.EdgarScope())[Tables.sec_employees_text].itertuples(index=False))
+    row = next(EMPLOYEES_TEXT_FETCH.parse("AAA", "0000000001", stamp, identity_for({"AAA": "1"}))[Tables.sec_employees_text].itertuples(index=False))
 
     tasks = {budget: employee_task(0, "AAA", row, budget) for budget in (60_000, 80_000)}
 

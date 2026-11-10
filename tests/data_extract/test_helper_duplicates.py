@@ -35,7 +35,7 @@ _LINEAGE = "the identity lineage rules, read back by the Identity reader in comm
 PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.edgar_extract.edgar_driver": (
         frozenset(
-            {"EdgarFetch", "EdgarRun", "EdgarScope", "FetchSummary", "FilingStamp", "RetryRounds", "index_years", "refresh_index"}
+            {"EdgarFetch", "EdgarRun", "FetchSummary", "FilingStamp", "RetryRounds", "index_years", "refresh_index"}
             | {"run_edgar_fetch", "universe_rows"}
         ),
         _DRIVER,

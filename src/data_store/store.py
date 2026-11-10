@@ -6,9 +6,11 @@ import csv
 import datetime as dt
 import io
 import logging
+import re
 import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -33,6 +35,7 @@ from src.data_store.schema import (
 
 _CHUNK = 10_000
 _CREATE_LOCK = threading.Lock()
+_SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 logger = logging.getLogger(__name__)
 
 
@@ -467,6 +470,20 @@ class DataStore:
 
     def exists(self, table) -> bool:
         return name_of(table) in self._metadata.tables or table_exists(self._database, name_of(table))
+
+    def create_declared(self, table: SchemaTable) -> None:
+        """Create `table` from its committed `sql/schema.sql` block (comments stripped) when it does not exist yet."""
+        name = name_of(table)
+        if self.exists(name):
+            return
+        block = ddl.existing_blocks(_SCHEMA_SQL.read_text(encoding="utf-8"))[name]
+        statements = [stmt for stmt in re.sub(r"--[^\n]*", "", block).split(";") if stmt.strip()]
+        with _CREATE_LOCK:
+            if table_exists(self._database, name):
+                return
+            with _connection(self._database, write=True) as conn:
+                for stmt in statements:
+                    conn.execute(text(stmt))
 
     def columns(self, table) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""

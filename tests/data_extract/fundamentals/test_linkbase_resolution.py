@@ -740,7 +740,7 @@ def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regime
     """
     from src.data_extract.utils.fundamentals.xbrl_linkbase import resolve_field as rf
 
-    tier1 = [f for f in CATALOGUE.by_tier(1) if CATALOGUE.field(f).is_extracted]
+    tier1 = [f for f in sorted(n for n, s in CATALOGUE.fields.items() if s.tier == 1) if CATALOGUE.field(f).is_extracted]
 
     counts: dict[str, int] = {}
     for ticker, _, _ in _REGIME_CASES:

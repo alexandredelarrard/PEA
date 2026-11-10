@@ -1,6 +1,6 @@
-"""Cold start of the two EDGAR text tables: whatever frame a walk saves first creates the committed `sql/schema.sql`
-layout, and a first nightly run in DAG order on a store without them (identity purge, both text walks, then the three
-LLM steps, which also run before any text table exists) raises nothing and stores every row.
+"""Cold start of the two EDGAR text tables and the five DEF 14A tables: whatever frame a walk saves first creates the
+committed `sql/schema.sql` layout, and a first nightly run in DAG order on a store without them (identity purge, both
+text walks, then the three LLM steps, which also run before any of them exists) raises nothing and stores every row.
 
 Offline: a real SQLite `DataStore`, a seeded local EDGAR index, filing stand-ins, stubbed SEC reads and recording
 extractors (no provider, no LLM call).
@@ -8,6 +8,7 @@ extractors (no provider, no LLM call).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -33,23 +34,17 @@ from src.utils.string import run_date
 from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.common.test_edgar_text_walks import FOREIGN, ProxyWorld
-from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, TenK, employee_answer, fake_context, patch_index_filings, seed_index
+from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, TenK, employee_answer, fake_context, identity_for, patch_index_filings, seed_index
 
 BLOCKS = ddl.existing_blocks((Path(__file__).resolve().parents[3] / "sql" / "schema.sql").read_text(encoding="utf-8"))
+ROSTER = identity_for({"AAA": "320193"})
 BODY = "As of December 31, 2021, we had approximately 41,000 employees."
 SPAN = (BODY.index("41,000"), BODY.index("41,000") + len("41,000"))
 VOTES_TEXT = "Item 5.07 Submission of Matters to a Vote of Security Holders. " + "Jane Example For 1,234,567 Against 12,345 Abstain 1,000. " * 8
-#: The tables the LLM steps read or write that already exist live; only the two text tables are new.
-LIVE_TABLES = (
-    Tables.fundamentals_employees,
-    Tables.def14a_llm,
-    Tables.def14a_directors,
-    Tables.def14a_executive_comp,
-    Tables.def14a_director_comp,
-    Tables.def14a_ownership,
-    Tables.sec_8k,
-    Tables.sec_8k_votes,
-)
+#: The tables the LLM steps read or write that the night does not create: the text tables and the DEF 14A tables are
+#: created by the night itself.
+LIVE_TABLES = (Tables.fundamentals_employees, Tables.sec_8k, Tables.sec_8k_votes)
+DEF14A_TABLES = tuple(section.table for section in def14a_llm.SECTIONS)
 
 
 def _stamp(accession: str, period: object = "2023-12-31") -> FilingStamp:
@@ -62,10 +57,8 @@ def _employee_shapes(monkeypatch: pytest.MonkeyPatch) -> dict[str, pd.DataFrame]
     monkeypatch.setattr(employees_text, "employee_text", lambda filing: employees_text.EmployeeText(BODY, "primary", (SPAN,)))
     monkeypatch.setattr(employees_text, "forget_sgml", lambda filing: None)
     table = Tables.sec_employees_text
-    data = parse_filing_rows("AAA", "0000320193", _stamp("a-1"), edgar_driver.EdgarScope(), table=table, row_fn=employees_text._employee_rows)[table]
-    no_period = parse_filing_rows(
-        "AAA", "0000320193", _stamp("a-3", None), edgar_driver.EdgarScope(), table=table, row_fn=employees_text._employee_rows
-    )[table]
+    data = parse_filing_rows("AAA", "0000320193", _stamp("a-1"), ROSTER, table=table, row_fn=employees_text._employee_rows)[table]
+    no_period = parse_filing_rows("AAA", "0000320193", _stamp("a-3", None), ROSTER, table=table, row_fn=employees_text._employee_rows)[table]
     marker = marker_row(table, "AAA", _stamp("a-2"))
     return {
         "data": data,
@@ -83,8 +76,8 @@ def _def14a_shapes() -> dict[str, pd.DataFrame]:
     rows = def14a_text._section_rows("AAA", base, {"audit": "Audit fees ...", "ownership": "Holders ..."})
     none_rows = def14a_text._section_rows("AAA", {**base, "accession_number": "d-2"}, {"audit": " "})
     stamp = _stamp("d-3")
-    data = parse_filing_rows("AAA", "", stamp, edgar_driver.EdgarScope(), table=table, row_fn=lambda t, s: rows)[table]
-    none = parse_filing_rows("AAA", "", stamp, edgar_driver.EdgarScope(), table=table, row_fn=lambda t, s: none_rows)[table]
+    data = parse_filing_rows("AAA", "", stamp, ROSTER, table=table, row_fn=lambda t, s: rows)[table]
+    none = parse_filing_rows("AAA", "", stamp, ROSTER, table=table, row_fn=lambda t, s: none_rows)[table]
     marker = marker_row(table, "AAA", stamp)
     return {
         "data": data,
@@ -128,16 +121,18 @@ def test_marker_first_save_then_data_save_stores_every_row(table: Table, sqlite_
 
 
 class SectionRecorder:
-    """A DEF 14A section extractor with no provider: records each task and answers it with a failed call."""
+    """A DEF 14A section extractor with no provider: records each task and answers it with the section's empty answer."""
 
     threads = 1
 
-    def __init__(self) -> None:
+    def __init__(self, section: Any) -> None:
+        self.section = section
         self.tasks: list[LlmTask] = []
 
     def run(self, tasks: list[LlmTask]) -> list[LlmResult]:
         self.tasks += tasks
-        return [LlmResult(seq=task.seq, task=task, parsed=None, error="fixture: no provider") for task in tasks]
+        empty = {"percent_unit": "percent"} if self.section.key in ("governance", "ownership") else {}
+        return [LlmResult(seq=task.seq, task=task, parsed=self.section.schema.model_validate(empty)) for task in tasks]
 
 
 class VotesRecorder:
@@ -155,7 +150,7 @@ class VotesRecorder:
 def night(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     """AAA (two CIK windows: its only 10-K is blank and its only proxy names a foreign subject, so both of its first saves
     are markers) and BBB (one CIK: a 10-K with a headcount and a proxy with a board section). The store holds only the
-    empty live input/output tables of the LLM steps (committed DDL), as the live database does; no text table."""
+    empty employees and 8-K tables (committed DDL); no text table and no DEF 14A table."""
     monkeypatch.setattr(edgar_driver, "_sleep", lambda seconds: None)
     create_canonical(sqlite_store.engine, LIVE_TABLES)
     identity = dated_identity(
@@ -184,7 +179,7 @@ def _llm_steps(ctx: Any) -> dict[str, int]:
     """`sec-employees-llm`, `sec-def14a-llm`, `sec-8k-votes` in DAG order; the tasks each extractor received."""
     tickers = ["AAA", "BBB"]
     employee_llm = FakeEmployeesLLM({"0000000002-22-000001": employee_answer(41_000, BODY)})
-    sections = {section.key: SectionRecorder() for section in def14a_llm.SECTIONS}
+    sections = {section.key: SectionRecorder(section) for section in def14a_llm.SECTIONS}
     votes = VotesRecorder()
     employees.fetch_employees_llm(ctx, tickers, 15, [employee_llm])  # type: ignore[list-item]
     def14a_llm.fetch_def14a_llm(ctx, ctx.config, tickers, sections)  # type: ignore[arg-type]
@@ -192,14 +187,20 @@ def _llm_steps(ctx: Any) -> dict[str, int]:
     return {"employees": len(employee_llm.tasks), "def14a": sum(len(r.tasks) for r in sections.values()), "votes": len(votes.tasks)}
 
 
+def _committed_columns(table: Table) -> list[str]:
+    """The column names of `table`'s `sql/schema.sql` block, in order."""
+    return re.findall(r'^\s+"([^"]+)" ', BLOCKS[table.name], re.M)
+
+
 def test_first_night_in_dag_order_creates_and_fills_both_text_tables(night: Any) -> None:
     ctx, store = night.ctx, night.ctx.store
     text_tables = (Tables.sec_employees_text, Tables.sec_def14a_text)
+    created_tables = (*text_tables, *DEF14A_TABLES)
 
     # identity purge on the empty store, then the LLM steps before any text table exists
+    missing_before = [table.name for table in created_tables if not store.exists(table)]
     purged = [r for spec in PURGE_TABLES for r in purge_rows(ctx, spec, ["AAA", "BBB"], owned_scopes(night.identity), night.identity.bounds, False)]
     before = _llm_steps(ctx)
-    missing_before = [table.name for table in text_tables if not store.exists(table)]
 
     # the two text walks (AAA's marker saves first), then the 8-K walk's stored 5.07 narrative and the LLM steps
     run = EdgarRun.load(ctx, ["AAA", "BBB"], 15, as_of=run_date(None))
@@ -212,14 +213,17 @@ def test_first_night_in_dag_order_creates_and_fills_both_text_tables(night: Any)
     again = {fetch.done.name: run_edgar_fetch(ctx, fetch, run, max_workers=1).work.size for fetch in (EMPLOYEES_TEXT_FETCH, DEF14A_TEXT_FETCH)}
 
     stored = {table.name: store.load(table, markers=True) for table in text_tables}
-    layout = {table.name: store.columns(table.name) == list(table.retrieval_columns) for table in text_tables}
+    layout = {table.name: store.exists(table) and store.columns(table.name) == _committed_columns(table) for table in created_tables}
     decided = store.load(Tables.fundamentals_employees, where={"ticker": "BBB"})
-    assert purged == [] and before == {"employees": 0, "def14a": 0, "votes": 0} and missing_before == [t.name for t in text_tables]
+    answered = store.load(Tables.def14a_llm, columns=["ticker", "def14a_json"], where={"ticker": "BBB"})
+    assert purged == [] and before == {"employees": 0, "def14a": 0, "votes": 0} and missing_before == [t.name for t in created_tables]
     assert all(layout.values()) and all(not summary.missing for summary in walks.values()) and again == dict.fromkeys(again, 0)
+    assert answered["def14a_json"].notna().all() and len(answered) == 1
     assert sorted(stored["sec_employees_text"]["source_document"]) == ["_empty", "primary"]
     assert set(stored["sec_def14a_text"]["section"]) == {"_empty", "governance"}
     assert after == {"employees": 1, "def14a": 1, "votes": 1} and decided["employees_total"].tolist() == [41_000]
     print("\n=== SANITY CHECK: cold-start night in DAG order (AC-004) ===")
-    print(f"  no text table: identity purge {len(purged)} rows; LLM steps before the walks made {before} tasks with both text tables absent;")
+    print(f"  no text or DEF 14A table: identity purge {len(purged)} rows; LLM steps before the walks made {before} tasks;")
     print(f"  walks (AAA marker first): {', '.join(f'{n} {len(df)} rows' for n, df in stored.items())}, committed layout {layout};")
-    print(f"  LLM steps after the walks: {after} tasks; BBB decided {decided['employees_total'].tolist()}; a second walk lists {again}.")
+    print(f"  LLM steps after the walks: {after} tasks; BBB decided {decided['employees_total'].tolist()}; BBB's governance answer archived;")
+    print(f"  the 5 DEF 14A tables exist with their committed layout; a second walk lists {again}.")

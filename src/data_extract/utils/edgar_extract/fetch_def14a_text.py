@@ -21,10 +21,11 @@ import pandas as pd
 from edgar import Filing
 
 from src.context import Context
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url, list_filings
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
@@ -75,11 +76,11 @@ def subject_accepted(ticker: str, filer_cik: str, accession: str, subjects: froz
     return False
 
 
-def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool:
+def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> bool:
     """The subject guard of a multi-window ticker: False (a marker) when the proxy's SGML subject names none of its
     event CIKs. A transient header failure raises (listed again); any other unreadable header accepts the proxy."""
     # read: the accepted subjects (a multi-window ticker's event CIKs), then the proxy's SGML subject CIKs
-    filing_scope = scope.filing_scope(ticker, cik)
+    filing_scope = identity.filing_scope(ticker)
     accepted = frozenset(filing_scope.event_ciks) if len(filing_scope.windows) > 1 else frozenset()
     if not accepted:
         return True

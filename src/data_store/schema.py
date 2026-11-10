@@ -44,6 +44,8 @@ RESUME_SNAPSHOT = "snapshot"
 _EMPTY = "_empty"
 #: The 10-K family the employees text walk reads and its LLM pass decides.
 _ANNUAL_REPORT_FORMS = ("10-K", "10-K/A", "10-K405", "10-K405/A")
+#: The proxy forms the DEF 14A text walk reads and its LLM pass extracts.
+_PROXY_FORMS = ("DEF 14A", "DEF 14C", "DEFC14A")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1370,7 +1372,7 @@ class Tables:
             )
         ),
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
         empty_marker=("def14a_json", _EMPTY),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
@@ -1543,7 +1545,7 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date",),
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
         empty_marker=("section", _EMPTY),
         desc="DEF 14A text (EDGAR)",
         retrieval_columns=(

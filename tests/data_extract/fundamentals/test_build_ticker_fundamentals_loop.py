@@ -16,7 +16,8 @@ import pytest
 
 import src.data_extract.utils.fundamentals.fetch_fundamentals_sec as mod
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from tests.data_extract.edgar_fixtures import identity_for
 
 
 def _filing(accession: str, cik: str, date: str, form: str = "10-Q", xbrl: Any = None):
@@ -46,7 +47,7 @@ def patched(monkeypatch):
 
 def _parse(ticker: str, roster_cik: str, filing) -> pd.DataFrame:
     stamp = FilingStamp.of(filing, roster_cik)
-    out = mod.parse_fundamentals(ticker, roster_cik, stamp, EdgarScope(), catalogue=cast(Any, None), gics_by_ticker={})
+    out = mod.parse_fundamentals(ticker, roster_cik, stamp, identity_for({ticker: roster_cik}), catalogue=cast(Any, None), gics_by_ticker={})
     assert set(out) == {mod.Tables.fundamentals_facts}  # no employee-side output
     return out[mod.Tables.fundamentals_facts]
 

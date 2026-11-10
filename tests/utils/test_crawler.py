@@ -74,7 +74,7 @@ def test_terminal_404_no_retry(monkeypatch):
 
 def test_direct_when_no_proxies(monkeypatch):
     c = cw.Crawler(retries=2, proxies=[])
-    assert c.n_proxies == 0
+    assert c._current_proxy() is None
     seen = []
 
     def fake(url, params, headers, proxy):

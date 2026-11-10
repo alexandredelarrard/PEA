@@ -10,12 +10,13 @@ from __future__ import annotations
 import queue
 import types
 from collections.abc import Iterable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.identity import FilingScope, Identity, build_identity
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
@@ -224,10 +225,29 @@ def identity_for(roster: dict[str, str]) -> Identity:
     )
 
 
+@dataclass(frozen=True)
+class RosterIdentity:
+    """An `Identity` stand-in for walks that read only the filing scope: each ticker's roster CIK alone (two tickers may
+    share a CIK, and a blank CIK scopes nothing), which a built `Identity` refuses."""
+
+    roster: dict[str, str]
+
+    def filing_scope(self, ticker: str) -> FilingScope:
+        """`ticker`'s roster CIK as its only window."""
+        return FilingScope.roster_only(ticker, self.roster[ticker])
+
+
+def roster_identity(roster: dict[str, str]) -> Identity:
+    """A `RosterIdentity` typed as the `Identity` the walks take."""
+    return cast(Identity, RosterIdentity({ticker: pad_cik(cik) if cik else "" for ticker, cik in roster.items()}))
+
+
 def roster_run(ctx: Any, tickers: list[str], years_history: int = 15, *, as_of: pd.Timestamp, full: bool = False, no_cap: bool = False) -> EdgarRun:
-    """`EdgarRun.load` with no identity layer: each key's filing scope is its roster CIK alone."""
+    """`EdgarRun.load` over a roster-only identity: each key's filing scope is its roster CIK alone."""
+    roster = edgar_driver.universe_rows(ctx, tickers)
+    identity = roster_identity(dict(zip(roster["ticker"], roster["cik"], strict=True)))
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(edgar_driver, "load_identity", lambda context: None)
+        patch.setattr(edgar_driver, "load_identity", lambda context: identity)
         return EdgarRun.load(ctx, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
 
 

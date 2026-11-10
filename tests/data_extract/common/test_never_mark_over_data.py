@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, marker_row, run_edgar_fetch
+from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, marker_row, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_shares_data_key
 from src.data_store.schema import Table, Tables, marker_tables
 from tests.canonical_schema import create_canonical
@@ -127,7 +128,7 @@ def test_a_table_whose_sentinel_is_in_the_key_is_returned_unread() -> None:
     print("  returned unchanged with no store read: its key can never equal a real row's key.")
 
 
-def _parse_nothing(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]:
+def _parse_nothing(ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> dict[Table, pd.DataFrame]:
     return {Tables.sec_employees_text: pd.DataFrame(columns=["ticker", "accession_number", "filing_date", "form"])}
 
 

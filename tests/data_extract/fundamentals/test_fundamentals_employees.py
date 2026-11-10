@@ -15,7 +15,7 @@ import src.data_extract.utils.edgar_extract.fetch_employees_text as text_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
-from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, lent, sent_excerpt
+from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, identity_for, lent, sent_excerpt
 from tests.data_extract.edgar_fixtures import employee_answer as answer
 from tests.data_extract.fake_context import extract_config
 
@@ -43,7 +43,7 @@ def text_rows(filings: list[Filing]) -> pd.DataFrame:
     """The `sec_employees_text` rows the walk's parse stores for `filings` (none for a filing with no usable text)."""
     parse = text_mod.EMPLOYEES_TEXT_FETCH.parse
     assert parse is not None
-    frames = [parse("AAA", "0000000001", edgar_driver.FilingStamp.of(filing, "0000000001"), edgar_driver.EdgarScope())[TEXT] for filing in filings]
+    frames = [parse("AAA", "0000000001", edgar_driver.FilingStamp.of(filing, "0000000001"), identity_for({"AAA": "1"}))[TEXT] for filing in filings]
     return pd.concat([frame for frame in frames if not frame.empty] or [pd.DataFrame(columns=list(TEXT.retrieval_columns))], ignore_index=True)
 
 

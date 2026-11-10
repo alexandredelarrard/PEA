@@ -34,6 +34,24 @@ from src.utils.string import pad_cik
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
+#: The `sec13f_hr` columns these tests compare (the frame columns the walk stores).
+HR_COLS = [
+    "cik",
+    "period",
+    "filing_date",
+    "ticker",
+    "cusip",
+    "shares",
+    "value_usd",
+    "call_shares",
+    "call_value",
+    "put_shares",
+    "put_value",
+    "debt_prn",
+    "debt_value",
+    "other_value",
+]
+
 ROSTER = "0001067983"
 OTHER = "0000999999"
 UNIVERSE = ["AAPL", "MSFT"]
@@ -185,7 +203,7 @@ def _old_hr_rows(filing: _FakeFiling) -> pd.DataFrame:
     out["period"] = pd.Timestamp(filing.period_of_report)
     out["filing_date"] = pd.Timestamp(filing.filing_date)
     out = out.merge(CMAP, on="cusip", how="inner")
-    return out[out["ticker"].isin(set(UNIVERSE))][f13._HR_COLS]
+    return out[out["ticker"].isin(set(UNIVERSE))][HR_COLS]
 
 
 def _roster_original() -> _FakeFiling:
@@ -221,7 +239,7 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(filing_sto
     hr = _stored(filing_store, Tables.sec13f_hr)
     expected = pd.concat([_old_hr_rows(f) for f in filings], ignore_index=True)
     keys = ["cik", "period", "ticker", "cusip"]
-    got = hr.loc[hr.ticker.isin(UNIVERSE), f13._HR_COLS].sort_values(keys).reset_index(drop=True)
+    got = hr.loc[hr.ticker.isin(UNIVERSE), HR_COLS].sort_values(keys).reset_index(drop=True)
     want = expected.sort_values(keys).reset_index(drop=True)
     pd.testing.assert_frame_equal(got, want, check_dtype=False)
 

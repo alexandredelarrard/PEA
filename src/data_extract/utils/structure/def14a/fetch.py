@@ -169,7 +169,10 @@ def fetch_def14a_llm(
     """Extract every section of a walked proxy filed by its ticker's end (plus the grace) that has a key gap and fewer
     than two attempts (`retry=1`, then one more call and `retry=2`), from the stored tables alone. `extractors`
     (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight."""
-    # load: the walked proxies in the window (no payloads), the ticker names and end bounds
+    # load: the five output tables (created from their committed DDL on a first run), the walked proxies in the window
+    # (no payloads), the ticker names and end bounds
+    for section in SECTIONS:
+        context.store.create_declared(section.table)
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, run_date(None), years)
     df_text = context.store.load(Tables.sec_def14a_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=floor, optional=True)

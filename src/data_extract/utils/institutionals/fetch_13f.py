@@ -80,24 +80,6 @@ _COVER_DOLLARS = re.compile(r"\bdollars?\b", re.I)
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
 
-# `quarter` is absent on purpose: it tagged the SOURCE bulk data set, not the period.
-_HR_COLS = [
-    "cik",
-    "period",
-    "filing_date",
-    "ticker",
-    "cusip",
-    "shares",
-    "value_usd",
-    "call_shares",
-    "call_value",
-    "put_shares",
-    "put_value",
-    "debt_prn",
-    "debt_value",
-    "other_value",
-]
-
 _BOOK_COLS = [
     "cik",
     "period",

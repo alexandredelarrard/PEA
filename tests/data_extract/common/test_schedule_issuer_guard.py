@@ -8,24 +8,22 @@ storing +0 rows after resolving MDT 28, BLK 50, VTRS 16+6 and ICE 10 predecessor
 
 from __future__ import annotations
 
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+from tests.data_extract.edgar_fixtures import identity_for
 
 #: VTRS as the register holds it: Mylan Inc -> Mylan N.V. -> Viatris.
-_VTRS = EdgarScope(
-    dated_identity(
-        [
-            ("VTRS", "0000069499", "cik_window", SENTINEL, "2015-05-01"),
-            ("VTRS", "0001623613", "cik_window", "2015-05-01", "2020-11-07"),
-            ("VTRS", "0001792044", "cik_window", "2020-11-07", None),
-        ],
-        {"VTRS": "0001792044", "AAPL": "0000320193"},
-    )
+_VTRS = dated_identity(
+    [
+        ("VTRS", "0000069499", "cik_window", SENTINEL, "2015-05-01"),
+        ("VTRS", "0001623613", "cik_window", "2015-05-01", "2020-11-07"),
+        ("VTRS", "0001792044", "cik_window", "2020-11-07", None),
+    ],
+    {"VTRS": "0001792044", "AAPL": "0000320193"},
 )
 
 
 def _subjects(ticker: str, cik: str) -> frozenset[str]:
-    return frozenset(_VTRS.filing_scope(ticker, cik).event_ciks)
+    return frozenset(_VTRS.filing_scope(ticker).event_ciks)
 
 
 def test_every_scope_cik_identifies_the_ticker_as_issuer():
@@ -49,5 +47,5 @@ def test_an_unrelated_issuer_is_still_rejected():
 
 def test_a_single_cik_ticker_keeps_exactly_its_roster_cik():
     assert _subjects("AAPL", "0000320193") == {"0000320193"}
-    assert EdgarScope().filing_scope("AAPL", "0000320193").event_ciks == ("0000320193",)
-    print("\n=== SANITY: a single-CIK scope (with or without identity) is its roster CIK ===")
+    assert identity_for({"AAPL": "320193"}).filing_scope("AAPL").event_ciks == ("0000320193",)
+    print("\n=== SANITY: a single-CIK scope is its roster CIK ===")

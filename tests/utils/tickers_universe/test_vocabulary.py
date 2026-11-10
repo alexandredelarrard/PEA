@@ -8,9 +8,11 @@ from pathlib import Path
 from src.data_aggregate.utils.common.sector_gates import SECTOR_KPI_SCOPE
 from src.utils.config import read_config
 from src.utils.tickers_universe.universe import universe_classification
-from src.utils.tickers_universe.vocabulary import GICS_GROUP_SECTOR, GICS_INDUSTRY_GROUPS, GICS_SECTORS, GICS_SUB_INDUSTRY_GROUP
+from src.utils.tickers_universe.vocabulary import GICS_GROUP_SECTOR, GICS_SUB_INDUSTRIES, GICS_SUB_INDUSTRY_GROUP
 
 ROOT = Path(__file__).resolve().parents[3]
+GICS_SECTORS = frozenset(GICS_GROUP_SECTOR.values())
+GICS_INDUSTRY_GROUPS = frozenset(GICS_SUB_INDUSTRIES)
 VOCABULARY = {"sector": GICS_SECTORS, "industry_group": GICS_INDUSTRY_GROUPS, "sub_industry": frozenset(GICS_SUB_INDUSTRY_GROUP)}
 
 

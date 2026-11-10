@@ -84,7 +84,6 @@ def ensure_zip(
     *,
     label: str,
     timeout: int = DEFAULT_TIMEOUT,
-    log: logging.Logger | None = None,
 ) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
 
@@ -96,7 +95,6 @@ def ensure_zip(
     if is_cached(path):
         return path
     candidates = [urls] if isinstance(urls, str) else [u for u in urls if u]
-    log = log or logger
     failures: list[str] = []
 
     for url in candidates:
@@ -110,16 +108,16 @@ def ensure_zip(
             continue
         return path
     if failures:
-        log.warning("%s: ZIP unavailable at every download location (%s)", label, "; ".join(failures))
+        logger.warning("%s: ZIP unavailable at every download location (%s)", label, "; ".join(failures))
     return None
 
 
-def _on_corrupt(path: Path, exc: Exception, policy: Literal["delete", "skip"], log: logging.Logger) -> None:
+def _on_corrupt(path: Path, exc: Exception, policy: Literal["delete", "skip"]) -> None:
     """Log a corrupt archive; under "delete" remove it so the next run re-downloads it."""
     if policy == "skip":
-        log.warning("%s: corrupt zip (%s) -> SKIPPED", path.name, exc)
+        logger.warning("%s: corrupt zip (%s) -> SKIPPED", path.name, exc)
         return
-    log.warning("%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
+    logger.warning("%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
     path.unlink(missing_ok=True)
 
 
@@ -178,13 +176,12 @@ def read_zip_tables(path: Path, specs: Mapping[str, ZipRead], *, on_corrupt: Lit
                 for member, spec in specs.items()
             }
     except zipfile.BadZipFile as exc:
-        _on_corrupt(path, exc, on_corrupt, logger)
+        _on_corrupt(path, exc, on_corrupt)
         return None
 
 
-def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger | None = None) -> str | None:
+def read_zip_text(path: Path, *, encoding: str = "latin-1") -> str | None:
     """The first member of a zip as decoded text; a corrupt archive is deleted so it re-downloads."""
-    log = log or logger
     try:
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
@@ -193,10 +190,10 @@ def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger 
             with archive.open(names[0]) as handle:
                 return handle.read().decode(encoding, errors="replace")
     except zipfile.BadZipFile as exc:
-        _on_corrupt(path, exc, "delete", log)
+        _on_corrupt(path, exc, "delete")
         return None
     except Exception as exc:  # noqa: BLE001
-        log.warning("%s: unreadable archive (%s)", path.name, exc)
+        logger.warning("%s: unreadable archive (%s)", path.name, exc)
         return None
 
 

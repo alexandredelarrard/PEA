@@ -21,8 +21,9 @@ from xml.etree import ElementTree
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp
 from src.data_extract.utils.edgar_extract.insider_common import (
     INSIDER_COLUMNS,
     INSIDER_KEY,
@@ -57,20 +58,18 @@ def _acceptance_datetime(filing: object) -> pd.Timestamp:
     return value
 
 
-def _owner_role(df_str: pd.DataFrame, ticker: str, cik: str, scope: EdgarScope) -> bool:
+def _owner_role(df_str: pd.DataFrame, ticker: str, identity: Identity) -> bool:
     """True when the XML names an issuer CIK outside the key's lineage (the key is only a reporting owner)."""
     issuer = pad_cik(df_str["issuer_cik"].dropna().iloc[0]) if "issuer_cik" in df_str and df_str["issuer_cik"].notna().any() else ""
-    lineage = frozenset(scope.filing_scope(ticker, cik).event_ciks)
+    lineage = frozenset(identity.filing_scope(ticker).event_ciks)
     return bool(issuer and lineage and issuer not in lineage)
 
 
 def parse_insider(
-    ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, *, universe: Sequence[str], excluded: list[pd.DataFrame]
+    ticker: str, cik: str, stamp: FilingStamp, identity: Identity, *, universe: Sequence[str], excluded: list[pd.DataFrame]
 ) -> dict[Table, pd.DataFrame]:
     """One ownership filing -> its kept `source='edgar'` rows and their footnotes; nothing for a
     holdings-only filing or one where the key is only an owner. Rejected in-scope rows go to `excluded`."""
-    if scope.identity is None:
-        raise ValueError("insider EDGAR fetch needs an identity-aware scope")
     xml = filing_xml(stamp.filing)
     if not xml:
         raise ParseFailureError(f"{stamp.accession_number}: no ownership XML")
@@ -80,11 +79,11 @@ def parse_insider(
         raise ParseFailureError(f"{stamp.accession_number}: invalid ownership XML ({exc})") from exc
     if df_str.empty:
         return {Tables.insider_footnotes: df_notes}
-    if _owner_role(df_str, ticker, cik, scope):
+    if _owner_role(df_str, ticker, identity):
         return {}
     df_built = build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS)
     df_built = df_built.assign(filing_date=stamp.filed.normalize(), acceptance_datetime=_acceptance_datetime(stamp.filing))
-    df_kept, df_rejected = screen_insider_rows(df_built.assign(source="edgar"), universe, scope.identity)
+    df_kept, df_rejected = screen_insider_rows(df_built.assign(source="edgar"), universe, identity)
     if not df_rejected.empty:
         excluded.append(exclusion_rows(df_rejected))
     df_rows = pd.DataFrame(columns=list(_EDGAR_COLUMNS))
@@ -226,7 +225,7 @@ def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Times
 def _finish_run(context: Context, since: pd.Timestamp | None, excluded: list[pd.DataFrame], *, after_failure: bool) -> None:
     """Log the run's exclusions and replace the zip rows it re-read (none without a stored zip
     quarter). After a failed run a reconcile error is logged, never raised, so the run's own error propagates."""
-    log_exclusions(context.log, "EDGAR run", excluded)
+    log_exclusions("EDGAR run", excluded)
     if since is None:
         return
     if not after_failure:

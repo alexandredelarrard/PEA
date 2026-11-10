@@ -260,12 +260,11 @@ def test_the_exclusion_message_counts_filings_rows_reasons_and_claims(identity):
 def test_log_exclusions_warns_once_and_is_info_when_nothing_was_excluded(identity, caplog):
     """One WARNING for all frames of a run; no exclusion is an INFO line, not a warning."""
     caplog.set_level(logging.INFO)
-    log = logging.getLogger("tests.identity_screen")
     _, first = screen_insider_rows(_rows([("COR", CORESITE)]), UNIVERSE, identity)
     _, second = screen_insider_rows(_rows([("AVGO", AVICENA)]).assign(accession_number="b0"), UNIVERSE, identity)
 
-    log_exclusions(log, "EDGAR run", [exclusion_rows(first), exclusion_rows(second), exclusion_rows(first.iloc[0:0])])
-    log_exclusions(log, "zip run", [])
+    log_exclusions("EDGAR run", [exclusion_rows(first), exclusion_rows(second), exclusion_rows(first.iloc[0:0])])
+    log_exclusions("zip run", [])
 
     warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
     infos = [record.getMessage() for record in caplog.records if record.levelno == logging.INFO]

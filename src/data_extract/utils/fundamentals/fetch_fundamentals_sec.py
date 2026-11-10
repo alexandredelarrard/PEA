@@ -20,11 +20,11 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
 from src.data_extract.utils.edgar_extract.edgar_driver import (
     EdgarFetch,
     EdgarRun,
-    EdgarScope,
     FetchSummary,
     FilingStamp,
     index_years,
@@ -587,7 +587,7 @@ def parse_fundamentals(
     ticker: str,
     cik: str,
     stamp: FilingStamp,
-    scope: EdgarScope,
+    identity: Identity,
     *,
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],

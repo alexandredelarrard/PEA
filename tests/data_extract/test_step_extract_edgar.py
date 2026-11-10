@@ -59,6 +59,7 @@ class Driver:
         self.events: list[str] = []
         self.refreshed_today = refreshed_today
         self.reads: list[str] = []
+        self.declared: list[str] = []
         self.boom = FETCHES[boom] if boom else None
         self.runs: list[EdgarRun] = []
         self.universe_tickers = universe_of(["AAA", "BBB"])
@@ -73,7 +74,8 @@ class Driver:
         self.events.append(f"refresh {years_history}y")
 
     def context(self, config: Any) -> _Context:
-        return _Context(config=config, config_dir="configs", reads=self.reads, universe_tickers=self.universe_tickers)
+        store = SimpleNamespace(create_declared=lambda table: self.declared.append(table.name))
+        return _Context(config=config, config_dir="configs", reads=self.reads, universe_tickers=self.universe_tickers, store=store)
 
     def cik_mapping(self, context: Any, tickers: list[str]) -> pd.DataFrame:
         self.reads.append("cik_map")
@@ -115,12 +117,13 @@ def test_run_walks_every_fetch_in_order_on_state_declared_once(monkeypatch: pyte
     assert first["cik_map"]["ticker"].tolist() == ["AAA", "BBB"] and first["tickers"] == ["AAA", "BBB"]
     assert all(run is driver.runs[0] for run in driver.runs), "every walk receives the one declared EdgarRun"
     assert driver.runs[0].cap == 100 and driver.runs[0].retry.rounds == 3
+    assert driver.declared == ["sec_employees_text", "sec_def14a_text"], "the two text walks create their table from its committed DDL"
     assert {(call["years_history"], call["as_of"], call["full"], call["no_cap"]) for call in driver.calls} == {
         (15, pd.Timestamp("2026-10-31"), False, False)
     }
     print("\n=== SANITY: StepExtractEdgar.run order ===")
     print(
-        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all {len(RUNS)} walks; window 15y, run date 2026-10-31."
+        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all {len(RUNS)} walks; window 15y, run date 2026-10-31; declared tables {driver.declared}."
     )
 
 

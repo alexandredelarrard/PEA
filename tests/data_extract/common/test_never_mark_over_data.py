@@ -11,7 +11,6 @@ from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, marker_row, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_shares_data_key
 from src.data_store.schema import Table, Tables, marker_tables
-from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, roster_run, seed_index
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -135,7 +134,6 @@ def _parse_nothing(ticker: str, cik: str, stamp: FilingStamp, identity: Identity
 def test_a_full_refetch_that_parses_nothing_leaves_the_stored_text_untouched(tmp_path, sqlite_store) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"], ["1"])
     seed_index(ctx, [(1, "Fixture Co", "10-K", "2026-03-01", _KEPT), (1, "Fixture Co", "10-K", "2026-03-02", _NEW)])
-    create_canonical(sqlite_store.engine, [Tables.sec_employees_text])
     sqlite_store.save(Tables.sec_employees_text, _real_text())
     fetch = EdgarFetch(tables=(Tables.sec_employees_text,), parse=_parse_nothing)
 

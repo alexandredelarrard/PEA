@@ -128,7 +128,7 @@ class ParseFn(Protocol):
 
 
 class SubjectFn(Protocol):
-    def __call__(self, ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> bool:
+    def __call__(self, ticker: str, stamp: FilingStamp, identity: Identity) -> bool:
         """False when the filing's subject is not the key's company."""
         ...
 
@@ -149,8 +149,8 @@ class SaveFn(Protocol):
 class EdgarFetch:
     """One per-filing EDGAR fetch, declared once and walked by `run_edgar_fetch`.
 
-    `parse(ticker, cik, stamp, identity)` returns `{table: frame}` for one filing; `is_subject` (same
-    arguments) rejects a filing on which the key is only a filer or owner. `done_table` (default
+    `parse(ticker, cik, stamp, identity)` returns `{table: frame}` for one filing; `is_subject(ticker,
+    stamp, identity)` rejects a filing on which the key is only a filer or owner. `done_table` (default
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
     key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
     df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
@@ -311,7 +311,7 @@ def _read_unit(fetch: EdgarFetch, identity: Identity, ticker: str, cik: str, sta
     """`(frames, is_marker)` for one filing; frames are None when it failed and must be listed again."""
     assert fetch.parse is not None
     try:
-        if fetch.is_subject is not None and not fetch.is_subject(ticker, cik, stamp, identity):
+        if fetch.is_subject is not None and not fetch.is_subject(ticker, stamp, identity):
             return {fetch.done: marker_row(fetch.done, ticker, stamp)}, True
         frames = fetch.parse(ticker, cik, stamp, identity)
     except TransientReadError as exc:

@@ -18,6 +18,7 @@ Changes from the old `schema_sql.py`:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pandas as pd
 from pandas.api import types as ptypes
@@ -30,6 +31,8 @@ VECTOR_SQL_TYPE = "DOUBLE PRECISION[]"
 
 # What a reflected array column's `str(type)` degrades to.
 _REFLECTED_ARRAY_TYPES = {"ARRAY", "ARRAY[]"}
+
+_SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 
 
 def sql_type(col: str, dtype, spec: Table | None = None) -> str:
@@ -116,6 +119,15 @@ _BLOCK_RE = re.compile(
 def existing_blocks(schema_sql: str) -> dict[str, str]:
     """`{table: its CREATE TABLE (+ CREATE INDEX) text}` parsed out of a schema.sql."""
     return {m.group("name"): m.group(0).rstrip() for m in _BLOCK_RE.finditer(schema_sql)}
+
+
+def declared_statements(name: str) -> list[str]:
+    """The statements of table `name`'s committed `sql/schema.sql` block (CREATE TABLE + its CREATE INDEX), comments
+    stripped; raises when the file has no block for `name`."""
+    blocks = existing_blocks(_SCHEMA_SQL.read_text(encoding="utf-8"))
+    if name not in blocks:
+        raise ValueError(f"{name}: no CREATE TABLE block in {_SCHEMA_SQL}")
+    return [stmt for stmt in re.sub(r"--[^\n]*", "", blocks[name]).split(";") if stmt.strip()]
 
 
 def generate_schema_sql(reflected: dict[str, list[tuple[str, str]]], previous: str | None = None) -> str:

@@ -1,6 +1,7 @@
-"""Cold start of the two EDGAR text tables and the five DEF 14A tables: whatever frame a walk saves first creates the
-committed `sql/schema.sql` layout, and a first nightly run in DAG order on a store without them (identity purge, both
-text walks, then the three LLM steps, which also run before any of them exists) raises nothing and stores every row.
+"""Cold start of the two EDGAR text tables and the five DEF 14A tables: each is created from its committed
+`sql/schema.sql` block, whatever frame a walk saves first lands in that layout, and a first nightly run in DAG order on
+a store without them (identity purge, both text walks, then the three LLM steps, which also run before any of them
+exists) raises nothing and stores every row.
 
 Offline: a real SQLite `DataStore`, a seeded local EDGAR index, filing stand-ins, stubbed SEC reads and recording
 extractors (no provider, no LLM call).
@@ -17,10 +18,11 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fundamentals_employees as employees
-from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_def14a_text as def14a_text
 from src.data_extract.utils.edgar_extract import fetch_employees_text as employees_text
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, marker_row, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row, parse_filing_rows
 from src.data_extract.utils.edgar_extract.employee_document import EmployeeText
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
@@ -29,6 +31,7 @@ from src.data_extract.utils.structure.def14a import fetch as def14a_llm
 from src.data_extract.utils.structure.votes.fetch import fetch_8k_votes_llm
 from src.data_store import ddl
 from src.data_store.schema import Table, Tables
+from src.data_store.store import reflect_columns
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.filer_tables import PURGE_TABLES
 from src.utils.string import run_date
@@ -89,27 +92,36 @@ def _def14a_shapes() -> dict[str, pd.DataFrame]:
     }
 
 
-def test_every_first_frame_creates_the_committed_ddl(monkeypatch: pytest.MonkeyPatch) -> None:
-    shapes = {Tables.sec_employees_text: _employee_shapes(monkeypatch), Tables.sec_def14a_text: _def14a_shapes()}
+SHAPES = [
+    *((Tables.sec_employees_text, shape) for shape in ("data", "data, no period", "marker", "data then marker", "marker then data")),
+    *((Tables.sec_def14a_text, shape) for shape in ("data", "_none", "marker", "data then marker", "marker then data")),
+]
 
-    verdicts = {
-        (table.name, shape): ddl.table_ddl_from_frame(table, df).strip() == BLOCKS[table.name].strip()
-        for table, frames in shapes.items()
-        for shape, df in frames.items()
-    }
 
-    different = sorted(key for key, same in verdicts.items() if not same)
-    print("\n=== SANITY CHECK: cold-start DDL of the text tables ===")
-    for (name, shape), same in verdicts.items():
-        print(f"  {name:20s} first save = {shape:17s} -> {'EQUAL' if same else 'DIFFERENT'} to sql/schema.sql")
-    assert not different, f"inferred DDL differs from sql/schema.sql for {different}"
-    print(f"  all {len(verdicts)} shapes create the committed layout (column order, types, PK, index).")
+def _committed_layout(table: Table) -> list[tuple[str, str]]:
+    """The `(column, type)` pairs of `table`'s `sql/schema.sql` block, in order."""
+    return re.findall(r'^\s+"([^"]+)" ([A-Z]+)', BLOCKS[table.name], re.M)
+
+
+@pytest.mark.parametrize(("table", "shape"), SHAPES, ids=[f"{t.name}-{s}" for t, s in SHAPES])
+def test_every_first_frame_lands_in_the_committed_layout(table: Table, shape: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    df = (_employee_shapes(monkeypatch) if table is Tables.sec_employees_text else _def14a_shapes())[shape]
+
+    sqlite_store.create_declared(table)
+    sqlite_store.save(table, df)
+
+    layout = reflect_columns(sqlite_store.engine, table.name)
+    stored = sqlite_store.load(table, markers=True)
+    assert layout == _committed_layout(table) and len(stored) == len(df)
+    print(f"\n=== SANITY CHECK: {table.name} first save = {shape} ===")
+    print(f"  created from sql/schema.sql ({len(layout)} columns, types EQUAL); the first save stores all {len(stored)} row(s), no column added.")
 
 
 @pytest.mark.parametrize("table", [Tables.sec_employees_text, Tables.sec_def14a_text], ids=lambda t: t.name)
 def test_marker_first_save_then_data_save_stores_every_row(table: Table, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     frames = _employee_shapes(monkeypatch) if table is Tables.sec_employees_text else _def14a_shapes()
 
+    sqlite_store.create_declared(table)
     sqlite_store.save(table, frames["marker"])
     created = sqlite_store.columns(table.name)
     sqlite_store.save(table, frames["data"])
@@ -118,7 +130,9 @@ def test_marker_first_save_then_data_save_stores_every_row(table: Table, sqlite_
     assert created == list(table.retrieval_columns)
     assert len(stored) == len(frames["marker"]) + len(frames["data"])
     print(f"\n=== SANITY CHECK: {table.name} marker-first cold save ===")
-    print(f"  a marker-only first save creates all {len(created)} declared columns; the next data save stores, {len(stored)} rows in all.")
+    print(
+        f"  a marker-only first save into the declared table keeps all {len(created)} columns; the next data save stores, {len(stored)} rows in all."
+    )
 
 
 class SectionRecorder:
@@ -153,6 +167,7 @@ def night(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) ->
     are markers) and BBB (one CIK: a 10-K with a headcount and a proxy with a board section). The store holds only the
     empty employees and 8-K tables (committed DDL); no text table and no DEF 14A table."""
     monkeypatch.setattr(edgar_driver, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(edgar_index, "refreshed_today", lambda context, years_history: True)
     create_canonical(sqlite_store.engine, LIVE_TABLES)
     identity = dated_identity(
         [
@@ -203,15 +218,16 @@ def test_first_night_in_dag_order_creates_and_fills_both_text_tables(night: Any)
     purged = [r for spec in PURGE_TABLES for r in purge_rows(ctx, spec, ["AAA", "BBB"], owned_scopes(night.identity), night.identity.bounds, False)]
     before = _llm_steps(ctx)
 
-    # the two text walks (AAA's marker saves first), then the 8-K walk's stored 5.07 narrative and the LLM steps
-    run = EdgarRun.load(ctx, ["AAA", "BBB"], 15, as_of=run_date(None))
-    walks = {fetch.done.name: run_edgar_fetch(ctx, fetch, run, max_workers=1) for fetch in (EMPLOYEES_TEXT_FETCH, DEF14A_TEXT_FETCH)}
+    # the two text walks through the step (each creates its table), then the 8-K walk's 5.07 narrative and the LLM steps
+    step = StepExtractEdgar(ctx, ctx.config, EdgarOptions(tickers=["AAA", "BBB"], years=15, as_of=run_date(None)))
+    text_walks = ((EMPLOYEES_TEXT_FETCH, step.run_employees_text), (DEF14A_TEXT_FETCH, step.run_def14a_text))
+    walks = {fetch.done.name: walk() for fetch, walk in text_walks}
     narrative = {"ticker": "BBB", "cik": "0000000002", "accession_number": "0000000002-22-000009", "item": "5.07", "form": "8-K"}
     store.save(
         Tables.sec_8k, pd.DataFrame([{**narrative, "filing_date": pd.Timestamp("2022-05-01"), "is_amendment": False, "item_text": VOTES_TEXT}])
     )
     after = _llm_steps(ctx)
-    again = {fetch.done.name: run_edgar_fetch(ctx, fetch, run, max_workers=1).work.size for fetch in (EMPLOYEES_TEXT_FETCH, DEF14A_TEXT_FETCH)}
+    again = {fetch.done.name: walk().work.size for fetch, walk in text_walks}
 
     stored = {table.name: store.load(table, markers=True) for table in text_tables}
     layout = {table.name: store.exists(table) and store.columns(table.name) == _committed_columns(table) for table in created_tables}
@@ -225,6 +241,8 @@ def test_first_night_in_dag_order_creates_and_fills_both_text_tables(night: Any)
     assert after == {"employees": 1, "def14a": 1, "votes": 1} and decided["employees_total"].tolist() == [41_000]
     print("\n=== SANITY CHECK: cold-start night in DAG order (AC-004) ===")
     print(f"  no text or DEF 14A table: identity purge {len(purged)} rows; LLM steps before the walks made {before} tasks;")
-    print(f"  walks (AAA marker first): {', '.join(f'{n} {len(df)} rows' for n, df in stored.items())}, committed layout {layout};")
+    print(
+        f"  walks (each table created from its committed DDL): {', '.join(f'{n} {len(df)} rows' for n, df in stored.items())}, committed layout {layout};"
+    )
     print(f"  LLM steps after the walks: {after} tasks; BBB decided {decided['employees_total'].tolist()}; BBB's governance answer archived;")
     print(f"  the 5 DEF 14A tables exist with their committed layout; a second walk lists {again}.")

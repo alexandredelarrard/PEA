@@ -171,11 +171,11 @@ def test_jcis_schedule_guards_accept_a_tyco_subject_and_refuse_old_jci(monkeypat
     stamp = FilingStamp("g-tyco", "SC 13G", TYCO, pd.Timestamp("2013-02-10"), False, None, filing=types.SimpleNamespace())
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({TYCO}))
     monkeypatch.setattr(schedule_rows, "schedule_filing_rows", lambda stamp, spec: [{"cik": TYCO, "rp_seq": 0}])
-    tyco_ok = schedule_rows.schedule_is_subject("JCI", TYCO, stamp, identity)
+    tyco_ok = schedule_rows.schedule_is_subject("JCI", stamp, identity)
     tyco_rows = [row["ticker"] for row in schedule_rows.schedule_ticker_rows("JCI", stamp, identity, SCHEDULE_13G)]
     old = FilingStamp("g-old-jci", "SC 13G", OLD_JCI, pd.Timestamp("2013-02-11"), False, None, filing=types.SimpleNamespace())
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({OLD_JCI}))
-    old_ok = schedule_rows.schedule_is_subject("JCI", OLD_JCI, old, identity)
+    old_ok = schedule_rows.schedule_is_subject("JCI", old, identity)
     print("\n=== SANITY CHECK: JCI schedule guards ===")
     print(f"  Tyco 2013 13G subject={tyco_ok} rows={tyco_rows}; old JCI 2013 13G subject={old_ok}")
     assert tyco_ok and tyco_rows == ["JCI"]

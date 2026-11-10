@@ -18,9 +18,9 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity import load_entity_by_cik
-from src.data_extract.utils.common.identity_contract import entity_or_singleton
+from src.data_extract.utils.common.identity_contract import entity_by_cik_map
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
+from src.data_extract.utils.identity.cik_history import sharadar_outside
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import secfilings_cik
 from src.utils.string import pad_cik, yahoo_symbol
@@ -50,13 +50,12 @@ class SourceCheck:
     sharadar_rows: int
     matched_rows: int
     fields_compared: list[str]
-    sec_only: list[str]
     field_gaps: pd.DataFrame
     gap_pct: float
     field_share: float
 
 
-def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_pct: float, field_share: float, top_tickers: int) -> SourceCheck:
+def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_pct: float, field_share: float, top_tickers: int) -> None:
     """Read the two histories, the Sharadar links and the CIK lineage once each, check them and log the result with its wall time."""
     # the two histories on their shared statement fields, every vendor link (vendor spelling), the CIK -> company rows
     started = time.perf_counter()
@@ -65,7 +64,7 @@ def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_
     sec = context.store.load(Tables.sec_fundamentals_history, columns=[*_KEYS, *shared], where=scope, optional=True)
     sharadar = context.store.load(Tables.sharadar_fundamentals_history, columns=[*_KEYS, *shared], where=scope, optional=True)
     vendor = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings"], optional=True)
-    entity_by_cik = load_entity_by_cik(context)
+    lineage = context.store.load(Tables.universe_cik_symbol, columns=["company_id", "cik"], optional=True)
 
     # an absent table is an empty one: the check reports it instead of stopping
     empty = pd.DataFrame(columns=_KEYS)
@@ -73,7 +72,7 @@ def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_
         empty if sec is None else sec,
         empty if sharadar is None else sharadar,
         pd.DataFrame(columns=["ticker", "secfilings"]) if vendor is None else vendor,
-        entity_by_cik,
+        {} if lineage is None else entity_by_cik_map(lineage),
         context.universe.cik_by_ticker,
         tickers,
         gap_pct=gap_pct,
@@ -86,7 +85,6 @@ def check_fundamentals_sources(context: Context, tickers: Sequence[str], *, gap_
         [f for f in HISTORY_STATEMENT_ORDER if f not in shared],
     )
     log_source_check(check, seconds=time.perf_counter() - started)
-    return check
 
 
 def check_sources(
@@ -111,7 +109,6 @@ def check_sources(
 
     # exact-key matches on the fields both frames carry
     fields = [c for c in sharadar.columns if c in sec.columns and c not in _KEYS and pd.api.types.is_numeric_dtype(sharadar[c])]
-    sec_only = [c for c in sec.columns if c not in sharadar.columns and c not in _KEYS and pd.api.types.is_numeric_dtype(sec[c])]
     sec_in, sharadar_in = sec[sec["ticker"].isin(members)], sharadar[sharadar["ticker"].isin(members)]
     matched = sharadar_in[[*_KEYS, *fields]].merge(sec_in[[*_KEYS, *fields]], on=_KEYS, suffixes=("", "_sec"))
     mismatches, no_cik = _cik_findings(vendor, entity_by_cik, roster_cik, sorted(members))
@@ -126,7 +123,6 @@ def check_sources(
         sharadar_rows=len(sharadar_in),
         matched_rows=len(matched),
         fields_compared=fields,
-        sec_only=sec_only,
         field_gaps=_field_gaps(matched, fields, gap_pct, field_share, top_tickers),
         gap_pct=gap_pct,
         field_share=field_share,
@@ -182,14 +178,10 @@ def _cik_findings(
     names = vendor["ticker"].map(yahoo_symbol)
     keep = names.isin(universe)
     ciks = pd.DataFrame({"ticker": names[keep], "cik": [secfilings_cik(url) for url in vendor.loc[keep, "secfilings"]]})
-    ciks = ciks[ciks["cik"] != ""].drop_duplicates()
+    sharadar = dict(ciks[ciks["cik"] != ""].drop_duplicates("ticker", keep="last").itertuples(index=False, name=None))
     roster = {t: pad_cik(c) for t, c in roster_cik.items()}
-    mismatches = [
-        (t, c, roster.get(t, ""))
-        for t, c in zip(ciks["ticker"], ciks["cik"], strict=True)
-        if not roster.get(t) or entity_or_singleton(entity_by_cik, c) != entity_or_singleton(entity_by_cik, roster[t])
-    ]
-    return sorted(mismatches), sorted(set(universe) - set(ciks["ticker"]))
+    mismatches = [(t, sharadar[t], roster[t]) for t in sharadar_outside(sharadar, entity_by_cik, roster)]
+    return mismatches, sorted(set(universe) - set(sharadar))
 
 
 def _field_gaps(matched: pd.DataFrame, fields: list[str], gap_pct: float, field_share: float, top_tickers: int) -> pd.DataFrame:

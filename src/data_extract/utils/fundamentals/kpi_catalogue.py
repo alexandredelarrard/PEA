@@ -481,22 +481,16 @@ def _catalogue_at(config_dir: str) -> Catalogue:
     regime_exceptions = {regime: config_entries(block) for regime, block in config_entries(exceptions_blob.get("by_regime", {})).items()}
 
     ticker_exceptions = {ticker: config_entries(block) for ticker, block in config_entries(exceptions_blob.get("by_ticker", {})).items()}
-    periodicity = {ticker: config_entries(block) for ticker, block in config_entries(exceptions_blob.get("by_ticker_periodicity", {})).items()}
 
     # An exception-register field missing from the catalogue is a typo that would excuse nothing.
     for regime, block in regime_exceptions.items():
         unknown = sorted(set(block) - set(fields))
         if unknown:
             raise ValueError(f"exceptions[{regime}] names unknown field(s) {unknown}")
-    for label, register in (("by_ticker", ticker_exceptions), ("by_ticker_periodicity", periodicity)):
-        ticker: str | None = None
-        block: dict = {}
-        for ticker, block in register.items():
-            unknown = sorted(set(block) - set(fields))
-            if unknown:
-                raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) {unknown}")
-        if ticker is None:
-            continue
+    for ticker, block in ticker_exceptions.items():
+        unknown = sorted(set(block) - set(fields))
+        if unknown:
+            raise ValueError(f"exceptions.by_ticker[{ticker}] names unknown field(s) {unknown}")
         # A concept declared both leaf and not-leaf is a contradiction; fail loudly.
         for field, entry in block.items():
             if not isinstance(entry, dict):

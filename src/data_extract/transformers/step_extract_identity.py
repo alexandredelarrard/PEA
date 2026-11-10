@@ -275,7 +275,7 @@ class StepExtractIdentity(Step):
 
         # check: the roster CIK names the company its filings name (D19)
         check_d19(tenure, roster_cik, entities.entity_of, d19_allowlist(blob))
-        log_cik_history(history, membership, len(candidates), sharadar_outside(anchor.sharadar_cik, entities, roster_cik))
+        log_cik_history(history, membership, len(candidates), sharadar_outside(anchor.sharadar_cik, entities.entity_of, roster_cik))
         self._cik_history = history
         return history
 

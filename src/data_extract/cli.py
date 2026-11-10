@@ -60,7 +60,7 @@ from src.constants.command_line_interface import (
     YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
-from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar, widest_index_years
+from src.data_extract.transformers.step_extract_edgar import EDGAR_WALKS, EdgarOptions, StepExtractEdgar, widest_index_years
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
@@ -75,13 +75,6 @@ from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
 )
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, plan_fetch
-from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
-from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
-from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
 )
@@ -664,17 +657,8 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
 
 
 def _document_fetches() -> dict[str, EdgarFetch]:
-    """Every EDGAR document fetch, keyed by its done table's name."""
-    fetches = (
-        SEC_8K_FETCH,
-        SEC_13D_FETCH,
-        SEC_13G_FETCH,
-        FILING_TEXT_FETCH,
-        DEF14A_EDGAR_FETCH,
-        SEC_FUNDAMENTALS_FETCH,
-        INSIDER_EDGAR_FETCH,
-    )
-    return {fetch.done.name: fetch for fetch in fetches}
+    """Every EDGAR document fetch (the walks, in `run()` order), keyed by its done table's name."""
+    return {fetch.done.name: fetch for fetch in EDGAR_WALKS}
 
 
 @cli.command(name="resume-plan", help="READ-ONLY: each EDGAR document table's work list for the run date, by key class, from the cached index.")

@@ -81,7 +81,7 @@ _RATIOS: frozenset[str] = frozenset(
 
 def _originals(facts: pd.DataFrame) -> pd.DataFrame:
     """`facts` without amendment filings (`form` ending `/A`): the history is built from originals only."""
-    if facts.empty or "form" not in facts.columns:
+    if facts.empty:
         return facts
     return facts[~facts["form"].astype(str).str.endswith("/A")]
 

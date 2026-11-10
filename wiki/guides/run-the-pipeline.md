@@ -346,7 +346,7 @@ This page keeps the decision summary. Exact recovery sequences, rollback evidenc
 
 ### Fundamentals
 
-Run facts in bounded ticker chunks with `-F`, then replay SEC history locally. A table-schema change requires the approved recreation script and a dry run before applying committed DDL. Validate fundamentals by tier/roster and render retained reports rather than re-running when only presentation changes.
+Run facts in bounded ticker chunks with `-F`, then replay SEC history locally. The four fundamentals tables have no `sql/schema.sql` block: each producer creates its table on its first write. A table-schema change means dropping the table and rerunning its producer (a dropped SEC facts table refills on the next walk; run `sec-fundamentals-history --full` for the SEC history). Validate fundamentals by tier/roster and render retained reports rather than re-running when only presentation changes.
 
 ### Registrant boundaries
 

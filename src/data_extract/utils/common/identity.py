@@ -715,12 +715,6 @@ def _log_identity(identity: Identity) -> None:
     )
 
 
-def load_entity_by_cik(context: Context) -> dict[str, str]:
-    """`{padded CIK: company_id}` from the published `universe_cik_symbol` alone; empty before the first build."""
-    lineage = context.store.load(Tables.universe_cik_symbol, columns=["company_id", "cik"], optional=True)
-    return {} if lineage is None else entity_by_cik_map(lineage)
-
-
 def load_identity(context: Context, refresh: bool = False) -> Identity:
     """The resolver for this run, built once per context from the published tables and cached on it (`refresh` rebuilds)."""
     cached = getattr(context, "_identity_resolver", None)

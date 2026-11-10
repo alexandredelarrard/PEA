@@ -46,7 +46,7 @@ class EdgarOptions:
 
 
 #: The seven walks, in `run()` order.
-_WALKS: tuple[EdgarFetch, ...] = (
+EDGAR_WALKS: tuple[EdgarFetch, ...] = (
     INSIDER_EDGAR_FETCH,
     SEC_13D_FETCH,
     SEC_13G_FETCH,
@@ -59,7 +59,7 @@ _WALKS: tuple[EdgarFetch, ...] = (
 
 def widest_index_years(years_history: int, run_date: pd.Timestamp) -> int:
     """The index window covering every walk on `run_date`: the source-history insider walk reaches its source start."""
-    return max(index_years(fetch, years_history, run_date) for fetch in _WALKS)
+    return max(index_years(fetch, years_history, run_date) for fetch in EDGAR_WALKS)
 
 
 class StepExtractEdgar(Step):

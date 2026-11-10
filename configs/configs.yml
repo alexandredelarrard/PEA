@@ -28,11 +28,10 @@ data_extract:
   # prices / sharadar_fundamentals_facts / sharadar_fundamentals_history date is within the table's cadence
   # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.
   prediction_fresh_share: 0.95
-  # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than
-  # parallel_fetch's DEFAULT_WORKERS because this is the only fetcher whose from-scratch
-  # backfill is measured in HOURS (~490 tickers x ~60 filings ~= 30k filing.xbrl() calls at
-  # 1.4-5.8s each). edgartools' shared client already caps ~9 req/sec globally, so raising
-  # this past ~8 buys nothing; lower it when running alongside another EDGAR pull.
+  # Process-pool width of the offline `sec-fundamentals-history` full replay (CPU-bound; 1 runs
+  # in-process), and the thread width of the `fundamentals-employees` ticker loop. It does NOT
+  # size or throttle the `sec-fundamentals-facts` EDGAR walk, which uses parallel_fetch's
+  # DEFAULT_WORKERS under the shared SEC rate limiter like the other walks.
   fundamentals_workers: 8
   # The read-only SEC vs Sharadar check (`fundamentals/check_sources.py`, `fundamentals-check`): a
   # shared field is listed when at least `field_share` of the exactly matched (ticker, as_of) rows

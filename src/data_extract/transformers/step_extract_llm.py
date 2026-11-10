@@ -35,6 +35,8 @@ class LlmOptions:
 
 class StepExtractLlm(Step):
     def __init__(self, context: Context, config: DictConfig, options: LlmOptions | None = None) -> None:
+        """Build the DEF 14A section, votes and employee extractors once; raise `OSError` when a provider these runs
+        use has no API key."""
         super().__init__(context=context, config=config)
         options = options or LlmOptions()
         self._requested = options.tickers
@@ -70,6 +72,7 @@ class StepExtractLlm(Step):
         fetch_employees_llm(self._context, self._tickers, self._years_history, self._employees, full=self._full)
 
     def run(self) -> None:
+        """The DEF 14A pass, then the 8-K votes, then the employees."""
         self.run_def14a_llm()
         self.run_8k_votes()
         self.run_employees_llm()

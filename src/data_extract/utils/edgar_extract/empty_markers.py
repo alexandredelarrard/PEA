@@ -30,12 +30,10 @@ def marker_mask(table: Table, df: pd.DataFrame) -> pd.Series:
 
 
 def marker_frame(table: Table, values: dict[str, object], key_fill: dict[str, object] | None = None) -> pd.DataFrame:
-    """One marker row of `table` from `values` (key, accession, frontier date and any stamp columns).
-
-    The sentinel is set; a primary-key column not in `values` takes `key_fill`'s value, else the
-    frontier date for a date column, else the sentinel. Columns follow `table.retrieval_columns`;
-    a column not in `values` is left out (NULL in an existing table).
-    """
+    """One marker row of `table` from `values` (key, accession, frontier date and any stamp columns), sentinel set.
+    A primary-key column not in `values` takes `key_fill`'s value, else the frontier date for a date column, else
+    the sentinel. Columns follow `table.retrieval_columns`; a column not in `values` is left out (NULL in an
+    existing table)."""
     if table.resume is None or table.empty_marker is None or table.resume.frontier_col is None:
         raise ValueError(f"{table.name}: a marker needs a resume contract with a frontier column and an empty_marker")
     column, sentinel = table.empty_marker

@@ -65,6 +65,7 @@ class FilingStamp:
 
     @classmethod
     def of(cls, filing: Any, roster_cik: str) -> FilingStamp:
+        """The stamp of an index or edgartools filing listed under `roster_cik`."""
         return cls(
             accession_number=filing.accession_number,
             form=filing.form,
@@ -77,12 +78,9 @@ class FilingStamp:
 
     @cached_property
     def period_of_report(self) -> Any:
-        """The filing's raw `period_of_report`, or None when EDGAR's metadata cannot yield it.
-
-        Guarded because the edgartools property can raise `TypeError`, which `run_per_ticker`
-        re-raises as a `PROGRAMMING_ERRORS` member; consumers tolerate a null. Read under the
-        `sec_io` retry policy; a transient SEC failure raises rather than storing a null.
-        """
+        """The filing's raw `period_of_report`, or None when EDGAR's metadata cannot yield it (the edgartools
+        property can raise `TypeError`, which `run_per_ticker` would re-raise; consumers tolerate a null). Read under
+        the `sec_io` retry policy: a transient SEC failure raises rather than storing a null."""
         try:
             return sec_call(attrgetter("period_of_report"), self.filing, label=f"{self.accession_number} period_of_report")
         except TransientReadError:
@@ -111,11 +109,10 @@ class FilingStamp:
         return str(url) if url else None
 
 
-def num_or_null(value, trust_value: bool) -> float:
-    """A 13D/13G beneficial-ownership numeric as float, or NaN when `trust_value` is False or it is unparseable.
-
-    `trust_value` is the caller's judgement that the value is real rather than a parser default.
-    Returns NaN, never None, so an all-unknown batch stays float dtype rather than SQL TEXT."""
+def num_or_null(value: Any, trust_value: bool) -> float:
+    """A 13D/13G beneficial-ownership numeric as float, or NaN when `trust_value` (the caller's judgement that the
+    value is real rather than a parser default) is False or it is unparseable. NaN, never None, so an all-unknown
+    batch stays float dtype rather than SQL TEXT."""
     if not trust_value or value is None:
         return float("nan")
     try:
@@ -180,6 +177,7 @@ class EdgarFetch:
 
     @property
     def done(self) -> Table:
+        """The table whose rows and markers mark a document done: `done_table`, else the first table."""
         return self.done_table if self.done_table is not None else self.tables[0]
 
 
@@ -195,12 +193,14 @@ class RetryRounds:
 
     @classmethod
     def from_config(cls, config: Any) -> RetryRounds:
+        """The rounds declared under `data_extract.retry_rounds`, else the defaults."""
         section = getattr(getattr(config, "data_extract", None), "retry_rounds", None)
         if section is None:
             return cls()
         return cls(int(section.rounds), tuple(float(w) for w in section.waits), float(section.threshold), int(section.min_failed))
 
     def due(self, listed: int, failed: int) -> bool:
+        """Whether a key with `failed` of `listed` documents failed gets another round."""
         return listed > 0 and failed >= self.min_failed and (listed - failed) / listed < self.threshold
 
 
@@ -256,6 +256,7 @@ class KeyOutcome:
 
     @property
     def read(self) -> int:
+        """The documents read: listed less still failed."""
         return self.listed - len(self.failed)
 
 
@@ -268,6 +269,7 @@ class FetchSummary:
 
     @property
     def missing(self) -> dict[str, list[str]]:
+        """The accessions still failed, per key that has any."""
         return {key: [str(a) for a in o.failed["accession"]] for key, o in self.outcomes.items() if not o.failed.empty}
 
 
@@ -300,6 +302,7 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
 
 
 def _has_key_rows(df: pd.DataFrame, table: Table, ticker: str) -> bool:
+    """Whether `df` holds a row of `ticker` under the table's resume key column."""
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
     return key_col in df.columns and bool(df[key_col].astype(str).eq(ticker).any())
 
@@ -490,6 +493,7 @@ def universe_rows(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
 
 
 def _document_cap(context: Context, no_cap: bool) -> int | None:
+    """The configured `max_documents_per_run`, or None when `no_cap` or none is configured."""
     value = getattr(getattr(getattr(context, "config", None), "data_extract", None), "max_documents_per_run", None)
     return None if no_cap or value is None else int(value)
 
@@ -514,6 +518,7 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
 
 
 def _source_start(fetch: EdgarFetch) -> pd.Timestamp:
+    """The done table's declared `source_start`."""
     return pd.Timestamp(cast(str, cast(Resume, fetch.done.resume).source_start))
 
 

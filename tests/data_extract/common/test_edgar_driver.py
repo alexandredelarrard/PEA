@@ -1,5 +1,4 @@
-"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/edgar_extract/edgar_driver.py`) and the
-`Company`-based registrant listing (`resolve_registrant_filings`) the LLM fetchers still use.
+"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/edgar_extract/edgar_driver.py`).
 
 The driver tests run offline on a real `DataStore` (SQLite), a seeded local EDGAR index and fake
 filings: per-filing units, empty-filing markers, in-task retry rounds and exit 0 (AC-011 check 4,
@@ -10,7 +9,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import types
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,23 +17,14 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import frame_sanitize
-from src.data_extract.utils.common.identity import FilingScope
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver
-from src.data_extract.utils.edgar_extract.edgar_driver import (
-    EdgarFetch,
-    EdgarRun,
-    EdgarScope,
-    FilingStamp,
-    parse_filing_rows,
-    resolve_registrant_filings,
-    run_edgar_fetch,
-)
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_store import schema
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
-from tests.data_extract.edgar_fixtures import fake_context, fake_filing, roster_run, seed_index
+from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, roster_run, seed_index
 
 _T_DOC = Table(
     "driver_doc",
@@ -64,10 +53,6 @@ def waits(monkeypatch) -> list[float]:
     return recorded
 
 
-def _filing(accession: str, filing_date: str):
-    return types.SimpleNamespace(accession_number=accession, filing_date=filing_date)
-
-
 def _accession(i: int) -> str:
     return f"0000000001-26-{i:06d}"
 
@@ -89,7 +74,7 @@ class _Source:
         self.kinds: dict[str, str] = {}
         self.reads: list[str] = []
 
-    def parse(self, ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]:
+    def parse(self, ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> dict[Table, pd.DataFrame]:
         accession = stamp.accession_number
         self.reads.append(accession)
         if self.fail_reads.get(accession, 0) > 0:
@@ -185,36 +170,6 @@ def test_marker_stamps_follow_table_metadata() -> None:
     assert row["source"] == "edgar"
     assert "cik" not in row.index
     print("SANITY: insider marker stamps follow the table contract, including after a table rename; the owner's CIK is never stamped as issuer.")
-
-
-# --------------------------------------------------------------------------- #
-# resolve_registrant_filings over a roster-only scope                          #
-# --------------------------------------------------------------------------- #
-def test_registrant_filings_drops_done_accessions_filters_since_and_sorts_oldest_first(monkeypatch):
-    listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01"), _filing("d", "2024-03-01"), _filing("b", "2021-05-01")]
-    monkeypatch.setattr("edgar.Company", lambda cik: types.SimpleNamespace(get_filings=lambda form: listed))
-
-    out = resolve_registrant_filings(
-        FilingScope.roster_only("AAPL", "0000320193"), ["8-K"], since=pd.Timestamp("2021-01-01"), done_accessions=frozenset({"c"})
-    )
-
-    # "a" is pre-since, "c" is already stored -> only b, d survive, oldest first
-    assert [f.accession_number for f in out] == ["b", "d"]
-
-    print("\n=== SANITY CHECK: registrant filings dedup + since + order ===")
-    print("  4 listed, 1 stored, 1 pre-since -> ['b', 'd'] oldest-first. Validated.")
-
-
-def test_registrant_filings_without_since_returns_everything_sorted(monkeypatch):
-    listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01")]
-    monkeypatch.setattr("edgar.Company", lambda cik: types.SimpleNamespace(get_filings=lambda form: listed))
-
-    got = resolve_registrant_filings(FilingScope.roster_only("AAPL", "0000320193"), ["8-K"], since=None, done_accessions=frozenset())
-
-    assert [f.accession_number for f in got] == ["a", "c"]
-
-    print("\n=== SANITY CHECK: registrant filings with since=None ===")
-    print("  no cutoff -> both filings kept, still oldest-first. Validated.")
 
 
 def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():
@@ -421,16 +376,7 @@ def test_a_lineage_expansion_lists_the_new_cik_on_the_next_run_with_no_run_state
     print("  run 1 (roster CIK only) read the 2026 8-K; after the predecessor window lands, run 2 lists only its 2019 8-K. Validated.")
 
 
-def test_parse_filing_rows_dedups_on_pk_and_coerces_after_dedup(monkeypatch):
-    coerced_lengths: list[int] = []
-    real_to_numeric = pd.to_numeric
-
-    def spy_to_numeric(values, **kwargs):
-        coerced_lengths.append(len(values))
-        return real_to_numeric(values, **kwargs)
-
-    monkeypatch.setattr(frame_sanitize.pd, "to_numeric", spy_to_numeric)
-
+def test_parse_filing_rows_dedups_on_pk():
     def row_fn(ticker, stamp):
         # two rows on one PK: the LAST must survive the dedup
         return [
@@ -440,10 +386,10 @@ def test_parse_filing_rows_dedups_on_pk_and_coerces_after_dedup(monkeypatch):
 
     stamp = FilingStamp.of(fake_filing("a-1", 320193, "2024-01-02"), "0000320193")
     table = dataclasses.replace(_T_DOC, retrieval_columns=("ticker", "accession_number", "item", "cik", "value"))
-    out = parse_filing_rows("AAPL", "0000320193", stamp, EdgarScope(), table=table, row_fn=row_fn, numeric=("value",))[table]
+    out = parse_filing_rows("AAPL", "0000320193", stamp, identity_for({"AAPL": "320193"}), table=table, row_fn=row_fn)[table]
 
-    assert list(out["value"]) == [7.0] and coerced_lengths == [1]
+    assert list(out["value"]) == ["7"]
     assert list(out["cik"]) == ["0000320193"]
     assert tuple(out.columns) == table.retrieval_columns
     print("\n=== SANITY CHECK: parse_filing_rows ===")
-    print(f"  2 rows on one PK -> {len(out)} after dedup; to_numeric ran on {coerced_lengths[0]} row (after dedup). Validated.")
+    print(f"  2 rows on one PK -> {len(out)} after dedup, the last one kept, in the declared column order. Validated.")

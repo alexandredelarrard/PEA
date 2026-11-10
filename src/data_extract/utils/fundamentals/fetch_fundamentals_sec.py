@@ -24,8 +24,9 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -542,7 +543,7 @@ def parse_fundamentals(
     ticker: str,
     cik: str,
     stamp: FilingStamp,
-    scope: EdgarScope,
+    identity: Identity,
     *,
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],

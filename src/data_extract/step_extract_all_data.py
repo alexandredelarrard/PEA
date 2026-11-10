@@ -5,10 +5,10 @@ Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, Sharadar actions, S
 Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
 symbol_tenure + universe_cik_symbol + universe_cusip -> propagation) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
-Sharadar -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD, SEC fundamentals facts) -> SEC fundamentals
-history + SEC vs Sharadar check -> LLM (DEF 14A, 8-K votes)
+Sharadar -> EDGAR (insider, 13D, 13G, 8-K, filing text, employees text, DEF 14A text, SEC fundamentals facts) -> SEC
+fundamentals history + SEC vs Sharadar check -> LLM (DEF 14A, 8-K votes)
 -> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step
-has run, so a missing API key fails from there on; employees stay on their own command (`fundamentals-employees`).
+has run, so a missing API key fails from there on; employees stay on their own command (`sec-employees-llm`).
 """
 
 from omegaconf import DictConfig
@@ -62,6 +62,6 @@ class StepExtractAllData(Step):
         # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a
         # missing API key fails only from this point on.
         llm = StepExtractLlm(self._context, self._config, LlmOptions(tickers=tickers))
-        llm.run_def14a()
+        llm.run_def14a_llm()
         llm.run_8k_votes()
         self._behavioral.run(tickers=tickers)

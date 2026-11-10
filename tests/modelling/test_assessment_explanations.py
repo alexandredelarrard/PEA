@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -45,7 +44,7 @@ def test_explain_tree_uses_actual_config_and_preserves_score_artifacts(pdp: bool
         pd.testing.assert_frame_equal(frame, original)
         return pd.Series(predicted, index=frame.index)
 
-    def shap_values(booster: Any, values: np.ndarray, features: list[str], *, sample: int, logger: logging.Logger) -> tuple[np.ndarray, np.ndarray]:
+    def shap_values(booster: Any, values: np.ndarray, features: list[str], *, sample: int) -> tuple[np.ndarray, np.ndarray]:
         assert booster is model and features == ["x", "sector"] and sample == 0
         np.testing.assert_array_equal(values, matrix)
         return phi.copy(), np.arange(len(values))
@@ -69,7 +68,7 @@ def test_explain_tree_uses_actual_config_and_preserves_score_artifacts(pdp: bool
     monkeypatch.setattr(assessment_diagnostics, "shap_row_values", shap_values)
     monkeypatch.setattr(assessment_diagnostics, "partial_dependence", pdp_values)
 
-    result = assessment_diagnostics.explain_tree(member, panel, tmp_path, config, logging.getLogger(__name__), pdp=pdp)
+    result = assessment_diagnostics.explain_tree(member, panel, tmp_path, config, pdp=pdp)
 
     assert calls == ([(0, 30, 2000, False, int(config.seed)), (1, 30, 2000, True, int(config.seed))] if pdp else [])
     assert result["rows"] == result["background_rows"] == len(panel)

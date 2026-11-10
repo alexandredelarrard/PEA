@@ -279,15 +279,20 @@ def test_pending_removals_list_an_event_only_ciks_consolidating_rows(sqlite_stor
     )
     sqlite_store.save(Tables.sec_fundamentals_facts, facts)
     sqlite_store.save(
-        Tables.def14a_edgar,
-        pd.DataFrame([{"ticker": t, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(d)} for t, a, c, d in filings]),
+        Tables.sec_def14a_text,
+        pd.DataFrame(
+            [
+                {"ticker": t, "accession_number": a, "section": "audit", "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(d), "period": ""}
+                for t, a, c, d in filings
+            ]
+        ),
     )
 
     report = check_identity(_context(sqlite_store))
 
     removals = report.removals[report.removals["ticker"].eq("TMUS")]
     got = sorted(zip(removals["table"], removals["cik"], removals["keys"], removals["rows"], strict=True))
-    assert got == [("sec_8k", TMO_USA, 1, 2), (Tables.def14a_edgar.name, TMO_USA, 1, 1), ("sec_fundamentals_facts", TMO_USA, 1, 2)], got
+    assert got == [("sec_8k", TMO_USA, 1, 2), (Tables.sec_def14a_text.name, TMO_USA, 1, 1), ("sec_fundamentals_facts", TMO_USA, 1, 2)], got
     assert report.removals[report.removals["ticker"].eq("REG")].empty, report.removals
     print("\n=== SANITY CHECK: validator pending removals, H1 ===")
     print(removals.to_string(index=False))

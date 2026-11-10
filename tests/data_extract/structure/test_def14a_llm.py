@@ -7,24 +7,23 @@ test_compensation_anchor_skips_noise— the SCT anchor skips CD&A prose AND "rea
 test_sayonpay_anchor_matches_approval — say-on-pay anchor catches "NN% approval"/"NN% of votes"
 test_payratio_and_ownership_anchors — pay-ratio & beneficial-ownership content anchors match
 test_def14a_sections_extraction     — prepare_def14a_sections() isolates the right blocks
-test_llm_extractor_mock             — LLMExtractor.extract() with a mocked OpenAI call
+test_llm_extractor_mock             — LLMExtractor.run() with a mocked OpenAI call
 test_flatten_surfaces_all_signals   — _flatten emits every governance / comp / ownership column
 test_flatten_ceo_age_fallback       — ceo_age recovered from the directors list
-test_llm_extractor_real_apple       — live EDGAR + OpenAI (skips without OPENAI_API_KEY)
-test_fetch_def14a_llm_to_postgres   — fetcher drives the schema-constrained LLM and upserts to DB
-test_fetch_def14a_llm_incremental   — per-ticker year-incremental cutoff (skips without DB)
+test_evidence_gate_parsed_stored_and_persistence_agree — parsed, stored and persisted evidence agree
+test_flatten_surfaces_the_auditor_block — the auditor block flattens; technology fields are gone
 """
 
 from __future__ import annotations
 
-import json
 import os
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.structure.def14a import flatten as flatten_mod
 from src.data_extract.utils.structure.def14a.carve import (
     _COMPENSATION_CONTENT_RE,
     _DIRECTOR_MAX_FRAC,
@@ -36,9 +35,11 @@ from src.data_extract.utils.structure.def14a.carve import (
     _densest_window,
     prepare_def14a_sections,
 )
+from src.data_extract.utils.structure.def14a.def14a_schema import BeneficialOwner as _BeneficialOwner
 from src.data_extract.utils.structure.def14a.def14a_schema import (
     Def14AExtract as _Def14AExtract,
 )
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorCompensation as _DirectorCompensation
 from src.data_extract.utils.structure.def14a.def14a_schema import (
     DirectorInfo as _DirectorInfo,
 )
@@ -48,9 +49,13 @@ from src.data_extract.utils.structure.def14a.def14a_schema import (
 from src.data_extract.utils.structure.def14a.def14a_schema import (
     GovernanceProfile as _GovernanceProfile,
 )
-from src.data_extract.utils.structure.def14a.flatten import _flatten
+from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
+from src.data_store.schema import Tables
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
+BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
+DirectorCompensation: Any = _DirectorCompensation
 DirectorInfo: Any = _DirectorInfo
 ExecutiveCompensation: Any = _ExecutiveCompensation
 GovernanceProfile: Any = _GovernanceProfile
@@ -364,42 +369,13 @@ def test_tabular_sections_capture_rows_in_synthetic():
     )
 
 
-def _stub_extractor_cls(captured: dict):
-    """The REAL `LLMExtractor` with a stub provider injected.
-
-    Everything downstream of the network call -- task building, the carve, the flatten, the
-    five saves -- stays real, so these tests still exercise the production path and only the
-    paid call is replaced.
-    """
-    from src.gpt_extract.transformers.gpt_getter import LLMExtractor as _Real
-
-    class _StubProvider:
-        name, model, structured = "stub", "stub-model", True
-
-        def parse(self, schema, system, user):
-            captured["schema"] = schema
-            captured["system"] = system
-            captured.setdefault("payloads", []).append(user)
-            return _make_expected(), {"input_tokens": 1, "output_tokens": 1, "cached_input_tokens": 0}
-
-    class _Stubbed(_Real):
-        def initialize_client(self, methode=None, key_index=None) -> Any:
-            return _StubProvider()
-
-        def run_extraction(self, tasks, flatten=None, group_key=None):
-            tasks = list(tasks)
-            captured.setdefault("extracted", []).extend(cast(Any, t.meta)["filing"]["accession_number"] for t in tasks)
-            return super().run_extraction(tasks, flatten=flatten, group_key=group_key)
-
-    return _Stubbed
-
-
 # --------------------------------------------------------------------------- #
 # LLMExtractor (mocked)                                                         #
 # --------------------------------------------------------------------------- #
 def test_llm_extractor_mock():
-    """extract() uses the configured model, tailored instructions and stable cache key."""
+    """run() uses the configured model, tailored instructions and stable cache key."""
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+    from src.gpt_extract.utils.schemas_gpt import LlmTask
     from tests.gpt_extract.fakes import fake_context, gpt_config
 
     mock_response = MagicMock()
@@ -412,8 +388,8 @@ def test_llm_extractor_mock():
             mock_cls.return_value = mock_client
 
             config = gpt_config()
-            extractor = LLMExtractor(fake_context(), config, action="def14a")
-            result = extractor.extract(Def14AExtract, _SYNTHETIC, action="def14a")
+            extractor = LLMExtractor(fake_context(), config, action="def14a_executive_pay")
+            result = extractor.run([LlmTask(seq=0, payload=_SYNTHETIC, schema=Def14AExtract)])[0].parsed
 
     assert isinstance(result, Def14AExtract)
     assert result.company_name == "ACME Corporation"
@@ -421,9 +397,8 @@ def test_llm_extractor_mock():
     expected_model = str(config.gpt.llm_model[config.gpt.default_api])
     assert call_kw["model"] == expected_model
     assert call_kw["text_format"] is Def14AExtract
-    # the tailored prompt now lives in prompt_templates/def14a_system_prompt.md
-    assert "=== LABEL ===" in call_kw["instructions"]
-    assert "SUMMARY COMPENSATION TABLE" in call_kw["instructions"]
+    # the section prompt lives in prompt_templates/def14a_executive_pay_system_prompt.md
+    assert "Summary Compensation Table" in call_kw["instructions"]
     assert call_kw["input"].rstrip().endswith(_SYNTHETIC.rstrip()[-60:])  # payload LAST
     assert call_kw["prompt_cache_key"] == f"{expected_model}:Def14AExtract"
     assert "seed" not in call_kw
@@ -434,7 +409,7 @@ def test_llm_extractor_mock():
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
     print(
-        f"  extract() -> {result.company_name}; parse() got the .md instructions, the "
+        f"  run() -> {result.company_name}; parse() got the .md instructions, the "
         f"payload last, configured model={expected_model!r}, "
         f"prompt_cache_key={call_kw['prompt_cache_key']!r}, and no seed. Validated."
     )
@@ -507,237 +482,121 @@ def test_flatten_ceo_age_fallback():
     print(f"  ceo_age omitted top-level -> recovered {row['ceo_age']} from directors. Validated.")
 
 
-# --------------------------------------------------------------------------- #
-# Live integration (skips without OPENAI_API_KEY)                              #
-# --------------------------------------------------------------------------- #
-@pytest.mark.skipif(
-    not (os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_AI_API_KEY")),
-    reason="OPENAI_API_KEY not set — skipping live Apple DEF 14A extraction",
+@pytest.mark.parametrize(
+    "label, extract, expected",
+    [
+        ("empty", Def14AExtract(), False),
+        ("metadata", Def14AExtract(company_name="ACME", fiscal_year=2025), False),
+        (
+            "inferred false defaults",
+            Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False)),
+            False,
+        ),
+        ("classified true", Def14AExtract(governance=GovernanceProfile(classified_board=True)), True),
+        ("dual class true", Def14AExtract(governance=GovernanceProfile(dual_class_shares=True)), True),
+        ("explicit founder false", Def14AExtract(ceo_is_founder=False), True),
+        (
+            "explicit majority false",
+            Def14AExtract(governance=GovernanceProfile(majority_voting_for_directors=False)),
+            True,
+        ),
+        (
+            "numeric zero",
+            Def14AExtract(governance=GovernanceProfile(insider_ownership_pct=0.0)),
+            True,
+        ),
+        (
+            "ownership only",
+            Def14AExtract(ownership_holders=[BeneficialOwner(holder_name="Example Fund", holder_type="5pct_holder")]),
+            True,
+        ),
+        ("director only", Def14AExtract(directors=[DirectorInfo(name="Jane Director")]), True),
+        (
+            "executive compensation only",
+            Def14AExtract(compensation=[ExecutiveCompensation(name="Jane CEO", title="CEO", fiscal_year=2025)]),
+            True,
+        ),
+        (
+            "director compensation only",
+            Def14AExtract(director_compensation=[DirectorCompensation(name="Jane Director", fiscal_year=2025)]),
+            True,
+        ),
+        ("ceo only", Def14AExtract(ceo_name="Jane CEO"), True),
+        ("auditor only", Def14AExtract(governance=GovernanceProfile(auditor_name="Example Audit LLP")), True),
+        ("board only", Def14AExtract(governance=GovernanceProfile(board_size=8)), True),
+        ("blank scalar", Def14AExtract(ceo_name="   "), False),
+    ],
 )
-@pytest.mark.live  # live EDGAR + OpenAI
-def test_llm_extractor_real_apple():
-    """Live: fetch Apple's latest DEF 14A, extract with the tailored prompt, sanity-check."""
-    from src.context import get_config_context
-    from src.data_extract.utils.common.sec_io import sec_get
-    from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
-    from src.data_extract.utils.edgar_extract.html_text import html_to_text
-    from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-
-    config, ctx = get_config_context("./configs", use_cache=True, save=False)
-    ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
-
-    filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
-    if filings.empty:
-        pytest.skip("No DEF 14A filings found for AAPL via EDGAR")
-
-    latest = filings.sort_values("filing_date").iloc[-1]
-    raw_html = sec_get(ctx, latest["doc_url"]).text
-    focused = prepare_def14a_sections(raw_html, html_to_text(raw_html))
-    result = LLMExtractor(ctx, config, action="def14a").extract(Def14AExtract, focused, action="def14a")
-    row = _flatten("AAPL", latest, result)
-
-    assert len(result.directors) >= 5
-    ceo = next((c for c in result.compensation if "chief executive" in (c.title or "").lower()), None)
-    assert ceo is not None and (ceo.stock_awards_usd or 0) > 0, "CEO SCT breakdown not extracted"
-    assert row["ceo_total_comp"] and row["ceo_pay_ratio"]
-
-    print("\n=== SANITY CHECK: Real DEF 14A extraction (Apple) ===")
-    print(f"  {result.company_name} FY{result.fiscal_year}; focused={len(focused):,} chars")
-    print(
-        f"  CEO {ceo.name}: salary=${(ceo.salary_usd or 0):,.0f} stock=${(ceo.stock_awards_usd or 0):,.0f} "
-        f"total=${row['ceo_total_comp']:,.0f}; pay_ratio={row['ceo_pay_ratio']:.0f}:1"
+def test_evidence_gate_parsed_stored_and_persistence_agree(label, extract, expected):
+    filing = pd.Series(
+        {
+            "accession_number": f"acc-{label}",
+            "filing_date": pd.Timestamp("2025-04-01"),
+            "period_of_report": "2024-12-31",
+        }
     )
-    print(f"  board size={row['board_size']} %indep={row['pct_independent_directors']} say_on_pay={row['say_on_pay_support_pct']}. Validated.")
+    row = _flatten("ZZ", filing, extract)
+    projected = {column: row.get(column) for column in flatten_mod._DEF14A_EVIDENCE_COLUMNS}
+    task = LlmTask(seq=0, payload="proxy", schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": "ZZ", "filing": filing})
+    frames = _result_frames(LlmResult(seq=0, task=task, parsed=extract))
+
+    parent = frames[Tables.def14a_llm].iloc[0]
+    assert flatten_mod._has_extract_evidence(extract) is expected, label
+    assert flatten_mod._has_parent_evidence(projected) is expected, label
+    assert (parent["def14a_json"] != "_empty") is expected, label
+    if not expected:
+        assert set(frames) == {Tables.def14a_llm} and list(frames[Tables.def14a_llm].columns) == [
+            "ticker",
+            "accession_number",
+            "as_of",
+            "def14a_json",
+        ]
+
+    print(f"\n=== SANITY: DEF 14A evidence gate — {label} ===")
+    print(f"  parsed={expected}, stored={expected}, {'parent row' if expected else 'empty-filing marker, no child row'}. Validated.")
 
 
-# --------------------------------------------------------------------------- #
-# fetch_def14a_llm(): schema-constrained LLM -> Postgres def14a_llm table       #
-# --------------------------------------------------------------------------- #
-@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set — needs the Postgres DB")
-@pytest.mark.live  # DELETEs and upserts rows in the live def14a_llm table
-def test_fetch_def14a_llm_to_postgres(monkeypatch):
-    """End-to-end (network + LLM mocked): the fetcher (1) constrains the LLM to the
-    Def14AExtract schema and (2) UPSERTS the flattened row into Postgres."""
-    from sqlalchemy import text
+def test_flatten_surfaces_the_auditor_block():
+    """`n_technology_directors` / `technology_committee` were REMOVED -- they were an opinion,
+    not an extraction (mean |delta| of 1.06 directors between consecutive filings of the same
+    company, only 38.8% unchanged, and wrong by 7x on HUBB 2022 whose own matrix states
+    "Cybersecurity and Technology 78%" of 9 directors).
 
-    from src.context import get_config_context
-    from src.data_extract.utils.structure.def14a import fetch as mod
+    What replaced them is the auditor block, which is the opposite kind of field: the firm name
+    is present in 98% of documents and was the WORST column in the retired edgar table at 2.05%
+    fill."""
+    extract = Def14AExtract(
+        company_name="ACME",
+        fiscal_year=2024,
+        governance=GovernanceProfile(
+            board_size=10,
+            auditor_name="Ernst & Young LLP",
+            auditor_since_year=1934,
+            auditor_fees_usd=12_000_000.0,
+            audit_fees_audit_usd=9_000_000.0,
+            audit_fees_audit_related_usd=1_000_000.0,
+            audit_fees_tax_usd=1_500_000.0,
+            audit_fees_other_usd=500_000.0,
+            auditor_fees_prior_usd=11_000_000.0,
+        ),
+    )
+    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"), "period_of_report": "2023-12-31", "accession_number": "a1"})
+    row = _flatten("ACME", filing, extract)
+    assert row["auditor_name"] == "Ernst & Young LLP"
+    assert row["auditor_since_year"] == 1934
+    assert row["auditor_fees"] == 12_000_000.0
+    assert row["audit_fees_audit"] == 9_000_000.0
+    assert row["audit_fees_tax"] == 1_500_000.0
+    assert row["auditor_fees_prior"] == 11_000_000.0
+    # the dropped fields must NOT come back
+    for gone in ("n_technology_directors", "pct_technology_directors", "technology_committee"):
+        assert gone not in row, f"{gone} reappeared in the flatten"
+    # absent -> null (not a false 0)
+    empty = _flatten("X", filing, Def14AExtract(governance=GovernanceProfile(board_size=8)))
+    assert empty["auditor_name"] is None and empty["auditor_fees"] is None
+    assert empty["audit_fees_audit"] is None
 
-    try:
-        _, ctx = get_config_context("./configs", use_cache=False, save=False)
-        ctx.store.exists("def14a_llm")
-    except Exception as e:  # noqa: BLE001
-        pytest.skip(f"DB not reachable: {e}")
-
-    ticker, acc = "ZZTEST", "9999999999-99-999999"
-
-    def _cleanup():
-        if ctx.store.exists("def14a_llm"):
-            with ctx.store.engine.begin() as c:
-                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": ticker})
-
-    _cleanup()
-    try:
-        captured: dict = {}
-        _fakeextractor = _stub_extractor_cls(captured)  # no OPENAI key needed
-
-        filings = pd.DataFrame(
-            [
-                {
-                    "accession_number": acc,
-                    "doc_url": "http://example/def14a.htm",
-                    "filing_date": pd.Timestamp("2024-04-01"),
-                    "period_of_report": "2023-12-31",
-                    "form": "DEF 14A",
-                }
-            ]
-        )
-
-        class _Resp:
-            text = "<html>proxy statement</html>"
-
-        monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
-        monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
-        monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
-        monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "name": ["Z"]}))
-        monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
-
-        mod.fetch_def14a_llm(ctx, ctx.config, [ticker], mod.section_extractors(ctx, ctx.config))
-
-        assert captured["schema"] is Def14AExtract, captured
-        assert "SUMMARY COMPENSATION TABLE" in captured["system"]  # the .md prompt is used
-
-        back = ctx.store.load("def14a_llm")
-        assert back is not None
-        row = back[back["ticker"] == ticker]
-        assert len(row) == 1, "row not found in def14a_llm table"
-        r = row.iloc[0]
-        assert r["accession_number"] == acc
-        assert int(r["n_directors"]) == 3
-        assert float(r["ceo_salary"]) == 850_000.0
-        assert int(r["ceo_age"]) == 58
-        assert float(r["ceo_pay_ratio"]) == 250.0
-        assert float(r["pct_female_directors"]) == pytest.approx(2 / 3, abs=1e-3)
-        assert float(r["insider_ownership_pct"]) == pytest.approx(0.084, abs=1e-3)
-        assert json.loads(r["def14a_json"])["company_name"] == "ACME Corporation"
-
-        print("\n=== SANITY CHECK: DEF 14A LLM -> Postgres ===")
-        print(f"  LLM constrained to {captured['schema'].__name__} with tailored prompt.")
-        print(
-            f"  Upserted: ticker={r['ticker']} n_directors={int(r['n_directors'])} "
-            f"ceo_age={int(r['ceo_age'])} ceo_salary=${float(r['ceo_salary']):,.0f} "
-            f"pay_ratio={float(r['ceo_pay_ratio']):.0f}:1 insider_own={float(r['insider_ownership_pct']):.3f}"
-        )
-        print("  Persisted to Postgres, NOT parquet. Validated.")
-    finally:
-        _cleanup()
-
-
-@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set — needs the Postgres DB")
-@pytest.mark.live  # seeds, upserts and DELETEs rows in the live def14a_llm table
-def test_fetch_def14a_llm_incremental(monkeypatch):
-    """Gap-filling per-filing incremental: the FULL window is listed (no `since` cutoff), and only
-    filings whose accession is NOT already in the table hit the LLM — so a MISSING year (a hole
-    between two present years) is filled while the present ones are never re-extracted."""
-    from sqlalchemy import text
-
-    from src.context import get_config_context
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    try:
-        _, ctx = get_config_context("./configs", use_cache=False, save=False)
-        ctx.store.exists("def14a_llm")
-    except Exception as e:  # noqa: BLE001
-        pytest.skip(f"DB not reachable: {e}")
-
-    # 2022 + 2024 already stored; 2023 is a HOLE in the middle; a NEW 2025 also appears
-    ticker = "ZZINC"
-    a22, a23, a24, a25 = (f"{y}{y}{y}{y}{y}{y}{y}{y}{y}{y}-{y % 100}{y % 100}-{y}11" for y in (1, 2, 3, 4))
-    have_years = {"2022": a22, "2024": a24}
-    gap_years = {"2023": a23, "2025": a25}  # the two MISSING filings to fill
-
-    def _cleanup():
-        if ctx.store.exists("def14a_llm"):
-            with ctx.store.engine.begin() as c:
-                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": ticker})
-
-    _cleanup()
-    try:
-        for yr, acc in have_years.items():
-            def14a_fetch: Any = mod
-            ctx.store.save(
-                mod.Tables.def14a_llm,
-                def14a_fetch._prepare_frame(
-                    [_seed_row(ticker, acc, pd.Timestamp(f"{yr}-04-01"))],
-                    tuple(def14a_fetch._NUMERIC_COLS),
-                    ["ticker", "accession_number"],
-                ),
-            )
-        captured: dict = {"since_seen": [], "extracted": []}
-        _fakeextractor = _stub_extractor_cls(captured)
-
-        def _fake_list_filings(context, cik, forms, years, company="", since=None):
-            captured["since_seen"].append(since)  # must be None now (full window)
-            rows = {**have_years, **gap_years}
-            return pd.DataFrame(
-                [
-                    {
-                        "accession_number": acc,
-                        "doc_url": f"http://x/{yr}.htm",
-                        "filing_date": pd.Timestamp(f"{yr}-04-01"),
-                        "period_of_report": f"{int(yr) - 1}-12-31",
-                        "form": "DEF 14A",
-                    }
-                    for yr, acc in rows.items()
-                ]
-            )
-
-        class _Resp:
-            text = "<html>proxy</html>"
-
-        # which accessions actually reach the LLM is recorded by the stub extractor
-        monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
-        monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
-        monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
-        monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "name": ["Z"]}))
-        monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
-
-        mod.fetch_def14a_llm(ctx, ctx.config, [ticker], mod.section_extractors(ctx, ctx.config))
-
-        # full window listed (no since cutoff), and ONLY the two missing years hit the LLM
-        assert captured["since_seen"] == [None]
-        assert set(captured["extracted"]) == set(gap_years.values()), captured["extracted"]
-        back = ctx.store.load("def14a_llm")
-        assert back is not None
-        accs = set(back[back["ticker"] == ticker]["accession_number"])
-        assert accs == set(have_years.values()) | set(gap_years.values()), accs
-
-        print("\n=== SANITY CHECK: DEF 14A gap-filling incremental ===")
-        print(
-            f"  had 2022+2024; listed full window (since={captured['since_seen'][0]}); "
-            f"LLM ran ONLY on the missing {sorted(gap_years)} (2023 hole + new 2025), "
-            f"skipped the 2 present. Table now {len(accs)} filings. Validated."
-        )
-    finally:
-        _cleanup()
-
-
-def _seed_row(ticker: str, acc: str, as_of: pd.Timestamp) -> dict:
-    """Minimal def14a_llm row for seeding the incremental test (current columns only)."""
-    return {
-        "ticker": ticker,
-        "as_of": as_of,
-        "period": as_of,
-        "accession_number": acc,
-        "company_name": "Z",
-        "fiscal_year_extract": as_of.year - 1,
-        "n_directors": 3,
-        "board_size": 3,
-        "avg_director_age": 60.0,
-        "avg_board_tenure": 8.0,
-        "pct_independent_directors": 0.66,
-        "ceo_name_proxy": "Old CEO",
-        "ceo_salary": 800_000.0,
-        "ceo_total_comp": 1_000_000.0,
-        "def14a_json": "{}",
-    }
+    print("\n=== SANITY: auditor block flattens; technology fields are gone ===")
+    print("  auditor_name='Ernst & Young LLP', since=1934, fees=12,000,000 split 9.0M/1.0M/1.5M/0.5M, prior=11,000,000; absent -> null.")
+    print("  n_technology_directors / pct_technology_directors / technology_committee are")
+    print("  absent from the flatten -- they were an opinion, not an extraction. Validated.")

@@ -40,6 +40,7 @@ class _CountingLLM:
     `failing`), saves through the caller's flatten like the real extractor, and counts the calls."""
 
     calls: list[str] = []
+    tasks: list[LlmTask] = []
     failing: set[str] = set()
 
     def __init__(self, context: Any, config: Any, action: str | None = None, threads: int | None = None) -> None:
@@ -50,6 +51,7 @@ class _CountingLLM:
         for task in tasks:
             accession = str(task.meta["filing"]["accession_number"])
             type(self).calls.append(accession)
+            type(self).tasks.append(task)
             if accession in type(self).failing:
                 results.append(LlmResult(seq=task.seq, task=task, parsed=None, error="APIError: 500"))
             else:
@@ -69,17 +71,18 @@ def _source_row(key: str) -> dict[str, object]:
     }
 
 
-def _context(sqlite_store, *, short: bool = True) -> Any:
+def _context(sqlite_store, *, short: bool = True, budget: int = 40000) -> Any:
     rows = [_source_row(key) for key in _READ]
     if short:
         rows.append({**_source_row("aapl_2025"), "accession_number": _SHORT_ACCESSION, "item_text": "Item 5.07 results to follow."})
     sqlite_store.save(Tables.sec_8k, pd.DataFrame(rows))
-    return types.SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.votes"), config=extract_config())
+    config = extract_config(data_extract={"llm_text_budget": {"votes": budget}})
+    return types.SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.votes"), config=config)
 
 
 @pytest.fixture
 def llm(monkeypatch: pytest.MonkeyPatch) -> type[_CountingLLM]:
-    _CountingLLM.calls, _CountingLLM.failing = [], set()
+    _CountingLLM.calls, _CountingLLM.tasks, _CountingLLM.failing = [], [], set()
     monkeypatch.setattr(votes_fetch, "LLMExtractor", _CountingLLM)
     return _CountingLLM
 
@@ -118,6 +121,19 @@ def test_a_failed_llm_call_writes_nothing_and_is_queued_again(sqlite_store, llm)
     assert llm.calls[3:] == [failed]
     print("\n=== SANITY CHECK: failed LLM call ===")
     print(f"  run 1 stored {len(stored)} markers and nothing for {failed}; run 2 queued only {llm.calls[3:]}.")
+
+
+def test_each_prompt_holds_the_narrative_cut_at_the_votes_budget(sqlite_store, llm) -> None:
+    context = _context(sqlite_store, short=False, budget=500)
+    texts = {str(_FIXTURES[key]["accession_number"]): str(_FIXTURES[key]["item_text"]) for key in _READ}
+
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
+
+    sent = {str(task.meta["filing"]["accession_number"]): task for task in llm.tasks}
+    assert sorted(sent) == sorted(texts) and all(len(text) > 500 for text in texts.values())
+    assert all(task.payload == texts[accession][:500] and task.meta["text"] == texts[accession] for accession, task in sent.items())
+    print("\n=== SANITY CHECK: votes text budget (data_extract.llm_text_budget.votes) ===")
+    print(f"  budget 500: {len(sent)} prompts hold the first 500 chars of their narrative; guard and grounding keep the whole text.")
 
 
 def test_a_votes_marker_reads_back_as_typed_nulls(sqlite_store, llm) -> None:

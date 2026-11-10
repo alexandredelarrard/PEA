@@ -17,8 +17,9 @@ from typing import Any
 import pandas as pd
 
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, header_subject_ciks, num_or_null
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, header_subject_ciks, num_or_null
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
@@ -121,16 +122,16 @@ def schedule_filing_rows(stamp: FilingStamp, spec: ScheduleSpec) -> list[dict[st
     return rows
 
 
-def schedule_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool:
+def schedule_is_subject(ticker: str, stamp: FilingStamp, identity: Identity) -> bool:
     """False when the SGML header names subject companies and none is a CIK that is the ticker's company on the filing date.
 
     A header without subject companies defers to the issuer guard of `schedule_ticker_rows`; an
     unreadable header (an SEC error page) raises `TransientReadError`."""
     subjects = header_subject_ciks(stamp.filing)
-    return not subjects or not subjects.isdisjoint(scope.filing_scope(ticker, cik).ciks_on(stamp.filed))
+    return not subjects or not subjects.isdisjoint(identity.filing_scope(ticker).ciks_on(stamp.filed))
 
 
-def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, spec: ScheduleSpec) -> list[dict[str, Any]]:
+def schedule_ticker_rows(ticker: str, stamp: FilingStamp, identity: Identity, spec: ScheduleSpec) -> list[dict[str, Any]]:
     """One schedule's rows stamped with `ticker`; [] when the parsed issuer CIK is not the ticker's company on the filing date.
 
     An unresolvable CIK on either side means unknown and does not reject. A parse failure raises
@@ -141,7 +142,7 @@ def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: Edgar
         raise
     except Exception as exc:  # noqa: BLE001 -- filing parser boundary
         raise ParseFailureError(f"{spec.label} accession {stamp.accession_number} could not be parsed") from exc
-    ticker_ciks = scope.filing_scope(ticker, cik).ciks_on(stamp.filed)
+    ticker_ciks = identity.filing_scope(ticker).ciks_on(stamp.filed)
     issuer_cik = pad_cik(rows[0].get("cik")) if rows else ""
     if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
         return []
@@ -150,6 +151,6 @@ def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: Edgar
     return rows
 
 
-def parse_schedule(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, *, spec: ScheduleSpec, table: Table) -> dict[Table, pd.DataFrame]:
+def parse_schedule(ticker: str, cik: str, stamp: FilingStamp, identity: Identity, *, spec: ScheduleSpec, table: Table) -> dict[Table, pd.DataFrame]:
     """A schedule fetch's `parse`: one `table` frame finalised by `finalise_frame`."""
-    return {table: finalise_frame(table, schedule_ticker_rows(ticker, cik, stamp, scope, spec))}
+    return {table: finalise_frame(table, schedule_ticker_rows(ticker, stamp, identity, spec))}

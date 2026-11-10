@@ -29,7 +29,7 @@ def test_actual_full40_paid_answers_keep_source_categories_year_and_scope(full40
     stamp = {**packet["meta"], "as_of": pd.Timestamp(packet["meta"]["as_of"])}
     answer = section.schema.model_validate(packet["parsed"])
     original = answer.model_dump()
-    raw = append_answer(None, section, answer, packet["source"])
+    raw = append_answer(None, section, answer)
     saved, parent = {}, {}
 
     # The original paid answer and its exact text pass through actual persistence twice.
@@ -208,7 +208,7 @@ def test_group_scope_correction_preserves_valid_saved_aggregate_and_clears_only_
     sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([parent]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([parent]))
     raw = Def14AExtract.model_validate({"governance": {"insider_ownership_pct": saved_percentage, "insider_voting_pct": 0.0125}}).model_dump_json()
-    raw = append_answer(raw, section, answer, packet["source"])
+    raw = append_answer(raw, section, answer)
     original = raw
 
     # Apply the same paid answer twice, preserving valid retained ownership and separate voting.

@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.sec_io import ParseFailureError
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import (
     SCHEDULE_13G,
     SEC_13G_FETCH,
@@ -27,6 +27,7 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import (
 from src.data_extract.utils.edgar_extract.schedule_rows import SCHEDULE_NUMERIC_COLS as _NUMERIC_COLS
 from src.data_extract.utils.edgar_extract.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
+from tests.data_extract.edgar_fixtures import roster_identity
 
 
 def _rows(filing: object) -> list[dict]:
@@ -219,7 +220,7 @@ def test_empty_reporting_persons_yields_one_nan_fallback_row():
 # --------------------------------------------------------------------------- #
 def _parse_all(ticker: str, cik: str, filings: list) -> pd.DataFrame:
     """`filings` through the 13G per-filing parse, concatenated as the driver saves them."""
-    frames = [SEC_13G_FETCH.parse(ticker, cik, FilingStamp.of(f, cik), EdgarScope())[Tables.sec_13g] for f in filings]
+    frames = [SEC_13G_FETCH.parse(ticker, cik, FilingStamp.of(f, cik), roster_identity({ticker: cik}))[Tables.sec_13g] for f in filings]
     return pd.concat(frames, ignore_index=True)
 
 

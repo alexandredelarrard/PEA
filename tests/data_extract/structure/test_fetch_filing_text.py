@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     FILING_SECTION_MDA,
     FILING_SECTION_RISK,
@@ -24,6 +24,7 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     extract_item_sections,
 )
 from src.data_store.schema import Tables
+from tests.data_extract.edgar_fixtures import identity_for
 
 
 def _pad(text: str, min_chars: int = FILING_TEXT_MIN_CHARS) -> str:
@@ -169,7 +170,9 @@ def test_filing_sections_survives_a_totally_unparseable_filing():
 
 # --- Per-filing parse ------------------------------------------------------- #
 def _parse(filing) -> pd.DataFrame:
-    return FILING_TEXT_FETCH.parse("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), EdgarScope())[Tables.filing_risk_text]
+    return FILING_TEXT_FETCH.parse("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), identity_for({"AAPL": "320193"}))[
+        Tables.filing_risk_text
+    ]
 
 
 def test_filing_text_parse_returns_both_sections_stamped_with_the_filing_date():

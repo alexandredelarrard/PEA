@@ -35,7 +35,7 @@ def test_actual_wmt_paid_unknown_clears_only_the_source_unsupported_legacy_zero(
     sqlite_store.save(section.table, old)
     raw = wmt_packet["legacy_raw_json"]
     assert hashlib.sha256(raw.encode()).hexdigest() == wmt_packet["legacy_raw_sha256"]
-    raw = append_answer(raw, section, answer, wmt_packet["source"])
+    raw = append_answer(raw, section, answer)
     unchanged = raw
 
     # Replay the exact paid source and answer twice against the actual legacy row.

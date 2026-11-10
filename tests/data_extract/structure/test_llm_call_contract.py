@@ -4,7 +4,7 @@ test_llm_call_contract.py  (tests/data_extract/structure/)
 What the two fetchers ask the LLM for, now that neither owns a client or a prompt.
 
 The point of these is the SEAM, not the extraction: the fetchers must hand the pool the
-carved text and the right schema under the right per-action budget, and a single filing's
+carved text, whole, with the right prompt and schema, and a single filing's
 failure must not cost its ticker the rest.
 """
 
@@ -25,6 +25,7 @@ from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract 
 from src.data_extract.utils.structure.def14a.flatten import _result_frames
 from src.data_extract.utils.structure.votes.vote_schema import Item507Extract as _Item507Extract
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.utils.schemas_gpt import LlmTask
 
 _GPT_YML = Path(__file__).resolve().parents[3] / "configs" / "gpt.yml"
 Def14AExtract: Any = _Def14AExtract
@@ -66,21 +67,25 @@ def _extractor(action: str, calls: list, fail_on: str | None = None, store=None)
 # The action contract                                                          #
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
-    "action, schema, budget, marker",
-    [("def14a", Def14AExtract, 130_000, "SUMMARY COMPENSATION TABLE"), ("sec8k_votes", Item507Extract, 40_000, "Item 5.07")],
+    "action, schema, marker",
+    [("def14a_executive_pay", Def14AExtract, "Summary Compensation Table"), ("sec8k_votes", Item507Extract, "Item 5.07")],
 )
-def test_each_action_resolves_its_prompt_schema_and_budget(action, schema, budget, marker):
+def test_each_action_resolves_its_prompt_and_schema_and_sends_the_payload_whole(action, schema, marker):
     calls: list = []
     ext = _extractor(action, calls)
-    ext.extract(schema, "x" * 500_000, provider=_RecordingProvider(calls), action=action)
+    payload = "x" * 500_000
+    results = ext.run([LlmTask(seq=0, payload=payload, schema=schema)])
 
     call = calls[-1]
+    assert results[0].ok and len(calls) == 1
     assert call["schema"] is schema
     assert marker in call["system"], f"{action} did not load its own system prompt"
-    assert len(call["user"]) < budget + 5_000  # template + the truncated payload
+    assert payload in call["user"] and len(call["user"]) < len(payload) + 5_000  # template + the whole payload
 
     print(f"\n=== SANITY: {action} call contract ===")
-    print(f"  schema={schema.__name__}, prompt marker {marker!r} present, payload truncated to the {budget:,}-char budget. Validated.")
+    print(
+        f"  schema={schema.__name__}, prompt marker {marker!r} present, the whole {len(payload):,}-char payload sent (the step cuts, not the extractor). Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -97,9 +102,7 @@ def test_a_failed_filing_does_not_abort_its_ticker():
 
     store = _Store()
     calls: list = []
-    ext = _extractor("def14a", calls, fail_on="FILING-2", store=store)
-
-    from src.gpt_extract.utils.schemas_gpt import LlmTask
+    ext = _extractor("def14a_executive_pay", calls, fail_on="FILING-2", store=store)
 
     tasks = [
         LlmTask(

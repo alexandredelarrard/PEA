@@ -131,8 +131,17 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
             for a, c, f in rows
             for tag in ("T1", "T2")
         ]
-    elif table == Tables.def14a_edgar:
-        out = [{"ticker": ticker, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f)} for a, c, f in rows]
+    elif table == Tables.sec_employees_text:
+        out = [
+            {"ticker": ticker, "accession_number": a, "form": "10-K", "cik": c, "filing_date": pd.Timestamp(f), "source_document": "primary"}
+            for a, c, f in rows
+        ]
+    elif table == Tables.sec_def14a_text:
+        out = [
+            {"ticker": ticker, "accession_number": a, "section": section, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f), "period": ""}
+            for a, c, f in rows
+            for section in ("audit", "governance")
+        ]
     elif table == Tables.insider_transactions:
         out = [
             {
@@ -271,6 +280,25 @@ def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, t
     print("  AB's two employee rows under ALB (one count, one NULL-status) purged; ALB's own row and MSFT's (scope unchanged) kept. Validated.")
 
 
+def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_store, tmp_path, monkeypatch, stubs):
+    """AC-006: ALB's scope changed; AB's text rows under ALB go in both tables, ALB's own and MSFT's stay."""
+    context = _context(sqlite_store, tmp_path)
+    text_tables = (Tables.sec_employees_text, Tables.sec_def14a_text)
+    for table in text_tables:
+        sqlite_store.save(table, _filings(table, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2019-03-01"), ("ab-2", AB, "2021-08-01")]))
+        sqlite_store.save(table, _filings(table, "MSFT", [("msft-x", MSFT_FOREIGN, "2024-03-01")]))
+
+    result = run_propagation(context, _identity({"ALB": AFTER}), monkeypatch, list(ROSTER), as_of=RUN_DATE)
+
+    for table in text_tables:
+        assert _keys(sqlite_store, table) == {("ALB", "alb-1"), ("MSFT", "msft-x")}, table.name
+    got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], result.removals["rows"], strict=True))
+    assert got == [(Tables.sec_def14a_text.name, AB, 2, 4), (Tables.sec_employees_text.name, AB, 2, 2)], got
+    print("\n=== SANITY CHECK: EDGAR text tables purged by filer CIK ===")
+    print("  AB's 2 filings under ALB purged from sec_employees_text (2 rows) and sec_def14a_text (4 section rows);")
+    print("  ALB's own filing and MSFT's (scope unchanged) kept. Validated.")
+
+
 def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch, stubs):
     """AC-022 with P35: T-Mobile USA's facts under TMUS are the entity's own; its 8-Ks (an event-only CIK) and the
     foreign filer's rows go."""
@@ -305,18 +333,18 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     )
     identity = build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": "PLD", "cik": prologis}])))
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
-    for table in (Tables.sec_fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
+    for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
     resolver = identity
     context = _context(sqlite_store, tmp_path)
 
     result = run_propagation(context, resolver, monkeypatch, ["PLD"], as_of=RUN_DATE)
 
-    for table in (Tables.sec_fundamentals_facts, Tables.def14a_edgar):
+    for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text):
         assert _keys(sqlite_store, table) == {("PLD", "new-1")}, table.name
     assert _keys(sqlite_store, Tables.insider_transactions) == {("PLD", "old-1"), ("PLD", "old-2"), ("PLD", "new-1")}
     got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], strict=True))
-    assert got == [(Tables.def14a_edgar.name, old_prologis, 2), (Tables.sec_fundamentals_facts.name, old_prologis, 2)], got
+    assert got == [(Tables.sec_def14a_text.name, old_prologis, 2), (Tables.sec_fundamentals_facts.name, old_prologis, 2)], got
     assert stubs["history"] == [(["PLD"], True)]
     print("\n=== SANITY CHECK: H1 purge, single-window ticker ===")
     print("  PLD: old ProLogis's 2 facts filings and 2 proxies purged (before and after the 2011 seam); Prologis Inc's kept;")

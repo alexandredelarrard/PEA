@@ -102,7 +102,7 @@ class LLMExtractor(GptExtracter):
 
             provider = self._clients.get()
             try:
-                system, user = self.build_prompt(self.truncate(task.payload), task.schema)
+                system, user = self.build_prompt(task.payload, task.schema)
                 parsed, usage = provider.parse(task.schema, system, user)
                 self.usage.record(usage)
                 result = LlmResult(seq=task.seq, task=task, parsed=parsed, usage=usage)

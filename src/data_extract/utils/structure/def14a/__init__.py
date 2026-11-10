@@ -4,13 +4,12 @@ def14a  (src/data_extract/utils/structure/def14a/)
 Everything that reads a DEF 14A proxy (or the DEF 14C information statement a controlled
 company files instead), split by job:
 
-    carve.py     anchors -> the `=== LABEL ===` payload the model reads
+    carve.py     anchors -> the `=== LABEL ===` payload the model reads; called by the
+                 `sec-def14a-text` walk, which stores the payloads in `sec_def14a_text`
     flatten.py   a filled `Def14AExtract` -> the parent row and the four child tables
-    fetch.py     orchestration: list, skip what is stored, extract, save, then the
-                 cross-ticker gender consensus
+    fetch.py     orchestration: read the stored payloads, extract the open sections, save,
+                 then the cross-ticker gender consensus
     tables.py    deterministic HTML table extraction the carve embeds as TSV
-    ecd.py       the Pay-versus-Performance / ECD inline-XBRL block (filer-tagged, no LLM);
-                 used by `fetch_def14a_edgar`, which is a different fetcher entirely
     validate.py  row cleaning and the fee repairs; re-exports the two name cleaners
     gender.py    the cross-filing gender consensus; re-exports `person_key`
 
@@ -21,8 +20,3 @@ import `src/data_extract/`, and a second copy would let the write side and the r
 the same human differently. `gender.py` and `validate.py` re-export them, so nothing here or in
 `votes/` had to change.
 """
-
-from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
-from src.data_extract.utils.structure.def14a.fetch import fetch_def14a_llm, section_extractors
-
-__all__ = ["fetch_def14a_llm", "prepare_def14a_sections", "section_extractors"]

@@ -92,10 +92,6 @@ class Crawler:
         )
 
     # ------------------------------------------------------------------ #
-    @property
-    def n_proxies(self) -> int:
-        return len(self._proxies)
-
     def _current_proxy(self) -> str | None:
         return self._proxies[self._i % len(self._proxies)] if self._proxies else None
 

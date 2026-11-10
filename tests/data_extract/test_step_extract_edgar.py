@@ -1,5 +1,5 @@
 """`StepExtractEdgar` declares its window, run date, tickers, CIK mapping, identity scope, cap and retry policy once,
-runs the seven EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
+runs the eight EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
 universe, the CIK mapping and the identity are stubbed."""
 
 from __future__ import annotations
@@ -19,14 +19,24 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from tests.data_extract.edgar_fixtures import walk_call
 from tests.support.universe import universe_of
 
-RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_def14a_ecd", "run_fundamentals_facts")
+RUNS = (
+    "run_insider",
+    "run_13d",
+    "run_13g",
+    "run_8k",
+    "run_filing_text",
+    "run_employees_text",
+    "run_def14a_text",
+    "run_fundamentals_facts",
+)
 FETCHES = {
     "run_insider": step_mod.INSIDER_EDGAR_FETCH,
     "run_13d": step_mod.SEC_13D_FETCH,
     "run_13g": step_mod.SEC_13G_FETCH,
     "run_8k": step_mod.SEC_8K_FETCH,
     "run_filing_text": step_mod.FILING_TEXT_FETCH,
-    "run_def14a_ecd": step_mod.DEF14A_EDGAR_FETCH,
+    "run_employees_text": step_mod.EMPLOYEES_TEXT_FETCH,
+    "run_def14a_text": step_mod.DEF14A_TEXT_FETCH,
     "run_fundamentals_facts": step_mod.SEC_FUNDAMENTALS_FETCH,
 }
 COMMANDS = {
@@ -35,7 +45,8 @@ COMMANDS = {
     "sec-13g": "run_13g",
     "sec-8k-items": "run_8k",
     "filing-text": "run_filing_text",
-    "def14a-edgar": "run_def14a_ecd",
+    "sec-employees-text": "run_employees_text",
+    "sec-def14a-text": "run_def14a_text",
     "sec-fundamentals-facts": "run_fundamentals_facts",
 }
 CIK_MAP = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]})
@@ -59,6 +70,7 @@ class Driver:
         self.events: list[str] = []
         self.refreshed_today = refreshed_today
         self.reads: list[str] = []
+        self.declared: list[str] = []
         self.boom = FETCHES[boom] if boom else None
         self.runs: list[EdgarRun] = []
         self.universe_tickers = universe_of(["AAA", "BBB"])
@@ -73,7 +85,8 @@ class Driver:
         self.events.append(f"refresh {years_history}y")
 
     def context(self, config: Any) -> _Context:
-        return _Context(config=config, config_dir="configs", reads=self.reads, universe_tickers=self.universe_tickers)
+        store = SimpleNamespace(create_declared=lambda table: self.declared.append(table.name))
+        return _Context(config=config, config_dir="configs", reads=self.reads, universe_tickers=self.universe_tickers, store=store)
 
     def cik_mapping(self, context: Any, tickers: list[str]) -> pd.DataFrame:
         self.reads.append("cik_map")
@@ -103,7 +116,7 @@ def _step(driver: Driver, options: EdgarOptions | None = None) -> StepExtractEdg
     return StepExtractEdgar(driver.context(config), config, options)  # type: ignore[arg-type]
 
 
-def test_run_walks_the_seven_fetches_in_order_on_state_declared_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_walks_every_fetch_in_order_on_state_declared_once(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
     step = _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00")))
     assert driver.reads == [], "constructing the step reads nothing (REQ-014)"
@@ -115,12 +128,13 @@ def test_run_walks_the_seven_fetches_in_order_on_state_declared_once(monkeypatch
     assert first["cik_map"]["ticker"].tolist() == ["AAA", "BBB"] and first["tickers"] == ["AAA", "BBB"]
     assert all(run is driver.runs[0] for run in driver.runs), "every walk receives the one declared EdgarRun"
     assert driver.runs[0].cap == 100 and driver.runs[0].retry.rounds == 3
+    assert driver.declared == ["sec_employees_text", "sec_def14a_text"], "the two text walks create their table from its committed DDL"
     assert {(call["years_history"], call["as_of"], call["full"], call["no_cap"]) for call in driver.calls} == {
         (15, pd.Timestamp("2026-10-31"), False, False)
     }
     print("\n=== SANITY: StepExtractEdgar.run order ===")
     print(
-        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all {len(RUNS)} walks; window 15y, run date 2026-10-31."
+        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all {len(RUNS)} walks; window 15y, run date 2026-10-31; declared tables {driver.declared}."
     )
 
 
@@ -180,7 +194,7 @@ def test_run_refreshes_the_index_once_over_the_widest_window_before_the_walks(mo
     _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31"))).run()
 
     assert driver.refreshes == [max(15, INSIDER_YEARS)], "one refresh per run(), over the insider walk's source-start window"
-    assert driver.events[0].startswith("refresh") and len(driver.events) == 1 + len(RUNS) == 8
+    assert driver.events[0].startswith("refresh") and len(driver.events) == len(RUNS) + 1
     print("\n=== SANITY: one index refresh per run() ===")
     print(f"  {driver.events[0]} then the {len(RUNS)} walks; edgar_index.refresh {len(RUNS)} -> 1.")
 

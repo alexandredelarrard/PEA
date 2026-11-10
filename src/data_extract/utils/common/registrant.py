@@ -6,7 +6,7 @@ Filings follow the legal registrant, whose CIK changes on a reorganisation or do
 only from its `valid_from`. The lineage build turns it into dated CIK windows. `FORM_POLICY` decides per
 form whether filings UNION across a ticker's event CIKs (insider forms) or SPLIT by its CIK windows (everything
 else); `resolve_registrant_entries` applies it to local EDGAR index rows, by CIK only, never by symbol. Config and
-local rows only: the live `Company` listing walk lives in `edgar_extract.edgar_driver`.
+local rows only: this module imports no SEC client.
 """
 
 from __future__ import annotations
@@ -222,10 +222,9 @@ FORM_POLICY: dict[str, Combine] = {
         (Tables.sec_13g, Combine.SPLIT),
         (Tables.insider_transactions, Combine.UNION),
         (Tables.sec_fundamentals_facts, Combine.SPLIT),
-        (Tables.fundamentals_employees, Combine.SPLIT),
         (Tables.filing_risk_text, Combine.SPLIT),
-        (Tables.def14a_edgar, Combine.SPLIT),
-        (Tables.def14a_llm, Combine.SPLIT),
+        (Tables.sec_employees_text, Combine.SPLIT),
+        (Tables.sec_def14a_text, Combine.SPLIT),
     )
     for form in cast(Resume, table.resume).forms
 }
@@ -264,7 +263,7 @@ def listing_ciks(scope: FilingScope) -> tuple[str, ...]:
 def resolve_registrant_entries(scope: FilingScope, df_entries: pd.DataFrame, forms: Sequence[str]) -> pd.DataFrame:
     """The scope's index rows of `forms` (`cik`, `company`, `form`, `filed`, `accession`), one per accession, oldest first.
 
-    The `FORM_POLICY` rules of `edgar_driver.resolve_registrant_filings`, applied to index rows: UNION keeps every
+    The `FORM_POLICY` rules applied to index rows: UNION keeps every
     event CIK's rows; SPLIT keeps each CIK window's rows inside its seam-widened dates. An accession
     two CIKs list goes to the CIK whose stated window owns its date, else the first CIK listed.
     """

@@ -1,4 +1,8 @@
-"""Dataroma roster history seed: each snapshot is stamped at its capture date with its own source URL."""
+"""
+Dataroma roster seed (src/data_extract/utils/institutionals/fetch_superinvestors.py): the rebuild stamps each committed
+history snapshot at its capture date with its own source URL. The history builder itself lives in
+scripts/build_dataroma_roster_history.py (scripts carry no tests).
+"""
 
 from __future__ import annotations
 

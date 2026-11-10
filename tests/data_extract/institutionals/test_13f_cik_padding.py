@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_store.schema import Tables
-from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _line
+from tests.data_extract.institutionals.test_13f_one_walk import CMAP, HR_COLS, ROSTER, _line
 from tests.support.store_identity import store_identity
 
 _UNPADDED = ROSTER.lstrip("0")  # "1067983", the legacy form
@@ -50,7 +50,7 @@ def test_the_walk_save_pads_the_cik(filing_store, monkeypatch):
 
 def test_the_hr_save_pads_the_cik(filing_store):
     ctx: Any = SimpleNamespace(store=filing_store)
-    hr = _book(_UNPADDED).merge(CMAP, on="cusip")[f13._HR_COLS]
+    hr = _book(_UNPADDED).merge(CMAP, on="cusip")[HR_COLS]
 
     f13.save_hr(ctx, hr.assign(accession_number="padding-direct"))
 

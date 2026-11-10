@@ -626,8 +626,8 @@ def read_ftd_period(context: Context, cache: Path, period: str, *, download: boo
     """
     path: Path | None = cache / FTD_ZIP_NAME_TEMPLATE.format(period=period)
     if download:
-        path = ensure_zip(context, path, _period_urls(period), label=f"FTD {period}", timeout=180, log=logger)
-    raw = None if path is None else read_zip_text(path, log=logger)
+        path = ensure_zip(context, path, _period_urls(period), label=f"FTD {period}", timeout=180)
+    raw = None if path is None else read_zip_text(path)
     if path is None:
         return None
     try:
@@ -648,9 +648,7 @@ def read_ftd_period(context: Context, cache: Path, period: str, *, download: boo
 
 def ensure_ftd_zip(context: Context, cache: Path, period: str) -> Path | None:
     """The cached ZIP of `period`, downloaded once when absent; None when no location serves it."""
-    return ensure_zip(
-        context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180, log=logger
-    )
+    return ensure_zip(context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180)
 
 
 def download_fails_to_deliver(context: Context, years_history: int = 31, as_of: pd.Timestamp | None = None) -> int:

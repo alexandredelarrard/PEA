@@ -19,7 +19,7 @@ from src.data_extract.utils.common.identity import Identity, load_source_identit
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.common.security_lines import prepare_master, tape_intervals
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
+from src.data_extract.utils.edgar_extract.edgar_driver import _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.identity import cusip_history, identity_propagate
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
@@ -409,7 +409,9 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    scope = cusip_history.FtdScope(symbols=frozenset({"LEN"}), prefixes=frozenset(), tape=tape_intervals(sqlite_store.load(Tables.universe_cik_symbol)))
+    scope = cusip_history.FtdScope(
+        symbols=frozenset({"LEN"}), prefixes=frozenset(), tape=tape_intervals(sqlite_store.load(Tables.universe_cik_symbol))
+    )
     assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
     assert cusip_history.read_ftd_evidence(context, path.parent, scope).empty, "the bad cached period is skipped"
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
@@ -825,7 +827,7 @@ def test_actual_xml_parser_run_writes_and_stamps_fetched_at(sqlite_store: DataSt
         {"cik": ["0000920760"], "company": ["LEN"], "form": ["4"], "filed": pd.to_datetime(["2026-07-01"]), "accession": [accession]}
     )
     with insider_edgar._insider_run_scope(context, ["LEN"], pd.Timestamp("2026-10-06")) as prepared:
-        outcome = _walk_key(context, prepared, EdgarScope(identity), {"LEN": units}, "LEN", "0000920760")
+        outcome = _walk_key(context, prepared, identity, {"LEN": units}, "LEN", "0000920760")
         assert len(outcome.failed) == 0
     rows = sqlite_store.load(Tables.insider_transactions)
     assert rows is not None and set(rows["accession_number"]) == {accession}

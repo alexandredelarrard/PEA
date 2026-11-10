@@ -20,9 +20,10 @@ from typing import Any, cast
 import pandas as pd
 from bs4 import BeautifulSoup
 
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_attachments, filing_text
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp
 from src.data_extract.utils.edgar_extract.item_carve import ITEM_SEP, carve_spans, item_heading
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.edgar_extract.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, schedule_is_subject, schedule_ticker_rows
@@ -355,10 +356,10 @@ SCHEDULE_13D = ScheduleSpec(
 )
 
 
-def parse_13d(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]:
+def parse_13d(ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> dict[Table, pd.DataFrame]:
     """One issuer-side 13D: a `sec_13d` row per reporting person plus its Item 5(c) trades in
     `sec_13d_transactions`; both empty when the parsed issuer is another company."""
-    rows = schedule_ticker_rows(ticker, cik, stamp, scope, SCHEDULE_13D)
+    rows = schedule_ticker_rows(ticker, stamp, identity, SCHEDULE_13D)
     trades = _filing_transactions(ticker, cik, stamp, rows) if rows else []
     return {
         Tables.sec_13d: pd.DataFrame(rows, columns=Tables.sec_13d.retrieval_columns),

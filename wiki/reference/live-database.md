@@ -147,7 +147,8 @@ Important measured state:
 | Bulk Notes pension maxima, and the latest insider `quarter` tag, lag today | Publication cadence, not automatically failed extraction. Insider rows after the last zip quarter come from EDGAR with a NULL `quarter`. |
 | Table `pension_facts` is orphaned | No code reads or writes it; it exists until the user drops it (`DROP TABLE pension_facts`, see [TODO](../TODO.md#sec-notes-pension-net-liability-user-actions)). Pension facts live in `notes_num`. |
 | Short-volume minimum predates the current provider window | The isolated stored date is not proof of continuously recoverable history. |
-| `sec_def14a` code exists but table was removed in an older cutover | Check current table presence before designing a feature around Pay-versus-Performance history. |
+| Table `sec_def14a` is orphaned if present | No code reads or writes it and there is no Pay-versus-Performance source; it exists until the user drops it (`DROP TABLE IF EXISTS sec_def14a`). |
+| `sec_employees_text` and `sec_def14a_text` are empty | Expected until the nightly DAG's first fill (about 3 nights at the cap, or one with `sec-employees-text --no-cap` and `sec-def14a-text --no-cap`); until then `sec-employees-llm` and `sec-def14a-llm` find no work and make no call. |
 | Price table missing on another machine | Real-data price fixtures skip; a green test suite then represents reduced coverage. |
 
 ## High-risk measured defects

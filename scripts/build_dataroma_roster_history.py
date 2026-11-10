@@ -40,10 +40,17 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import (  # noqa
 from src.data_store.schema import Resume, Tables  # noqa: E402
 from src.utils.superinvestor_roster import roster_history_path  # noqa: E402
 
+#: Wayback answers 429 to a browser User-Agent sent by a non-browser client; identify the script honestly.
+WAYBACK_HEADERS = {"User-Agent": "stock-pick-strat-roster-history/1.0 (read-only research)"}
+#: Seconds to wait after each Wayback request.
+POLITENESS_DELAY_S = 1.5
+#: Attempts per Wayback request before the run fails (a rerun resumes from the cache).
+FETCH_ATTEMPTS = 3
 # Every Wayback capture of the Dataroma home page, uncollapsed: one `timestamp status original` line each.
 WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx?url=dataroma.com/m/home.php&fl=timestamp,statuscode,original"
 # A capture's archived bytes as served (`id_`: no Wayback rewrite).
-WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
+_WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
+#: The `_README` lines of the generated history document.
 ROSTER_HISTORY_README = [
     "Dataroma superinvestor roster history: one snapshot per calendar quarter, the newest valid Wayback capture of "
     "dataroma.com/m/home.php in that quarter.",
@@ -53,13 +60,6 @@ ROSTER_HISTORY_README = [
     "snapshot's count; a quarter with no valid capture is absent (a logged gap).",
     "Generated file, do not hand-edit: scripts/build_dataroma_roster_history.py --cache-dir DIR --until YYYY-MM-DD.",
 ]
-
-#: Wayback answers 429 to a browser User-Agent sent by a non-browser client; identify the script honestly.
-WAYBACK_HEADERS = {"User-Agent": "stock-pick-strat-roster-history/1.0 (read-only research)"}
-#: Seconds to wait after each Wayback request.
-POLITENESS_DELAY_S = 1.5
-#: Attempts per Wayback request before the run fails (a rerun resumes from the cache).
-FETCH_ATTEMPTS = 3
 
 logger = logging.getLogger("build_dataroma_roster_history")
 
@@ -73,7 +73,7 @@ class WaybackCapture(NamedTuple):
     @property
     def raw_url(self) -> str:
         """The capture's unmodified archived bytes."""
-        return WAYBACK_RAW_URL.format(timestamp=self.timestamp, original=self.original)
+        return _WAYBACK_RAW_URL.format(timestamp=self.timestamp, original=self.original)
 
     @property
     def captured_at(self) -> str:

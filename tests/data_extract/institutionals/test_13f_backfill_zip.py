@@ -29,7 +29,7 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import activity_
 from src.data_store.schema import Tables
 from src.utils.identity_tables import LINE_COLUMNS
 from tests.data_extract.edgar_fixtures import fake_context
-from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _seed_roster
+from tests.data_extract.institutionals.test_13f_one_walk import HR_COLS, ROSTER, _seed_roster
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
@@ -227,13 +227,13 @@ def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False, cut:
 def _markers(store: Any) -> pd.DataFrame:
     """The stored gap-walk marker rows of `sec13f_hr` (empty frame when none)."""
     df = store.load(Tables.sec13f_hr, where={"cusip": _SENTINEL, "cik": _SENTINEL}, markers=True, optional=True)
-    return pd.DataFrame(columns=f13._HR_COLS) if df is None else df
+    return pd.DataFrame(columns=HR_COLS) if df is None else df
 
 
 def _stored_hr(store: Any, ticker: str) -> pd.DataFrame:
     df = store.load(Tables.sec13f_hr, where={"ticker": ticker}, optional=True)
     if df is None:
-        return pd.DataFrame(columns=f13._HR_COLS)
+        return pd.DataFrame(columns=HR_COLS)
     return df.assign(period=pd.to_datetime(df["period"]), filing_date=pd.to_datetime(df["filing_date"]))
 
 

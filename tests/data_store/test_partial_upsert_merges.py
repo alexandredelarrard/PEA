@@ -12,7 +12,7 @@ gender-consensus pass writes a 4-column patch (`ticker`, `accession_number`,
 rows** — including `def14a_json`, the only copy of the LLM answers those filings were
 extracted from. 395 paid calls, unreplayable.
 
-Narrow writes are the normal shape here, not an exotic one: `_finalise_gender` has two of
+Narrow writes are the normal shape here, not an exotic one: `finalise_gender` has two of
 them and says so in its docstring ("both writes carry only the columns they change"). So the
 merge is the contract, and this pins it on both dialects the repo runs on.
 

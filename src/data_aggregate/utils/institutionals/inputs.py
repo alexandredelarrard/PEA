@@ -26,6 +26,8 @@ from src.utils.string import pad_cik, yahoo_symbol
 logger = logging.getLogger(__name__)
 
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+#: The share-class letter of an insider `security_title` ("Class A Common Stock", "Series B").
+_CLASS_LETTER = r"(?i)\b(?:CLASS|SERIES)\s+([A-Z])\b"
 
 
 def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.DataFrame:
@@ -59,7 +61,7 @@ class InsiderSource:
     first_filed: pd.Series
 
 
-def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> InsiderSource | None:
+def load_insider_transactions(store: DataStore, universe: Sequence[str] | None, lines: pd.DataFrame | None) -> InsiderSource | None:
     """Retain full issuer metadata, then select canonical economic rows and actual empty markers."""
     table = Tables.insider_transactions
     present = store.columns(table)
@@ -69,7 +71,7 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
 
     # keep columns needed & read data in chunks; the frontier is the whole table's newest filing
     complete_through = store.max_date(table, "filing_date")
-    columns = set(present).intersection(set((*table.read_columns, "issuer_cik", "lineage_role")))
+    columns = set(present).intersection(set((*table.read_columns, "issuer_cik", "lineage_role", "economic_date")))
     where: dict[str, Any] = {}
     if universe is not None:
         where["ticker"] = sorted(set(universe))
@@ -82,13 +84,42 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
         logger.warning("%s lacks required source metadata -> insider features are skipped.", table.name)
         return None
 
-    # clean dates of insider
-    df_rows = normalize_insider_dates(df_rows)
+    # shares as filed -> canonical-class shares; clean dates of insider
+    df_rows = normalize_insider_dates(canonical_class_units(df_rows, lines))
     first = df_rows["filing_date"].groupby(df_rows["ticker"]).min()
     selected = df_rows["lineage_role"].isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
 
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
     return InsiderSource(df_rows.loc[selected], complete_through, first)
+
+
+def canonical_class_units(df_rows: pd.DataFrame, lines: pd.DataFrame | None) -> pd.DataFrame:
+    """`df_rows` (as filed) with each non-derivative row of a class traded at a contractual ratio in canonical-class
+    shares: `shares` and `shares_owned_after` x the `universe_cusip` line's `conversion_ratio` of the row's ticker and
+    `security_title` class ("Class A ...") holding its `economic_date`, `price_per_share` / it; `value_usd` unchanged."""
+    ratio_lines = None if lines is None else lines.loc[pd.to_numeric(lines["conversion_ratio"], errors="coerce").ne(1.0)]
+    if ratio_lines is None or ratio_lines.empty or df_rows.empty:
+        return df_rows
+
+    # compute: each non-derivative class row's ratio from the line of its company and class covering its economic date
+    letters = df_rows["security_title"].astype("string").str.extract(_CLASS_LETTER, expand=False).str.upper()
+    day = pd.to_datetime(df_rows.reindex(columns=["economic_date"])["economic_date"], errors="coerce")
+    rows = pd.DataFrame({"canonical_company": df_rows["ticker"], "security_class": ("class_" + letters).astype(object), "day": day})
+    rows = rows.loc[df_rows["security_type"].eq("nonderiv") & letters.notna()].reset_index()
+    hits = rows.merge(ratio_lines[["canonical_company", "security_class", "valid_from", "valid_to", "conversion_ratio"]])
+    start, end = pd.to_datetime(hits["valid_from"]), pd.to_datetime(hits["valid_to"])
+    hits = hits.loc[hits["day"].ge(start) & (hits["day"].lt(end) | end.isna())].drop_duplicates("index", keep="last")
+    if hits.empty:
+        return df_rows
+    ratio = pd.Series(1.0, index=df_rows.index)
+    ratio[hits["index"].to_numpy()] = pd.to_numeric(hits["conversion_ratio"]).to_numpy()
+
+    # post-process: canonical-class quantities, the price per canonical share
+    out = df_rows.copy()
+    for column in ("shares", "shares_owned_after"):
+        out[column] = pd.to_numeric(out[column], errors="coerce") * ratio
+    out["price_per_share"] = pd.to_numeric(out["price_per_share"], errors="coerce") / ratio
+    return out
 
 
 def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame, universe: Sequence[str] | None = None) -> pd.DataFrame:

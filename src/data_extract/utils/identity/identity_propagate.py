@@ -117,8 +117,7 @@ def reparse_notes(context: Context, changed: Sequence[str], scopes: Mapping[str,
 def reparse_insider(
     context: Context, changed: Sequence[str], scopes: Mapping[str, FilingScope], identity: Identity, run_date: pd.Timestamp
 ) -> dict[str, tuple[str, ...]]:
-    """Re-parse the cached Form 3/4/5 quarters for the changed tickers whose rows lack an event CIK (co-registrants aside),
-    or that have a share class at a contractual ratio (U-67: its rows are stored in canonical-class shares)."""
+    """Re-parse the cached Form 3/4/5 quarters for the changed tickers whose rows lack an event CIK (co-registrants aside)."""
     # load: the issuer CIKs of each changed ticker's stored insider rows
     stored = context.store.summarize(
         Tables.insider_transactions, ["ticker", "issuer_cik"], {"rows": ("count", None)}, where={"ticker": list(changed)}
@@ -128,9 +127,7 @@ def reparse_insider(
     # compute: the tickers to re-parse (every changed one before the table exists)
     held = stored.assign(issuer_cik=pad_cik_series(stored["issuer_cik"]))
     events = {ticker: frozenset(scope.event_ciks) - identity.co_registrant_ciks for ticker, scope in scopes.items()}
-    ratios = {hit.canonical_company for lines in identity.securities_by_cusip.values() for _, _, hit in lines if hit.conversion_ratio != 1.0}
-    converted = set(changed) & ratios & set(held["ticker"])
-    tickers = sorted(set(_lacking(held, "issuer_cik", events, changed, exists)) | converted)
+    tickers = _lacking(held, "issuer_cik", events, changed, exists)
 
     # save: re-parse them through the rebuilt identity, up to the run date
     if tickers:

@@ -68,7 +68,7 @@ def test_insider_frontier_is_the_whole_table_newest_filing_markers_included(sqli
         }
     )
     sqlite_store.save(Tables.insider_transactions, rows)
-    source = inputs.load_insider_transactions(sqlite_store, ["AAA"])
+    source = inputs.load_insider_transactions(sqlite_store, ["AAA"], None)
     assert source is not None and source.complete_through == pd.Timestamp("2026-06-30")
     assert source.first_filed.to_dict() == {"AAA": pd.Timestamp("2026-01-01")}
     print("SANITY: D = 2026-06-30, the newest filing of the whole table (another ticker), read for AAA alone; fetched_at plays no part.")
@@ -146,7 +146,7 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     dates = pd.bdate_range("2015-01-01", "2015-12-31")
     sqlite_store.save(Tables.short_interest, pd.DataFrame({"ticker": "AAA", "date": dates[:21], "short_volume": 0.0, "total_volume": 2.0}))
     sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([(f"{dates[0]:%Y-%m-%d}", "000000001", "AAA", 12.0, "201501a")]))
-    source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"])
+    source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"], None)
     assert source is not None and source.complete_through == pd.Timestamp(transactions["filing_date"].max())
     close = pd.DataFrame(100.0, index=dates, columns=["AAA", "BBB"])
     frames = make_frames(dates, {"AAA": {"AAA": 1.0}, "BBB": {"BBB": 1.0}}, close_split=close)

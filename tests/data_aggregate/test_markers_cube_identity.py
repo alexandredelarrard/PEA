@@ -112,7 +112,7 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
     pinned: dict[str, pd.Series] = {}
 
     def insider(store: DataStore) -> pd.DataFrame:
-        source = load_insider_transactions(store, TICKERS)
+        source = load_insider_transactions(store, TICKERS, None)
         assert source is not None
         complete_through = pinned.setdefault("through", source.complete_through)
         return build_insider_feature_panel(frames, source.transactions, coverage=InsiderCoverage.from_availability(None, complete_through))

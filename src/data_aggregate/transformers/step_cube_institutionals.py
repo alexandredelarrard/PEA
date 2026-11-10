@@ -139,7 +139,7 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
-        source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
+        source = institutional_inputs.load_insider_transactions(self._store, frames.universe, identity_intervals)
         if source is None or source.transactions.empty:
             return None
 

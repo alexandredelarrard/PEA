@@ -26,8 +26,6 @@ from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 INSIDER_KEY = list(Tables.insider_transactions.pk)
 #: Accessions per `IN` list when stored rows are read or deleted by accession.
 ACCESSION_BATCH = 2_000
-#: The share-class letter of an insider `security_title` ("Class A Common Stock", "Series B").
-_CLASS_LETTER = r"(?i)\b(?:CLASS|SERIES)\s+([A-Z])\b"
 #: The `insider_transactions` column contract.
 INSIDER_COLUMNS = list(Tables.insider_transactions.retrieval_columns)
 #: The lineage stamp `stamp_lineage` adds and a re-stamp rewrites.
@@ -298,7 +296,7 @@ def screen_insider_rows(df: pd.DataFrame, universe: Sequence[str], identity: Ide
         return df, pd.DataFrame(columns=EXCLUSION_COLUMNS)
     scored = insider_verdicts(repair_transaction_dates(df), universe, identity)
     keep, in_scope = _screen_masks(scored, universe)
-    return canonical_class_units(stamp_lineage(scored[keep], identity), identity), scored[~keep & in_scope]
+    return stamp_lineage(scored[keep], identity), scored[~keep & in_scope]
 
 
 def _screen_masks(scored: pd.DataFrame, universe: Sequence[str]) -> tuple[pd.Series, pd.Series]:
@@ -434,38 +432,6 @@ def stamp_lineage(df: pd.DataFrame, identity: Identity, originals: pd.DataFrame 
         symbol = df["source_symbol"] if "source_symbol" in df.columns else pd.Series(pd.NA, index=df.index, dtype="string")
     df_stamped = df.assign(source_symbol=symbol, economic_date=economic_dates(df, originals))
     return df_stamped.assign(lineage_role=lineage_roles(df_stamped, identity))
-
-
-def canonical_class_units(df: pd.DataFrame, identity: Identity) -> pd.DataFrame:
-    """`df` (stamped rows) with each non-derivative row of a class traded at a contractual ratio in canonical-class shares
-    (U-67): `shares` and `shares_owned_after` x the class line's dated `conversion_ratio` on the row's `economic_date`,
-    `price_per_share` / it; `value_usd` is unchanged. The class is the letter of `security_title` ("Class A ...")."""
-    # load: the dated lines whose ratio is not one (BRK-A), as (company, class, start, end, ratio)
-    lines = [
-        (hit.canonical_company, hit.security_class, start, end, hit.conversion_ratio)
-        for intervals in identity.securities_by_cusip.values()
-        for start, end, hit in intervals
-        if hit.canonical_company and hit.conversion_ratio != 1.0
-    ]
-    if df.empty or not lines:
-        return df
-
-    # compute: each non-derivative row's ratio (1 where no line of its company and class holds its date)
-    letters = df["security_title"].astype("string").str.extract(_CLASS_LETTER, expand=False).str.upper()
-    rows = pd.DataFrame({"ticker": df["ticker"], "klass": "class_" + letters, "day": pd.to_datetime(df["economic_date"], errors="coerce")})
-    rows = rows[df["security_type"].eq("nonderiv") & letters.notna()]
-    ratio = pd.Series(1.0, index=df.index)
-    for company, klass, start, end, value in lines:
-        held = rows["ticker"].eq(company) & rows["klass"].eq(klass) & (rows["day"] >= start if start is not None else True)
-        held &= rows["day"] < end if end is not None else True
-        ratio[rows.index[held.fillna(False).astype(bool)]] = value
-
-    # post-process: canonical-class quantities, the price per canonical share
-    out = df.copy()
-    for column in ("shares", "shares_owned_after"):
-        out[column] = pd.to_numeric(out[column], errors="coerce") * ratio
-    out["price_per_share"] = pd.to_numeric(out["price_per_share"], errors="coerce") / ratio
-    return out
 
 
 def accession_batches(accessions: Sequence[str]) -> Iterator[list[str]]:

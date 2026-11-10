@@ -1105,3 +1105,10 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Parity: replay goldens (employees text and outputs, DEF 14A payloads, prompts, postprocess inputs, 5 output tables, vote prompts) 0 diffs except the dropped `period`; evidence in the local run dir `reports/validate/2026-11-09-edgar-text-followup/_out/`.
 - Pages: [TODO](./TODO.md), [Coding standards](./guides/coding-standards.md), [Testing and validation](./guides/testing.md), [Table catalog](./reference/table-catalog.md), [Run the pipeline](./guides/run-the-pipeline.md), [Live database](./reference/live-database.md), [Data sources](./reference/data-sources.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md).
 - Pending (user): the first fill is the normal DAG (optionally `--no-cap`); `DROP TABLE IF EXISTS sec_def14a` stays optional.
+
+## 2026-11-10: refresh — strict call depth replaces the library gate (F-003)
+
+- Profile: internal/standard; branch `fix/edgar-text-followup/F-003` from `harness/edgar-text-followup` @ `a37dfcdc`.
+- Scope: D-05 (domain libraries with uncapped depth) replaced by the 4-level rule: shared code (`src/utils`, `src/data_store`, `sec_io`, identity/resume/index/worklist, HTML and table parsers, `gpt_extract`, the drivers) is a leaf; step-flow and domain modules are counted. The shape test gates the EDGAR text and LLM text step flows (no allowlist, green); `employee_guard.ticker_rows` is flat; the domain modules' remaining depth is a P2 [TODO](./TODO.md#edgar-text-tables-follow-ups-2026-11-09).
+- Parity: replay goldens 0 diffs vs `p2a` apart from the run-date floor line; evidence in the local run dir `reports/validate/2026-11-09-edgar-text-followup/` (`fixes/F-003.md`).
+- Pages: [Coding standards](./guides/coding-standards.md), [Testing and validation](./guides/testing.md), [TODO](./TODO.md).

@@ -406,11 +406,6 @@ def decide_employee_answer(answer: EmployeeAnswer, source_text: str, *, previous
     )
 
 
-def _filing_key(stamp: FilingStamp) -> tuple[pd.Timestamp, int, str]:
-    """Filing date, then original before amendment, so a same-day 10-K/A supersedes its original."""
-    return (stamp.filed.normalize(), int(stamp.is_amendment), str(stamp.accession_number))
-
-
 def employee_task(sequence: int, ticker: str, row: Any, budget: int) -> LlmTask:
     """One LLM task for a stored `sec_employees_text` row: the filing prefix, then the stored candidate windows kept in
     priority order while the gap-joined excerpt fits the rest of `budget`, each sliced from the stored piece holding it.
@@ -482,19 +477,16 @@ def _previous_counts(history: pd.DataFrame, filed: pd.Timestamp) -> dict[str, in
     return {component: int(values.iloc[-1]) for component, column in columns if not (values := prior[column].dropna()).empty}
 
 
-def source_quote(quotes: tuple[tuple[str, str], ...]) -> str | None:
-    """The kept quotes as a JSON object keyed by component (`total`, `full_time`, `part_time`); None when none is kept."""
-    return json.dumps(dict(quotes), ensure_ascii=False) if quotes else None
-
-
 def ticker_rows(ticker: str, decisions: list[FilingDecision]) -> tuple[pd.DataFrame, list[dict]]:
     """`(frame, outcomes)`: one `FRAME_COLUMNS` row per filing date (the last decision with a component in filing
     order, else the last decision, with NULL components and its status) and one outcome per decision; an earlier
-    counted decision on that date is superseded."""
+    counted decision on that date is superseded. Filing order: date, original before amendment, accession."""
+    # compute: each decision's outcome in filing order, and the outcome each filing date stores
     outcomes: list[dict] = []
     chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome stored as its row
     counted: set[pd.Timestamp] = set()
-    for decision in sorted(decisions, key=lambda decision: _filing_key(decision.stamp)):
+    order = sorted(decisions, key=lambda d: (d.stamp.filed.normalize(), int(d.stamp.is_amendment), str(d.stamp.accession_number)))
+    for decision in order:
         stamp, decided = decision.stamp, decision.decided
         filed = stamp.filed.normalize()
         if decided.counted and filed in counted:
@@ -520,22 +512,22 @@ def ticker_rows(ticker: str, decisions: list[FilingDecision]) -> tuple[pd.DataFr
                 "quotes": decided.quotes,
             }
         )
-    rows = [_row(ticker, filed, outcomes[chosen[filed]]) for filed in sorted(chosen)]
+
+    # post-process: one stored row per filing date from its chosen outcome; the kept quotes as JSON keyed by component
+    rows = [
+        {
+            "ticker": ticker,
+            "as_of": filed,
+            "cik": outcome["cik"],
+            "accession_number": outcome["accession_number"],
+            "form": outcome["form"],
+            **{column: outcome[column] for column in COUNT_COLUMNS},
+            "basis": outcome["basis"],
+            "status": outcome["status"],
+            "source_document": outcome["source_document"],
+            "source_quote": json.dumps(dict(outcome["quotes"]), ensure_ascii=False) if outcome["quotes"] else None,
+            "measurement_period": outcome["measurement_period"],
+        }
+        for filed, outcome in ((day, outcomes[index]) for day, index in sorted(chosen.items()))
+    ]
     return pd.DataFrame(rows, columns=FRAME_COLUMNS).astype(dict.fromkeys(COUNT_COLUMNS, "Int64")), outcomes
-
-
-def _row(ticker: str, filed: pd.Timestamp, outcome: dict) -> dict:
-    """The stored row for one filing date, from its chosen outcome."""
-    return {
-        "ticker": ticker,
-        "as_of": filed,
-        "cik": outcome["cik"],
-        "accession_number": outcome["accession_number"],
-        "form": outcome["form"],
-        **{column: outcome[column] for column in COUNT_COLUMNS},
-        "basis": outcome["basis"],
-        "status": outcome["status"],
-        "source_document": outcome["source_document"],
-        "source_quote": source_quote(outcome["quotes"]),
-        "measurement_period": outcome["measurement_period"],
-    }

@@ -28,6 +28,7 @@ from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, buil
 from src.data_extract.utils.institutionals.fetch_13f_backfill import mark_gap_walked
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+from src.utils.price.adjustments import ShareBasis
 from tests.conftest import _store, make_frames
 from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
@@ -184,10 +185,14 @@ def test_13f_gap_markers_never_change_an_institutional_cell(sqlite_store: DataSt
         pytest.skip(f"live source rows unavailable: {type(exc).__name__}: {exc}")
     sqlite_store.save(Tables.sec13f_hr, cast(pd.DataFrame, holdings))
     close = prices.assign(date=pd.to_datetime(prices["date"])).pivot(index="date", columns="ticker", values="close_split").sort_index()
-    frames = make_frames(close.index, {t: {p: 1.0 for p in F13_TICKERS if p != t} for t in F13_TICKERS}, close_split=close)
+    capital = pd.DataFrame(index=close.index)
+    peers = {t: {p: 1.0 for p in F13_TICKERS if p != t} for t in F13_TICKERS}
+    frames = make_frames(close.index, peers, close_split=close, shares_outstanding_pit=capital, mcap_pit=capital)
+    empty = pd.DataFrame(columns=["ticker", "date", "value"])
+    share_basis = ShareBasis(empty, empty, empty, {})
 
     def build() -> pd.DataFrame:
-        return build_institutional_feature_panel(frames, load_source(sqlite_store, Tables.sec13f_hr, F13_TICKERS))
+        return build_institutional_feature_panel(frames, load_source(sqlite_store, Tables.sec13f_hr, F13_TICKERS), share_basis=share_basis)
 
     before = _canonical(build())
     saved = mark_gap_walked(cast(Any, SimpleNamespace(store=sqlite_store)), F13_TICKERS, F13_GAP_START)

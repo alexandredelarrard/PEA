@@ -7,16 +7,14 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.availability import (
-    InstitutionalAvailability,
-    availability_date,
-)
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Table, Tables
 from src.utils.config import read_config
+from src.utils.institutional_vintages import availability_date
 from tests.conftest import make_frames
 
 

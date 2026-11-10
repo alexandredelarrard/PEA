@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import src.data_extract.utils.fundamentals.employee_guard as guard
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import run_edgar_fetch
@@ -58,7 +59,7 @@ def walk(ctx: Any, *, years_history: int = 15, no_cap: bool = True) -> None:
 def decide(ctx: Any, extractor: FakeEmployeesLLM, *, years_history: int = 15, full: bool = False) -> pd.DataFrame:
     mod.fetch_employees_llm(ctx, ["AAA"], years_history, [extractor], full=full)  # type: ignore[list-item]
     stored = ctx.store.load(Tables.fundamentals_employees, optional=True)
-    return pd.DataFrame(columns=mod.FRAME_COLUMNS) if stored is None else stored.sort_values("as_of", ignore_index=True)
+    return pd.DataFrame(columns=guard.FRAME_COLUMNS) if stored is None else stored.sort_values("as_of", ignore_index=True)
 
 
 def test_decided_dates_make_no_call(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:

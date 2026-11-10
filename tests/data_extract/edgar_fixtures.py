@@ -20,7 +20,7 @@ from src.data_extract.utils.common.identity import FilingScope, Identity, build_
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
-from src.data_extract.utils.fundamentals.fundamentals_employees import EmployeeAnswer, employee_task
+from src.data_extract.utils.fundamentals.employee_guard import EmployeeAnswer, employee_task
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config

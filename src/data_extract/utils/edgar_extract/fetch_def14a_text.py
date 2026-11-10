@@ -57,6 +57,7 @@ class ProxyFiling:
 
     @property
     def txt_url(self) -> str:
+        """The `<accession>.txt` full submission."""
         return archive_url(self.cik, self.accession_number, f"{self.accession_number}.txt")
 
 

@@ -11,7 +11,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import src.data_extract.utils.edgar_extract.employee_document as document_mod
 import src.data_extract.utils.edgar_extract.fetch_employees_text as text_mod
+import src.data_extract.utils.fundamentals.employee_guard as guard
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
@@ -48,14 +50,14 @@ def text_rows(filings: list[Filing]) -> pd.DataFrame:
 
 
 def build(
-    store: Any, filings: list[Filing], answers: dict[str, mod.EmployeeAnswer], *, stored: pd.DataFrame | None = None
+    store: Any, filings: list[Filing], answers: dict[str, guard.EmployeeAnswer], *, stored: pd.DataFrame | None = None
 ) -> mod.EmployeeTickerResult:
     """One ticker's decisions over the stored text rows of `filings`, through the per-ticker worker and a fake LLM."""
     df_text = text_rows(filings)
     if not df_text.empty:
         store.save(TEXT, df_text)
     df_todo, _ = mod._undecided(store.load(TEXT, columns=mod._TEXT_COLUMNS, optional=True), None, {})
-    history = pd.DataFrame(columns=["ticker", "as_of", *mod._COUNT_COLUMNS]) if stored is None else stored.assign(ticker="AAA")
+    history = pd.DataFrame(columns=["ticker", "as_of", *guard.COUNT_COLUMNS]) if stored is None else stored.assign(ticker="AAA")
     context = SimpleNamespace(
         store=store,
         config=extract_config(data_extract={"llm_text_budget": {"employees": 60000}}),
@@ -106,7 +108,7 @@ def test_no_roster_and_every_column_is_stored(sqlite_store: Any) -> None:
         "paraphrase": answer(41000, "The company employs 41,000 people."),
     }
     frame = build(sqlite_store, filings, answers).frame
-    assert frame.columns.tolist() == STORED_COLUMNS == mod.FRAME_COLUMNS
+    assert frame.columns.tolist() == STORED_COLUMNS == guard.FRAME_COLUMNS
     rows = {row["accession_number"]: row for row in frame.to_dict("records")}
     found = rows["low"]
     assert (found["ticker"], found["as_of"], found["cik"], found["form"], found["status"], found["source_document"]) == (
@@ -143,7 +145,7 @@ def decide(
     quote: str | None = None,
     is_fte: bool = False,
     includes_contractors: bool = False,
-) -> mod.EmployeeDecision:
+) -> guard.EmployeeDecision:
     """The decision on `text` for a fake answer whose every claimed component quotes `quote` (default: all of `text`)."""
     cited = quote or text
     reply = answer(
@@ -156,7 +158,7 @@ def decide(
         is_fte=is_fte,
         includes_contractors=includes_contractors,
     )
-    return mod.decide_employee_answer(reply, text)
+    return guard.decide_employee_answer(reply, text)
 
 
 def supported(count: int | None, text: str, quote: str | None = None) -> int | None:
@@ -164,7 +166,7 @@ def supported(count: int | None, text: str, quote: str | None = None) -> int | N
     return decide(text, total=count, quote=quote).employees_total
 
 
-def components(decision: mod.EmployeeDecision) -> tuple[int | None, int | None, int | None, str | None, str]:
+def components(decision: guard.EmployeeDecision) -> tuple[int | None, int | None, int | None, str | None, str]:
     return (decision.employees_total, decision.employees_full_time, decision.employees_part_time, decision.basis, decision.status)
 
 
@@ -199,11 +201,11 @@ def test_source_guard_resolves_bounds_units_and_ranges():
 
 def test_statuses_without_a_count():
     text = "Workforce totals are shown in the following image."
-    assert components(mod.decide_employee_answer(answer(None, None, status="image_only"), text)) == (None, None, None, None, "image_only")
-    assert components(mod.decide_employee_answer(answer(None, None, status="not_disclosed"), text))[4] == "not_disclosed"
-    assert components(mod.decide_employee_answer(answer(None, None, status="incorporated_by_reference"), text))[4] == "incorporated"
-    assert components(mod.decide_employee_answer(answer(None, None, status="ambiguous"), text))[4] == "ambiguous"
-    assert components(mod.decide_employee_answer(answer(None, None, status="found"), text))[4] == "ambiguous"
+    assert components(guard.decide_employee_answer(answer(None, None, status="image_only"), text)) == (None, None, None, None, "image_only")
+    assert components(guard.decide_employee_answer(answer(None, None, status="not_disclosed"), text))[4] == "not_disclosed"
+    assert components(guard.decide_employee_answer(answer(None, None, status="incorporated_by_reference"), text))[4] == "incorporated"
+    assert components(guard.decide_employee_answer(answer(None, None, status="ambiguous"), text))[4] == "ambiguous"
+    assert components(guard.decide_employee_answer(answer(None, None, status="found"), text))[4] == "ambiguous"
     print("\nSANITY: image-only, not-disclosed, incorporated-by-reference and ambiguous filings decide to NULL components with their own status.")
 
 
@@ -273,7 +275,7 @@ def test_mrk_possessive_employee_sentence_keeps_full_time_count(total: int, labe
     total_quote = f"the Company had approximately {total:,} employees worldwide"
     full_quote = f"Approximately 73,000 of the Company’s employees are {label}."
     text = f"As of December 31, 2024, {total_quote}. {full_quote}"
-    decision = mod.decide_employee_answer(answer(total, total_quote, full_time=73000, full_time_quote=full_quote), text)
+    decision = guard.decide_employee_answer(answer(total, total_quote, full_time=73000, full_time_quote=full_quote), text)
     assert components(decision) == (total, 73000, None, "full_part", "found")
     assert not decision.rejected
     print(f"\nSANITY: MRK's explicit {total:,} total and 73,000 full-time employees both survive verbatim quote validation.")
@@ -283,7 +285,7 @@ def test_mrk_possessive_employee_sentence_keeps_full_time_count(total: int, labe
 @pytest.mark.parametrize("quote", [None, "Our workforce was approximately this many people."])
 def test_missing_or_paraphrased_quote_recovers_source_count_within_ten_percent(value: int, quote: str | None) -> None:
     text = f"We employed around {value:,} employees worldwide."
-    decision = mod.decide_employee_answer(answer(value, quote), text, previous={"total": 100000})
+    decision = guard.decide_employee_answer(answer(value, quote), text, previous={"total": 100000})
     assert decision.employees_total == value and decision.status == "found" and not decision.rejected
     assert dict(decision.quotes)["total"] in text
     print(f"\nSANITY: {value:,} is within inclusive +/-10% of 100,000; a broken quote is replaced with actual filing evidence.")
@@ -304,7 +306,7 @@ def test_missing_or_paraphrased_quote_recovers_source_count_within_ten_percent(v
     ],
 )
 def test_quote_recovery_retains_numeric_and_workforce_guards(text: str, value: int, previous: dict[str, int]) -> None:
-    decision = mod.decide_employee_answer(answer(value, None), text, previous=previous)
+    decision = guard.decide_employee_answer(answer(value, None), text, previous=previous)
     assert decision.status == "unsupported" and decision.employees_total is None
     print("\nSANITY: quote recovery rejects out-of-band, unanchored, absent, non-workforce, ranged and unflagged contractor counts.")
 
@@ -319,11 +321,11 @@ def test_approximate_counts_keep_the_stated_value(qualifier: str) -> None:
 def test_quote_recovery_keeps_component_labels() -> None:
     text = "Approximately 73,000 of the Company’s employees are full-time employees."
     reply = answer(None, None, full_time=73000)
-    decision = mod.decide_employee_answer(reply, text, previous={"full_time": 72000})
+    decision = guard.decide_employee_answer(reply, text, previous={"full_time": 72000})
     assert components(decision) == (None, 73000, None, "full_time_only", "found")
     assert dict(decision.quotes)["full_time"] in text
-    assert mod.decide_employee_answer(reply, "We had 73,000 employees.", previous={"full_time": 72000}).status == "unsupported"
-    assert mod.decide_employee_answer(reply, text, previous={"total": 74000}).status == "unsupported"
+    assert guard.decide_employee_answer(reply, "We had 73,000 employees.", previous={"full_time": 72000}).status == "unsupported"
+    assert guard.decide_employee_answer(reply, text, previous={"total": 74000}).status == "unsupported"
     fte = "Approximately 73,000 of the Company's employees were full-time equivalent employees."
     assert decide(fte, total=73000).basis == "fte"
     assert decide(fte, full_time=73000).status == "unsupported"
@@ -374,10 +376,10 @@ def test_table_rows_with_percentage_cells_keep_their_shift_label():
         part_time=1589,
         part_time_quote="Part-time 603 38 % 986 62 % 1,589",
     )
-    assert components(mod.decide_employee_answer(reply, ADM_2023_TABLE)) == (41802, 40213, 1589, "full_part", "found")
+    assert components(guard.decide_employee_answer(reply, ADM_2023_TABLE)) == (41802, 40213, 1589, "full_part", "found")
     # The Total row's number is still unlabelled, so it cannot stand in for the full-time row.
     wrong_row = answer(None, None, full_time=41802, full_time_quote="Total 31,100 74 % 10,702 26 % 41,802")
-    assert components(mod.decide_employee_answer(wrong_row, ADM_2023_TABLE)) == (None, None, None, None, "unsupported")
+    assert components(guard.decide_employee_answer(wrong_row, ADM_2023_TABLE)) == (None, None, None, None, "unsupported")
     print("\nSANITY: ADM FY2023 rows with % cells store 41,802 / 40,213 / 1,589 (full_part); a Total-row number is not a full-time count.")
 
 
@@ -406,20 +408,20 @@ def test_dltr_table_rows_are_components():
         part_time=139110,
         part_time_quote="Part-time Associates 97,913 41,184 13 139,110",
     )
-    assert components(mod.decide_employee_answer(reply, DLTR_2021)) == (199327, 60217, 139110, "full_part", "found")
+    assert components(guard.decide_employee_answer(reply, DLTR_2021)) == (199327, 60217, 139110, "full_part", "found")
     # The full-time count quoted with the Total row only is not supported; the total stays.
     wrong_row = answer(199327, "Total 125,865 71,046 2,416 199,327", full_time=60217, full_time_quote="Total 125,865 71,046 2,416 199,327")
-    decision = mod.decide_employee_answer(wrong_row, DLTR_2021)
+    decision = guard.decide_employee_answer(wrong_row, DLTR_2021)
     assert components(decision) == (199327, None, None, "total", "found") and decision.rejected == ("full_time: not_stated",)
     # A bounded total is stored as stated, never combined with an exact component.
     bounded = answer(
         199300, "we employed more than 199,300 associates", full_time=60217, full_time_quote="Full-time Associates 27,952 29,862 2,403 60,217"
     )
-    assert components(mod.decide_employee_answer(bounded, DLTR_2021)) == (199350, 60217, None, "full_part", "found")
+    assert components(guard.decide_employee_answer(bounded, DLTR_2021)) == (199350, 60217, None, "full_part", "found")
     held_for_sale = answer(
         214710, "Total 143,283 68,936 2,491 214,710", full_time=64434, full_time_quote="Full-time Associates 33,233 28,712 2,489 64,434"
     )
-    assert components(mod.decide_employee_answer(held_for_sale, DLTR_2025))[:2] == (214710, 64434)
+    assert components(guard.decide_employee_answer(held_for_sale, DLTR_2025))[:2] == (214710, 64434)
     print(
         "\nSANITY: DLTR 2021 stores total 199,327 / FT 60,217 / PT 139,110 from their own rows; a wrong-row FT is rejected; 2025 keeps held-for-sale staff."
     )
@@ -576,7 +578,7 @@ class NoPrimaryDocumentFiling(Filing):
 def test_missing_primary_document_reads_full_submission(sqlite_store: Any) -> None:
     submission = "<SEC-DOCUMENT><TEXT>As of December 31, 1999, we had 1,234 employees.</TEXT></SEC-DOCUMENT>"
     filing = NoPrimaryDocumentFiling("no-primary", "2000-03-01", submission)
-    assert text_mod.filing_body_text(filing) == "As of December 31, 1999, we had 1,234 employees."
+    assert document_mod.filing_body_text(filing) == "As of December 31, 1999, we had 1,234 employees."
     unreadable = NoPrimaryDocumentFiling("unreadable", "2000-03-01", "")
     assert text_rows([unreadable]).empty
     result = build(sqlite_store, [filing, unreadable], {"no-primary": answer(1234, "we had 1,234 employees.")})
@@ -597,7 +599,7 @@ def test_ix_header_is_stripped_and_the_workforce_sentence_survives(sqlite_store:
     statement = "As of October 31, 2019, we employed approximately 16,300 people worldwide."
     filing = Filing("a-2019", "2019-12-19", "")
     filing.html = lambda: f"<html><body>{header}<p>{FILLER * 150}</p><p>{statement}</p></body></html>"
-    text = text_mod.filing_body_text(filing)
+    text = document_mod.filing_body_text(filing)
     assert len(junk) > 20_000 and "us-gaap" not in text and "0001090872" not in text
     assert statement in excerpt(filing, 10_000)
     result = build(sqlite_store, [filing], {"a-2019": answer(16300, statement)})
@@ -651,22 +653,22 @@ def test_exhibit_fallback_reads_the_annual_report_exhibit(sqlite_store: Any) -> 
     )
     filing = Filing("wy-2000", "2000-03-10", primary)
     filing.attachments = [UnreadAttachment("EX-21", ""), Attachment("EX-13", f"<p>{FILLER * 40}</p><p>{wy}</p>")]
-    chosen = text_mod.employee_text(filing)
+    chosen = document_mod.employee_text(filing)
     assert chosen.source_document == "EX-13" and wy in chosen.text
     no_number = Filing("wy-bare", "2000-03-10", f"{FILLER * 30}Employees are described in the Annual Report.")
     no_number.attachments = [Attachment("EX-99", f"<p>{wy}</p>", description="1999 Annual Report to Shareholders")]
-    assert text_mod.employee_text(no_number).source_document == "EX-99"
+    assert document_mod.employee_text(no_number).source_document == "EX-99"
     result = build(sqlite_store, [filing], {"wy-2000": answer(44800, "The company has 44,800 employees")})
     assert result.frame["employees_total"].tolist() == [44800.0] and result.frame["source_document"].tolist() == ["EX-13"]
-    assert text_mod.is_annual_report_exhibit("EX-99", "Annual Report to Shareholders") and not text_mod.is_annual_report_exhibit(
+    assert document_mod.is_annual_report_exhibit("EX-99", "Annual Report to Shareholders") and not document_mod.is_annual_report_exhibit(
         "EX-99.1", "Press release"
     )
     stated = Filing("own", "2025-03-01", "We had 41,000 employees.")
     stated.attachments = [UnreadAttachment("EX-13", "")]
-    assert text_mod.employee_text(stated).source_document == "primary"
+    assert document_mod.employee_text(stated).source_document == "primary"
     bare = Filing("bare", "2025-03-01", f"{FILLER * 30}No exhibit carries a workforce figure.")
     bare.attachments = [Attachment("EX-13", f"<p>{FILLER * 10}</p>")]
-    assert text_mod.employee_text(bare).source_document == "primary"
+    assert document_mod.employee_text(bare).source_document == "primary"
     print(
         "\nSANITY: a primary document that incorporates its employee count by reference sends the EX-13 text (44,800 saved, "
         "source EX-13), as does an EX-99 annual report; a primary that states its own count reads no exhibit; an exhibit with no workforce number is not used."
@@ -677,19 +679,19 @@ def test_offline_task_builder_and_decision_for_cached_text():
     """A task from one stored text row (no Filing, no network), then the pure decision."""
     filing = Filing("0000060667-25-000049", "2025-03-24", f"{FILLER * 200}{LOW_2025} {FILLER * 20}", report="2025-01-31")
     row = next(text_rows([filing]).itertuples(index=False))
-    task = mod.employee_task(7, "LOW", row, 9_000)
+    task = guard.employee_task(7, "LOW", row, 9_000)
     source_text = str(task.meta["source_text"])
-    assert task.seq == 7 and task.schema is mod.EmployeeAnswer and task.meta["source_document"] == "primary"
+    assert task.seq == 7 and task.schema is guard.EmployeeAnswer and task.meta["source_document"] == "primary"
     assert task.payload.startswith("Ticker: LOW\nFiscal period end: 2025-01-31\nSEC filing date: 2025-03-24\nAccession: 0000060667-25-000049\n")
     assert (
         LOW_2025 in source_text and task.payload.endswith(source_text) and "Source document: primary" in task.payload and len(task.payload) <= 9_000
     )
     quote = "Lowe’s employed approximately 161,000 full-time associates and 109,000 part-time associates"
     reply = answer(None, None, full_time=161000, full_time_quote=quote, part_time=109000, part_time_quote=quote)
-    decision = mod.decide_employee_answer(reply, source_text)
+    decision = guard.decide_employee_answer(reply, source_text)
     assert (decision.employees_total, decision.basis, decision.quotes) == (270000, "full_part", (("full_time", quote), ("part_time", quote)))
     with pytest.raises(ValueError, match="too small for filing metadata"):
-        mod.employee_task(0, "LOW", row, 100)
+        guard.employee_task(0, "LOW", row, 100)
     print("\nSANITY: a stored LOW text row builds a 9,000-char task offline and its fake answer decides to 270,000 full_part with both quotes kept.")
 
 
@@ -788,7 +790,7 @@ def test_missing_report_period_keeps_filing_date(sqlite_store: Any) -> None:
         config=extract_config(data_extract={"llm_text_budget": {"employees": 60000}}),
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
-    history = pd.DataFrame(columns=["ticker", "as_of", *mod._COUNT_COLUMNS])
+    history = pd.DataFrame(columns=["ticker", "as_of", *guard.COUNT_COLUMNS])
     result = mod._ticker_employees("AAA", context=context, extractors=lent(llm), df_todo=df_todo, df_history=history)  # type: ignore[arg-type]
     assert pd.to_datetime(result.frame["as_of"]).tolist() == [pd.Timestamp("2024-03-01")]
     assert "Fiscal period end: unknown\n" in llm.tasks[0].payload
@@ -797,9 +799,9 @@ def test_missing_report_period_keeps_filing_date(sqlite_store: Any) -> None:
 
 def test_the_walk_scans_a_document_for_workforce_numbers_once(monkeypatch):
     scans: list[int] = []
-    spans = text_mod.workforce_number_spans
-    monkeypatch.setattr(text_mod, "workforce_number_spans", lambda text: scans.append(len(text)) or spans(text))
+    spans = document_mod.workforce_number_spans
+    monkeypatch.setattr(document_mod, "workforce_number_spans", lambda text: scans.append(len(text)) or spans(text))
     row = next(text_rows([Filing("one", "2025-03-01", "We had 41,000 employees.")]).itertuples(index=False))
-    task = mod.employee_task(1, "AAA", row, 60_000)
+    task = guard.employee_task(1, "AAA", row, 60_000)
     assert "41,000 employees" in str(task.meta["source_text"]) and len(scans) == 1
     print("\nSANITY: the stored row is built from one workforce-number scan of the document; the LLM side scans nothing.")

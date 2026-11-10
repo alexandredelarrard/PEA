@@ -21,6 +21,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract import fetch_def14a_text as def14a_text
 from src.data_extract.utils.edgar_extract import fetch_employees_text as employees_text
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, marker_row, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.employee_document import EmployeeText
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.identity.identity_propagate import owned_scopes, purge_rows
@@ -54,7 +55,7 @@ def _stamp(accession: str, period: object = "2023-12-31") -> FilingStamp:
 
 def _employee_shapes(monkeypatch: pytest.MonkeyPatch) -> dict[str, pd.DataFrame]:
     """The first frames the employees walk can save, built by its own row function (document read stubbed)."""
-    monkeypatch.setattr(employees_text, "employee_text", lambda filing: employees_text.EmployeeText(BODY, "primary", (SPAN,)))
+    monkeypatch.setattr(employees_text, "employee_text", lambda filing: EmployeeText(BODY, "primary", (SPAN,)))
     monkeypatch.setattr(employees_text, "forget_sgml", lambda filing: None)
     table = Tables.sec_employees_text
     data = parse_filing_rows("AAA", "0000320193", _stamp("a-1"), ROSTER, table=table, row_fn=employees_text._employee_rows)[table]

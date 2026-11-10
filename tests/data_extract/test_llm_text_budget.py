@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
-from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP, employee_task
+from src.data_extract.utils.fundamentals.employee_guard import _GAP, employee_task
 from src.data_store.schema import Tables
 from src.utils.config import read_config
 from tests.data_extract.edgar_fixtures import TenK, identity_for

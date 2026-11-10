@@ -1,4 +1,4 @@
-"""Code-shape contract of the extraction steps, enforced on every function a flow's roots reach (plan 3c, D-16).
+"""Code-shape contract of the extraction steps: the flows a step's roots reach, and the domain libraries they call.
 
 The walk resolves calls statically: a bare name defined in or imported from a `src` module, `self.<method>`, and
 `<src module alias>.<name>`; a repository function passed as an argument counts as a call. Levels count from the step:
@@ -6,8 +6,9 @@ The walk resolves calls statically: a bare name defined in or imported from a `s
 callback (`parse`, `is_subject`, `filings`, `run_scope`, and the `row_fn` a parse binds) is a level-2 root wherever
 it is named: the driver, not the step, calls it; so is a flow's per-ticker worker, which `run_per_ticker` calls once
 per ticker (checked to be bound and handed to it). A function outside the flow's `scope` is infrastructure: a level-1
-or level-2 function may call it, a level-3 helper may call no repository function at all. `allowlist` maps a callee
-(a qualified name, a `prefix.`, or a `caller -> callee` edge) to the reason it is not walked.
+or level-2 function may call it, a level-3 helper may call no repository function at all. The domain libraries
+(`LIBRARY_MODULES`) are such infrastructure, gated module-wide: every one of their functions, reached or not, keeps
+the per-function contract below except the `Tables.<x>` literal rule; their call depth is not capped.
 
 Each reached function: at most 6 inputs, 90 lines and control-flow nesting 2; no pass-through; full annotations; no
 logger parameter and no `log=` / `logger=` argument; no `print`; no import inside the body; a docstring of at most 4 lines; every blank-line-separated
@@ -98,17 +99,6 @@ EDGAR_TEXT = Flow(
         f"{_EDGAR}fetch_def14a_text",
         "src.data_extract.utils.common.workforce",
     ),
-    allowlist={
-        "src.data_extract.transformers.step_extract_edgar.StepExtractEdgar._run_fetch -> "
-        "src.data_extract.transformers.step_extract_edgar.StepExtractEdgar._ensure_index": (
-            "the existing once-per-step index refresh shared by every EDGAR walk, unchanged by this run (D-16)"
-        ),
-        f"{_DEF14A}carve.": _CARRIED_DEF14A.format("section carving"),
-        f"{_EDGAR}fetch_employees_text.employee_text": (
-            "the primary-body read, EX-13/EX-99 fallback and their SEC reads, moved unchanged from fundamentals_employees.py "
-            "(D-14) and pinned byte for byte by AC-001; rewritten by the carried-over follow-up run (D-16)"
-        ),
-    },
     callback_modules=(f"{_EDGAR}fetch_employees_text", f"{_EDGAR}fetch_def14a_text"),
     run_order=(
         "run_index",
@@ -127,18 +117,9 @@ LLM_TEXT = Flow(
     step_class="StepExtractLlm",
     roots=("run_employees_llm", "run_def14a_llm"),
     scope=("src.data_extract.transformers.step_extract_llm", _EMPLOYEES, f"{_DEF14A}fetch"),
-    # Only entries the walk meets are listed (a stale entry fails): the guard `decide_employee_answer` and the DEF 14A
-    # retry/basis/holders/tables/flatten/carve modules sit below `_llm_decisions`, `work`, `postprocess` and `gender`.
+    # Only entries the walk meets are listed (a stale entry fails): the DEF 14A retry/basis/holders/tables/flatten/carve
+    # modules sit below `work`, `postprocess` and `gender`.
     allowlist={
-        f"{_EMPLOYEES}._decide_ticker": "carried-over per-date decision rule, unchanged by this run (D-16)",
-        f"{_EMPLOYEES}._llm_decisions": (
-            "signature changed by this run (results and history passed in, the read and the calls moved out); the "
-            "answer-to-decision loop and employee guard with quote recovery are carried over (D-16 follow-up)"
-        ),
-        f"{_EMPLOYEES}.employee_task -> src.data_extract.utils.common.workforce.merge_spans": (
-            "the stdlib span union the walk's stored pieces and the excerpt greedy must apply identically (D-12, touch rule "
-            "pinned by AC-001); a private copy in the greedy would be the duplicate the helper rule forbids"
-        ),
         **{f"{_DEF14A}{name}.": _TRIMMED_DEF14A.format(name) for name in ("work", "postprocess")},
         f"{_DEF14A}gender.": _CARRIED_DEF14A.format("gender"),
     },
@@ -146,6 +127,10 @@ LLM_TEXT = Flow(
     run_order=("run_def14a_llm", "run_8k_votes", "run_employees_llm"),
 )
 FLOWS = (IDENTITY, EDGAR_TEXT, LLM_TEXT)
+#: Domain libraries the flows call from levels 1-2 (infrastructure, not walked): every function of these modules keeps
+#: the per-function contract, except the `Tables.<x>` literal rule (D-06: the DEF 14A modules store through the
+#: `SECTIONS` registry tables).
+LIBRARY_MODULES = (f"{_EDGAR}employee_document", "src.data_extract.utils.fundamentals.employee_guard")
 
 
 @dataclass
@@ -500,3 +485,17 @@ def test_every_function_the_flow_reaches_keeps_the_code_shape_contract(flow: Flo
     short = sorted(" -> ".join(part.rstrip(".").rsplit(".", 1)[-1] for part in key.split(" -> ")) for key in flow.allowlist)
     print(f"  allowlisted ({len(flow.allowlist)}, each with a reason): {short}")
     print("  OK: every reached function keeps the contract; level-3 helpers call no repository function")
+
+
+@pytest.mark.parametrize("name", LIBRARY_MODULES, ids=lambda name: name.rsplit(".", 1)[1])
+def test_every_library_function_keeps_the_function_contract(name: str) -> None:
+    """D-06: every function of a library module, reached or not, keeps the per-function contract (limits, nesting,
+    blocks, docstring, annotations, no logger input, reads in the first block); call depth is not capped."""
+    module = _module(name)
+    assert module is not None, name
+    problems = [problem for qualname, function in module.functions.items() for problem in _shape(module, qualname, function)]
+    problems = [problem for problem in problems if "without Tables.<name>" not in problem]
+
+    assert not problems, "\n".join(problems)
+    print(f"\n=== SANITY CHECK: library {name.rsplit('.', 1)[1]} keeps the function contract ===")
+    print(f"  {len(module.functions)} function(s), {len(module.lines)} lines, 0 violations")

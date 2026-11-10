@@ -27,7 +27,7 @@ from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH, NO_PAYLOAD
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH, candidate_windows
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.fundamentals.fundamentals_employees import _GAP
+from src.data_extract.utils.fundamentals.employee_guard import _GAP
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik

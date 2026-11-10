@@ -198,4 +198,4 @@ def finalise_gender(context: Context) -> None:
     parent = recompute_parent_gender(resolved)
     if not parent.empty:
         context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])
-        context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
+        logger.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))

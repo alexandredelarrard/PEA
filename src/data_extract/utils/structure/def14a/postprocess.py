@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
@@ -269,9 +269,18 @@ def _refresh_ceo_copies(df_parent: pd.DataFrame, stamp: dict[str, Any], saved: M
     return df_parent
 
 
-def _retained_legacy(section: Section, df_merged: pd.DataFrame, legacy: Def14AExtract, parent: dict[str, Any]) -> Def14AExtract:
-    """The answer with this domain's rows replaced by the merged retained rows; pay rows also get their `reconciles`
-    flag in `df_merged`."""
+def _with_reconciles(section: Section, df_merged: pd.DataFrame, records: list[dict[Hashable, Any]]) -> pd.DataFrame:
+    """`df_merged` with each pay row's `reconciles` flag computed from its `records`; another domain's frame unchanged."""
+    if section.key not in ("executive_pay", "director_pay"):
+        return df_merged
+    components = _EXEC_COMPONENT_COLS if section.key == "executive_pay" else _DIRECTOR_COMPONENT_COLS
+    df_flagged = df_merged.copy()
+    df_flagged["reconciles"] = [_reconciles(row, components) for row in records]
+    return df_flagged
+
+
+def _retained_legacy(section: Section, records: list[dict[Hashable, Any]], legacy: Def14AExtract, parent: dict[str, Any]) -> Def14AExtract:
+    """The answer with this domain's rows replaced by the merged retained `records`."""
     raw_key = {"executive_pay": "compensation", "director_pay": "compensation", "ownership": "holders", "governance": "directors"}[section.key]
     legacy_key = {
         "executive_pay": "compensation",
@@ -279,10 +288,6 @@ def _retained_legacy(section: Section, df_merged: pd.DataFrame, legacy: Def14AEx
         "ownership": "ownership_holders",
         "governance": "directors",
     }[section.key]
-    records = df_merged.astype(object).where(pd.notna(df_merged), None).to_dict("records")
-    if section.key in ("executive_pay", "director_pay"):
-        components = _EXEC_COMPONENT_COLS if section.key == "executive_pay" else _DIRECTOR_COMPONENT_COLS
-        df_merged["reconciles"] = [_reconciles(row, components) for row in records]
     retained = _legacy_answer(section, {raw_key: records}, parent)
     return legacy.model_copy(update={legacy_key: getattr(retained, legacy_key)})
 
@@ -326,8 +331,9 @@ def postprocess_section(
         df_merged, source_corrections = correct_basis(section, df_merged, df_new, supported_source, legacy.ceo_name, stamp.get("company_name"))
         if not df_merged.empty:
             df_merged["retry"] = retry
-            frames[section.table] = df_merged
-            legacy = _retained_legacy(section, df_merged, legacy, parent)
+            records = df_merged.astype(object).where(pd.notna(df_merged), None).to_dict("records")
+            frames[section.table] = _with_reconciles(section, df_merged, records)
+            legacy = _retained_legacy(section, records, legacy, parent)
         else:
             frames[section.table] = reservation_frame(section.table, stamp, df_saved, retry)
 

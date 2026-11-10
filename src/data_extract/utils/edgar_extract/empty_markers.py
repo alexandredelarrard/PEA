@@ -1,7 +1,7 @@
 """Empty-filing marker rows (`Table.empty_marker`) and the rule that a marker never replaces data.
 
-`marker_frame` builds one marker: the given key and stamp values and the declared sentinel, in
-the table's declared column order. A marker whose sentinel column is not part of the primary key
+`marker_frame` builds one marker: the given key and stamp values, the declared sentinel, and a
+typed NULL in every other column. A marker whose sentinel column is not part of the primary key
 has the same key as the real row of that filing, so upserting it would overwrite stored data.
 `drop_markers_over_data` removes such a marker before any save when a real row with its key is
 stored or is in the same frame.
@@ -32,8 +32,7 @@ def marker_mask(table: Table, df: pd.DataFrame) -> pd.Series:
 def marker_frame(table: Table, values: dict[str, object], key_fill: dict[str, object] | None = None) -> pd.DataFrame:
     """One marker row of `table` from `values` (key, accession, frontier date and any stamp columns), sentinel set.
     A primary-key column not in `values` takes `key_fill`'s value, else the frontier date for a date column, else
-    the sentinel. Columns follow `table.retrieval_columns`; a column not in `values` is left out (NULL in an
-    existing table)."""
+    the sentinel. A column not in `values` is stored as NULL."""
     if table.resume is None or table.empty_marker is None or table.resume.frontier_col is None:
         raise ValueError(f"{table.name}: a marker needs a resume contract with a frontier column and an empty_marker")
     column, sentinel = table.empty_marker
@@ -42,10 +41,8 @@ def marker_frame(table: Table, values: dict[str, object], key_fill: dict[str, ob
     for key_col in table.pk:
         if key_col not in row:
             row[key_col] = (key_fill or {}).get(key_col, row[frontier] if key_col in table.date_type_cols else sentinel)
-    # The declared layout first, so a marker that creates its table creates the declared column order.
-    declared = [c for c in table.retrieval_columns if c in row]
     dates = [c for c in row if c in table.date_type_cols or c == frontier]
-    return pin_dtypes(pd.DataFrame([row], columns=[*declared, *(c for c in row if c not in declared)]), dates=dates)
+    return pin_dtypes(pd.DataFrame([row]), dates=dates)
 
 
 def marker_shares_data_key(table: Table) -> bool:

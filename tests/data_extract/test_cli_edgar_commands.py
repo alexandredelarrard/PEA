@@ -53,7 +53,7 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
 def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
-    context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
+    context = SimpleNamespace(name="ctx", config=config, config_dir="configs", store=SimpleNamespace(create_declared=lambda table: None))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")])
     stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append({"context": context, **kwargs}))

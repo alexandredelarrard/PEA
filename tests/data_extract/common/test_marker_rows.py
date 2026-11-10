@@ -1,8 +1,7 @@
 """AC-016 check 1 for the EDGAR document tables: an empty-filing marker built by `marker_row` is one
 row whose key columns are filled (the declared sentinel included), whose data columns read back as
 typed missing values (NaN / NaT / None) after a store round trip, which `load` hides, and which
-carries only columns the table's DDL in `sql/schema.sql` declares, so saving it never adds a column.
-The two text tables' markers carry their whole declared layout (`n_chars` 0, the rest NULL)."""
+carries only columns the table's DDL in `sql/schema.sql` declares, so saving it never adds a column."""
 
 from __future__ import annotations
 
@@ -43,6 +42,11 @@ _CASES: dict[str, tuple[Table, dict[str, object], tuple[str, str, str]]] = {
         Tables.filing_risk_text,
         {"section": "mda", "n_words": 3.0, "period_of_report": pd.Timestamp("2026-06-30"), "text": "body"},
         ("n_words", "period_of_report", "text"),
+    ),
+    "sec_employees_text": (
+        Tables.sec_employees_text,
+        {"source_document": "primary", "n_chars": 9.0, "period_of_report": pd.Timestamp("2025-12-31"), "windows": "[[0, 9]]"},
+        ("n_chars", "period_of_report", "windows"),
     ),
     "sec_13d": (
         Tables.sec_13d,
@@ -118,27 +122,10 @@ def test_a_def14a_text_rejection_marker_is_hidden_beside_a_real_section(sqlite_s
 
     shown = sqlite_store.load(table, markers=True).set_index("section")
     assert sorted(shown.index) == ["_empty", "audit"] and shown.loc["_empty", "form"] == "DEF 14A"
-    assert pd.isna(shown.loc["_empty", "payload"]) and shown.loc["_empty", "n_chars"] == 0
+    assert pd.isna(shown.loc["_empty", "payload"]) and pd.isna(shown.loc["_empty", "n_chars"])
     assert shown.loc["audit", "primary_document"] == "" and sqlite_store.load(table)["section"].tolist() == ["audit"]
     print("\n=== SANITY CHECK: sec_def14a_text marker ===")
-    print(
-        "  section='_empty' with NULL payload and n_chars 0 beside a real 'audit' row; '' primary_document survives; load hides the marker. Validated."
-    )
-
-
-@pytest.mark.parametrize("table", [Tables.sec_employees_text, Tables.sec_def14a_text], ids=lambda t: t.name)
-def test_a_text_table_marker_carries_its_declared_layout(table: Table, sqlite_store) -> None:
-    create_canonical(sqlite_store.engine, [table])
-    marker = marker_row(table, "AAA", FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="10-K"), "0000000001"))
-
-    sqlite_store.save(table, marker)
-
-    row = sqlite_store.load(table, markers=True).iloc[0]
-    nulls = [c for c in table.retrieval_columns if c in dict(table.marker_extra) and c != "n_chars"]
-    assert list(marker.columns) == list(table.retrieval_columns) and row["n_chars"] == 0
-    assert all(pd.isna(row[c]) for c in nulls) and sqlite_store.load(table, optional=True) is None
-    print(f"\n=== SANITY CHECK: {table.name} marker layout ===")
-    print(f"  the marker carries all {len(marker.columns)} declared columns in order; n_chars 0, {nulls} NULL; hidden from load.")
+    print("  section='_empty' with NULL payload/n_chars beside a real 'audit' row; '' primary_document survives; load hides the marker. Validated.")
 
 
 def test_marker_key_fill_for_the_composite_keys() -> None:

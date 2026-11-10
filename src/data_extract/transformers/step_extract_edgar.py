@@ -28,6 +28,7 @@ from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
+from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.utils.string import run_date
 
@@ -117,11 +118,15 @@ class StepExtractEdgar(Step):
         return self._run_fetch(FILING_TEXT_FETCH)
 
     def run_employees_text(self) -> FetchSummary:
-        """Walk the 10-K family filings into `sec_employees_text` (candidate windows and their union)."""
+        """Walk the 10-K family filings into `sec_employees_text` (candidate windows and their union), created from its
+        committed DDL on a first run."""
+        self._context.store.create_declared(Tables.sec_employees_text)
         return self._run_fetch(EMPLOYEES_TEXT_FETCH)
 
     def run_def14a_text(self) -> FetchSummary:
-        """Walk the proxies into `sec_def14a_text` (untruncated section payloads, subject guard as markers)."""
+        """Walk the proxies into `sec_def14a_text` (untruncated section payloads, subject guard as markers), created from
+        its committed DDL on a first run."""
+        self._context.store.create_declared(Tables.sec_def14a_text)
         return self._run_fetch(DEF14A_TEXT_FETCH)
 
     def run(self) -> None:

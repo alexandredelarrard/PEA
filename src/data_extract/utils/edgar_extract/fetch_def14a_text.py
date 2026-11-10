@@ -77,7 +77,7 @@ def subject_accepted(ticker: str, filer_cik: str, accession: str, subjects: froz
     return False
 
 
-def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> bool:
+def proxy_is_subject(ticker: str, stamp: FilingStamp, identity: Identity) -> bool:
     """The subject guard of a multi-window ticker: False (a marker) when the proxy's SGML subject names none of its
     event CIKs. A transient header failure raises (listed again); any other unreadable header accepts the proxy."""
     # read: the accepted subjects (a multi-window ticker's event CIKs), then the proxy's SGML subject CIKs

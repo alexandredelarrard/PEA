@@ -6,11 +6,9 @@ import csv
 import datetime as dt
 import io
 import logging
-import re
 import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -35,7 +33,6 @@ from src.data_store.schema import (
 
 _CHUNK = 10_000
 _CREATE_LOCK = threading.Lock()
-_SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +81,11 @@ def ensure_table(engine: Engine | Connection, name: str, df: pd.DataFrame) -> No
     if table_exists(engine, name):
         return
     statements = [stmt for stmt in ddl.table_ddl_from_frame(resolve(name), df).split(";") if stmt.strip()]
+    _create_locked(engine, name, statements)
+
+
+def _create_locked(engine: Engine | Connection, name: str, statements: list[str]) -> None:
+    """Run `statements` under the cold-table lock unless `name` was created meanwhile."""
     with _CREATE_LOCK:
         if table_exists(engine, name):
             return
@@ -474,16 +476,8 @@ class DataStore:
     def create_declared(self, table: SchemaTable) -> None:
         """Create `table` from its committed `sql/schema.sql` block (comments stripped) when it does not exist yet."""
         name = name_of(table)
-        if self.exists(name):
-            return
-        block = ddl.existing_blocks(_SCHEMA_SQL.read_text(encoding="utf-8"))[name]
-        statements = [stmt for stmt in re.sub(r"--[^\n]*", "", block).split(";") if stmt.strip()]
-        with _CREATE_LOCK:
-            if table_exists(self._database, name):
-                return
-            with _connection(self._database, write=True) as conn:
-                for stmt in statements:
-                    conn.execute(text(stmt))
+        if not self.exists(name):
+            _create_locked(self._database, name, ddl.declared_statements(name))
 
     def columns(self, table) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""

@@ -1510,8 +1510,7 @@ class Tables:
     # 10-K-family headcount text read by the EDGAR walk for `StepExtractLlm`'s employees step: one
     # row per filing; `source_document` (main or EX-13 name), `windows` (JSON candidate `[start, end]`
     # offsets in selection order) and `pieces` (JSON `[offset, text]` covering their union).
-    # Marker: `source_document` = '_empty' for a filing with no usable text; it carries every column
-    # (`n_chars` 0, the rest NULL), so a marker that creates the table creates the committed layout.
+    # Marker: `source_document` = '_empty' for a filing with no usable text.
     sec_employees_text = Table(
         "sec_employees_text",
         ("ticker", "accession_number"),
@@ -1533,12 +1532,11 @@ class Tables:
             "pieces",
             "n_chars",
         ),
-        marker_extra=(("period_of_report", None), ("windows", None), ("pieces", None), ("n_chars", 0)),
     )
     # Proxy text read by the EDGAR walk for `StepExtractLlm`'s DEF 14A step: one row per carved
     # section with its untruncated `payload` and the submissions `primary_document`.
-    # Marker `section` = '_empty' marks a subject-guard rejection (every column carried, `n_chars` 0,
-    # the rest NULL); `section` = '_none' is a visible row for a walked filing with no payload.
+    # Marker `section` = '_empty' marks a subject-guard rejection; `section` = '_none' is a visible
+    # row for a walked filing with no payload.
     sec_def14a_text = Table(
         "sec_def14a_text",
         ("ticker", "accession_number", "section"),
@@ -1559,7 +1557,6 @@ class Tables:
             "payload",
             "n_chars",
         ),
-        marker_extra=(("primary_document", None), ("payload", None), ("n_chars", 0)),
     )
 
     # ----------------------------------------------------------------- #

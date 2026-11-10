@@ -123,7 +123,7 @@ def schedule_filing_rows(stamp: FilingStamp, spec: ScheduleSpec) -> list[dict[st
     return rows
 
 
-def schedule_is_subject(ticker: str, cik: str, stamp: FilingStamp, identity: Identity) -> bool:
+def schedule_is_subject(ticker: str, stamp: FilingStamp, identity: Identity) -> bool:
     """False when the SGML header names subject companies and none is a CIK that is the ticker's company on the filing date.
 
     A header without subject companies defers to the issuer guard of `schedule_ticker_rows`; an

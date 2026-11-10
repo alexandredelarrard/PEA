@@ -163,11 +163,11 @@ def test_an_acquired_targets_schedule_filings_are_not_the_acquirers(monkeypatch:
     stamp = FilingStamp("g-joint", "SC 13G", ACE, pd.Timestamp("2015-02-10"), False, None, filing=SimpleNamespace())
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({OLD_CHUBB}))
     monkeypatch.setattr(schedule_rows, "schedule_filing_rows", lambda stamp, spec: [{"cik": OLD_CHUBB, "rp_seq": 0}])
-    assert not schedule_rows.schedule_is_subject("CB", ACE, stamp, identity)
+    assert not schedule_rows.schedule_is_subject("CB", stamp, identity)
     assert schedule_rows.schedule_ticker_rows("CB", stamp, identity, SCHEDULE_13G) == []
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({ACE}))
     monkeypatch.setattr(schedule_rows, "schedule_filing_rows", lambda stamp, spec: [{"cik": ACE, "rp_seq": 0}])
-    assert schedule_rows.schedule_is_subject("CB", ACE, stamp, identity)
+    assert schedule_rows.schedule_is_subject("CB", stamp, identity)
     assert [row["ticker"] for row in schedule_rows.schedule_ticker_rows("CB", stamp, identity, SCHEDULE_13G)] == ["CB"]
     print("\nsanity: schedules whose subject is old Chubb never reach CB (not listed, subject and issuer guards refuse); ACE's own 13G is kept")
 

@@ -10,6 +10,7 @@ from types import MappingProxyType
 
 import pandas as pd
 
+from src.utils.identity_tables import sum_company_rows
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
 
 type BookKey = tuple[str, pd.Timestamp]
@@ -101,7 +102,9 @@ def _publication_rounds(df_manifest: pd.DataFrame, single: pd.Series) -> tuple[l
 
 
 def _append_revisions(revisions: dict[BookKey, list[PublicBook]], df_round: pd.DataFrame, df_books: pd.DataFrame, df_states: pd.DataFrame) -> None:
-    """Append each quarter's resolved book at its public day; age starts at its first known resolution."""
+    """Append each quarter's resolved book at its public day, a company's rows merged onto its canonical CUSIP (one
+    position per company, as the top-10 rank needs); age starts at its first known resolution."""
+    df_books = sum_company_rows(df_books, ["cik", "period", "ticker"]).sort_values(["cik", "period", "cusip"], kind="stable")
     positions = {key: df.reset_index(drop=True) for key, df in df_books.groupby(["cik", "period"], sort=False)}
     states = {(state["cik"], state["period"]): state for state in df_states.to_dict("records")}
     for cik, period, day in df_round.itertuples(index=False, name=None):

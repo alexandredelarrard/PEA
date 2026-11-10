@@ -4,7 +4,9 @@
 `universe_cik_symbol`, `universe_cusip`, `symbol_tenure` or `cusip_ticker_map` (the static test
 `test_identity_reads_only.py` enforces it); the identity build and the `Identity` resolver own their own reads.
 
-`tag_cusips` is the two-layer 13F rule (user decision X2 + the superinvestor-book correction): a CUSIP of a
+`tag_company_lines` tags each filed 13F row and puts a company's share classes in canonical-class shares, one row per
+filed row; `sum_company_rows` then merges a company's rows onto its canonical CUSIP (the extraction per accession, the
+cube per resolved book). `tag_cusips` is the two-layer 13F rule (user decision X2 + the superinvestor-book correction): a CUSIP of a
 universe company is tagged by its dated `universe_cusip` line (canonical, predecessor or secondary class) with the
 company's universe ticker, so every share class of a company lands on one ticker; any other CUSIP keeps its
 market-wide `cusip_ticker_map` ticker, so a manager book keeps its holdings outside the universe.
@@ -12,7 +14,7 @@ market-wide `cusip_ticker_map` ticker, so a manager book keeps its holdings outs
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +36,8 @@ SHARE_LEGS = ("shares", "call_shares", "put_shares")
 AMOUNT_LEGS = (*SHARE_LEGS, "value_usd", "call_value", "put_value", "debt_prn", "debt_value", "other_value")
 #: The 13F company row's key: one row per manager x accession x company (U-67).
 COMPANY_KEY = ["cik", "accession_number", "ticker"]
+#: The column `tag_company_lines` adds: the company's canonical CUSIP on the row's period (null off the company lines).
+COMPANY_CUSIP = "company_cusip"
 
 
 def read_identity(store: DataStore, table: Table, **load: Any) -> pd.DataFrame | None:
@@ -106,30 +110,42 @@ def tag_cusips(holdings: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame |
 
 
 def company_rows(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
-    """`book` (one 13F accession, one row per CUSIP) as stored in `sec13f_hr` (U-67): tagged by `tag_cusips`; the rows a
-    dated company line tags make ONE row per company, on the company's canonical CUSIP of the period, its share legs in
-    canonical-class shares (x the line's dated `conversion_ratio`), its dollar legs summed as filed (unknown if one is
-    unknown). Every other row keeps its own CUSIP and market ticker."""
-    # compute: each row's tag, its dated line (ratio) and its company's canonical CUSIP on the period
-    tagged = book.assign(ticker=tag_cusips(book, lines, cmap))
-    hits = company_lines(tagged, lines)
-    if hits.empty:
-        return tagged
+    """`book` (one 13F accession, one row per CUSIP) as stored in `sec13f_hr` (U-67): `tag_company_lines`, then
+    `sum_company_rows` per manager x accession x company. Every row no company line tags keeps its CUSIP and ticker."""
+    return sum_company_rows(tag_company_lines(book, lines, cmap), COMPANY_KEY)
 
-    # compute: canonical-class shares, the target CUSIP first in each company group
-    rows = tagged.loc[hits.index].assign(_target=hits["target"], _first=hits["target"].ne(tagged.loc[hits.index, "cusip"]))
-    for leg in SHARE_LEGS:
-        rows[leg] = pd.to_numeric(rows[leg], errors="coerce") * hits["ratio"]
-    rows = rows.sort_values([*COMPANY_KEY, "_first", "cusip"], kind="stable")
+
+def tag_company_lines(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
+    """Every row of `book` (13F positions dated by `period`) tagged by `tag_cusips`, one row per filed row. A row a dated
+    company line tags has its share legs in canonical-class shares (x the line's dated `conversion_ratio`) and the
+    company's canonical CUSIP of the period in `COMPANY_CUSIP`; every other row keeps its legs and a null there."""
+    tagged = book.assign(ticker=tag_cusips(book, lines, cmap), **{COMPANY_CUSIP: pd.Series(None, index=book.index, dtype=object)})
+    hits = company_lines(tagged, lines)
+    for leg in (leg for leg in SHARE_LEGS if leg in tagged):
+        tagged.loc[hits.index, leg] = pd.to_numeric(tagged.loc[hits.index, leg], errors="coerce") * hits["ratio"]
+    tagged.loc[hits.index, COMPANY_CUSIP] = hits["target"]
+    return tagged
+
+
+def sum_company_rows(tagged: pd.DataFrame, key: Sequence[str]) -> pd.DataFrame:
+    """`tag_company_lines` rows with the rows of one company and `key` merged into ONE row on the company's canonical
+    CUSIP: metadata of the canonical row first, amounts summed (unknown when one row is unknown). Every other row is kept
+    as it is; `COMPANY_CUSIP` is dropped."""
+    # compute: the company rows, the canonical CUSIP's row first in each group
+    columns = [column for column in tagged.columns if column != COMPANY_CUSIP]
+    hit = tagged[COMPANY_CUSIP].notna()
+    if not hit.any():
+        return tagged[columns]
+    first = tagged.loc[hit, COMPANY_CUSIP].ne(tagged.loc[hit, "cusip"])
+    rows = tagged.loc[hit].assign(_first=first).sort_values([*key, "_first", "cusip"], kind="stable")
 
     # merge: one row per company (metadata of its first row, amounts summed, unknown when one row is unknown)
-    grouped = rows.groupby(COMPANY_KEY, sort=False)
+    grouped = rows.groupby(list(key), sort=False)
     merged = grouped.first()
     amounts = [leg for leg in (*AMOUNT_LEGS, *(c for c in rows.columns if c.startswith("raw_"))) if leg in rows]
     merged[amounts] = grouped[amounts].sum(min_count=1).where(grouped[amounts].count().eq(grouped.size(), axis=0))
-    merged["cusip"] = merged["_target"]
-    merged = merged.reset_index().drop(columns=["_target", "_first"])
-    return pd.concat([tagged.drop(index=hits.index), merged[tagged.columns]], ignore_index=True)
+    merged["cusip"] = merged[COMPANY_CUSIP]
+    return pd.concat([tagged.loc[~hit, columns], merged.reset_index()[columns]], ignore_index=True)
 
 
 def company_lines(tagged: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:

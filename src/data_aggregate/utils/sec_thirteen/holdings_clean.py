@@ -1,17 +1,17 @@
-"""Shared 13F date normalization, stored-ticker attachment and per-batch value repair."""
+"""Shared 13F date normalization and per-batch company tagging and value repair."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import closing
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, prepare_public_value_quotes, repair_value_basis
-from src.data_store.schema import Tables
+from src.utils.identity_tables import CusipTags, tag_company_lines
 
 logger = logging.getLogger(__name__)
 
@@ -28,28 +28,30 @@ def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> t
     return df_filings, df_holdings
 
 
-def attach_tickers(holdings: pd.DataFrame, universe: Sequence[str] | None = None) -> pd.DataFrame:
-    """Each position's ticker as stored at extraction (U-67); none on the unmapped sentinel, nor outside `universe`
-    when given. Unmapped and off-universe positions stay in the book."""
-    stored = holdings["ticker"].astype(object)
-    keep = stored.ne(cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]) if universe is None else stored.isin(set(universe))
-    return holdings.assign(ticker=stored.where(keep, None))
-
-
 def clean_public_batches(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
+    tags: CusipTags,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
-    """Prepare shared quotes once, then per batch attach stored tickers and repair raw accession values before
-    reconciliation, retaining unsupported rows."""
+    """Prepare shared quotes once, then per batch tag each filed row and repair raw accession values before
+    reconciliation, retaining unsupported rows. `tag_company_lines` tags every row (the stored ticker is not read),
+    one row per stored row so the resolver's count checks hold: a company's share classes in canonical-class shares
+    (x the dated ratio, before the value repair) with its canonical CUSIP in `COMPANY_CUSIP`. No ticker where nothing
+    tags a row, nor outside `universe` when given; unmapped and off-universe positions stay in the book."""
     period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
+    members = None if universe is None else set(universe)
     with closing(packets):
         for df_filings, df_raw in packets:
-            # Stored tickers, then one vector repair per batch; an empty batch passes through unrepaired.
-            df_holdings, df_register = repair_value_basis(attach_tickers(df_raw, universe), valuation_close, value_basis, period_quotes=period_quotes)
-            del df_raw
+            # Tags and canonical-class shares, then one vector repair per batch; an empty batch passes through unrepaired.
+            df_tagged = tag_company_lines(df_raw, tags.lines, tags.cmap)
+            tickers = df_tagged["ticker"].astype(object)
+            keep = tickers.notna() if members is None else tickers.isin(members)
+            df_holdings, df_register = repair_value_basis(
+                df_tagged.assign(ticker=tickers.where(keep, None)), valuation_close, value_basis, period_quotes=period_quotes
+            )
+            del df_raw, df_tagged
 
             # Report the unit decisions, then null the excluded amounts; the rows stay in the book.
             log_register(df_register, float(df_holdings.value_usd.sum()))

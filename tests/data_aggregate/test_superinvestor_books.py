@@ -12,6 +12,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_books import (
     PublicBookSnapshot,
     prepare_superinvestor_book_history,
 )
+from src.utils.identity_tables import COMPANY_CUSIP
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate import sec_thirteen_legacy_reference as institutional_vintages
 
@@ -23,11 +24,12 @@ def _packet(
     amounts = ("shares", "value_usd", "call_shares", "call_value", "put_shares", "put_value", "debt_prn", "debt_value", "other_value")
     rows = []
     for cusip, shares in positions.items():
-        row = {**identity, "cusip": cusip, "ticker": "AAA", "position_type": "common", "class_evidence": '["common"]', **dict.fromkeys(amounts, 0.0)}
-        row.update(shares=shares, value_usd=shares * 10, shares_provenance="filed", value_provenance="filed")
+        # a cleaned row (`clean_public_batches`): tagged, off the company lines
+        row = {**identity, "cusip": cusip, "ticker": "AAA", COMPANY_CUSIP: None, "position_type": "common", "class_evidence": '["common"]'}
+        row.update(dict.fromkeys(amounts, 0.0), shares=shares, value_usd=shares * 10, shares_provenance="filed", value_provenance="filed")
         row.update({"raw_" + column: row[column] for column in amounts if "value" in column})
         rows.append(row)
-    columns = [*identity, "cusip", "ticker", "position_type", "class_evidence", *amounts, "shares_provenance", "value_provenance"]
+    columns = [*identity, "cusip", "ticker", COMPANY_CUSIP, "position_type", "class_evidence", *amounts, "shares_provenance", "value_provenance"]
     columns.extend("raw_" + column for column in amounts if "value" in column)
     manifest = {
         **identity,

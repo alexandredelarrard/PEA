@@ -33,7 +33,7 @@ from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, repl
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
-from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
 from tests.data_extract.institutionals.test_13f_one_walk import _line as _info_line
 from tests.support.propagation import stub_propagation
@@ -207,7 +207,7 @@ def test_a_collapsed_accession_marker_counts_the_stored_rows_and_the_cube_reads_
     def marker_and_history() -> tuple[int, int]:
         stored = filing_store.load(Tables.sec13f_hr, columns=["parse_status", "parsed_row_count"], markers=True)
         packets = thirteen_inputs.iter_filing_vintages(filing_store, grid.max())
-        with closing(clean_public_batches(packets, ["BRK-B", "VMRK"], None, None)) as batches:
+        with closing(clean_public_batches(packets, CusipTags(lines, cmap), ["BRK-B", "VMRK"], None, None)) as batches:
             history = prepare_institutional_book_history(batches, grid, settle_days=3)
         assert history is not None
         return int(stored.loc[stored["parse_status"].eq("complete"), "parsed_row_count"].iloc[0]), len(history[0])

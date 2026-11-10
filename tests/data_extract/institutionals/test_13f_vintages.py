@@ -31,7 +31,7 @@ from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vin
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
@@ -1406,14 +1406,17 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     )
 
 
+#: The market-wide map of the ordinary-step books (no company line): extraction tags with it, the cube re-tags with it.
+ORDINARY_CMAP = pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]})
+
+
 def ordinary_step(
     filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
     packets: tuple[tuple[pd.DataFrame, pd.DataFrame], ...],
 ) -> tuple[StepCubeSecThirteen, PriceFrames]:
-    cmap = pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]})
     for manifest, holdings in packets:
-        save_hr_filing(filing_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), cmap)  # tagged at extraction (U-67)
+        save_hr_filing(filing_store, manifest, holdings, pd.DataFrame(columns=LINE_COLUMNS), ORDINARY_CMAP)  # tagged at extraction (U-67)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
@@ -1436,7 +1439,8 @@ def normal_resources(frames: PriceFrames) -> SecThirteenResources:
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
     cohort = frozenset({"0000000001"})
     capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": cast(pd.DataFrame, frames.close_pit) * 1e9}
-    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort})
+    tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), ORDINARY_CMAP)
+    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort}, tags)
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:

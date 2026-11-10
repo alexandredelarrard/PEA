@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Collection, Generator, Iterator, Sequence
 from contextlib import closing
 from typing import Any, cast
 
@@ -46,9 +46,12 @@ _POSITION_COLUMNS = (
 )
 
 
-def _filing_layout(store: DataStore, until: object, ciks: Sequence[str] | None, universe: Sequence[str] | None) -> dict[str, Any] | None:
+def _filing_layout(
+    store: DataStore, until: object, ciks: Sequence[str] | None, universe: Sequence[str] | None, cusips: Collection[str]
+) -> dict[str, Any] | None:
     """Validate the source layout and build its projected public-prefix query: whole books, or with `universe`
-    every completion marker OR'd with the positions stored under a universe ticker."""
+    every completion marker OR'd with the positions stored under a universe ticker or on one of `cusips` (the universe
+    companies' `universe_cusip` CUSIPs, so a class filed under its own market ticker is read too)."""
     if not set(_MANIFEST_COLUMNS) <= set(store.columns(Tables.sec13f_hr)):
         logger.warning("%s has no completed accession schema; replay original sources before building PIT features.", Tables.sec13f_hr.name)
         return None
@@ -56,7 +59,11 @@ def _filing_layout(store: DataStore, until: object, ciks: Sequence[str] | None, 
     where: dict[str, Any] | list[dict[str, Any]] = {"parse_status": ["complete", "position"], **scope}
     if universe is not None:
         markers = {"parse_status": "complete", "cusip": cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1], **scope}
-        where = [markers, {"parse_status": "position", "ticker": sorted(set(universe)), **scope}]
+        positions = [
+            {"parse_status": "position", "ticker": sorted(set(universe)), **scope},
+            {"parse_status": "position", "cusip": sorted(set(cusips)), **scope},
+        ]
+        where = [markers, *positions]
     columns = list(dict.fromkeys((*_MANIFEST_COLUMNS, *_POSITION_COLUMNS)))
     return {"columns": columns, "where": where, "until": until, "date_col": "filing_date", "markers": True}
 
@@ -70,12 +77,18 @@ def _partition_packet(df_payload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
 
 
 def iter_filing_vintages(
-    store: DataStore, until: object, ciks: Sequence[str] | None = None, *, universe: Sequence[str] | None = None
+    store: DataStore,
+    until: object,
+    ciks: Sequence[str] | None = None,
+    *,
+    universe: Sequence[str] | None = None,
+    cusips: Collection[str] = frozenset(),
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]] | None:
     """Open one projected source stream of many complete CIK-quarter groups. With `universe`, a single-version book
-    carries only its universe positions (the extraction writes positions and marker atomically, so it is complete)
-    and an amended book carries all its positions, so the resolver's stored-row count check still holds."""
-    query = _filing_layout(store, until, ciks, universe)
+    carries only its positions under a universe ticker or on one of `cusips` (the extraction writes positions and
+    marker atomically, so it is complete) and an amended book carries all its positions, so the resolver's stored-row
+    count check still holds."""
+    query = _filing_layout(store, until, ciks, universe, cusips)
     if query is None:
         return None
     return _iter_filing_packets(store, query, scoped=universe is not None)

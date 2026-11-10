@@ -14,11 +14,12 @@ from src.data_aggregate.transformers import step_cube_sec_thirteen as step_modul
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
@@ -49,7 +50,7 @@ def _manager_batch_owner(
         security_basis=basis,
     )
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
-    resources = SecThirteenResources(frames, {"": ciks})
+    resources = SecThirteenResources(frames, {"": ciks}, _hr_tags([holdings for _, holdings in packets]))
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
@@ -203,11 +204,21 @@ def _hr_book(cik: str, period: str, filed: str, rows: list[tuple[str, str, float
     return pd.DataFrame([marker, *positions])
 
 
+def _hr_tags(books: list[pd.DataFrame]) -> CusipTags:
+    """The books' stored (cusip, ticker) pairs as the cube's market-wide map, no company line; `_empty` stays unmapped."""
+    empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
+    rows = pd.concat(books, ignore_index=True)
+    pairs = rows.loc[rows["cusip"].ne(empty) & rows["ticker"].ne(empty), ["cusip", "ticker"]].drop_duplicates()
+    return CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pairs.reset_index(drop=True))
+
+
 def _roster_history(
     store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, quotes: dict[str, float], books: list[pd.DataFrame]
 ) -> dict[str, pd.DataFrame]:
-    """The step's own roster read and superinvestor path over `sec13f_hr` books; only market and roster loaders are supplied."""
+    """The step's own roster read and superinvestor path over `sec13f_hr` books; only market and roster loaders are
+    supplied, and the stored tickers are saved as the `cusip_ticker_map` the step tags with."""
     store.save(Tables.sec13f_hr, pd.concat(books, ignore_index=True))
+    store.save(Tables.cusip_ticker_map, _hr_tags(books).cmap)
     ctx = context(store, tmp_path)
     ctx.config.build_cube.institutionals.value_basis = {"min_securities": 1}
     grid = pd.bdate_range("2024-01-02", "2024-12-31")
@@ -243,7 +254,7 @@ def _on(history: dict[str, pd.DataFrame], name: str, day: str) -> pd.Series:
 
 
 def test_roster_books_read_merged_company_rows_from_sec13f_hr(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Known truth: one BRK-B row merges 1 BRK-A (x1,500) + 1,000 BRK-B at extraction; the class lines never meet in the cube."""
+    """Known truth: one BRK-B row stored merged (1 BRK-A x1,500 + 1,000 BRK-B, the U-67 shape) reads as one position."""
     brk_q1, brk_q2 = ("084670702", "BRK-B", 2_500.0, 1_000_000.0), ("084670702", "BRK-B", 3_000.0, 1_200_000.0)
     aaa, unmapped = ("AAA000001", "AAA", 10_000.0, 1_000_000.0), ("999999991", "_empty", 1_000.0, 2_000_000.0)
     q1 = _hr_book("0000000001", "2024-03-31", "2024-05-10", [brk_q1, aaa, unmapped])
@@ -267,7 +278,8 @@ def test_unmapped_rows_stay_in_the_whole_book_without_a_ticker(sqlite_store: Any
     q2 = _hr_book(
         "0000000001", "2024-06-30", "2024-08-12", [("AAA000001", "AAA", 12_000.0, 1_200_000.0), (*second, 1_400_000.0), (*third, 1_400_000.0)]
     )
-    assert attach_tickers(q1.loc[q1.parse_status.eq("position")], None)["ticker"].tolist() == ["AAA", None, None]
+    packets = iter([(pd.DataFrame(), q1.loc[q1.parse_status.eq("position")])])
+    assert next(clean_public_batches(packets, _hr_tags([q1]), None, None, None))[1]["ticker"].tolist() == ["AAA", None, None]
     history = _roster_history(sqlite_store, monkeypatch, tmp_path, {"AAA": 100.0}, [q1, q2])
     assert _on(history, "ic_super_conviction_weight", "2024-06-28")["AAA"] == pytest.approx(0.25)
     assert _on(history, "ic_super_conviction_weight", "2024-08-20")["AAA"] == pytest.approx(0.3)

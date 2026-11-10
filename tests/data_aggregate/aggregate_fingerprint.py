@@ -861,6 +861,7 @@ def compute() -> dict:
         cross_sectional_rank,
         cross_sectional_zscore,
     )
+    from src.utils.identity_tables import LINE_COLUMNS, CusipTags
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
     from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
@@ -1049,7 +1050,9 @@ def compute() -> dict:
             accepted_at=pd.NaT,
         )
     )
-    df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), None, valuation_close, None))[1]
+    # The fixture's own tags: no company line, its stored (cusip, ticker) pairs as the market-wide map.
+    fixture_tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), df_books.loc[df_books.ticker.ne("_empty"), ["cusip", "ticker"]])
+    df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), fixture_tags, None, valuation_close, None))[1]
     book_history = prepare_superinvestor_book_history(((df_filings, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})

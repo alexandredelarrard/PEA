@@ -29,7 +29,7 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import availability_date
 from src.utils.price.adjustments import ShareBasis
 from tests.canonical_schema import create_canonical
@@ -1107,7 +1107,9 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         mcap_pit=capital,
         security_basis=basis,
     )
-    resources = SecThirteenResources(frames, None)
+    resources = SecThirteenResources(
+        frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
+    )
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)

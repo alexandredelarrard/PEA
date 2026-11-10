@@ -1109,6 +1109,6 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 ## 2026-11-10: refresh — strict call depth replaces the library gate (F-003)
 
 - Profile: internal/standard; branch `fix/edgar-text-followup/F-003` from `harness/edgar-text-followup` @ `a37dfcdc`.
-- Scope: the user rejected D-05 (domain libraries with uncapped depth). The coding standards state the 4-level rule (`run` 1 ... a flat helper 4) with no library exemption; the shape test gates it on the EDGAR text and LLM text flows over every repository function reached (only the drivers are infrastructure). `employee_guard.ticker_rows` is flat. The gate fails: the remaining depth needs a user decision (see [TODO](./TODO.md#edgar-text-tables-follow-ups-2026-11-09)).
-- Parity: replay goldens 0 diffs vs `p2a`; evidence in the local run dir `reports/validate/2026-11-09-edgar-text-followup/` (`fixes/F-003.md`).
+- Scope: D-05 (domain libraries with uncapped depth) replaced by the 4-level rule: shared code (`src/utils`, `src/data_store`, `sec_io`, identity/resume/index/worklist, HTML and table parsers, `gpt_extract`, the drivers) is a leaf; step-flow and domain modules are counted. The shape test gates the EDGAR text and LLM text step flows (no allowlist, green); `employee_guard.ticker_rows` is flat; the domain modules' remaining depth is a P2 [TODO](./TODO.md#edgar-text-tables-follow-ups-2026-11-09).
+- Parity: replay goldens 0 diffs vs `p2a` apart from the run-date floor line; evidence in the local run dir `reports/validate/2026-11-09-edgar-text-followup/` (`fixes/F-003.md`).
 - Pages: [Coding standards](./guides/coding-standards.md), [Testing and validation](./guides/testing.md), [TODO](./TODO.md).

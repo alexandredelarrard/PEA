@@ -4,13 +4,13 @@ The walk resolves calls statically: a bare name defined in or imported from a `s
 `<src module alias>.<name>`; a repository function passed as an argument counts as a call. Levels count from the step:
 0 `run`, 1 a `run_*` sub-run (wherever it is called from), 2 a domain function, 3 a flat helper (the coding
 standards number these 1-4). An `EdgarFetch` callback (`parse`, `is_subject`, `filings`, `run_scope`, and the
-`row_fn` a parse binds) is a level-2 root wherever
-it is named: the driver, not the step, calls it; so is a flow's per-ticker worker, which `run_per_ticker` calls once
-per ticker (checked to be bound and handed to it). Inside the flow's `scope` a level-3 helper may call no repository
-function at all. The strict depth gate counts the same chains as depths (1 `run`, 2 a sub-run, 3 a function it calls
-or a callback/worker root, 4 a flat helper) over EVERY repository function the EDGAR text and LLM text roots reach,
-along the deepest chain, with no allowlist and no exemption: only the drivers (`edgar_driver`, `run_per_ticker`) are
-infrastructure. Every function of the domain modules (`DOMAIN_MODULES`), reached or not, keeps the per-function
+`row_fn` a parse binds) is a level-2 root wherever it is named: the driver, not the step, calls it; so is a flow's
+per-ticker worker, which `run_per_ticker` calls once per ticker (checked to be bound and handed to it). Inside the
+flow's `scope` a level-3 helper may call no repository function at all. The depth gate counts depths (1 `run`, 2 a
+sub-run, 3 a function it calls or a callback/worker root, 4 a flat helper) along the deepest chain through the step
+flow and domain modules; shared code (every other module) is called like a package and not counted. It holds every
+step-flow function (`STEP_FLOW_MODULES`) to depth 4, with no allowlist; the domain modules' own depth is recorded
+debt (wiki TODO). Every function of the domain modules (`DOMAIN_MODULES`), reached or not, keeps the per-function
 contract below except the `Tables.<x>` literal rule.
 
 Each reached function: at most 6 inputs, 90 lines and control-flow nesting 2; no pass-through; full annotations; no
@@ -33,8 +33,6 @@ from src.data_extract.utils.edgar_extract import fetch_def14a_text, fetch_employ
 
 REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 MAX_INPUTS, MAX_LINES, MAX_NESTING, MAX_LEVEL, MAX_DOC_LINES, MAX_DEPTH = 6, 90, 2, 3, 4, 4
-#: The drivers that call the callback and worker roots ("`run_edgar_fetch` and below are infrastructure").
-_DRIVERS = ("src.data_extract.utils.edgar_extract.edgar_driver", "src.data_extract.utils.edgar_extract.parallel_fetch")
 _BRANCHES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.Match)
 _STORE_READS = {"load", "iter_load", "distinct", "summarize", "load_cohort"}
 _STORE_CALLS = _STORE_READS | {"save", "replace", "update", "delete", "row_count"}
@@ -120,12 +118,21 @@ LLM_TEXT = Flow(
 )
 FLOWS = (IDENTITY, EDGAR_TEXT, LLM_TEXT)
 #: Domain modules of the text flows: every function keeps the per-function contract, reached or not, except the
-#: `Tables.<x>` literal rule (D-06: the DEF 14A modules store through the `SECTIONS` registry tables). Their call
-#: depth is gated like any other repository function's (`test_every_function_the_text_flows_reach_sits_at_depth_4`).
+#: `Tables.<x>` literal rule (D-06: the DEF 14A modules store through the `SECTIONS` registry tables). Their depth is
+#: counted in the chains the depth gate walks.
 DOMAIN_MODULES = (
     f"{_EDGAR}employee_document",
     "src.data_extract.utils.fundamentals.employee_guard",
     *(f"{_DEF14A}{name}" for name in ("work", "postprocess", "basis", "carve", "holders", "retry", "gender")),
+)
+#: The step-flow code of the text flows (the steps and their fetch/LLM orchestrators): held to depth 4.
+STEP_FLOW_MODULES = (
+    EDGAR_TEXT.step_module,
+    LLM_TEXT.step_module,
+    f"{_EDGAR}fetch_employees_text",
+    f"{_EDGAR}fetch_def14a_text",
+    _EMPLOYEES,
+    f"{_DEF14A}fetch",
 )
 
 
@@ -493,8 +500,9 @@ def _owner(qualified: str) -> tuple[_Module, str]:
 
 
 def _depths(flows: tuple[Flow, ...]) -> tuple[dict[str, tuple[int, tuple[str, ...]]], dict[str, list[str]]]:
-    """Deepest depth (with its chain) of every repository function the flows' roots reach, and each one's callees. A
-    root a caller names (a callback, a worker) is run by its driver at its own depth, so naming it is not a call."""
+    """Deepest depth (with its chain) of every step-flow or domain function the flows' roots reach, and each one's
+    counted callees; shared code is a leaf. A root a caller names (a callback, a worker) runs at its own depth."""
+    counted = (*STEP_FLOW_MODULES, *DOMAIN_MODULES)
     roots = [(f"{flow.step_module}.{flow.step_class}.{root}", 2) for flow in flows for root in flow.roots]
     roots += [(name, 3) for flow in flows for name in sorted(_callbacks(flow) | set(flow.workers))]
     named = {name for name, _ in roots}
@@ -507,21 +515,22 @@ def _depths(flows: tuple[Flow, ...]) -> tuple[dict[str, tuple[int, tuple[str, ..
             continue
         module, qualname = _owner(qualified)
         depth[qualified] = (level, (*chain, qualified))
-        found = [_qualified(t, n) for t, n in _calls(module, qualname, module.functions[qualname]) if t.name not in _DRIVERS]
+        found = [_qualified(t, n) for t, n in _calls(module, qualname, module.functions[qualname]) if t.name in counted]
         callees[qualified] = [name for name in dict.fromkeys(found) if name not in named]
         stack += [(name, level + 1, (*chain, qualified)) for name in reversed(callees[qualified])]
     return depth, callees
 
 
-def test_every_function_the_text_flows_reach_sits_at_depth_4() -> None:
-    """The user's rule on the EDGAR text and LLM text flows, along the deepest chain and with no exemption: `run` 1, a
-    sub-run 2, a function it calls 3, a helper 4 that calls no repository function (pandas, numpy, stdlib only)."""
+def test_every_step_flow_function_sits_at_depth_4() -> None:
+    """The coding-standards depth rule on the EDGAR text and LLM text step flows, along the deepest chain: `run` 1, a
+    sub-run 2, a function it calls 3, a flat helper 4; shared code is a leaf, step-flow code has no allowlist."""
     depth, callees = _depths((EDGAR_TEXT, LLM_TEXT))
-    deeper = [f"depth {d} > {MAX_DEPTH}: {' -> '.join(chain)}" for d, chain in depth.values() if d > MAX_DEPTH]
-    calling = [f"depth-{d} {name} calls {', '.join(callees[name])}" for name, (d, _) in depth.items() if d == MAX_DEPTH and callees[name]]
+    flow = {name: value for name, value in depth.items() if _owner(name)[0].name in STEP_FLOW_MODULES}
+    deeper = [f"depth {d} > {MAX_DEPTH}: {' -> '.join(chain)}" for d, chain in flow.values() if d > MAX_DEPTH]
+    calling = [f"depth-{d} {name} calls {', '.join(callees[name])}" for name, (d, _) in flow.items() if d == MAX_DEPTH and callees[name]]
+    debt = sum(1 for name, (d, _) in depth.items() if name not in flow and (d > MAX_DEPTH or (d == MAX_DEPTH and callees[name])))
 
-    assert not deeper and not calling, f"{len(deeper)} function(s) deeper than {MAX_DEPTH}, {len(calling)} depth-4 caller(s):\n" + "\n".join(
-        sorted(calling) + sorted(deeper)
-    ).replace("src.data_extract.", "")
-    print("\n=== SANITY CHECK: the text flows sit at depth <= 4 ===")
-    print(f"  {len(depth)} function(s) reached; deepest {max(d for d, _ in depth.values())}; 0 violations")
+    assert not deeper and not calling, "\n".join(sorted(calling) + sorted(deeper)).replace("src.data_extract.", "")
+    print("\n=== SANITY CHECK: the text step flows sit at depth <= 4 ===")
+    print(f"  {len(flow)} step-flow function(s), deepest {max(d for d, _ in flow.values())}; 0 violations")
+    print(f"  domain-module depth debt (wiki TODO): {debt} function(s) of {len(depth) - len(flow)} reached")

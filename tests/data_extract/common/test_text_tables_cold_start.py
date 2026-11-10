@@ -80,8 +80,8 @@ def _def14a_shapes() -> dict[str, pd.DataFrame]:
     """The first frames the DEF 14A walk can save: section rows, the `_none` row, the subject-guard marker, mixed."""
     table = Tables.sec_def14a_text
     base = {"cik": "0000320193", "accession_number": "d-1", "form": "DEF 14A", "filing_date": pd.Timestamp("2024-01-05"), "primary_document": "p.htm"}
-    rows = def14a_text._section_rows("AAA", {**base, "period": "2024-02-28"}, {"audit": "Audit fees ...", "ownership": "Holders ..."})
-    none_rows = def14a_text._section_rows("AAA", {**base, "accession_number": "d-2", "period": None}, {"audit": " "})
+    rows = def14a_text._section_rows("AAA", base, {"audit": "Audit fees ...", "ownership": "Holders ..."})
+    none_rows = def14a_text._section_rows("AAA", {**base, "accession_number": "d-2"}, {"audit": " "})
     stamp = _stamp("d-3")
     data = parse_filing_rows("AAA", "", stamp, edgar_driver.EdgarScope(), table=table, row_fn=lambda t, s: rows)[table]
     none = parse_filing_rows("AAA", "", stamp, edgar_driver.EdgarScope(), table=table, row_fn=lambda t, s: none_rows)[table]
@@ -175,7 +175,7 @@ def night(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) ->
     proxies = [(1, "AAA Inc", "DEF 14A", "2022-03-02", "0000000001-22-000002"), (2, "BBB Inc", "DEF 14A", "2022-03-02", "0000000002-22-000002")]
     seed_index(ctx, [(f.cik, "Fixture Co", f.form, f.filing_date, f.accession_number) for f in tenks] + proxies)
     patch_index_filings(monkeypatch, {f.accession_number: f for f in tenks})
-    world = ProxyWorld(monkeypatch, {"0000000001": [(proxies[0][4], "a.htm", "2022-04-20")], "0000000002": [(proxies[1][4], "b.htm", "2022-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(proxies[0][4], "a.htm")], "0000000002": [(proxies[1][4], "b.htm")]})
     world.subjects = {proxies[0][4]: frozenset({FOREIGN})}
     return SimpleNamespace(ctx=ctx, identity=identity, tenks=tenks, proxies=proxies)
 

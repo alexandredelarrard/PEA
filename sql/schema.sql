@@ -1575,7 +1575,7 @@ CREATE INDEX IF NOT EXISTS ix_sec_employees_text_filing_date ON "sec_employees_t
 
 -- [extract] sec_def14a_text  (pk: ticker, accession_number, section)
 -- Proxy text for the DEF 14A LLM step: one row per carved section with its untruncated
--- `payload`. `period` is SEC's reportDate string ('' when SEC gives none). `section` = '_empty'
+-- `payload`. `section` = '_empty'
 -- is a subject-guard rejection marker; `section` = '_none' a walked filing with no payload.
 
 CREATE TABLE IF NOT EXISTS "sec_def14a_text" (
@@ -1584,7 +1584,6 @@ CREATE TABLE IF NOT EXISTS "sec_def14a_text" (
     "accession_number" TEXT NOT NULL,
     "form" TEXT,
     "filing_date" DATE,
-    "period" TEXT,
     "primary_document" TEXT,
     "section" TEXT NOT NULL,
     "payload" TEXT,

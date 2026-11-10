@@ -49,7 +49,7 @@ from src.utils.tickers_universe.universe import before_end
 logger = logging.getLogger(__name__)
 
 #: The `sec_def14a_text` columns the worklist reads; `payload` is read per ticker, for its proxies worth a payload.
-_TEXT_COLUMNS = ["ticker", "accession_number", "cik", "filing_date", "period"]
+_TEXT_COLUMNS = ["ticker", "accession_number", "cik", "filing_date"]
 
 
 def _finalise_gender(context: Context) -> None:
@@ -95,11 +95,10 @@ def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExt
 
 
 def _walked_proxies(df_text: pd.DataFrame | None, names: Mapping[str, str]) -> pd.DataFrame:
-    """One row per walked proxy, in filing order: the filings frame `load_work` reads, with the universe company name;
-    a NULL period reads back as '' (Postgres COPY stores the walk's '' as NULL)."""
+    """One row per walked proxy, in filing order: the filings frame `load_work` reads, with the universe company name."""
     df = (pd.DataFrame(columns=_TEXT_COLUMNS) if df_text is None else df_text).drop_duplicates(["ticker", "accession_number"])
     df = df.assign(filing_date=pd.to_datetime(df["filing_date"]).dt.normalize(), ticker=df["ticker"].astype(str))
-    df = df.assign(period=df["period"].fillna(""), company_name=df["ticker"].map(names).fillna(""))
+    df = df.assign(company_name=df["ticker"].map(names).fillna(""))
     return df.sort_values(["ticker", "filing_date", "accession_number"], kind="stable").reset_index(drop=True)
 
 

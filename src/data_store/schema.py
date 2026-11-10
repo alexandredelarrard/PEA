@@ -1534,7 +1534,7 @@ class Tables:
         marker_extra=(("period_of_report", None), ("windows", None), ("pieces", None), ("n_chars", 0)),
     )
     # Proxy text read by the EDGAR walk for `StepExtractLlm`'s DEF 14A step: one row per carved
-    # section with its untruncated `payload`; `period` is SEC's `reportDate` string ('' when absent).
+    # section with its untruncated `payload` and the submissions `primary_document`.
     # Marker `section` = '_empty' marks a subject-guard rejection (every column carried, `n_chars` 0,
     # the rest NULL); `section` = '_none' is a visible row for a walked filing with no payload.
     sec_def14a_text = Table(
@@ -1552,13 +1552,12 @@ class Tables:
             "accession_number",
             "form",
             "filing_date",
-            "period",
             "primary_document",
             "section",
             "payload",
             "n_chars",
         ),
-        marker_extra=(("period", None), ("primary_document", None), ("payload", None), ("n_chars", 0)),
+        marker_extra=(("primary_document", None), ("payload", None), ("n_chars", 0)),
     )
 
     # ----------------------------------------------------------------- #

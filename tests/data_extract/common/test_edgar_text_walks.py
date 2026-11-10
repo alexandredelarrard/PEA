@@ -225,11 +225,11 @@ FOREIGN = "0001437107"
 class ProxyWorld:
     """SEC stand-ins for the DEF 14A walk: the submissions listing, the document reads and the SGML subject headers.
 
-    `listing[cik]` holds `(accession, primaryDocument, reportDate)`; a `listing_error` raises from the listing;
+    `listing[cik]` holds `(accession, primaryDocument)`; a `listing_error` raises from the listing;
     `html[url]` (else `PROXY`) is the document, a `BaseException` value raises; `subjects[accession]` is the header's
     subject CIKs, a `BaseException` raises."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, listing: dict[str, list[tuple[str, str, str]]]) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, listing: dict[str, list[tuple[str, str]]]) -> None:
         self.listing = listing
         self.listing_error: BaseException | None = None
         self.html: dict[str, object] = {}
@@ -245,8 +245,8 @@ class ProxyWorld:
         self.listed.append(pad_cik(cik))
         if self.listing_error is not None:
             raise self.listing_error
-        rows = [{"accession_number": a, "primary_document": p, "period_of_report": r} for a, p, r in self.listing.get(pad_cik(cik), [])]
-        return pd.DataFrame(rows, columns=["accession_number", "primary_document", "period_of_report"])
+        rows = [{"accession_number": a, "primary_document": p} for a, p in self.listing.get(pad_cik(cik), [])]
+        return pd.DataFrame(rows, columns=["accession_number", "primary_document"])
 
     def sec_get(self, context: Any, url: str) -> SimpleNamespace:
         self.urls.append(url)
@@ -286,7 +286,7 @@ def test_rejected_foreign_subject_is_one_marker_never_read_again(tmp_path: Path,
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     own, foreign = _accession(1), _accession(2)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", own), (1, "AAA Inc", "DEFC14A", "2023-03-01", foreign)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(own, "proxy.htm", "2022-04-20"), (foreign, "contest.htm", "2023-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(own, "proxy.htm"), (foreign, "contest.htm")]})
     world.subjects = {own: frozenset({"0000000001"}), foreign: frozenset({FOREIGN})}
 
     first = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
@@ -307,7 +307,7 @@ def test_transient_header_error_stores_nothing_and_lists_again(tmp_path: Path, s
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accession = _accession(1)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm")]})
     world.subjects = {accession: TransientReadError("header: HTTP 503")}
 
     first = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
@@ -326,7 +326,7 @@ def test_unreadable_header_accepts_the_proxy(tmp_path: Path, sqlite_store: Any, 
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accession = _accession(1)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm")]})
     world.subjects = {accession: ValueError("no SGML header")}
 
     summary = _proxy_walk(ctx, _two_window_run(ctx, monkeypatch))
@@ -341,7 +341,7 @@ def test_walked_proxy_with_no_payload_is_one_visible_none_row(tmp_path: Path, sq
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accession = _accession(1)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "notice.htm", "2022-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "notice.htm")]})
     world.html = {archive_url("1", accession, "notice.htm"): BLANK_PROXY}
 
     first = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
@@ -359,7 +359,7 @@ def test_def14a_cold_fill_then_nothing_new(tmp_path: Path, sqlite_store: Any, wa
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"], max_documents_per_run=2)
     accessions = [_accession(i) for i in range(1, 5)]
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", f"202{i}-03-01", a) for i, a in enumerate(accessions, start=1)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(a, f"p{i}.htm", f"202{i}-04-20") for i, a in enumerate(accessions, start=1)]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(a, f"p{i}.htm") for i, a in enumerate(accessions, start=1)]})
 
     capped = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
     after_capped = set(_proxies(sqlite_store)["accession_number"])
@@ -378,7 +378,7 @@ def test_failed_listing_stores_nothing_and_lists_again(tmp_path: Path, sqlite_st
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accession = _accession(1)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm")]})
     world.listing_error = requests.HTTPError("403 Client Error: Forbidden")
 
     first = _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
@@ -426,7 +426,7 @@ def test_a_proxy_shared_by_two_tickers_is_stored_for_each(tmp_path: Path, sqlite
     ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"], ciks=["1", "1"])
     accession = _accession(1)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
-    ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm")]})
 
     _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
     second = _proxy_walk(ctx, roster_run(ctx, ["AAA", "BBB"], as_of=AS_OF))
@@ -441,7 +441,7 @@ def test_single_window_ticker_reads_no_header(tmp_path: Path, sqlite_store: Any,
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accession = _accession(1)
     seed_index(ctx, [(1, "AAA Inc", "DEF 14A", "2022-03-01", accession)])
-    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm", "2022-04-20")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(accession, "proxy.htm")]})
     world.subjects = {accession: frozenset({FOREIGN})}
 
     _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
@@ -451,7 +451,7 @@ def test_single_window_ticker_reads_no_header(tmp_path: Path, sqlite_store: Any,
     print("  a one-CIK scope stores its proxy with no SGML header read (no guard), even when the header would name another subject.")
 
 
-def test_parse_reads_the_listed_document_and_stamps_period(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
+def test_parse_reads_the_listed_document(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     old, gone, contest = _accession(1), _accession(2), _accession(3)
     seed_index(
@@ -462,7 +462,7 @@ def test_parse_reads_the_listed_document_and_stamps_period(tmp_path: Path, sqlit
             (1, "AAA Inc", "DEFC14A", "2023-03-01", contest),
         ],
     )
-    world = ProxyWorld(monkeypatch, {"0000000001": [(old, "", "2021-04-20"), (gone, "gone.htm", "2022-04-20"), (contest, "c.htm", "")]})
+    world = ProxyWorld(monkeypatch, {"0000000001": [(old, ""), (gone, "gone.htm"), (contest, "c.htm")]})
     world.html = {archive_url("1", gone, "gone.htm"): ValueError("HTTP 404")}
 
     _proxy_walk(ctx, roster_run(ctx, ["AAA"], as_of=AS_OF))
@@ -477,9 +477,9 @@ def test_parse_reads_the_listed_document_and_stamps_period(tmp_path: Path, sqlit
             archive_url("1", contest, "c.htm"),
         ]
     )
-    assert rows.loc[old, "period"] == "2021-04-20" and rows.loc[contest, "period"] == "" and rows.loc[old, "primary_document"] == ""
-    assert (rows["payload"] == expected).all() and (rows["n_chars"] == len(expected)).all() and "period_of_report" not in rows.columns
+    assert rows.loc[old, "primary_document"] == "" and rows.loc[contest, "primary_document"] == "c.htm"
+    assert (rows["payload"] == expected).all() and (rows["n_chars"] == len(expected)).all() and "period" not in rows.columns
     assert world.listed == ["0000000001"]
     print("\n=== SANITY CHECK: one listing, today's document rule ===")
-    print("  one submissions read for the CIK; no primaryDocument -> <acc>.txt; a 404 primary -> the .txt fallback; period is the")
-    print(f"  listing's reportDate ('' kept); the stored payload equals the carve's untruncated payload ({len(expected)} chars).")
+    print("  one submissions read for the CIK; no primaryDocument -> <acc>.txt; a 404 primary -> the .txt fallback; no period")
+    print(f"  column; the stored payload equals the carve's untruncated payload ({len(expected)} chars).")

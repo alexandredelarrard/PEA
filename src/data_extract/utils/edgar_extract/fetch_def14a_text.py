@@ -1,8 +1,7 @@
 """DEF 14A text: each proxy's carved section payloads, untruncated, for the DEF 14A LLM step.
 
 Writes `sec_def14a_text`, one row per non-empty section (`executive_pay`, `director_pay`, `audit`, `ownership`,
-`governance`) with its `payload`, `n_chars`, the submissions `primary_document` and `period` (`reportDate`), and the
-filing stamp. The filer's submissions listing is read once per CIK holding pending proxies; the document is its
+`governance`) with its `payload`, `n_chars`, the submissions `primary_document` and the filing stamp. The filer's submissions listing is read once per CIK holding pending proxies; the document is its
 primary document, else the `<accession>.txt` full submission, read with `sec_get`. A walked proxy with no payload
 in any section is one visible `section = "_none"` row. A multi-window ticker's proxy whose SGML subject names none
 of its entity CIKs becomes an empty-filing marker; a transient SEC failure or an unreadable listing stores nothing
@@ -41,7 +40,7 @@ NO_PAYLOAD = "_none"
 @dataclass(frozen=True)
 class ProxyFiling:
     """A listed proxy as the walk reads it: what `FilingStamp.of` reads plus the submissions `primaryDocument`
-    ('' when SEC names none) and `reportDate` (None when the listing does not hold the filing)."""
+    ('' when SEC names none or the listing does not hold the filing)."""
 
     accession_number: str
     cik: str
@@ -49,7 +48,6 @@ class ProxyFiling:
     filing_date: str
     company: str
     primary_document: str
-    period: str | None
 
     @property
     def doc_url(self) -> str:
@@ -99,7 +97,7 @@ def proxy_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScop
 
 
 def proxy_filings(context: Context, ticker: str, df_units: pd.DataFrame) -> dict[str, ProxyFiling]:
-    """The pending proxies by accession, with their submissions primary document and report date: one listing per
+    """The pending proxies by accession, with their submissions primary document: one listing per
     filer CIK, from 31 days before its oldest pending index date (SEC's `filingDate` can precede it). A listing that
     cannot be read raises `TransientReadError`, so the key's proxies are listed again; a programming error propagates."""
     forms = cast(Resume, Tables.sec_def14a_text.resume).forms
@@ -116,15 +114,13 @@ def proxy_filings(context: Context, ticker: str, df_units: pd.DataFrame) -> dict
 
 
 def _by_accession(df_units: pd.DataFrame, listed: Sequence[pd.DataFrame]) -> dict[str, ProxyFiling]:
-    """One `ProxyFiling` per pending unit: the listing's primary document and report date, else none."""
+    """One `ProxyFiling` per pending unit: the listing's primary document, else none."""
     found = {str(row["accession_number"]): row for part in listed for row in part.to_dict("records")}
     out: dict[str, ProxyFiling] = {}
     for unit in df_units.itertuples(index=False):
         row = found.get(str(unit.accession), {})
-        primary, period = str(row.get("primary_document") or ""), row.get("period_of_report")
-        out[str(unit.accession)] = ProxyFiling(
-            str(unit.accession), str(unit.cik), str(unit.form), str(unit.filed), str(unit.company), primary, period
-        )
+        primary = str(row.get("primary_document") or "")
+        out[str(unit.accession)] = ProxyFiling(str(unit.accession), str(unit.cik), str(unit.form), str(unit.filed), str(unit.company), primary)
     if missing := sorted(out.keys() - found.keys()):
         logger.warning("DEF 14A text: %d indexed proxy(ies) absent from the submissions listing: %s", len(missing), ", ".join(missing[:20]))
     return out
@@ -150,14 +146,13 @@ def _def14a_rows(context: Context, ticker: str, stamp: FilingStamp) -> list[dict
         logger.info("%s: primary document unavailable, falling back to the full submission", stamp.accession_number)
         html = sec_get(context, filing.txt_url).text
 
-    # compute: the carved payloads, stamped with the filing (no `period_of_report`: this table keeps `period`)
+    # compute: the carved payloads, stamped with the filing
     payloads = prepare_def14a_payloads(html, html_to_text(html))
     stamped = {
         "cik": stamp.cik,
         "accession_number": stamp.accession_number,
         "form": str(stamp.form),
         "filing_date": stamp.filed.normalize(),
-        "period": filing.period,
         "primary_document": filing.primary_document,
     }
     return _section_rows(ticker, stamped, payloads)

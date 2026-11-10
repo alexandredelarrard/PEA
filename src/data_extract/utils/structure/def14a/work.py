@@ -76,7 +76,7 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
         loaded = context.store.load(table, columns=columns, where={"ticker": ticker}, since=floor, markers=True, optional=True)
         frames[table] = loaded if loaded is not None else pd.DataFrame(columns=columns)
 
-    # Keep the walked proxy's entity, filing date and report period separate from its fiscal-year rows.
+    # Keep the walked proxy's entity and filing date separate from its fiscal-year rows.
     works: list[FilingWork] = []
     for _, filing in filings.drop_duplicates("accession_number").iterrows():
         accession = str(filing["accession_number"])
@@ -94,7 +94,6 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
             "accession_number": accession,
             "as_of": pd.Timestamp(filing["filing_date"]),
             "cik": filing.get("cik"),
-            "period": filing.get("period"),
             "company_name": filing.get("company_name"),
         }
         work = FilingWork(stamp, saved, parent, attempts)

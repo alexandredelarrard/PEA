@@ -67,14 +67,13 @@ class Run:
 
         monkeypatch.setattr(LLMExtractor, "initialize_client", lambda *_args, **_kwargs: Provider())
 
-    def seed(self, accession: str, filed: pd.Timestamp, payloads: dict[str, str], period: str | None = "2025-12-31") -> None:
+    def seed(self, accession: str, filed: pd.Timestamp, payloads: dict[str, str]) -> None:
         """The walk's rows for one proxy: one per non-empty section, else the visible `_none` row."""
         stamped = {
             "cik": "0000000001",
             "accession_number": accession,
             "form": "DEF 14A",
             "filing_date": filed,
-            "period": period,
             "primary_document": "p.htm",
         }
         self.context.store.save(Tables.sec_def14a_text, pd.DataFrame(_section_rows("ZZ", stamped, payloads)))
@@ -145,27 +144,27 @@ def test_a_walked_proxy_with_no_payload_consumes_its_attempts(run: Run) -> None:
 
 
 def test_the_prompt_is_cut_and_postprocess_gets_the_uncut_payload(run: Run, monkeypatch: pytest.MonkeyPatch) -> None:
-    """F-P0-3: no real payload reaches the budget, so a synthetic one does; a NULL period reads back as ''."""
+    """F-P0-3: no real payload reaches the budget, so a synthetic one does."""
     head = PAYLOADS["governance"] + "\n"
     long_payload = head + "a" * (BUDGET - len(head)) + "TAIL-BEYOND-THE-BUDGET"
     run.answers.update(_complete_answers())
-    run.seed("long", YESTERDAY, {**PAYLOADS, "governance": long_payload}, period=None)
-    seen: dict[str, tuple[str, Any]] = {}
+    run.seed("long", YESTERDAY, {**PAYLOADS, "governance": long_payload})
+    seen: dict[str, str] = {}
     original = fetch.postprocess_section
 
     def spy(section: Any, answer: Any, stamp: dict, saved: Any, parent: dict, source_payload: str = "") -> Any:
-        seen[section.key] = (source_payload, stamp["period"])
+        seen[section.key] = source_payload
         return original(section, answer, stamp, saved, parent, source_payload)
 
     monkeypatch.setattr(fetch, "postprocess_section", spy)
     run()
     user = next(user for name, user in run.calls if name == "GovernanceExtract")
     assert long_payload[:BUDGET] in user and "TAIL-BEYOND-THE-BUDGET" not in user
-    assert seen["governance"] == (long_payload, "")
-    assert all(seen[key][0] == PAYLOADS[key] for key in PAYLOADS if key != "governance")
+    assert seen["governance"] == long_payload
+    assert all(seen[key] == PAYLOADS[key] for key in PAYLOADS if key != "governance")
     print("\n=== SANITY: prompt cut vs postprocess input ===")
     print(f"  {len(long_payload):,}-char governance payload: prompt holds its first {BUDGET:,} chars (configs.yml), not the tail;")
-    print("  postprocess got the stored uncut payload for all 5 sections; NULL period -> ''. Validated.")
+    print("  postprocess got the stored uncut payload for all 5 sections. Validated.")
 
 
 def test_new_archive_has_no_source(run: Run) -> None:

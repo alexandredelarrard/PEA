@@ -36,7 +36,7 @@ def _walk(context: Any, filings: pd.DataFrame, payloads: dict[str, str] | None =
     payloads = prepare_def14a_payloads(PROXY, html_to_text(PROXY)) if payloads is None else payloads
     for filing in filings.itertuples(index=False):
         stamped = {"cik": filing.cik, "accession_number": filing.accession_number, "form": filing.form, "filing_date": filing.filing_date}
-        rows = _section_rows("ZZ", {**stamped, "period": filing.period_of_report, "primary_document": "proxy.htm"}, payloads)
+        rows = _section_rows("ZZ", {**stamped, "primary_document": "proxy.htm"}, payloads)
         context.store.save(Tables.sec_def14a_text, pd.DataFrame(rows))
 
 

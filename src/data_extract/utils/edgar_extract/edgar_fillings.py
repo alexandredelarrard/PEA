@@ -35,7 +35,6 @@ def _rows_from_recent(block: dict, forms: set, cutoff: pd.Timestamp) -> list[dic
             continue
         rows.append(
             {
-                "period_of_report": block.get("reportDate", [None] * n)[i],
                 "accession_number": block["accessionNumber"][i],
                 "primary_document": block["primaryDocument"][i],
             }
@@ -44,7 +43,7 @@ def _rows_from_recent(block: dict, forms: set, cutoff: pd.Timestamp) -> list[dic
 
 
 def list_filings(context: Context, cik: str, forms: Sequence[str], since: pd.Timestamp | str) -> pd.DataFrame:
-    """Filings of `forms` for one CIK filed strictly after `since`: accession, primary document and report date.
+    """Filings of `forms` for one CIK filed strictly after `since`: accession and primary document.
 
     Archive pages entirely before the cutoff are not downloaded. A page that cannot be read raises
     (`sec_io.TransientReadError` once retries are spent), so a listing is never silently short.

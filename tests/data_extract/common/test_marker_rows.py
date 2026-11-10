@@ -110,7 +110,7 @@ def test_a_def14a_text_rejection_marker_is_hidden_beside_a_real_section(sqlite_s
     table = Tables.sec_def14a_text
     create_canonical(sqlite_store.engine, [table])
     marker = marker_row(table, "AAA", FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="DEF 14A"), "0000000001"))
-    real = _real_row(table, {"section": "audit", "period": "", "payload": "fees", "n_chars": 4})
+    real = _real_row(table, {"section": "audit", "primary_document": "", "payload": "fees", "n_chars": 4})
 
     assert set(marker.columns) <= _ddl_columns(table.name), set(marker.columns) - _ddl_columns(table.name)
     sqlite_store.save(table, real)
@@ -119,9 +119,11 @@ def test_a_def14a_text_rejection_marker_is_hidden_beside_a_real_section(sqlite_s
     shown = sqlite_store.load(table, markers=True).set_index("section")
     assert sorted(shown.index) == ["_empty", "audit"] and shown.loc["_empty", "form"] == "DEF 14A"
     assert pd.isna(shown.loc["_empty", "payload"]) and shown.loc["_empty", "n_chars"] == 0
-    assert shown.loc["audit", "period"] == "" and sqlite_store.load(table)["section"].tolist() == ["audit"]
+    assert shown.loc["audit", "primary_document"] == "" and sqlite_store.load(table)["section"].tolist() == ["audit"]
     print("\n=== SANITY CHECK: sec_def14a_text marker ===")
-    print("  section='_empty' with NULL payload and n_chars 0 beside a real 'audit' row; '' period survives; load hides the marker. Validated.")
+    print(
+        "  section='_empty' with NULL payload and n_chars 0 beside a real 'audit' row; '' primary_document survives; load hides the marker. Validated."
+    )
 
 
 @pytest.mark.parametrize("table", [Tables.sec_employees_text, Tables.sec_def14a_text], ids=lambda t: t.name)

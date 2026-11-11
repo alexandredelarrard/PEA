@@ -173,12 +173,14 @@ def test_parse_keeps_the_raw_symbol_case_market_exempt_and_fractional_volumes():
 
 
 def test_the_scope_is_the_stored_ftd_symbols_the_tickers_and_the_equity_lineage_symbols():
-    keys, symbols = si.short_scope(_berkshire_lineage(), ["BRKA", "BRKB", "BACPRB", "", "JPM"], ["BRK-B", "AAPL"])
-    assert keys == {"BRKA", "BRKB", "BACPRB", "JPM"}, "every stored FTD symbol, preferreds included"
-    assert symbols == {"BRK-B", "BRK-A", "AAPL"}, "the Notes-only bond BRK59 and the noise TRUE are no tape symbols"
+    symbols = ["BRKA", "BRKB", "BACPRB", "", "JPM"]
+    spans = pd.DataFrame({"source_symbol": symbols, "first": pd.Timestamp("2010-01-04"), "last": pd.Timestamp("2026-06-30")})
+    scope = si.short_scope(_berkshire_lineage(), spans, ["BRK-B", "AAPL"])
+    lineage_keys = set(scope.windows.loc[scope.windows["valid_from"].lt("2000-01-01"), "key"])
+    assert lineage_keys == {"BRKB", "BRKA"}, "the Notes-only bond BRK59 and the noise TRUE are no tape symbols"
+    assert scope.keys == {"BACPRB", "JPM", "AAPL"}, "the stored FTD symbols and tickers that are no (dated) lineage symbol"
     lines = si._parse_regsho(_file("20260701", [(s, 1, 0, 2, "Q") for s in ("BRK/A", "BACpB", "BRK59", "TRUE", "AAPL", "ZZZZ")]))
-    kept = lines["source_symbol"].map(si.finra_key).isin(keys) | lines["source_symbol"].map(si.yahoo_symbol).isin(symbols)
-    assert lines.loc[kept, "source_symbol"].tolist() == ["BRK/A", "BACpB", "AAPL"]
+    assert lines.loc[si.in_short_scope(lines, scope), "source_symbol"].tolist() == ["BRK/A", "BACpB", "AAPL"]
     print("\n=== SANITY CHECK: RegSHO scope ===")
     print("  BRK/A by its FTD spelling BRKA, BACpB by BACPRB (a stored FTD symbol), AAPL a ticker; BRK59 (Notes only), TRUE (noise), ZZZZ out")
 

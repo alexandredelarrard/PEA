@@ -199,3 +199,88 @@ def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, t
     print(f"\nSANITY (rowless growth key): run 1 read {sorted(first)}, run 2 read {sorted(reads)} (expected none)")
     assert first == ["202601a", "202601b"], "the cold run reads each period once, with no separate growth pass"
     assert reads == [], "a never-matching growth key already re-read is not re-read on the next run"
+
+
+def _meta_lineage(store) -> None:
+    """META's dated lineage: FB from the 2012 IPO to the 2022-06-09 rename, META from then (open)."""
+    windows = [("FB", "2012-05-17", "2022-06-09"), ("META", "2022-06-09", None)]
+    rows = [("cik_window", "", "2012-05-17", None), *(("symbol", symbol, start, end) for symbol, start, end in windows)]
+    frame = pd.DataFrame(
+        [
+            {
+                "company_id": "E0001326801",
+                "canonical_ticker": "META",
+                "cik": "0001326801",
+                "role": role,
+                "symbol": symbol,
+                "valid_from": pd.Timestamp(start),
+                "valid_to": pd.Timestamp(end) if end else None,
+                "status": "corroborated",
+                "sources": "form345,roster",
+                "scope_changed_at": pd.Timestamp("2026-01-01"),
+            }
+            for role, symbol, start, end in rows
+        ]
+    )
+    store.save(Tables.universe_cik_symbol, frame)
+
+
+def test_a_lineage_symbol_brings_a_line_and_its_cusip6_only_inside_its_window(sqlite_store, tmp_path):
+    """FB is META's symbol until 2022-06-09. A 2021 FB line on Meta's CUSIP is stored and puts 30303M in scope (its class
+    line 30303M999 too); a 2023 META line is stored; the 2025 FB line is a ProShares ETF (74349Y101): neither it nor the
+    other ProShares ETF SH (74349Y102) is stored, as the out-of-window match adds no CUSIP-6."""
+    context = _context(sqlite_store, tmp_path, ("META",))
+    _meta_lineage(sqlite_store)
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {
+            "202106a": _HEADER + "20210604|30303M102|FB|100|FACEBOOK INC CL A|330.0\n20210604|30303M999|FBB|5|FACEBOOK INC CL B|1.0\n",
+            "202306a": _HEADER + "20230605|30303M102|META|50|META PLATFORMS INC|270.0\n",
+            "202506a": _HEADER + "20250605|74349Y101|FB|10|PROSHARES S&P 500 DYNAMIC|20.0\n20250605|74349Y102|SH|20|PROSHARES SHORT S&P500|40.0\n",
+        },
+    )
+
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+
+    stored = _stored(sqlite_store)[["period", "cusip", "source_symbol"]].values.tolist()
+    print(f"\nSANITY (dated symbol scope): stored {stored}; the 2025 ProShares FB/SH lines (74349Y) are expected out")
+    assert stored == [
+        ["202106a", "30303M102", "FB"],
+        ["202106a", "30303M999", "FBB"],
+        ["202306a", "30303M102", "META"],
+    ], "only in-window symbol lines (and the CUSIP-6 they bring) are stored"
+
+
+def test_a_stored_out_of_window_symbol_line_puts_no_cusip6_in_scope(sqlite_store, tmp_path):
+    """The table already holds a 2025 ProShares `FB` line (74349Y101, out of META's FB window): the next period's other
+    ProShares ETF SH (74349Y102) is not stored, while META's own line is."""
+    context = _context(sqlite_store, tmp_path, ("META",))
+    _meta_lineage(sqlite_store)
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {
+            "202506a": _HEADER + "20250605|74349Y101|FB|10|PROSHARES S&P 500 DYNAMIC|20.0\n",
+            "202507a": _HEADER + "20250707|74349Y102|SH|20|PROSHARES SHORT S&P500|40.0\n20250707|30303M102|META|50|META PLATFORMS INC|700.0\n",
+        },
+    )
+    bloat = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2025-06-05")],
+            "trade_date": [pd.Timestamp("2025-06-03")],
+            "cusip": ["74349Y101"],
+            "source_symbol": ["FB"],
+            "description": ["PROSHARES S&P 500 DYNAMIC"],
+            "price": [20.0],
+            "fails_quantity": [10.0],
+            "fails_value": [200.0],
+            "period": ["202506a"],
+        }
+    )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, bloat)
+
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+
+    stored = _stored(sqlite_store)[["period", "cusip", "source_symbol"]].values.tolist()
+    print(f"\nSANITY (dated stored prefixes): stored {stored}; SH 74349Y102 expected out, META 30303M102 in")
+    assert ["202507a", "74349Y102", "SH"] not in stored, "an out-of-window stored FB line adds no CUSIP-6 to the scope"
+    assert ["202507a", "30303M102", "META"] in stored

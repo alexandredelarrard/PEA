@@ -1,6 +1,6 @@
 """The shared contract of `universe_cusip` lines: their role vocabulary (`src/utils/security_series.py` holds the FTD and
 short-volume rules), the tape intervals a line is voted by, the FTD scope the ingest stores and the CUSIP history reads
-(lineage symbols, Sharadar / curated CUSIP-6), the co-registrant CIKs it leaves out and the curated
+(lineage symbols inside their dated windows, Sharadar / curated CUSIP-6), the co-registrant CIKs it leaves out and the curated
 `configs/sec/security_master_manual.json`.
 
 Read by the identity step (which builds the lines), the FTD tape, the insider lineage stamp, the
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
@@ -205,22 +206,42 @@ def tape_intervals(lineage: pd.DataFrame) -> pd.DataFrame:
     return tape.sort_values(["key", "cik", "valid_from"], ignore_index=True)
 
 
+def symbol_windows(lineage: pd.DataFrame) -> pd.DataFrame:
+    """`[key, valid_from, valid_to]`: the squashed symbol of each equity lineage symbol row and the dates it is the
+    company's (`valid_from <= day < valid_to`; a missing end is open)."""
+    rows = equity_symbol_rows(lineage)
+    windows = pd.DataFrame(
+        {"key": rows["symbol"].map(squash), "valid_from": pd.to_datetime(rows["valid_from"]), "valid_to": pd.to_datetime(rows["valid_to"])}
+    )
+    return windows.loc[windows["key"].ne("")].drop_duplicates(ignore_index=True)
+
+
+def in_window(keys: pd.Series, days: pd.Series, windows: pd.DataFrame) -> pd.Series:
+    """Per row, whether a `symbol_windows` window of its key covers its day."""
+    pairs = pd.DataFrame({"key": keys.to_numpy(), "day": pd.to_datetime(days).to_numpy(), "_row": np.arange(len(keys))})
+    hits = pairs.merge(windows, on="key")
+    covered = (hits["valid_from"].isna() | hits["day"].ge(hits["valid_from"])) & (hits["valid_to"].isna() | hits["day"].lt(hits["valid_to"]))
+    return pd.Series(np.isin(pairs["_row"].to_numpy(), hits.loc[covered, "_row"].to_numpy()), index=keys.index)
+
+
 @dataclass(frozen=True)
 class FtdScope:
-    """What the FTD lines keep: the squashed lineage symbols, the CUSIP-6 prefixes and the tape intervals that vote."""
+    """What the FTD lines keep: the squashed lineage symbols and their dated windows, the CUSIP-6 prefixes and the tape
+    intervals that vote."""
 
     symbols: frozenset[str]
     prefixes: frozenset[str]
     tape: pd.DataFrame
+    windows: pd.DataFrame
 
 
 def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manual: SecurityManual) -> FtdScope:
-    """The FTD scope (REQ-003): the lineage's equity symbols, the CUSIP-6 of the universe companies' Sharadar CUSIPs and
-    of the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
-    rows = equity_symbol_rows(lineage)
-    symbols = frozenset(key for key in rows["symbol"].map(squash) if key)
+    """The FTD scope (REQ-003): the lineage's equity symbols with their windows, the CUSIP-6 of the universe companies'
+    Sharadar CUSIPs and of the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
+    windows = symbol_windows(lineage)
     curated = set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna()) | {c for group in cusips.values() for c in group}
-    return FtdScope(symbols=symbols, prefixes=frozenset(str(c)[:6] for c in curated if c), tape=tape_intervals(lineage))
+    prefixes = frozenset(str(c)[:6] for c in curated if c)
+    return FtdScope(symbols=frozenset(windows["key"]), prefixes=prefixes, tape=tape_intervals(lineage), windows=windows)
 
 
 def sharadar_cusips(universe: pd.DataFrame, sharadar: pd.DataFrame | None) -> dict[str, frozenset[str]]:

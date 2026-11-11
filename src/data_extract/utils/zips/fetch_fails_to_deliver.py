@@ -4,8 +4,10 @@ fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches every listed
 ZIP; `fetch_fails_to_deliver` (`zips-ingest --only ftd`) stores the lines of each new cached period as filed in
 `sec_fails_to_deliver_security`, one row per (CUSIP, settlement date), source columns only. A line is kept when its
-squashed symbol is a universe lineage equity symbol (not noise, not a Notes debt symbol), its CUSIP-6 is a prefix of a universe company's Sharadar or
-curated CUSIP, or its CUSIP-6 is on a symbol-matched line; the scope never reads `universe_cusip`. The identity step
+squashed symbol is a universe lineage equity symbol (not noise, not a Notes debt symbol) and its trade date lies inside
+that symbol's lineage window, its CUSIP-6 is a prefix of a universe company's Sharadar or curated CUSIP, or its CUSIP-6
+is on such an in-window symbol-matched line (a reused symbol brings no other issuer's family); the scope never reads
+`universe_cusip`. The identity step
 reads these lines as CUSIP evidence; the institutionals cube maps them to companies (`src/utils/security_series.py`).
 Values are cumulative net unsettled balances, not new fails. A run that stores a new period also re-reads the cached
 periods once for scope keys changed since the previous stored period and still lineless. `full` re-reads every cached ZIP.
@@ -36,6 +38,7 @@ from src.data_extract.utils.common.security_lines import (
     SecurityManual,
     equity_symbol_rows,
     ftd_scope,
+    in_window,
     load_security_manual,
     sharadar_cusips,
 )
@@ -148,11 +151,11 @@ def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
     return kept
 
 
-def scope_lines(raw: pd.DataFrame, symbols: frozenset[str], prefixes: Collection[str]) -> tuple[pd.DataFrame, frozenset[str]]:
-    """The lines of one period in scope (a lineage symbol, a CUSIP-6 in `prefixes`, or the CUSIP-6 of a symbol-matched line
-    of this period) and the CUSIP-6 of its symbol-matched lines."""
+def scope_lines(raw: pd.DataFrame, windows: pd.DataFrame, prefixes: Collection[str]) -> tuple[pd.DataFrame, frozenset[str]]:
+    """The lines of one period in scope (a lineage symbol traded inside one of its `windows`, a CUSIP-6 in `prefixes`, or
+    the CUSIP-6 of such a symbol-matched line of this period) and the CUSIP-6 of its symbol-matched lines."""
     keys = raw["source_symbol"].map({value: squash(value) for value in raw["source_symbol"].dropna().unique()})
-    matched = keys.isin(symbols)
+    matched = in_window(keys, raw["trade_date"], windows)
     seen = frozenset(raw.loc[matched, "cusip"].str[:6])
     kept = matched | raw["cusip"].str[:6].isin(set(prefixes) | seen)
     return raw.loc[kept, list(SECURITY_COLUMNS)], seen
@@ -233,11 +236,14 @@ class _Reads:
     found: dict[str, int] = field(default_factory=dict)
 
 
-def _seen_prefixes(pairs: pd.DataFrame | None, symbols: frozenset[str]) -> frozenset[str]:
-    """The CUSIP-6 of the stored lines a lineage symbol matched (the stored part of the symbol-matched scope)."""
+def _seen_prefixes(pairs: pd.DataFrame | None, windows: pd.DataFrame) -> frozenset[str]:
+    """The CUSIP-6 of the stored (CUSIP, symbol) pairs a lineage symbol matched inside its window (the stored part of the
+    symbol-matched scope): the pair's first or last stored trade date lies in a window of its symbol."""
     if pairs is None or pairs.empty:
         return frozenset()
-    return frozenset(pairs.loc[pairs["source_symbol"].fillna("").map(squash).isin(symbols), "cusip"].astype(str).str[:6])
+    keys = pairs["source_symbol"].fillna("").map(squash)
+    dated = in_window(keys, pairs["first"], windows) | in_window(keys, pairs["last"], windows)
+    return frozenset(pairs.loc[dated, "cusip"].astype(str).str[:6])
 
 
 def _rowless_keys(
@@ -274,9 +280,9 @@ def _save_lines(store: DataStore, period: str, lines: pd.DataFrame, replace: boo
         return bound.save(table, lines) if not lines.empty else 0
 
 
-def _read_periods(context: Context, reads: _Reads, periods: list[str], symbols: frozenset[str], prefixes: frozenset[str], replace: bool) -> int:
-    """Read each period once and save its lines of `symbols`, `prefixes` and the CUSIP-6 found so far; a CUSIP-6 a
-    symbol-matched line adds is in scope for the periods read after it. Returns the lines written."""
+def _read_periods(context: Context, reads: _Reads, periods: list[str], windows: pd.DataFrame, prefixes: frozenset[str], replace: bool) -> int:
+    """Read each period once and save its lines of the symbols inside their `windows`, `prefixes` and the CUSIP-6 found so
+    far; a CUSIP-6 a symbol-matched line adds is in scope for the periods read after it. Returns the lines written."""
     written = 0
     for period in tqdm(periods, desc="SEC fails-to-deliver" if replace else "SEC fails-to-deliver (scope growth)"):
         raw = read_ftd_period(context, reads.cache, period)
@@ -284,7 +290,7 @@ def _read_periods(context: Context, reads: _Reads, periods: list[str], symbols: 
             continue
         reads.order[period] = len(reads.order)
         reads.held[period] = frozenset(raw["cusip"].str[:6].unique())
-        kept, seen = scope_lines(raw, symbols, prefixes | set(reads.found))
+        kept, seen = scope_lines(raw, windows, prefixes | set(reads.found))
         reads.found.update({prefix: reads.order[period] for prefix in seen - reads.known - reads.found.keys()})
         written += _save_lines(context.store, period, kept, replace)
     return written
@@ -313,21 +319,22 @@ def fetch_fails_to_deliver(context: Context, full: bool = False, as_of: pd.Times
     lineage = load_stored_lineage(context)
     sharadar = context.store.load(Tables.sharadar_tickers, columns=list(SHARADAR_CUSIP_COLUMNS), optional=True)
     manual = load_security_manual(str(context.config_dir))
-    pairs = context.store.summarize(table, ["cusip", "source_symbol"], {"n": ("count", None)}) if context.store.exists(table) else None
+    spans = {"n": ("count", None), "first": ("min", "trade_date"), "last": ("max", "trade_date")}
+    pairs = context.store.summarize(table, ["cusip", "source_symbol"], spans) if context.store.exists(table) else None
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     listed_periods, stored = archive_periods(context, [table], sorted(cached_ftd_periods(cache)))
     if lineage is None or lineage.empty:
         logger.warning("FTD: no universe_cik_symbol yet (run `identity` first); nothing stored")
         return 0
 
-    # the scope: lineage symbols, Sharadar / curated CUSIP-6 and the CUSIP-6 of stored symbol-matched lines
+    # the scope: dated lineage symbols, Sharadar / curated CUSIP-6 and the CUSIP-6 of stored in-window symbol-matched lines
     listed = sharadar_cusips(context.universe.frame, sharadar)
     scope = ftd_scope(lineage, listed, manual)
-    reads = _Reads(cache, scope.prefixes | _seen_prefixes(pairs, scope.symbols))
+    reads = _Reads(cache, scope.prefixes | _seen_prefixes(pairs, scope.windows))
 
     # save: each new period, then the scope growth over the other cached periods, then the periods read before a growth
     pending = listed_periods if full else [period for period in listed_periods if period not in stored]
-    written = _read_periods(context, reads, pending, scope.symbols, reads.known, True)
+    written = _read_periods(context, reads, pending, scope.windows, reads.known, True)
     symbols, prefixes = frozenset[str](), frozenset[str]()
     if stored and any(period not in stored for period in reads.order):
         # a run that stored a new period: the keys changed after the newest period stored before it ended
@@ -335,7 +342,8 @@ def fetch_fails_to_deliver(context: Context, full: bool = False, as_of: pd.Times
         joined = {t for t, added in context.universe.added_on_dates(context.universe.tickers, run_date(as_of)).items() if added > since}
         symbols, prefixes = _rowless_keys(lineage, listed, manual, pairs, joined, since)
     others = [period for period in listed_periods if period not in reads.order]
-    grown = _read_periods(context, reads, others, symbols, prefixes, False) if others and (symbols or prefixes or reads.found) else 0
+    growth = scope.windows.loc[scope.windows["key"].isin(symbols)]
+    grown = _read_periods(context, reads, others, growth, prefixes, False) if others and (symbols or prefixes or reads.found) else 0
     grown += _catch_up(context, reads)
     logger.info(
         "FTD: %d period(s) stored, %d line(s); scope growth: %d key(s) re-read (%d symbol(s), %d CUSIP-6), %d line(s)",

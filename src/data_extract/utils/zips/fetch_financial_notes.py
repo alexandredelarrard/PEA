@@ -5,8 +5,8 @@ curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw
 ticker whose lineage window of its filer CIK holds the filing date (consolidating). Rows carry their archive
 `period` and point-in-time `available_at` clock. A period counts as done only when both tables hold it; the work
 list comes from `resume.archive_worklist`. Zips are large, so the window is `years_history + 1` years (`StepExtractZips`).
-`download_notes_periods` caches the zips whose cover-page `dei:TradingSymbol` facts the identity step has not
-captured yet (`utils/identity/evidence.py`); the notes parse reads its zips itself.
+`download_notes_periods` caches every listed zip missing on disk; the identity step (`utils/identity/evidence.py`)
+and the notes parse read the cache.
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ from src.data_extract.utils.common.identity import Identity, load_identity, tick
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.resume import ZipScope, archive_worklist, period_end, rescan_lineage
 from src.data_extract.utils.common.sec_io import sec_get
-from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik_series, run_date
@@ -362,16 +361,12 @@ def cached_notes_periods(cache: Path) -> list[str]:
 
 
 def download_notes_periods(context: Context, cache: Path, periods: list[str]) -> int:
-    """Cache the notes zips of `periods` whose cover-page symbols are not captured yet; returns the zips available.
-
-    Resume reads the `dei` periods stored in `symbol_tenure` (no marker file). Writes no table.
-    """
-    captured = captured_dei_periods(context)
-    pending = [period for period in periods if period not in captured]
+    """Cache every notes zip of `periods` missing on disk (a cached zip is never downloaded again); returns the zips
+    available. Writes no table."""
     return sum(
         ensure_zip(context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600)
         is not None
-        for period in pending
+        for period in tqdm(periods, desc="notes download")
     )
 
 

@@ -96,7 +96,7 @@ def test_options_reach_every_source(monkeypatch: pytest.MonkeyPatch) -> None:
     scope = seen["notes_ingest"][0][2]
     assert (scope.tickers, scope.run_date, scope.full) == (["AAA"], as_of, True)
     ftd_args, ftd_kwargs = seen["ftd_ingest"]
-    assert ftd_args[1:] == (True, as_of) and ftd_kwargs == {}
+    assert ftd_args[1:] == (True,) and ftd_kwargs == {}
 
     print("\n=== SANITY CHECK: StepExtractZips options ===")
     print("  tickers, full and run date declared once in the init reach all three ingests")

@@ -18,6 +18,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import src.data_extract.utils.common.bulk_cache as bulk_cache
 import src.data_extract.utils.identity.evidence as dei
 import src.data_extract.utils.zips.fetch_financial_notes as fn
 from src.data_extract.utils.common.bulk_cache import read_zip_tables
@@ -228,8 +229,8 @@ def test_reprocessing_a_captured_zip_is_a_row_identical_no_op(tmp_path: Path, sq
     print("  OK: re-processing a zip is a no-op")
 
 
-def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stored `dei` periods A..C are skipped, the new D is captured, other partitions survive, no marker file appears."""
+def test_download_caches_every_period_and_capture_reads_only_new_ones(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Download caches all four listed periods whatever is stored; capture reads only the new D, other partitions survive, no marker file."""
     periods = ["2025_01", "2025_02", "2025_03", "2025_04"]
     for period in periods:
         _write_notes_zip(tmp_path, period, ["A1"])
@@ -244,7 +245,7 @@ def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: 
     monkeypatch.setattr(fn, "ensure_zip", lambda context, path, urls, **kwargs: path)
 
     context = _context(sqlite_store)
-    assert fn.download_notes_periods(context, tmp_path, periods) == 1, "only the uncaptured period is downloaded"
+    assert fn.download_notes_periods(context, tmp_path, periods) == 4, "every listed period is cached, captured or not"
     written = sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path, False))
     after = _stored(sqlite_store)
 
@@ -257,8 +258,8 @@ def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: 
     assert markers == [], markers
 
     print("\n=== SANITY CHECK: dei resume on stored periods ===")
-    print(f"  stored dei periods {periods[:3]} + form345 + manual; read {read}; wrote {written}; marker files {markers}")
-    print("  OK: only the new period is read, the other partitions are untouched, and no marker file is written")
+    print(f"  stored dei periods {periods[:3]} + form345 + manual; downloaded 4; read {read}; wrote {written}; marker files {markers}")
+    print("  OK: every period is cached, only the new period is read, the other partitions are untouched, and no marker file is written")
 
 
 def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,7 +272,7 @@ def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqli
         _seed_row("XYZ", "0000000001", "manual", ""),
     ]
     sqlite_store.save(Tables.symbol_tenure, pd.DataFrame(seeded))
-    monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: pytest.fail("a cached, captured period needs no download"))
+    monkeypatch.setattr(bulk_cache, "download", lambda *args, **kwargs: pytest.fail("a cached zip is never downloaded again"))
 
     context = _context(sqlite_store)
     fn.download_notes_periods(context, tmp_path, ["2025q3"])

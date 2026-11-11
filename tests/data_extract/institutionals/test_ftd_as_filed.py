@@ -159,7 +159,7 @@ def test_a_key_changed_after_the_previous_period_is_reread_once_when_a_new_perio
     sqlite_store.save(Tables.sec_fails_to_deliver_security, stored_abc)
     reads: list[str] = []
     reader = ftd.read_zip_text
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: reads.append(path.stem.removeprefix("cnsfails")) or reader(path, log=log))
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path: reads.append(path.stem.removeprefix("cnsfails")) or reader(path))
     with caplog.at_level(logging.INFO):
         ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
     first, reads[:] = list(reads), []
@@ -191,7 +191,7 @@ def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, t
     )
     reads: list[str] = []
     reader = ftd.read_zip_text
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: reads.append(path.stem.removeprefix("cnsfails")) or reader(path, log=log))
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path: reads.append(path.stem.removeprefix("cnsfails")) or reader(path))
     ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
     first, reads[:] = list(reads), []
 
@@ -206,12 +206,12 @@ def _recording_reader(monkeypatch, crash_on: str | None = None) -> list[str]:
     """Record each period whose cached ZIP is read; `crash_on` kills the process (a non-ValueError) at that period's read."""
     reads: list[str] = []
 
-    def read(path, log=None):
+    def read(path):
         period = path.stem.removeprefix("cnsfails")
         if period == crash_on:
             raise RuntimeError(f"simulated kill while reading {period}")
         reads.append(period)
-        return read_zip_text(path, log=log)
+        return read_zip_text(path)
 
     monkeypatch.setattr(ftd, "read_zip_text", read)
     return reads

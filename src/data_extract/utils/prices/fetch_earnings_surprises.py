@@ -1,7 +1,8 @@
 """Historical earnings surprises (consensus EPS estimate vs reported EPS) per quarter -> `earnings_surprises`.
 
 Source is `yfinance.get_earnings_dates()`. The next, not-yet-reported date arrives as a forward row with a NaN
-actual; the upsert on `(ticker, earnings_date)` overwrites it once the actual is reported.
+actual; the upsert on `(ticker, earnings_date)` overwrites it once the actual is reported. Yahoo files a company's
+history under its current symbol, so a ticker whose trading symbol changed recently is pulled in full again.
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.context import Context
+from src.data_extract.utils.common.identity_store import load_stored_lineage
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_extract.utils.common.resume import ended_keys, planner_bounds
+from src.data_extract.utils.identity.symbol_history import trading_symbols
 from src.data_store.schema import Resume, Tables
 from src.utils.string import run_date
 from src.utils.tickers_universe.universe import before_end
@@ -87,14 +90,25 @@ def _resume_dates(context: Context) -> tuple[dict[str, pd.Timestamp], dict[str, 
     return dict(zip(reported["key"], reported["last"], strict=True)), dict(zip(stored["key"], stored["last"], strict=True))
 
 
+def _renamed_keys(lineage: pd.DataFrame | None, today: pd.Timestamp, window_days: int) -> set[str]:
+    """Tickers whose current trading symbol started within `window_days` before `today` (from the dated lineage)."""
+    if lineage is None or lineage.empty:
+        return set()
+    current = trading_symbols(lineage).dropna(subset=["trading_symbol_from"])
+    started = pd.to_datetime(current["trading_symbol_from"])
+    return set(current.loc[started.between(today - pd.Timedelta(days=window_days), today), "ticker"])
+
+
 def _plan_fetch(
     tickers: list[str],
     last_reported: dict[str, pd.Timestamp],
     next_expected: dict[str, pd.Timestamp],
     full_limit: int,
     refetch_window_days: int,
+    full_keys: set[str],
 ) -> list[tuple[str, int]]:
-    """`(ticker, limit)` fetch plan: full pull for unseen tickers, `_RECENT_LIMIT` once the stored forward date has passed.
+    """`(ticker, limit)` fetch plan: full pull for unseen tickers and `full_keys`, `_RECENT_LIMIT` once the stored
+    forward date has passed.
 
     Tickers with no stored forward row fall back to `refetch_window_days` since the last reported date; the rest
     are skipped.
@@ -103,8 +117,8 @@ def _plan_fetch(
     plan = []
     for t in tickers:
         last = last_reported.get(t)
-        if last is None:
-            plan.append((t, full_limit))  # never seen -> full pull
+        if last is None or t in full_keys:
+            plan.append((t, full_limit))  # never seen, or re-pulled in full -> full pull
             continue
         nxt = next_expected.get(t, last)
         # a known forward earnings date is due once it has passed; without one, the staleness window decides
@@ -115,8 +129,10 @@ def _plan_fetch(
     return plan
 
 
-def fetch_earnings_surprises(context: Context, tickers: list[str], years_history: int, pause: float = 0.3) -> None:
+def fetch_earnings_surprises(context: Context, tickers: list[str], years_history: int, full: bool = False, pause: float = 0.3) -> None:
     """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped.
+
+    A ticker whose trading symbol started within the table's overlap, and every ticker under `full`, is pulled in full.
 
     The plan comes from per-ticker stored dates (`key_stats`), never a table read; the staleness
     window is the table's contract overlap. An ended ticker with stored rows is skipped once the run date is past its
@@ -127,13 +143,18 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     refetch_window_days = resume.overlap_days
     bounds, symbols = planner_bounds(context), context.universe.trading_symbols
     last_reported, next_expected = _resume_dates(context)
+    lineage = load_stored_lineage(context)
     ended = ended_keys(bounds, [t for t in tickers if t in next_expected], run_date(None), refetch_window_days)
     if ended:
         context.log.info(
             "Earnings surprises: %d ended ticker(s) with stored rows past grace end plus overlap skipped: %s", len(ended), ", ".join(ended)
         )
     full_limit = (years_history + 1) * 4
-    plan = _plan_fetch([t for t in tickers if t not in set(ended)], last_reported, next_expected, full_limit, refetch_window_days)
+    renamed = _renamed_keys(lineage, run_date(None), refetch_window_days) & set(tickers)
+    if renamed:
+        context.log.info("Earnings surprises: %d ticker(s) with a new trading symbol pulled in full: %s", len(renamed), ", ".join(sorted(renamed)))
+    full_keys = set(tickers) if full else renamed
+    plan = _plan_fetch([t for t in tickers if t not in set(ended)], last_reported, next_expected, full_limit, refetch_window_days, full_keys)
     context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)", len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []

@@ -41,7 +41,7 @@ def test_plan_fetch_incremental(sqlite_store):
     sqlite_store.save(Tables.earnings_surprises, existing.assign(earnings_date=existing["earnings_date"].dt.strftime("%Y-%m-%d")))
     context: Any = types.SimpleNamespace(store=sqlite_store)
     last_reported, next_expected = _resume_dates(context)
-    plan = dict(_plan_fetch(tickers, last_reported, next_expected, full_limit=44, refetch_window_days=80))
+    plan = dict(_plan_fetch(tickers, last_reported, next_expected, full_limit=44, refetch_window_days=80, full_keys=set()))
 
     assert "FRESH" not in plan, "recently-reported ticker must be skipped"
     assert plan["STALE"] == _RECENT_LIMIT, "stale ticker -> small top-up pull"
@@ -55,10 +55,36 @@ def test_plan_fetch_incremental(sqlite_store):
 
 
 def test_plan_fetch_no_existing_pulls_all():
-    plan = dict(_plan_fetch(["A", "B", "C"], {}, {}, full_limit=20, refetch_window_days=80))
+    plan = dict(_plan_fetch(["A", "B", "C"], {}, {}, full_limit=20, refetch_window_days=80, full_keys=set()))
     assert plan == {"A": 20, "B": 20, "C": 20}
     print("\n=== SANITY CHECK: cold start ===")
     print("  no stored row -> every ticker gets a full pull.")
+
+
+def test_a_new_trading_symbol_is_pulled_in_full():
+    """PSKY's lineage: PSKY open since 2025-08-07, SKYD open since 2026-10-06 (the trading symbol). Yahoo files the
+    company's whole history under SKYD, so within the overlap the stored ticker is re-pulled in full; META is not."""
+    lineage = pd.DataFrame(
+        {
+            "canonical_ticker": ["PSKY", "PSKY", "META"],
+            "role": "symbol",
+            "symbol": ["PSKY", "SKYD", "META"],
+            "valid_from": pd.to_datetime(["2025-08-07", "2026-10-06", "2021-10-28"]),
+            "valid_to": pd.NaT,
+            "sources": "dei,sharadar",
+            "status": "corroborated",
+        }
+    )
+    inside = surprises._renamed_keys(lineage, pd.Timestamp("2026-10-20"), 35)
+    after = surprises._renamed_keys(lineage, pd.Timestamp("2026-11-20"), 35)
+    seen = {"PSKY": pd.Timestamp("2026-08-04"), "META": pd.Timestamp("2026-10-21")}
+    plan = dict(_plan_fetch(["PSKY", "META"], seen, seen, full_limit=128, refetch_window_days=35, full_keys=inside))
+
+    assert inside == {"PSKY"} and after == set() and surprises._renamed_keys(None, pd.Timestamp("2026-10-20"), 35) == set()
+    assert plan["PSKY"] == 128 and plan.get("META") != 128
+    print("\n=== SANITY CHECK: trading-symbol change ===")
+    print(f"  SKYD opened 2026-10-06: renamed on 2026-10-20 {sorted(inside)}, on 2026-11-20 {sorted(after)}; plan {plan}")
+    print("  OK: a ticker whose trading symbol started within the overlap gets a full pull; the others stay incremental.")
 
 
 def test_a_run_that_fetches_nothing_returns_without_saving(sqlite_store, monkeypatch):

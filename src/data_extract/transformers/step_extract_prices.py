@@ -29,9 +29,9 @@ class StepExtractPrices(Step):
         super().__init__(context=context, config=config)
         self.config = self._context.config
 
-    def run_earnings_surprises(self, tickers: list[str]) -> None:
-        """Earnings surprises over the equity window -> `earnings_surprises`."""
-        fetch_earnings_surprises(self._context, tickers=tickers, years_history=int(self.config.data_extract.years_history))
+    def run_earnings_surprises(self, tickers: list[str], full: bool = False) -> None:
+        """Earnings surprises over the equity window -> `earnings_surprises`; `full` re-pulls every ticker's history."""
+        fetch_earnings_surprises(self._context, tickers=tickers, years_history=int(self.config.data_extract.years_history), full=full)
 
     def run(self, tickers: list[str]) -> None:
 

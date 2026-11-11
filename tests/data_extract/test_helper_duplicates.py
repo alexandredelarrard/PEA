@@ -53,6 +53,10 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"Catalogue", "load_catalogue"}),
         "the KPI catalogue owned by fundamentals; the Sharadar merge reads the same catalogue",
     ),
+    "src.data_extract.utils.identity.symbol_history": (
+        frozenset({"trading_symbols"}),
+        "the trading-symbol rule owned by identity; earnings surprises re-pull a ticker whose trading symbol just started",
+    ),
     "src.data_extract.utils.structure.def14a.carve": (frozenset({"prepare_def14a_payloads"}), _DEF14A),
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),
     "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods"}), _NOTES_CACHE),

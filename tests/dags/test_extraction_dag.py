@@ -148,7 +148,7 @@ DERIVED_PARENTS = {
     "superinvestors": {"thirteen_f"},
     "thirteen_f_managers": {"superinvestors"},
 }
-IDENTITY_INDEPENDENT = {"macro", "earnings_surprises"}
+IDENTITY_INDEPENDENT = {"macro"}
 
 
 class _StubTask:
@@ -260,7 +260,9 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     # zip downloads -> identity (captures, build, sync) -> every consumer, the two zip ingests included
     for download in IDENTITY_DOWNLOADS:
         assert "identity" in graph[download], f"{download} must feed identity"
-    assert graph["identity"] == IDENTITY_CONSUMERS | {"edgar_index", "extraction_status", "price_history"}, sorted(graph["identity"])
+    assert graph["identity"] == IDENTITY_CONSUMERS | {"edgar_index", "extraction_status", "price_history", "earnings_surprises"}, sorted(
+        graph["identity"]
+    )
     for derived, parents in DERIVED_PARENTS.items():
         assert all(derived in graph[parent] for parent in parents), f"{derived} must wait for {sorted(parents)}"
         assert derived in after_identity
@@ -408,7 +410,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
-    lenient = {"identity", "price_history", "fundamentals_check"}
+    lenient = {"identity", "price_history", "earnings_surprises", "fundamentals_check"}
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
@@ -419,6 +421,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     assert states["sec_fundamentals_facts"] == states["fundamentals_sharadar"] == states["zips_ingest_datasets"] == "upstream_failed"
     assert states["extraction_status"] == "success"
     assert states["price_history"] == "success", "prices read the stored master when the build fails"
+    assert states["earnings_surprises"] == "success", "earnings read the stored trading symbols when the build fails"
     for download in sorted(IDENTITY_DOWNLOADS):
         states = replay(dag, [download])
         assert states["price_history"] == states["identity"] == states["zips_ingest_insider"] == states["sec_fundamentals_facts"] == "success", (

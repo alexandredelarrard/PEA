@@ -44,7 +44,7 @@ def test_plan_fetch_uses_forward_date(sqlite_store):
     sqlite_store.save(Tables.earnings_surprises, existing.assign(earnings_date=existing["earnings_date"].dt.strftime("%Y-%m-%d")))
     context: Any = types.SimpleNamespace(store=sqlite_store)
     last_reported, next_expected = _resume_dates(context)
-    plan = dict(_plan_fetch(["A", "B", "C", "D", "E"], last_reported, next_expected, full_limit=full, refetch_window_days=95))
+    plan = dict(_plan_fetch(["A", "B", "C", "D", "E"], last_reported, next_expected, full_limit=full, refetch_window_days=95, full_keys=set()))
 
     assert plan.get("A") == full, "unseen ticker -> full pull"
     assert "B" not in plan, "next earnings still in the future -> skip"

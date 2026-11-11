@@ -411,12 +411,13 @@ def sharadar_sp500(config_path: str, full: bool) -> None:
     fetch_sharadar_sp500(context, full=full)
 
 
-@cli.command(help="Earnings surprises -> historical forward P/E (the prices step's `run_earnings_surprises`).")
+@cli.command(help="Earnings surprises -> historical forward P/E (the prices step's `run_earnings_surprises`); -F re-pulls every history.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def earnings_surprises(config_path: str, tickers: str | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def earnings_surprises(config_path: str, tickers: str | None, full: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    StepExtractPrices(context=context, config=config).run_earnings_surprises(_tickers(context, tickers))
+    StepExtractPrices(context=context, config=config).run_earnings_surprises(_tickers(context, tickers), full=full)
 
 
 @cli.command(

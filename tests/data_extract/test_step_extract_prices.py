@@ -44,7 +44,7 @@ def test_run_ends_with_earnings_surprises(monkeypatch: pytest.MonkeyPatch) -> No
     _step(monkeypatch, calls).run(tickers=["AAPL"])
 
     assert [label for label, _ in calls] == ORDER
-    assert calls[4][1] == {"tickers": ["AAPL"], "years_history": 15}
+    assert calls[4][1] == {"tickers": ["AAPL"], "years_history": 15, "full": False}
     print("\n=== SANITY CHECK: StepExtractPrices order ===")
     print(f"  {' -> '.join(ORDER)}; earnings surprises get the equity window 15 (not the macro 30). Validated.")
 
@@ -53,7 +53,7 @@ def test_run_earnings_surprises_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     _step(monkeypatch, calls).run_earnings_surprises(["MSFT"])
 
-    assert calls == [("earnings_surprises", {"tickers": ["MSFT"], "years_history": 15})]
+    assert calls == [("earnings_surprises", {"tickers": ["MSFT"], "years_history": 15, "full": False})]
     print("\n=== SANITY CHECK: run_earnings_surprises alone ===\n  one fetcher call, no price or macro download. Validated.")
 
 
@@ -77,5 +77,5 @@ def test_the_cli_command_calls_the_prices_step(monkeypatch: pytest.MonkeyPatch) 
     result = CliRunner().invoke(cli_mod.cli, ["earnings-surprises", "-t", "aaa"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("earnings_surprises", {"tickers": ["AAA"], "years_history": 15})]
+    assert calls == [("earnings_surprises", {"tickers": ["AAA"], "years_history": 15, "full": False})]
     print("\n=== SANITY CHECK: earnings-surprises command ===\n  calls StepExtractPrices.run_earnings_surprises once. Validated.")

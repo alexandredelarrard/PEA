@@ -26,7 +26,7 @@ differs from `configs/universe.yml`. Identity stage: zips_download -> identity
 (captures, symbol_tenure + universe_cik_symbol + universe_cusip, the SQL-only sync; offline, reads tables and cached Form 3/4/5 and Notes zips) -> every task that reads
 the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_cusip`, and the backfill, superinvestors and
 manager books follow it) and the earnings calls included (price_history waits for identity: it reads the master's current
-secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on
+secondary classes, and earnings_surprises its trading symbols); a failed identity run leaves those consumers unrun. identity, price_history and earnings_surprises run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
 stored master. edgar_index refreshes the EDGAR filing index once after identity; the eight EDGAR document walks
 (the SEC fundamentals facts walk included) wait for it and skip a refresh already done today (the insider walk still
@@ -108,7 +108,9 @@ universe_evidence = [sec_company_tickers, sharadar_tickers, sharadar_actions, se
 # 1) LIGHT / fast — fan out in the default pool
 macro = fetch("macro")
 short_interest = fetch("short-interest")
-earnings_surprises = fetch("earnings-surprises")  # StepExtractPrices.run_earnings_surprises
+# queried under identity's trading symbols (Yahoo files a company's history under its current symbol); the stored ones serve
+# when identity fails
+earnings_surprises = fetch("earnings-surprises", trigger_rule=TriggerRule.ALL_DONE)  # StepExtractPrices.run_earnings_surprises
 
 # yfinance: one shared session runs fetch_price_actions, fetch_dividends and fetch_prices -> prices_splits, prices_dividends, prices (a new split re-pulls its ticker)
 price_history = fetch("price-history", trigger_rule=TriggerRule.ALL_DONE)  # the stored master is enough when identity fails
@@ -231,6 +233,7 @@ edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, sec_e
 
 universe_evidence >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes
+identity >> earnings_surprises  # queried under tonight's trading symbols
 zips_download >> identity >> identity_consumers
 identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and skip their own refresh
 zips_ingest_insider >> insider_edgar  # zips fill first; EDGAR resumes after their last quarter and replaces each filing it re-reads

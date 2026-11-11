@@ -42,7 +42,7 @@ def _stamp(filing: object, cik: str) -> FilingStamp:
 def test_filing_text_parse_stores_none_when_period_of_report_raises() -> None:
     body = "Revenue increased because demand grew. " * (FILING_TEXT_MIN_CHARS // 20)
     filing = _RaisingPeriodFiling(form="10-K", accession="0000320193-24-000010", filing_date="2024-05-03", cik="320193")
-    filing.obj = lambda: SimpleNamespace(risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
+    filing.obj = lambda: SimpleNamespace(business=None, risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
     df = FILING_TEXT_FETCH.parse("AAPL", "0000320193", _stamp(filing, "0000320193"), identity_for({"AAPL": "320193"}))[Tables.filing_risk_text]
 
     assert len(df) == 1

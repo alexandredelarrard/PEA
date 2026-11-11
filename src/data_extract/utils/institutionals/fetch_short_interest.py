@@ -3,10 +3,11 @@ fetch_short_interest.py (src/data_extract/utils/institutionals/fetch_short_inter
 ---------------------------------------------------------------------------------
 FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files; not reported short interest).
 Each day-file line is stored as filed in `sec_short_volume_security`, keyed on the symbol as filed (case kept:
-`BACpB` is a preferred, `BRK/A` a class), source columns only. A line is kept when its FTD spelling (`finra_key`) is a
-symbol of a stored FTD line, or its symbol is a universe ticker or an equity lineage symbol of a universe company
-(`equity_symbol_rows`: not noise, not the Notes cover page alone), the symbols the cube's lineage fallback reads. The
-institutionals cube maps the lines to companies and sums the classes (`security_series.short_volume_series`). One file
+`BACpB` is a preferred, `BRK/A` a class), source columns only. A line is kept when its symbol is an equity lineage
+symbol of a universe company (`equity_symbol_rows`: not noise, not the Notes cover page alone) and its day lies inside
+that symbol's lineage window or inside the span of the stored FTD lines of that symbol (a reused symbol brings no other
+issuer's days), or, undated, when its FTD spelling (`finra_key`) is a symbol of a stored FTD line or a universe ticker
+that is no lineage symbol (a CUSIP-6 family class or preferred). The institutionals cube maps the lines to companies and sums the classes (`security_series.short_volume_series`). One file
 covers every ticker, so the day files read are the business days from the earlier of the table's latest day and today
 less the table's overlap, to today; `full` starts at the table's source start. FINRA day files are not cached: a symbol
 newly in scope gets its history from `short-interest --full`. Missing the Lit exchange volumes.
@@ -18,6 +19,7 @@ import io
 import logging
 import time
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
@@ -28,9 +30,10 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity_store import load_stored_lineage
+from src.data_extract.utils.common.security_lines import in_window, symbol_windows
 from src.data_store.schema import Resume, Tables
-from src.utils.security_series import equity_symbol_rows, finra_key
-from src.utils.string import run_date, squash, yahoo_symbol
+from src.utils.security_series import finra_key
+from src.utils.string import run_date, squash
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 
@@ -90,12 +93,37 @@ def _parse_regsho(text: str) -> pd.DataFrame:
     return out[list(RAW_COLUMNS)].reset_index(drop=True)
 
 
-def short_scope(lineage: pd.DataFrame | None, ftd_symbols: Collection[str], tickers: Collection[str]) -> tuple[frozenset[str], frozenset[str]]:
-    """`(FTD keys, symbols)` a stored line matches: the squashed symbols of the stored FTD lines (matched on `finra_key`),
-    and the universe tickers plus the equity lineage symbols of the universe companies (matched on `yahoo_symbol`)."""
-    keys = frozenset(key for key in map(squash, ftd_symbols) if key)
-    lineage_symbols = set(equity_symbol_rows(lineage)["symbol"].map(yahoo_symbol)) if lineage is not None and not lineage.empty else set()
-    return keys, frozenset(lineage_symbols | set(tickers)) - {""}
+@dataclass(frozen=True)
+class ShortScope:
+    """What a FINRA line matches: a lineage symbol inside one of its `windows`, or one of the undated `keys`."""
+
+    windows: pd.DataFrame
+    keys: frozenset[str]
+
+
+def short_scope(lineage: pd.DataFrame | None, ftd_spans: pd.DataFrame, tickers: Collection[str]) -> ShortScope:
+    """The scope of the FINRA lines. A lineage symbol is dated: the windows of the equity lineage symbols of the universe
+    companies, plus each stored FTD symbol's span of trade dates (`ftd_spans`: `source_symbol`, `first`, `last`; those
+    lines are in scope by construction). The other stored FTD symbols and universe tickers are undated keys."""
+    windows = symbol_windows(lineage) if lineage is not None and not lineage.empty else pd.DataFrame(columns=["key", "valid_from", "valid_to"])
+    spans = pd.DataFrame(
+        {
+            "key": ftd_spans["source_symbol"].map(squash),
+            "valid_from": pd.to_datetime(ftd_spans["first"]),
+            "valid_to": pd.to_datetime(ftd_spans["last"]) + pd.Timedelta(days=1),
+        }
+    )
+    keys = {key for key in [*spans["key"], *map(squash, tickers)] if key} - set(windows["key"])
+    return ShortScope(windows=pd.concat([windows, spans.loc[spans["key"].ne("")]], ignore_index=True), keys=frozenset(keys))
+
+
+def in_short_scope(lines: pd.DataFrame, scope: ShortScope) -> pd.Series:
+    """Per FINRA line, whether its symbol (as filed or in its FTD spelling) has a scope window covering the line's day,
+    or its FTD spelling is an undated scope key."""
+    finra = lines["source_symbol"].map(finra_key)
+    filed = lines["source_symbol"].map(squash)
+    dated = in_window(filed, lines["date"], scope.windows) | in_window(finra, lines["date"], scope.windows)
+    return dated | finra.isin(scope.keys)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,9 +163,7 @@ def _validated_regsho_day(day: pd.Timestamp, session: requests.Session) -> pd.Da
     return lines
 
 
-def _read_regsho_days(
-    days: Sequence[pd.Timestamp], keys: frozenset[str], symbols: frozenset[str], pause: float
-) -> tuple[pd.DataFrame, list[pd.Timestamp], list[str]]:
+def _read_regsho_days(days: Sequence[pd.Timestamp], scope: ShortScope, pause: float) -> tuple[pd.DataFrame, list[pd.Timestamp], list[str]]:
     """Stage fully validated source units; failed units never enter the write."""
     frames: list[pd.DataFrame] = []
     successful: list[pd.Timestamp] = []
@@ -153,8 +179,7 @@ def _read_regsho_days(
             if lines is None:
                 continue
             successful.append(day)
-            in_scope = lines["source_symbol"].map(finra_key).isin(keys) | lines["source_symbol"].map(yahoo_symbol).isin(symbols)
-            frames.append(lines.loc[in_scope])
+            frames.append(lines.loc[in_short_scope(lines, scope)])
             time.sleep(pause)
     raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(RAW_COLUMNS))
     return raw, successful, errors
@@ -169,14 +194,16 @@ def fetch_short_interest(
 ) -> None:
     """Fetch the `_plan_days` RegSHO day files and store their in-scope lines as filed (a keyed upsert).
     `full` aborts before any write on a fetch error or when no day is served."""
-    # load: the lineage and the stored FTD symbols the scope is built from; the planned days
+    # load: the lineage and the stored FTD symbols' trade-date spans the scope is built from; the planned days
     lineage = load_stored_lineage(context)
-    ftd = Tables.sec_fails_to_deliver_security
-    ftd_symbols = [str(s) for s in context.store.distinct(ftd, "source_symbol") if s is not None] if context.store.exists(ftd) else []
+    spans = {"first": ("min", "trade_date"), "last": ("max", "trade_date")}
+    ftd_spans = context.store.summarize(Tables.sec_fails_to_deliver_security, "source_symbol", spans)
     days = list(_plan_days(context, full, as_of))
-    keys, symbols = short_scope(lineage, ftd_symbols, tickers)
-    logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers ({len(keys)} FTD key(s), {len(symbols)} lineage symbol(s))")
-    raw, successful, errors = _read_regsho_days(days, keys, symbols, pause)
+    scope = short_scope(lineage, ftd_spans, tickers)
+    logger.info(
+        f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers ({len(scope.keys)} undated key(s), {len(scope.windows)} dated window(s))"
+    )
+    raw, successful, errors = _read_regsho_days(days, scope, pause)
 
     if full and (errors or not successful):
         raise RuntimeError(f"RegSHO full: {len(errors)} fetch error(s) {errors[:5]}, {len(successful)} served; aborting before any write")

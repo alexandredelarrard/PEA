@@ -196,3 +196,58 @@ def test_fetch_day_reuses_the_supplied_http_session():
     assert len(calls) == 1 and calls[0][0].endswith("CNMSshvol20260922.txt")
     print("\n=== SANITY CHECK: RegSHO connection reuse ===")
     print("  one run-scoped HTTP session serves the daily FINRA request")
+
+
+def test_a_lineage_symbol_brings_a_finra_line_only_inside_its_window(sqlite_store, monkeypatch):
+    """FB is META's symbol until 2022-06-09 and META from then; an FTD line of Meta's CUSIP under FB is stored. A FINRA FB
+    line is stored in 2021 but not in 2025 (a ProShares ETF), a META line in 2025 but not in 2021 (another ETF trust)."""
+    lineage = pd.DataFrame(
+        [
+            ("cik_window", "", pd.Timestamp("2012-05-17"), pd.NaT),
+            ("symbol", "FB", pd.Timestamp("2012-05-17"), pd.Timestamp("2022-06-09")),
+            ("symbol", "META", pd.Timestamp("2022-06-09"), pd.NaT),
+        ],
+        columns=["role", "symbol", "valid_from", "valid_to"],
+    )
+    lineage = lineage.assign(cik="0001326801", company_id="E0001326801", canonical_ticker="META", sources="form345,roster", status="corroborated")
+    sqlite_store.save(Tables.universe_cik_symbol, lineage)
+    fb_line = {"date": pd.Timestamp("2021-06-04"), "trade_date": pd.Timestamp("2021-06-02"), "cusip": "30303M102", "source_symbol": "FB"}
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, pd.DataFrame([{**fb_line, "fails_quantity": 100.0, "period": "202106a"}]))
+    monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.DatetimeIndex(["2021-06-01", "2025-06-02"]))
+    _serve(monkeypatch, {"20210601": [("FB", 10.0, 20.0), ("META", 1.0, 2.0)], "20250602": [("FB", 3.0, 4.0), ("META", 30.0, 40.0)]})
+
+    si.fetch_short_interest(_context(sqlite_store), ["LEN", "META"], pause=0.0)
+
+    stored = _stored(sqlite_store)
+    print(f"\n=== SANITY CHECK: dated RegSHO scope === stored {sorted(stored)}; FB 2025 and META 2021 expected out")
+    assert stored == {("FB", "2021-06-01"): 10.0, ("META", "2025-06-02"): 30.0}, "a lineage symbol is in scope only inside its window"
+
+
+def test_a_lineage_symbol_is_also_in_scope_inside_its_stored_ftd_span(sqlite_store, monkeypatch):
+    """News Corp's lineage dates NWSA from 2019-11-08, but its stored FTD NWSA lines (on its own CUSIP-6, so in scope by
+    construction) run from 2013: a 2019-01-02 FINRA NWSA line is stored; a 2012 one, before both, is not."""
+    lineage = pd.DataFrame(
+        [("cik_window", "", pd.Timestamp("2013-06-28"), pd.NaT), ("symbol", "NWSA", pd.Timestamp("2019-11-08"), pd.NaT)],
+        columns=["role", "symbol", "valid_from", "valid_to"],
+    )
+    lineage = lineage.assign(cik="0001564708", company_id="E0001564708", canonical_ticker="NWSA", sources="form345,roster", status="corroborated")
+    sqlite_store.save(Tables.universe_cik_symbol, lineage)
+    lines = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2013-07-03", "2026-01-06"]),
+            "trade_date": pd.to_datetime(["2013-07-01", "2026-01-02"]),
+            "cusip": "65249B109",
+            "source_symbol": "NWSA",
+            "fails_quantity": 10.0,
+            "period": ["201307a", "202601a"],
+        }
+    )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, lines)
+    monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.DatetimeIndex(["2012-06-01", "2019-01-02"]))
+    _serve(monkeypatch, {"20120601": [("NWSA", 1.0, 2.0)], "20190102": [("NWSA", 5.0, 6.0)]})
+
+    si.fetch_short_interest(_context(sqlite_store), ["NWSA"], pause=0.0)
+
+    stored = _stored(sqlite_store)
+    print(f"\n=== SANITY CHECK: FTD-span RegSHO scope === stored {sorted(stored)}; 2019-01-02 in (FTD span), 2012-06-01 out")
+    assert stored == {("NWSA", "2019-01-02"): 5.0}, "the stored FTD span dates a lineage symbol too"

@@ -452,12 +452,13 @@ def test_m3_a_rowless_new_cik_is_rescanned_for_that_cik_once_on_a_new_period_run
 
 
 def _partial_warnings(caplog) -> list[str]:
-    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING" and "full rescan is needed" in record.getMessage()]
+    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING" and "rescan is needed" in record.getMessage()]
 
 
 def test_m3_a_changed_pair_with_rows_warns_with_the_full_rescan_command_on_every_run(tmp_path, sqlite_store, caplog):
     """AAA's window CIK 1 is stamped 2026-07-05, after 2026q2 (the newest stored period) ended, and already has rows: it is
-    not rescanned, so each run, with or without a new period, warns once with `zips-ingest --only notes -F`."""
+    not rescanned, so each run, with or without a new period, warns once with `zips-ingest --only notes -F -t AAA` and
+    says it repeats until the next archive period is stored."""
     ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
     _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
     lineage = _lineage([("AAA", "0000000001", "cik_window", "2026-07-05")])
@@ -469,7 +470,8 @@ def test_m3_a_changed_pair_with_rows_warns_with_the_full_rescan_command_on_every
 
     print(f"\nSANITY (partial pair warning): {len(warnings)} warning(s), one per run; first: {warnings[0] if warnings else None}")
     assert len(warnings) == 2, "one warning per run, on the new-period run and on the run with no new period"
-    assert all("zips-ingest --only notes -F" in text and "AAA 0000000001" in text for text in warnings)
+    assert all("zips-ingest --only notes -F -t AAA`" in text and "AAA 0000000001" in text for text in warnings), "the scoped command"
+    assert all("repeats on every run until the next archive period is stored" in text for text in warnings), "says it persists"
     assert new_period.rescan_ciks == {} and same_day.rescan == [], "the warning does not change what is rescanned"
 
 

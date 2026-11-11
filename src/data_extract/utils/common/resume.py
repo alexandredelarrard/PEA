@@ -14,7 +14,7 @@ stored rows gets none once the run date is past its grace end plus the table's o
 parsed for every key; plus, only on a run that parses a new cached period, every cached stored period re-parsed for
 the (key, lineage CIK) pairs stamped (`universe_cik_symbol.scope_changed_at`) or added to the universe after the
 newest stored period ended that have no archive row. Such a pair that already has rows is not rescanned: every run
-warns with the full-rescan command instead.
+until the next period is stored warns with the `-F -t` rescan command instead.
 """
 
 from __future__ import annotations
@@ -388,20 +388,23 @@ def _by_key(pairs: set[tuple[str, str]]) -> dict[str, frozenset[str]]:
 
 def _warn_partial_pairs(tables: Sequence[Table], pairs: set[tuple[str, str]], since: pd.Timestamp) -> None:
     """One warning naming the changed (key, CIK) pairs that already have archive rows (never rescanned automatically) and
-    the full-rescan command that fills their newly covered periods."""
+    the scoped rescan command that fills their newly covered periods. Nothing records a rescan, so the warning repeats
+    until the next archive period is stored."""
     if not pairs:
         return
     named = [f"{key} {cik}" for key, cik in sorted(pairs)]
     family = "insider" if tables[0] is Tables.insider_transactions else "notes"
     logger.warning(
         "%s: %d (ticker, CIK) pair(s) changed after %s already have archive rows, so their newly covered periods may be "
-        "missing; a full rescan is needed: run `zips-ingest --only %s -F` (%s%s)",
+        "missing (%s%s); a rescan is needed: run `zips-ingest --only %s -F -t %s` once. This warning repeats on every run "
+        "until the next archive period is stored, even after that rescan.",
         tables[0].name,
         len(named),
         since.date(),
-        family,
         ", ".join(named[:20]),
         ", ..." if len(named) > 20 else "",
+        family,
+        ",".join(sorted({key for key, _ in pairs})),
     )
 
 

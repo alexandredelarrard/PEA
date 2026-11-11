@@ -145,7 +145,7 @@ def _filing_sections(filing: Any) -> dict[str, str]:
     except ParseFailureError:
         obj = None
     sections = _structured_sections(obj, form) if obj is not None else {}
-    missing = (needed - sections.keys()) | ({FILING_SECTION_BUSINESS} if is_10k else set())
+    missing = needed - (sections.keys() - {FILING_SECTION_BUSINESS})
     if not missing:
         return sections
     try:

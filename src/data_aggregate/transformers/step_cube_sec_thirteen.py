@@ -32,16 +32,18 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
+from src.utils.identity_tables import CusipTags, universe_cusips
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
 
 
 @dataclass(frozen=True)
 class SecThirteenResources:
-    """One loaded capital/security snapshot shared by both13F families."""
+    """One loaded capital/security snapshot shared by both13F families, with the CUSIP tags both read once."""
 
     frames: PriceFrames
     cohorts: Mapping[str, frozenset[str]] | None
+    tags: CusipTags
 
 
 @dataclass(frozen=True)
@@ -136,6 +138,7 @@ class StepCubeSecThirteen(Step):
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         frames.require(*self._FIELDS)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
+        tags = CusipTags.load(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -143,17 +146,19 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, cohorts)
+        return SecThirteenResources(frames, cohorts, tags)
 
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until=resources.frames.trading_index.max(), universe=resources.frames.universe)
+        # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
+        universe, until = resources.frames.universe, resources.frames.trading_index.max()
+        packets = thirteen_inputs.iter_filing_vintages(self._store, until, universe=universe, cusips=universe_cusips(resources.tags.lines, universe))
         cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
 
-        # Preserve the existing broad cleaning, reconciliation and numerical equations.
-        # `sec13f_hr` rows keep the ticker stored at extraction; amended books arrive whole.
-        with closing(clean_public_batches(packets, resources.frames.universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        # Each filed row tagged and in canonical-class shares before the value repair; amended books arrive whole and the
+        # compact rows sum each company per manager-quarter after the resolver.
+        with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:
             return None
@@ -178,7 +183,7 @@ class StepCubeSecThirteen(Step):
         # Clean whole books once, retaining off-universe and unmapped positions and provenance.
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, resources.tags, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
             books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
         if books is None:
             return None

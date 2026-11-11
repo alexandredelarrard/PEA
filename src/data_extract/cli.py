@@ -209,8 +209,8 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 
 
 @cli.command(
-    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from universe_cusip, "
-    "summed per ticker by class into sec_short_interest. Day files: business days from the earlier of the latest stored "
+    help="FINRA RegSHO daily short volume: the lines of the universe companies' symbols and of the stored FTD symbols, "
+    "as filed per symbol (sec_short_volume_security); the cube sums them per ticker. Day files: business days from the earlier of the latest stored "
     "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
     "a fetch error."
 )
@@ -495,29 +495,26 @@ _IDENTITY_STAGES = (
     "cusip-history",
     "lifecycle",
     "publish",
-    "propagate",
+    "sync",
 )
 
 
 @cli.command(
     name="identity",
-    help="Identity layer, OFFLINE (cached zips + DB): capture the evidence (Notes cover-page symbols, Form 3/4/5 tenure), "
-    "anchor each company, build its CIK and symbol history, its CUSIP history from the cached FTD zips, then propagate the "
-    f"changes. --only runs one stage ({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every "
-    "ticker. `publish` is the only stage that saves; one `identity` run also builds a cold store.",
+    help="Identity layer, OFFLINE (cached Form 3/4/5 and Notes zips + DB): capture the evidence (Notes cover-page symbols, "
+    "Form 3/4/5 tenure), anchor each company, build its CIK and symbol history, its CUSIP history from the stored FTD lines, "
+    "publish, then sync the CIK-keyed tables by SQL only (move rows to the company that now holds their CIK, purge foreign "
+    f"filers, re-stamp insider lineage). --only runs one stage ({', '.join(_IDENTITY_STAGES)}); --full re-captures every "
+    "cached Notes zip and re-checks every ticker. `publish` and `sync` are the only stages that write; one `identity` run "
+    "also builds a cold store.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-@click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
 @click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all eight.")
-def identity(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, dry_run: bool, only: str | None) -> None:
-    if dry_run and only != "propagate":
-        raise click.UsageError("--dry-run applies to `--only propagate` only.")
+def identity(config_path: str, full: bool, as_of: datetime | None, only: str | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    options = IdentityOptions(tickers=_tickers(context, tickers) if tickers else None, full=full, dry_run=dry_run, as_of=run_date(as_of))
-    step = StepExtractIdentity(context, config, options)
+    step = StepExtractIdentity(context, config, IdentityOptions(full=full, as_of=run_date(as_of)))
     stages = {
         "capture-evidence": step.run_capture_evidence,
         "company-anchor": step.run_company_anchor,
@@ -526,13 +523,10 @@ def identity(config_path: str, tickers: str | None, full: bool, as_of: datetime 
         "cusip-history": step.run_cusip_history,
         "lifecycle": step.run_lifecycle,
         "publish": step.run_publish,
-        "propagate": step.run_propagate,
+        "sync": step.run_sync,
     }
     if only is None:
         step.run()
-    elif dry_run:
-        removals = step.run_propagate().removals
-        click.echo(removals.to_string(index=False) if not removals.empty else "identity --only propagate: no pending removals")
     else:
         stages[only]()
 

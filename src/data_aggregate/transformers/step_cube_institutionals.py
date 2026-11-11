@@ -117,13 +117,7 @@ class StepCubeInstitutionals(Step):
 
         # Load shared price and class inputs once.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
-        df_lines = read_identity(
-            self._store,
-            Tables.universe_cusip,
-            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role"),
-            where={"source": "ftd"},
-            optional=True,
-        )
+        df_lines = institutional_inputs.load_ftd_lines(self._store)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
 
         # Build each family sequentially so raw sources do not overlap in memory.
@@ -139,7 +133,7 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
-        source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
+        source = institutional_inputs.load_insider_transactions(self._store, frames.universe, identity_intervals)
         if source is None or source.transactions.empty:
             return None
 
@@ -161,14 +155,13 @@ class StepCubeInstitutionals(Step):
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)
 
     def _short_flow_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
-        # Load observed fallback only for companies without any adjudicated master evidence; clean the raw class tape once.
-        known = set(lines["canonical_company"].dropna()) if lines is not None else set()
+        # Build the short-volume series and its lineage-fallback evidence and the FTD series from the as-filed lines; clean the raw class tape once.
+        lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_classes = (
             lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)] if lines is not None else None
         )
-        df_finra = institutional_inputs.load_finra_tenure(self._store, sorted(set(frames.universe) - known))
-        df_short = capital_inputs.load_source(self._store, Tables.short_interest, frames.universe)
-        df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe)
+        df_short, df_finra = institutional_inputs.load_short_volume(self._store, frames.universe, lines, lineage)
+        df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe, lines, self._bugfix)
         df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._store, df_classes), self._bugfix)
 
         # Put FINRA, FTD and outstanding quantities in each ticker's last saved security units (`q * F_T / F_d`).

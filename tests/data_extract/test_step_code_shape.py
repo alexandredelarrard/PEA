@@ -80,7 +80,7 @@ IDENTITY = Flow(
         "run_cusip_history",
         "run_lifecycle",
         "run_publish",
-        "run_propagate",
+        "run_sync",
     ),
 )
 EDGAR_TEXT = Flow(

@@ -4,7 +4,8 @@
 `universe_cik_symbol`, `universe_cusip`, `symbol_tenure` or `cusip_ticker_map` (the static test
 `test_identity_reads_only.py` enforces it); the identity build and the `Identity` resolver own their own reads.
 
-`tag_cusips` is the two-layer 13F rule (user decision X2 + the superinvestor-book correction): a CUSIP of a
+`sec13f_hr` stores each book as filed, tagged by `cusip_ticker_map` alone (`tag_cusips` with no lines); the cube tags
+each filed row with the lines too (`sec_thirteen/holdings_clean.py`). `tag_cusips` is the two-layer 13F rule: a CUSIP of a
 universe company is tagged by its dated `universe_cusip` line (canonical, predecessor or secondary class) with the
 company's universe ticker, so every share class of a company lands on one ticker; any other CUSIP keeps its
 market-wide `cusip_ticker_map` ticker, so a manager book keeps its holdings outside the universe.
@@ -26,14 +27,8 @@ from src.data_store.store import DataStore
 IDENTITY_TABLES = (Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure, Tables.cusip_ticker_map)
 #: `universe_cusip` roles whose dated line tags a 13F CUSIP with its company (every share class of the company).
 TAGGED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
-#: The `universe_cusip` columns `tag_cusips` and `company_rows` read.
+#: The `universe_cusip` columns `tag_cusips` and the cube's 13F company tagging read.
 LINE_COLUMNS = ["cusip", "canonical_company", "lineage_role", "market_symbol", "conversion_ratio", "valid_from", "valid_to"]
-#: 13F share legs counted in the canonical class (x the dated ratio); every other amount is summed as filed.
-SHARE_LEGS = ("shares", "call_shares", "put_shares")
-#: 13F amounts of one position row.
-AMOUNT_LEGS = (*SHARE_LEGS, "value_usd", "call_value", "put_value", "debt_prn", "debt_value", "other_value")
-#: The 13F company row's key: one row per manager x accession x company (U-67).
-COMPANY_KEY = ["cik", "accession_number", "ticker"]
 
 
 def read_identity(store: DataStore, table: Table, **load: Any) -> pd.DataFrame | None:
@@ -103,60 +98,6 @@ def tag_cusips(holdings: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame |
     pairs["ticker"] = pairs["company"].where(pairs["company"].notna(), fallback.where(~fallback.isin(company_names) & ~own))
     out = keys.merge(pairs[["cusip", "day", "ticker"]], on=["cusip", "day"], how="left")["ticker"]
     return pd.Series(out.to_numpy(dtype=object), index=holdings.index).astype("str")
-
-
-def company_rows(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
-    """`book` (one 13F accession, one row per CUSIP) as stored in `sec13f_hr` (U-67): tagged by `tag_cusips`; the rows a
-    dated company line tags make ONE row per company, on the company's canonical CUSIP of the period, its share legs in
-    canonical-class shares (x the line's dated `conversion_ratio`), its dollar legs summed as filed (unknown if one is
-    unknown). Every other row keeps its own CUSIP and market ticker."""
-    # compute: each row's tag, its dated line (ratio) and its company's canonical CUSIP on the period
-    tagged = book.assign(ticker=tag_cusips(book, lines, cmap))
-    hits = company_lines(tagged, lines)
-    if hits.empty:
-        return tagged
-
-    # compute: canonical-class shares, the target CUSIP first in each company group
-    rows = tagged.loc[hits.index].assign(_target=hits["target"], _first=hits["target"].ne(tagged.loc[hits.index, "cusip"]))
-    for leg in SHARE_LEGS:
-        rows[leg] = pd.to_numeric(rows[leg], errors="coerce") * hits["ratio"]
-    rows = rows.sort_values([*COMPANY_KEY, "_first", "cusip"], kind="stable")
-
-    # merge: one row per company (metadata of its first row, amounts summed, unknown when one row is unknown)
-    grouped = rows.groupby(COMPANY_KEY, sort=False)
-    merged = grouped.first()
-    amounts = [leg for leg in (*AMOUNT_LEGS, *(c for c in rows.columns if c.startswith("raw_"))) if leg in rows]
-    merged[amounts] = grouped[amounts].sum(min_count=1).where(grouped[amounts].count().eq(grouped.size(), axis=0))
-    merged["cusip"] = merged["_target"]
-    merged = merged.reset_index().drop(columns=["_target", "_first"])
-    return pd.concat([tagged.drop(index=hits.index), merged[tagged.columns]], ignore_index=True)
-
-
-def company_lines(tagged: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
-    """Per row of `tagged` that a dated company line tags (its index): the line's `ratio` and `target`, the canonical
-    CUSIP of the company on the period (canonical current before predecessor, then the latest start; the row's own CUSIP
-    when the company has no canonical line that day)."""
-    # clean: the rows and the tagged lines with their dates
-    rows = pd.DataFrame({"row": tagged.index, "cusip": tagged["cusip"].astype(str).str.strip().str.upper(), "ticker": tagged["ticker"]})
-    rows["day"] = pd.to_datetime(tagged["period"]).to_numpy()
-    work = lines[lines["lineage_role"].isin(TAGGED_ROLES)].assign(
-        start=pd.to_datetime(lines["valid_from"]), end=pd.to_datetime(lines["valid_to"]), cusip=lines["cusip"].astype(str)
-    )
-
-    # compute: the line holding each row's date for its own company, then the company's canonical CUSIP that day
-    held = rows.merge(work, left_on=["cusip", "ticker"], right_on=["cusip", "canonical_company"])
-    held = held[held["start"].isna() | (held["start"] <= held["day"])]
-    held = held[held["end"].isna() | (held["day"] < held["end"])].drop_duplicates("row")
-    canonical = work[work["lineage_role"].isin(CANONICAL_ROLES)].assign(rank=lambda w: w["lineage_role"].ne(CANONICAL_ROLES[1]))
-    pairs = held[["row", "canonical_company", "day"]].merge(canonical[["canonical_company", "cusip", "rank", "start", "end"]], on="canonical_company")
-    pairs = pairs[(pairs["start"].isna() | (pairs["start"] <= pairs["day"])) & (pairs["end"].isna() | (pairs["day"] < pairs["end"]))]
-    target = pairs.sort_values(["rank", "start"], ascending=[True, False], na_position="last").drop_duplicates("row").set_index("row")["cusip"]
-
-    # post-process: one (ratio, target) per tagged row
-    out = held.set_index("row")[["conversion_ratio", "cusip"]].rename(columns={"conversion_ratio": "ratio"})
-    out["ratio"] = pd.to_numeric(out["ratio"], errors="coerce").fillna(1.0)
-    out["target"] = target.reindex(out.index).fillna(out["cusip"])
-    return out[["ratio", "target"]]
 
 
 @dataclass(frozen=True)

@@ -22,6 +22,7 @@ from src.data_extract.utils.identity.sec_tickers import parse_company_tickers_ex
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import load_vendor_exceptions
 from src.utils.predecessor_series import load_vendor_series
+from src.utils.security_series import trade_dates
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.support.cusip_build import derive_cusip_history, ftd_texts, run_cusip_stage, write_ftd_zips
@@ -234,7 +235,7 @@ def test_class_letter_from_description(desc, letter):
 
 def test_trade_dates_follow_the_settlement_cycle():
     settle = pd.Series(pd.to_datetime(["2017-09-06", "2017-09-07", "2024-05-28", "2024-05-29", "2010-01-20"]))
-    got = sl.trade_dates(settle).dt.strftime("%Y-%m-%d").tolist()
+    got = trade_dates(settle).dt.strftime("%Y-%m-%d").tolist()
     assert got == ["2017-09-01", "2017-09-05", "2024-05-24", "2024-05-28", "2010-01-15"], got
     print(f"\n=== SANITY CHECK: T+3 / T+2 / T+1 eras ===\n  {got}\n  OK: settlement dates convert to trade dates by the cycle in force")
 
@@ -418,7 +419,7 @@ def test_ac103_one_symbol_two_cusips_on_one_date_is_a_conflict():
     conflicts = build.flags[build.flags["kind"].eq("security_symbol_conflict")]
     assert conflicts["source_symbol"].tolist() == ["BAC"] and "060505999" in conflicts["detail"].iloc[0]
     identity = _identity(BAC, ("BAC", "0000070858"), build.rows)
-    day = sl.trade_dates(pd.Series([pd.Timestamp("2010-01-13")])).iloc[0]
+    day = trade_dates(pd.Series([pd.Timestamp("2010-01-13")])).iloc[0]
     assert identity.security_on(symbol="BAC", source="ftd", day=day) is None
     assert identity.security_on(cusip="060505104", source="ftd", day=day) is not None
     print("\n=== SANITY CHECK: AC-103 ===")
@@ -600,7 +601,7 @@ def test_vendor_exceptions_and_expected_changes_configs():
     ]
     expected = json.loads((CONFIG_DIR / "sec" / "expected_lineage_changes.json").read_text(encoding="utf-8"))["hypotheses"]
     ids = {row["id"] for row in expected}
-    assert {"trs_pld_fundamentals_facts_event_only_cik", "trs_ftd_tdcc_to_dd", "trs_insider_tdcc_moves"} <= ids
+    assert {"trs_pld_fundamentals_facts_event_only_cik", "trs_insider_tdcc_moves"} <= ids
     assert all(row.get("status") == "hypothesis" and row.get("source") and row.get("change_set") == "traded_security_realignment" for row in expected)
     print("\n=== SANITY CHECK: vendor exceptions and the traded-security realignment hypotheses ===")
     print(f"  {len(rows)} vendor exceptions read back by the shared loader; {len(expected)} lineage-change hypotheses recorded")
@@ -897,7 +898,7 @@ def _trading_days(*spans: tuple[str, str, str]) -> pd.DataFrame:
 
 
 def _finra_hit(build: CusipHistory, lineage: pd.DataFrame, roster_pair: tuple[str, str], symbol: str, day: str):
-    """How a stored FINRA row of `symbol` on trade date `day` is stamped (`stamp_short_volume` resolves by FTD symbol)."""
+    """How a stored FINRA row of `symbol` on trade date `day` maps to a security (the cube resolves it by FTD symbol)."""
     return _identity(lineage, roster_pair, build.rows).security_on(symbol=symbol, source="ftd", day=pd.Timestamp(day))
 
 

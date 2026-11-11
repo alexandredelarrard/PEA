@@ -87,13 +87,13 @@ validate:
       pit_sources:
         f_ic_insider_: insider_transactions
         f_ic_act_: sec_13d
-        f_ic_shortvol_: sec_short_interest
-        f_ic_ftd_: sec_fails_to_deliver
+        f_ic_shortvol_: sec_short_volume_security
+        f_ic_ftd_: sec_fails_to_deliver_security
         f_ic_bo_:
         - sec_13d
         - sec_13g
       pit_observed_zero_sources:
-        f_ic_ftd_: sec_fails_to_deliver
+        f_ic_ftd_: sec_fails_to_deliver_security
         f_ic_insider_net_buy_ratio_180d: insider_transactions
       bounds:
         f_ic_insider_net_buy_ratio_180d:

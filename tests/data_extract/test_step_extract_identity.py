@@ -1,4 +1,4 @@
-"""`StepExtractIdentity`: `run()` is the eight-stage flow, the captures land before the builders with one Form 3/4/5 scan,
+"""`StepExtractIdentity`: `run()` is the eight-stage flow (the last one the SQL-only sync), the captures land before the builders with one Form 3/4/5 scan,
 per-stage failures, and the D-15 cold start."""
 
 from __future__ import annotations
@@ -18,9 +18,8 @@ from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
-from tests.data_extract.institutionals.test_fails_to_deliver import _HEADER, _scope_lineage
-from tests.support.cusip_build import write_ftd_zips
-from tests.support.propagation import stub_propagation
+from tests.data_extract.identity.test_ftd_evidence_table import _HEADER, _lineage
+from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe, universe_of
 
 #: an empty published lineage, as the stubbed resolver inputs carry
@@ -34,7 +33,7 @@ FLOW = (
     "run_cusip_history",
     "run_lifecycle",
     "run_publish",
-    "run_propagate",
+    "run_sync",
 )
 
 
@@ -89,10 +88,10 @@ def _stub_operations(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: st
     monkeypatch.setattr(StepExtractIdentity, "run_lifecycle", lambda self: order.append("lifecycle"))
     monkeypatch.setattr(StepExtractIdentity, "run_publish", lambda self: order.append("publish"))
     monkeypatch.setattr(StepExtractIdentity, "run_cusip_history", lambda self: mark("cusips", pd.DataFrame())())
-    stub_propagation(monkeypatch, module)
+    stub_sync(monkeypatch, module)
     inputs = SimpleNamespace(lineage=_NO_LINEAGE, tenure=None, master=None, co_registrants=frozenset(), mergers=())
     monkeypatch.setattr(module, "identity_inputs", mark("refresh", inputs))
-    monkeypatch.setattr(module, "recheck_tickers", mark("propagate", []))
+    monkeypatch.setattr(module, "recheck_tickers", mark("sync", []))
     monkeypatch.setattr(module, "load_stored_lineage", lambda context: pd.DataFrame())
 
 
@@ -108,10 +107,10 @@ def test_run_is_the_flow_of_eight_named_stages(monkeypatch: pytest.MonkeyPatch) 
     assert tuple(calls) == FLOW, calls
     print("\n=== SANITY CHECK: StepExtractIdentity.run is the flow ===")
     print(f"  {' -> '.join(calls)}")
-    print("  OK: evidence, anchor, CIK, symbol and CUSIP history, lifecycle, publish, propagate -- in the REQ-009 order")
+    print("  OK: evidence, anchor, CIK, symbol and CUSIP history, lifecycle, publish, sync -- in the REQ-009 order")
 
 
-def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_captures_first_then_builds_and_syncs_with_one_scan(monkeypatch: pytest.MonkeyPatch) -> None:
     order: list[str] = []
     _stub_operations(monkeypatch, order)
 
@@ -129,18 +128,18 @@ def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch
         "lifecycle",
         "publish",
         "refresh",
-        "propagate",
+        "sync",
     ]
     assert order == expected, order
     assert order.count("scan") == 1, "the tenure and the CIK history share one Form 3/4/5 scan"
     print("\n=== SANITY CHECK: StepExtractIdentity.run operations ===")
     print(f"  {' -> '.join(order)}; one scan shared by the tenure and the CIK history")
-    print("  OK: the captures land before the builders read their evidence, and propagation runs on the rebuilt tables")
+    print("  OK: the captures land before the builders read their evidence, and the sync runs on the rebuilt tables")
 
 
-@pytest.mark.parametrize("boom", ["dei", "symbols", "cusips", "propagate"])
+@pytest.mark.parametrize("boom", ["dei", "symbols", "cusips", "sync"])
 def test_a_failing_stage_raises_from_its_own_method_only(monkeypatch: pytest.MonkeyPatch, boom: str) -> None:
-    owner = {"dei": "run_capture_evidence", "symbols": "run_symbol_history", "cusips": "run_cusip_history", "propagate": "run_propagate"}
+    owner = {"dei": "run_capture_evidence", "symbols": "run_symbol_history", "cusips": "run_cusip_history", "sync": "run_sync"}
     order: list[str] = []
     _stub_operations(monkeypatch, order, boom=boom)
     step = StepExtractIdentity(_context(), _config())  # type: ignore[arg-type]
@@ -158,33 +157,33 @@ def test_a_failing_stage_raises_from_its_own_method_only(monkeypatch: pytest.Mon
     print(f"  {owner[boom]} raised alone; the other seven sub-runs completed when called alone; run() stopped at it")
 
 
-def test_options_reach_the_capture_and_the_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_options_reach_the_capture_and_the_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, dict[str, Any]] = {}
     _stub_operations(monkeypatch, [])
     monkeypatch.setattr(module, "pending_dei_periods", lambda context, cache, full: calls.setdefault("dei", {"full": full}) and [])
-    stages = stub_propagation(monkeypatch, module)
-    options = IdentityOptions(tickers=["AAA"], full=True, dry_run=True, as_of=pd.Timestamp("2026-10-30"))
-    step = StepExtractIdentity(_context(), _config(), options)  # type: ignore[arg-type]
+    stages = stub_sync(monkeypatch, module)
+    step = StepExtractIdentity(_context(), _config(), IdentityOptions(full=True, as_of=pd.Timestamp("2026-10-30")))  # type: ignore[arg-type]
 
     step.run_capture_evidence()
-    step.run_propagate()
+    step.run_sync()
 
     assert calls["dei"] == {"full": True}
     recheck = stages["recheck"][0]
-    assert recheck["tickers"] == ["AAA"] and stages["retag"] == [True]
-    assert recheck["every"] and recheck["as_of"] == pd.Timestamp("2026-10-30")
+    assert recheck["tickers"] == ["AAA", "BBB"] and recheck["every"] and recheck["as_of"] == pd.Timestamp("2026-10-30")
     print("\n=== SANITY CHECK: identity options ===")
-    print("  --full reaches the capture; -t, --full, --dry-run and --as-of reach the propagation")
+    print("  --full reaches the capture; --full and --as-of reach the sync, which re-checks the whole universe")
 
 
-def test_cold_start_run_builds_universe_cusip_from_the_cached_ftd_zips(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """D-15: one `identity` run on a cold store (no lineage, FTD zips cached) builds and publishes `universe_cusip` from the
-    lineage it just built; the FTD lines are read from the zips and never stored by identity."""
-    create_canonical(sqlite_store.engine, [Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure])
+def test_cold_start_run_builds_universe_cusip_from_the_stored_ftd_lines(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """D-15 / Q4: one `identity` run on a store with no lineage but with the FTD lines an ingest stored builds and publishes
+    `universe_cusip` from the lineage it just built; the lines come from the table, and identity writes none."""
+    create_canonical(
+        sqlite_store.engine, [Tables.universe_cik_symbol, Tables.universe_cusip, Tables.symbol_tenure, Tables.sec_fails_to_deliver_security]
+    )
     context, config = _context(sqlite_store, tmp_path), _config()
     context.universe = seed_universe(sqlite_store, ["ABC"], rows={"ABC": {"cik": "0000000777"}})
     text = _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|999999ZZZ|ZZZ|9|OTHER CO|3.0\n"
-    write_ftd_zips(ftd.cache_dir(context, config.local.paths.fails_deliver), {"201501b": text})
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd._parse_ftd_lines(text).assign(period="201501b"))
     monkeypatch.setattr(module, "pending_dei_periods", lambda *args: [])
     monkeypatch.setattr(module, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
@@ -194,7 +193,7 @@ def test_cold_start_run_builds_universe_cusip_from_the_cached_ftd_zips(sqlite_st
     monkeypatch.setattr(StepExtractIdentity, "run_cik_history", lambda self: setattr(self, "_cik_history", activity) or activity)
 
     def symbol_history(self: StepExtractIdentity) -> SimpleNamespace:
-        self._symbols = SimpleNamespace(rows=_scope_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)), blocked=pd.DataFrame())  # type: ignore[assignment]
+        self._symbols = SimpleNamespace(rows=_lineage(), backlog=pd.DataFrame(columns=list(BACKLOG_COLUMNS)), blocked=pd.DataFrame())  # type: ignore[assignment]
         return self._symbols  # type: ignore[return-value]
 
     monkeypatch.setattr(StepExtractIdentity, "run_symbol_history", symbol_history)
@@ -203,18 +202,18 @@ def test_cold_start_run_builds_universe_cusip_from_the_cached_ftd_zips(sqlite_st
     monkeypatch.setattr(
         module, "prepare_observations", lambda observations: lines_seen.append(observations["cusip"].tolist()) or prepare(observations)
     )
-    stub_propagation(monkeypatch, module)
+    stub_sync(monkeypatch, module)
     assert sqlite_store.row_count(Tables.universe_cik_symbol) == 0, "a cold store: no lineage yet"
 
     StepExtractIdentity(context, config).run()  # type: ignore[arg-type]
 
     master = sqlite_store.load(Tables.universe_cusip)
-    assert lines_seen == [["000111AAA"]], "the CUSIP stage sees the in-scope line of the zip; ZZZ is out of scope"
+    assert lines_seen == [["000111AAA"]], "the CUSIP stage sees the in-scope stored line; ZZZ is out of scope"
     assert master[["cusip", "canonical_company", "lineage_role"]].values.tolist() == [["000111AAA", "ABC", "canonical_current"]], master
     assert set(sqlite_store.load(Tables.universe_cik_symbol)["company_id"]) == {"E0000000777"}, "the lineage is published in the same run"
-    assert not sqlite_store.exists(Tables.sec_fails_to_deliver_security) and not sqlite_store.exists(Tables.sec_fails_to_deliver)
+    assert sqlite_store.row_count(Tables.sec_fails_to_deliver_security) == 2, "identity writes no FTD line"
 
     print("\n=== SANITY CHECK: D-15 cold start ===")
-    print(f"  identity on a cold store: lineage built, the CUSIP stage read {lines_seen[0]} from the cached zip (ZZZ out of scope)")
-    print(f"  published {master['cusip'].tolist()} canonical for ABC (company_id {master['company_id'].tolist()}); no FTD table created")
+    print(f"  identity with no lineage: lineage built, the CUSIP stage read {lines_seen[0]} from the stored lines (ZZZ out of scope)")
+    print(f"  published {master['cusip'].tolist()} canonical for ABC (company_id {master['company_id'].tolist()}); the 2 stored lines unchanged")
     print("  OK: one identity run fills universe_cusip on a cold store")

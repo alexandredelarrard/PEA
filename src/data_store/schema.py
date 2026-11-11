@@ -292,41 +292,18 @@ class Tables:
     # its own frontier rather than the price one.
     # NOT a market-cap input -- see the table comment in sql/schema.sql.
     prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
-    short_interest = Table(
-        "sec_short_interest",
-        ("ticker", "date"),
-        date_col="date",
-        freshness="daily",
-        read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume", "source_checked_at"),
-        optional_columns=frozenset({"short_interest", "avg_daily_volume", "source_checked_at"}),
-        # The first day FINRA serves; earlier never-stored days are not requested.
-        resume=Resume(RESUME_SERIES, "ticker", "date", 7, source_start="2018-08-01"),
-    )
-    # SEC Fails-to-Deliver: settlement fails per ticker x date. Same grain as
-    # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files don't
-    # pollute short_interest's global-max-date incremental; combined at the feature layer.
-    # First usable date 2009-07-01 (measured), which is where SEC's own published series
-    # begins -- unlike RegSHO above, this one is a fixed start, not a rolling window.
-    sec_fails_to_deliver = Table(
-        "sec_fails_to_deliver",
-        ("ticker", "date"),
-        date_col="date",
-        date_type_cols=("date",),
-        freshness="biweekly",
-        read_columns=("date", "ticker", "fails_quantity", "period", "source_checked_at"),
-        optional_columns=frozenset({"source_checked_at"}),
-        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 31, period_col="period", source_start="2009-07-01"),
-    )
-    # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
-    # on the CUSIP the file reports. `identity --only capture-ftd` stores the in-scope lines (lineage symbols
-    # and the CUSIP-6 of their voted issuers) with `security_id`, `ticker`, `lineage_role` and
-    # `security_class` NULL; the security master is derived from these rows. `date` is the
+    # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line as filed (no summing),
+    # keyed on the CUSIP the file reports, source columns only. `zips-ingest --only ftd` stores
+    # the lines of the universe companies' lineage symbols and CUSIP-6 prefixes and resumes on the
+    # cached periods no stored line carries: one market-wide frontier (no key). `date` is the
     # settlement date as filed, `trade_date` its settlement-cycle conversion; `price` is NULL
-    # where the file has '.', and so is `fails_value`. `identity --only capture-ftd` resumes on the periods no stored
-    # line carries; one market-wide frontier (no key), the ticker grain is rebuilt from these rows.
+    # where the file has '.', and so is `fails_value`. The identity step reads these lines as
+    # CUSIP evidence; the institutionals cube builds the per-ticker series from them. First
+    # usable date 2009-07-01 (measured), where the SEC's published series begins.
     sec_fails_to_deliver_security = Table(
         "sec_fails_to_deliver_security",
         ("cusip", "date"),
+        ticker_col=None,
         date_col="date",
         date_type_cols=("date", "trade_date"),
         freshness="biweekly",
@@ -341,38 +318,23 @@ class Tables:
             "fails_quantity",
             "fails_value",
             "period",
-            "security_id",
-            "ticker",
-            "lineage_role",
-            "security_class",
         ),
     )
     # FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
-    # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities. The four
-    # stamp columns come from `universe_cusip` (a symbol never seen in FTD: the P21 lineage fallback,
-    # `security_id` `S<cik>:<symbol>`); NULL when the symbol's security is known but not on that date.
-    # `short-interest` rebuilds the ticker-grain `short_interest` from these rows and plans its day files
-    # on that table's per-ticker windows; one day file serves every symbol, so this table has one
-    # market-wide frontier (no key) from FINRA's first served day.
+    # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities, source
+    # columns only. `short-interest` stores the lines of the universe companies' symbols and of the
+    # stored FTD symbols; the institutionals cube maps them to companies and sums the classes. One day
+    # file serves every symbol, so this table has one market-wide frontier (no key) from FINRA's first
+    # served day; earlier never-stored days are not requested.
     sec_short_volume_security = Table(
         "sec_short_volume_security",
         ("source_symbol", "date"),
+        ticker_col=None,
         date_col="date",
         date_type_cols=("date",),
         freshness="daily",
         resume=Resume(RESUME_SERIES, None, "date", 7, source_start="2018-08-01"),
-        read_columns=(
-            "date",
-            "source_symbol",
-            "market",
-            "short_volume",
-            "short_exempt_volume",
-            "total_volume",
-            "security_id",
-            "ticker",
-            "lineage_role",
-            "security_class",
-        ),
+        read_columns=("date", "source_symbol", "market", "short_volume", "short_exempt_volume", "total_volume"),
     )
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two
     # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,
@@ -524,8 +486,8 @@ class Tables:
     # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
     # `source_document` read and `source_quote` (JSON, one verbatim quote per component).
     # A filing with no usable count is a row with NULL components and its status, so the row
-    # itself marks the date decided and the table declares no marker. `identity --only propagate`
-    # purges rows by `cik` (`filer_tables.PURGE_TABLES`).
+    # itself marks the date decided and the table declares no marker. `identity --only sync`
+    # moves and purges rows by `cik` (`filer_tables.PURGE_TABLES`).
     fundamentals_employees = Table(
         "fundamentals_employees",
         ("ticker", "as_of"),

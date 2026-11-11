@@ -1,10 +1,11 @@
-"""The stored tables that keep a filer CIK per row, and the removal record a foreign filer leaves.
+"""The stored tables that keep a filer CIK per row, and the removal and move records a foreign filer leaves.
 
-Shared by `identity --only propagate` (which purges) and the identity validator (which recomputes the same
+Shared by `identity --only sync` (which moves and purges) and the identity validator (which recomputes the same
 pending removals through the store); a row is foreign when its filer CIK is not a CIK of its ticker's entity
 (`own_filer_mask`), for a dated table (8-K, 13D/13G) also when no seam-widened window of that CIK
 admits its date (`windowed_filer_mask`), and for a consolidating table also when that CIK holds no window
-of the ticker at all (`window_owner_mask`).
+of the ticker at all (`window_owner_mask`). A foreign row that another universe ticker's scope holds moves there
+(`moved_filer_rows`, `move_filer_rows`).
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
-#: One row per (table, ticker, filer CIK) a propagation removes; `cik` is empty for a symbol tape.
+#: One row per (table, ticker, filer CIK) a sync removes.
 REMOVAL_COLUMNS = ("table", "ticker", "cik", "first_filed", "last_filed", "keys", "rows")
+#: One row per (table, ticker, filer CIK, new ticker) a sync moves; `kept` rows already stood under the new key.
+MOVE_COLUMNS = ("table", "ticker", "cik", "new_ticker", "first_filed", "last_filed", "rows", "kept")
 #: Tickers read per scoped load, and keys per targeted delete.
 _TICKER_CHUNK = 50
 _KEY_CHUNK = 500
@@ -178,6 +181,62 @@ def foreign_filer_rows(
         frames.append(rows[foreign_mask(spec, rows, own_ciks, own_windows)])
     found = [frame for frame in frames if not frame.empty]
     return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=columns)
+
+
+def moved_filer_rows(
+    spec: FilerTable, foreign: pd.DataFrame, own_ciks: Mapping[str, frozenset[str]], own_windows: Mapping[str, Sequence[ListedWindow]]
+) -> pd.DataFrame:
+    """The `foreign` rows whose filer CIK is now a CIK of another universe ticker whose scope holds them (`foreign_mask`
+    under that ticker), with that `new_ticker`; the index of `foreign` is kept."""
+    owner = {cik: ticker for ticker, ciks in own_ciks.items() for cik in ciks}
+    target = foreign[spec.cik_col].map(pad_cik).map(owner)
+    candidates = target.notna() & target.ne(foreign["ticker"].map(normalise_ticker))
+    moved = foreign[candidates].assign(ticker=target[candidates])
+    held = ~foreign_mask(spec, moved, own_ciks, own_windows) if not moved.empty else pd.Series(dtype=bool)
+    return foreign[candidates][held.to_numpy(dtype=bool)].assign(new_ticker=target[candidates][held.to_numpy(dtype=bool)])
+
+
+def move_filer_rows(store: DataStore, spec: FilerTable, moved: pd.DataFrame) -> list[dict]:
+    """Re-ticker `moved` rows to their `new_ticker` by delete + insert, one transaction per key chunk; a row whose new
+    primary key is already stored is dropped and the stored row kept. One `MOVE_COLUMNS` record per moved group."""
+    records: list[dict] = []
+    for (ticker, cik, new), group in moved.groupby(["ticker", spec.cik_col, "new_ticker"], sort=True):
+        keys = sorted(group[spec.key_col].astype(str).unique())
+        counts = [
+            _move_chunk(store, spec, {"ticker": ticker, spec.cik_col: cik}, new, keys[start : start + _KEY_CHUNK])
+            for start in range(0, len(keys), _KEY_CHUNK)
+        ]
+        rows, kept = sum(count[0] for count in counts), sum(count[1] for count in counts)
+        first, last = filing_window(group[spec.date_col])
+        records.append(
+            {"table": spec.table.name, "ticker": str(ticker), "cik": str(cik), "new_ticker": str(new), "first_filed": first, "last_filed": last}
+            | {"rows": rows, "kept": kept}
+        )
+    return records
+
+
+def _move_chunk(store: DataStore, spec: FilerTable, filer: dict[str, object], new: str, chunk: list[str]) -> tuple[int, int]:
+    """Re-ticker one key chunk of a `filer` (`ticker`, CIK) to `new` in one transaction; returns (rows read, rows dropped
+    because their new primary key is already stored)."""
+    with store.transaction() as bound:
+        where = {**filer, spec.key_col: chunk}
+        df_rows = bound.load(spec.table, where=where, optional=True)
+        df_held = bound.load(spec.table, columns=list(spec.table.pk), where={"ticker": new, spec.key_col: chunk}, optional=True)
+        df_new = _new_keys(df_rows.assign(ticker=new) if df_rows is not None else pd.DataFrame(), df_held, spec.table.pk)
+        bound.delete(spec.table, where)
+        bound.insert(spec.table, df_new)
+    read = 0 if df_rows is None else len(df_rows)
+    return read, read - len(df_new)
+
+
+def _new_keys(rows: pd.DataFrame, held: pd.DataFrame | None, pk: Sequence[str]) -> pd.DataFrame:
+    """`rows` whose primary key `held` does not already store."""
+    if rows.empty or held is None or held.empty or "ticker" not in pk:
+        return rows
+    keys = list(pk)
+    stored = held[keys].astype(str).drop_duplicates().assign(_held=True)
+    flags = rows[keys].astype(str).merge(stored, on=keys, how="left")["_held"].notna().to_numpy()
+    return rows[~flags]
 
 
 def delete_filer_rows(store: DataStore, spec: FilerTable, foreign: pd.DataFrame) -> None:

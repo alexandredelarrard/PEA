@@ -41,7 +41,10 @@ import pandas as pd
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context, get_config_context
+from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_store.schema import Tables
+from src.utils.identity_tables import read_identity
+from src.utils.price.adjustments import load_bugfix
 
 #: (label, Table, date column). The sources the institutionals feature families read, plus
 #: `prices` and the fundamentals history as reference denominators -- a source that starts late
@@ -52,17 +55,41 @@ _SOURCES = [
     ("insider", Tables.insider_transactions, "filing_date"),
     ("13D", Tables.sec_13d, "filing_date"),
     ("13G", Tables.sec_13g, "filing_date"),
-    ("shortvol", Tables.short_interest, "date"),
-    ("FTD", Tables.sec_fails_to_deliver, "date"),
     ("fundamentals", Tables.sec_fundamentals_history, "as_of"),
 ]
 
 
+def security_series(context: Context) -> dict[str, pd.DataFrame | None]:
+    """The short-volume and FTD (ticker, date) series of the universe, built from the security-grain tables as the
+    institutionals cube builds them (dated `universe_cusip` / `universe_cik_symbol` mapping, class ratios, ticker sums)."""
+    store = context.store
+    universe = list(context.universe.tickers)
+    lines = institutional_inputs.load_ftd_lines(store)
+    lineage = read_identity(store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
+    short, _ = institutional_inputs.load_short_volume(store, universe, lines, lineage)
+    fails, _ = institutional_inputs.load_fails(store, universe, lines, load_bugfix(context.config_dir))
+    return {"shortvol": short, "FTD": fails}
+
+
+def _tickers_per_year(frame: pd.DataFrame, date_col: str, per_year: dict[int, set]) -> None:
+    """Add each calendar year's distinct tickers of `frame` to `per_year`."""
+    years = pd.to_datetime(frame[date_col], errors="coerce").dt.year
+    for year, values in frame.assign(_y=years).dropna(subset=["_y"]).groupby("_y")["ticker"]:
+        per_year.setdefault(int(cast(int, year)), set()).update(values.dropna().unique())
+
+
 def ticker_coverage(context: Context, since_year: int) -> pd.DataFrame:
-    """Distinct tickers present per calendar year, one column per source (`prices`: universe tickers only)."""
+    """Distinct tickers present per calendar year, one column per source (`prices`: universe tickers only; short
+    volume and FTD: the cube's per-ticker series of the universe)."""
     since = pd.Timestamp(f"{since_year}-01-01")
     universe = context.universe.tickers
     columns: dict[str, pd.Series] = {}
+    for label, series in security_series(context).items():
+        per_year: dict[int, set] = {}
+        if series is not None and not series.empty:
+            _tickers_per_year(series.loc[pd.to_datetime(series["date"]) >= since], "date", per_year)
+        if per_year:
+            columns[label] = pd.Series({y: len(v) for y, v in per_year.items()})
     for label, table, date_col in _SOURCES:
         if not context.store.exists(table):
             continue
@@ -71,9 +98,7 @@ def ticker_coverage(context: Context, since_year: int) -> pd.DataFrame:
         per_year: dict[int, set] = {}
         where: dict[str, object] | None = {"ticker": universe} if table is Tables.prices else None
         for chunk in context.store.iter_load(table, columns=["ticker", date_col], where=where, date_col=date_col, since=since):
-            years = pd.to_datetime(chunk[date_col], errors="coerce").dt.year
-            for year, values in chunk.assign(_y=years).dropna(subset=["_y"]).groupby("_y")["ticker"]:
-                per_year.setdefault(int(cast(int, year)), set()).update(values.dropna().unique())
+            _tickers_per_year(chunk, date_col, per_year)
         if per_year:
             columns[label] = pd.Series({y: len(v) for y, v in per_year.items()})
     if not columns:

@@ -24,7 +24,6 @@ from src.data_extract.utils.institutionals.value_units import (
     NO_EVIDENCE,
     caption_factor,
 )
-from src.utils.identity_tables import LINE_COLUMNS
 
 
 def test_cover_billion_does_not_set_information_table_units() -> None:
@@ -366,7 +365,7 @@ def test_value_total_mismatch_is_saved_with_a_warning(filing_store: Any, caplog:
         )
     assert "the cover is a reference only, filing kept" in _messages(caplog)
     assert manifest.iloc[0].declared_value_total == 777.0 and manifest.iloc[0].source_value_total == 1_050_000
-    assert save_hr_filing(filing_store, manifest, book, pd.DataFrame(columns=LINE_COLUMNS), None) == len(cells)
+    assert save_hr_filing(filing_store, manifest, book, None) == len(cells)
     print("SANITY: XML cover total 777 against a 1,050,000 VALUE column -> WARNING, filing kept and saved, cover stored as filed.")
 
 

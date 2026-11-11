@@ -26,7 +26,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marke
 from src.data_extract.utils.edgar_extract.employee_document import EmployeeText
 from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
-from src.data_extract.utils.identity.identity_propagate import owned_scopes, purge_rows
+from src.data_extract.utils.identity.identity_sync import owned_scopes, sync_filer_rows
 from src.data_extract.utils.structure.def14a import fetch as def14a_llm
 from src.data_extract.utils.structure.votes.fetch import fetch_8k_votes_llm
 from src.data_store import ddl
@@ -213,9 +213,10 @@ def test_first_night_in_dag_order_creates_and_fills_both_text_tables(night: Any)
     text_tables = (Tables.sec_employees_text, Tables.sec_def14a_text)
     created_tables = (*text_tables, *DEF14A_TABLES)
 
-    # identity purge on the empty store, then the LLM steps before any text table exists
+    # identity sync on the empty store, then the LLM steps before any text table exists
     missing_before = [table.name for table in created_tables if not store.exists(table)]
-    purged = [r for spec in PURGE_TABLES for r in purge_rows(ctx, spec, ["AAA", "BBB"], owned_scopes(night.identity), night.identity.bounds, False)]
+    owned = owned_scopes(night.identity)
+    purged = [r for spec in PURGE_TABLES for r in sync_filer_rows(ctx, spec, ["AAA", "BBB"], owned, night.identity.bounds)[0]]
     before = _llm_steps(ctx)
 
     # the two text walks through the step (each creates its table), then the 8-K walk's 5.07 narrative and the LLM steps

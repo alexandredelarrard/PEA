@@ -316,7 +316,7 @@ def test_loader_normalizes_before_first_filing_and_role_metadata(sqlite_store: A
         return iter([df_source]) if table == Tables.insider_transactions else original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", stream)
-    loaded = load_insider_transactions(sqlite_store, ["AAA"])
+    loaded = load_insider_transactions(sqlite_store, ["AAA"], None)
     assert loaded is not None and loaded.first_filed["AAA"] == pd.Timestamp("2024-01-10")
     assert loaded.transactions["filing_date"].isna().tolist() == [True, False]
     assert loaded.transactions["filing_date_raw"].iloc[0].year == 1

@@ -20,11 +20,24 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import read_identity
+from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, load_fails_basis, prepare_master, short_volume_series
 from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+#: The `universe_cusip` columns of the FTD lines the cube maps the security-grain sources with.
+FTD_LINE_COLUMNS = (*CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role", "cusip")
+#: The `universe_cik_symbol` columns the short-volume lineage fallback reads.
+LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
+#: The share-class letter of an insider `security_title` ("Class A Common Stock", "Series B").
+_CLASS_LETTER = r"(?i)\b(?:CLASS|SERIES)\s+([A-Z])\b"
+
+
+def load_ftd_lines(store: DataStore) -> pd.DataFrame | None:
+    """The FTD `universe_cusip` lines (`FTD_LINE_COLUMNS`); None before the first identity build."""
+    return read_identity(store, Tables.universe_cusip, columns=FTD_LINE_COLUMNS, where={"source": "ftd"}, optional=True)
 
 
 def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.DataFrame:
@@ -34,18 +47,22 @@ def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.Da
     return df_bars if df_bars is not None else pd.DataFrame(columns=["ticker", "date", "volume"])
 
 
-def load_finra_tenure(store: DataStore, universe: Sequence[str]) -> pd.DataFrame | None:
-    """Observed fallback stamps already resolved by FINRA's dated owner/class mapper; missing dates stay unknown."""
-    if not universe or not store.exists(Tables.sec_short_volume_security):
-        return None
-    columns = ("date", "ticker", "security_id", "lineage_role", "security_class")
-    chunks = []
-    for chunk in store.iter_load(
-        Tables.sec_short_volume_security, columns=columns, where={"ticker": sorted(set(universe)), "lineage_role": list(CANONICAL_ROLES)}
-    ):
-        selected = chunk["security_id"].fillna("").str.fullmatch(r"S\d{10}:[A-Z0-9][A-Z0-9.-]*")
-        chunks.append(chunk.loc[selected].drop_duplicates())
-    return pd.concat(chunks, ignore_index=True).drop_duplicates() if chunks else None
+def load_short_volume(
+    store: DataStore, universe: Sequence[str], lines: pd.DataFrame | None, lineage: pd.DataFrame | None
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """The short-volume series of the `universe` companies and the lineage-fallback stamps the tenure mask reads, built
+    from the as-filed FINRA lines, the step's `universe_cusip` lines and its `universe_cik_symbol` rows
+    (`security_series.short_volume_series`)."""
+    # one read of the stored lines
+    stored = store.load(Tables.sec_short_volume_security, columns=list(SHORT_LINE_COLUMNS), optional=True)
+    if stored is None or stored.empty or lines is None or lineage is None or not universe:
+        logger.warning("%s or the identity tables are absent -> short-volume features are skipped.", Tables.sec_short_volume_security.name)
+        return None, None
+
+    # every universe company's series and its fallback stamps
+    series, fallback = short_volume_series(stored, lines, lineage, universe)
+    logger.info("Loaded %s: %s lines -> %s series rows", Tables.sec_short_volume_security.name, len(stored), len(series))
+    return series, (fallback if not fallback.empty else None)
 
 
 @dataclass(frozen=True)
@@ -58,7 +75,7 @@ class InsiderSource:
     first_filed: pd.Series
 
 
-def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> InsiderSource | None:
+def load_insider_transactions(store: DataStore, universe: Sequence[str] | None, lines: pd.DataFrame | None) -> InsiderSource | None:
     """Retain full issuer metadata, then select canonical economic rows and actual empty markers."""
     table = Tables.insider_transactions
     present = store.columns(table)
@@ -68,7 +85,7 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
 
     # keep columns needed & read data in chunks; the frontier is the whole table's newest filing
     complete_through = store.max_date(table, "filing_date")
-    columns = set(present).intersection(set((*table.read_columns, "issuer_cik", "lineage_role")))
+    columns = set(present).intersection(set((*table.read_columns, "issuer_cik", "lineage_role", "economic_date")))
     where: dict[str, Any] = {}
     if universe is not None:
         where["ticker"] = sorted(set(universe))
@@ -81,13 +98,42 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
         logger.warning("%s lacks required source metadata -> insider features are skipped.", table.name)
         return None
 
-    # clean dates of insider
-    df_rows = normalize_insider_dates(df_rows)
+    # shares as filed -> canonical-class shares; clean dates of insider
+    df_rows = normalize_insider_dates(canonical_class_units(df_rows, lines))
     first = df_rows["filing_date"].groupby(df_rows["ticker"]).min()
     selected = df_rows["lineage_role"].isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
 
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
     return InsiderSource(df_rows.loc[selected], complete_through, first)
+
+
+def canonical_class_units(df_rows: pd.DataFrame, lines: pd.DataFrame | None) -> pd.DataFrame:
+    """`df_rows` (as filed) with each non-derivative row of a class traded at a contractual ratio in canonical-class
+    shares: `shares` and `shares_owned_after` x the `universe_cusip` line's `conversion_ratio` of the row's ticker and
+    `security_title` class ("Class A ...") holding its `economic_date`, `price_per_share` / it; `value_usd` unchanged."""
+    ratio_lines = None if lines is None else lines.loc[pd.to_numeric(lines["conversion_ratio"], errors="coerce").ne(1.0)]
+    if ratio_lines is None or ratio_lines.empty or df_rows.empty:
+        return df_rows
+
+    # compute: each non-derivative class row's ratio from the line of its company and class covering its economic date
+    letters = df_rows["security_title"].astype("string").str.extract(_CLASS_LETTER, expand=False).str.upper()
+    day = pd.to_datetime(df_rows.reindex(columns=["economic_date"])["economic_date"], errors="coerce")
+    rows = pd.DataFrame({"canonical_company": df_rows["ticker"], "security_class": ("class_" + letters).astype(object), "day": day})
+    rows = rows.loc[df_rows["security_type"].eq("nonderiv") & letters.notna()].reset_index()
+    hits = rows.merge(ratio_lines[["canonical_company", "security_class", "valid_from", "valid_to", "conversion_ratio"]])
+    start, end = pd.to_datetime(hits["valid_from"]), pd.to_datetime(hits["valid_to"])
+    hits = hits.loc[hits["day"].ge(start) & (hits["day"].lt(end) | end.isna())].drop_duplicates("index", keep="last")
+    if hits.empty:
+        return df_rows
+    ratio = pd.Series(1.0, index=df_rows.index)
+    ratio[hits["index"].to_numpy()] = pd.to_numeric(hits["conversion_ratio"]).to_numpy()
+
+    # post-process: canonical-class quantities, the price per canonical share
+    out = df_rows.copy()
+    for column in ("shares", "shares_owned_after"):
+        out[column] = pd.to_numeric(out[column], errors="coerce") * ratio
+    out["price_per_share"] = pd.to_numeric(out["price_per_share"], errors="coerce") / ratio
+    return out
 
 
 def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame, universe: Sequence[str] | None = None) -> pd.DataFrame:
@@ -162,16 +208,18 @@ def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.Da
     return df_proxy
 
 
-def load_fails(store: DataStore, universe: Sequence[str]) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Keep global ZIP/date coverage while retaining only requested economic rows."""
-    coverage_chunks, ticker_chunks = [], []
-
-    # Preserve market-wide observed dates before discarding other tickers' rows.
-    for df_chunk in store.iter_load(Tables.sec_fails_to_deliver, project=True):
-        coverage_chunks.append(df_chunk[["date", "period"]].drop_duplicates())
-        ticker_chunks.append(df_chunk.loc[df_chunk["ticker"].isin(universe)])
-    if not coverage_chunks:
+def load_fails(
+    store: DataStore, universe: Sequence[str], lines: pd.DataFrame | None, bugfix: dict
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """The FTD series of the `universe` companies and the market-wide served calendar, built from the as-filed security
+    lines and the step's `universe_cusip` lines (`security_series.fails_series`)."""
+    # one read of the stored lines and of the share basis of the FTD lines' classes and companies
+    stored = store.load(Tables.sec_fails_to_deliver_security, columns=list(LINE_COLUMNS), optional=True)
+    master = prepare_master(lines) if lines is not None else None
+    if stored is None or stored.empty or master is None or master.empty:
         return None, None
+    basis = load_fails_basis(store, bugfix, master)
 
-    # Assemble the scoped economics and compact global coverage independently.
-    return pd.concat(ticker_chunks, ignore_index=True), pd.concat(coverage_chunks, ignore_index=True).drop_duplicates()
+    # every company's series and the served dates; the economics of the universe only
+    series, coverage = fails_series(stored, master, basis)
+    return series.loc[series["ticker"].isin(set(universe))].reset_index(drop=True), coverage

@@ -27,8 +27,8 @@ tables in this registry publish on a different clock than the period they descri
 registry's own answer to that question, never `date_col` and never a name written here.
 
 ⚠ AND BOTH SIDES GO THROUGH `frame.as_ts`. `sec_13d.filing_date`, `sec_13g.filing_date` and
-`sec_fails_to_deliver.date` are Postgres DATE and come back as `datetime.date`;
-`prices.date`, `sec_short_interest.date` and the cube parts' `date` are TIMESTAMP and come
+`sec_fails_to_deliver_security.date` and `sec_short_volume_security.date` are Postgres DATE and come back as
+`datetime.date`; `prices.date` and the cube parts' `date` are TIMESTAMP and come
 back as `pd.Timestamp`. Comparing one against the other raises rather than answering, and this
 is exactly the bug class a parquet-cached harness never sees, because parquet round-trips both
 as nanoseconds.
@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
@@ -60,6 +61,9 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
+from src.utils.identity_tables import read_identity
+from src.utils.security_series import finra_key
+from src.utils.string import squash
 from src.validate.frame import as_ts, column_groups, feature_columns
 from src.validate.io import CHUNK_ROWS, cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
@@ -77,6 +81,10 @@ _MAX_FINDINGS = 25
 
 #: Violating (ticker, leg) pairs carried in `metrics`, worst lead first.
 _MAX_EXAMPLES = 50
+
+#: Security-grain sources: the key column their lines carry, mapped to a company by the same `universe_cusip` column, and
+#: the spelling both sides are compared in (a FINRA symbol by its FTD spelling, `BRK/A` -> `BRKA`).
+_SECURITY_KEYS = {Tables.sec_fails_to_deliver_security.name: ("cusip", squash), Tables.sec_short_volume_security.name: ("source_symbol", finra_key)}
 
 
 def _horizons(columns: list[str], pattern: str) -> dict[str, tuple[int, str]]:
@@ -108,24 +116,51 @@ def _first_per_ticker(frame: pd.DataFrame, ticker_col: str, date_col: str, leg: 
     return present.groupby(ticker_col)[date_col].min()
 
 
+def _security_owners(context: Context, key_col: str, spelling: Callable[[object], str]) -> pd.DataFrame:
+    """`[key, ticker, valid_from, valid_to]`: each FTD-line key of a `universe_cusip` line with its company and the dates
+    the line covers (`valid_from <= date < valid_to`, a NULL end open)."""
+    columns = [key_col, "canonical_company", "valid_from", "valid_to"]
+    lines = read_identity(context.store, Tables.universe_cusip, columns=columns, where={"source": "ftd"}, optional=True)
+    if lines is None:
+        return pd.DataFrame(columns=["key", "ticker", "valid_from", "valid_to"])
+    lines = lines.dropna(subset=[key_col, "canonical_company"])
+    owners = pd.DataFrame(
+        {
+            "key": lines[key_col].astype(str).map(spelling),
+            "ticker": lines["canonical_company"].astype(str),
+            "valid_from": as_ts(lines["valid_from"]),
+            "valid_to": as_ts(lines["valid_to"]),
+        }
+    )
+    return owners.drop_duplicates(ignore_index=True)
+
+
 def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
-    """Per ticker, the first date this source PUBLISHED anything, streamed.
+    """Per ticker, the first date this source PUBLISHED anything, streamed. A security-grain source (`_SECURITY_KEYS`)
+    carries no ticker: its key maps to the companies through `universe_cusip`, on the dates each line covers.
 
     Returns `(series, clock)` where `clock` names the column used, so the result can show
     which clock each family was judged against rather than asking the reader to trust it."""
     spec = resolve(source)
     clock = spec.freshness_col
-    if clock is None or spec.ticker_col is None:
+    security = _SECURITY_KEYS.get(spec.name)
+    key_col = security[0] if security is not None else spec.ticker_col
+    if clock is None or key_col is None:
         raise LookupError(f"`{spec.name}` declares no publication clock (freshness_col={clock!r}, ticker_col={spec.ticker_col!r})")
     live = context.store.columns(spec)
-    if clock not in live or spec.ticker_col not in live:
-        raise LookupError(f"`{spec.name}` does not carry {spec.ticker_col!r}/{clock!r}")
+    if clock not in live or key_col not in live:
+        raise LookupError(f"`{spec.name}` does not carry {key_col!r}/{clock!r}")
+    owners = _security_owners(context, *security) if security is not None else None
 
     running: pd.Series | None = None
-    for chunk in context.store.iter_load(spec, columns=[spec.ticker_col, clock], chunksize=CHUNK_ROWS):
-        chunk = chunk.assign(**{clock: as_ts(chunk[clock])})
-        keys = chunk[spec.ticker_col].astype(str).str.strip().str.upper()
-        part = chunk.groupby(keys)[clock].min()
+    for chunk in context.store.iter_load(spec, columns=[key_col, clock], chunksize=CHUNK_ROWS):
+        keys = chunk[key_col].map(security[1]) if security is not None else chunk[key_col].astype(str).str.strip().str.upper()
+        chunk = chunk.assign(**{clock: as_ts(chunk[clock])}, key=keys)
+        if owners is not None:
+            chunk = chunk.merge(owners, on="key")
+            covered = chunk[clock].ge(chunk["valid_from"]) & (chunk["valid_to"].isna() | chunk[clock].lt(chunk["valid_to"]))
+            chunk = chunk.loc[covered].assign(key=lambda frame: frame["ticker"])
+        part = chunk.groupby("key")[clock].min()
         running = part if running is None else pd.concat([running, part]).groupby(level=0).min()
     return (running if running is not None else pd.Series(dtype="datetime64[ns]")), clock
 

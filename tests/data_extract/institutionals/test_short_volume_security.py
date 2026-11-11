@@ -1,37 +1,32 @@
-"""Short volume per security (Q2c): raw FINRA RegSHO rows stamped through `universe_cusip`, the ticker table rebuilt.
+"""Short volume per security (P5): FINRA RegSHO lines stored as filed, source columns only; the scope a line is kept by.
 
-The master rows are real (the Q2a build over the whole FTD cache) for BRK-B, BAC, GOOGL, LEN and DOC; the FINRA
-lines copy the real symbology of the CNMSshvol files (`BRK/A`, `BACpB`, `LEN/B`, fractional volumes, `Market`).
-Symbols never seen in FTD (E25) use a hand-written lineage with a roster CIK, a predecessor window CIK and an
-event-only CIK.
+The FINRA lines copy the real symbology of the CNMSshvol files (`BRK/A`, `BACpB`, fractional volumes, `Market`). The
+cube maps them to companies (`tests/data_aggregate/test_short_volume_series.py`, which reads the fixtures below).
+
+The master rows are real (the Q2a build over the whole FTD cache) for BRK-B, BAC, GOOGL, LEN and DOC. Symbols never seen
+in FTD (E25) use a hand-written lineage with a roster CIK, a predecessor window CIK and an event-only CIK.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity, load_source_identity
 from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.security_series import SOURCE_FTD
 from tests.canonical_schema import create_canonical
-from tests.data_extract.fake_context import extract_config
 from tests.support.universe import as_roster
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
-#: The run date: LATER falls inside the 7-day re-check window before it, BUILT does not.
-RUN_DATE = pd.Timestamp("2026-10-12")
-LATER = pd.Timestamp("2026-10-06 09:00:00")
 HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
 UNIVERSE = ["BRK-B", "BAC", "GOOGL", "LEN", "DOC", "AAA"]
 
@@ -73,18 +68,12 @@ LINEAGE_ROWS = [
 ]
 
 
-@pytest.fixture
-def sqlite_store(sqlite_store):
-    create_canonical(sqlite_store.engine, [Tables.sec_short_volume_security, Tables.short_interest])
-    return sqlite_store
-
-
 def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.DataFrame:
     columns = ["cusip", "canonical_company", "issuer_cik", "source_symbol", "security_class", "conversion_ratio", "lineage_role"]
     frame = pd.DataFrame(rows, columns=[*columns, "valid_from", "valid_to", "lineage_reason"])
     frame = frame.assign(
         security_id="C" + frame["cusip"],
-        source=sl.SOURCE_FTD,
+        source=SOURCE_FTD,
         market_symbol=frame["source_symbol"],
         exchange=None,
         source_accession=None,
@@ -149,20 +138,17 @@ def _file(day: str, rows: list[tuple[str, float, float, float, str]]) -> str:
     return "\n".join([HEADER, *(f"{day}|{s}|{sv}|{ex}|{tv}|{m}" for s, sv, ex, tv, m in rows), str(len(rows))]) + "\n"
 
 
-def _lines(day: str, rows: list[tuple[str, float, float]]) -> pd.DataFrame:
-    return si._parse_regsho(_file(day, [(s, sv, 0, tv, "Q,N") for s, sv, tv in rows]))
-
-
-def _context(store, tmp_path: Path) -> Any:
-    return SimpleNamespace(
-        store=store,
-        paths={"DATA_STORE": tmp_path},
-        log=logging.getLogger("test.short_volume"),
-        config=extract_config(data_extract={"years_history": 15}),
-    )
-
-
-# --------------------------------------------------------------------------- parse and symbology
+def _berkshire_lineage() -> pd.DataFrame:
+    """Berkshire's lineage: its listed class symbols, a Notes-only bond symbol and a noise symbol."""
+    rows = [
+        ("0001067983", "cik_window", "", "register", "curated"),
+        ("0001067983", "symbol", "BRK-B", "form345,roster", "corroborated"),
+        ("0001067983", "symbol", "BRK-A", "form345", "corroborated"),
+        ("0001067983", "symbol", "BRK59", "dei", "single_source"),
+        ("0001067983", "symbol", "TRUE", "form345", "noise"),
+    ]
+    frame = pd.DataFrame(rows, columns=["cik", "role", "symbol", "sources", "status"])
+    return frame.assign(company_id="E0001067983", canonical_ticker="BRK-B", valid_from=pd.Timestamp("1900-01-01"), valid_to=pd.NaT)
 
 
 def test_parse_keeps_the_raw_symbol_case_market_exempt_and_fractional_volumes():
@@ -186,206 +172,26 @@ def test_parse_keeps_the_raw_symbol_case_market_exempt_and_fractional_volumes():
     print("  BRK/A, BACpB and BACPB kept as filed; fractional 2026 volumes, ShortExemptVolume and Market kept; record-count trailer dropped")
 
 
-@pytest.mark.parametrize(
-    ("symbol", "key", "kind"),
-    [
-        ("BRK/A", "BRKA", None),
-        ("LEN/B", "LENB", None),
-        ("BACpB", "BACPRB", "preferred"),
-        ("BACPB", "BACPB", None),
-        ("BACpY/CL", "BACPRYCL", "preferred"),
-        ("BAC/WS/A", "BACWSA", "warrant"),
-        ("AAC/U", "AACU", "unit"),
-        ("ABCr", "ABCRT", "right"),
-        ("ABCw", "ABCWI", "when_issued"),
-    ],
-)
-def test_finra_symbology_is_read_before_upper_casing(symbol, key, kind):
-    assert si.finra_key(symbol) == key
-    assert si.finra_marker_kind(symbol) == kind
-    print(f"\n=== SANITY CHECK: FINRA symbology {symbol} ===")
-    print(f"  key {key} (the FTD spelling), marker kind {kind}")
+def test_the_scope_is_the_stored_ftd_symbols_the_tickers_and_the_equity_lineage_symbols():
+    symbols = ["BRKA", "BRKB", "BACPRB", "", "JPM"]
+    spans = pd.DataFrame({"source_symbol": symbols, "first": pd.Timestamp("2010-01-04"), "last": pd.Timestamp("2026-06-30")})
+    scope = si.short_scope(_berkshire_lineage(), spans, ["BRK-B", "AAPL"])
+    lineage_keys = set(scope.windows.loc[scope.windows["valid_from"].lt("2000-01-01"), "key"])
+    assert lineage_keys == {"BRKB", "BRKA"}, "the Notes-only bond BRK59 and the noise TRUE are no tape symbols"
+    assert scope.keys == {"BACPRB", "JPM", "AAPL"}, "the stored FTD symbols and tickers that are no (dated) lineage symbol"
+    lines = si._parse_regsho(_file("20260701", [(s, 1, 0, 2, "Q") for s in ("BRK/A", "BACpB", "BRK59", "TRUE", "AAPL", "ZZZZ")]))
+    assert lines.loc[si.in_short_scope(lines, scope), "source_symbol"].tolist() == ["BRK/A", "BACpB", "AAPL"]
+    print("\n=== SANITY CHECK: RegSHO scope ===")
+    print("  BRK/A by its FTD spelling BRKA, BACpB by BACPRB (a stored FTD symbol), AAPL a ticker; BRK59 (Notes only), TRUE (noise), ZZZZ out")
 
 
-# --------------------------------------------------------------------------- resolution through security_on
-
-
-def test_classes_are_separated_summed_by_ratio_and_preferreds_never_summed():
-    lines = _lines(
-        "20200102",
-        [
-            ("BRK/A", 2.0, 10.0),
-            ("BRK/B", 1000.0, 4000.0),
-            ("BACpB", 50.0, 100.0),
-            ("BAC", 7000.0, 30000.0),
-            ("GOOG", 300.0, 900.0),
-            ("GOOGL", 400.0, 1000.0),
-            ("LEN/B", 5.0, 20.0),
-            ("LEN", 60.0, 200.0),
-            ("ZZZZ", 1.0, 2.0),
-        ],
-    )
-    stamped = si.stamp_short_volume(lines, _identity(), UNIVERSE)
-    roles = dict(zip(stamped["source_symbol"], zip(stamped["ticker"], stamped["lineage_role"], stamped["security_class"], strict=True), strict=True))
-    assert roles["BRK/A"] == ("BRK-B", "secondary_class", "class_A") and roles["BRK/B"] == ("BRK-B", "canonical_current", "class_B")
-    assert roles["BACpB"] == ("BAC", "excluded", "preferred")
-    assert roles["GOOG"] == ("GOOGL", "secondary_class", "class_C") and roles["LEN/B"] == ("LEN", "secondary_class", "class_B")
-    assert "ZZZZ" not in roles, "a symbol of no universe security is not kept"
-    grain = si.ticker_rows(stamped).set_index("ticker")
-    assert grain.loc["BRK-B", "short_volume"] == 1000.0 + 1500 * 2.0 and grain.loc["BRK-B", "total_volume"] == 4000.0 + 1500 * 10.0
-    assert grain.loc["BAC", "short_volume"] == 7000.0, "the BACpB preferred contributes 0"
-    assert grain.loc["GOOGL", "short_volume"] == 700.0 and grain.loc["LEN", "total_volume"] == 220.0
-    assert list(si.ticker_rows(stamped).columns) == list(si.TICKER_COLUMNS)
-    print("\n=== SANITY CHECK: class sum ===")
-    print("  BRK-B = B + 1,500 x A; GOOGL = A + C; LEN = A + B; BACpB stored as an excluded preferred and never summed")
-
-
-def test_acquired_constituent_is_kept_labelled_and_never_summed():
-    lines = pd.concat([_lines("20230103", [("DOC", 900.0, 3000.0), ("PEAK", 400.0, 1500.0)]), _lines("20240305", [("DOC", 800.0, 2000.0)])])
-    stamped = si.stamp_short_volume(lines, _identity(), UNIVERSE)
-    by_day = {
-        (s, str(d.date())): (r, i)
-        for s, d, r, i in zip(stamped["source_symbol"], stamped["date"], stamped["lineage_role"], stamped["security_id"], strict=True)
-    }
-    assert by_day[("DOC", "2023-01-03")] == ("acquired_constituent", "C71943U104"), "Physicians Realty's DOC"
-    assert by_day[("DOC", "2024-03-05")] == ("canonical_current", "C42250P103"), "Healthpeak's DOC after the seam"
-    grain = {(t, str(d.date())): v for t, d, v in zip(*si.ticker_rows(stamped)[["ticker", "date", "short_volume"]].T.values, strict=True)}
-    assert grain == {("DOC", "2023-01-03"): 400.0, ("DOC", "2024-03-05"): 800.0}
-    print("\n=== SANITY CHECK: acquired constituent ===")
-    print("  Physicians Realty's DOC (2023) stored as acquired_constituent, 0 in DOC; PEAK counts; DOC counts after 2024-03-01")
-
-
-def test_e14_case_sensitive_keys_differ_and_a_same_key_collision_is_a_conflict():
-    lines = _lines("20200102", [("BACpB", 50.0, 100.0), ("BACPB", 5.0, 10.0)])
-    stamped = si.stamp_short_volume(lines, _identity(), UNIVERSE)
-    assert stamped["source_symbol"].tolist() == ["BACpB"], "BACPB is another key (no master security): not kept"
-    clash = _lines("20200102", [("BACpB", 50.0, 100.0), ("BACPRB", 5.0, 10.0)])
-    stamped = si.stamp_short_volume(clash, _identity(), UNIVERSE)
-    assert sorted(stamped["source_symbol"]) == ["BACPRB", "BACpB"]
-    assert stamped["security_id"].isna().all() and stamped["lineage_role"].isna().all(), "both unresolved on that date"
-    assert si.ticker_rows(stamped).empty
-    print("\n=== SANITY CHECK: E14 FINRA case sensitivity ===")
-    print("  BACpB -> BACPRB and BACPB stay different keys; BACpB with a BACPRB on one date is a conflict: kept unresolved, never summed")
-
-
-def test_e25_a_symbol_never_seen_in_ftd_maps_only_through_a_window_cik_inside_its_window():
-    lines = pd.concat(
-        [
-            _lines("20200601", [("OLDA", 10.0, 100.0), ("ACQ", 20.0, 200.0)]),
-            _lines("20210105", [("OLDA", 11.0, 110.0), ("AAA", 30.0, 300.0), ("AAApA", 1.0, 2.0)]),
-        ]
-    )
-    stamped = si.stamp_short_volume(lines, _identity(), UNIVERSE)
-    got = {
-        (s, str(d.date())): (i, r)
-        for s, d, i, r in zip(stamped["source_symbol"], stamped["date"], stamped["security_id"], stamped["lineage_role"], strict=True)
-    }
-    assert got == {
-        ("OLDA", "2020-06-01"): ("S0000000099:OLDA", "canonical_predecessor"),
-        ("AAA", "2021-01-05"): ("S0000000100:AAA", "canonical_current"),
-    }, got
-    print("\n=== SANITY CHECK: E25 P21 fallback ===")
-    print("  OLDA inside its window CIK's window and AAA on the roster CIK map as S securities;")
-    print("  OLDA after the window, the event-only ACQ and the AAApA preferred are not kept")
-
-
-def test_a_known_key_outside_every_master_interval_is_kept_unresolved():
-    stamped = si.stamp_short_volume(_lines("20150105", [("GOOG", 3.0, 4.0)]), _identity(), UNIVERSE)
-    assert stamped["source_symbol"].tolist() == ["GOOG"] and stamped["lineage_role"].isna().all() and stamped["ticker"].isna().all()
-    assert si.ticker_rows(stamped).empty
-    print("\n=== SANITY CHECK: known key, no interval ===")
-    print("  GOOG in 2015 (before Alphabet's class C line): kept with NULL stamps for a later re-stamp, never summed")
-
-
-# --------------------------------------------------------------------------- consumer schema
-
-
-def test_the_ticker_table_keeps_its_consumer_schema_and_the_raw_table_is_spliced():
+def test_the_raw_table_stores_source_columns_only_and_the_ticker_table_is_gone():
     ddl = (REPO / "sql" / "schema.sql").read_text(encoding="utf-8")
-    block = re.search(r'CREATE TABLE IF NOT EXISTS "sec_short_interest" \((.*?)\);', ddl, re.S)
-    assert block is not None
-    assert re.findall(r'^\s*"(\w+)"', block.group(1), re.M) == ["source_checked_at", *si.TICKER_COLUMNS]
-    assert Tables.short_interest.name == "sec_short_interest" and Tables.short_interest.pk == ("ticker", "date")
-    assert Tables.short_interest.read_columns == (
-        "date",
-        "ticker",
-        "short_volume",
-        "total_volume",
-        "short_interest",
-        "avg_daily_volume",
-        "source_checked_at",
-    )
     raw = re.search(r'CREATE TABLE IF NOT EXISTS "sec_short_volume_security" \((.*?)\);', ddl, re.S)
     assert raw is not None
-    assert re.findall(r'^\s*"(\w+)"', raw.group(1), re.M) == list(si.SECURITY_COLUMNS)
-    assert Tables.sec_short_volume_security.pk == ("source_symbol", "date")
-    print("\n=== SANITY CHECK: consumer schema ===")
-    print(
-        "  sec_short_interest keeps PK (ticker, date) and its financial columns plus optional source evidence; raw source columns and PK stay unchanged"
-    )
-
-
-# --------------------------------------------------------------------------- re-stamp (AC-118, E31, E32)
-
-
-def _stamped_store(store, tmp_path: Path) -> Any:
-    for table, frame in _identity().source_cohort.items():
-        if not frame.empty:
-            store.save(table, frame)
-    lines = pd.concat(
-        [
-            _lines("20200102", [("BRK/A", 2.0, 10.0), ("BRK/B", 1000.0, 4000.0), ("LEN", 60.0, 200.0), ("LEN/B", 5.0, 20.0)]),
-            _lines("20200103", [("LEN", 70.0, 210.0), ("LEN/B", 6.0, 22.0)]),
-        ]
-    )
-    stamped = si.stamp_short_volume(lines, _identity(), UNIVERSE)
-    store.save(Tables.sec_short_volume_security, stamped[list(si.SECURITY_COLUMNS)])
-    store.save(Tables.short_interest, si.ticker_rows(stamped))
-    context = _context(store, tmp_path)
-    return context
-
-
-def test_e31_a_moved_master_boundary_restamps_exactly_the_affected_rows(sqlite_store, tmp_path):
-    context = _stamped_store(sqlite_store, tmp_path)
-    master = _master()
-    lenb = master["cusip"].eq("526057302")
-    master.loc[lenb, "valid_from"] = pd.Timestamp("2020-01-03")  # LEN-B's line now starts one day later
-    master.loc[master["canonical_company"].eq("LEN"), "scope_changed_at"] = LATER
-    sqlite_store.replace(Tables.universe_cusip, master)
-
-    records = si.restamp_short_volume(context, ["LEN"], UNIVERSE, identity=_identity(master, store=sqlite_store))
-
-    raw = sqlite_store.load(Tables.sec_short_volume_security)
-    raw["day"] = pd.to_datetime(raw["date"]).dt.strftime("%Y-%m-%d")
-    lenb = raw[raw["source_symbol"].eq("LEN/B")]
-    lenb_rows = {day: (None if pd.isna(role) else role) for day, role in zip(lenb["day"], lenb["lineage_role"], strict=True)}
-    assert lenb_rows == {"2020-01-02": None, "2020-01-03": "secondary_class"}
-    grain = sqlite_store.load(Tables.short_interest)
-    grain = {(t, str(pd.Timestamp(d).date())): v for t, d, v in zip(grain["ticker"], grain["date"], grain["short_volume"], strict=True)}
-    assert grain[("LEN", "2020-01-02")] == 60.0 and grain[("LEN", "2020-01-03")] == 76.0 and grain[("BRK-B", "2020-01-02")] == 4000.0
-    assert records == []
-    print("\n=== SANITY CHECK: E31 master boundary moved ===")
-    print("  LEN-B's line starts a day later: its 2020-01-02 row loses its stamp and LEN 2020-01-02 drops to 60; BRK-B untouched")
-
-
-def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkeypatch):
-    context = _stamped_store(sqlite_store, tmp_path)
-    resolver = _identity(store=sqlite_store)
-    for name in ("save", "delete", "replace"):
-        monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, **k: pytest.fail(f"unchanged master must not {_n}"))
-    assert si.restamp_short_volume(context, ["LEN", "BRK-B"], UNIVERSE, identity=resolver) == []
-    print("\n=== SANITY CHECK: E32 unchanged master ===")
-    print("  re-stamping LEN and BRK-B under the same master reproduces every stored row: no write")
-
-
-def test_f107_on_a_cusip_change_day_the_single_summed_security_takes_the_finra_line():
-    """STE 2019-03-26: the old CUSIP's last fail and the new CUSIP's first share one trade date under one symbol."""
-    old = ("526057999", "LEN", "0000920760", "LEN", "common", 1.0, "acquired_constituent", "2019-12-31", "2020-01-03", "outside_window")
-    master = _master([*MASTER_ROWS, old])
-    stamped = si.stamp_short_volume(_lines("20200102", [("LEN", 60.0, 200.0)]), _identity(master), UNIVERSE)
-    assert stamped[["security_id", "lineage_role"]].values.tolist() == [["C526057104", "canonical_current"]]
-    both = _master([*MASTER_ROWS, (*old[:6], "canonical_predecessor", *old[7:])])
-    unresolved = si.stamp_short_volume(_lines("20200102", [("LEN", 60.0, 200.0)]), _identity(both), UNIVERSE)
-    assert unresolved["security_id"].isna().all(), "two summed securities on one day stay a conflict"
-    print("\n=== SANITY CHECK: F-107 CUSIP-change day ===")
-    print("  LEN under an acquired line and the canonical line on one day: the canonical takes it; two summed lines stay a conflict")
+    assert re.findall(r'^\s*"(\w+)"', raw.group(1), re.M) == list(si.RAW_COLUMNS)
+    assert "sec_short_interest" not in ddl and not hasattr(Tables, "short_interest")
+    table = Tables.sec_short_volume_security
+    assert table.pk == ("source_symbol", "date") and table.ticker_col is None and table.read_columns == si.RAW_COLUMNS
+    print("\n=== SANITY CHECK: as-filed schema ===")
+    print("  sec_short_volume_security = the six day-file columns, PK (source_symbol, date), no ticker; sec_short_interest removed")

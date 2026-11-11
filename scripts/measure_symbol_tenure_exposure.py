@@ -1,15 +1,16 @@
-"""Size the symbol-reuse exposure of the two CIK-LESS tables. MEASURE ONLY -- no fix (D2).
+"""Size the symbol-reuse exposure of the two CIK-LESS series. MEASURE ONLY -- no fix (D2).
 
-`sec_short_interest` and `sec_fails_to_deliver` are the only tables in the repo that filter a
-GENUINE HISTORICAL TAPE on `Symbol`. FINRA and RegSHO publish every symbol that traded on a
-settlement date, and the fetchers keep the rows whose symbol is in today's universe -- so a
-2011 fails row for the OLD holder of `COR` is admitted under today's `COR`. Unlike the vendor
-fetchers (yfinance, Sharadar), which return today's holder's own back-filled history and so
-cannot carry another company's rows at all, these files really do contain them.
+`sec_short_volume_security` (FINRA RegSHO, per symbol) and `sec_fails_to_deliver_security`
+(SEC FTD, per CUSIP) are GENUINE HISTORICAL TAPES: they publish every security that traded on
+a settlement date, so a symbol reused by another company really appears in them. The
+institutionals cube maps their lines to tickers through the dated `universe_cusip` /
+`universe_cik_symbol` rows; this script classifies each (ticker, date) of the resulting series
+(`source_coverage_report.security_series`) against `symbol_tenure`. Unlike the vendor fetchers
+(yfinance, Sharadar), which return today's holder's own back-filled history, these files can
+carry another company's rows.
 
-⚠ NEITHER TABLE CARRIES A CIK, so the entity comparison the insider screen uses is unavailable
-and `symbol_tenure` is the only resolver there is. This is the phase that justifies axis B
-being built at all.
+⚠ NEITHER TAPE CARRIES A CIK, so the entity comparison the insider screen uses is unavailable
+and `symbol_tenure` is the only resolver there is.
 
 ⚠ THE OUTCOME IS SIX-WAY, NOT TWO, AND EVERY EXTRA BUCKET EXISTS BECAUSE COLLAPSING IT WOULD
 MISSTATE THE DEFECT.
@@ -52,6 +53,7 @@ from pathlib import Path
 from typing import cast
 
 import pandas as pd
+from source_coverage_report import security_series
 
 from src.context import get_config_context
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, load_identity
@@ -61,9 +63,8 @@ from src.data_store.schema import Resume, Tables
 CONFIG_DIR = "./configs"
 OUT = Path("reports") / pd.Timestamp.today().strftime("%Y-%m-%d")
 
-#: ⚠ The attribute name is `short_interest` while the TABLE is `sec_short_interest` -- one of
-#: the five registry entries whose two names differ.
-TABLES = [(Tables.short_interest, "sec_short_interest"), (Tables.sec_fails_to_deliver, "sec_fails_to_deliver")]
+#: `security_series` label -> the report name of each series.
+SERIES = {"shortvol": "short_volume", "FTD": "fails_to_deliver"}
 
 
 def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None, blind: frozenset[str]) -> str:
@@ -91,8 +92,8 @@ def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None, bl
     return "held" if holder == expected else "other_entity"
 
 
-def measure(store, identity, table, name: str, blind: frozenset[str]) -> pd.DataFrame:
-    df = store.load(table, columns=["ticker", "date"])
+def measure(series: pd.DataFrame, identity, name: str, blind: frozenset[str]) -> pd.DataFrame:
+    df = series[["ticker", "date"]].drop_duplicates().reset_index(drop=True)
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     df["date"] = pd.to_datetime(df["date"])
     print(f"\n=== {name} ===")
@@ -142,8 +143,12 @@ def main() -> None:
     print(f"\n  {len(blind)} tenure-blind ticker(s) from the D19 allow-list: {', '.join(sorted(blind))}")
     OUT.mkdir(parents=True, exist_ok=True)
     summary = []
-    for table, name in TABLES:
-        df = measure(context.store, identity, table, name, blind)
+    for label, series in security_series(context).items():
+        name = SERIES[label]
+        if series is None or series.empty:
+            print(f"\n=== {name} === no series (table or identity rows absent)")
+            continue
+        df = measure(series, identity, name, blind)
         row = {
             "table": name,
             "rows": len(df),
@@ -157,11 +162,7 @@ def main() -> None:
     out = pd.DataFrame(summary).fillna(0)
     out.to_csv(OUT / "symbol_tenure_exposure.csv", index=False)
     print(f"\n  written to {OUT}/symbol_tenure_exposure.csv")
-    print(
-        "\n  ⚠ NO FETCHER WAS CHANGED (D2). The natural fix input for the follow-up task is "
-        "the FTD source file's UNREAD CUSIP column (fetch_fails_to_deliver.py:80-81), which "
-        "would give these rows the issuer key they lack; it is deliberately not parsed here."
-    )
+    print("\n  measure only: `other_entity` rows point at a `universe_cusip` / `universe_cik_symbol` window to review.")
 
 
 if __name__ == "__main__":

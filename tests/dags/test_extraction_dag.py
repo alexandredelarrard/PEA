@@ -101,7 +101,7 @@ def test_freshness_inventory_comes_only_from_schema():
 
 
 #: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, FTD, SEC current tickers),
-#: then the identity step (captures, build, propagation).
+#: then the identity step (captures, build, sync).
 IDENTITY_DOWNLOADS = {"zips_download"}
 #: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
 ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
@@ -257,7 +257,7 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     position = {task: index for index, task in enumerate(order)}
     after_identity = _descendants(graph, "identity")
 
-    # zip downloads -> identity (captures, build, propagation) -> every consumer, the two zip ingests included
+    # zip downloads -> identity (captures, build, sync) -> every consumer, the two zip ingests included
     for download in IDENTITY_DOWNLOADS:
         assert "identity" in graph[download], f"{download} must feed identity"
     assert graph["identity"] == IDENTITY_CONSUMERS | {"edgar_index", "extraction_status", "price_history"}, sorted(graph["identity"])
@@ -382,7 +382,7 @@ def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(mon
     print("\n=== SANITY CHECK: insider tasks by pool (D-8) ===")
     print(f"  zips_ingest_insider: {bulk['pool']} -> {bulk['bash_command'].split(' -m src data_extract ')[1]}")
     print(f"  insider_edgar: {walk['pool']} ({walk['pool_slots']} slots) -> {walk['bash_command'].split(' -m src data_extract ')[1]}")
-    print("  OK: the live EDGAR walk holds both sec_api slots and starts after the bulk parse and the identity propagation.")
+    print("  OK: the live EDGAR walk holds both sec_api slots and starts after the bulk parse and the identity sync.")
 
 
 def test_one_price_task_and_no_alias_commands():
@@ -580,7 +580,7 @@ def test_the_evidence_lands_before_the_universe_sync_and_never_stops_the_night()
     print("  a failed sharadar_actions or sec_submissions -> sync, identity, consumers and the aggregation trigger still succeed. Validated.")
 
 
-#: identity build modules: every `Tables.<name>` they name is an input of the build (captures write, propagation rewrites).
+#: identity build modules: every `Tables.<name>` they name is an input of the build (captures write, the sync rewrites).
 IDENTITY_BUILD_FILES = (
     "src/data_extract/utils/identity/symbol_tenure.py",
     "src/data_extract/transformers/step_extract_identity.py",
@@ -601,8 +601,7 @@ INPUT_PRODUCERS = {
     "symbol_tenure": {"identity"},
     "universe_cik_symbol": {"identity"},
     "universe_cusip": {"identity"},
-    "sec_fails_to_deliver_security": {"identity"},  # the capture adds the lines; `zips_ingest_datasets` only stamps them
-    "sec_fails_to_deliver": {"identity", "zips_ingest_datasets"},  # the capture keeps (unverified) the derived rows of a re-read period
+    "sec_fails_to_deliver_security": {"zips_ingest_datasets"},  # the FTD ingest stores the lines as filed
     "sec_short_volume_security": {"short_interest"},
     "prices": {"price_history"},
     "sec13f_hr": {"thirteen_f", "thirteen_f_backfill"},
@@ -610,9 +609,9 @@ INPUT_PRODUCERS = {
     "sec_13g": {"sec_13g"},
 }
 #: inputs read one night old, as history only. U-3: prices, 13F and 13D/G CUSIPs. X15 (2026-11-04): the CUSIP history's
-#: FINRA presence check (`sec_short_volume_security`). `sec_fails_to_deliver`: the FTD capture keeps the derived rows the
-#: ingest wrote last night for a period it re-reads (the ingest rebuilds them after identity).
-ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security", "sec_fails_to_deliver"}
+#: FINRA presence check (`sec_short_volume_security`). Q4 (2026-11-09): the CUSIP history reads the FTD lines the ingest
+#: stored last night (`sec_fails_to_deliver_security`).
+ONE_NIGHT_LAG = {"prices", "sec13f_hr", "sec_13d", "sec_13g", "sec_short_volume_security", "sec_fails_to_deliver_security"}
 
 
 def test_identity_reads_no_input_written_later_in_the_night():

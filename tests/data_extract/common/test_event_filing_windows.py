@@ -1,7 +1,7 @@
 """P35: a CIK's 8-K and 13D/13G filings belong to a ticker only on the dates the CIK is the company.
 
 Listing keeps them inside the CIK's seam-widened window, an acquired target's event-only CIK contributes
-none, the propagation purge and the validator remove stored rows outside the windows, and the gate names
+none, the sync purge and the validator remove stored rows outside the windows, and the gate names
 the removal. Insider forms keep listing over every CIK of the entity with their stored role (D-Q2-1).
 Offline: a real `Identity` over hand-written lineage rows (CB, MRK, TMUS) and a real SQLite `DataStore`.
 """
@@ -21,14 +21,14 @@ from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import Combine, combine_for, resolve_registrant_entries
-from src.data_extract.utils.common.security_lines import ACQUIRED_CONSTITUENT
 from src.data_extract.utils.edgar_extract import schedule_rows
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
 from src.data_store.schema import Resume, Tables
+from src.utils.security_series import ACQUIRED_CONSTITUENT
 from src.validate.checks.identity import pending_removals
 from tests.support import identity_regression_gate as gate
-from tests.support.propagation import run_propagation
+from tests.support.identity_sync import run_sync
 from tests.support.universe import as_roster, universe_of
 
 SENTINEL = "1900-01-01"
@@ -238,13 +238,11 @@ def test_the_purge_removes_event_rows_outside_their_ciks_windows_and_keeps_insid
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
     identity = _identity()
-    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
-    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
-    monkeypatch.setattr(step_module, "refresh_insider", lambda *args: [])
+    monkeypatch.setattr(step_module, "restamp_insider_lineage", lambda *args, **kwargs: [])
     lineage = _lineage()
     pending = pending_removals(context, lineage, list(ROSTER))
 
-    result = run_propagation(context, identity, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    result = run_sync(context, identity, monkeypatch, as_of=RUN_DATE)
 
     assert _keys(sqlite_store, Tables.sec_8k) == {"ace-1", "merck-1", "mrk-1", "t-1"}
     assert _keys(sqlite_store, Tables.sec_13g) == {"g-ace"}

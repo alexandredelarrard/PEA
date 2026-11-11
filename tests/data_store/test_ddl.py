@@ -49,7 +49,7 @@ Q2A_TABLES = {
     "sec_company_tickers": (("cik", "ticker"), ('"cik" TEXT NOT NULL', '"exchange" TEXT', '"fetched_at" TIMESTAMP')),
     "sec_fails_to_deliver_security": (
         ("cusip", "date"),
-        ('"date" DATE NOT NULL', '"trade_date" DATE', '"price" DOUBLE PRECISION', '"description" TEXT', '"lineage_role" TEXT'),
+        ('"date" DATE NOT NULL', '"trade_date" DATE', '"price" DOUBLE PRECISION', '"description" TEXT', '"period" TEXT'),
     ),
 }
 
@@ -66,7 +66,8 @@ def test_q2a_tables_are_registered_and_spliced_into_schema_sql() -> None:
             assert column in persisted, (name, column)
         generated = ddl.table_ddl(table, [(c, "TEXT") for c in table.read_columns])
         assert generated.split("(", 1)[0] == persisted.split("(", 1)[0]
-    assert "universe_cik_symbol" in blocks and "sec_fails_to_deliver" in blocks and "ix_universe_cik_symbol_company_id" in schema_sql
+    assert "universe_cik_symbol" in blocks and "sec_fails_to_deliver" not in blocks and "ix_universe_cik_symbol_company_id" in schema_sql
+    assert '"ticker"' not in blocks["sec_fails_to_deliver_security"], "the FTD lines are stored as filed: no identity stamp"
     print("\n=== SANITY CHECK: Q2a DDL ===")
     print(f"  {', '.join(Q2A_TABLES)} registered with their PKs and hand-spliced into sql/schema.sql; existing blocks and indexes kept")
 
@@ -83,12 +84,12 @@ def test_q2c_short_volume_security_table_is_registered_and_spliced() -> None:
         '"source_symbol" TEXT NOT NULL',
         '"market" TEXT',
         '"short_exempt_volume" DOUBLE PRECISION',
-        '"security_class" TEXT',
     ):
         assert column in persisted, column
-    assert "sec_short_interest" in blocks and "ix_sec_short_volume_security_ticker" in schema_sql
+    assert '"ticker"' not in persisted and '"security_class"' not in persisted, "the FINRA lines are stored as filed: no identity stamp"
+    assert "sec_short_interest" not in blocks and "ix_sec_short_volume_security_ticker" not in schema_sql
     print("\n=== SANITY CHECK: Q2c DDL ===")
-    print("  sec_short_volume_security registered with PK (source_symbol, date) and hand-spliced; sec_short_interest's block kept")
+    print("  sec_short_volume_security registered with PK (source_symbol, date), source columns only; sec_short_interest removed")
 
 
 def test_edgar_text_tables_are_registered_and_spliced() -> None:

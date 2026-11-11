@@ -19,7 +19,6 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
-from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.edgar_extract import insider_common as ic
@@ -27,7 +26,7 @@ from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
-from tests.support.propagation import run_propagation
+from tests.support.identity_sync import run_sync
 from tests.support.universe import as_roster
 
 OLD_MERCK, SGP = "0000064978", "0000310158"
@@ -369,7 +368,7 @@ def test_the_cube_reads_canonical_insider_rows_only(sqlite_store: Any) -> None:
         ]
     )
     sqlite_store.save(Tables.insider_transactions, rows)
-    got = institutional_inputs.load_insider_transactions(sqlite_store, ["MRK"])
+    got = institutional_inputs.load_insider_transactions(sqlite_store, ["MRK"], None)
     assert got is not None and sorted(got.transactions["accession_number"]) == ["a0", "a1"]
     print("\nSANITY: the insider reader keeps canonical_predecessor and canonical_current rows; acquired and unstamped rows are not read")
 
@@ -444,25 +443,23 @@ def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_p
     )
 
 
-def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The re-stamp is wired into `identity --only propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
+def test_identity_sync_restamps_insider_rows_of_changed_tickers(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The re-stamp is wired into `identity --only sync`: driven by the lineage `scope_changed_at` inside the re-check window."""
     sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=True, mergers=(ACCOUNTING_PLD,))))
     context = _context(sqlite_store, tmp_path)
-    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
-    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
     after = _identity(stamp=pd.Timestamp("2026-01-12 09:00"))
-    run_propagation(context, after, monkeypatch, list(UNIVERSE), as_of=pd.Timestamp("2026-01-13"))
+    run_sync(context, after, monkeypatch, as_of=pd.Timestamp("2026-01-13"))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     assert roles["amb"] == "canonical_current" and roles["opld"] == "acquired_constituent"
-    print("\nSANITY: identity --only propagate re-stamps the stored insider rows of the company whose lineage changed")
+    print("\nSANITY: identity --only sync re-stamps the stored insider rows of the company whose lineage changed")
 
 
-def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lineage_change(
+def test_a_config_edit_restamps_and_purges_on_the_next_sync_without_a_lineage_change(
     sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """P32: declaring a co-registrant or a merger in the manual config moves no lineage stamp, yet the next
-    propagation re-checks the tickers the config names: the PG&E utility row is purged and the boundary-day row
+    sync re-checks the tickers the config names: the PG&E utility row is purged and the boundary-day row
     reporting SGP, canonical without the MRK merger entry, becomes acquired."""
     tenure = pd.DataFrame(
         [
@@ -486,11 +483,9 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     sourced = kept.assign(source="zip")
     sqlite_store.save(Tables.insider_transactions, sourced[[c for c in ic.INSIDER_COLUMNS if c in sourced.columns]])
     context = _context(sqlite_store, tmp_path)
-    monkeypatch.setattr(step_module, "reparse_notes", lambda *args: {})
-    monkeypatch.setattr(step_module, "reparse_insider", lambda *args: {})
 
     after = _identity()  # same lineage and stamps; the shipped merger metadata and both fixture co-registrants
-    result = run_propagation(context, after, monkeypatch, list(UNIVERSE), as_of=STAMP + pd.Timedelta(days=10))
+    result = run_sync(context, after, monkeypatch, as_of=STAMP + pd.Timedelta(days=10))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     print("\n=== SANITY CHECK: config-driven re-stamp (P32) ===")
@@ -499,7 +494,7 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     assert roles == {"sgp_day": "acquired_constituent", "pcg": "canonical_current"}
     assert [(r.ticker, r.cik, r.rows) for r in result.removals.itertuples()] == [("PCG", PCG_UTILITY, 1)]
     print(
-        "  OK: with no lineage change the propagation re-checks the config-named tickers: the new co-registrant's row is purged, the MRK merger entry re-stamps the SGP row."
+        "  OK: with no lineage change the sync re-checks the config-named tickers: the new co-registrant's row is purged, the MRK merger entry re-stamps the SGP row."
     )
 
 

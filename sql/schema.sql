@@ -300,22 +300,10 @@ CREATE TABLE IF NOT EXISTS "prices_splits" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] sec_short_interest  (pk: ticker, date)
-
-CREATE TABLE IF NOT EXISTS "sec_short_interest" (
-    "source_checked_at" TIMESTAMP,
-    "date" TIMESTAMP NOT NULL,
-    "ticker" TEXT NOT NULL,
-    "short_volume" DOUBLE PRECISION,
-    "total_volume" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "date")
-);
-
 -- [extract] sec_short_volume_security  (pk: source_symbol, date)
 -- FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
--- (case kept), `market` the reporting facilities. The four stamp columns come from universe_cusip;
--- NULL when the symbol's security is known but not on that date. short-interest rebuilds
--- sec_short_interest from these rows.
+-- (case kept), `market` the reporting facilities, source columns only. The institutionals cube maps
+-- the lines to companies and sums the classes.
 
 CREATE TABLE IF NOT EXISTS "sec_short_volume_security" (
     "date" DATE NOT NULL,
@@ -324,31 +312,14 @@ CREATE TABLE IF NOT EXISTS "sec_short_volume_security" (
     "short_volume" DOUBLE PRECISION,
     "short_exempt_volume" DOUBLE PRECISION,
     "total_volume" DOUBLE PRECISION,
-    "security_id" TEXT,
-    "ticker" TEXT,
-    "lineage_role" TEXT,
-    "security_class" TEXT,
     PRIMARY KEY ("source_symbol", "date")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_short_volume_security_ticker ON "sec_short_volume_security" ("ticker");
-
--- [extract] sec_fails_to_deliver  (pk: ticker, date)
-
-CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (
-    "source_checked_at" TIMESTAMP,
-    "ticker" TEXT NOT NULL,
-    "date" DATE NOT NULL,
-    "fails_quantity" DOUBLE PRECISION,
-    "fails_value" DOUBLE PRECISION,
-    "period" TEXT,
-    PRIMARY KEY ("ticker", "date")
 );
 
 -- [extract] sec_fails_to_deliver_security  (pk: cusip, date)
--- SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line, no summing. `date` is the
--- settlement date as filed, `trade_date` its settlement-cycle conversion; `price` and
--- `fails_value` are NULL where the file has '.'. `identity --only capture-ftd` stores the in-scope lines with the
--- four stamp columns NULL.
+-- SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line as filed, no summing, source columns only.
+-- `date` is the settlement date as filed, `trade_date` its settlement-cycle conversion; `price` and `fails_value`
+-- are NULL where the file has '.'. `zips-ingest --only ftd` stores the lines of the universe companies' lineage
+-- symbols and CUSIP-6 prefixes; the identity step and the institutionals cube read them.
 
 CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver_security" (
     "date" DATE NOT NULL,
@@ -360,13 +331,8 @@ CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver_security" (
     "fails_quantity" DOUBLE PRECISION,
     "fails_value" DOUBLE PRECISION,
     "period" TEXT,
-    "security_id" TEXT,
-    "ticker" TEXT,
-    "lineage_role" TEXT,
-    "security_class" TEXT,
     PRIMARY KEY ("cusip", "date")
 );
-CREATE INDEX IF NOT EXISTS ix_sec_fails_to_deliver_security_ticker ON "sec_fails_to_deliver_security" ("ticker");
 
 -- [extract] prices_macro  (pk: ticker, date)
 
@@ -394,7 +360,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- `status`, the `source_document` read (primary or an exhibit type) and `source_quote`, a
 -- JSON object holding one verbatim quote per kept component. A filing with no usable count
 -- is a row with NULL components and its status, so the row marks the date decided.
--- `identity --only propagate` purges rows by `cik`.
+-- `identity --only sync` moves and purges rows by `cik`.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
     "ticker" TEXT NOT NULL,

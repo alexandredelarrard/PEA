@@ -14,6 +14,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_extract.utils.common.resume import ZipScope
 from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
 from src.data_extract.utils.zips.fetch_financial_notes import (
     download_notes_periods,
@@ -22,7 +23,6 @@ from src.data_extract.utils.zips.fetch_financial_notes import (
     repair_notes_availability,
 )
 from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
-from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.utils.step import Step
 from src.utils.string import run_date
 
@@ -83,8 +83,7 @@ class StepExtractZips(Step):
         return ingest_financial_notes(self._context, self._notes_cache, self._scope, self._notes_period_list())
 
     def run_ingest_fails_to_deliver(self) -> int:
-        scope = self._scope
-        return fetch_fails_to_deliver(self._context, scope.tickers, scope.full, scope.run_date)
+        return fetch_fails_to_deliver(self._context, self._scope.full)
 
     def run_ingest(self) -> None:
         self.run_ingest_insider()

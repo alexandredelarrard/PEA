@@ -1,7 +1,7 @@
 """Identity step: one dated identity per universe company, built offline from the cached zips and the DB.
 
 `run()` is the flow: capture evidence -> company anchor -> CIK history -> symbol history -> CUSIP history -> lifecycle ->
-publish -> propagate. Each `run_*` runs alone from stored inputs (`identity --only <stage>`).
+publish -> sync. Each `run_*` runs alone from stored inputs (`identity --only <stage>`); `run_sync` is SQL only.
 """
 
 from __future__ import annotations
@@ -16,8 +16,16 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.identity import bind_identity, build_identity, identity_inputs
 from src.data_extract.utils.common.identity_contract import DEI_SOURCE, FORM345_SOURCE, check_one_entity_per_cik, entity_by_cik_map, sharadar_outside
+from src.data_extract.utils.common.identity_store import load_stored_lineage, parse_stored_rows
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_extract.utils.common.security_lines import co_registrant_ciks, load_security_manual, tape_intervals
+from src.data_extract.utils.common.security_lines import (
+    SHARADAR_CUSIP_COLUMNS,
+    co_registrant_ciks,
+    ftd_scope,
+    load_security_manual,
+    sharadar_cusips,
+    tape_intervals,
+)
 from src.data_extract.utils.identity.cik_history import (
     BACKLOG_COLUMNS,
     CikHistory,
@@ -46,15 +54,10 @@ from src.data_extract.utils.identity.cik_history import (
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor, anchor_company_ids, newest_window_ciks, roster_ciks, sharadar_ciks
 from src.data_extract.utils.identity.cusip_history import (
     EVIDENCE_COLUMNS,
-    HOLDING_GROUPS,
-    PROFILE_NAME_COLUMNS,
-    SHARADAR_CUSIP_COLUMNS,
     CusipFlags,
     CusipHistory,
     CusipRoles,
-    back_extend,
     canonical_segments,
-    company_names,
     cusip_facts,
     cusip_flags,
     cusip_issuers,
@@ -64,9 +67,7 @@ from src.data_extract.utils.identity.cusip_history import (
     finra_evidence,
     flag_items,
     ftd_lines,
-    ftd_scope,
     line_ends,
-    line_owners,
     lineage_view,
     log_cusip_history,
     prepare_observations,
@@ -75,27 +76,10 @@ from src.data_extract.utils.identity.cusip_history import (
     role_segments,
     row_context,
     sec_listing,
-    sharadar_cusips,
-    thirteenf_starts,
 )
 from src.data_extract.utils.identity.cusip_history import TABLE_COLUMNS as CUSIP_COLUMNS
 from src.data_extract.utils.identity.evidence import capture_dei_period, pending_dei_periods
-from src.data_extract.utils.identity.identity_propagate import (
-    PropagationResult,
-    log_propagation,
-    owned_scopes,
-    purge_rows,
-    rebuild_history,
-    rebuilt_since,
-    recheck_tickers,
-    refresh_fails,
-    refresh_insider,
-    refresh_short_volume,
-    reparse_insider,
-    reparse_notes,
-    retag_13f,
-    thirteenf_moves,
-)
+from src.data_extract.utils.identity.identity_sync import SyncResult, log_sync, owned_scopes, recheck_tickers, sync_filer_rows, sync_result
 from src.data_extract.utils.identity.lifecycle import (
     LIFE_COLUMNS,
     PRICE_SPAN,
@@ -111,10 +95,8 @@ from src.data_extract.utils.identity.symbol_history import (
     TAPE_TICKER_COLUMNS,
     TICKER_CHANGE_ACTIONS,
     SymbolHistory,
-    load_stored_lineage,
     log_changed_assignments,
     log_symbol_history,
-    parse_stored_rows,
     symbol_evidence,
     symbol_holders,
     symbol_rows,
@@ -130,8 +112,9 @@ from src.data_extract.utils.identity.symbol_tenure import (
     load_rejected_symbol_tenure,
     scan_form345_cache,
 )
+from src.data_extract.utils.zips.fetch_insider_transactions import restamp_insider_lineage
 from src.data_store.schema import Tables
-from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS
+from src.utils.filer_tables import PURGE_TABLES
 from src.utils.identity_flags import (
     FLAG_COLUMNS,
     cik_activity,
@@ -150,7 +133,7 @@ from src.utils.identity_flags import (
     tape_mix_pairs,
 )
 from src.utils.step import Step
-from src.utils.string import pad_cik_series, run_date
+from src.utils.string import run_date
 
 #: The `sec_cik_profile` columns the CIK history reads, and the rows that carry one of its event forms.
 _PROFILE_COLUMNS = ("cik", "form_25", "form_15", "form_8k12b")
@@ -160,12 +143,9 @@ _ANCHOR_LINEAGE_COLUMNS = ("canonical_ticker", "company_id", "cik", "role", "val
 
 @dataclass(frozen=True)
 class IdentityOptions:
-    """The `identity` command's options: the propagated ticker subset (None: the universe), `full` re-capture and
-    re-check, `dry_run` propagation and the run date."""
+    """The `identity` command's options: `full` re-capture and re-check, and the run date."""
 
-    tickers: list[str] | None = None
     full: bool = False
-    dry_run: bool = False
     as_of: pd.Timestamp | None = None
 
 
@@ -177,7 +157,6 @@ class StepExtractIdentity(Step):
         self._insider_cache = cache_dir(context, paths.insider_transactions)
         self._notes_cache = cache_dir(context, paths.financial_notes)
         self._run_date = run_date(self._options.as_of)
-        self._ftd_cache = cache_dir(context, paths.fails_deliver)
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
         self._anchor: CompanyAnchor | None = None
@@ -186,12 +165,10 @@ class StepExtractIdentity(Step):
         self._cusips: CusipHistory | None = None
         self._lifecycle: Lifecycle | None = None
         self._first_build = False
-        #: this run's start (UTC, the lineage stamps' clock): the scopes stamped since then changed in this run (X90)
-        self._started = pd.Timestamp.now(tz="UTC").tz_localize(None).floor("s")
 
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured (the FTD
-        lines are read by the CUSIP history, never stored here)."""
+        lines the CUSIP history reads are stored by the FTD ingest)."""
         # the Notes cover-page symbols of every filer, one cached period at a time (`full`: every period)
         periods = pending_dei_periods(self._context, self._notes_cache, self._options.full)
         written = sum(capture_dei_period(self._context, self._notes_cache, period) for period in tqdm(periods, desc="SEC notes cover-page symbols"))
@@ -308,37 +285,28 @@ class StepExtractIdentity(Step):
         return build
 
     def run_cusip_history(self) -> pd.DataFrame:
-        """CUSIP lines of each company (`universe_cusip`) from the cached FTD lines in this run's lineage scope (else the
-        stored lineage's), back to each CUSIP's first confirmed 13F period (`run_publish` logs its items and saves the table)."""
-        # load the lineage, the Sharadar CUSIPs, the curation, the in-scope FTD lines of the zip cache, the SEC listing, the
-        # stored table, the filed evidence, FINRA days, names and 13F holders
+        """CUSIP lines of each company (`universe_cusip`) from the stored FTD lines in this run's lineage scope (else the
+        stored lineage's), from each CUSIP's first FTD line (`run_publish` logs its items and saves the table)."""
+        # load the lineage, the Sharadar CUSIPs, the curation, the in-scope stored FTD lines, the SEC listing, the stored
+        # table, the filed evidence and FINRA days
         lineage = self._symbols.rows if self._symbols is not None else load_stored_lineage(self._context)
         if lineage is None:
             raise ValueError("universe_cusip needs universe_cik_symbol: run `identity --only symbol-history` first")
         sharadar = self._context.store.load(Tables.sharadar_tickers, columns=list(SHARADAR_CUSIP_COLUMNS), optional=True)
         manual = load_security_manual(str(self._config_dir))
         scope = ftd_scope(lineage, sharadar_cusips(self._universe.frame, sharadar), manual)
-        observations = read_ftd_evidence(self._context, self._ftd_cache, scope)
+        observations = read_ftd_evidence(self._context.store, scope)
         sec_tickers = self._context.store.load(Tables.sec_company_tickers, project=True, optional=True)
         existing = self._context.store.load(Tables.universe_cusip, project=True, optional=True)
         evidence = self._context.store.load(
             Tables.symbol_tenure, columns=list(EVIDENCE_COLUMNS), where={"source": [FORM345_SOURCE, DEI_SOURCE]}, optional=True
         )
         presence = self._context.store.load(Tables.sec_short_volume_security, columns=["source_symbol", "date"], optional=True)
-        profile = self._context.store.load(
-            Tables.sec_cik_profile, columns=list(PROFILE_NAME_COLUMNS), where={"cik": sorted(set(pad_cik_series(lineage["cik"])))}, optional=True
-        )
-        cusips = sorted(set(observations["cusip"].astype(str).str.strip().str.upper()))
-        holdings = (
-            self._context.store.summarize(Tables.sec13f_hr, list(HOLDING_GROUPS), {"n_rows": ("count", None)}, where={"cusip": cusips})
-            if cusips
-            else None
-        )
         anchor = self._anchor if self._anchor is not None else self.run_company_anchor()
 
-        # nothing to build without FTD lines in the cache: the table is left as it is
+        # nothing to build without stored FTD lines: the table is left as it is
         if observations.empty:
-            self._log.info("universe_cusip: no in-scope FTD line in the zip cache (run `zips-download --only ftd`); table left unchanged")
+            self._log.info("universe_cusip: no in-scope stored FTD line (run `zips-ingest --only ftd`); table left unchanged")
             return pd.DataFrame(columns=list(CUSIP_COLUMNS))
 
         # clean: the FTD lines, the lineage view, the SEC listing and the FINRA class symbols and days
@@ -346,13 +314,10 @@ class StepExtractIdentity(Step):
         view = lineage_view(lineage, anchor.roster_cik, tape_intervals(lineage))
         listing, finra, flags = sec_listing(sec_tickers), finra_evidence(presence), CusipFlags()
 
-        # compute: the lines and their issuers, their life over FINRA days and back to the first confirmed 13F period (X3, X4)
+        # compute: the lines and their issuers, their life over FINRA days
         lines, spans = ftd_lines(obs)
         issuers = cusip_issuers(spans, obs, view, manual, flags)
         lines = extend_lines(line_ends(lines, obs, listing, issuers), finra, manual, issuers, view)
-        names = company_names(view, self._universe.frame, sharadar, profile)
-        thirteenf = thirteenf_starts(holdings, line_owners(issuers, view), names, sharadar_cusips(self._universe.frame, sharadar), self._run_date)
-        lines = back_extend(lines, thirteenf.starts)
 
         # compute: each CUSIP's facts and role segments, one canonical line per company and date (co-registrant CIKs left out)
         facts = cusip_facts(lines, issuers, view, manual, listing, finra)
@@ -369,8 +334,8 @@ class StepExtractIdentity(Step):
 
         # check: the flags of the build (its WARNING items are logged by `run_publish`) and the INFO summary
         detail, items = flag_items(cusip_flags(flags, roles, lines, obs, rows), ratio_step_flags(obs, rows, manual.ratios))
-        log_cusip_history(rows, detail, thirteenf, co_registrants)
-        self._cusips = CusipHistory(rows=rows, flags=detail, items=items, thirteenf=thirteenf)
+        log_cusip_history(rows, detail, co_registrants)
+        self._cusips = CusipHistory(rows=rows, flags=detail, items=items)
         return rows
 
     def run_lifecycle(self) -> Lifecycle:
@@ -432,10 +397,10 @@ class StepExtractIdentity(Step):
         self._log.info(f"identity publish: {written} row(s) written ({len(changed)} universe ticker(s) with changed identity columns)")
         return written
 
-    def run_propagate(self) -> PropagationResult:
-        """Carry the published identity into the stored rows (REQ-014): purge rows filed outside each changed company's
-        scope, re-parse, re-stamp the insider, FTD, short-volume and 13F rows, rebuild purged histories. A first build or
-        `--full` re-checks every ticker (PD-13); `--dry-run` only reports (AC-013)."""
+    def run_sync(self) -> SyncResult:
+        """Carry the published identity into the CIK-keyed stored rows, SQL only: move the rows another company's
+        scope now holds, purge the rows filed outside each changed company's scope, re-stamp the insider lineage. A first
+        build or `--full` re-checks every ticker (PD-13)."""
         # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49), bound to
         # the universe re-read after the publish (the cached one predates this run's end dates, symbols and CIKs)
         inputs = identity_inputs(self._context)
@@ -444,30 +409,21 @@ class StepExtractIdentity(Step):
         roster_cik = {ticker: current[ticker] for ticker in universe.tickers if ticker in current}
         built = build_identity(inputs.lineage, inputs.tenure, roster_cik, inputs.master, inputs.co_registrants, inputs.mergers)
         identity = bind_identity(self._context, built, universe)
-        tickers, dry_run, every = self._options.tickers or universe.tickers, self._options.dry_run, self._options.full or self._first_build
 
         # compute: the tickers whose scope changed, and what each company owns
-        scopes = {ticker: identity.filing_scope(ticker) for ticker in tickers}
-        changed = recheck_tickers(scopes, as_of=self._run_date, every=every)
+        scopes = {ticker: identity.filing_scope(ticker) for ticker in universe.tickers}
+        changed = recheck_tickers(scopes, as_of=self._run_date, every=self._options.full or self._first_build)
         owned = owned_scopes(identity)
 
-        # contraction: rows filed by a CIK outside the ticker's company or windows (the event-only CIKs on consolidating tables)
-        records = [record for spec in PURGE_TABLES for record in purge_rows(self._context, spec, changed, owned, identity.bounds, dry_run)]
+        # save: per filer table the moves then the purge, then the insider stamps of the changed and the receiving tickers
+        synced = [sync_filer_rows(self._context, spec, changed, owned, identity.bounds) for spec in PURGE_TABLES]
+        removals, moves = [r for records, _ in synced for r in records], [m for _, moved in synced for m in moved]
+        receiving = sorted(set(changed) | {m["new_ticker"] for m in moves})
+        removals += restamp_insider_lineage(self._context, receiving, identity=identity)
 
-        # expansion and re-stamps: the bulk re-parse of the scopes this run changed (X90: every cached zip, so once per change;
-        # not on a dry run), then the insider, FTD, short-volume and 13F rows
-        reparsed = changed if every else rebuilt_since(scopes, self._started)
-        notes = {} if dry_run else reparse_notes(self._context, reparsed, scopes, identity)
-        insider = {} if dry_run else reparse_insider(self._context, reparsed, scopes, identity, self._run_date)
-        records += refresh_insider(self._context, identity, changed, dry_run)
-        records += refresh_fails(self._context, tickers, self._run_date, dry_run, every)
-        records += refresh_short_volume(self._context, identity, tickers, self._run_date, dry_run, every)
-        restamped = retag_13f(self._context, *thirteenf_moves(self._context, tickers, self._run_date, every), dry_run)
-
-        # post-process: the history of every ticker whose facts were purged; one summary
-        removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
-        result = PropagationResult(removals, restamped, {**notes, **insider}, rebuild_history(self._context, removals, dry_run))
-        log_propagation(self._context, changed, result, dry_run)
+        # post-process: one summary
+        result = sync_result(removals, moves)
+        log_sync(self._context, changed, result)
         return result
 
     def run(self) -> None:
@@ -480,4 +436,4 @@ class StepExtractIdentity(Step):
         self.run_cusip_history()
         self.run_lifecycle()
         self.run_publish()
-        self.run_propagate()
+        self.run_sync()

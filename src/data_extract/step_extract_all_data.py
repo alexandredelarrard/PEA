@@ -2,12 +2,12 @@
 
 Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, Sharadar actions, SEC submissions metadata, universe sync)
 -> zip downloads (Form 3/4/5,
-Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
-symbol_tenure + universe_cik_symbol + universe_cusip -> propagation) -> zip ingests (insider zip quarters, notes,
+Notes, FTD) -> `StepExtractIdentity` (Notes cover-page capture, symbol_tenure + universe_cik_symbol + universe_cusip
+from the stored FTD lines -> SQL-only sync of the CIK-keyed tables) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
 Sharadar -> EDGAR (insider, 13D, 13G, 8-K, filing text, employees text, DEF 14A text, SEC fundamentals facts) -> SEC
 fundamentals history + SEC vs Sharadar check -> LLM (DEF 14A, 8-K votes)
--> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step
+-> behavioral. Every domain step only reads the published lineage. The LLM step is built only once the EDGAR step
 has run, so a missing API key fails from there on; employees stay on their own command (`sec-employees-llm`).
 """
 
@@ -50,7 +50,7 @@ class StepExtractAllData(Step):
 
         zips = StepExtractZips(self._context, self._config, ZipsOptions(tickers=tickers))
         zips.run_download()
-        StepExtractIdentity(self._context, self._config, IdentityOptions(tickers=tickers)).run()
+        StepExtractIdentity(self._context, self._config, IdentityOptions()).run()
         zips.run_ingest()
 
         # run each extract big block

@@ -604,15 +604,11 @@ def test_read_projection_covers_builder_needs():
             "security_type",
             "shares_owned_after",
         },
-        # ⚠ FOUR COLUMNS, NOT SIX. `short_interest` / `avg_daily_volume` were in this contract
-        # for `ic_shortvol_days_to_cover` -- a feature that no longer exists, and whose absence
-        # is a DESIGN decision rather than a missing projection: the live `sec_short_interest`
-        # table carries RegSHO daily short VOLUME only, and days-to-cover needs FINRA's
-        # twice-monthly short-INTEREST positions, which this repo does not fetch. Asserting the
-        # two dead columns here made the projection look broken when it was the contract that
-        # was stale. Do not add them back without a fetcher that populates them.
-        Tables.short_interest: {"date", "ticker", "short_volume", "total_volume"},
-        Tables.sec_fails_to_deliver: {"date", "ticker", "fails_quantity"},
+        # the institutionals loader builds the ticker short-volume series from the as-filed FINRA lines
+        # (`security_series.SHORT_LINE_COLUMNS`); RegSHO carries daily short VOLUME only, no short interest
+        Tables.sec_short_volume_security: {"date", "source_symbol", "short_volume", "total_volume"},
+        # the institutionals loader builds the ticker FTD series from the as-filed lines (`security_series.LINE_COLUMNS`)
+        Tables.sec_fails_to_deliver_security: {"date", "trade_date", "cusip", "source_symbol", "fails_quantity", "fails_value", "period"},
         # ownership_features (13D/13G). `accession_number` + `cusip` are the canonical-event
         # key (a group files one 13D under many reporting persons; summing their
         # `percent_of_class` would double-count the same block), and `filing_date` is the ONLY
@@ -661,16 +657,16 @@ def test_step_forwards_the_registry_projection_to_the_store() -> None:
             calls.append((table, kwargs))
             return iter([pd.DataFrame({"ticker": ["AAPL"]})])
 
-    capital_inputs.load_source(Store(), Tables.short_interest)
-    assert calls == [(Tables.short_interest, {"project": True, "where": None})]
+    capital_inputs.load_source(Store(), Tables.sec_13d)
+    assert calls == [(Tables.sec_13d, {"project": True, "where": None})]
     print("SANITY: shared source reader forwards the registry projection through one payload stream.")
 
 
 def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) -> None:
     sqlite_store.save(
-        Tables.short_interest,
+        Tables.sec_13d,
         pd.DataFrame(
-            {"date": pd.to_datetime(["2024-01-02"] * 2), "ticker": ["AAPL", "OUTSIDE"], "short_volume": [10.0, 99.0], "total_volume": [100.0, 100.0]}
+            {"ticker": ["AAPL", "OUTSIDE"], "accession_number": ["a-1", "o-1"], "rp_seq": 1, "filing_date": pd.to_datetime(["2024-01-02"] * 2)}
         ),
     )
     calls = []
@@ -681,7 +677,7 @@ def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) ->
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = capital_inputs.load_source(sqlite_store, Tables.short_interest, ["AAPL"])
+    result = capital_inputs.load_source(sqlite_store, Tables.sec_13d, ["AAPL"])
     assert result is not None and set(result["ticker"]) == {"AAPL"}
     assert calls == [{"project": True, "where": {"ticker": ["AAPL"]}}]
     print("SANITY: source universe filter reaches the store once; outside names never enter the panel.")
@@ -690,8 +686,8 @@ def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) ->
 def test_every_projected_table_resolves_to_a_registered_physical_table():
     """A projection must hang off a REGISTERED table, and the registry key trap is real.
 
-    Five registry entries carry an attribute name that is not their table name -- the one
-    that bit is `Tables.short_interest`, whose table is `sec_short_interest`. A projection map
+    Registry entries can carry an attribute name that is not their table name -- the one
+    that bit was `Tables.short_interest`, whose table was `sec_short_interest`. A projection map
     keyed on the ATTRIBUTE name meant `store.exists()` returned False, `_load_source` returned
     None, and the three `ic_shortvol_*` features were absent from `cube_part_institutionals`
     while 956,640 rows sat unread in the table. Nothing failed: the map, the step and this
@@ -715,8 +711,7 @@ def test_every_projected_table_resolves_to_a_registered_physical_table():
     print(f"  {len(projected)} tables declare read_columns, all reachable by physical name")
     print(f"  {len(mismatched)} registry entries where attribute != table name -- the trap:")
     for attr, real in sorted(mismatched.items()):
-        print(f"      Tables.{attr:22} -> {real}" + ("   <- the one that broke ic_shortvol_*" if attr == "short_interest" else ""))
-    assert name_of(Tables.short_interest) == "sec_short_interest"
+        print(f"      Tables.{attr:22} -> {real}")
 
 
 def test_projection_tolerates_an_absent_optional_column():
@@ -724,25 +719,17 @@ def test_projection_tolerates_an_absent_optional_column():
     REQUIRED one must be REPORTED rather than swallowed.
 
     `read_table` resolves each projected column via `tbl.c[name]`, which raises KeyError for
-    an absent one. An older `sec_short_interest` table has only date/ticker/short_volume/
-    total_volume, while the projection also declares optional `short_interest`,
-    `avg_daily_volume` and `source_checked_at`. Demanding optional fields unconditionally
-    killed the whole institutionals step with `KeyError: 'short_interest'`.
+    an absent one. An older `sec13f_hr` carries no option or accession columns, which its
+    projection declares optional; demanding them unconditionally would kill the step.
     """
-    live_short = ["date", "ticker", "short_volume", "total_volume"]
-    cols, required_missing, optional_missing = projection_report(Tables.short_interest, live_short)
-    assert cols == live_short, cols
+    full_13f = list(Tables.sec13f_hr.read_columns)
+    live_13f = [c for c in full_13f if c not in Tables.sec13f_hr.optional_columns]
+    cols, required_missing, optional_missing = projection_report(Tables.sec13f_hr, live_13f)
+    assert cols == live_13f, cols
     assert not required_missing
-    assert sorted(optional_missing) == ["avg_daily_volume", "short_interest", "source_checked_at"]
-
-    checked_short = [*live_short, "source_checked_at"]
-    checked_cols, checked_required_missing, checked_optional_missing = projection_report(Tables.short_interest, checked_short)
-    assert checked_cols == checked_short
-    assert not checked_required_missing
-    assert sorted(checked_optional_missing) == ["avg_daily_volume", "short_interest"]
+    assert sorted(optional_missing) == sorted(Tables.sec13f_hr.optional_columns)
 
     # a table with every projected column present is unchanged
-    full_13f = list(Tables.sec13f_hr.read_columns)
     assert projection(Tables.sec13f_hr, full_13f) == full_13f
 
     # a missing REQUIRED column is REPORTED, not dropped in silence -- that is the half of
@@ -751,15 +738,14 @@ def test_projection_tolerates_an_absent_optional_column():
     assert req_missing == ["value_usd"], req_missing
 
     # unknown column list (table shape unreadable) -> project the full declared list
-    assert projection(Tables.short_interest, None) == list(Tables.short_interest.read_columns)
+    assert projection(Tables.sec13f_hr, None) == full_13f
     # a table declaring no projection -> None (load in full)
     assert projection(Tables.prices_splits, ["a", "b"]) is None
 
     print()
     print("=== SANITY CHECK: optional projected columns degrade, required ones report ===")
-    print(f"  short_interest live cols {live_short} -> projection {cols}")
+    print(f"  sec13f_hr live cols {live_13f} -> projection {cols}")
     print(f"  dropped as optional: {sorted(optional_missing)}")
-    print("  source_checked_at is retained when present and tolerated when absent")
     print(f"  sec13f_hr without `value_usd` -> required_missing={req_missing}")
     print(
         "  CONCLUSION: an optional column missing from the live table is dropped from the "

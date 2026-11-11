@@ -56,7 +56,7 @@ from src.data_extract.utils.institutionals.value_units import (
 )
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore
-from src.utils.identity_tables import company_rows
+from src.utils.identity_tables import LINE_COLUMNS, tag_cusips
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series, run_date
 
@@ -125,7 +125,8 @@ class ReadFailure:
 
 @dataclass
 class _WalkState:
-    """Running state of one 13F walk: the CUSIP map built so far, the `universe_cusip` lines read once and rows saved per table."""
+    """Running state of one 13F walk: the CUSIP map built so far, the `universe_cusip` lines read once (the backfill's
+    holder scope) and rows saved per table."""
 
     looked_up: set[str] = field(default_factory=set)
     cmap: pd.DataFrame | None = None
@@ -455,12 +456,11 @@ def _filing_checksum(manifest: pd.DataFrame, holdings: pd.DataFrame) -> str:
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
 
-def save_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
-    """Preserve one immutable accession and its completion marker in `sec13f_hr`: `company_rows` of the whole `book`
-    (one row per universe company in canonical-class shares, other CUSIPs as they are, unmapped on the sentinel). The
-    source checks and the checksum read the per-CUSIP `book`. Returns rows saved; 0 when the accession is stored."""
+def save_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
+    """Preserve one immutable accession and its completion marker in `sec13f_hr` as filed: one row per CUSIP, tagged by
+    `cmap` alone (unmapped on the sentinel). Returns rows saved; 0 when the accession is stored."""
     checksum = _filing_checksum(manifest, book)
-    rows = _hr_rows(book, lines, cmap)
+    rows = _hr_rows(book, cmap)
     row = manifest.iloc[0]
     empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
     with store.transaction() as bound:
@@ -487,7 +487,7 @@ def save_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame,
 
 def _insert_filing(bound: DataStore, manifest: pd.DataFrame, positions: pd.DataFrame, checksum: str) -> None:
     """Insert one accession's `sec13f_hr` position rows and its completion marker through a bound store. The marker's
-    `parsed_row_count` is the number of position rows stored (fewer than filed when `company_rows` merged classes)."""
+    `parsed_row_count` is the number of position rows filed."""
     empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
     marker = manifest.assign(cusip=empty, ticker=empty, content_checksum=checksum, parsed_row_count=len(positions))
     positions = positions.assign(parse_status="position")
@@ -496,23 +496,12 @@ def _insert_filing(bound: DataStore, manifest: pd.DataFrame, positions: pd.DataF
     bound.insert(Tables.sec13f_hr, marker.reindex(columns=columns))
 
 
-def _hr_rows(book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
-    """`company_rows` of `book` with every untagged row on the unmapped sentinel."""
-    rows = company_rows(book, lines, cmap)
+def _hr_rows(book: pd.DataFrame, cmap: pd.DataFrame | None) -> pd.DataFrame:
+    """`book` with each row's `cusip_ticker_map` ticker (no `universe_cusip` line: the cube maps classes to companies),
+    every unmapped row on the sentinel."""
+    tickers = tag_cusips(book, pd.DataFrame(columns=LINE_COLUMNS), cmap)
     sentinel = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
-    return rows.assign(ticker=rows["ticker"].astype(object).where(rows["ticker"].notna(), sentinel))
-
-
-def replace_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, lines: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
-    """Rewrite one stored accession's `sec13f_hr` rows from its re-read `book` (an identity correction): its rows and
-    marker are deleted and its `company_rows` saved, in one transaction. Returns rows saved."""
-    checksum = _filing_checksum(manifest, book)
-    rows = _hr_rows(book, lines, cmap)
-    row = manifest.iloc[0]
-    with store.transaction() as bound:
-        bound.delete(Tables.sec13f_hr, {"cik": row["cik"], "accession_number": row["accession_number"]})
-        _insert_filing(bound, manifest, rows, checksum)
-    return len(rows)
+    return book.assign(ticker=tickers.astype(object).where(tickers.notna(), sentinel))
 
 
 @dataclass
@@ -551,10 +540,9 @@ class _Saver:
         return self.walk.lines
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
-        """Preserve the source book in `sec13f_hr` as its `company_rows` (one row per universe company in
-        canonical-class shares, any other CUSIP by `cusip_ticker_map`)."""
+        """Preserve the source book in `sec13f_hr` as filed, each CUSIP tagged by `cusip_ticker_map`."""
         cmap = _ticker_map(self.context, book, self.walk)
-        self.walk.hr_saved += save_hr_filing(self.context.store, manifest, book, self.cusip_lines(), cmap)
+        self.walk.hr_saved += save_hr_filing(self.context.store, manifest, book, cmap)
         self.walk.hr_suspect += _suspect_prices(book)
 
 

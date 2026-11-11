@@ -1,27 +1,14 @@
-"""Pieces the period-archive ingests share: the run scope and the one `ensure_zip -> clock -> skip` block."""
+"""Pieces the period-archive ingests share: the archive source and the one `ensure_zip -> clock -> skip` block."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
-
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached, stored_period_clock
+from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached
 from src.data_extract.utils.common.resume import period_end
-from src.data_store.schema import Table
-
-
-@dataclass(frozen=True)
-class ZipScope:
-    """One ingest's tickers (the `-t` subset or the universe), the run date and `full` re-parse."""
-
-    tickers: list[str]
-    run_date: pd.Timestamp
-    full: bool
 
 
 @dataclass(frozen=True)
@@ -44,10 +31,3 @@ def ensure_archive(context: Context, cache: Path, source: ArchiveSource, period:
     if found is None:
         return None
     return found, archive_available_at(period_end(period), found, observed_from=source.observed_from, downloaded=downloaded)
-
-
-def reparse_clock(context: Context, tables: Sequence[Table], period: str, path: Path, observed_from: date) -> date | None:
-    """A cached period's clock for a lineage re-parse: the one stored for `period`, else the archive's own (no download)."""
-    return stored_period_clock(context, tables, period) or archive_available_at(
-        period_end(period), path, observed_from=observed_from, downloaded=False
-    )

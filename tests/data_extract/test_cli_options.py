@@ -16,7 +16,7 @@ from src.data_extract.transformers import step_extract_fundamentals as step_fund
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
 from tests.data_extract.edgar_fixtures import stub_edgar_step
-from tests.support.propagation import stub_propagation
+from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe
 
 
@@ -131,7 +131,7 @@ def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace,
     config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
     context.config_dir = "configs"
     monkeypatch.setattr(step_identity, "cache_dir", lambda ctx, name: Path(name))
-    stub_propagation(monkeypatch, step_identity)
+    stub_sync(monkeypatch, step_identity)
 
 
 @pytest.fixture
@@ -150,7 +150,7 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
         ("sec-fundamentals-history", "build_fundamentals_history", "rebuild_history"),
-        ("identity --only propagate", "recheck_tickers", "every"),
+        ("identity --only sync", "recheck_tickers", "every"),
         ("edgar-index", "refresh", "rebuild"),
     ],
 )
@@ -168,7 +168,7 @@ def test_full_reaches_the_existing_source_operation(
 
     if command.startswith("identity "):
         stub_identity_step(monkeypatch, context.config, context)
-        monkeypatch.setattr(step_identity, target, record)
+        monkeypatch.setattr(step_identity, target, lambda *args, **kwargs: record(*args, **kwargs) and [])  # the re-checked tickers
     elif command.startswith("zips-ingest "):
         stub_zips_step(monkeypatch, context.config)
         monkeypatch.setattr(step_zips, target, record)
@@ -229,7 +229,9 @@ def test_help_lists_the_split_fundamentals_commands_and_none_of_the_removed_ones
     [
         ("identity --dry-run", 2, []),
         ("identity --only cik-history --dry-run", 2, []),
-        ("identity --only propagate --dry-run", 0, ["run_propagate"]),
+        ("identity --only sync --dry-run", 2, []),
+        ("identity -t AAA", 2, []),
+        ("identity --only sync", 0, ["run_sync"]),
         ("identity --only cik-history", 0, ["run_cik_history"]),
         ("identity --approve-rekey A:B", 2, []),
         ("zips-ingest --repair-availability", 2, []),
@@ -241,7 +243,6 @@ def test_a_flag_scoped_to_one_stage_is_refused_elsewhere(
     command: str, exit_code: int, called: list[str], context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     step = Mock()
-    step.run_propagate.return_value.removals = pd.DataFrame()
     monkeypatch.setattr(cli_mod, "StepExtractIdentity", Mock(return_value=step))
     monkeypatch.setattr(cli_mod, "StepExtractZips", Mock(return_value=step))
     result = CliRunner().invoke(cli_mod.cli, command.split())

@@ -23,7 +23,7 @@ the night: `extraction_status` and `identity_check` run on ALL_DONE, so they sta
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
 hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `universe_tickers`
 differs from `configs/universe.yml`. Identity stage: zips_download -> identity
-(captures, symbol_tenure + universe_cik_symbol + universe_cusip, propagation; offline) -> every task that reads
+(captures, symbol_tenure + universe_cik_symbol + universe_cusip, the SQL-only sync; offline, reads tables and cached Form 3/4/5 and Notes zips) -> every task that reads
 the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_cusip`, and the backfill, superinvestors and
 manager books follow it) and the earnings calls included (price_history waits for identity: it reads the master's current
 secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on
@@ -115,8 +115,8 @@ price_history = fetch("price-history", trigger_rule=TriggerRule.ALL_DONE)  # the
 
 # 2) identity stage: cache the Form 3/4/5, Notes and FTD zips and snapshot SEC's current
 #    tickers (StepExtractZips download phase); then StepExtractIdentity offline: capture the Notes cover-page
-#    symbols and the raw in-scope FTD lines, build symbol_tenure + universe_cik_symbol + universe_cusip, and carry
-#    lineage changes into the stored rows
+#    symbols, read the stored FTD lines as CUSIP evidence, build symbol_tenure + universe_cik_symbol + universe_cusip,
+#    and sync the CIK-keyed stored rows (SQL only)
 zips_download = fetch("zips-download", pool="sec_bulk")
 identity = fetch("identity", trigger_rule=TriggerRule.ALL_DONE)  # builds offline from cached evidence
 

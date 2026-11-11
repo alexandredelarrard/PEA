@@ -1,7 +1,9 @@
-"""The shared contract of `universe_cusip` lines: their source and role vocabulary, the FTD trade-date rule, the FTD
-lines prepared for stamping and their change stamps, the tape intervals a line is voted by, the co-registrant CIKs it leaves out and the curated `configs/sec/security_master_manual.json`.
+"""The shared contract of `universe_cusip` lines: their role vocabulary (`src/utils/security_series.py` holds the FTD and
+short-volume rules), the tape intervals a line is voted by, the FTD scope the ingest stores and the CUSIP history reads
+(lineage symbols inside their dated windows, Sharadar / curated CUSIP-6), the co-registrant CIKs it leaves out and the curated
+`configs/sec/security_master_manual.json`.
 
-Read by the identity step (which builds the lines), the FTD and short-interest tapes, the insider lineage stamp, the
+Read by the identity step (which builds the lines), the FTD tape, the insider lineage stamp, the
 `Identity` reader and the fundamentals merges (merger metadata, reverse acquisitions, vendor exchanges).
 """
 
@@ -13,44 +15,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.common.identity_contract import DEI_SOURCE, ROLE_SYMBOL
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import cik_activity, cik_items, flag_rows
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
-from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
+from src.utils.security_series import ACQUIRED_CONSTITUENT, EXCLUDED, equity_symbol_rows
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash
 
-#: The `source` of a line read off the SEC fails-to-deliver files.
-SOURCE_FTD = "ftd"
-ACQUIRED_CONSTITUENT = "acquired_constituent"
-EXCLUDED = "excluded"
 ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS, ACQUIRED_CONSTITUENT, EXCLUDED)
-
-#: First trade date of each settlement cycle (T+2 from 2017-09-05, T+1 from 2024-05-28).
-T2_FROM = pd.Timestamp("2017-09-05")
-T1_FROM = pd.Timestamp("2024-05-28")
 
 #: Two tape intervals of one symbol overlapping by more than this are concurrent, not a former listing.
 _LISTING_OVERLAP = pd.Timedelta(days=31)
 _FAR = pd.Timestamp("2262-01-01")
-#: The `universe_cusip` columns read for stamping FTD lines.
-FTD_MASTER_COLUMNS = [
-    "security_id",
-    "canonical_company",
-    "cusip",
-    "source_symbol",
-    "market_symbol",
-    "security_class",
-    "conversion_ratio",
-    "lineage_role",
-    "valid_from",
-    "valid_to",
-    "scope_changed_at",
-]
-
+#: The Sharadar ticker columns read for a company's CUSIPs.
+SHARADAR_CUSIP_COLUMNS = ("permaticker", "name", "cusips")
 _RATIO_COLUMNS = ("ticker", "cusip", "ratio", "valid_from", "valid_to", "source")
 _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "valid_to", "reason", "source")
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
@@ -61,37 +43,6 @@ _OVERRIDE_COLUMNS = ("cusip", "ticker", "source")
 
 class SecurityManualError(ValueError):
     """A `security_master_manual.json` entry without a URL or accession, or with an unknown role."""
-
-
-def trade_dates(settlement: pd.Series) -> pd.Series:
-    """Trade dates of FTD settlement dates by the cycle in force (T+3, T+2 from 2017-09-05, T+1 from 2024-05-28)."""
-    days = pd.to_datetime(settlement)
-    bday = pd.offsets.BDay
-    t1, t2, t3 = days - bday(1), days - bday(2), days - bday(3)
-    out = t3.where(t2 < T2_FROM, t2).where(t1 < T1_FROM, t1)
-    return out.where(days.notna())
-
-
-def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
-    """The FTD rows of `universe_cusip`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
-    rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
-    out = rows.reindex(columns=FTD_MASTER_COLUMNS).copy()
-    out["market_symbol"] = out["market_symbol"].fillna(out["source_symbol"]).map(yahoo_symbol)
-    out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
-    out["source_symbol"] = out["source_symbol"].fillna("").map(normalise_ticker)
-    out["valid_from"] = pd.to_datetime(out["valid_from"])
-    out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
-    out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"], errors="coerce").astype("float64")
-    company = out["canonical_company"].astype(object)
-    out["canonical_company"] = company.where(company.notna() & company.astype(str).ne(""), None)
-    out["scope_changed_at"] = pd.to_datetime(out["scope_changed_at"], errors="coerce")
-    return out.reset_index(drop=True)
-
-
-def master_stamps(master: pd.DataFrame) -> dict[str, pd.Timestamp]:
-    """`{canonical company: latest scope_changed_at}` over its master rows."""
-    stamps = master.dropna(subset=["canonical_company"]).groupby("canonical_company")["scope_changed_at"].max()
-    return {str(company): pd.Timestamp(stamp) for company, stamp in stamps.items() if pd.notna(stamp)}
 
 
 @dataclass(frozen=True)
@@ -240,17 +191,62 @@ def load_security_manual(config_dir: str | None = None) -> SecurityManual:
     return parse_security_manual(json.loads(path.read_text(encoding="utf-8")))
 
 
+def symbol_windows(lineage: pd.DataFrame) -> pd.DataFrame:
+    """`[key, cik, status, valid_from, valid_to]`: the squashed symbol of each equity lineage symbol row and the dates it is
+    the company's (`valid_from <= day < valid_to`; an open end is far in the future)."""
+    rows = equity_symbol_rows(lineage)
+    windows = pd.DataFrame(
+        {
+            "key": rows["symbol"].map(squash),
+            "cik": pad_cik_series(rows["cik"]),
+            "status": rows["status"],
+            "valid_from": pd.to_datetime(rows["valid_from"]),
+            "valid_to": pd.to_datetime(rows["valid_to"]).fillna(_FAR),
+        }
+    )
+    return windows.loc[windows["key"].ne("")].reset_index(drop=True)
+
+
 def tape_intervals(lineage: pd.DataFrame) -> pd.DataFrame:
-    """`[key, cik, valid_from, valid_to]` of the symbol rows a tape may read: not noise or conflict, not `dei` alone."""
-    symbols = lineage[lineage["role"].eq(ROLE_SYMBOL)].copy()
-    symbols["key"] = symbols["symbol"].map(squash)
-    symbols["cik"] = pad_cik_series(symbols["cik"])
-    sources = symbols["sources"].fillna("").astype(str).str.lower()
-    tape_ok = ~symbols["status"].isin(("noise", "conflict")) & sources.ne(DEI_SOURCE) & symbols["key"].ne("")
-    tape = symbols.loc[tape_ok, ["key", "cik", "valid_from", "valid_to"]].copy()
-    tape["valid_from"] = pd.to_datetime(tape["valid_from"])
-    tape["valid_to"] = pd.to_datetime(tape["valid_to"]).fillna(_FAR)
+    """`[key, cik, valid_from, valid_to]` of the symbol rows a tape may read: equity symbol rows that are not conflict."""
+    windows = symbol_windows(lineage)
+    tape = windows.loc[windows["status"].ne("conflict"), ["key", "cik", "valid_from", "valid_to"]]
     return tape.sort_values(["key", "cik", "valid_from"], ignore_index=True)
+
+
+def in_window(keys: pd.Series, days: pd.Series, windows: pd.DataFrame) -> pd.Series:
+    """Per row, whether a `symbol_windows` window of its key covers its day."""
+    pairs = pd.DataFrame({"key": keys.to_numpy(), "day": pd.to_datetime(days).to_numpy(), "_row": np.arange(len(keys))})
+    hits = pairs.merge(windows, on="key")
+    covered = hits["day"].ge(hits["valid_from"]) & hits["day"].lt(hits["valid_to"])
+    return pd.Series(np.isin(pairs["_row"].to_numpy(), hits.loc[covered, "_row"].to_numpy()), index=keys.index)
+
+
+@dataclass(frozen=True)
+class FtdScope:
+    """What the FTD lines keep: the dated windows of the lineage symbols, the CUSIP-6 prefixes and the tape intervals that
+    vote."""
+
+    prefixes: frozenset[str]
+    tape: pd.DataFrame
+    windows: pd.DataFrame
+
+
+def ftd_scope(lineage: pd.DataFrame, cusips: Mapping[str, frozenset[str]], manual: SecurityManual) -> FtdScope:
+    """The FTD scope: the lineage's equity symbols with their windows, the CUSIP-6 of the universe companies' Sharadar
+    CUSIPs and of the curated CUSIPs, and the lineage tape that votes further prefixes on the lines read."""
+    curated = set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna()) | {c for group in cusips.values() for c in group}
+    prefixes = frozenset(str(c)[:6] for c in curated if c)
+    return FtdScope(prefixes=prefixes, tape=tape_intervals(lineage), windows=symbol_windows(lineage))
+
+
+def sharadar_cusips(universe: pd.DataFrame, sharadar: pd.DataFrame | None) -> dict[str, frozenset[str]]:
+    """`{universe ticker: the CUSIPs every Sharadar row of its permaticker lists}` (`sharadar`: `SHARADAR_CUSIP_COLUMNS`)."""
+    if sharadar is None or sharadar.empty or "permaticker" not in universe.columns:
+        return {}
+    rows = universe[["ticker", "permaticker"]].dropna().merge(sharadar[["permaticker", "cusips"]].dropna(), on="permaticker", how="inner")
+    listed = rows.assign(cusip=rows["cusips"].astype(str).str.upper().str.split()).explode("cusip").dropna(subset=["cusip"])
+    return {str(ticker): frozenset(group) for ticker, group in listed.groupby("ticker")["cusip"]}
 
 
 def co_registrant_ciks(lineage: pd.DataFrame, evidence: pd.DataFrame | None, declared: Collection[str] = ()) -> frozenset[str]:

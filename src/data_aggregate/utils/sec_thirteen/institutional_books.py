@@ -9,23 +9,24 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import COMPANY_CUSIP
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
 
 logger = logging.getLogger(__name__)
 
 
 def compact_institutional_books(df_books: pd.DataFrame) -> pd.DataFrame:
-    """Keep mapped amounts, unknown/zero rows and the positive-share CUSIP identity, one row per (period, manager,
-    company) as stored: `sec13f_hr` holds one row per manager x company x accession in canonical-class shares (U-67)."""
+    """One row per (period, manager, company): the resolved book's tagged rows of one ticker summed (a company's classes
+    already in canonical-class shares; unknown when one row is unknown), with the company's canonical CUSIP as the
+    positive-share identity (a row off the company lines keeps its own CUSIP)."""
     numeric = ["shares", "value_usd", "call_value", "put_value"]
     keys = ["period", "cik", "ticker"]
-    df_mapped = df_books.loc[df_books.ticker.notna()]
-    duplicated = df_mapped.duplicated(keys)
-    if duplicated.any():
-        sample = df_mapped.loc[duplicated, keys].head(3).to_dict("records")
-        raise ValueError(f"13F books hold {int(duplicated.sum())} duplicate manager x company row(s), e.g. {sample}: run `identity --only propagate`")
-    df_totals = df_mapped.set_index(keys)[numeric]
-    df_totals["_cusips"] = pd.Series(df_mapped["cusip"].where(df_mapped["shares"].gt(0)).to_numpy(), index=df_totals.index, dtype="object")
+    # A level groupby keeps the stored key dtypes (a column groupby infers `str` for object tickers).
+    df_mapped = df_books.loc[df_books.ticker.notna()].set_index(keys)
+    grouped = df_mapped.groupby(level=keys, sort=False)
+    df_totals = grouped[numeric].sum(min_count=1).where(grouped[numeric].count().eq(grouped.size(), axis=0))
+    identity = df_mapped[COMPANY_CUSIP].fillna(df_mapped["cusip"]).where(df_mapped["shares"].gt(0))
+    df_totals["_cusips"] = identity.groupby(level=keys, sort=False).first().astype("object")
     return df_totals
 
 

@@ -76,7 +76,6 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
         (Tables.notes_num, "2009-01-01"),
         (Tables.notes_text, "2009-01-01"),
         (Tables.insider_transactions, "2006-01-01"),
-        (Tables.sec_fails_to_deliver, "2009-07-01"),
         (Tables.sec_fails_to_deliver_security, "2009-07-01"),
         (Tables.earnings_call_sections, "2005-01-01"),
         (Tables.earnings_surprises, "2002-10-01"),

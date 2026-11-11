@@ -16,9 +16,10 @@ from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
 from src.data_aggregate.utils.sec_thirteen import institutional_features as features_module
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_batches
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import COMPANY_CUSIP, clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
 from src.data_store.schema import Tables
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books, iter_snapshot_books, snapshot_feature_history
 
 
@@ -165,9 +166,17 @@ def test_streamed_value_repair_reuses_exact_age_bounded_quotes() -> None:
     print("SANITY: one quote preparation preserves repair values/provenance before prices, on weekends, at expiry and after the final quote.")
 
 
+def _stored_tags(stored: pd.DataFrame) -> CusipTags:
+    """The fixture's tags as the cube reads them: no company line, each stored position's (cusip, ticker) as the
+    market-wide map; a position on the `_empty` sentinel stays unmapped."""
+    empty = Tables.sec13f_hr.empty_marker[1]
+    positions = stored.loc[stored["cusip"].ne(empty) & stored["ticker"].ne(empty), ["cusip", "ticker"]]
+    return CusipTags(pd.DataFrame(columns=LINE_COLUMNS), positions.drop_duplicates())
+
+
 def _clean_union(raw: pd.DataFrame, universe: tuple[str, ...] | None, close: pd.DataFrame | None) -> pd.DataFrame:
     """The whole position union cleaned as one batch."""
-    with closing(clean_public_batches(((pd.DataFrame(), raw) for _ in range(1)), universe, close, None)) as batches:
+    with closing(clean_public_batches(((pd.DataFrame(), raw) for _ in range(1)), _stored_tags(raw), universe, close, None)) as batches:
         return next(batches)[1]
 
 
@@ -193,7 +202,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     grid = pd.bdate_range("2024-01-02", "2025-03-31")
     universe = tuple(mapping.ticker.unique())
     close = pd.DataFrame(10.0, index=grid, columns=list(universe))
-    # extraction tags each stored position (U-67); the cube reads the stored ticker
+    # the mapping is the market-wide map the cube tags each stored position with
     stored = payload.assign(
         ticker=payload["ticker"].where(
             ~payload["cusip"].isin(set(mapping.cusip)), payload["cusip"].map(dict(zip(mapping.cusip, mapping.ticker, strict=True)))
@@ -210,7 +219,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    with closing(holdings_clean.clean_public_batches(stream, universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(stream, _stored_tags(stored), universe, close, None)) as batches:
         history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
     actual = list(iter_snapshot_books(*history))
@@ -230,7 +239,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     # The universe-scoped read (universe positions + whole amended books) replays the same books.
     scoped = inputs.iter_filing_vintages(sqlite_store, grid.max(), universe=universe)
     assert scoped is not None
-    with closing(holdings_clean.clean_public_batches(scoped, universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(scoped, _stored_tags(stored), universe, close, None)) as batches:
         scoped_history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert scoped_history is not None
     for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(actual, iter_snapshot_books(*scoped_history), strict=True):
@@ -380,7 +389,9 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     packets = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
-        batches = holdings_clean.clean_public_batches(packets, universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None)
+        batches = holdings_clean.clean_public_batches(
+            packets, _stored_tags(payload), universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None
+        )
         with closing(batches):
             history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
     assert history is not None
@@ -452,7 +463,7 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
         expected = _clean_union(raw, None, close)
         expected_register = registers.pop()
-        with closing(holdings_clean.clean_public_batches(source, None, close, None)) as batches:
+        with closing(holdings_clean.clean_public_batches(source, _stored_tags(raw), None, close, None)) as batches:
             result = list(batches)
     # Empty books retain their manifests and contribute no position rows to the union.
     actual = pd.concat([packet[1] for packet in result if not packet[1].empty], ignore_index=True)
@@ -484,25 +495,29 @@ def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
     raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].reset_index(drop=True))
     raw.loc[raw.cusip.eq("000000001"), "ticker"] = "OUT"
     raw.loc[raw.cusip.eq("000000002"), "ticker"] = "_empty"
-    expected, _ = values.repair_value_basis(attach_tickers(raw, ("ABC",)), None, None)
+    # Known truth: only the ABC rows keep a ticker; OUT is off the universe, `_empty` is unmapped; no company line.
+    tagged = raw.assign(ticker=raw["ticker"].where(raw["ticker"].eq("ABC"), None).astype(object), **{COMPANY_CUSIP: None})
+    expected, _ = values.repair_value_basis(tagged, None, None)
     expected.loc[expected.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     packets = ((pd.DataFrame(), raw) for _ in range(1))
-    with closing(holdings_clean.clean_public_batches(packets, ("ABC",), None, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(packets, _stored_tags(raw), ("ABC",), None, None)) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
     assert len(actual) == len(raw) and actual.ticker.isna().sum() == raw.ticker.ne("ABC").sum() > 0
     print("SANITY: a universe-filtered read retains every raw row; off-universe and unmapped rows keep the unknown ticker dtype and null mask.")
 
 
-def test_compact_books_refuse_two_rows_of_one_manager_and_company() -> None:
-    """U-67: `sec13f_hr` holds one row per manager x company x accession; two rows of one key (stored before U-67 and
-    not yet rewritten by the propagation) stop the cube instead of being summed."""
+def test_compact_books_sum_the_rows_of_one_manager_and_company() -> None:
+    """Known truth: a resolved book's BRK-A row (2 filed x 1,500, already in BRK-B shares) and BRK-B row (100) make one
+    (period, manager, BRK-B) row of 3,100 shares on the BRK-B CUSIP; one unknown amount makes the company sum unknown."""
     rows = pd.DataFrame(
         {"period": pd.Timestamp("2024-06-30"), "cik": "0000000001", "ticker": "BRK-B", "cusip": ["084670108", "084670702"],
-         "shares": [2.0, 100.0], "value_usd": [1.3e6, 4.3e4], "call_value": 0.0, "put_value": 0.0}
+         COMPANY_CUSIP: "084670702", "shares": [3_000.0, 100.0], "value_usd": [1.3e6, 4.3e4], "call_value": 0.0, "put_value": [0.0, np.nan]}
     )  # fmt: skip
-    with pytest.raises(ValueError, match="duplicate manager x company"):
-        books.compact_institutional_books(rows)
+    df_compact = books.compact_institutional_books(rows)
+    assert df_compact.index.tolist() == [(pd.Timestamp("2024-06-30"), "0000000001", "BRK-B")]
+    assert df_compact[["shares", "value_usd", "call_value", "_cusips"]].iloc[0].tolist() == [3_100.0, 1_343_000.0, 0.0, "084670702"]
+    assert pd.isna(df_compact["put_value"].iloc[0])
     one = books.compact_institutional_books(rows.iloc[1:])
     assert one["shares"].tolist() == [100.0] and one["_cusips"].tolist() == ["084670702"]
-    print("SANITY: a pre-U-67 BRK-A + BRK-B pair is refused; one company row passes through as stored with its CUSIP identity.")
+    print("SANITY: BRK-A 3,000 + BRK-B 100 B shares sum to one BRK-B row of 3,100 on the Class B CUSIP; an unknown put leg stays unknown.")

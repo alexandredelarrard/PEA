@@ -27,7 +27,6 @@ CLASSIFIED = {
     "symbol_tenure.scan_form345_cache": "operational: fewer cached Form 3/4/5 quarters than expected, a partial history",
     "symbol_tenure._unreadable_quarter": "operational: a cached Form 3/4/5 zip without its submission member is skipped",
     "symbol_tenure._aggregate_submission": "operational: a cached Form 3/4/5 zip missing columns is skipped",
-    "identity_propagate.retag_13f": "operational: a 13F accession whose source cannot be re-read keeps its stored rows",
 }
 
 
@@ -47,7 +46,7 @@ def _warning_sites() -> dict[str, int]:
 
 def test_every_identity_warning_site_is_classified() -> None:
     """PD-14: the WARNING sites are exactly the classified ones; the backlog, refused merges, symbol conflicts, stale
-    rejections, cold-start states and propagation purges log at INFO or DEBUG."""
+    rejections, cold-start states and the sync's moves and purges log at INFO or DEBUG."""
     sites = _warning_sites()
 
     assert set(sites) == set(CLASSIFIED), {"unclassified": sorted(set(sites) - set(CLASSIFIED)), "gone": sorted(set(CLASSIFIED) - set(sites))}

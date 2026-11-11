@@ -1,7 +1,6 @@
-"""`identity --only propagate`: a lineage contraction purges rows whose filer CIK (or tape symbol) left the
-ticker's entity, an expansion re-parses the bulk families for that ticker only, and the derived
-history of a purged ticker is rebuilt. Offline: a real `DataStore` on SQLite, a real `Identity` over
-hand-written lineage rows and the bulk re-parsers stubbed where noted.
+"""`identity --only sync`, the purge half: a lineage contraction purges rows whose filer CIK left the ticker's entity,
+once per table logged; the nightly SEC history build then rebuilds a purged ticker (M7). Offline: a real `DataStore` on
+SQLite and a real `Identity` over hand-written lineage rows.
 """
 
 from __future__ import annotations
@@ -13,20 +12,15 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.fundamentals import build_history
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
-from src.data_extract.utils.identity import cusip_history as sm
-from src.data_extract.utils.identity import identity_propagate as prop
-from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils import filer_tables
-from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
-from tests.support.propagation import run_propagation
-from tests.support.universe import as_roster, seed_universe
+from tests.support.identity_sync import run_sync
+from tests.support.universe import as_roster, seed_universe, universe_of
 
 SENTINEL = "1900-01-01"
 #: The run date: AFTER falls inside the 7-day re-check window before it, BEFORE does not.
@@ -35,7 +29,7 @@ BEFORE, AFTER = pd.Timestamp("2026-01-05 09:00"), pd.Timestamp("2026-01-12 09:00
 ALB, AB, MSFT, MSFT_FOREIGN = "0000915913", "0000825313", "0000789019", "0000000666"
 TMUS, TMO_USA, SPRINT = "0001283699", "0001097609", "0001727074"
 ROSTER = {"ALB": ALB, "MSFT": MSFT, "TMUS": TMUS}
-LOGGER = "test.identity_propagate"
+LOGGER = "test.identity_sync"
 
 
 def _row(ticker: str, cik: str, role: str, *, symbol: str = "", start: str = SENTINEL, end: str | None = None, stamp=BEFORE, **extra) -> dict:
@@ -178,37 +172,13 @@ def _seed(store) -> None:
         store.save(table, _filings(table, "MSFT", [("msft-1", MSFT, "2024-02-01"), ("msft-x", MSFT_FOREIGN, "2024-03-01")]))
 
 
-@pytest.fixture
-def stubs(monkeypatch) -> dict[str, list]:
-    """Bulk re-parsers, the FTD re-stamp and the derived rebuilds recorded instead of run."""
-    calls: dict[str, list] = {"notes": [], "insider": [], "ftd": [], "short": [], "history": []}
-    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: calls["notes"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: calls["insider"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(
-        prop,
-        "restamp_fails",
-        lambda context, companies, tickers, identity=None, dry_run=False, others=None: calls["ftd"].append(sorted(companies)) or [],
-    )
-    monkeypatch.setattr(
-        prop,
-        "restamp_short_volume",
-        lambda context, companies, tickers, identity=None, dry_run=False: calls["short"].append(sorted(companies)) or [],
-    )
-    monkeypatch.setattr(
-        prop,
-        "build_fundamentals_history",
-        lambda context, tickers, rebuild_history=False: calls["history"].append((sorted(tickers), rebuild_history)),
-    )
-    return calls
-
-
 def _keys(store, table) -> set[tuple[str, str]]:
     key = filer_tables.PURGE_TABLES_BY_NAME[table.name].key_col
     frame = store.load(table, columns=["ticker", key])
     return set(zip(frame["ticker"], frame[key], strict=True))
 
 
-def test_a_contraction_purges_the_removed_cik_in_every_family_and_logs_once_per_table(sqlite_store, tmp_path, monkeypatch, caplog, stubs):
+def test_a_contraction_purges_the_removed_cik_in_every_family_and_logs_once_per_table(sqlite_store, tmp_path, monkeypatch, caplog):
     """AC-031/AC-034: ALB's scope changed after each table's last run; AB's rows go, ALB's own stay, MSFT is not read."""
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
@@ -216,26 +186,25 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_logs_once_per_
     resolver = identity
 
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+        result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
 
     for table in PURGED_FAMILIES:
         keys = _keys(sqlite_store, table)
         assert ("ALB", "ab-1") not in keys and ("ALB", "ab-2") not in keys, table.name
         assert {("ALB", "alb-1"), ("ALB", "alb-2"), ("MSFT", "msft-1"), ("MSFT", "msft-x")} <= keys, table.name
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "identity propagate: purged" in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "identity sync: purged" in r.getMessage()]
     assert len(warnings) == len(PURGED_FAMILIES), warnings
     for table in PURGED_FAMILIES:
         line = next(w for w in warnings if f"'{table.name}'" in w)
         assert f"ALB cik {AB} 2019-03-01..2021-08-01 4 row(s)" in line, line
     removed = result.removals
     assert set(removed["table"]) == {t.name for t in PURGED_FAMILIES} and set(removed["cik"]) == {AB} and set(removed["rows"]) == {4}
-    assert stubs["history"] == [(["ALB"], True)]
-    assert not hasattr(prop, "build_sharadar_history"), "the propagation rebuilds the SEC history only"
+    assert result.moves.empty, "AB is no universe company's CIK: nothing moves"
     print("\n=== SANITY CHECK: contraction purge ===")
     print(
         f"  4 families: AB's 2 filings (4 rows each) purged under ALB; ALB's own and MSFT's (scope unchanged) rows kept; {len(warnings)} INFO lines (PD-14)"
     )
-    print("  ALB's SEC history rebuilt (delete + recompute); no merged or Sharadar build is called. Validated.")
+    print("  nothing moved (AB belongs to no universe company); no zip read. Validated.")
 
 
 def _employee_row(ticker: str, as_of: str, cik: str, accession: str, total: int | None, status: str) -> dict:
@@ -257,7 +226,7 @@ def _employee_row(ticker: str, as_of: str, cik: str, accession: str, total: int 
     }
 
 
-def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, tmp_path, monkeypatch, stubs):
+def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, tmp_path, monkeypatch):
     """AC-005: ALB's scope changed; AB's employee rows under ALB (a count and a NULL-status row) go, ALB's own and MSFT's stay."""
     context = _context(sqlite_store, tmp_path)
     rows = [
@@ -269,7 +238,7 @@ def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, t
     sqlite_store.save(Tables.fundamentals_employees, pd.DataFrame(rows).astype({"employees_total": "Int64"}))
     resolver = _identity({"ALB": AFTER})
 
-    result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
 
     stored = sqlite_store.load(Tables.fundamentals_employees, columns=["ticker", "accession_number"])
     keys = set(zip(stored["ticker"], stored["accession_number"], strict=True))
@@ -280,7 +249,7 @@ def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, t
     print("  AB's two employee rows under ALB (one count, one NULL-status) purged; ALB's own row and MSFT's (scope unchanged) kept. Validated.")
 
 
-def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_store, tmp_path, monkeypatch, stubs):
+def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_store, tmp_path, monkeypatch):
     """AC-006: ALB's scope changed; AB's text rows under ALB go in both tables, ALB's own and MSFT's stay."""
     context = _context(sqlite_store, tmp_path)
     text_tables = (Tables.sec_employees_text, Tables.sec_def14a_text)
@@ -288,7 +257,7 @@ def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_stor
         sqlite_store.save(table, _filings(table, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2019-03-01"), ("ab-2", AB, "2021-08-01")]))
         sqlite_store.save(table, _filings(table, "MSFT", [("msft-x", MSFT_FOREIGN, "2024-03-01")]))
 
-    result = run_propagation(context, _identity({"ALB": AFTER}), monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    result = run_sync(context, _identity({"ALB": AFTER}), monkeypatch, as_of=RUN_DATE)
 
     for table in text_tables:
         assert _keys(sqlite_store, table) == {("ALB", "alb-1"), ("MSFT", "msft-x")}, table.name
@@ -299,7 +268,7 @@ def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_stor
     print("  ALB's own filing and MSFT's (scope unchanged) kept. Validated.")
 
 
-def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch, stubs):
+def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch):
     """AC-022 with P35: T-Mobile USA's facts under TMUS are the entity's own; its 8-Ks (an event-only CIK) and the
     foreign filer's rows go."""
     context = _context(sqlite_store, tmp_path)
@@ -309,7 +278,7 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings
         )
     resolver = _identity({"TMUS": AFTER})
 
-    run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
 
     expected = {Tables.sec_8k: {TMUS: 2}, Tables.sec_fundamentals_facts: {TMUS: 2}}
     for table, want in expected.items():
@@ -320,7 +289,7 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings
     print("  TMUS: T-Mobile USA (event-only, no window) loses its 8-K and its facts; the foreign 0001727074 filing purged")
 
 
-def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ticker(sqlite_store, tmp_path, monkeypatch, stubs):
+def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ticker(sqlite_store, tmp_path, monkeypatch):
     """H1 (AC-004), PLD shape: old ProLogis is a CIK of PLD's entity with no window, so its facts and proxies are purged
     whatever their date; Prologis Inc's (the window) and its insider rows (UNION by policy) stay."""
     prologis, old_prologis = "0001045609", "0000899881"
@@ -335,23 +304,22 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
     for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
-    resolver = identity
     context = _context(sqlite_store, tmp_path)
+    context.universe = universe_of(["PLD"], rows={"PLD": {"cik": prologis}})
 
-    result = run_propagation(context, resolver, monkeypatch, ["PLD"], as_of=RUN_DATE)
+    result = run_sync(context, identity, monkeypatch, as_of=RUN_DATE)
 
     for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text):
         assert _keys(sqlite_store, table) == {("PLD", "new-1")}, table.name
     assert _keys(sqlite_store, Tables.insider_transactions) == {("PLD", "old-1"), ("PLD", "old-2"), ("PLD", "new-1")}
     got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], strict=True))
     assert got == [(Tables.sec_def14a_text.name, old_prologis, 2), (Tables.sec_fundamentals_facts.name, old_prologis, 2)], got
-    assert stubs["history"] == [(["PLD"], True)]
     print("\n=== SANITY CHECK: H1 purge, single-window ticker ===")
     print("  PLD: old ProLogis's 2 facts filings and 2 proxies purged (before and after the 2011 seam); Prologis Inc's kept;")
-    print("  old ProLogis's insider rows kept (Forms 3/4/5 UNION across the entity); PLD's history rebuilt")
+    print("  old ProLogis's insider rows kept (Forms 3/4/5 UNION across the entity)")
 
 
-def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store, tmp_path, monkeypatch, stubs):
+def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store, tmp_path, monkeypatch):
     """D-7: the purge's pre-filter is the validator's. A junk CIK string ('N/A', '-') is not a filer, so its rows stay."""
     context = _context(sqlite_store, tmp_path)
     for table in (Tables.sec_8k, Tables.sec_fundamentals_facts):
@@ -359,7 +327,7 @@ def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store
         sqlite_store.save(table, _filings(table, "ALB", filings))
     resolver = _identity({"ALB": AFTER})
 
-    result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
 
     for table in (Tables.sec_8k, Tables.sec_fundamentals_facts):
         keys = _keys(sqlite_store, table)
@@ -379,176 +347,21 @@ def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store
     print("  OK: a CIK with no digit is never judged, by the purge exactly as by the validator.")
 
 
-def test_the_dry_run_returns_the_same_removals_and_deletes_nothing(sqlite_store, tmp_path, monkeypatch, stubs):
-    context = _context(sqlite_store, tmp_path)
-    _seed(sqlite_store)
-    identity = _stored_identity(sqlite_store, {"ALB": AFTER})
-    resolver = identity
-    before = {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES}
-
-    dry = run_propagation(context, resolver, monkeypatch, list(ROSTER), dry_run=True, as_of=RUN_DATE)
-
-    assert {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES} == before
-    assert stubs["notes"] == stubs["insider"] == stubs["history"] == []
-    wet = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-    columns = list(filer_tables.REMOVAL_COLUMNS)
-    assert dry.removals[columns].reset_index(drop=True).equals(wet.removals[columns].reset_index(drop=True))
-    assert len(dry.removals) == len(PURGED_FAMILIES)
-    print("\n=== SANITY CHECK: dry run ===")
-    print(f"  dry run listed {len(dry.removals)} (table, ticker, cik) removals, deleted 0 rows; the real run removed exactly that set")
-
-
-def test_an_unchanged_lineage_neither_purges_nor_reparses(sqlite_store, tmp_path, monkeypatch, stubs):
+def test_an_unchanged_lineage_purges_nothing_and_full_rechecks_every_ticker(sqlite_store, tmp_path, monkeypatch):
     """AC-032: every scope stamp is older than every table's last run."""
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
     resolver = _identity({})
     before = {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES}
 
-    result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
 
     assert result.removals.empty
     assert {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES} == before
-    assert all(not calls for calls in stubs.values()), stubs
-    every = run_propagation(context, resolver, monkeypatch, list(ROSTER), dry_run=True, full=True, as_of=RUN_DATE).removals
+    every = run_sync(context, resolver, monkeypatch, full=True, as_of=RUN_DATE).removals
     assert set(zip(every["ticker"], every["cik"], strict=True)) == {("ALB", AB), ("MSFT", MSFT_FOREIGN)}
     print("\n=== SANITY CHECK: unchanged lineage (AC-032) ===")
-    print("  no purge, no bulk re-parse, no FTD re-stamp, no rebuild; the validator's every-ticker dry run still lists both foreign filers")
-
-
-def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_store, tmp_path, monkeypatch, stubs):
-    """AC-030: MSFT's scope changed; ALB and TMUS stay on their incremental frontier."""
-    context = _context(sqlite_store, tmp_path)
-    # X90: only a scope stamped by this run (on or after the step starts) is re-parsed
-    resolver = _identity({"MSFT": pd.Timestamp.now(tz="UTC").tz_localize(None) + pd.Timedelta(hours=1)})
-
-    run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    assert stubs["notes"] == stubs["insider"] == [["MSFT"]]
-    assert stubs["ftd"] == []  # no stored FTD lines, no master
-    print("\n=== SANITY CHECK: expansion (AC-030) ===")
-    print("  notes and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
-
-
-def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
-    """Short volume is no purge table: companies whose master rows changed recently are re-stamped from stored rows."""
-    context = _context(sqlite_store, tmp_path)
-    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER}))
-    sqlite_store.save(
-        Tables.sec_short_volume_security,
-        pd.DataFrame({"date": pd.to_datetime(["2024-02-01"]), "source_symbol": ["ALB"], "short_volume": [1.0], "ticker": ["ALB"]}),
-    )
-    resolver = _identity({})
-
-    run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    assert Tables.short_interest.name not in filer_tables.PURGE_TABLES_BY_NAME
-    assert stubs["short"] == [["ALB"]], stubs["short"]
-    print("\n=== SANITY CHECK: short volume re-stamp ===")
-    print("  ALB's master rows changed inside the re-check window: its stored short-volume rows are re-stamped; nothing is purged by CIK")
-
-
-def _master(owner_of_old: str, stamps: dict[str, pd.Timestamp]) -> pd.DataFrame:
-    """One canonical CUSIP per ticker, plus `OLD` (2010-2016) held by `owner_of_old`."""
-    rows = [
-        ("000000AL1", "ALB", "ALB", "2000-01-01", None),
-        ("000000MS1", "MSFT", "MSFT", "2000-01-01", None),
-        ("000000OL1", owner_of_old, "OLD", "2010-01-01", "2016-01-01"),
-    ]
-    frame = pd.DataFrame(rows, columns=["cusip", "canonical_company", "source_symbol", "valid_from", "valid_to"])
-    frame = frame.assign(
-        security_id="C" + frame["cusip"],
-        issuer_cik="0000000001",
-        source=sl.SOURCE_FTD,
-        market_symbol=frame["source_symbol"],
-        exchange=None,
-        security_class="common",
-        conversion_ratio=1.0,
-        lineage_role=sm.CANONICAL_CURRENT,
-        lineage_reason="fixture",
-        source_accession=None,
-        evidence="fixture",
-        n_observations=1,
-    )
-    frame["valid_from"] = pd.to_datetime(frame["valid_from"])
-    frame["valid_to"] = pd.to_datetime(frame["valid_to"])
-    frame["scope_changed_at"] = [stamps.get(t, BEFORE) for t in frame["canonical_company"]]
-    return frame[list(sm.TABLE_COLUMNS)]
-
-
-def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
-    lines = ["SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"]
-    lines += [f"{day}|{cusip}|{symbol}|{qty}|X|1.0" for day, cusip, symbol, qty in rows]
-    return ftd._parse_ftd_lines("\n".join(lines) + "\n")
-
-
-def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch):
-    """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
-    ticker row retains verified zero completion, MSFT gains it after reconciling the controlled original source units."""
-    create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
-    context = _context(sqlite_store, tmp_path)
-    raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
-    raw = raw.assign(
-        period=["201203a", "202402a", "202402a"],
-        security_id="C" + raw["cusip"],
-        ticker=["ALB", "ALB", "MSFT"],
-        lineage_role=sm.CANONICAL_CURRENT,
-        security_class="common",
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
-    stored = pd.DataFrame(
-        {
-            "ticker": ["ALB", "ALB", "MSFT"],
-            "date": pd.to_datetime(["2012-03-01", "2024-02-01", "2024-02-01"]),
-            "fails_quantity": [10.0, 5.0, 7.0],
-            "fails_value": [10.0, 5.0, 7.0],
-            "period": ["201203a", "202402a", "202402a"],
-        }
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver, stored)
-    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
-    resolver = _identity({})
-    originals = {
-        "201203a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20120301|000000OL1|OLD|10|X|1.0\n",
-        "202402a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240201|000000AL1|ALB|5|X|1.0\n20240201|000000MS1|MSFT|7|X|1.0\n",
-    }
-    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(originals))
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, **kwargs: originals[path.stem.removeprefix("cnsfails")])
-    monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: 0)
-    monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: 0)
-
-    result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    after = sqlite_store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "fails_quantity"])
-    got = sorted((t, str(pd.Timestamp(d).date()), q) for t, d, q in after.itertuples(index=False))
-    assert got == [("ALB", "2012-03-01", 0.0), ("ALB", "2024-02-01", 5.0), ("MSFT", "2012-03-01", 10.0), ("MSFT", "2024-02-01", 7.0)], got
-    checked = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "ALB", "date": pd.Timestamp("2012-03-01")})
-    assert checked is not None and checked["source_checked_at"].notna().all()
-    restamped = sqlite_store.load(Tables.sec_fails_to_deliver_security, where={"cusip": "000000OL1"})
-    assert restamped["ticker"].tolist() == ["MSFT"]
-    assert result.removals.empty, result.removals
-    print("\n=== SANITY CHECK: FTD re-stamp ===")
-    print("  OLD moved from ALB to MSFT: ALB's 2012 row retains verified zero completion, MSFT gains its fails; 2024 rows kept; no removals")
-
-
-def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path, monkeypatch, stubs):
-    """Only companies whose master rows changed since the table's last run are re-stamped; no CIK family is re-parsed."""
-    context = _context(sqlite_store, tmp_path)
-    raw = _ftd_raw([("20240201", "000000AL1", "ALB", 5)]).assign(
-        period="202402a", security_id="C000000AL1", ticker="ALB", lineage_role=sm.CANONICAL_CURRENT, security_class="common"
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
-    sqlite_store.replace(Tables.universe_cusip, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
-    identity = _identity({})
-    resolver = identity
-
-    run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    assert stubs["ftd"] == [["ALB", "MSFT"]]
-    assert stubs["notes"] == stubs["insider"] == []
-    print("\n=== SANITY CHECK: master stamp ===")
-    print("  universe_cusip rows carry their own change stamp: FTD re-stamped for ALB and MSFT, no CIK family re-parsed")
+    print("  no stamp in the window: nothing purged; `--full` re-checks every ticker and purges both foreign filers")
 
 
 def _history(ticker: str, dates: list, revenue: float) -> pd.DataFrame:
@@ -558,7 +371,8 @@ def _history(ticker: str, dates: list, revenue: float) -> pd.DataFrame:
 
 
 def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sqlite_store, tmp_path, monkeypatch):
-    """Published history rows built from a foreign filing are replaced once its facts are purged."""
+    """M7: published history rows built from a foreign filing are replaced by the nightly history build once the sync
+    purged its facts (the ticker's scope changed inside the re-check window)."""
     context = _context(sqlite_store, tmp_path)
     sqlite_store.save(
         Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2021-08-01")])
@@ -574,15 +388,14 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     assert sqlite_store.row_count(Tables.sec_fundamentals_history) == 2
     resolver = _identity({"ALB": AFTER})
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
-    for name in ("reparse_financial_notes", "reparse_insider_transactions"):
-        monkeypatch.setattr(prop, name, lambda context, tickers, **kwargs: 0)
 
-    run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
+    run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
+    build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
 
     history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "totalRevenue"])
     assert [str(pd.Timestamp(d).date()) for d in history["as_of"]] == ["2024-02-01"] and list(history["totalRevenue"]) == [1.0]
     print("\n=== SANITY CHECK: history rebuild ===")
-    print("  2 published rows (one from AB's filing) -> 1 row after the purge and the SEC history rebuild")
+    print("  2 published rows (one from AB's filing) -> 1 row after the sync purge and the nightly SEC history build")
 
 
 def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_run(sqlite_store, tmp_path, monkeypatch, caplog):
@@ -617,57 +430,4 @@ def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_
     history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
     assert list(history["totalRevenue"]) == [4.0]
     print("\n=== SANITY CHECK: history expansion rebuild ===")
-    print("  unchanged scope: verifying replay refuses the changed row (2.0 kept); scope changed: check, not late -> ALB REBUILT (2 -> 4)")
-
-
-def test_f105_the_bulk_reparse_compares_each_table_only_with_the_ciks_it_can_hold(sqlite_store, tmp_path, monkeypatch, stubs):
-    """Every scope changed: ALB holds its notes rows, MSFT none, TMUS insider rows but never its co-registrant's."""
-    context = _context(sqlite_store, tmp_path)
-    sqlite_store.save(Tables.notes_num, _filings(Tables.notes_num, "ALB", [("alb-1", ALB, "2024-02-01")]))
-    sqlite_store.save(Tables.insider_transactions, _filings(Tables.insider_transactions, "TMUS", [("t-1", TMUS, "2024-02-01")]))
-    sqlite_store.save(Tables.insider_transactions, _filings(Tables.insider_transactions, "ALB", [("alb-1", ALB, "2024-02-01")]))
-    rows = pd.DataFrame(
-        [
-            _row(t, c, r, stamp=AFTER)
-            for t, c, r in (("ALB", ALB, "cik_window"), ("MSFT", MSFT, "cik_window"), ("TMUS", TMUS, "cik_window"), ("TMUS", TMO_USA, "cik_event"))
-        ]
-    )
-    tenure = pd.DataFrame(
-        [
-            {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
-            for t, c in ROSTER.items()
-        ]
-    )
-    roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    identity = build_identity(rows, tenure, as_roster(roster), co_registrant_ciks=[TMO_USA])
-    resolver = identity
-
-    result = run_propagation(context, resolver, monkeypatch, list(ROSTER), as_of=RUN_DATE)
-
-    assert stubs["notes"] == [] and stubs["insider"] == [], "no table lacks a CIK it can hold: nothing re-parsed"
-    assert "notes_num" not in result.reparsed and "insider_transactions" not in result.reparsed
-    print("\n=== SANITY CHECK: F-105 bulk re-parse trigger ===")
-    print("  every scope changed: ALB holds its window CIK's notes, MSFT holds none, TMUS's co-registrant is never stored -> no re-parse")
-
-
-def test_the_bulk_reparse_uses_the_propagation_resolver_and_run_date(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """S6: the two family re-parses get the resolver and run date from `reparse_notes` / `reparse_insider`; none reloads the identity."""
-    from src.data_extract.utils.zips import fetch_financial_notes as notes
-    from src.data_extract.utils.zips import fetch_insider_transactions as insider
-
-    loads: list[str] = []
-    for module in (notes, insider):
-        monkeypatch.setattr(module, "load_identity", lambda context, *a, **k: loads.append("load") or None)
-        monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
-    resolver = SimpleNamespace(co_registrant_ciks=frozenset(), securities_by_cusip={})
-    empty = pd.DataFrame(columns=["ticker", "cik", "issuer_cik", "rows"])
-    store = SimpleNamespace(exists=lambda table: False, summarize=lambda *args, **kwargs: empty)
-    context = SimpleNamespace(store=store, log=logging.getLogger("test.reparse"), config=extract_config())
-    scopes = {"AAA": SimpleNamespace(event_ciks=(), windows=())}
-    done = {
-        **prop.reparse_notes(context, ["AAA"], scopes, resolver),  # type: ignore[arg-type]
-        **prop.reparse_insider(context, ["AAA"], scopes, resolver, pd.Timestamp("2026-10-31")),  # type: ignore[arg-type]
-    }
-    assert done == {Tables.notes_num.name: ("AAA",), Tables.insider_transactions.name: ("AAA",)}
-    assert loads == [], loads
-    print(f"\nSANITY: 2 family re-parses ran on an empty cache through the passed resolver; load_identity calls = {len(loads)}.")
+    print("  unchanged scope: a changed published row still refuses; scope changed inside the re-check window: ALB rebuilt (2 -> 4 fact rows)")

@@ -3,7 +3,7 @@
 Order: insider Forms 3/4/5 (EDGAR rows after the last stored zip quarter, then the zip reconcile; the insider run
 enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, 10-K employees text, DEF 14A text, 10-K/10-Q
 XBRL facts (the facts run binds its catalogue and GICS parser on entry). The window, run date, ticker scope and CIK
-mapping are declared once and shared by every walk. Consumes the identity built and propagated
+mapping are declared once and shared by every walk. Consumes the identity built and synced
 upstream; the identity scope, document cap and retry policy are read once too. The local EDGAR index is refreshed
 once per step: `run()` refreshes it over the widest window of the walks before them (`run_index`); a walk run
 alone refreshes its own window, unless the step already did or today's refresh (the nightly `edgar-index` task,

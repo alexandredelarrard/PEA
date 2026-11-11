@@ -18,7 +18,6 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
-from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
@@ -73,9 +72,9 @@ def _log_read_failure(context: Context, cik: str, stamp: FilingStamp, period: pd
     )
 
 
-def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp, lines: pd.DataFrame, cmap: pd.DataFrame) -> tuple[int, int, int]:
-    """Save each complete pending accession to `sec13f_hr` independently, tagged by the `universe_cusip` `lines` and
-    the stored `cmap`; failed siblings remain pending. Returns (rows saved, suspect-price rows, transient failures)."""
+def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp, cmap: pd.DataFrame) -> tuple[int, int, int]:
+    """Save each complete pending accession to `sec13f_hr` independently, as filed and tagged by the stored `cmap`;
+    failed siblings remain pending. Returns (rows saved, suspect-price rows, transient failures)."""
     frames: list[pd.DataFrame] = []
     held_periods: list[pd.Timestamp] = []
     # Only a verified completed accession leaves the pending set.
@@ -87,7 +86,7 @@ def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp
             _log_read_failure(context, cik, stamp, period, rows)
         else:
             manifest, book = rows
-            save_hr_filing(context.store, manifest, book, lines, cmap)
+            save_hr_filing(context.store, manifest, book, cmap)
             if not book.empty:
                 frames.append(book)
         if isinstance(rows, ReadFailure) and rows.transient:
@@ -131,11 +130,11 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         )
     names = roster_map_as_of(context)  # latest snapshot; only used for log lines
     with_book = set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cik": ciks}))
-    lines, cmap = load_identity(context).cusip_lines, load_cusip_map(context.store)
+    cmap = load_cusip_map(context.store)
     since = run_date(None) - pd.DateOffset(years=years_history)
     logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book), since.date())
 
-    worker = partial(_catch_up_cik, context=context, since=since, lines=lines, cmap=cmap)
+    worker = partial(_catch_up_cik, context=context, since=since, cmap=cmap)
     df_scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
     guarded = run_per_ticker(df_scope, worker, desc="13F manager books", key_cols=("cik_label", "cik"))
     results = [result or (0, 0, 0) for result in guarded]
@@ -250,7 +249,7 @@ def recover_13f_vintages(
     if dry_run:
         return preview
     saved = 0
-    lines, cmap = load_identity(context).cusip_lines, load_cusip_map(context.store)
+    cmap = load_cusip_map(context.store)
     cached_packets: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     if archives:
         for path in sorted(set(paths[str(row["accession"])] for row in pending)):
@@ -264,6 +263,6 @@ def recover_13f_vintages(
         if isinstance(packet, ReadFailure):
             raise RuntimeError(f"13F recovery stopped at {accession}: {packet.reason}")
         manifest, holdings = packet
-        saved += save_hr_filing(context.store, manifest, holdings, lines, cmap)
+        saved += save_hr_filing(context.store, manifest, holdings, cmap)
     preview["saved_rows"] = saved
     return preview

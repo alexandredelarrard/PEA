@@ -135,15 +135,17 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
 
 
 def _filing_sections(filing: Any) -> dict[str, str]:
-    """Structured sections from the parsed filing, with the regex carve filling whichever section it missed."""
+    """Structured sections from the parsed filing, with the regex carve filling whichever section it missed. A 10-K's
+    Business takes the carve whenever it finds one: edgartools' Item 1 can stop at a sub-heading inside the item."""
     form = filing.form
-    needed = {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}
+    is_10k = str(form).upper().startswith("10-K")
+    needed = {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA} if is_10k else {FILING_SECTION_MDA}
     try:
         obj = filing_obj(filing)
     except ParseFailureError:
         obj = None
     sections = _structured_sections(obj, form) if obj is not None else {}
-    missing = needed - sections.keys()
+    missing = (needed - sections.keys()) | ({FILING_SECTION_BUSINESS} if is_10k else set())
     if not missing:
         return sections
     try:

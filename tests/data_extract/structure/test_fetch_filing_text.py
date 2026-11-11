@@ -254,6 +254,15 @@ def test_filing_sections_only_falls_back_for_the_missing_section():
     assert "Revenue increased" in sections[FILING_SECTION_MDA]
 
 
+def test_filing_sections_business_prefers_the_carve_and_keeps_edgartools_otherwise():
+    """Business takes the regex carve over edgartools' Item 1 when the carve finds it, and keeps edgartools' when not."""
+    obj = _fake_ten_k(risk_factors=_pad("STRUCTURED RISK"), management_discussion=_pad("STRUCTURED MDA"), business=_pad("STRUCTURED BUSINESS"))
+    carved = _filing_sections(_fake_filing(obj=obj, text=_REAL_10K_TEXT_SAMPLE))
+    assert "smartphones" in carved[FILING_SECTION_BUSINESS] and "STRUCTURED RISK" in carved[FILING_SECTION_RISK]
+    kept = _filing_sections(_fake_filing(obj=obj, text=_REAL_10Q_TEXT_SAMPLE))
+    assert "STRUCTURED BUSINESS" in kept[FILING_SECTION_BUSINESS]
+
+
 def test_filing_sections_survives_a_totally_unparseable_filing():
     """Both .obj() and .text() failing (a genuinely bad filing) must return an
     empty dict rather than raising -- the caller (FILING_TEXT_FETCH.parse) then

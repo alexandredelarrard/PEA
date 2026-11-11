@@ -14,12 +14,13 @@ import pytest
 from src.context import Context
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, plan_fetch
 from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_text import DEF14A_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
@@ -39,6 +40,7 @@ from src.data_store.schema import (
     resume_tables,
 )
 from src.data_store.store import DataStore
+from tests.data_extract.edgar_fixtures import identity_for
 from tests.support.fundamentals_frames import sec_facts_frame, sharadar_facts_frame
 from tests.support.universe import seed_universe
 
@@ -107,7 +109,7 @@ def test_every_resumed_extract_table_has_a_cadence() -> None:
     ):
         assert table.freshness == "daily", table.name
     assert Tables.filing_risk_text.freshness == "quarterly"
-    assert Tables.def14a_edgar.freshness == "yearly"
+    assert Tables.sec_def14a_text.freshness == "yearly"
 
     print("\n=== SANITY CHECK: cadences ===")
     print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")
@@ -155,6 +157,31 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
     print("  rp_seq -> -1 (sequence starts at 0), proposal_seq -> 0 (starts at 1): no marker can overwrite a real row. Validated.")
 
 
+def test_edgar_text_tables_declare_their_layout_markers_and_ddl(monkeypatch: pytest.MonkeyPatch) -> None:
+    types = _column_types(monkeypatch)
+    expected = {
+        Tables.sec_employees_text: (("ticker", "accession_number"), ("source_document", "_empty"), {"windows": "TEXT", "pieces": "TEXT"}),
+        Tables.sec_def14a_text: (("ticker", "accession_number", "section"), ("section", "_empty"), {"primary_document": "TEXT", "payload": "TEXT"}),
+    }
+    for table, (pk, marker, data_types) in expected.items():
+        resume = cast(Resume, table.resume)
+        assert table.pk == pk and table.empty_marker == marker and table.desc, table.name
+        assert (resume.mode, table.date_col, table.freshness) == (
+            RESUME_DOCUMENTS,
+            "filing_date",
+            "yearly" if "def14a" in table.name else "quarterly",
+        )
+        assert list(types[table.name]) == list(table.retrieval_columns), table.name
+        assert types[table.name]["filing_date"] == "DATE" and types[table.name]["n_chars"] == "BIGINT"
+        assert {col: types[table.name][col] for col in data_types} == data_types
+    assert "period_of_report" in Tables.sec_employees_text.date_type_cols and "period" not in Tables.sec_def14a_text.date_type_cols
+
+    print("\n=== SANITY CHECK: EDGAR text tables ===")
+    for table in expected:
+        print(f"  {table.name}: pk {table.pk}, marker {table.empty_marker}, {len(table.retrieval_columns)} columns = sql/schema.sql block")
+    print("  DEF 14A `period` stays TEXT ('' allowed); employees period_of_report is a DATE. Validated.")
+
+
 def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
     context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"])))
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
@@ -163,7 +190,8 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         SEC_13D_FETCH,
         SEC_13G_FETCH,
         INSIDER_EDGAR_FETCH,
-        DEF14A_EDGAR_FETCH,
+        DEF14A_TEXT_FETCH,
+        EMPLOYEES_TEXT_FETCH,
         FILING_TEXT_FETCH,
         SEC_FUNDAMENTALS_FETCH,
     )
@@ -179,7 +207,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         plan_fetch(
             context,
             fetch,
-            EdgarRun(list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10),
+            EdgarRun(list(keys["ticker"]), keys, identity_for(dict(zip(keys["ticker"], keys["cik"], strict=True))), pd.Timestamp("2026-10-13"), 10),
         )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms

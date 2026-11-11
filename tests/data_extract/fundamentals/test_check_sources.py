@@ -9,6 +9,7 @@ BF-B's vendor row is spelled `BF.B` and links a predecessor CIK its company owns
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -17,9 +18,12 @@ from src.data_extract.utils.common.identity_contract import entity_by_cik_map
 from src.data_extract.utils.fundamentals.check_sources import (
     SHARADAR_GAP_EXPECTED_FIELDS,
     SourceCheck,
+    check_fundamentals_sources,
     check_sources,
     log_source_check,
 )
+from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
+from src.data_store.schema import Tables
 
 _UNIVERSE = ["AAA", "BBB", "BF-B", "CCC", "DDD"]
 _ROSTER = {"AAA": "1", "BBB": "0000000002", "BF-B": "0000000005", "CCC": "0000000003", "DDD": "0000000004"}
@@ -98,10 +102,23 @@ def test_a_field_off_on_1pct_of_rows_is_not_listed(check: SourceCheck) -> None:
 
 
 def test_an_sec_only_field_is_not_value_checked(check: SourceCheck) -> None:
-    assert check.sec_only == ["goodwill"] and "goodwill" not in check.fields_compared
-    assert "goodwill" not in set(check.field_gaps["field"])
+    assert "goodwill" not in check.fields_compared and "goodwill" not in set(check.field_gaps["field"])
     print("\n=== SANITY CHECK: SEC-only field ===")
-    print(f"  goodwill (1e9 on every SEC row, absent from Sharadar): sec_only {check.sec_only}, not compared. Validated.")
+    print(f"  goodwill (1e9 on every SEC row, absent from Sharadar): not in the compared fields {check.fields_compared}. Validated.")
+
+
+def test_the_sec_only_statement_fields_are_logged_and_absent_tables_read_empty(sqlite_store, caplog: pytest.LogCaptureFixture) -> None:
+    context = SimpleNamespace(store=sqlite_store, universe=SimpleNamespace(cik_by_ticker={}))
+    with caplog.at_level(logging.INFO, logger="src.data_extract.utils.fundamentals.check_sources"):
+        check_fundamentals_sources(context, ["AAA"], gap_pct=0.03, field_share=0.05, top_tickers=3)
+    lines = [r.getMessage() for r in caplog.records if r.name.endswith("check_sources")]
+    sec_only = [f for f in HISTORY_STATEMENT_ORDER if f not in Tables.sharadar_fundamentals_history.read_columns]
+    assert "goodwill" in sec_only and "totalRevenue" not in sec_only
+    assert lines[0] == f"fundamentals check: {len(sec_only)} SEC-only statement field(s) not value-checked {sec_only}", lines
+    assert any("1 ticker(s) with no parseable Sharadar CIK: ['AAA']" in line for line in lines), lines
+    print("\n=== SANITY CHECK: SEC-only statement fields (empty database) ===")
+    print(f"  {lines[0]}")
+    print(f"  {len(lines)} lines; no table present -> read as empty; AAA has no Sharadar CIK. Validated.")
 
 
 def test_an_expected_fork_is_tagged_and_still_shown(check: SourceCheck) -> None:

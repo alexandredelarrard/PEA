@@ -17,7 +17,7 @@ from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
+from src.data_extract.utils.edgar_extract.edgar_driver import _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
@@ -604,7 +604,7 @@ def test_actual_xml_parser_run_writes_and_stamps_fetched_at(sqlite_store: DataSt
         {"cik": ["0000920760"], "company": ["LEN"], "form": ["4"], "filed": pd.to_datetime(["2026-07-01"]), "accession": [accession]}
     )
     with insider_edgar._insider_run_scope(context, ["LEN"], pd.Timestamp("2026-10-06")) as prepared:
-        outcome = _walk_key(context, prepared, EdgarScope(identity), {"LEN": units}, "LEN", "0000920760")
+        outcome = _walk_key(context, prepared, identity, {"LEN": units}, "LEN", "0000920760")
         assert len(outcome.failed) == 0
     rows = sqlite_store.load(Tables.insider_transactions)
     assert rows is not None and set(rows["accession_number"]) == {accession}

@@ -24,7 +24,7 @@ from src.data_extract.utils.common.resume import period_end
 from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_store.schema import Tables
 
-LOG = logging.getLogger("test_bulk_cache")
+LOG = logging.getLogger("src.data_extract.utils.common.bulk_cache")
 
 
 class FakeStore:
@@ -73,13 +73,13 @@ def test_zip_fallback_warns_only_when_every_url_fails(
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     with caplog.at_level(logging.WARNING, logger=LOG.name):
-        result = ensure_zip(SimpleNamespace(), path, urls, label="13F source", log=LOG)
+        result = ensure_zip(SimpleNamespace(), path, urls, label="13F source")
     assert calls == list(urls)
     warnings = [record.getMessage() for record in caplog.records if record.name == LOG.name and record.levelno >= logging.WARNING]
     if second == 200:
         assert result == path and path.read_bytes() == b"source archive"
         assert not warnings
-        assert ensure_zip(SimpleNamespace(), path, urls, label="13F source", log=LOG) == path
+        assert ensure_zip(SimpleNamespace(), path, urls, label="13F source") == path
         assert calls == list(urls)
     else:
         assert result is None and not path.exists()

@@ -40,7 +40,7 @@ Table rules live with their users: identity changes in [identity_store.py](../..
 - [src/data_store/schema.py](../../src/data_store/schema.py) is the single table registry.
 - [src/data_store/store.py](../../src/data_store/store.py) is the application I/O facade.
 - [src/data_store/ddl.py](../../src/data_store/ddl.py) renders registry definitions into SQL.
-- [sql/schema.sql](../../sql/schema.sql) is generated managed-table DDL. `managed=False` tables (the cube parts and the four fundamentals tables) are absent; `ensure_table` creates them on their first write, with the CREATE serialized under `_CREATE_LOCK`. `columns()` reads the shared reflection cache under the same lock, because `_table` registers a table before its columns are reflected.
+- [sql/schema.sql](../../sql/schema.sql) is generated managed-table DDL. `managed=False` tables (the cube parts and the four fundamentals tables) are absent; `ensure_table` creates them on their first write, with the CREATE serialized under `_CREATE_LOCK`. A managed table whose producer may meet an empty database is created from its committed block instead: `create_declared` runs `ddl.declared_statements` (the block's CREATE TABLE and CREATE INDEX) under the same lock when the table is missing (the EDGAR text tables and the DEF 14A output tables). `columns()` reads the shared reflection cache under the same lock, because `_table` registers a table before its columns are reflected.
 - [test_store_boundary.py](../../tests/data_store/test_store_boundary.py) rejects SQL leakage elsewhere.
 
 ## Dependencies

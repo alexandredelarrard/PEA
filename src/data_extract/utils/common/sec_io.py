@@ -325,11 +325,6 @@ def filing_text(filing: Any) -> str | None:
     return sec_call(filing.text, label=_label(filing, "text"))
 
 
-def filing_html(filing: Any) -> str | None:
-    """`filing.html()` under the retry policy."""
-    return sec_call(filing.html, label=_label(filing, "html"))
-
-
 def filing_xml(filing: Any) -> str | None:
     """`filing.xml()` under the retry policy."""
     return sec_call(filing.xml, label=_label(filing, "xml"))

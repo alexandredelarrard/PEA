@@ -121,8 +121,9 @@ class FieldSpec:
         return list(spec.get("sum", []))
 
     @cached_property
-    def _never_use_by_regime(self) -> dict[str | None, MappingProxyType]:
-        """`never_use`'s per-regime memo (an instance dict: `raw` makes this frozen dataclass unhashable)."""
+    def _never_use_by_regime(self) -> dict[str | None, dict[str, Any]]:
+        """`never_use`'s per-regime memo of plain dicts, so the catalogue pickles (an instance dict: `raw` makes this
+        frozen dataclass unhashable)."""
         return {}
 
     def never_use(self, regime: str | None = None) -> MappingProxyType:
@@ -132,10 +133,8 @@ class FieldSpec:
         """
         cached = self._never_use_by_regime.get(regime)
         if cached is None:
-            merged = dict(self.raw.get("never_use", {}))
-            merged.update(self._regime_block(regime).get("never_use", {}))
-            cached = self._never_use_by_regime[regime] = MappingProxyType(merged)
-        return cached
+            cached = self._never_use_by_regime[regime] = {**self.raw.get("never_use", {}), **self._regime_block(regime).get("never_use", {})}
+        return MappingProxyType(cached)
 
     def _regime_block(self, regime: str | None) -> dict[str, Any]:
         if not regime:
@@ -248,12 +247,6 @@ class Catalogue:
     force_regime_by_sub_industry: dict[str, str]
     ticker_exceptions: dict[str, Any]
 
-    @cached_property
-    def all_column_names(self) -> frozenset[str]:
-        """Every name the contract declares (catalogue fields plus computed columns), the set `feeds` /
-        `components` references resolve against. Wider than `history_columns` (includes side-table fields)."""
-        return frozenset(self.fields) | frozenset(self.derived_columns)
-
     # ------------------------------------------------- the history contract --- #
     @cached_property
     def side_table_fields(self) -> list[str]:
@@ -300,39 +293,11 @@ class Catalogue:
             raise KeyError(f"{name!r} is not in the KPI catalogue ({len(self.fields)} fields declared)") from None
 
     @cached_property
-    def _by_tier(self) -> dict[int, list[str]]:
-        """Every tier's sorted field list, built in one pass over `fields`."""
-        out: dict[int, list[str]] = {}
-        for name in sorted(self.fields):
-            out.setdefault(self.fields[name].tier, []).append(name)
-        return out
-
-    def by_tier(self, tier: int) -> list[str]:
-        return list(self._by_tier.get(tier, ()))
-
-    @cached_property
-    def scored_fields(self) -> list[str]:
-        return sorted(n for n, s in self.fields.items() if s.is_scored)
-
-    @cached_property
-    def input_fields(self) -> list[str]:
-        return sorted(n for n, s in self.fields.items() if s.tier == INPUT_TIER)
-
-    @cached_property
     def extracted_fields(self) -> list[str]:
         """Fields resolved against XBRL, i.e. everything the facts layer must produce."""
         return sorted(n for n, s in self.fields.items() if s.is_extracted)
 
-    @cached_property
-    def unverified_fields(self) -> list[str]:
-        """Fields whose `authority` is still the placeholder; the schema test asserts on this list."""
-        return sorted(n for n, s in self.fields.items() if s.authority == UNVERIFIED)
-
     # --------------------------------------------------------------- regimes --- #
-    @cached_property
-    def regime_names(self) -> list[str]:
-        return sorted(self.regimes)
-
     def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None, sub_industry: str | None = None) -> str | None:
         """The GICS-implied regime, or None (never a guess) when nothing matches.
 
@@ -481,22 +446,16 @@ def _catalogue_at(config_dir: str) -> Catalogue:
     regime_exceptions = {regime: config_entries(block) for regime, block in config_entries(exceptions_blob.get("by_regime", {})).items()}
 
     ticker_exceptions = {ticker: config_entries(block) for ticker, block in config_entries(exceptions_blob.get("by_ticker", {})).items()}
-    periodicity = {ticker: config_entries(block) for ticker, block in config_entries(exceptions_blob.get("by_ticker_periodicity", {})).items()}
 
     # An exception-register field missing from the catalogue is a typo that would excuse nothing.
     for regime, block in regime_exceptions.items():
         unknown = sorted(set(block) - set(fields))
         if unknown:
             raise ValueError(f"exceptions[{regime}] names unknown field(s) {unknown}")
-    for label, register in (("by_ticker", ticker_exceptions), ("by_ticker_periodicity", periodicity)):
-        ticker: str | None = None
-        block: dict = {}
-        for ticker, block in register.items():
-            unknown = sorted(set(block) - set(fields))
-            if unknown:
-                raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) {unknown}")
-        if ticker is None:
-            continue
+    for ticker, block in ticker_exceptions.items():
+        unknown = sorted(set(block) - set(fields))
+        if unknown:
+            raise ValueError(f"exceptions.by_ticker[{ticker}] names unknown field(s) {unknown}")
         # A concept declared both leaf and not-leaf is a contradiction; fail loudly.
         for field, entry in block.items():
             if not isinstance(entry, dict):

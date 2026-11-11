@@ -1,28 +1,10 @@
-"""
-gender.py  (src/data_extract/utils/structure/def14a/gender.py)
----------------------------------------------------------------------
-Cross-filing gender consensus over `def14a_directors`. Deterministic — no LLM.
+"""Cross-filing gender consensus over `def14a_directors`. Deterministic, no LLM.
 
-Why this exists. `pct_female_directors` carries alpha, so the answer to "gender is 97.9% filled
-while only 17.4% of proxies disclose it" is to make the field RIGHT, not to delete it. The
-extraction side resolves gender from in-document evidence in a fixed order and records which
-rule fired in `gender_basis` (`stated` > `honorific` > `pronoun` > `name`). This module is the
-second half: a director's gender does not change, and directors recur across years and across
-boards, so the many rows describing one PERSON can be reconciled to their
-highest-provenance value.
-
-Two things it buys that per-filing extraction cannot:
-  * it FILLS a director whose own bio carried no honorific or pronoun (the pre-2001 ASCII case)
-    from a filing where the evidence was present;
-  * it CORRECTS an unstable first-name inference wherever any sibling row has real evidence.
-
-The `overturned` count it logs is the direct measure of what the upgrade bought. An overturn
-count of 0 on real data means the name key never matched anyone across filings -- a silent
-failure of the mechanism, not a clean bill of health.
-
-IDEMPOTENT: the consensus is recomputed from `gender_basis`, and a value is never DOWNGRADED to
-a weaker basis, so a second run is a no-op. That matters because the pass runs at the end of
-every extraction, and DEF 14A is a yearly filing -- an incremental day adds ~0 rows.
+The extraction resolves gender from in-document evidence and records the rule in `gender_basis` (`stated` >
+`honorific` > `pronoun` > `name`). A director's gender does not change and directors recur across years and boards,
+so the rows of one person are reconciled to their highest-provenance value: a director whose own bio carried no
+evidence is filled, and a first-name inference is corrected wherever a sibling row has evidence. A value is never
+downgraded to a weaker basis, so a second run is a no-op.
 """
 
 from __future__ import annotations
@@ -32,11 +14,12 @@ from collections import Counter
 
 import pandas as pd
 
-# Re-exported, not defined: `person_key` moved to `src/utils/names.py` so the governance cube
-# can bucket the same humans without importing this package (D26 / AGENTS.md "no cross-imports
-# between `src/` subfolders"). Importing it here keeps every existing call site -- `consensus`
-# below, `votes/roles.py`, `votes/flatten.py` -- unchanged, which is what makes the move a move.
-# ⚠ Do not "improve" it there: `sec_8k_votes`' stored role-category sums were bucketed with it.
+from src.context import Context
+from src.data_store.schema import Tables
+
+# `person_key` lives in `src/utils/names.py` so the governance cube buckets the same people without importing this
+# package; `votes/roles.py` and `votes/flatten.py` import it from here. Do not change it there: `sec_8k_votes`'
+# stored role-category sums were bucketed with it.
 from src.utils.names import person_key  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -48,16 +31,12 @@ BASIS_RANK = {"stated": 3, "honorific": 2, "pronoun": 1, "name": 0}
 #: Above this rank a value is DOCUMENT evidence rather than an inference -- the threshold
 #: `pct_gender_stated` reports and the one a consumer can filter on.
 EVIDENCE_RANK = BASIS_RANK["honorific"]
+_DIRECTOR_COLUMNS = ["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"]
 
 
 def _norm(value: object) -> str | None:
-    """Lower-cased text, or None for anything that is not a real string.
-
-    `value or ""` is NOT enough: a null read back from Postgres arrives as `float('nan')`,
-    which is TRUTHY, so that idiom returns the nan and the next `.strip()` raises
-    `AttributeError: 'float' object has no attribute 'strip'`. Every value in this module comes
-    out of a DataFrame, so a null-bearing column is the normal case, not an edge one.
-    """
+    """Lower-cased stripped text, or None for anything that is not a non-empty string. A null read back from Postgres
+    arrives as `float('nan')`, which is truthy, so `value or ""` is not enough."""
     if not isinstance(value, str):
         return None
     cleaned = value.strip().lower()
@@ -65,29 +44,22 @@ def _norm(value: object) -> str | None:
 
 
 def _basis_rank(value: object) -> int:
+    """The `BASIS_RANK` of a `gender_basis` value; -1 for none or an unknown basis."""
     normalized = _norm(value)
     return BASIS_RANK.get(normalized, -1) if normalized is not None else -1
 
 
 def _is_female(value: object) -> bool:
+    """Whether a gender value reads female."""
     normalized = _norm(value)
     return normalized is not None and normalized.startswith("f")
 
 
 def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """Resolve one gender per PERSON and apply it to every row of that person.
-
-    `df` needs `name`, `gender`, `gender_basis`. Returns (a copy with `gender` /
-    `gender_basis` / `person_key` set, stats).
-
-    Resolution, per person:
-      1. the highest basis rank present for that person wins outright -- a single `stated` row
-         beats any number of `name`-inferred ones, because provenance is not a popularity
-         contest and a first-name prior is not evidence;
-      2. within that rank, the majority value;
-      3. ties break toward the value that appears in the most recent row, which is the only
-         tiebreak that is not arbitrary.
-    """
+    """One gender per person (`name`, `gender`, `gender_basis` needed), applied to every row of that person: the
+    highest basis rank present wins outright, then the majority value within it, then the most recent row's value.
+    Returns the copy with `gender` / `gender_basis` / `person_key` set and the stats."""
+    # clean: the person key, basis rank and normalised gender of each row
     out = df.copy()
     for col in ("gender", "gender_basis"):
         if col not in out.columns:
@@ -96,6 +68,7 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     out["_rank"] = out["gender_basis"].map(_basis_rank)
     out["_gender"] = out["gender"].map(_norm)
 
+    # compute: each person's winning gender and basis
     resolved: dict[str, tuple[str, str]] = {}
     for key, grp in out[out["person_key"].notna()].groupby("person_key"):
         known = grp[grp["_gender"].notna()]  # notna() covers None AND pd.NA
@@ -112,6 +85,7 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         basis = next((b for b, r in BASIS_RANK.items() if r == best_rank), "name")
         resolved[str(key)] = (str(winner), basis)
 
+    # post-process: apply the winner to every row of its person, counting fills and overturns
     filled = overturned = unchanged = 0
     new_gender, new_basis = [], []
     for _, r in out.iterrows():
@@ -121,10 +95,8 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             new_basis.append(_norm(r["gender_basis"]))
             continue
         winner, basis = resolved[key]
-        # `_norm` returns None, but a pyarrow-backed string column turns that into `pd.NA` on
-        # the way through `.map`, and `pd.NA is None` is False -- which silently counted every
-        # FILLED row as an OVERTURNED one, i.e. overstated exactly the number this pass is
-        # judged on. Compare with `pd.isna`, never with `is None`.
+        # a pyarrow-backed string column turns `_norm`'s None into `pd.NA`, and `pd.NA is None` is False: compare
+        # with `pd.isna`, never with `is None`
         old = r["_gender"]
         if pd.isna(old):
             filled += 1
@@ -138,6 +110,7 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         own_rank = _basis_rank(r["gender_basis"])
         new_basis.append(_norm(r["gender_basis"]) if own_rank >= BASIS_RANK[basis] else basis)
 
+    # post-process: the resolved columns and the stats
     out["gender"] = new_gender
     out["gender_basis"] = new_basis
     stats = {
@@ -160,13 +133,9 @@ def basis_distribution(df: pd.DataFrame) -> dict[str, int]:
 
 
 def recompute_parent_gender(directors: pd.DataFrame) -> pd.DataFrame:
-    """Per-filing `pct_female_directors` / `pct_gender_stated` from consensus-corrected rows.
-
-    Returned as its own frame keyed on `(ticker, accession_number)` so the caller writes only
-    those columns back to `def14a_llm` -- the fallback ratio therefore gets BETTER, not
-    narrower, and the existing precedence (the filing's own `n_women_directors` first) is
-    untouched.
-    """
+    """Per-filing `pct_female_directors` / `pct_gender_stated` from consensus-corrected rows, keyed on
+    `(ticker, accession_number)` so the caller writes only those columns back to `def14a_llm` (the filing's own
+    `n_women_directors` keeps its precedence)."""
     if directors.empty:
         return pd.DataFrame(columns=["ticker", "accession_number", "pct_female_directors", "pct_gender_stated"])
     d = directors[directors["gender"].notna()].copy()
@@ -185,10 +154,10 @@ def recompute_parent_gender(directors: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def log_consensus(log, stats: dict, before: dict, after: dict) -> None:
-    """Print the evidence that the upgrade worked. `overturned == 0` on real data means the name
-    key matched nobody across filings, which is a mechanism failure, not a clean result."""
-    log.info(
+def log_consensus(stats: dict[str, int], before: dict[str, int], after: dict[str, int]) -> None:
+    """Log the consensus stats and the basis distribution before and after it. `overturned == 0` and `filled == 0`
+    over matched people means the name key matched nobody across filings: a mechanism failure, not a clean result."""
+    logger.info(
         "gender consensus: %d rows -> %d distinct people | filled %d, overturned %d, unchanged %d, unkeyable %d",
         stats["rows"],
         stats["people"],
@@ -197,9 +166,36 @@ def log_consensus(log, stats: dict, before: dict, after: dict) -> None:
         stats["unchanged"],
         stats["unmatched_rows"],
     )
-    log.info("gender_basis before: %s", before or "-")
-    log.info("gender_basis after:  %s", after or "-")
+    logger.info("gender_basis before: %s", before or "-")
+    logger.info("gender_basis after:  %s", after or "-")
     if stats["people"] and not stats["overturned"] and not stats["filled"]:
-        log.warning(
+        logger.warning(
             "gender consensus changed NOTHING across %d people -- if this persists the person key is matching nobody across filings", stats["people"]
         )
+
+
+def finalise_gender(context: Context) -> None:
+    """Cross-ticker gender consensus over `def14a_directors`, run once after the per-ticker loop: a director recurs
+    across companies, so it needs every ticker's rows. Rewrites the directors' gender columns and the parent's gender
+    ratios only when something changed."""
+    # load: every ticker's directors
+    directors = context.store.load(Tables.def14a_directors, columns=_DIRECTOR_COLUMNS, optional=True)
+    if directors is None or directors.empty:
+        return
+
+    # compute: the consensus, logged against the basis distribution before it
+    before = basis_distribution(directors)
+    resolved, stats = consensus(directors)
+    after = basis_distribution(resolved)
+    log_consensus(stats, before, after)
+    if not (stats["filled"] or stats["overturned"]):
+        return
+
+    # save: the changed gender columns
+    context.store.save(Tables.def14a_directors, resolved[_DIRECTOR_COLUMNS], pk=["ticker", "accession_number", "name"])
+
+    # save: the parent's fallback ratio (the filing's stated `n_women_directors` still wins)
+    parent = recompute_parent_gender(resolved)
+    if not parent.empty:
+        context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])
+        logger.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))

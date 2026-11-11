@@ -188,7 +188,7 @@ def read_ftd_period(context: Context, cache: Path, period: str) -> pd.DataFrame 
     A file with invalid content is logged and kept in the cache; only a corrupt archive is deleted.
     """
     path = cache / FTD_ZIP_NAME_TEMPLATE.format(period=period)
-    raw = read_zip_text(path, log=logger)
+    raw = read_zip_text(path)
     try:
         if raw is None:
             raise ValueError("missing or unreadable text member")
@@ -207,9 +207,7 @@ def read_ftd_period(context: Context, cache: Path, period: str) -> pd.DataFrame 
 
 def ensure_ftd_zip(context: Context, cache: Path, period: str) -> Path | None:
     """The cached ZIP of `period`, downloaded once when absent; None when no location serves it."""
-    return ensure_zip(
-        context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180, log=logger
-    )
+    return ensure_zip(context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180)
 
 
 def download_fails_to_deliver(context: Context, years_history: int = 31, as_of: pd.Timestamp | None = None) -> int:

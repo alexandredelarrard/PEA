@@ -366,18 +366,8 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
             continue
         excluded.append(exclusion_rows(df_rejected))
         deleted += patch_insider_source(context.store, pd.DataFrame(), sorted(df_rejected["accession_number"].unique()))
-    log_exclusions(logger, "stored-row sweep", excluded)
+    log_exclusions("stored-row sweep", excluded)
     return deleted
-
-
-def _stored_rows(context: Context, accessions: Sequence[str], columns: list[str]) -> pd.DataFrame:
-    """`columns` of the stored rows of `accessions`, read in `accession_batches`."""
-    frames: list[pd.DataFrame] = []
-    for batch in accession_batches(accessions):
-        df_batch = context.store.load(Tables.insider_transactions, columns=columns, where={"accession_number": batch}, optional=True)
-        if df_batch is not None:
-            frames.append(df_batch)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
 
 
 def store_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame, df_notes: pd.DataFrame) -> int:
@@ -476,7 +466,7 @@ def download_insider_transactions(context: Context) -> list[str]:
     cached = [
         quarter
         for quarter in tqdm(quarters, desc="insider data sets (download)")
-        if ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}", log=logger) is not None
+        if ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}") is not None
     ]
     logger.info("insider download: %d of %d quarter zip(s) cached", len(cached), len(quarters))
     return cached
@@ -532,7 +522,7 @@ def fetch_insider_transactions(
     excluded: list[pd.DataFrame] = []
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for quarter, keys in tqdm(units, desc="insider data sets"):
-        path = ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}", log=logger)
+        path = ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}")
         parsed = _read_quarter(path, quarter, work.screen, identity, fetched_at) if path is not None else None
         if parsed is None:
             continue
@@ -544,7 +534,7 @@ def fetch_insider_transactions(
             report_zip_quarter(context, quarter, df_kept)
         saved += store_zip_quarter(context, quarter, df_kept, df_notes)
         notes_saved += len(df_notes)
-    log_exclusions(logger, f"zip run ({len(units)} quarter(s))", excluded)
+    log_exclusions(f"zip run ({len(units)} quarter(s))", excluded)
 
     # The sweep adjudicates against the whole universe: on a `--tickers` subset every other company's rows would read as rejects.
     deleted = 0 if work.scoped else _screen_stored_rows(context, context.universe.tickers, identity)

@@ -369,9 +369,7 @@ def download_notes_periods(context: Context, cache: Path, periods: list[str]) ->
     captured = captured_dei_periods(context)
     pending = [period for period in periods if period not in captured]
     return sum(
-        ensure_zip(
-            context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger
-        )
+        ensure_zip(context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600)
         is not None
         for period in pending
     )

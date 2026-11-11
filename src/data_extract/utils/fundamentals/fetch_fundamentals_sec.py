@@ -24,8 +24,9 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -94,8 +95,7 @@ def _precision(decimals) -> float:
 def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
     """`{period key: fact}` for one concept; namespaced match when `concept` has a prefix, bare otherwise.
 
-    A duplicate (concept, period) keeps the finer `decimals`, not the later one. Two DIFFERENT values are always
-    recorded on the survivor as `duplicate_fact`; identical re-tagging is not flagged.
+    A duplicate (concept, period) keeps the finer `decimals`, not the later one.
     """
     column = "concept" if ":" in concept else "_bare"
     hits = facts[facts[column] == concept]
@@ -114,23 +114,8 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
             "period_days": row.period_days,
         }
         prior = out.get(key)
-        if prior is None:
+        if prior is None or _precision(fact["decimals"]) > _precision(prior["decimals"]):
             out[key] = fact
-            continue
-        winner, loser = (fact, prior) if _precision(fact["decimals"]) > _precision(prior["decimals"]) else (prior, fact)
-        if winner["value"] != loser["value"]:
-            seen = list(prior.get("duplicate_fact", []))
-            seen.append(
-                {
-                    "concept": concept,
-                    "kept": winner["value"],
-                    "kept_decimals": str(winner["decimals"]),
-                    "dropped": loser["value"],
-                    "dropped_decimals": str(loser["decimals"]),
-                }
-            )
-            winner = {**winner, "duplicate_fact": seen}
-        out[key] = winner
     return out
 
 
@@ -206,24 +191,15 @@ def _drop_note_only_quarter(
     """Drop quarterly facts an ANNUAL report published alone for their fiscal year (see `_lone_quarters`).
 
     Such a value is a discrete item from a note, never the quarter's total. Gated on `_ANNUAL_FORMS`: every
-    quarter in a 10-Q is "lone", so an ungated rule would delete the quarterly grain. Each dropped quarter is
-    recorded as `note_quarter_rejected` on its covering annual period when that period survives. Complements,
-    and does not replace, the value-based check in `periods._masquerading_quarters`.
+    quarter in a 10-Q is "lone", so an ungated rule would delete the quarterly grain. Complements, and does not
+    replace, the value-based check in `periods._masquerading_quarters`.
     """
     if str(form or "").upper() not in _ANNUAL_FORMS:
         return periods
     lone = _lone_quarters(periods, filing_windows)
     if not lone:
         return periods
-    out = {key: period for key, period in periods.items() if key not in lone}
-    for key, year in lone.items():
-        if year not in out:
-            continue
-        dropped, host = periods[key], out[year]
-        rejected = list(host.get("note_quarter_rejected", []))
-        rejected.append({"period_end": str(pd.Timestamp(dropped["period_end"]).date()), "value": dropped["value"]})
-        out[year] = {**host, "note_quarter_rejected": rejected}
-    return out
+    return {key: period for key, period in periods.items() if key not in lone}
 
 
 def _retry_without(
@@ -286,14 +262,7 @@ def _materialise(resolution: Resolution, facts: pd.DataFrame) -> tuple[dict[tupl
         out = {}
         for key in shared:
             total = sum(legs[c][key]["value"] * w for c, w in resolution.children)
-            base = legs[resolution.children[0][0]][key]
-            # Union duplicates across all legs, not just `base`'s.
-            duplicates = [d for c, _ in resolution.children for d in legs[c][key].get("duplicate_fact", [])]
-            out[key] = {**base, "value": total}
-            if duplicates:
-                out[key]["duplicate_fact"] = duplicates
-            else:
-                out[key].pop("duplicate_fact", None)
+            out[key] = {**legs[resolution.children[0][0]][key], "value": total}
     elif resolution.concept:
         out, refused = _values_by_period(facts, resolution.concept), {}
     else:
@@ -350,11 +319,6 @@ def _compose(
             continue
         parts = [resolved[name][key] for name in present]
         out[key] = {**parts[0], "value": sum(p["value"] for p in parts)}
-        duplicates = [d for part in parts for d in part.get("duplicate_fact", [])]
-        if duplicates:
-            out[key]["duplicate_fact"] = duplicates
-        else:
-            out[key].pop("duplicate_fact", None)
     if not out:
         return {}, (INCOMPLETE_ROLL_UP if keys else NOT_DISCLOSED)
     return out, None
@@ -542,7 +506,7 @@ def parse_fundamentals(
     ticker: str,
     cik: str,
     stamp: FilingStamp,
-    scope: EdgarScope,
+    identity: Identity,
     *,
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
@@ -567,4 +531,7 @@ def _facts_run_scope(context: Context, _tickers: Sequence[str], _as_of: pd.Times
 
 
 #: The `sec_fundamentals_facts` walk of `StepExtractEdgar`; its parser is bound per run by `_facts_run_scope`.
-SEC_FUNDAMENTALS_FETCH = EdgarFetch(tables=(Tables.sec_fundamentals_facts,), run_scope=_facts_run_scope)
+#: A cold ticker fills in full on its first night: a newest-first capped suffix would make the history build
+#: publish events missing their earlier quarters, which the later back-fill then trips the drift guard on.
+#: A `-F` re-read replaces each re-read filing's rows, so the table holds what the current resolver emits.
+SEC_FUNDAMENTALS_FETCH = EdgarFetch(tables=(Tables.sec_fundamentals_facts,), run_scope=_facts_run_scope, fill_cold=True, rewrite_on_full=True)

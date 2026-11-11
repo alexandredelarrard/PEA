@@ -236,7 +236,5 @@ GICS_GROUP_SECTOR: dict[str, str] = {
     UTILITIES: UTILITIES,
 }
 
-GICS_SECTORS: frozenset[str] = frozenset(GICS_GROUP_SECTOR.values())
-GICS_INDUSTRY_GROUPS: frozenset[str] = frozenset(GICS_SUB_INDUSTRIES)
 #: sub-industry -> its industry group
 GICS_SUB_INDUSTRY_GROUP: dict[str, str] = {sub: group for group, subs in GICS_SUB_INDUSTRIES.items() for sub in subs}

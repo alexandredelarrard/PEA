@@ -15,7 +15,7 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.identity import bind_identity, build_identity, identity_inputs
-from src.data_extract.utils.common.identity_contract import DEI_SOURCE, FORM345_SOURCE, check_one_entity_per_cik, entity_by_cik_map
+from src.data_extract.utils.common.identity_contract import DEI_SOURCE, FORM345_SOURCE, check_one_entity_per_cik, entity_by_cik_map, sharadar_outside
 from src.data_extract.utils.common.identity_store import load_stored_lineage, parse_stored_rows
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.security_lines import (
@@ -49,7 +49,6 @@ from src.data_extract.utils.identity.cik_history import (
     manual_lineage_blob,
     owner_sets,
     parse_manual_lineage,
-    sharadar_outside,
     succession_pairs,
 )
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor, anchor_company_ids, newest_window_ciks, roster_ciks, sharadar_ciks
@@ -252,7 +251,7 @@ class StepExtractIdentity(Step):
 
         # check: the roster CIK names the company its filings name (D19)
         check_d19(tenure, roster_cik, entities.entity_of, d19_allowlist(blob))
-        log_cik_history(history, membership, len(candidates), sharadar_outside(anchor.sharadar_cik, entities, roster_cik))
+        log_cik_history(history, membership, len(candidates), sharadar_outside(anchor.sharadar_cik, entities.entity_of, roster_cik))
         self._cik_history = history
         return history
 

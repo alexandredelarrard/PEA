@@ -17,17 +17,17 @@ import pytest
 
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_13d_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SCHEDULE_13D, SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G, SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.schedule_rows import SCHEDULE_NUMERIC_COLS, schedule_filing_rows
 from src.data_store.schema import Table, Tables
+from tests.data_extract.edgar_fixtures import identity_for
 
 _NUMERIC = SCHEDULE_NUMERIC_COLS
 _SPEC = {"13D": SCHEDULE_13D, "13G": SCHEDULE_13G}
 _FETCH = {"13D": SEC_13D_FETCH, "13G": SEC_13G_FETCH}
 _TABLE = {"13D": Tables.sec_13d, "13G": Tables.sec_13g}
-_SCOPE = EdgarScope()
 
 
 def _rows(family: str, filing: Any) -> list[dict]:
@@ -39,7 +39,7 @@ def _build(family: str, filings: list[Any], ticker: str = "AAPL", cik: str = "00
     """`filings` through the form's per-filing parse, frames concatenated per table as the driver saves them."""
     frames: dict[Table, list[pd.DataFrame]] = {}
     for filing in filings:
-        for table, df in _FETCH[family].parse(ticker, cik, FilingStamp.of(filing, cik), _SCOPE).items():
+        for table, df in _FETCH[family].parse(ticker, cik, FilingStamp.of(filing, cik), identity_for({ticker: cik})).items():
             frames.setdefault(table, []).append(df)
     return {table: pd.concat(dfs, ignore_index=True) for table, dfs in frames.items()}
 

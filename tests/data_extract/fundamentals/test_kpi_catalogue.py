@@ -17,7 +17,9 @@ real artifact, and checking anything else would prove nothing. What is enforced:
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -52,6 +54,11 @@ EXPECTED_ABSENT_MIN_RATE = 0.75
 EXPECTED_UNVERIFIED: frozenset[str] = frozenset()
 
 
+def _tier_fields(cat: Any, tier: int) -> list[str]:
+    """The sorted catalogue fields of one tier."""
+    return sorted(n for n, s in cat.fields.items() if s.tier == tier)
+
+
 @pytest.fixture(scope="module")
 def cat():
     return load_catalogue(CONFIG_DIR)
@@ -71,15 +78,17 @@ def test_every_field_declares_the_mandatory_keys(cat):
 
 
 def test_tier_census_matches_the_contract(cat):
-    actual = {tier: len(cat.by_tier(tier)) for tier in sorted(EXPECTED_TIER_COUNTS)}
+    actual = {tier: len(_tier_fields(cat, tier)) for tier in sorted(EXPECTED_TIER_COUNTS)}
     assert actual == EXPECTED_TIER_COUNTS, f"tier census drifted: {actual}"
     assert len(cat.fields) == sum(EXPECTED_TIER_COUNTS.values())
 
     print("\n=== SANITY CHECK: tier census ===")
     for tier in sorted(EXPECTED_TIER_COUNTS):
         label = "inputs" if tier == INPUT_TIER else f"tier {tier}"
-        print(f"  {label:8} {actual[tier]:2d}: {', '.join(cat.by_tier(tier))}")
-    print(f"  scored {len(cat.scored_fields)} | inputs {len(cat.input_fields)} | extracted {len(cat.extracted_fields)}")
+        print(f"  {label:8} {actual[tier]:2d}: {', '.join(_tier_fields(cat, tier))}")
+    print(
+        f"  scored {len(sorted(n for n, s in cat.fields.items() if s.is_scored))} | inputs {len(_tier_fields(cat, INPUT_TIER))} | extracted {len(cat.extracted_fields)}"
+    )
 
 
 def test_no_field_appears_in_two_tiers(cat):
@@ -145,7 +154,7 @@ def test_every_authority_is_sourced_or_explicitly_unverified(cat):
         for p in parents:
             assert cites_a_source(cat.field(p)) or cat.field(p).authority == UNVERIFIED
 
-    unverified = cat.unverified_fields
+    unverified = sorted(n for n, s in cat.fields.items() if s.authority == UNVERIFIED)
     for name in unverified:
         note = cat.field(name).raw["authority_note"]
         assert len(note) > 60, f"{name}: authority_note is too thin to act on"
@@ -176,7 +185,7 @@ def test_every_authority_is_sourced_or_explicitly_unverified(cat):
 def test_cross_references_resolve(cat):
     """`roll_up` on a FIELD names concepts; `roll_up` on a derived/aggregate field and the
     `components` / `feeds` keys name FIELDS. A typo in either is a silent no-op."""
-    names = cat.all_column_names  # extracted fields PLUS the computed columns
+    names = frozenset(cat.fields) | frozenset(cat.derived_columns)  # extracted fields PLUS the computed columns
     problems: list[str] = []
     for name, spec in cat.fields.items():
         for key in ("components", "feeds"):
@@ -186,10 +195,12 @@ def test_cross_references_resolve(cat):
     assert not problems, "\n".join(problems)
 
     # Every tier-0 input must say which field it feeds, or it has no reason to be carried.
-    orphans = [n for n in cat.input_fields if not cat.field(n).raw.get("feeds")]
+    orphans = [n for n in _tier_fields(cat, INPUT_TIER) if not cat.field(n).raw.get("feeds")]
     assert not orphans, f"calculation input(s) that feed nothing: {orphans}"
 
-    print(f"\n[catalogue] every `components`/`feeds` reference resolves; all {len(cat.input_fields)} calculation inputs declare what they feed")
+    print(
+        f"\n[catalogue] every `components`/`feeds` reference resolves; all {len(_tier_fields(cat, INPUT_TIER))} calculation inputs declare what they feed"
+    )
 
 
 def test_derived_fields_declare_their_formula(cat):
@@ -237,7 +248,7 @@ def test_regime_overrides_and_exceptions_name_real_regimes(cat):
     )
 
     print("\n=== SANITY CHECK: regimes + expected absence ===")
-    print(f"  {len(cat.regime_names)} regimes: {', '.join(cat.regime_names)}")
+    print(f"  {len(sorted(cat.regimes))} regimes: {', '.join(sorted(cat.regimes))}")
     print(f"  {len(cat.force_regime_by_sub_industry)} sub-industries force a regime (the verified GICS traps):")
     for si, regime in sorted(cat.force_regime_by_sub_industry.items()):
         print(f"    {si:45} -> {regime}")
@@ -339,3 +350,16 @@ def test_the_measured_traps_are_encoded(cat):
     print("    6/7/8). InterestExpenseBorrowings is EXCLUDED -- 2 of 14 banks tag it.")
     print("  IncomeTaxExpenseBenefitContinuingOperations is kept as a pre-2014 fallback:")
     print("    276 facts / 82 tickers, window 2011-06-30..2013-12-31. Validated.")
+
+
+def test_a_catalogue_the_resolver_has_used_still_pickles(cat):
+    """The history replay pool pickles the process-cached catalogue AFTER the facts resolver has filled
+    every field's `never_use` memo; the copy must load with identical bans (F-007)."""
+    names = list(cat.extracted_fields)
+    used = {(name, regime): dict(cat.field(name).never_use(regime)) for name in names for regime in (None, "bank")}
+
+    copy = pickle.loads(pickle.dumps(cat))
+
+    assert {(name, regime): dict(copy.field(name).never_use(regime)) for name in names for regime in (None, "bank")} == used
+    print("\n=== SANITY CHECK: a used catalogue pickles ===")
+    print(f"  never_use read on {len(names)} field(s) x 2 regimes; the pickled copy returns the same bans. Validated.")

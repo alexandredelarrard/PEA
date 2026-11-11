@@ -24,8 +24,9 @@ STRICT_EDGAR_FILES = (
     "src/data_extract/utils/edgar_extract/fetch_13d_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_13g_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_insider_edgar.py",
-    "src/data_extract/utils/edgar_extract/fetch_def14a_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_filing_text.py",
+    "src/data_extract/utils/edgar_extract/fetch_employees_text.py",
+    "src/data_extract/utils/edgar_extract/fetch_def14a_text.py",
 )
 #: the universe step: the two ticker lists and the two identity evidence refreshes, then the sync (AC-020).
 EVIDENCE_TASKS = ("sec_company_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions")
@@ -48,15 +49,16 @@ REQUIRED_COMMANDS = {
     "sec-fundamentals-facts",
     "sec-fundamentals-history",
     "fundamentals-check",
-    "fundamentals-employees",
+    "sec-employees-llm",
     "fundamentals-sharadar",
-    "def14a",
-    "def14a-edgar",
+    "sec-def14a-llm",
     "sec-8k-items",
     "sec-8k-votes",
     "sec-13d",
     "sec-13g",
     "filing-text",
+    "sec-employees-text",
+    "sec-def14a-text",
     "extract-earnings-calls",
     "extraction-status",
 }
@@ -103,8 +105,19 @@ def test_freshness_inventory_comes_only_from_schema():
 IDENTITY_DOWNLOADS = {"zips_download"}
 #: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
 ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
-#: the seven EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
-EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text", "def14a_edgar", "sec_fundamentals_facts"}
+#: the eight EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
+EDGAR_WALKS = {
+    "insider_edgar",
+    "sec_13d",
+    "sec_13g",
+    "sec_8k_items",
+    "filing_text",
+    "sec_employees_text",
+    "sec_def14a_text",
+    "sec_fundamentals_facts",
+}
+#: the LLM passes over the stored text tables (no SEC read): default pool, after the walk storing their text (D-05, M4).
+LLM_TEXT_TASKS = {"sec_employees_llm": {"sec_employees_text"}, "sec_def14a_llm": {"sec_def14a_text", "sec_8k_items"}}
 #: the SEC fundamentals producer; no path may join it to `fundamentals_sharadar` (AC-009).
 SEC_FUNDAMENTALS = {"sec_fundamentals_facts", "sec_fundamentals_history"}
 #: every task that reads the lineage; each must start after `identity`.
@@ -116,17 +129,19 @@ IDENTITY_CONSUMERS = {
     "extract_earnings_calls",
     "sec_fundamentals_facts",
     "fundamentals_sharadar",  # D16: the vendor history is keyed through the lineage
-    "fundamentals_employees",
-    "def14a",
-    "def14a_edgar",
+    "sec_employees_llm",
+    "sec_def14a_llm",
     "sec_8k_items",
     "sec_13d",
     "sec_13g",
     "filing_text",
+    "sec_employees_text",
+    "sec_def14a_text",
 }
 #: derived from consumer tables; each must start after its parents.
 DERIVED_PARENTS = {
-    "sec_8k_votes": {"sec_8k_items", "def14a"},
+    "sec_8k_votes": {"sec_def14a_llm"},
+    **LLM_TEXT_TASKS,
     "sec_fundamentals_history": {"sec_fundamentals_facts"},
     "fundamentals_check": {"sec_fundamentals_history", "fundamentals_sharadar"},
     "thirteen_f_backfill": {"thirteen_f"},
@@ -226,8 +241,8 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
     assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
     assert "fundamentals >> fundamentals_sharadar" not in source  # the two producers are independent (AC-009)
-    assert "fundamentals_employees] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
-    assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
+    assert "sec_employees_llm] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
+    assert "[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
@@ -307,8 +322,8 @@ def test_sec_and_sharadar_fundamentals_are_independent_producers(monkeypatch):
     assert params["fundamentals_check"]["trigger_rule"] == "all_done" and graph["fundamentals_check"] == {"extraction_status"}
     assert " fundamentals-check -c " in str(params["fundamentals_check"]["bash_command"])
     assert " sec-fundamentals-history -c " in str(params["sec_fundamentals_history"]["bash_command"])
-    assert not {"fundamentals_sharadar", *SEC_FUNDAMENTALS} & _descendants(graph, "fundamentals_employees"), "a producer waits for headcount"
-    assert "extraction_status" in graph["fundamentals_employees"]
+    assert not {"fundamentals_sharadar", *SEC_FUNDAMENTALS} & _descendants(graph, "sec_employees_llm"), "a producer waits for headcount"
+    assert graph["sec_employees_llm"] == {"extraction_status"}
 
     dag = load_dag(DAG_FILE)
     sec_down, sharadar_down = replay(dag, ["sec_fundamentals_facts"]), replay(dag, ["fundamentals_sharadar"])
@@ -320,6 +335,26 @@ def test_sec_and_sharadar_fundamentals_are_independent_producers(monkeypatch):
     print("  identity -> edgar_index -> sec_fundamentals_facts (sec_api) -> sec_fundamentals_history -> fundamentals_check")
     print("  identity -> fundamentals_sharadar -> fundamentals_check (ALL_DONE); no path between the two producers")
     print("  replay: facts failed -> Sharadar still succeeds; Sharadar failed -> SEC history still succeeds; the check runs both times. Validated.")
+
+
+def test_the_llm_passes_run_in_the_default_pool_after_the_walk_storing_their_text(monkeypatch):
+    """D-05 / M4: the text walks hold both sec_api slots; the LLM passes read only stored text, so they run in the
+    default pool (no new pool), each after its walk; DEF 14A also waits for the 8-K items and feeds the vote parser."""
+    graph, params = _load_dag_graph(monkeypatch)
+    upstream = {task: {up for up, downs in graph.items() if task in downs} for task in graph}
+    for walk, command in (("sec_employees_text", "sec-employees-text"), ("sec_def14a_text", "sec-def14a-text")):
+        assert params[walk]["pool"] == "sec_api" and params[walk]["pool_slots"] == 2 and f" {command} -c " in str(params[walk]["bash_command"])
+    for task, parents in LLM_TEXT_TASKS.items():
+        assert params[task]["pool"] == "default_pool" and params[task]["pool_slots"] == 1, params[task]
+        assert upstream[task] == {"universe_sync", "identity", *parents}, sorted(upstream[task])
+    assert graph["sec_employees_text"] == {"sec_employees_llm", "extraction_status"}
+    assert graph["sec_def14a_text"] == {"sec_def14a_llm", "extraction_status"}
+    assert graph["sec_def14a_llm"] == {"sec_8k_votes", "extraction_status"} and upstream["sec_8k_votes"] == {"universe_sync", "sec_def14a_llm"}
+    assert params["sec_8k_votes"]["pool"] == "default_pool" and params["sec_8k_votes"]["pool_slots"] == 1, params["sec_8k_votes"]
+    assert {str(kwargs.get("pool")) for kwargs in params.values() if "pool" in kwargs} == {"default_pool", "sec_api", "sec_bulk"}, "no new pool"
+    print("\n=== SANITY CHECK: text walks -> LLM passes (D-05, M4) ===")
+    print("  sec_employees_text, sec_def14a_text: sec_api (2 slots); sec_employees_llm, sec_def14a_llm, sec_8k_votes: default_pool (1 slot)")
+    print("  sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec_8k_items] -> sec_def14a_llm -> sec_8k_votes; no new pool")
 
 
 def test_price_history_waits_for_the_security_master(monkeypatch):

@@ -32,12 +32,14 @@ _NOTES_CACHE = "the Notes cache listing owned by the Notes reader; the identity 
 #: into `common/` is a separate decision (02-plan Phase 9b record).
 PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.edgar_extract.edgar_driver": (
-        frozenset({"EdgarFetch", "EdgarScope", "FilingStamp", "RetryRounds", "header_subject_ciks", "universe_rows"}),
+        frozenset({"EdgarFetch", "FilingStamp", "RetryRounds", "universe_rows"}),
         _DRIVER,
     ),
-    "src.data_extract.utils.edgar_extract.edgar_fillings": (frozenset({"list_filings"}), _DRIVER),
+    "src.data_extract.utils.edgar_extract.document_resume": (
+        frozenset({"WorklistRequest", "document_worklist"}),
+        "the EDGAR driver's read-only planner; the employees LLM step reads the text walk's pending filings from it to hold back later dates",
+    ),
     "src.data_extract.utils.edgar_extract.empty_markers": (frozenset({"marker_frame", "marker_mask"}), _DRIVER),
-    "src.data_extract.utils.edgar_extract.html_text": (frozenset({"html_to_text"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.parallel_fetch": (frozenset({"run_per_ticker"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.insider_common": (
         frozenset(
@@ -55,8 +57,7 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"captured_dei_periods"}),
         "the DEI period ledger owned by identity; the Notes reader skips periods it holds",
     ),
-    "src.data_extract.utils.structure.def14a.ecd": (frozenset({"ecd_facts", "ecd_row", "has_ecd_block"}), _DEF14A),
-    "src.data_extract.utils.structure.def14a.validate": (frozenset({"repair_main_row"}), _DEF14A),
+    "src.data_extract.utils.structure.def14a.carve": (frozenset({"prepare_def14a_payloads"}), _DEF14A),
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),
     "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods"}), _NOTES_CACHE),
 }

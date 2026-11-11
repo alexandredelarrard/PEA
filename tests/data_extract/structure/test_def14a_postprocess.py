@@ -1,4 +1,4 @@
-"""Known-truth units, reporting-year, partial-answer and archive replay checks."""
+"""Known-truth units, reporting-year, partial-answer and archive checks."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from src.data_extract.utils.structure.def14a.def14a_schema import (
 )
 from src.data_extract.utils.structure.def14a.postprocess import (
     append_answer,
-    archived_answers,
     postprocess_section,
     refresh_archive,
 )
@@ -186,7 +185,7 @@ def test_paid_archive_keeps_original_raw_answers_and_legacy_facade(stamp: dict[s
     section = next(section for section in SECTIONS if section.key == "audit")
     original = Def14AExtract(ceo_name="Jane Roe", ceo_age=61, governance=GovernanceProfile(auditor_name="Old LLP")).model_dump_json()
     answer = AuditExtract(currency="USD", amount_scale="millions", auditor_fees=57.6, auditor_fees_prior=41)
-    raw = append_answer(original, section, answer, "Audit fees (in millions): 57.6; prior 41")
+    raw = append_answer(original, section, answer)
     processed = postprocess_section(section, answer, stamp, {}, {})
     final = refresh_archive(raw, section, processed.legacy)
     document = json.loads(final)
@@ -195,9 +194,6 @@ def test_paid_archive_keeps_original_raw_answers_and_legacy_facade(stamp: dict[s
     facade = Def14AExtract.model_validate_json(final)
     assert facade.ceo_age == 61 and facade.ceo_name == "Jane Roe"
     assert facade.governance is not None and facade.governance.auditor_fees_usd == 57_600_000
-    recovered = archived_answers(final)
-    assert len(recovered["audit"]) == 2 and len(recovered["governance"]) == 1
-    assert recovered["audit"][-1].model_dump() == answer.model_dump()
     print("SANITY: the original paid JSON stays byte-exact, new source-scale answers remain raw, and old JSON readers still see a usable facade.")
 
 
@@ -205,7 +201,7 @@ def test_partial_archive_facade_does_not_replace_valid_existing_fees(stamp: dict
     section = next(section for section in SECTIONS if section.key == "audit")
     original = Def14AExtract(governance=GovernanceProfile(auditor_fees_usd=12_000_000)).model_dump_json()
     answer = AuditExtract(currency="USD", amount_scale="millions", auditor_fees=57.6, auditor_fees_prior=41)
-    raw = append_answer(original, section, answer, "reported fee repair")
+    raw = append_answer(original, section, answer)
     processed = postprocess_section(section, answer, stamp, {}, {"auditor_fees": 12_000_000})
     assert processed.frames[Tables.def14a_llm].iloc[0]["auditor_fees"] == 12_000_000
     facade = Def14AExtract.model_validate_json(refresh_archive(raw, section, processed.legacy))

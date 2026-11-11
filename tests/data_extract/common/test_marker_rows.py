@@ -52,10 +52,10 @@ _CASES: dict[str, tuple[Table, dict[str, object], tuple[str, str, str]]] = {
         {"section": "mda", "n_words": 3.0, "period_of_report": pd.Timestamp("2026-06-30"), "text": "body"},
         ("n_words", "period_of_report", "text"),
     ),
-    "sec_def14a": (
-        Tables.def14a_edgar,
-        {"form": "DEF 14A", "peo_total_comp": 1.0, "ecd_period_end": pd.Timestamp("2025-12-31"), "peo_name": "X"},
-        ("peo_total_comp", "ecd_period_end", "peo_name"),
+    "sec_employees_text": (
+        Tables.sec_employees_text,
+        {"source_document": "primary", "n_chars": 9.0, "period_of_report": pd.Timestamp("2025-12-31"), "windows": "[[0, 9]]"},
+        ("n_chars", "period_of_report", "windows"),
     ),
     "sec_13d": (
         Tables.sec_13d,
@@ -136,6 +136,24 @@ def test_a_marker_is_one_typed_null_row_with_ddl_columns_only(name: str, sqlite_
     )
 
 
+def test_a_def14a_text_rejection_marker_is_hidden_beside_a_real_section(sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
+    table = Tables.sec_def14a_text
+    create_canonical(sqlite_store.engine, [table])
+    marker = marker_row(table, "AAA", FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="DEF 14A"), "0000000001"))
+    real = _real_row(table, {"section": "audit", "primary_document": "", "payload": "fees", "n_chars": 4})
+
+    assert set(marker.columns) <= _ddl_columns(table, monkeypatch), set(marker.columns) - _ddl_columns(table, monkeypatch)
+    sqlite_store.save(table, real)
+    sqlite_store.save(table, marker)
+
+    shown = sqlite_store.load(table, markers=True).set_index("section")
+    assert sorted(shown.index) == ["_empty", "audit"] and shown.loc["_empty", "form"] == "DEF 14A"
+    assert pd.isna(shown.loc["_empty", "payload"]) and pd.isna(shown.loc["_empty", "n_chars"])
+    assert shown.loc["audit", "primary_document"] == "" and sqlite_store.load(table)["section"].tolist() == ["audit"]
+    print("\n=== SANITY CHECK: sec_def14a_text marker ===")
+    print("  section='_empty' with NULL payload/n_chars beside a real 'audit' row; '' primary_document survives; load hides the marker. Validated.")
+
+
 def test_a_value_less_facts_row_is_kept_without_label_columns(sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
     """AC-004 / AM-1: a field the filing tags nowhere is still written as one value-less row (it marks the field as
     read), and the facts table carries no `dc_code`, `adjustment` or `is_amendment` column."""
@@ -164,12 +182,13 @@ def test_marker_key_fill_for_the_composite_keys() -> None:
     stamp = FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="10-Q"), "0000000001")
     facts = marker_row(Tables.sec_fundamentals_facts, "AAA", stamp).iloc[0]
     insider = marker_row(Tables.insider_transactions, "AAA", stamp).iloc[0]
-    proxy = marker_row(Tables.def14a_edgar, "AAA", stamp).iloc[0]
+    employees = marker_row(Tables.sec_employees_text, "AAA", stamp).iloc[0]
 
     assert (facts["field"], facts["duration_type"], facts["period_end"]) == ("_empty", "_empty", pd.Timestamp(_FILED))
     assert (insider["security_type"], insider["row_sequence"], insider["source"]) == ("_empty", 0, "edgar") and "issuer_cik" not in insider.index
-    assert proxy["form"] == "_empty" and proxy["cik"] == "0000000001"
+    assert employees["source_document"] == "_empty" and employees["cik"] == "0000000001"
     print("\n=== SANITY CHECK: marker key fill ===")
     print(
-        "  fundamentals: field/duration_type '_empty', period_end = filing date; insider: ('_empty', 0, source 'edgar'), no issuer CIK; DEF 14A: form '_empty'."
+        "  fundamentals: field/duration_type '_empty', period_end = filing date; insider: ('_empty', 0, source 'edgar'), no issuer CIK; "
+        "employees text: source_document '_empty'."
     )

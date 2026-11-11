@@ -70,6 +70,15 @@ def _facts(rows: list[tuple], ticker: str = "TEST", field: str = "totalRevenue",
     return pd.DataFrame(out)
 
 
+#: `periods._quarter_rows`' row keys, so an empty result still has columns to filter on.
+_QUARTER_KEYS = ("period_start", "period_end", "period_days", "value", "basis", "known_from", "source_concept", "concept_switch")
+
+
+def _quarters(facts: pd.DataFrame, spec: FieldSpec, guards: periods.PeriodGuards) -> pd.DataFrame:
+    """One field's discrete quarters through the production engine (`periods._quarter_rows`), one row per window."""
+    return pd.DataFrame(periods._quarter_rows(periods.FieldFacts.of(facts), spec, guards), columns=list(_QUARTER_KEYS))
+
+
 #: One ordinary calendar year of the three shapes a filer publishes.
 _Q1 = ("2020-01-01", "2020-03-31")
 _Y6 = ("2020-01-01", "2020-06-30")
@@ -100,7 +109,7 @@ def test_the_ytd9_route_wins_when_the_two_q4_routes_disagree():
             (*_FY, 400.0),
         ]
     )
-    quarters = periods.quarterize(facts, _spec(), GUARDS)
+    quarters = _quarters(facts, _spec(), GUARDS)
     q4 = quarters[quarters["period_end"] == pd.Timestamp("2020-12-31")].iloc[0]
 
     assert q4["basis"] == periods.FY_MINUS_YTD9
@@ -124,7 +133,7 @@ def test_the_quarter_sum_route_is_the_fallback_and_says_so():
             (*_FY, 400.0),
         ]
     )
-    quarters = periods.quarterize(facts, _spec(), GUARDS)
+    quarters = _quarters(facts, _spec(), GUARDS)
     q4 = quarters[quarters["period_end"] == pd.Timestamp("2020-12-31")].iloc[0]
     assert q4["basis"] == periods.FY_MINUS_QUARTERS
     assert q4["value"] == pytest.approx(100.0)
@@ -149,7 +158,7 @@ def test_an_as_reported_quarter_is_never_replaced_by_a_derived_one():
             (*_FY, 400.0),  # arithmetic would say 100
         ]
     )
-    quarters = periods.quarterize(facts, _spec(), GUARDS)
+    quarters = _quarters(facts, _spec(), GUARDS)
     q4 = quarters[quarters["period_end"] == pd.Timestamp("2020-12-31")]
     assert len(q4) == 1
     assert q4.iloc[0]["basis"] == periods.AS_REPORTED
@@ -170,7 +179,7 @@ def test_the_97_day_fact_a_filer_labels_fy_is_not_the_annual_anchor():
     )
     shapes = dict(zip(facts["period_days"], facts["duration_type"], strict=False))
     assert shapes[370] == periods.ANNUAL and shapes[97] == periods.QUARTERLY
-    quarters = periods.quarterize(facts, _spec(), GUARDS)
+    quarters = _quarters(facts, _spec(), GUARDS)
     q4 = quarters[quarters["period_end"] == pd.Timestamp("2020-10-02")]
     assert len(q4) == 1 and q4.iloc[0]["value"] == pytest.approx(956.8)
     print(
@@ -196,7 +205,7 @@ def test_a_negative_quarter_on_a_non_negative_field_is_refused():
     spec = _spec("costOfRevenue")
     assert spec.sign == "non_negative"
     facts = _facts([(*_Y9, 300.0), (*_FY, 250.0)], field="costOfRevenue")
-    quarters = periods.quarterize(facts, spec, GUARDS)
+    quarters = _quarters(facts, spec, GUARDS)
     assert quarters.empty or (quarters["period_end"] != pd.Timestamp("2020-12-31")).all()
     print(
         f"\nSANITY: FY 250 against YTD9 300 would give Q4 = -50 on costOfRevenue "
@@ -225,7 +234,7 @@ def test_one_loss_quarter_does_not_destroy_the_years_fourth_quarter():
         ],
         field="netIncome",
     )
-    quarters = periods.quarterize(facts, signed, GUARDS)
+    quarters = _quarters(facts, signed, GUARDS)
     q4 = quarters[quarters["period_end"] == pd.Timestamp("2020-12-31")].iloc[0]
     assert q4["value"] == pytest.approx(1572.0)
     print(f"\nSANITY: quarters -368 / +2,207 / +284 and FY 3,695 -> Q4 = {q4['value']:,.0f}. One loss quarter no longer nulls the year.")
@@ -243,7 +252,7 @@ def test_a_concept_switch_is_allowed_when_the_two_legs_are_the_same_size():
         ],
         field="depAmort",
     )
-    quarters = periods.quarterize(facts, _spec("depAmort"), GUARDS)
+    quarters = _quarters(facts, _spec("depAmort"), GUARDS)
     q4 = quarters.iloc[0]
     assert q4["value"] == pytest.approx(100.0)
     assert bool(q4["concept_switch"]) is True
@@ -263,7 +272,7 @@ def test_a_concept_switch_to_a_different_sized_line_is_refused():
             (*_FY, 5000.0, "2021-02-01", "us-gaap:Revenues"),  # ~12x the nine-month rate
         ]
     )
-    quarters = periods.quarterize(facts, _spec(), GUARDS)
+    quarters = _quarters(facts, _spec(), GUARDS)
     assert quarters.empty
     print(f"\nSANITY: an FY running at 12x the nine-month rate under a different concept is refused -- {len(quarters)} quarters emitted.")
 
@@ -291,7 +300,7 @@ def test_a_weighted_average_share_count_is_differenced_in_share_days():
         field="dilutedShares",
         concept="us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
     )
-    quarters = periods.quarterize(facts, spec, GUARDS)
+    quarters = _quarters(facts, spec, GUARDS)
     q4 = quarters.iloc[0]
     assert q4["value"] == pytest.approx(2_000.0, rel=1e-9)
     print(
@@ -311,39 +320,23 @@ def test_a_stock_split_inside_the_window_refuses_the_trailing_average():
     looks entirely plausible.
     """
     spec = _spec("dilutedShares")
-    quarters = pd.DataFrame(
+    facts = _facts(
         [
-            {
-                "ticker": "TEST",
-                "field": "dilutedShares",
-                "period_start": pd.Timestamp(s),
-                "period_end": pd.Timestamp(e),
-                "period_days": 91,
-                "value": v,
-                "basis": periods.AS_REPORTED,
-                "known_from": pd.Timestamp(e),
-                "source_concept": "x",
-                "concept_switch": False,
-                "fiscal_year": 2020,
-                "fiscal_quarter": q,
-            }
-            for q, (s, e, v) in enumerate(
-                [
-                    ("2019-10-01", "2019-12-31", 1_000.0),
-                    ("2020-01-01", "2020-03-31", 1_000.0),
-                    ("2020-04-01", "2020-06-30", 1_000.0),
-                    ("2020-07-01", "2020-09-30", 7_000.0),
-                ],
-                start=1,
-            )
-        ]
+            ("2019-10-01", "2019-12-31", 1_000.0),
+            ("2020-01-01", "2020-03-31", 1_000.0),
+            ("2020-04-01", "2020-06-30", 1_000.0),
+            ("2020-07-01", "2020-09-30", 7_000.0),
+        ],
+        field="dilutedShares",
+        concept="us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
     )
-    ttm = periods.trailing_twelve(quarters, spec, guards=GUARDS)
-    last = ttm.iloc[-1]
-    assert pd.isna(last["value"]) and last["n_quarters"] == 4
+    assert len(_quarters(facts, spec, GUARDS)) == 4
+    ttm, quarter = periods.newest_periods(periods.FieldFacts.of(facts), spec, GUARDS)
+    assert quarter["value"] == pytest.approx(7_000.0)
+    assert ttm["period_end"] == pd.Timestamp("2020-09-30") and ttm["value"] is None
     print(
         f"\nSANITY: three quarters at 1,000 shares then one at 7,000 (a 7:1 split) -> "
-        f"TTM is NULL over a full {last['n_quarters']}-quarter window, not the 2,500 a mean would give."
+        f"TTM is {ttm['value']} over a full 4-quarter window, not the 2,500 a mean would give."
     )
 
 
@@ -355,37 +348,22 @@ def test_a_ttm_needs_four_contiguous_quarters_and_never_a_carried_forward_annual
     quarters and froze **1,622 of 26,242 consecutive `totalRevenue` pairs (6.2%)**, making
     `revenueGrowth` exactly 0 for three quarters in four. Coverage drops here on purpose."""
     spec = _spec()
-    rows = [
-        ("2020-01-01", "2020-03-31", 100.0),
-        ("2020-04-01", "2020-06-30", 110.0),
-        ("2021-01-01", "2021-03-31", 120.0),
-        ("2021-04-01", "2021-06-30", 130.0),
-    ]
-    quarters = pd.DataFrame(
+    facts = _facts(
         [
-            {
-                "ticker": "TEST",
-                "field": "totalRevenue",
-                "period_start": pd.Timestamp(s),
-                "period_end": pd.Timestamp(e),
-                "period_days": (pd.Timestamp(e) - pd.Timestamp(s)).days,
-                "value": v,
-                "basis": periods.AS_REPORTED,
-                "known_from": pd.Timestamp(e),
-                "source_concept": "x",
-                "concept_switch": False,
-                "fiscal_year": 2021,
-                "fiscal_quarter": 1,
-            }
-            for s, e, v in rows
+            ("2020-01-01", "2020-03-31", 100.0),
+            ("2020-04-01", "2020-06-30", 110.0),
+            ("2021-01-01", "2021-03-31", 120.0),
+            ("2021-04-01", "2021-06-30", 130.0),
         ]
     )
-    ttm = periods.trailing_twelve(quarters, spec, guards=GUARDS)
+    # The TTM each night would store, as each quarter becomes the newest one.
+    ttm = [periods.newest_periods(periods.FieldFacts.of(facts.iloc[: n + 1]), spec, GUARDS)[0] for n in range(len(facts))]
     # Four quarters exist, but they span two years with a two-quarter hole in between.
-    assert ttm["value"].isna().all() and "dc_code" not in ttm.columns
+    assert [row["period_end"] for row in ttm] == list(facts["period_end"])
+    assert all(row["value"] is None for row in ttm)
     print(
         f"\nSANITY: four quarters spanning 18 months with a hole -> "
-        f"{int(ttm['value'].isna().sum())}/{len(ttm)} NULL. No annual is carried forward to fill it."
+        f"{sum(row['value'] is None for row in ttm)}/{len(ttm)} NULL. No annual is carried forward to fill it."
     )
 
 
@@ -394,65 +372,22 @@ def test_a_ttm_needs_four_contiguous_quarters_and_never_a_carried_forward_annual
 
 def test_a_four_four_five_retail_calendar_labels_its_own_quarters():
     """Kroger's fiscal Q1 is 16 weeks and Q2-Q4 are 12. A fixed day-count divisor puts the
-    111-day Q1 in two buckets; dividing the offset by THAT YEAR's own quarter length and
-    rounding is exact."""
+    111-day Q1 in two buckets; dividing the covered span by THAT YEAR's own quarter length
+    and rounding is exact."""
     year_ends = [pd.Timestamp("2025-02-01"), pd.Timestamp("2026-01-31")]
-    windows = [("2025-02-02", "2025-05-24"), ("2025-05-25", "2025-08-16"), ("2025-08-17", "2025-11-08"), ("2025-11-09", "2026-01-31")]
-    quarters = pd.DataFrame(
-        [
-            {
-                "ticker": "KR",
-                "field": "totalRevenue",
-                "period_start": pd.Timestamp(s),
-                "period_end": pd.Timestamp(e),
-                "period_days": (pd.Timestamp(e) - pd.Timestamp(s)).days,
-                "value": 1.0,
-                "basis": periods.AS_REPORTED,
-                "known_from": pd.Timestamp(e),
-                "source_concept": "x",
-                "concept_switch": False,
-            }
-            for s, e in windows
-        ]
-    )
-    labelled = periods.label_fiscal_periods(quarters, year_ends)
-    assert list(labelled["fiscal_quarter"]) == [1, 2, 3, 4]
-    assert set(labelled["fiscal_year"]) == {2026}
-    print(
-        f"\nSANITY: a 111/83/83/83-day retail year labels as "
-        f"{list(labelled['fiscal_quarter'])} in FY{labelled['fiscal_year'].iloc[0]}, "
-        f"with the 16-week Q1 in exactly one bucket."
-    )
+    ends = ["2025-05-24", "2025-08-16", "2025-11-08", "2026-01-31"]
+    labels = [periods.fiscal_quarter_of_end(end, year_ends) for end in ends]
+    assert labels == [1, 2, 3, 4]
+    print(f"\nSANITY: a 111/83/83/83-day retail year labels as {labels}, with the 16-week Q1 in exactly one bucket.")
 
 
 def test_the_year_the_filer_is_still_inside_labels_from_its_start():
     """The three quarters filed since the last 10-K are the ones a model trades on. Ranking
     from the END labelled them Q2/Q3/Q4; anchoring on the year's own start gives Q1/Q2/Q3."""
     year_ends = [pd.Timestamp("2025-09-27"), pd.Timestamp("2026-09-26")]
-    windows = [("2025-09-28", "2025-12-27"), ("2025-12-28", "2026-03-28"), ("2026-03-29", "2026-06-27")]
-    quarters = pd.DataFrame(
-        [
-            {
-                "ticker": "AAPL",
-                "field": "totalRevenue",
-                "period_start": pd.Timestamp(s),
-                "period_end": pd.Timestamp(e),
-                "period_days": 90,
-                "value": 1.0,
-                "basis": periods.AS_REPORTED,
-                "known_from": pd.Timestamp(e),
-                "source_concept": "x",
-                "concept_switch": False,
-            }
-            for s, e in windows
-        ]
-    )
-    labelled = periods.label_fiscal_periods(quarters, year_ends)
-    assert list(labelled["fiscal_quarter"]) == [1, 2, 3]
-    print(
-        f"\nSANITY: three quarters into an unfinished fiscal year label as "
-        f"{list(labelled['fiscal_quarter'])}, not the 2/3/4 a rank-from-the-end gives."
-    )
+    labels = [periods.fiscal_quarter_of_end(end, year_ends) for end in ("2025-12-27", "2026-03-28", "2026-06-27")]
+    assert labels == [1, 2, 3]
+    print(f"\nSANITY: three quarters into an unfinished fiscal year label as {labels}, not the 2/3/4 a rank-from-the-end gives.")
 
 
 def test_a_missing_annual_report_does_not_swallow_three_years_of_quarters():
@@ -480,7 +415,7 @@ def test_the_same_quarter_tagged_twice_a_day_apart_collapses():
             ("2013-01-01", "2013-03-31", 101.0, "2014-05-01"),
         ]
     )
-    quarters = periods.quarterize(facts, _spec(), GUARDS)
+    quarters = _quarters(facts, _spec(), GUARDS)
     assert len(quarters) == 1
     assert quarters.iloc[0]["value"] == pytest.approx(101.0)  # the later filing wins
     print(
@@ -498,6 +433,39 @@ def test_the_configured_guards_are_the_ones_this_file_asserts_against():
 
 
 # --------------------------------------------------------------------- real data ---
+
+
+def _ticker_periods(facts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`(quarters, ttm)` of one ticker's facts through the production engine, on the ticker's own calendar.
+
+    Quarters carry `fiscal_quarter` as the replay labels them (`fiscal_quarter_of_end`); `ttm` is every additive
+    field's four-quarter sum (`_ttm_value`) at each quarter end where one exists.
+    """
+    guards = periods.load_guards("./configs")
+    durations = facts[periods.is_duration(facts)]
+    year_ends = periods.fiscal_year_ends(durations)
+    quarters, ttm = [], []
+    for name, group in durations.groupby("field", sort=True):
+        spec = CATALOGUE.field(name)
+        if spec.kind != "duration":
+            continue
+        q = _quarters(group, spec, guards)
+        q.insert(0, "field", name)
+        q.insert(0, "ticker", group["ticker"].iloc[0])
+        q["fiscal_quarter"] = [periods.fiscal_quarter_of_end(end, year_ends) for end in q["period_end"]]
+        quarters.append(q)
+        if not spec.is_additive:
+            continue
+        starts, ends = q["period_start"].to_numpy("datetime64[ns]"), q["period_end"].to_numpy("datetime64[ns]")
+        values, days = q["value"].to_numpy(dtype=float), q["period_days"].to_numpy(dtype=float) + 1
+        last = periods.TTM_QUARTERS - 1
+        for i in range(last, len(q)):
+            window = slice(i - last, i + 1)
+            value = periods._ttm_value(last, starts[window], ends[window], values[window], days[window], spec, guards)
+            if value is not None:
+                ttm.append({"ticker": q["ticker"].iloc[0], "field": name, "period_end": q["period_end"].iloc[i], "value": value})
+    return pd.concat(quarters, ignore_index=True), pd.DataFrame(ttm, columns=["ticker", "field", "period_end", "value"])
+
 
 _REAL_TICKERS = {
     "AAPL": ("Information Technology", "Technology Hardware & Equipment", "Technology Hardware, Storage & Peripherals"),
@@ -536,7 +504,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     facts = pd.DataFrame(rows)
     quarters, ttm = [], []
     for _, group in facts.groupby("ticker"):
-        q, t, _ = periods.build_periods(group, CATALOGUE)
+        q, t = _ticker_periods(group)
         quarters.append(q)
         ttm.append(t)
     return facts, pd.concat(quarters, ignore_index=True), pd.concat(ttm, ignore_index=True)
@@ -554,8 +522,7 @@ def test_apples_fiscal_2025_fourth_quarter_revenue(real_periods):
     assert q4.iloc[0]["fiscal_quarter"] == 4
     print(
         f"\nSANITY: AAPL fiscal-2025 Q4 revenue = ${q4.iloc[0]['value'] / 1e9:.3f} bn by "
-        f"{q4.iloc[0]['basis']}, labelled FY{q4.iloc[0]['fiscal_year']} "
-        f"Q{q4.iloc[0]['fiscal_quarter']} -- matching the published figure."
+        f"{q4.iloc[0]['basis']}, labelled Q{q4.iloc[0]['fiscal_quarter']} -- matching the published figure."
     )
 
 
@@ -586,10 +553,7 @@ def test_a_derived_year_foots_to_the_number_the_filer_published(real_periods):
         .sort_values("filing_date")
         .drop_duplicates(["ticker", "field", "period_start", "period_end"], keep="last")
     )
-    sums = ttm[ttm.basis == periods.TTM_FOUR_QUARTERS]
-    joined = sums.merge(
-        annual[["ticker", "field", "period_end", "value"]].rename(columns={"value": "as_filed"}), on=["ticker", "field", "period_end"]
-    )
+    joined = ttm.merge(annual[["ticker", "field", "period_end", "value"]].rename(columns={"value": "as_filed"}), on=["ticker", "field", "period_end"])
     joined = joined[joined.as_filed.abs() > 0]
     relative = (joined.value - joined.as_filed).abs() / joined.as_filed.abs()
     within = (relative < 0.005).mean()
@@ -607,7 +571,7 @@ def test_a_derived_year_foots_to_the_number_the_filer_published(real_periods):
 
 
 def _duration_frame(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
-    """(start, end, value) triples -> the duration frame `quarterize` consumes."""
+    """(start, end, value) triples -> the duration frame `_quarters` consumes."""
     out = []
     for start, end, value in rows:
         s, e = pd.Timestamp(start), pd.Timestamp(end)
@@ -647,7 +611,7 @@ def test_an_annual_tagged_against_a_q4_context_does_not_become_q4():
             ("2021-06-01", "2022-05-31", 42_440e6),  # the annual itself
         ]
     )
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
+    q = _quarters(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2022-05-31")]
     assert len(q4) == 1
     assert q4.iloc[0].basis == periods.FY_MINUS_YTD9
@@ -670,7 +634,7 @@ def test_a_fourth_quarter_that_really_is_the_whole_year_is_kept():
             ("2021-06-01", "2022-05-31", 500e6),
         ]
     )
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
+    q = _quarters(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2022-05-31")]
     assert len(q4) == 1
     assert q4.iloc[0].basis == periods.AS_REPORTED
@@ -688,7 +652,7 @@ def test_a_normal_fourth_quarter_is_untouched():
             ("2021-06-01", "2022-05-31", 42_440e6),
         ]
     )
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
+    q = _quarters(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2022-05-31")]
     assert q4.iloc[0].basis == periods.AS_REPORTED
     assert q4.iloc[0].value == pytest.approx(11_840e6)
@@ -722,7 +686,7 @@ def test_an_annual_on_a_q4_window_with_no_annual_fact_is_refused():
             ("2020-03-01", "2020-05-31", 39_068e6),  # the YEAR, on a Q4 window
         ]
     )  # and NO annual fact anywhere
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
+    q = _quarters(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2020-05-31")]
     print("\n=== SANITY CHECK: D1b, an annual on a Q4 window with no annual fact ===")
     print("  the fact      : $39,068M on a 91-day window ending 2020-05-31")
@@ -748,7 +712,7 @@ def test_d1b_keeps_a_fourth_quarter_that_really_is_the_whole_year():
             ("2020-03-01", "2020-05-31", 500e6),
         ]
     )
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
+    q = _quarters(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2020-05-31")]
     print("\n=== SANITY CHECK: D1b does not eat a legitimate Q4-equals-FY ===")
     print(f"  nine months $0, Q4 $500M -> rows kept {len(q4)}")
@@ -768,7 +732,7 @@ def test_d1b_leaves_a_normal_fourth_quarter_alone_when_no_annual_exists():
             ("2020-03-01", "2020-05-31", 10_439e6),  # the real Q4
         ]
     )
-    q = periods.quarterize(frame, _revenue_spec(), periods.load_guards("./configs"))
+    q = _quarters(frame, _revenue_spec(), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2020-05-31")]
     print("\n=== SANITY CHECK: D1b on the ordinary no-annual filer ===")
     print(f"  nine months $28,629M, Q4 $10,439M -> kept {len(q4)}")
@@ -782,7 +746,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     The facts frame is returned because the refusal moved layers (cluster `2603621e89ab`):
     `fetch_fundamentals_sec._drop_note_only_quarter` now drops the mislabelled years while
-    the filing is being read, so `build_periods` never sees them and D1b has nothing left to
+    the filing is being read, so the period engine never sees them and D1b has nothing left to
     refuse. The evidence is therefore in the fact rows.
 
     Since `_retry_without`, those three filings no longer produce a value-less stub either:
@@ -795,7 +759,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, pd.DataFrame]:
     the ANNUAL-window fact that lets D1 handle fiscal 2021 and 2022 arrives in the FY2023 and
     FY2024 10-Ks. Truncate the window at 2022 and D1b fires on three years instead of one --
     correctly, since all three facts really are mislabelled annuals, but not the outcome
-    production sees. `quarterize` is handed the ticker's WHOLE stored history, so the fixture
+    production sees. The engine is handed the ticker's WHOLE stored history, so the fixture
     has to be wide enough to contain the later vintages or it tests a different question.
     """
     if not os.getenv("SEC_USER_AGENT", "").strip():
@@ -819,7 +783,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, pd.DataFrame]:
             continue
         rows.extend(filing_rows("ORCL", FilingStamp.of(filing, str(company.cik)), CATALOGUE, gics))
     facts = pd.DataFrame(rows)
-    quarters, _ttm, _instants = periods.build_periods(facts, CATALOGUE)
+    quarters, _ttm = _ticker_periods(facts)
     return quarters, facts
 
 
@@ -945,7 +909,7 @@ def test_d1b_keeps_a_genuine_loss_quarter_bigger_than_the_nine_months():
             ("2017-10-01", "2017-12-31", -1_656.9e6),  # Q4 a bigger NEGATIVE
         ]
     )  # and no annual fact anywhere
-    q = periods.quarterize(frame, CATALOGUE.field("netIncome"), periods.load_guards("./configs"))
+    q = _quarters(frame, CATALOGUE.field("netIncome"), periods.load_guards("./configs"))
     q4 = q[q.period_end == pd.Timestamp("2017-12-31")]
     print("\n=== SANITY CHECK: D1b keeps a genuine loss quarter ===")
     print(f"  nine months +$1,452.8M, Q4 -$1,656.9M -> kept {len(q4)}")

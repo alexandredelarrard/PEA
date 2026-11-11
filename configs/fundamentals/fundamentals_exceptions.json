@@ -685,21 +685,5 @@
         "verified": "2026-08-23"
       }
     }
-  },
-
-  "by_ticker_periodicity": {
-    "_README": {
-      "purpose": "A field the filer tags on SOME period shapes only. Distinct from an ABSENCE exception -- the value exists, it simply has no discrete quarter -- and the `by_regime` register had no key for that.",
-      "consumed_by": "Phase 7's `coverage_quarters` gate, which must read a structural periodicity gap as structural rather than as a regression."
-    },
-    "AFL": {
-      "depAmort": {
-        "shapes": [
-          "annual"
-        ],
-        "evidence": "AFL tags `us-gaap:DepreciationAndAmortization` on the ANNUAL window only -- 48 annual facts across 63 filings, ZERO quarterly, ytd6 or ytd9 -- so no discrete quarter exists and `ebitda` is annual-only for AFL. Correct behaviour, not a defect. Its operating node's only amortisation-named line is `DeferredPolicyAcquisitionCostAmortizationExpense` ($1,282M, 35 filings), which is DAC under ASC 944 and deliberately not a D&A leaf, so route 3b cannot and should not rescue the quarters.",
-        "verified": "2026-08-23"
-      }
-    }
   }
 }

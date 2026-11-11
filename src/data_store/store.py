@@ -81,6 +81,11 @@ def ensure_table(engine: Engine | Connection, name: str, df: pd.DataFrame) -> No
     if table_exists(engine, name):
         return
     statements = [stmt for stmt in ddl.table_ddl_from_frame(resolve(name), df).split(";") if stmt.strip()]
+    _create_locked(engine, name, statements)
+
+
+def _create_locked(engine: Engine | Connection, name: str, statements: list[str]) -> None:
+    """Run `statements` under the cold-table lock unless `name` was created meanwhile."""
     with _CREATE_LOCK:
         if table_exists(engine, name):
             return
@@ -467,6 +472,12 @@ class DataStore:
 
     def exists(self, table) -> bool:
         return name_of(table) in self._metadata.tables or table_exists(self._database, name_of(table))
+
+    def create_declared(self, table: SchemaTable) -> None:
+        """Create `table` from its committed `sql/schema.sql` block (comments stripped) when it does not exist yet."""
+        name = name_of(table)
+        if not self.exists(name):
+            _create_locked(self._database, name, ddl.declared_statements(name))
 
     def columns(self, table) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""

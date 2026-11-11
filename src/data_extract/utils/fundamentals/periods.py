@@ -19,7 +19,6 @@ from functools import lru_cache
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype
 
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, FieldSpec
@@ -91,11 +90,6 @@ Q3_FROM_YTD9 = "ytd9_minus_ytd6"
 FY_MINUS_YTD9 = "fy_minus_ytd9"
 FY_MINUS_QUARTERS = "fy_minus_q1q2q3"
 
-#: TTM bases.
-TTM_FOUR_QUARTERS = "sum_4q"
-TTM_FOUR_QUARTER_MEAN = "mean_4q"
-TTM_AS_REPORTED_ANNUAL = "as_reported_annual"
-
 #: A trailing-twelve window is four quarters spanning the annual band, so 52/53-week years pass
 #: and a year with a stub or missing quarter does not.
 TTM_MIN_DAYS, TTM_MAX_DAYS = 330, 400
@@ -103,22 +97,6 @@ TTM_QUARTERS = 4
 
 #: Two period ends this close are the SAME period tagged twice -- see `_latest_per_window`.
 _SAME_PERIOD_DAYS = 7
-
-_QUARTER_COLUMNS: tuple[str, ...] = (
-    "ticker",
-    "field",
-    "period_start",
-    "period_end",
-    "period_days",
-    "value",
-    "basis",
-    "known_from",
-    "source_concept",
-    "concept_switch",
-    "fiscal_year",
-    "fiscal_quarter",
-)
-
 
 # ------------------------------------------------------------------ selection helpers ---
 
@@ -281,11 +259,6 @@ def _masquerading_quarters(facts: FieldFacts) -> np.ndarray:
     return flagged
 
 
-def _window_bounds(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """`frame`'s `(period_start, period_end)` as nanosecond arrays, taken once per candidate frame."""
-    return frame["period_start"].to_numpy("datetime64[ns]"), frame["period_end"].to_numpy("datetime64[ns]")
-
-
 def _same_start_before(candidates: _Legs, start: np.datetime64, end: np.datetime64) -> int | None:
     """The position in `candidates` of the latest leg sharing this window's START and ending strictly earlier, or None.
 
@@ -376,12 +349,8 @@ def _derived(total: dict, subtrahend: dict, basis: str, spec: FieldSpec, sibling
     }
 
 
-#: `_quarter_rows`' row keys, also the unlabelled `quarterize` columns.
-_ROW_COLUMNS: tuple[str, ...] = ("period_start", "period_end", "period_days", "value", "basis", "known_from", "source_concept", "concept_switch")
-
-
 def _quarter_rows(facts: FieldFacts, spec: FieldSpec, guards: PeriodGuards) -> list[dict]:
-    """One field's duration facts -> its discrete quarters as `_ROW_COLUMNS` dicts, ascending and unique by `period_end`.
+    """One field's duration facts -> its discrete quarters as dicts, ascending and unique by `period_end`.
 
     Reported quarters are kept and win over a derived one for the same window; the rest come from the ladder. A
     non-additive field (weighted-average shares) is differenced in share-days (`average x days`) and converted back.
@@ -422,29 +391,6 @@ def _quarter_rows(facts: FieldFacts, spec: FieldSpec, guards: PeriodGuards) -> l
         for row in kept:
             row["value"] = row["value"] / _inclusive_days(row["period_days"])
     return kept
-
-
-def quarterize(
-    facts: pd.DataFrame,
-    spec: FieldSpec,
-    guards: PeriodGuards | None = None,
-    year_ends: list[pd.Timestamp] | None = None,
-) -> pd.DataFrame:
-    """One (ticker, field)'s duration facts -> discrete quarters (`_QUARTER_COLUMNS`), with provenance (`_quarter_rows`).
-
-    `known_from` is the latest filing date of the inputs. `year_ends` defaults to this field's own.
-    """
-    guards = guards or load_guards()
-    if facts.empty:
-        return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
-    rows = _quarter_rows(FieldFacts.of(facts), spec, guards)
-    if not rows:
-        return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
-    out = pd.DataFrame({column: [row[column] for row in rows] for column in _ROW_COLUMNS})
-    out.insert(0, "field", spec.name)
-    out.insert(0, "ticker", facts["ticker"].iloc[0])
-    # Callers should pass the TICKER's calendar: a field's own sparse annual facts mislabel fiscal years.
-    return label_fiscal_periods(out, fiscal_year_ends(facts[facts["period_start"].notna()]) if year_ends is None else year_ends)
 
 
 def _ladder(quarters: _Legs, y6: _Legs, y9: _Legs, annual: _Legs, spec: FieldSpec, guards: PeriodGuards) -> list[dict]:
@@ -528,29 +474,24 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
 
 @lru_cache(maxsize=256)
 def _bounds_of(year_ends: tuple[pd.Timestamp, ...]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
-    """`_fiscal_bounds` cached on the calendar tuple; returns immutable tuples because callers share them."""
+    """The fiscal years as `(ends, starts)`: each starts the day after the previous end, the first 364 days back.
+
+    Cached on the calendar tuple; returns immutable tuples because callers share them.
+    """
     ends = tuple(sorted(pd.Timestamp(e) for e in year_ends))
     starts = (ends[0] - pd.Timedelta(days=364), *(e + pd.Timedelta(days=1) for e in ends[:-1]))
     return ends, starts
 
 
-def _fiscal_bounds(year_ends: list[pd.Timestamp]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
-    """The fiscal years as `(ends, starts)`: each starts the day after the previous end, the first 364 days back.
-
-    Shared by `label_fiscal_periods` and `fiscal_quarter_of_end` so both label a quarter identically.
-    """
-    return _bounds_of(tuple(year_ends))
-
-
 def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
     """Which fiscal quarter (1-4) a period ENDING on `end` sits in, or None if outside the calendar.
 
-    The end-date mirror of `label_fiscal_periods`, for TTM and instant rows too: the covered span from
-    the year start, divided by that year's quarter length and rounded.
+    The covered span from the year start, divided by that year's quarter length and rounded (exact for
+    52/53-week and 4-4-5 years).
     """
     if not year_ends or end is None or pd.isna(end):
         return None
-    ends, starts = _fiscal_bounds(year_ends)
+    ends, starts = _bounds_of(tuple(year_ends))
     end = pd.Timestamp(end)
     # side='left' puts a period ending exactly ON a year end into that year, where Q4 lives.
     position = int(pd.Series(ends).searchsorted(end, side="left"))
@@ -562,99 +503,6 @@ def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
     return int(min(max(round(covered / quarter_length), 1), TTM_QUARTERS))
 
 
-def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) -> pd.DataFrame:
-    """Attach `fiscal_year` and `fiscal_quarter` and return `_QUARTER_COLUMNS`.
-
-    The quarter is the offset of `period_start` into its fiscal year divided by that year's own quarter
-    length, rounded (exact for 52/53-week years). `fiscal_year` is the calendar year of the year-end,
-    matching SEC's `fy`. Quarters beyond the calendar stay NA.
-    """
-    out = quarters.copy()
-    out["fiscal_year"] = pd.NA
-    out["fiscal_quarter"] = pd.NA
-    if not year_ends or out.empty:
-        return out[list(_QUARTER_COLUMNS)]
-    ends, starts = _fiscal_bounds(year_ends)
-    bounds = pd.Series(ends)
-    # side='left' puts a quarter ending exactly ON a year end into that year, where Q4 lives.
-    slot = bounds.searchsorted(out["period_end"].values, side="left")
-    inside = slot < len(ends)
-    if inside.any():
-        day = np.timedelta64(1, "D")
-        position = slot[inside]
-        year_end = np.array(ends, dtype="datetime64[ns]")[position]
-        year_start = np.array(starts, dtype="datetime64[ns]")[position]
-        quarter_length = np.maximum((year_end - year_start) // day + 1, 1) / TTM_QUARTERS
-        offset = (out["period_start"].to_numpy("datetime64[ns]")[inside] - year_start) // day
-        # np.round is half-to-even, like the builtin `round`; cells stay python ints in an object column.
-        quarter = np.minimum(np.maximum(np.round(offset / quarter_length) + 1, 1), TTM_QUARTERS)
-        years = np.array([end.year for end in ends])[position]
-        fiscal_year = np.full(len(out), pd.NA, dtype=object)
-        fiscal_quarter = np.full(len(out), pd.NA, dtype=object)
-        fiscal_year[inside] = [int(y) for y in years]
-        fiscal_quarter[inside] = [int(q) for q in quarter]
-        out["fiscal_year"] = fiscal_year
-        out["fiscal_quarter"] = fiscal_quarter
-    return out[list(_QUARTER_COLUMNS)]
-
-
-# ----------------------------------------------------------------- trailing twelve ---
-
-
-def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFrame | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
-    """A TTM value at every quarter end, built only from FOUR contiguous discrete quarters (`_ttm_value`).
-
-    Otherwise the row is NULL (never a carried-forward annual). A non-additive field is the share-day-weighted
-    mean, or the as-reported annual figure where the window ends on a fiscal year end; a window straddling a
-    split is NULL.
-    """
-    empty = pd.DataFrame(columns=["ticker", "field", "period_end", "value", "basis", "known_from", "n_quarters"])
-    if quarters.empty:
-        return empty
-    guards = guards or load_guards()
-    ordered = quarters.sort_values("period_end").reset_index(drop=True)
-    # Only the non-additive branch reads the annual facts.
-    reported_annual = {} if spec.is_additive or annual is None or annual.empty else _annual_by_end(FieldFacts.of(annual))
-    ticker = ordered["ticker"].iloc[0]
-    # Arrays taken once; each window below is a positional slice of them.
-    ends = list(ordered["period_end"])
-    values = ordered["value"].to_numpy(dtype=float)
-    days_all = _inclusive_days(ordered["period_days"]).to_numpy(dtype=float)
-    known = ordered["known_from"]
-    known_ns = known.to_numpy() if is_datetime64_any_dtype(known) else None
-    starts_ns, ends_ns = _window_bounds(ordered)
-    rows = []
-    for i, end in enumerate(ends):
-        low = max(0, i - TTM_QUARTERS + 1)
-        base = {"ticker": ticker, "field": spec.name, "period_end": end}
-        fact = reported_annual.get(int(ends_ns[i].view("i8")))
-        if fact is not None:
-            rows.append({**base, "value": float(fact[0]), "basis": TTM_AS_REPORTED_ANNUAL, "known_from": pd.Timestamp(fact[1]), "n_quarters": 0})
-            continue
-        value = _ttm_value(i, starts_ns, ends_ns, values, days_all, spec, guards)
-        if value is None:
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": i + 1 - low})
-            continue
-        if known_ns is not None:
-            seen = known_ns[low : i + 1]
-            seen = seen[~np.isnat(seen)]
-            latest = pd.Timestamp(seen.max()) if seen.size else pd.NaT
-        else:
-            latest = known.iloc[low : i + 1].max()
-        rows.append(
-            {
-                **base,
-                "value": value,
-                "basis": TTM_FOUR_QUARTERS if spec.is_additive else TTM_FOUR_QUARTER_MEAN,
-                "known_from": latest,
-                "n_quarters": TTM_QUARTERS,
-            }
-        )
-    out = pd.DataFrame(rows, columns=list(empty.columns))
-    # One null representation: mixed None/NaN in an object column breaks downstream null tests.
-    return out.astype({"basis": "string"})
-
-
 def _ttm_value(
     i: int, starts: np.ndarray, ends: np.ndarray, values: np.ndarray, days: np.ndarray, spec: FieldSpec, guards: PeriodGuards
 ) -> float | None:
@@ -664,7 +512,7 @@ def _ttm_value(
     if i + 1 - low < TTM_QUARTERS or not _bounds_are_contiguous(starts[low : i + 1], ends[low : i + 1]):
         return None
     window = values[low : i + 1]
-    if not spec.is_additive and not _one_share_basis_values(window, guards):
+    if not spec.is_additive and not _one_share_basis(window, guards):
         return None
     # A twelve-month weighted average is share-days over days, not the mean of four means.
     weights = days[low : i + 1]
@@ -684,8 +532,9 @@ def _annual_by_end(facts: FieldFacts) -> dict[int, tuple[float, np.datetime64]]:
 def newest_periods(facts: FieldFacts, spec: FieldSpec, guards: PeriodGuards) -> tuple[dict | None, dict | None]:
     """The newest TTM row and the newest discrete quarter of one field's duration facts, as `{period_end, value}`.
 
-    The last rows of `trailing_twelve(quarterize(...))` and `quarterize(...)`, computed without building either
-    frame; `(None, None)` for a non-`duration` field or one with no quarter.
+    The TTM is built only from four contiguous discrete quarters (`_ttm_value`), else its value is None (never a
+    carried-forward annual); a non-additive field's TTM is the as-reported annual where the newest quarter ends
+    on a fiscal year end. `(None, None)` for a non-`duration` field or one with no quarter.
     """
     if spec.kind != "duration":
         return None, None
@@ -710,16 +559,9 @@ def newest_periods(facts: FieldFacts, spec: FieldSpec, guards: PeriodGuards) -> 
     return {"period_end": last["period_end"], "value": value}, quarter
 
 
-def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:
-    """Are the window's share counts on ONE split basis (max/min within `share_basis_max_ratio`)?
-
-    A window straddling a split mixes two incompatible units; it is refused, not repaired.
-    """
-    return _one_share_basis_values(window["value"].to_numpy(dtype=float), guards)
-
-
-def _one_share_basis_values(values: np.ndarray, guards: PeriodGuards) -> bool:
-    """`_one_share_basis` on a window's value array; NaN is skipped, an all-NaN window is refused."""
+def _one_share_basis(values: np.ndarray, guards: PeriodGuards) -> bool:
+    """Are the window's share counts on ONE split basis (max/min within `share_basis_max_ratio`)? NaN is skipped, an
+    all-NaN window is refused; a window straddling a split is refused, not repaired."""
     present = np.abs(values[~np.isnan(values)])
     if present.size == 0:
         return False
@@ -732,14 +574,9 @@ def _skipna_sum(values: np.ndarray) -> np.float64:
     return np.where(np.isnan(values), 0.0, values).sum()
 
 
-def _window_is_contiguous(window: pd.DataFrame) -> bool:
-    """True when the quarters abut (gaps of at most 1 day) and span `TTM_MIN_DAYS`..`TTM_MAX_DAYS`."""
-    starts, ends = _window_bounds(window)
-    return _bounds_are_contiguous(starts, ends)
-
-
 def _bounds_are_contiguous(starts: np.ndarray, ends: np.ndarray) -> bool:
-    """`_window_is_contiguous` on nanosecond bound arrays; whole days are floored, a NaT gap is not a break."""
+    """True when the quarters abut (gaps of at most 1 day) and span `TTM_MIN_DAYS`..`TTM_MAX_DAYS`; whole days are
+    floored, a NaT gap is not a break."""
     day = np.timedelta64(1, "D")
     gaps = starts[1:] - ends[:-1]
     known = ~np.isnat(gaps)
@@ -823,47 +660,6 @@ class InstantLookup:
         return None if np.isnan(value) else float(value)
 
 
-# ----------------------------------------------------------------------- entry point ---
-
-
-def build_periods(
-    facts: pd.DataFrame,
-    catalogue,
-    guards: PeriodGuards | None = None,
-    year_ends: list[pd.Timestamp] | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Every `duration` field's discrete quarters and TTM values, plus the instants, for one ticker's facts.
-
-    Returns long frames `(quarters, ttm, instants)`; nothing is written to a table. `year_ends` is the ticker's fiscal calendar,
-    derived from all annual-shaped facts when omitted and shared by every field.
-    """
-    # Resolved once here rather than per (event, field) in the callees.
-    guards = guards or load_guards()
-    if facts.empty:
-        return (
-            pd.DataFrame(columns=list(_QUARTER_COLUMNS)),
-            trailing_twelve(pd.DataFrame(), catalogue.field(catalogue.extracted_fields[0]), guards=guards),
-            facts,
-        )
-    durations = facts[is_duration(facts)]
-    # One calendar for the whole ticker, built from every field's annual-shaped facts.
-    if year_ends is None:
-        year_ends = fiscal_year_ends(durations)
-    all_quarters, all_ttm = [], []
-    for name, group in durations.groupby("field", sort=True):
-        spec = catalogue.field(name)
-        if spec.kind != "duration":
-            continue
-        quarters = quarterize(group, spec, guards, year_ends)
-        if quarters.empty:
-            continue
-        all_quarters.append(quarters)
-        all_ttm.append(trailing_twelve(quarters, spec, annual=group, guards=guards))
-    quarters = pd.concat(all_quarters, ignore_index=True) if all_quarters else pd.DataFrame(columns=list(_QUARTER_COLUMNS))
-    ttm = pd.concat(all_ttm, ignore_index=True) if all_ttm else pd.DataFrame()
-    return quarters, ttm, instant_stock(facts)
-
-
 def is_duration(facts: pd.DataFrame) -> pd.Series:
-    """The rows `build_periods` treats as duration facts: every shape but `instant` and `other`."""
+    """The duration facts: every shape but `instant` and `other`."""
     return ~facts["duration_type"].isin([INSTANT, OTHER_SHAPE])

@@ -148,7 +148,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     def llm_step(context, config, options):
         assert options.tickers == ["AAA", "BBB"]
         order.append("llm_init")
-        return SimpleNamespace(run_def14a=mark("def14a_llm"), run_8k_votes=mark("votes_llm"))
+        return SimpleNamespace(run_def14a_llm=mark("def14a_llm"), run_8k_votes=mark("votes_llm"))
 
     monkeypatch.setattr(all_data_module, "StepExtractLlm", llm_step)
     return step

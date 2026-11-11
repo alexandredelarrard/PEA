@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from src.data_extract.utils.edgar_extract.empty_markers import marker_mask
 from src.data_extract.utils.structure.def14a.basis import complete_director_years, correct_basis
@@ -50,6 +50,7 @@ class ProcessedSection:
 
 def _normalize_units(section: Section, answer: BaseModel, as_of: pd.Timestamp | str) -> dict[str, Any]:
     """Convert declared source bases once; leave unsupported currency/scale unknown."""
+    # clean: the answer as a plain payload and the declared scale factors
     payload = answer.model_dump()
     scales = {"units": 1.0, "thousands": 1_000.0, "millions": 1_000_000.0}
 
@@ -58,13 +59,20 @@ def _normalize_units(section: Section, answer: BaseModel, as_of: pd.Timestamp | 
         amount_scale: str | None = payload.get("amount_scale")
         factor = scales.get(amount_scale) if amount_scale is not None and str(payload.get("currency", "")).upper() == "USD" else None
         for row in payload.get("compensation", []):
-            for field in {*_EXEC_COMPONENT_COLS, *_DIRECTOR_COMPONENT_COLS, "total"}:
-                value = row.get(field)
-                row[field] = float(value) * factor if value is not None and factor is not None else None
-        for field in (*_FEE_COLS, "median_employee_pay"):
-            if field in payload:
-                value = payload[field]
-                payload[field] = float(value) * factor if value is not None and factor is not None else None
+            row.update(
+                {
+                    field: float(row[field]) * factor if row.get(field) is not None and factor is not None else None
+                    for field in {*_EXEC_COMPONENT_COLS, *_DIRECTOR_COMPONENT_COLS, "total"}
+                }
+            )
+        fees = (*_FEE_COLS, "median_employee_pay")
+        payload.update(
+            {
+                field: float(payload[field]) * factor if payload[field] is not None and factor is not None else None
+                for field in fees
+                if field in payload
+            }
+        )
         payload["amount_scale"] = "units" if factor is not None else None
 
     # Keep economic ownership and voting on separate fractional bases.
@@ -74,8 +82,8 @@ def _normalize_units(section: Section, answer: BaseModel, as_of: pd.Timestamp | 
         shares = scales.get(shares_scale) if shares_scale is not None else None
         for row in payload["holders"]:
             row["shares"] = row["shares"] * shares if row["shares"] is not None and shares is not None else None
-            for field in ("percent_of_class", "percent_of_voting_power"):
-                row[field] = row[field] * percentage if row[field] is not None else None
+            percents = ("percent_of_class", "percent_of_voting_power")
+            row.update({field: row[field] * percentage if row[field] is not None else None for field in percents})
         for field in ("insider_ownership_pct", "insider_voting_pct"):
             payload[field] = payload[field] * percentage if payload[field] is not None else None
         payload["insider_shares"] = payload["insider_shares"] * shares if payload["insider_shares"] is not None and shares is not None else None
@@ -96,19 +104,14 @@ def _normalize_units(section: Section, answer: BaseModel, as_of: pd.Timestamp | 
 
 def _legacy_answer(section: Section, payload: dict[str, Any], parent: dict[str, Any]) -> Def14AExtract:
     """Adapt normalized values to the existing pure row builders."""
+    # clean: the answer's CEO, else the saved one
     candidate = payload.get("ceo_name") or parent.get("ceo_name_proxy")
     ceo = candidate if isinstance(candidate, str) and candidate.strip() else None
 
     # Compensation rows share the old column vocabulary after a small field rename.
     if section.key in ("executive_pay", "director_pay"):
         model = ExecutiveCompensation if section.key == "executive_pay" else DirectorCompensation
-        aliases = {"all_other_comp_usd": "other_compensation", "total_compensation_usd": "total"}
-        rows = []
-        for row in payload.get("compensation", []):
-            values = {field: row.get(aliases.get(field, field.removesuffix("_usd"))) for field in model.model_fields}
-            if model is ExecutiveCompensation:
-                values["title"] = values["title"] or ""
-            rows.append(model.model_validate(values))
+        rows = [_compensation_row(model, row) for row in payload.get("compensation", [])]
         key = "compensation" if section.key == "executive_pay" else "director_compensation"
         return Def14AExtract.model_validate({"ceo_name": ceo, key: rows})
 
@@ -146,8 +149,18 @@ def _legacy_answer(section: Section, payload: dict[str, Any], parent: dict[str, 
     )
 
 
+def _compensation_row(model: type[ExecutiveCompensation] | type[DirectorCompensation], row: dict[str, Any]) -> BaseModel:
+    """One normalized compensation row as the old pay model, after the `_usd` field rename."""
+    aliases = {"all_other_comp_usd": "other_compensation", "total_compensation_usd": "total"}
+    values = {field: row.get(aliases.get(field, field.removesuffix("_usd"))) for field in model.model_fields}
+    if model is ExecutiveCompensation:
+        values["title"] = values["title"] or ""
+    return model.model_validate(values)
+
+
 def _merge_rows(table: Table, df_saved: pd.DataFrame | None, df_new: pd.DataFrame) -> pd.DataFrame:
     """Fill missing cells and retain useful people/years from partial answers."""
+    # clean: the saved data rows without their markers
     df_old = df_saved.loc[~marker_mask(table, df_saved)].copy() if df_saved is not None else pd.DataFrame()
 
     # Holder aliases share a source identity, not necessarily the stored literal key.
@@ -216,6 +229,7 @@ def _parent_patch(section: Section, legacy: Def14AExtract, stamp: dict[str, Any]
 
 def _refresh_ceo_copies(df_parent: pd.DataFrame, stamp: dict[str, Any], saved: Mapping[Table, pd.DataFrame], parent: dict[str, Any]) -> pd.DataFrame:
     """Select the repaired CEO's already-loaded pay and ownership at this exact filing."""
+    # clean: the repaired and the previously saved CEO names
     ceo_name = clean_person_name(df_parent.iloc[0].get("ceo_name_proxy", parent.get("ceo_name_proxy")))
     previous_ceo = clean_person_name(parent.get("ceo_name_proxy"))
     if not ceo_name:
@@ -253,6 +267,29 @@ def _refresh_ceo_copies(df_parent: pd.DataFrame, stamp: dict[str, Any], saved: M
             copied = copied.combine_first(pd.DataFrame([{column: parent.get(column) for column in columns}]))
         df_parent[columns] = copied
     return df_parent
+
+
+def _with_reconciles(section: Section, df_merged: pd.DataFrame, records: list[dict[Hashable, Any]]) -> pd.DataFrame:
+    """`df_merged` with each pay row's `reconciles` flag computed from its `records`; another domain's frame unchanged."""
+    if section.key not in ("executive_pay", "director_pay"):
+        return df_merged
+    components = _EXEC_COMPONENT_COLS if section.key == "executive_pay" else _DIRECTOR_COMPONENT_COLS
+    df_flagged = df_merged.copy()
+    df_flagged["reconciles"] = [_reconciles(row, components) for row in records]
+    return df_flagged
+
+
+def _retained_legacy(section: Section, records: list[dict[Hashable, Any]], legacy: Def14AExtract, parent: dict[str, Any]) -> Def14AExtract:
+    """The answer with this domain's rows replaced by the merged retained `records`."""
+    raw_key = {"executive_pay": "compensation", "director_pay": "compensation", "ownership": "holders", "governance": "directors"}[section.key]
+    legacy_key = {
+        "executive_pay": "compensation",
+        "director_pay": "director_compensation",
+        "ownership": "ownership_holders",
+        "governance": "directors",
+    }[section.key]
+    retained = _legacy_answer(section, {raw_key: records}, parent)
+    return legacy.model_copy(update={legacy_key: getattr(retained, legacy_key)})
 
 
 def postprocess_section(
@@ -294,22 +331,9 @@ def postprocess_section(
         df_merged, source_corrections = correct_basis(section, df_merged, df_new, supported_source, legacy.ceo_name, stamp.get("company_name"))
         if not df_merged.empty:
             df_merged["retry"] = retry
-            frames[section.table] = df_merged
-            raw_key = {"executive_pay": "compensation", "director_pay": "compensation", "ownership": "holders", "governance": "directors"}[
-                section.key
-            ]
-            legacy_key = {
-                "executive_pay": "compensation",
-                "director_pay": "director_compensation",
-                "ownership": "ownership_holders",
-                "governance": "directors",
-            }[section.key]
             records = df_merged.astype(object).where(pd.notna(df_merged), None).to_dict("records")
-            if section.key in ("executive_pay", "director_pay"):
-                components = _EXEC_COMPONENT_COLS if section.key == "executive_pay" else _DIRECTOR_COMPONENT_COLS
-                df_merged["reconciles"] = [_reconciles(row, components) for row in records]
-            retained = _legacy_answer(section, {raw_key: records}, parent)
-            legacy = legacy.model_copy(update={legacy_key: getattr(retained, legacy_key)})
+            frames[section.table] = _with_reconciles(section, df_merged, records)
+            legacy = _retained_legacy(section, records, legacy, parent)
         else:
             frames[section.table] = reservation_frame(section.table, stamp, df_saved, retry)
 
@@ -345,8 +369,9 @@ def _archive_document(raw: str | None) -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def append_answer(raw: str | None, section: Section, answer: BaseModel, payload: str) -> str:
-    """Durably append a paid raw answer before derived processing can fail."""
+def append_answer(raw: str | None, section: Section, answer: BaseModel) -> str:
+    """Durably append a paid raw answer before derived processing can fail; its source stays in `sec_def14a_text`."""
+    # clean: the archive document and its split metadata
     document = _archive_document(raw)
     metadata = document.get("_def14a_split")
 
@@ -354,59 +379,16 @@ def append_answer(raw: str | None, section: Section, answer: BaseModel, payload:
     if not isinstance(metadata, dict):
         metadata = {"version": 1, "legacy_json": raw, "responses": {}}
     responses = metadata.setdefault("responses", {})
-    responses.setdefault(section.key, []).append({"response": json.loads(answer.model_dump_json()), "source": payload})
+    responses.setdefault(section.key, []).append({"response": json.loads(answer.model_dump_json())})
     document["_def14a_split"] = metadata
     return json.dumps(document, ensure_ascii=False, allow_nan=False)
-
-
-def archived_answers(raw: str | None) -> dict[str, list[BaseModel]]:
-    """Reuse all already-paid legacy/split partial answers without another submission."""
-    try:
-        document = json.loads(raw) if raw and raw != "_empty" else {}
-    except (ValueError, TypeError):
-        document = {}
-    if not isinstance(document, dict):
-        document = {}
-    metadata = document.get("_def14a_split")
-    legacy_raw = metadata.get("legacy_json") if isinstance(metadata, dict) else raw
-    result: dict[str, list[BaseModel]] = {section.key: [] for section in SECTIONS}
-
-    # Replay the original legacy request before appended domain repairs.
-    if legacy_raw and legacy_raw != "_empty":
-        try:
-            legacy = Def14AExtract.model_validate_json(legacy_raw)
-        except (ValueError, ValidationError):
-            legacy = None
-        if legacy is not None:
-            for section in SECTIONS:
-                result[section.key].append(legacy)
-
-    # An empty/failed newer answer cannot hide useful facts in an older answer.
-    responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
-    for section in SECTIONS:
-        for entry in responses.get(section.key, []):
-            try:
-                result[section.key].append(section.schema.model_validate(entry["response"]))
-            except (ValueError, TypeError, KeyError, ValidationError):
-                continue
-    return result
-
-
-def source_for_answer(raw: str | None, section: Section, answer: BaseModel) -> str:
-    """Reuse only the source archived with this exact focused response."""
-    document = _archive_document(raw)
-    metadata = document.get("_def14a_split", {})
-    responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
-    payload = json.loads(answer.model_dump_json())
-    matches = [entry.get("source") for entry in responses.get(section.key, []) if entry.get("response") == payload]
-    sources = {source for source in matches if isinstance(source, str) and source.strip()}
-    return next(iter(sources)) if len(sources) == 1 else ""
 
 
 def refresh_archive(
     raw: str | None, section: Section, legacy: Def14AExtract, corrections: Mapping[str, tuple[float, float | None]] | None = None
 ) -> str:
     """Refresh the legacy-readable facade while retaining original and raw responses."""
+    # clean: the archive document (split metadata ensured), the answer payload and the fields each section owns
     document = _archive_document(raw)
     if not isinstance(document.get("_def14a_split"), dict):
         document["_def14a_split"] = {"version": 1, "legacy_json": raw, "responses": {}}
@@ -443,9 +425,8 @@ def refresh_archive(
     if section.key in child and payload[child[section.key]]:
         document[child[section.key]] = payload[child[section.key]]
     if section.key == "governance":
-        for field in ("ceo_name", "ceo_age", "ceo_since_year", "ceo_is_founder", "ceo_is_board_chair"):
-            if payload.get(field) is not None and document.get(field) is None:
-                document[field] = payload[field]
+        ceo_fields = ("ceo_name", "ceo_age", "ceo_since_year", "ceo_is_founder", "ceo_is_board_chair")
+        document.update({field: payload[field] for field in ceo_fields if payload.get(field) is not None and document.get(field) is None})
     current = document.get("governance") or {}
     for field in governance_fields.get(section.key, ()):
         value = (payload.get("governance") or {}).get(field)

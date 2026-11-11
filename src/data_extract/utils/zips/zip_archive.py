@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -12,8 +11,6 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached
 from src.data_extract.utils.common.resume import period_end
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -41,7 +38,7 @@ def ensure_archive(context: Context, cache: Path, source: ArchiveSource, period:
     path = cache / source.file_template.format(period=period)
     downloaded = not is_cached(path)
     url = source.url_template.format(period=period, quarter=period)
-    found = ensure_zip(context, path, url, label=f"{source.label} {period}", timeout=source.timeout, log=logger)
+    found = ensure_zip(context, path, url, label=f"{source.label} {period}", timeout=source.timeout)
     if found is None:
         return None
     return found, archive_available_at(period_end(period), found, observed_from=source.observed_from, downloaded=downloaded)

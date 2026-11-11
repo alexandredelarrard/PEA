@@ -33,7 +33,10 @@ from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     FIELD_SUM,
-    LINKBASE_METHODS,
+    LINKBASE_ROOT,
+    LINKBASE_SUM,
+    LINKBASE_TOTAL,
+    STATEMENT_LEAF_SUM,
     TAG_FALLBACK,
     UNRESOLVED,
     ArcGraph,
@@ -42,6 +45,8 @@ from src.data_extract.utils.fundamentals.xbrl_linkbase import (
 )
 
 pytestmark = pytest.mark.live  # every test here reads live EDGAR filings
+#: Routes where the filer's own declared structure chose the concept.
+LINKBASE_METHODS = frozenset({LINKBASE_TOTAL, LINKBASE_ROOT, LINKBASE_SUM, STATEMENT_LEAF_SUM})
 
 
 CATALOGUE = load_catalogue("./configs")
@@ -444,7 +449,7 @@ def test_noncurrent_debt_never_steps_by_an_order_of_magnitude(ledger):
 
     # One value per BALANCE DATE, latest vintage. Every filing restates the prior-year
     # comparatives, so a raw shift() would difference two vintages of the same date and
-    # measure restatement instead of the series -- and `quarterize` keeps the latest
+    # measure restatement instead of the series -- and the period engine keeps the latest
     # vintage, so the latest is also what production stores.
     series = (
         debt[debt["duration_type"] == "instant"]

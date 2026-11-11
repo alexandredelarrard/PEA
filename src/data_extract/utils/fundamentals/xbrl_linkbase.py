@@ -221,9 +221,6 @@ SEGMENT_ONLY_CONCEPT = "segment_only_concept"
 #: therefore worth naming: 1 row in 144,131 on the in-sample ledger.
 NO_USABLE_PERIOD = "no_usable_period"
 
-#: Routes where the FILER'S OWN declared structure chose the concept.
-LINKBASE_METHODS: frozenset[str] = frozenset({LINKBASE_TOTAL, LINKBASE_ROOT, LINKBASE_SUM, STATEMENT_LEAF_SUM})
-
 #: `roll_up.anchor_role` values -> the role-URI pattern that names that statement. An
 #: EXCLUSION-free positive test is safe here in a way it is not for `NON_STATEMENT_ROLE`,
 #: because the vocabulary for "this is the cash-flow statement" is short and filers do not
@@ -347,13 +344,12 @@ class Resolution:
     #: SEGMENT-INFORMATION role -- see `SEGMENT_ROLE`. Unlike `role_rejected` this is
     #: NOT relaxable: a segment aggregate is a different measure, not a narrower basis, so
     #: there is no pass that puts it back. Carried so the population stays countable
-    #: (`adjustment::jsonb ? 'segment_rejected'`) rather than vanishing into a null.
+    #: rather than vanishing into a null.
     segment_rejected: tuple[str, ...] = ()
     #: The field resolved ONLY after those rejections were put back in play, i.e. the
-    #: note-level concept is the filer's whole answer for this field. The value is kept --
-    #: a narrow real number beats a null, and 745 correct rows nulled by an over-strict
-    #: guard is this repo's own most expensive precedent -- but it is flagged, because a
-    #: note-level basis is exactly what Phase 5b's `basis_step` is looking for.
+    #: note-level concept is the filer's whole answer for this field. A narrow real number
+    #: beats a null, but it is flagged because a note-level basis is narrower than the
+    #: statement line.
     role_only_retained: bool = False
     #: Candidates route 1 DECLINED because the filer does not declare them in its statement
     #: linkbase at all, while it DOES declare this field's own statement lines -- so route 3b
@@ -380,16 +376,6 @@ class Resolution:
     #: businesses" ($540.9M FY2019) beside a $2,393.7M "Capital expenditures", and EQIX,
     #: whose is "Purchase of real estate". See `sibling_leg`.
     sibling_rejected: tuple[tuple[str, str], ...] = ()
-    #: The field HAS a value, but on a basis the catalogue declares non-comparable -- the
-    #: winning concept is named in the field's `dc_code_on_fallback` map. Today's only
-    #: entry: `researchAndDevelopment` resolving on
-    #: `ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost` instead of the
-    #: aggregate, which is a SUBSET, not a substitute (of 21 both-tagged pairs, 0.0% agree
-    #: within 1%; mean aggregate/ex-IPR&D ratio 1.675).
-    #:
-    #: Deliberately NOT `dc_code`: `resolved` is defined as "no dc_code", so a qualifier
-    #: carried there would turn every ex-IPR&D row into an absence and delete a real number.
-    basis_qualifier: str | None = None
 
     @property
     def resolved(self) -> bool:
@@ -1060,7 +1046,7 @@ def resolve_field(
         candidates=candidates,
     )
     if strict.resolved:
-        return _stamp_basis(spec, _segment_stamp(strict, withheld))
+        return _segment_stamp(strict, withheld)
 
     # Relax the statement-role guard before the zero guard, because the two relaxations
     # are not equally palatable: a note-level fact is a real amount on a narrow basis,
@@ -1083,7 +1069,7 @@ def resolve_field(
         if relaxed.resolved:
             # Carry the strict pass's ledger through, so the row says BOTH what was
             # withheld and that it had to be put back -- either half alone is unreadable.
-            return _stamp_basis(spec, _segment_stamp(replace(relaxed, role_only_retained=True, role_rejected=strict.role_rejected), withheld))
+            return _segment_stamp(replace(relaxed, role_only_retained=True, role_rejected=strict.role_rejected), withheld)
 
     if not zero_only:
         return _segment_stamp(strict, withheld)
@@ -1100,9 +1086,7 @@ def resolve_field(
         prefer_structure=False,
         candidates=candidates,
     )
-    return (
-        _stamp_basis(spec, _segment_stamp(replace(retry, zero_only_retained=True), withheld)) if retry.resolved else _segment_stamp(strict, withheld)
-    )
+    return _segment_stamp(replace(retry, zero_only_retained=True), withheld) if retry.resolved else _segment_stamp(strict, withheld)
 
 
 def _segment_stamp(resolution: Resolution, withheld: frozenset[str]) -> Resolution:
@@ -1118,23 +1102,6 @@ def _segment_stamp(resolution: Resolution, withheld: frozenset[str]) -> Resoluti
         return resolution
     resolution = replace(resolution, segment_rejected=tuple(sorted(withheld)))
     return resolution if resolution.resolved else replace(resolution, dc_code=SEGMENT_ONLY_CONCEPT)
-
-
-def _stamp_basis(spec: FieldSpec, resolution: Resolution) -> Resolution:
-    """Flag a resolution that answered on a concept the catalogue declares non-comparable.
-
-    Keyed on the CONCEPT rather than on the route, because the basis is a property of the
-    element the filer used and not of how we found it: the ex-IPR&D element is a genuine
-    narrower measure whether route 1 or route 5 picks it up.
-
-    Only a field that declares `dc_code_on_fallback` can be stamped, and only one does, so
-    this is a dict lookup on a missing key for 52 of 53 fields.
-    """
-    declared = spec.raw.get("dc_code_on_fallback") or {}
-    if not declared or not resolution.concept:
-        return resolution
-    code = declared.get(bare_concept(resolution.concept))
-    return replace(resolution, basis_qualifier=code) if code else resolution
 
 
 def _resolve_once(

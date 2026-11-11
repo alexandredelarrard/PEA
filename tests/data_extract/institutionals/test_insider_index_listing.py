@@ -16,7 +16,7 @@ import pytest
 
 from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, plan_fetch, run_edgar_fetch
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
@@ -70,7 +70,7 @@ def test_every_indexed_form_4_is_listed_until_stored(ctx, sqlite_store):
     rows = _jpm_book(5_200)
     seed_index(ctx, rows)
     cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
-    scope = EdgarScope(edgar_driver.load_identity(ctx), {})
+    scope = edgar_driver.load_identity(ctx)
     fetch = module.INSIDER_EDGAR_FETCH
 
     night1 = plan_fetch(ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF, 15))
@@ -111,9 +111,7 @@ def test_a_stored_zip_row_counts_as_read_only_before_the_edgar_window(ctx, sqlit
     seed_index(ctx, rows)
     sqlite_store.save(Tables.insider_transactions, _zip_book(rows, "JPM", "2026q2"))
     cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
-    work = plan_fetch(
-        ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, EdgarScope(), _AS_OF, 15)
-    )
+    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), _AS_OF, 15))
 
     listed = work.units["JPM"]["filed"]
     expected = sum(pd.Timestamp(r[3]) >= pd.Timestamp("2026-07-01") for r in rows)
@@ -140,7 +138,7 @@ def test_zip_rows_count_as_read_before_the_earlier_of_the_zip_floor_and_seven_da
     seed_index(ctx, jpm + oxy)
     sqlite_store.save(Tables.insider_transactions, pd.concat([_zip_book(jpm, "JPM", quarter), _zip_book(oxy, "OXY", quarter)], ignore_index=True))
     roster = pd.DataFrame({"ticker": ["JPM", "OXY"], "cik": ["0000019617", "0000797468"]})
-    scope = EdgarScope(edgar_driver.load_identity(ctx), {})
+    scope = edgar_driver.load_identity(ctx)
 
     universe = plan_fetch(
         ctx,
@@ -203,8 +201,6 @@ def test_an_unread_filing_is_stored_nowhere_and_listed_again(ctx, sqlite_store, 
     assert summary.missing == {"OXY": [accession]}
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     cik_map = pd.DataFrame({"ticker": ["OXY"], "cik": ["0000797468"]})
-    again = plan_fetch(
-        ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, EdgarScope(), _AS_OF, 15)
-    )
+    again = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), _AS_OF, 15))
     assert again.units["OXY"]["accession"].tolist() == [accession]
     print("\nSANITY: a Form 4 that 503'd is stored nowhere (no row, no marker) and is listed again on the next night.")

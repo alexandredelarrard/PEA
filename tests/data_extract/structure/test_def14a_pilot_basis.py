@@ -33,7 +33,7 @@ def test_actual_paid_pilot_source_recovers_the_three_regressions(pilot_packets: 
     name_column = "holder_name" if domain == "ownership" else "name"
     saved = {}
     parent = {}
-    raw = append_answer(None, section, answer, packet["source"])
+    raw = append_answer(None, section, answer)
 
     # Exact recorded answers and original request text replay through real persistence twice.
     for _ in range(2):

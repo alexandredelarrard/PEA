@@ -2,8 +2,8 @@
 
 One Parquet file per quarter, `{y}Q{q}.parquet`, under `<DATA_STORE>/<paths.sec_edgar_index>`, with
 every CIK's filings of `INDEX_FORMS`: `cik` (int64), `company`, `form`, `filed` (date), `accession`.
-`refresh` downloads a missing closed quarter once, the current quarter on every call, and the
-previous quarter again during the first `_PREVIOUS_QUARTER_DAYS` days of a quarter; `refreshed_today`
+`refresh` downloads a missing closed quarter, a closed quarter again once a week (Saturday), the
+current quarter on every call, and the previous quarter during the first `_PREVIOUS_QUARTER_DAYS` days of a quarter; `refreshed_today`
 tells, from the cache files, whether today's refresh already covered a window. Downloads go
 through `sec_io`; a quarter file is replaced atomically. `entries` reads the cache with filters.
 """

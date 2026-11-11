@@ -74,7 +74,7 @@ def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         calls["sweeps"] += 1
         return 0
 
-    def log_exclusions(log: object, label: str, frames: list[pd.DataFrame]) -> None:
+    def log_exclusions(label: str, frames: list[pd.DataFrame]) -> None:
         calls["excluded"] = sorted(a for frame in frames for a in frame["accession_number"])
 
     monkeypatch.setattr(ins, "_parse_quarter", parse)

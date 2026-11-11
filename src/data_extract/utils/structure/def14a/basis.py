@@ -22,37 +22,19 @@ def _source_rows(source: str) -> list[tuple[str, int | None, dict[str, str]]]:
     last_name = ""
     caption_year, table_year = None, None
     for line in source.splitlines():
-        caption_years = set(re.findall(r"director\s+compensation(?:\s+table)?\s+for\s+(?:fiscal\s*)?((?:19|20)\d{2})", line, re.I))
-        local_fiscal = (
-            r"following table(?: and footnotes)?.{0,180}?compensation.{0,180}?Directors?\s+in\s+FY\s+((?:19|20)\d{2}(?:-(?:\d{2}|\d{4}))?)(?![-\d])"
-        )
-        for fiscal in re.findall(local_fiscal, line, re.I):
-            label = re.fullmatch(r"((?:19|20)\d{2})(?:-(\d{2}|\d{4}))?", fiscal)
-            if label and (not label[2] or str(int(label[1]) + 1).endswith(label[2])):
-                caption_years.add(str(int(label[1]) + bool(label[2])))
+        caption_years = _caption_years(line)
         if caption_years:
             caption_year = int(next(iter(caption_years))) if len(caption_years) == 1 else None
         cells = [cell.strip() for cell in line.split("\t")]
         if len(cells) < 2:
             header = []
             previous_header = []
-            if line.strip() and not caption_years and not line.strip().startswith("Source table (tab-separated columns):"):
-                caption_year = None
+            prose = line.strip() and not caption_years and not line.strip().startswith("Source table (tab-separated columns):")
+            caption_year = None if prose else caption_year
             continue
         names = [index for index, cell in enumerate(cells) if re.search(r"\bname\b", cell, re.I)]
         if names:
-            header, name_column = cells, names[0]
-            missing_names = len(cells) - len(previous_header)
-            if (
-                missing_names in (1, 2)
-                and names == [0]
-                and not any(cells[1:missing_names])
-                and all(re.search(r"fees|awards|compensation|pension|total", label, re.I) for label in previous_header)
-            ):
-                header = [
-                    *cells[:missing_names],
-                    *(f"{label} {unit}".strip() for label, unit in zip(previous_header, cells[missing_names:], strict=True)),
-                ]
+            header, name_column = _header(cells, names, previous_header), names[0]
             previous_header = []
             year_column = next((index for index, cell in enumerate(header) if re.fullmatch(r"(?:Fiscal\s+)?Year", cell, re.I)), None)
             table_year = caption_year if any(re.search(r"fees.*(?:earned|cash)", cell, re.I) for cell in header) else None
@@ -68,17 +50,49 @@ def _source_rows(source: str) -> list[tuple[str, int | None, dict[str, str]]]:
         last_name = name
         years = re.findall(r"\b(?:19|20)\d{2}\b", cells[year_column] if year_column is not None else " ".join(header))
         if year_column is not None and len(years) > 1:
-            vectors = [cell.split() if cell else [""] * len(years) for cell in cells]
-            vectors[name_column] = [name] * len(years)
-            if len(set(years)) != len(years) or any(len(vector) != len(years) for vector in vectors):
-                continue
-            result.extend(
-                (name, int(year), dict(zip(header, [vector[index] for vector in vectors], strict=True))) for index, year in enumerate(years)
-            )
+            result.extend(_year_rows(name, cells, header, name_column, years))
             continue
         year = int(years[0]) if len(set(years)) == 1 else table_year if not years and year_column is None else None
         result.append((name, year, dict(zip(header, cells, strict=True))))
     return result
+
+
+def _caption_years(line: str) -> set[str]:
+    """The fiscal years a director-compensation caption on `line` names (an `FY 2019-20` label as its end year)."""
+    caption_years = set(re.findall(r"director\s+compensation(?:\s+table)?\s+for\s+(?:fiscal\s*)?((?:19|20)\d{2})", line, re.I))
+    local_fiscal = (
+        r"following table(?: and footnotes)?.{0,180}?compensation.{0,180}?Directors?\s+in\s+FY\s+((?:19|20)\d{2}(?:-(?:\d{2}|\d{4}))?)(?![-\d])"
+    )
+    for fiscal in re.findall(local_fiscal, line, re.I):
+        label = re.fullmatch(r"((?:19|20)\d{2})(?:-(\d{2}|\d{4}))?", fiscal)
+        if label and (not label[2] or str(int(label[1]) + 1).endswith(label[2])):
+            caption_years.add(str(int(label[1]) + bool(label[2])))
+    return caption_years
+
+
+def _header(cells: list[str], names: list[int], previous_header: list[str]) -> list[str]:
+    """The header row, its pay labels prefixed by the label row above it when that row lacks the name column(s)."""
+    missing_names = len(cells) - len(previous_header)
+    if (
+        missing_names in (1, 2)
+        and names == [0]
+        and not any(cells[1:missing_names])
+        and all(re.search(r"fees|awards|compensation|pension|total", label, re.I) for label in previous_header)
+    ):
+        return [
+            *cells[:missing_names],
+            *(f"{label} {unit}".strip() for label, unit in zip(previous_header, cells[missing_names:], strict=True)),
+        ]
+    return cells
+
+
+def _year_rows(name: str, cells: list[str], header: list[str], name_column: int, years: list[str]) -> list[tuple[str, int, dict[str, str]]]:
+    """One row per year of a multi-year source row whose cells stack one value per year; none when they do not."""
+    vectors = [cell.split() if cell else [""] * len(years) for cell in cells]
+    vectors[name_column] = [name] * len(years)
+    if len(set(years)) != len(years) or any(len(vector) != len(years) for vector in vectors):
+        return []
+    return [(name, int(year), dict(zip(header, [vector[index] for vector in vectors], strict=True))) for index, year in enumerate(years)]
 
 
 def _source_values(cells: dict[str, str], ownership: bool) -> dict[str, float | None]:
@@ -94,42 +108,11 @@ def _source_values(cells: dict[str, str], ownership: bool) -> dict[str, float | 
         label = label.lower()
         if not ownership and re.search(r"\b(?:EUR|GBP|CAD|AUD|CHF|JPY)\b|[€£¥]", label, re.I):
             continue
-        field = None
         if ownership and re.search(r"percent|%|voting", label):
             continue
         quantity = re.search(r"#|\b(?:shares?|units?|securities|number|count)\b", label)
         monetary = re.search(r"\$|\bUSD\b|dollar|fair.?value", label, re.I)
-        if not ownership and quantity and not monetary and re.search(r"stock|option|securities|sars?", label):
-            field = "_wrong_stock" if "stock" in label and "option" not in label else "_wrong_option"
-        elif ownership:
-            if re.search(r"additional underlying|cash.settled", label):
-                field = "_extra"
-            elif "total beneficial ownership" in label:
-                field = "shares"
-            elif "total" in label and re.search(r"additional underlying|cash.settled", headers):
-                field = "_inclusive_total"
-            elif (
-                "shares" not in values
-                and re.search(r"common stock|shares beneficially owned|amount and nature|^total$", label)
-                and not re.search(r"percent|voting|sole|shared", label)
-            ):
-                field = "shares"
-        else:
-            patterns = {
-                "_wrong_total": r"total annual|total all other",
-                "_wrong_bonus": r"other annual",
-                "_wrong_option": r"accounting expense|securities.*underlying|options?[/ ]+sars|number.*options",
-                "salary": r"\bsalary\b",
-                "bonus": r"\bbonus\b",
-                "fees_earned": r"fees.*(?:earned|cash)",
-                "stock_awards": r"stock.*award",
-                "option_awards": r"option.*award" + (r"|\bsars?\b.*award" if monetary else ""),
-                "non_equity_incentive": r"non.equity.*incentive",
-                "pension_change": r"pension",
-                "other_compensation": r"all other.*compensation",
-                "total": r"\btotal\b",
-            }
-            field = next((field for field, pattern in patterns.items() if re.search(pattern, label)), None)
+        field = _ownership_field(label, headers, values) if ownership else _pay_field(label, quantity is not None, monetary is not None)
         if field is None:
             continue
         numeric = re.sub(r"\s+\(\d+\)$", "", raw).replace(",", "").replace("$", "").replace(" ", "")
@@ -147,6 +130,46 @@ def _source_values(cells: dict[str, str], ownership: bool) -> dict[str, float | 
         if field == "option_awards" and monetary and not re.search(r"#|\b(?:number|count|units|securities)\b", label):
             values["_option_money"] = values[field]
     return values
+
+
+def _ownership_field(label: str, headers: str, values: dict[str, float | None]) -> str | None:
+    """The ownership field a lower-cased column label names: the share count, its inclusive total or an extra
+    underlying/cash-settled column; None for any other column."""
+    if re.search(r"additional underlying|cash.settled", label):
+        return "_extra"
+    if "total beneficial ownership" in label:
+        return "shares"
+    if "total" in label and re.search(r"additional underlying|cash.settled", headers):
+        return "_inclusive_total"
+    if (
+        "shares" not in values
+        and re.search(r"common stock|shares beneficially owned|amount and nature|^total$", label)
+        and not re.search(r"percent|voting|sole|shared", label)
+    ):
+        return "shares"
+    return None
+
+
+def _pay_field(label: str, quantity: bool, monetary: bool) -> str | None:
+    """The pay field a lower-cased column label names; an award counted in shares or options, or an incompatible
+    category, maps to its `_wrong_*` field. None for an unrecognised column."""
+    if quantity and not monetary and re.search(r"stock|option|securities|sars?", label):
+        return "_wrong_stock" if "stock" in label and "option" not in label else "_wrong_option"
+    patterns = {
+        "_wrong_total": r"total annual|total all other",
+        "_wrong_bonus": r"other annual",
+        "_wrong_option": r"accounting expense|securities.*underlying|options?[/ ]+sars|number.*options",
+        "salary": r"\bsalary\b",
+        "bonus": r"\bbonus\b",
+        "fees_earned": r"fees.*(?:earned|cash)",
+        "stock_awards": r"stock.*award",
+        "option_awards": r"option.*award" + (r"|\bsars?\b.*award" if monetary else ""),
+        "non_equity_incentive": r"non.equity.*incentive",
+        "pension_change": r"pension",
+        "other_compensation": r"all other.*compensation",
+        "total": r"\btotal\b",
+    }
+    return next((field for field, pattern in patterns.items() if re.search(pattern, label)), None)
 
 
 def _identity(value: object) -> str:
@@ -199,6 +222,7 @@ def _correct_director_categories(
     rows: pd.DataFrame, records: list[tuple[str, int | None, dict[str, float | None]]], new: pd.DataFrame
 ) -> pd.DataFrame:
     """Correct an explicit option-category error or an omitted other-pay zero in its own annual row."""
+    # compute: each person-year row matched to its single source row and the new answer's candidate
     result = rows.copy()
     for index, row in result.iterrows():
         identity = _identity(row["name"])
@@ -268,6 +292,7 @@ def _unsupported_group_percentage(source: str) -> dict[str, tuple[float, None]]:
 
 def _correct_security_rows(rows: pd.DataFrame, source: str, company_name: str | None) -> pd.DataFrame:
     """Replace foreign-class quantities only under the explicit disjoint ownership layout."""
+    # clean: only a source with the disjoint sole/shared voting layout, and the holder identities to look for
     header = (
         r"SOLE VOTING\s+SOLE VOTING\s+SHARED VOTING\s+AND LIMITED\s+AND\s+AND\s+OR NO\s+"
         r"INVESTMENT\s+INVESTMENT\s+INVESTMENT\s+PERCENT\s+TITLE OF CLASS\s+NAME\s+POWER(?:\(\d+\))*\s+POWER\s+POWER(?:\(\d+\))*\s+OF CLASS"
@@ -325,6 +350,7 @@ def correct_basis(
     section: Section, merged: pd.DataFrame, new: pd.DataFrame, source: str, ceo_name: str | None, company_name: str | None = None
 ) -> tuple[pd.DataFrame, dict[str, tuple[float, float | None]]]:
     """Correct only exact same-source conflicts; a median alone never changes an amount."""
+    # clean: the layout corrections, the labelled source records, the group totals and the CEO's latest year
     if not source or merged.empty or section.key not in ("executive_pay", "director_pay", "ownership"):
         return merged, {}
     result = merged.copy()
@@ -357,54 +383,67 @@ def correct_basis(
         if not ownership and "fiscal_year" in candidates and year is not None:
             candidates = candidates.loc[candidates.fiscal_year.eq(year)]
         candidate = candidates.iloc[0] if len(candidates) == 1 else pd.Series(dtype=object)
-        for field, raw in values.items():
-            if field.startswith("_") or field not in result or raw is None:
-                continue
-            value = raw
-            proposed = candidate.get(field)
-            if (pd.notna(proposed) and math.isclose(float(proposed), value)) or (
-                field == "option_awards" and pd.isna(row.get(field)) and values.get("_sar_awards") == value
-            ):
-                result.at[index, field] = value
-                continue
-            if ownership and field == "shares" and pd.notna(row.get(field)) and row[field] == values.get("_inclusive_total"):
-                result.at[index, field] = value
-                continue
-
-            # Both thousandfold directions need the source cell and other comparable years.
-            peers = [
-                peer_value
-                for person, other_year, other in records
-                if person == name and other_year != year and (peer_value := other.get(field)) is not None and peer_value > 0
-            ]
-            median = _leave_one_out_median(pd.Series([float("nan"), *peers], dtype=float)).iloc[0] if peers else float("nan")
-            actual = row.get(field)
-            if ownership or pd.isna(actual) or actual <= 0 or pd.isna(median) or median <= 0:
-                continue
-            correction = 1000.0 if math.isclose(actual * 1000.0, value) else 0.001 if math.isclose(actual * 0.001, value) else None
-            if correction is not None and value > 0 and abs(math.log(value / median)) < abs(math.log(actual / median)):
-                result.at[index, field] = value
+        stated = {field: value for field, value in values.items() if not field.startswith("_") and field in result and value is not None}
+        accepted = [
+            field
+            for field, value in stated.items()
+            if _confirmed(field, value, candidate.get(field), row, values, ownership)
+            or (not ownership and _thousandfold(field, value, row.get(field), name, year, records))
+        ]
+        for field in accepted:
+            result.at[index, field] = stated[field]
 
         # Clear only a value tied to an explicitly incompatible source column.
-        wrong = {
-            "bonus": "_wrong_bonus",
-            "total": "_wrong_total",
-            "option_awards": "_wrong_option",
-            "stock_awards": "_wrong_stock",
-            "non_equity_incentive": "bonus",
-        }
-        for field, incompatible in wrong.items():
-            incompatible_value = values.get(incompatible)
-            if not (
-                field in result
-                and values.get(field) is None
-                and incompatible_value is not None
-                and pd.notna(row.get(field))
-                and math.isclose(float(row[field]), incompatible_value)
-            ):
-                continue
+        cleared = _incompatible_fields(row, values, result.columns)
+        for field in cleared:
             result.at[index, field] = float("nan")
-            if section.key == "executive_pay" and ceo_name and identity == _identity(ceo_name) and year == latest:
-                scalar = "ceo_total_comp" if field == "total" else "ceo_" + field
-                parent[scalar] = (float(row[field]), None)
+        if section.key == "executive_pay" and ceo_name and identity == _identity(ceo_name) and year == latest:
+            parent.update({("ceo_total_comp" if field == "total" else "ceo_" + field): (float(row[field]), None) for field in cleared})
     return result, parent
+
+
+def _confirmed(field: str, value: float, proposed: Any, row: pd.Series, values: dict[str, float | None], ownership: bool) -> bool:
+    """Whether the source cell confirms the new answer's value, fills an empty option cell from a SAR award, or is
+    the share count an ownership row took from the inclusive total column."""
+    if pd.notna(proposed) and math.isclose(float(proposed), value):
+        return True
+    if field == "option_awards" and pd.isna(row.get(field)) and values.get("_sar_awards") == value:
+        return True
+    return bool(ownership and field == "shares" and pd.notna(row.get(field)) and row[field] == values.get("_inclusive_total"))
+
+
+def _thousandfold(
+    field: str, value: float, actual: Any, name: str, year: int | None, records: list[tuple[str, int | None, dict[str, float | None]]]
+) -> bool:
+    """Whether the saved amount is the source cell off by a thousandfold, judged against the person's other years:
+    the source value must sit closer to their leave-one-out median."""
+    peers = [
+        peer_value
+        for person, other_year, other in records
+        if person == name and other_year != year and (peer_value := other.get(field)) is not None and peer_value > 0
+    ]
+    median = _leave_one_out_median(pd.Series([float("nan"), *peers], dtype=float)).iloc[0] if peers else float("nan")
+    if pd.isna(actual) or actual <= 0 or pd.isna(median) or median <= 0:
+        return False
+    correction = 1000.0 if math.isclose(actual * 1000.0, value) else 0.001 if math.isclose(actual * 0.001, value) else None
+    return correction is not None and value > 0 and abs(math.log(value / median)) < abs(math.log(actual / median))
+
+
+def _incompatible_fields(row: pd.Series, values: dict[str, float | None], columns: pd.Index) -> list[str]:
+    """The saved fields whose value equals an explicitly incompatible source column while the source states none."""
+    wrong = {
+        "bonus": "_wrong_bonus",
+        "total": "_wrong_total",
+        "option_awards": "_wrong_option",
+        "stock_awards": "_wrong_stock",
+        "non_equity_incentive": "bonus",
+    }
+    return [
+        field
+        for field, incompatible in wrong.items()
+        if field in columns
+        and values.get(field) is None
+        and (incompatible_value := values.get(incompatible)) is not None
+        and pd.notna(row.get(field))
+        and math.isclose(float(row[field]), incompatible_value)
+    ]

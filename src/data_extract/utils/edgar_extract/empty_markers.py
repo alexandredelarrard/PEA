@@ -30,11 +30,9 @@ def marker_mask(table: Table, df: pd.DataFrame) -> pd.Series:
 
 
 def marker_frame(table: Table, values: dict[str, object], key_fill: dict[str, object] | None = None) -> pd.DataFrame:
-    """One marker row of `table` from `values` (key, accession, frontier date and any stamp columns).
-
-    The sentinel is set; a primary-key column not in `values` takes `key_fill`'s value, else the
-    frontier date for a date column, else the sentinel. Absent columns are stored as NULL.
-    """
+    """One marker row of `table` from `values` (key, accession, frontier date and any stamp columns), sentinel set.
+    A primary-key column not in `values` takes `key_fill`'s value, else the frontier date for a date column, else
+    the sentinel. A column not in `values` is stored as NULL."""
     if table.resume is None or table.empty_marker is None or table.resume.frontier_col is None:
         raise ValueError(f"{table.name}: a marker needs a resume contract with a frontier column and an empty_marker")
     column, sentinel = table.empty_marker
@@ -63,13 +61,10 @@ def _key_frame(table: Table, df: pd.DataFrame) -> pd.DataFrame:
     return df_keys
 
 
-def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log: logging.Logger | None = None) -> pd.DataFrame:
-    """`df` without the marker rows whose primary key already holds a real row, stored or in `df`.
-
-    Only tables whose marker shares the real row's key can collide; any other frame is returned
-    unchanged without a read. The stored check is one read projected on the key and scoped to the
-    markers' own key values (markers excluded).
-    """
+def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame) -> pd.DataFrame:
+    """`df` without the marker rows whose primary key already holds a real row, stored or in `df`. Only a table whose
+    marker shares the real row's key can collide (any other frame is returned without a read); the stored check is one
+    read projected on the key and scoped to the markers' own key values."""
     if df is None or df.empty or not marker_shares_data_key(table) or not set(table.pk) <= set(df.columns):
         return df
     is_marker = marker_mask(table, df)
@@ -84,7 +79,7 @@ def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log
     over_data = is_marker & pd.Series(pd.MultiIndex.from_frame(df_keys).isin(taken), index=df.index)
     if not over_data.any():
         return df
-    (log or logger).info(
+    logger.info(
         "%s: %d empty-filing marker(s) not written: their key already holds data (e.g. %s)",
         table.name,
         int(over_data.sum()),

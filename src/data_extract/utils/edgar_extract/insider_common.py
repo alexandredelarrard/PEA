@@ -22,6 +22,8 @@ from src.data_extract.utils.common.security_lines import ACQUIRED_CONSTITUENT, M
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
+logger = logging.getLogger(__name__)
+
 #: The `insider_transactions` row key.
 INSIDER_KEY = list(Tables.insider_transactions.pk)
 #: Accessions per `IN` list when stored rows are read or deleted by accession.
@@ -465,13 +467,13 @@ def exclusion_message(label: str, df_excluded: pd.DataFrame) -> str:
     )
 
 
-def log_exclusions(log: logging.Logger, label: str, frames: Sequence[pd.DataFrame]) -> None:
+def log_exclusions(label: str, frames: Sequence[pd.DataFrame]) -> None:
     """One WARNING summarising the excluded rows in `frames`, or one INFO line when there are none."""
     non_empty = [frame for frame in frames if not frame.empty]
     if not non_empty:
-        log.info("insider %s: no filing excluded by the identity screen", label)
+        logger.info("insider %s: no filing excluded by the identity screen", label)
         return
-    log.warning(exclusion_message(label, pd.concat(non_empty, ignore_index=True)))
+    logger.warning(exclusion_message(label, pd.concat(non_empty, ignore_index=True)))
 
 
 # --------------------------------------------------------------------------- #

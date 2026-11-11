@@ -12,6 +12,7 @@ from src.data_extract.utils.structure.def14a.validate import clean_holder_name
 
 def normalize_name(value: str) -> str:
     """Canonical name identity without parenthetical text, accents or punctuation."""
+    # clean: the working text and the innermost parenthetical group pattern
     text = value
     parentheses = re.compile(r"\([^()]*\)")
 
@@ -26,6 +27,7 @@ def normalize_name(value: str) -> str:
 
 def _holder_name(value: str) -> str:
     """Remove explicit postal tails and terminal letter footnotes, retaining readable names."""
+    # clean: the validated holder name, else the raw value
     name = clean_holder_name(value) or value
 
     # A source footnote may sit directly before whitespace and the street number.
@@ -37,6 +39,7 @@ def _holder_name(value: str) -> str:
 
 def reconcile_holders(df_saved: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
     """Fill missing cells of exact name aliases only at the same filing date and holder type."""
+    # merge: the saved rows before the new ones, on a datetime filing date
     df_rows = pd.concat([df_saved, df_new], ignore_index=True, sort=False)
     if df_rows.empty:
         return df_rows
@@ -53,13 +56,3 @@ def reconcile_holders(df_saved: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFr
     has_issuer = df_rows.groupby(keys, sort=False, dropna=False)["_security_qualified"].transform("min").eq(False)
     df_rows = df_rows.loc[~df_rows._security_qualified | ~has_issuer]
     return df_rows.groupby(keys, as_index=False, sort=False, dropna=False).first().reindex(columns=columns)
-
-
-def holders_need_reconciliation(df_saved: pd.DataFrame) -> bool:
-    """Find saved aliases or address labels even when all facts and attempts are complete."""
-    if df_saved.empty or "holder_name" not in df_saved:
-        return False
-    df_normalized = reconcile_holders(df_saved, pd.DataFrame())
-    return len(df_normalized) != len(df_saved) or not df_normalized.holder_name.reset_index(drop=True).equals(
-        df_saved.holder_name.reset_index(drop=True)
-    )

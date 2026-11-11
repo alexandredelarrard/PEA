@@ -125,8 +125,17 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
             for a, c, f in rows
             for tag in ("T1", "T2")
         ]
-    elif table == Tables.def14a_edgar:
-        out = [{"ticker": ticker, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f)} for a, c, f in rows]
+    elif table == Tables.sec_employees_text:
+        out = [
+            {"ticker": ticker, "accession_number": a, "form": "10-K", "cik": c, "filing_date": pd.Timestamp(f), "source_document": "primary"}
+            for a, c, f in rows
+        ]
+    elif table == Tables.sec_def14a_text:
+        out = [
+            {"ticker": ticker, "accession_number": a, "section": section, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(f), "period": ""}
+            for a, c, f in rows
+            for section in ("audit", "governance")
+        ]
     elif table == Tables.insider_transactions:
         out = [
             {
@@ -240,6 +249,25 @@ def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, t
     print("  AB's two employee rows under ALB (one count, one NULL-status) purged; ALB's own row and MSFT's (scope unchanged) kept. Validated.")
 
 
+def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_store, tmp_path, monkeypatch):
+    """AC-006: ALB's scope changed; AB's text rows under ALB go in both tables, ALB's own and MSFT's stay."""
+    context = _context(sqlite_store, tmp_path)
+    text_tables = (Tables.sec_employees_text, Tables.sec_def14a_text)
+    for table in text_tables:
+        sqlite_store.save(table, _filings(table, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2019-03-01"), ("ab-2", AB, "2021-08-01")]))
+        sqlite_store.save(table, _filings(table, "MSFT", [("msft-x", MSFT_FOREIGN, "2024-03-01")]))
+
+    result = run_sync(context, _identity({"ALB": AFTER}), monkeypatch, as_of=RUN_DATE)
+
+    for table in text_tables:
+        assert _keys(sqlite_store, table) == {("ALB", "alb-1"), ("MSFT", "msft-x")}, table.name
+    got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], result.removals["rows"], strict=True))
+    assert got == [(Tables.sec_def14a_text.name, AB, 2, 4), (Tables.sec_employees_text.name, AB, 2, 2)], got
+    print("\n=== SANITY CHECK: EDGAR text tables purged by filer CIK ===")
+    print("  AB's 2 filings under ALB purged from sec_employees_text (2 rows) and sec_def14a_text (4 section rows);")
+    print("  ALB's own filing and MSFT's (scope unchanged) kept. Validated.")
+
+
 def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch):
     """AC-022 with P35: T-Mobile USA's facts under TMUS are the entity's own; its 8-Ks (an event-only CIK) and the
     foreign filer's rows go."""
@@ -274,18 +302,18 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     )
     identity = build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": "PLD", "cik": prologis}])))
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
-    for table in (Tables.sec_fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
+    for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
     context = _context(sqlite_store, tmp_path)
     context.universe = universe_of(["PLD"], rows={"PLD": {"cik": prologis}})
 
     result = run_sync(context, identity, monkeypatch, as_of=RUN_DATE)
 
-    for table in (Tables.sec_fundamentals_facts, Tables.def14a_edgar):
+    for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text):
         assert _keys(sqlite_store, table) == {("PLD", "new-1")}, table.name
     assert _keys(sqlite_store, Tables.insider_transactions) == {("PLD", "old-1"), ("PLD", "old-2"), ("PLD", "new-1")}
     got = sorted(zip(result.removals["table"], result.removals["cik"], result.removals["keys"], strict=True))
-    assert got == [(Tables.def14a_edgar.name, old_prologis, 2), (Tables.sec_fundamentals_facts.name, old_prologis, 2)], got
+    assert got == [(Tables.sec_def14a_text.name, old_prologis, 2), (Tables.sec_fundamentals_facts.name, old_prologis, 2)], got
     print("\n=== SANITY CHECK: H1 purge, single-window ticker ===")
     print("  PLD: old ProLogis's 2 facts filings and 2 proxies purged (before and after the 2011 seam); Prologis Inc's kept;")
     print("  old ProLogis's insider rows kept (Forms 3/4/5 UNION across the entity)")
@@ -370,8 +398,12 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     print("  2 published rows (one from AB's filing) -> 1 row after the sync purge and the nightly SEC history build")
 
 
-def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_run(sqlite_store, tmp_path, monkeypatch):
-    """Expansion: predecessor facts change published rows; the replay rebuilds instead of refusing."""
+def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_run(sqlite_store, tmp_path, monkeypatch, caplog):
+    """Expansion: predecessor facts change published rows; the replay rebuilds instead of refusing.
+
+    With the scope unchanged, the verifying full replay refuses the changed row (the default run would take the
+    back-dated own-CIK filing as a late original). With the scope changed recently, the default run is a `check`, not
+    a late rewrite, and the moved history is rebuilt."""
     context = _context(sqlite_store, tmp_path)
     sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("alb-1", ALB, "2024-02-01")]))
 
@@ -383,11 +415,18 @@ def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_
     build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
     sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("pred-1", ALB, "2010-02-01")]))
 
-    with pytest.raises(ValueError, match="append-only"):
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(ValueError, match="append-only"):
+            build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE, verify_history=True)
+        untouched = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
+        assert list(untouched["totalRevenue"]) == [2.0], untouched
+        caplog.clear()
+        monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
         build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
-    monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
-    build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
 
+    triage = [line for line in caplog.messages if line.startswith("history: triage")]
+    assert triage == ["history: triage of 1 ticker(s): 0 full, 0 incremental, 0 late, 1 check, 0 current (skipped, no replay)"], triage
+    assert any("ALB REBUILT" in line for line in caplog.messages), caplog.messages
     history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
     assert list(history["totalRevenue"]) == [4.0]
     print("\n=== SANITY CHECK: history expansion rebuild ===")

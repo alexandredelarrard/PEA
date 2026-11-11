@@ -39,16 +39,11 @@ from src.data_extract.utils.common.identity_contract import (
     entity_or_singleton,
 )
 from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
-from src.data_extract.utils.common.security_lines import (
-    ACQUIRED_CONSTITUENT,
-    MergerBoundary,
-    co_registrant_ciks,
-    load_security_manual,
-    merger_boundaries,
-)
+from src.data_extract.utils.common.security_lines import MergerBoundary, co_registrant_ciks, load_security_manual, merger_boundaries
 from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.identity_tables import LINE_COLUMNS
+from src.utils.security_series import ACQUIRED_CONSTITUENT
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol
 from src.utils.tickers_universe.universe import Universe
 

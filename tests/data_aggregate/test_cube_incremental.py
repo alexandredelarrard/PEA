@@ -665,7 +665,9 @@ def test_step_forwards_the_registry_projection_to_the_store() -> None:
 def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) -> None:
     sqlite_store.save(
         Tables.sec_13d,
-        pd.DataFrame({"ticker": ["AAPL", "OUTSIDE"], "accession_number": ["a-1", "o-1"], "rp_seq": 1, "filing_date": pd.to_datetime(["2024-01-02"] * 2)}),
+        pd.DataFrame(
+            {"ticker": ["AAPL", "OUTSIDE"], "accession_number": ["a-1", "o-1"], "rp_seq": 1, "filing_date": pd.to_datetime(["2024-01-02"] * 2)}
+        ),
     )
     calls = []
     original = sqlite_store.iter_load

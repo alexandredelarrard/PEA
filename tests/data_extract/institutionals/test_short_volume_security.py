@@ -16,12 +16,12 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import security_lines as sl
 from src.data_extract.utils.common.identity import build_identity, load_source_identity
 from src.data_extract.utils.identity import cusip_history as sm
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.security_series import SOURCE_FTD
 from tests.canonical_schema import create_canonical
 from tests.support.universe import as_roster
 
@@ -73,7 +73,7 @@ def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.
     frame = pd.DataFrame(rows, columns=[*columns, "valid_from", "valid_to", "lineage_reason"])
     frame = frame.assign(
         security_id="C" + frame["cusip"],
-        source=sl.SOURCE_FTD,
+        source=SOURCE_FTD,
         market_symbol=frame["source_symbol"],
         exchange=None,
         source_accession=None,

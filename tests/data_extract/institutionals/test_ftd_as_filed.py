@@ -118,8 +118,9 @@ def test_the_ftd_scope_keeps_equity_symbols_not_notes_debt_or_noise_symbols() ->
 
     scope = ftd_scope(lineage, {}, SecurityManual.empty())
 
-    print(f"\nSANITY (FTD scope symbols): {sorted(scope.symbols)} from lineage symbols {[symbol for symbol, _, _ in rows]}")
-    assert scope.symbols == frozenset({"ABBV"}), "a Notes debt symbol and a noise symbol are not FTD scope keys"
+    symbols = frozenset(scope.windows["key"])
+    print(f"\nSANITY (FTD scope symbols): {sorted(symbols)} from lineage symbols {[symbol for symbol, _, _ in rows]}")
+    assert symbols == frozenset({"ABBV"}), "a Notes debt symbol and a noise symbol are not FTD scope keys"
 
 
 def test_a_new_period_run_rereads_every_cached_period_with_the_current_scope(sqlite_store, tmp_path, caplog, monkeypatch):

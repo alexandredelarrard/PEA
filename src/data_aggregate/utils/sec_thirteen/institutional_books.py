@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from src.utils.identity_tables import COMPANY_CUSIP
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import COMPANY_CUSIP
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
 
 logger = logging.getLogger(__name__)

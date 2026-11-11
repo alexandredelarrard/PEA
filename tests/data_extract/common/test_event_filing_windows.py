@@ -21,11 +21,11 @@ from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract.transformers import step_extract_identity as step_module
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import Combine, combine_for, resolve_registrant_entries
-from src.data_extract.utils.common.security_lines import ACQUIRED_CONSTITUENT
 from src.data_extract.utils.edgar_extract import schedule_rows
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
 from src.data_store.schema import Resume, Tables
+from src.utils.security_series import ACQUIRED_CONSTITUENT
 from src.validate.checks.identity import pending_removals
 from tests.support import identity_regression_gate as gate
 from tests.support.identity_sync import run_sync

@@ -64,13 +64,7 @@ def security_series(context: Context) -> dict[str, pd.DataFrame | None]:
     institutionals cube builds them (dated `universe_cusip` / `universe_cik_symbol` mapping, class ratios, ticker sums)."""
     store = context.store
     universe = list(context.universe.tickers)
-    lines = read_identity(
-        store,
-        Tables.universe_cusip,
-        columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role", "cusip"),
-        where={"source": "ftd"},
-        optional=True,
-    )
+    lines = institutional_inputs.load_ftd_lines(store)
     lineage = read_identity(store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
     short, _ = institutional_inputs.load_short_volume(store, universe, lines, lineage)
     fails, _ = institutional_inputs.load_fails(store, universe, lines, load_bugfix(context.config_dir))

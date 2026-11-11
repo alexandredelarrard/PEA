@@ -20,16 +20,24 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.identity_tables import read_identity
 from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, load_fails_basis, prepare_master, short_volume_series
 from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+#: The `universe_cusip` columns of the FTD lines the cube maps the security-grain sources with.
+FTD_LINE_COLUMNS = (*CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role", "cusip")
 #: The `universe_cik_symbol` columns the short-volume lineage fallback reads.
 LINEAGE_COLUMNS = ("company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources")
 #: The share-class letter of an insider `security_title` ("Class A Common Stock", "Series B").
 _CLASS_LETTER = r"(?i)\b(?:CLASS|SERIES)\s+([A-Z])\b"
+
+
+def load_ftd_lines(store: DataStore) -> pd.DataFrame | None:
+    """The FTD `universe_cusip` lines (`FTD_LINE_COLUMNS`); None before the first identity build."""
+    return read_identity(store, Tables.universe_cusip, columns=FTD_LINE_COLUMNS, where={"source": "ftd"}, optional=True)
 
 
 def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.DataFrame:

@@ -161,7 +161,11 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     assert pd.isna(ratio.loc[(pd.Timestamp("2015-12-01"), "AAA")]) and ratio.xs("BBB", level="ticker").isna().all()
     lines = market_lines(["AAA"], pd.Timestamp("2014-01-01"))
     short_rows, _ = inputs.load_short_volume(sqlite_store, ["AAA", "BBB"], lines, lineage_rows(["AAA", "BBB"]))
-    assert short_rows is not None and set(short_rows["ticker"]) == {"AAA"} and list(short_rows.columns) == ["date", "ticker", "short_volume", "total_volume"]
+    assert (
+        short_rows is not None
+        and set(short_rows["ticker"]) == {"AAA"}
+        and list(short_rows.columns) == ["date", "ticker", "short_volume", "total_volume"]
+    )
     short_volume = short_rows.pivot(index="date", columns="ticker", values="short_volume")
     total = short_rows.pivot(index="date", columns="ticker", values="total_volume")
     ratios, _ = short._shortvol_window_fields(short_volume, total, total.notna(), pd.DatetimeIndex(short_volume.index), None)

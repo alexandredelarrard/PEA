@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.bulk_cache import read_zip_text
 from src.data_extract.utils.common.security_lines import SecurityManual, ftd_scope
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
@@ -199,6 +200,129 @@ def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, t
     print(f"\nSANITY (rowless growth key): run 1 read {sorted(first)}, run 2 read {sorted(reads)} (expected none)")
     assert first == ["202601a", "202601b"], "the cold run reads each period once, with no separate growth pass"
     assert reads == [], "a never-matching growth key already re-read is not re-read on the next run"
+
+
+def _recording_reader(monkeypatch, crash_on: str | None = None) -> list[str]:
+    """Record each period whose cached ZIP is read; `crash_on` kills the process (a non-ValueError) at that period's read."""
+    reads: list[str] = []
+
+    def read(path, log=None):
+        period = path.stem.removeprefix("cnsfails")
+        if period == crash_on:
+            raise RuntimeError(f"simulated kill while reading {period}")
+        reads.append(period)
+        return read_zip_text(path, log=log)
+
+    monkeypatch.setattr(ftd, "read_zip_text", read)
+    return reads
+
+
+def test_an_interrupted_new_period_run_keeps_the_owed_reread_for_the_next_run(sqlite_store, tmp_path, monkeypatch):
+    """F-002 (S1): 202601a/b are stored, then XYZ (stamped 2026-02-03, in both files) joins ABC's lineage. The run that
+    stores 202602a is killed in its re-read of 202601a; the next same-day run must still store XYZ's two lines, and a
+    later new-period run must not lose them either."""
+    context = _context(sqlite_store, tmp_path, ("ABC",))
+    _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01"))])
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {
+            "202601a": _HEADER + "20260105|000111AAA|ABC|100|ABC CORP|10.0\n20260105|555555XXX|XYZ|7|XYZ CORP|2.0\n",
+            "202601b": _HEADER + "20260120|000111AAA|ABC|50|ABC CORP|10.0\n20260120|555555XXX|XYZ|8|XYZ CORP|2.0\n",
+        },
+    )
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)  # cold: XYZ is not yet in scope
+    _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01")), ("ABC", "0000000778", "XYZ", pd.Timestamp("2026-02-03"))])
+    write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n"})
+    _recording_reader(monkeypatch, crash_on="202601a")
+    with pytest.raises(RuntimeError, match="simulated kill"):
+        ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+    after_kill = sorted(set(_stored(sqlite_store)["period"]))
+    reads = _recording_reader(monkeypatch)
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)  # the next run, same day
+    retry, reads[:] = list(reads), []
+    write_ftd_zips(tmp_path / "ftd", {"202602b": _HEADER + "20260220|000111AAA|ABC|61|ABC CORP|10.0\n"})
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)  # a later new-period run
+
+    xyz = _stored(sqlite_store).query("source_symbol == 'XYZ'")[["period", "cusip", "fails_quantity"]].values.tolist()
+    print(f"\nSANITY (F-002 crash): periods stored after the kill {after_kill}; retry read {retry}; later run read {reads};")
+    print(f"  XYZ lines {xyz} (expected 202601a 7 and 202601b 8)")
+    assert after_kill == ["202601a", "202601b"], "a killed run commits nothing: its new period stays pending"
+    assert retry == ["202602a", "202601a", "202601b"], "the retry repeats the new period and the owed re-read"
+    assert xyz == [["202601a", "555555XXX", 7.0], ["202601b", "555555XXX", 8.0]], "XYZ's history survives the killed run"
+    assert reads == ["202602b"], "the re-read is not repeated once it committed with a new period"
+
+
+def test_a_key_with_stored_lines_under_one_cusip6_is_reread_for_its_other_families(sqlite_store, tmp_path, monkeypatch):
+    """F-003 (S2): WBD's Sharadar CUSIP 25470F104 is in scope, so the cold build stores DISCA's lines under it. DISCA then
+    joins WBD's lineage (stamped 2026-02-03): its lines under the other CUSIP 99999A101 must be stored once."""
+    context = _context(sqlite_store, tmp_path, ("WBD",))
+    monkeypatch.setattr(ftd, "sharadar_cusips", lambda universe, sharadar: {"WBD": frozenset({"25470F104"})})
+    _lineage(sqlite_store, [("WBD", "0001437107", "WBD", pd.Timestamp("2020-01-01"))])
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {
+            "202601a": _HEADER + "20260105|25470F104|DISCA|100|DISCOVERY A|10.0\n20260105|99999A101|DISCA|7|DISCOVERY A OLD CUSIP|2.0\n",
+            "202601b": _HEADER + "20260120|25470F104|DISCA|90|DISCOVERY A|10.0\n20260120|99999A101|DISCA|8|DISCOVERY A OLD CUSIP|2.0\n",
+        },
+    )
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)  # cold: the 25470F prefix is in scope, the DISCA symbol is not
+    _lineage(sqlite_store, [("WBD", "0001437107", "WBD", pd.Timestamp("2020-01-01")), ("WBD", "0001437107", "DISCA", pd.Timestamp("2026-02-03"))])
+    write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|934423104|WBD|60|WBD|10.0\n"})
+
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+
+    other = _stored(sqlite_store).query("cusip == '99999A101'")[["period", "source_symbol", "fails_quantity"]].values.tolist()
+    print(f"\nSANITY (F-003 S2 partial key): DISCA lines under 99999A101 {other} (expected 2: 202601a 7, 202601b 8)")
+    assert other == [["202601a", "DISCA", 7.0], ["202601b", "DISCA", 8.0]], "a key with lines under one CUSIP-6 is re-read for its others"
+
+
+def test_a_cusip6_first_stored_by_a_new_period_rereads_the_stored_periods_for_it(sqlite_store, tmp_path, monkeypatch):
+    """F-003 (S3): Sharadar adds ABC's class B CUSIP 000222BBB with no lineage change. The new period's class B line is
+    the CUSIP-6's first stored line, so the run also stores its 202601a/b lines (3 of 3)."""
+    context = _context(sqlite_store, tmp_path, ("ABC",))
+    monkeypatch.setattr(ftd, "sharadar_cusips", lambda universe, sharadar: {"ABC": frozenset({"000111AAA"})})
+    _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01"))])
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {
+            "202601a": _HEADER + "20260105|000111AAA|ABC|100|ABC CORP|10.0\n20260105|000222BBB|ABCB|7|ABC CL B|2.0\n",
+            "202601b": _HEADER + "20260120|000111AAA|ABC|50|ABC CORP|10.0\n20260120|000222BBB|ABCB|8|ABC CL B|2.0\n",
+        },
+    )
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+    monkeypatch.setattr(ftd, "sharadar_cusips", lambda universe, sharadar: {"ABC": frozenset({"000111AAA", "000222BBB"})})
+    write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n20260205|000222BBB|ABCB|9|ABC CL B|2.0\n"})
+
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+
+    class_b = _stored(sqlite_store).query("cusip == '000222BBB'")[["period", "fails_quantity"]].values.tolist()
+    print(f"\nSANITY (F-003 S3 prefix growth): class B lines {class_b} (expected 3: 202601a 7, 202601b 8, 202602a 9)")
+    assert class_b == [["202601a", 7.0], ["202601b", 8.0], ["202602a", 9.0]], "a CUSIP-6 new to the table is re-read once"
+
+
+def test_a_never_matching_owed_key_is_not_reread_on_the_next_new_period_run(sqlite_store, tmp_path, monkeypatch):
+    """GHOST joins ABC's lineage on 2026-02-03 and no file lists it: the run storing 202602a re-reads 202601a/b once; the
+    same-day re-run reads nothing, and the run storing 202602b (since = 2026-02-15 > the stamp) reads only 202602b."""
+    context = _context(sqlite_store, tmp_path, ("ABC",))
+    _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01"))])
+    write_ftd_zips(
+        tmp_path / "ftd",
+        {"202601a": _HEADER + "20260105|000111AAA|ABC|100|ABC CORP|10.0\n", "202601b": _HEADER + "20260120|000111AAA|ABC|50|ABC CORP|10.0\n"},
+    )
+    ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+    _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01")), ("ABC", "0000000778", "GHOST", pd.Timestamp("2026-02-03"))])
+    write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n"})
+    reads = _recording_reader(monkeypatch)
+    runs = []
+    for new in (None, None, "202602b"):
+        if new:
+            write_ftd_zips(tmp_path / "ftd", {new: _HEADER + "20260220|000111AAA|ABC|61|ABC CORP|10.0\n"})
+        ftd.fetch_fails_to_deliver(context, as_of=RUN_DATE)
+        runs.append(list(reads))
+        reads[:] = []
+
+    print(f"\nSANITY (bounded re-read): new-period run read {runs[0]}, same-day re-run {runs[1]}, next new period {runs[2]}")
+    assert runs == [["202602a", "202601a", "202601b"], [], ["202602b"]], "an owed key is re-read once, never on every run"
 
 
 def _meta_lineage(store) -> None:

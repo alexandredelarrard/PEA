@@ -1,4 +1,4 @@
-"""10-K Item 1A (Risk Factors) + Item 7 (MD&A) and 10-Q Item 2 (MD&A) as raw text.
+"""10-K Item 1 (Business), Item 1A (Risk Factors) and Item 7 (MD&A), and 10-Q Item 2 (MD&A), as raw text.
 
 Writes `sec_filing_text`, one row per (ticker, accession, section). Primary path: edgartools' typed
 `TenK`/`TenQ` section parser; fallback: a regex carve over the filing text, used only for a section the
@@ -18,6 +18,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, Filing
 from src.data_extract.utils.edgar_extract.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_store.schema import Tables
 
+FILING_SECTION_BUSINESS = "business"  # 10-K Item 1
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
 FILING_SECTION_MDA = "mda"  # 10-K Item 7 / 10-Q Item 2
 FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
@@ -25,6 +26,9 @@ FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
 _MAX_CHARS = 300_000  # cap a stored section (risk factors can be enormous)
 
 # Item markers are content-anchored; the "management's" apostrophe is matched with \W because EDGAR encodes it several ways.
+# Business (10-K Item 1) ends at Item 1A, or at Item 1B / Item 2 (Properties) for filers with no Item 1A (before 2005).
+_BUSINESS_START = item_heading(1, "business")
+_BUSINESS_END = re.compile(rf"item{ITEM_SEP}1a\b|item{ITEM_SEP}1b\b|item{ITEM_SEP}2\b{ITEM_SEP}propert", re.I)
 # Risk Factors (10-K Item 1A) ends at Item 1B, Item 1C (for filers that omit 1B) or Item 2 (Properties).
 _RISK_START = item_heading("1a", r"risk\s+factors")
 _RISK_END = re.compile(rf"item{ITEM_SEP}1b\b|item{ITEM_SEP}1c\b|unresolved\s+staff\s+comments|item{ITEM_SEP}2\b{ITEM_SEP}propert", re.I)
@@ -65,7 +69,7 @@ def _best_span(text: str, start_re: re.Pattern, min_chars: int, end_primary: re.
 def extract_item_sections(text: str, form: str) -> dict[str, str]:
     """{section: body_text} carved from a filing's plain text (the fallback path).
 
-    10-K -> Risk Factors (Item 1A) + MD&A (Item 7); 10-Q -> MD&A (Item 2) only. MD&A tries the
+    10-K -> Business (Item 1) + Risk Factors (Item 1A) + MD&A (Item 7); 10-Q -> MD&A (Item 2) only. MD&A tries the
     form's item anchor first, then the standalone title."""
     if not text or len(text) < FILING_TEXT_MIN_CHARS:
         return {}
@@ -75,7 +79,10 @@ def extract_item_sections(text: str, form: str) -> dict[str, str]:
     end_fall = _MDA_END_10K_FALL if is_10k else _MDA_END_10Q_FALL
 
     out: dict[str, str] = {}
-    if is_10k:  # substantive annual risk factors
+    if is_10k:  # substantive annual business description and risk factors
+        business = _best_span(text, _BUSINESS_START, FILING_TEXT_MIN_CHARS, _BUSINESS_END)
+        if business:
+            out[FILING_SECTION_BUSINESS] = business
         rf = _best_span(text, _RISK_START, FILING_TEXT_MIN_CHARS, _RISK_END)
         if rf:
             out[FILING_SECTION_RISK] = rf
@@ -93,6 +100,9 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
     is_10k = str(form).upper().startswith("10-K")
     try:
         if is_10k:
+            business = obj.business
+            if business and len(business) >= FILING_TEXT_MIN_CHARS:
+                out[FILING_SECTION_BUSINESS] = business[:_MAX_CHARS]
             rf = obj.risk_factors
             if rf and len(rf) >= FILING_TEXT_MIN_CHARS:
                 out[FILING_SECTION_RISK] = rf[:_MAX_CHARS]
@@ -109,7 +119,7 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
 def _filing_sections(filing: Any) -> dict[str, str]:
     """Structured sections from the parsed filing, with the regex carve filling whichever section it missed."""
     form = filing.form
-    needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}
+    needed = {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}
     try:
         obj = filing_obj(filing)
     except ParseFailureError:

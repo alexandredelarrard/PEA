@@ -111,7 +111,7 @@ def test_price_owner_windows_is_registered_and_spliced() -> None:
     assert table.pk == ("ticker", "valid_from") and table.date_type_cols == ("valid_from", "valid_to")
     persisted = blocks[table.name]
     assert persisted == ddl.table_ddl(table, [(c, "DATE" if c in table.date_type_cols else "TEXT") for c in table.read_columns])
-    assert "security_master" in blocks and "ix_entity_lineage_entity_id" in schema_sql
+    assert "universe_tickers" in blocks and "ix_universe_cik_symbol_company_id" in schema_sql
     print("\n=== SANITY CHECK: owner table DDL ===")
     print("  price_owner_windows registered with PK (ticker, valid_from), DATE windows, and its spliced block equals the generator's output")
 

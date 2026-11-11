@@ -81,11 +81,15 @@ def test_period_urls_legacy_vs_modern_boundary():
     print("  <=201706a -> FOIA legacy path first (modern fallback); >=201706b -> current path (legacy fallback). Boundary at 2017-06b. Validated.")
 
 
-def test_period_urls_end_with_the_other_root():
-    urls = ftd._period_urls("202610a")
-    other = "https://www.sec.gov/files/data/other/fails-deliver-data/cnsfails202610a.zip"
-    assert urls[-1] == other and urls[0] == ftd.SEC_FTD_URL_TEMPLATE.format(period="202610a")
-    print(f"SANITY: 202610a tries {len(urls)} SEC roots, the current path first and the /other/ root last.")
+def test_period_urls_reach_the_irregular_sec_links():
+    """The links SEC's FTD page serves (read 2026-11-11) for the periods the three plain roots 404."""
+    urls = {period: ftd._period_urls(period) for period in ("202610a", "201910a", "202002a", "202605a")}
+    assert urls["202610a"][0] == "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202610a.zip"
+    assert "https://www.sec.gov/files/data/fails-deliver-data/cnsfails201910a_0.zip" in urls["201910a"]
+    assert "https://www.sec.gov/files/node/add/data_distribution/cnsfails202002a.zip" in urls["202002a"]
+    assert "https://www.sec.gov/files/data/other/fails-deliver-data/cnsfails202605a.zip" in urls["202605a"]
+    assert all(not url.endswith("_0.zip") for url in urls["202610a"][:4]), "plain names before the _0 re-upload names"
+    print(f"SANITY: a period tries {len(urls['202610a'])} URLs, the current path first; 201910a_0 and the 2020 data_distribution files are reached.")
 
 
 def test_parse_ftd_lines_strips_the_trailer_and_checks_its_count():

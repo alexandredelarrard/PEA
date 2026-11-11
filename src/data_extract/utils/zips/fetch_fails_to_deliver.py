@@ -46,10 +46,13 @@ logger = logging.getLogger(__name__)
 #: Column order of `sec_fails_to_deliver_security`: the source line as filed and its ZIP period.
 SECURITY_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "fails_quantity", "fails_value", "period")
 
-# The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
-SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_OTHER_URL_TEMPLATE = "https://www.sec.gov/files/data/other/fails-deliver-data/cnsfails{period}.zip"
+# The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path. SEC
+# serves a few periods from other folders (2020-02a..2020-04b from `node/add/data_distribution`) or under a re-upload
+# name (`cnsfails201910a_0.zip`).
+_SEC_FTD_MODERN = "https://www.sec.gov/files/data/fails-deliver-data"
+_SEC_FTD_LEGACY = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data"
+_SEC_FTD_OTHER_FOLDERS = ("https://www.sec.gov/files/data/other/fails-deliver-data", "https://www.sec.gov/files/node/add/data_distribution")
+_SEC_FTD_NAME_SUFFIXES = ("", "_0")
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
 SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
@@ -161,13 +164,11 @@ def scope_lines(raw: pd.DataFrame, windows: pd.DataFrame, prefixes: Collection[s
 
 
 def _period_urls(period: str) -> tuple[str, ...]:
-    """Download URLs for a period: the date-appropriate path first (legacy <= 2017-06a), the other
-    as fallback, then the `other/` root. Fixed-width 'YYYYMMx' tags sort chronologically, so a string
-    compare is safe."""
-    modern = SEC_FTD_URL_TEMPLATE.format(period=period)
-    legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
-    other = SEC_FTD_OTHER_URL_TEMPLATE.format(period=period)
-    return (legacy, modern, other) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy, other)
+    """Download URLs for a period: the date-appropriate folder first (legacy <= 2017-06a), the other, then SEC's other
+    folders; each folder with the plain name before the `_0` re-upload name. Fixed-width 'YYYYMMx' tags sort
+    chronologically, so a string compare is safe."""
+    main = (_SEC_FTD_LEGACY, _SEC_FTD_MODERN) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (_SEC_FTD_MODERN, _SEC_FTD_LEGACY)
+    return tuple(f"{folder}/cnsfails{period}{suffix}.zip" for suffix in _SEC_FTD_NAME_SUFFIXES for folder in (*main, *_SEC_FTD_OTHER_FOLDERS))
 
 
 def cached_ftd_periods(cache: Path) -> set[str]:

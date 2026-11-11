@@ -116,7 +116,7 @@ def test_real_202609a_parses_its_trailer_count_on_a_copy(tmp_path):
     raw = read_zip_text(path)
     assert raw is not None
     trailer = int(re.search(r"Trailer record count (\d+)", raw).group(1))  # type: ignore[union-attr]
-    parsed = ftd.read_ftd_period(SimpleNamespace(), cache, "202609a")  # type: ignore[arg-type]
+    parsed = ftd.read_ftd_period(cache, "202609a")
     assert parsed is not None and len(parsed) == trailer and path.exists()
     print(f"SANITY: real FTD 202609a (copy) parses {len(parsed):,} lines = its trailer record count {trailer:,}; the cached file is kept.")
 
@@ -127,7 +127,7 @@ def test_invalid_ftd_content_keeps_the_cached_file(tmp_path):
     path = cache / "cnsfails202607a.zip"
     with ZipFile(path, "w") as archive:
         archive.writestr("cnsfails202607a.txt", f"{_HEADER}20260701|526057104|LEN|bad|LEN|10\n")
-    assert ftd.read_ftd_period(SimpleNamespace(), cache, "202607a") is None  # type: ignore[arg-type]
+    assert ftd.read_ftd_period(cache, "202607a") is None
     assert path.exists()
     print("SANITY: an FTD file with invalid content is skipped and left in the cache; only a corrupt archive is deleted.")
 

@@ -1,8 +1,8 @@
 """RegSHO short-volume fetch: day-file plan, incremental write, `full` rebuild and its abort gate.
 
 One RegSHO file covers the whole market, so the plan is table-wide: the business days from the earlier of the
-`sec_short_volume_security` latest day and today less its overlap, to today. An empty table or `full` starts at the
-source start; `full` aborts before any write on a fetch error or when nothing is served. The in-scope lines are stored as
+`sec_short_volume_security` latest day and today less its overlap, to today. An empty table, `full` or the first run of a
+new half-month starts at the source start; `full` aborts before any write on a fetch error or when nothing is served. The in-scope lines are stored as
 filed (a keyed upsert).
 """
 
@@ -86,13 +86,39 @@ def test_an_up_to_date_table_rereads_the_overlap_window(sqlite_store):
 
 
 def test_a_stale_table_resumes_from_its_latest_day(sqlite_store):
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-05-01", 1.0, 2.0), ("BBB", "2024-05-20", 1.0, 2.0)]))
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-03", 1.0, 2.0), ("BBB", "2024-06-17", 1.0, 2.0)]))
 
     plan = si._plan_days(_context(sqlite_store), False, _AS_OF)
 
-    assert plan.equals(pd.bdate_range("2024-05-20", _AS_OF)), "the table-wide latest day, not each symbol's own"
+    assert plan.equals(pd.bdate_range("2024-06-17", _AS_OF)), "the table-wide latest day, not each symbol's own"
     print("\n=== SANITY CHECK: RegSHO day plan, stale ===")
-    print(f"  AAA stops 05-01, BBB 05-20 -> {len(plan)} day files from the table's latest day 05-20.")
+    print(f"  AAA stops 06-03, BBB 06-17 -> {len(plan)} day files from the table's latest day 06-17.")
+
+
+def test_the_first_run_of_a_new_half_month_plans_a_full_refresh(sqlite_store, caplog):
+    """The latest stored day 06-14 is in 1st-15th June; the run on 06-17 is the first in 16th-end June: full refresh."""
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-14", 1.0, 2.0)]))
+
+    with caplog.at_level(logging.INFO, logger=si.__name__):
+        plan = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2024-06-17"))
+
+    assert plan.equals(pd.bdate_range("2018-08-01", "2024-06-17")), "a full refresh from the source start"
+    assert any("first run of a new half-month" in record.getMessage() for record in caplog.records), "one log line says why"
+    print("\n=== SANITY CHECK: RegSHO day plan, first run of a half-month ===")
+    print(f"  latest 06-14, run 06-17 -> {len(plan)} day files from the 2018-08-01 source start (full refresh).")
+
+
+def test_the_second_run_of_a_half_month_plans_incremental(sqlite_store, caplog):
+    """After the half-month's full refresh stored 06-17, the run on 06-18 is incremental (overlap window)."""
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-17", 1.0, 2.0)]))
+
+    with caplog.at_level(logging.INFO, logger=si.__name__):
+        plan = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2024-06-18"))
+
+    assert plan.equals(pd.bdate_range("2024-06-11", "2024-06-18")), "today - 7 d, earlier than the latest day"
+    assert not any("half-month" in record.getMessage() for record in caplog.records)
+    print("\n=== SANITY CHECK: RegSHO day plan, second run of a half-month ===")
+    print(f"  latest 06-17, run 06-18 -> {len(plan)} day files from 06-11 (incremental).")
 
 
 def test_an_empty_table_and_full_start_at_the_source_start(sqlite_store):

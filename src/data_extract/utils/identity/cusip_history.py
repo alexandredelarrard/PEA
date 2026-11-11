@@ -22,17 +22,12 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.data_extract.utils.common.identity_contract import ROLE_SYMBOL, ROLE_WINDOW, SENTINEL_START, entity_or_singleton
-from src.data_extract.utils.common.security_lines import (
-    ACQUIRED_CONSTITUENT,
-    EXCLUDED,
-    FtdScope,
-    SecurityManual,
-)
+from src.data_extract.utils.common.security_lines import FtdScope, SecurityManual
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.identity_flags import FLAG_COLUMNS
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
-from src.utils.security_series import SOURCE_FTD, trade_dates
+from src.utils.security_series import ACQUIRED_CONSTITUENT, EXCLUDED, SOURCE_FTD, trade_dates
 from src.utils.string import normalise_ticker, pad_cik_series, squash
 
 logger = logging.getLogger(__name__)
@@ -355,17 +350,18 @@ def read_ftd_evidence(store: DataStore, scope: FtdScope) -> pd.DataFrame:
     if stored is None or stored.empty:
         return pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
     keys = {value: squash(value) for value in stored["source_symbol"].dropna().unique()}
-    lines = _in_scope(stored, keys, scope.symbols, scope.prefixes)
+    symbols = frozenset(scope.windows["key"])
+    lines = _in_scope(stored, keys, symbols, scope.prefixes)
 
     # the prefixes the tape votes for, then the lines they add
     keyed = pd.DataFrame({"cusip": lines["cusip"], "key": lines["source_symbol"].map(keys), "trade_date": pd.to_datetime(lines["trade_date"])})
     added = frozenset(str(c)[:6] for c in _votes(keyed.drop_duplicates(ignore_index=True), scope.tape)["cusip"]) - scope.prefixes
-    lines = _in_scope(stored, keys, scope.symbols, scope.prefixes | added).reset_index(drop=True)
+    lines = _in_scope(stored, keys, symbols, scope.prefixes | added).reset_index(drop=True)
     logger.info(
         "FTD evidence: %d stored line(s), %d in scope (%d symbol(s), %d CUSIP-6 prefix(es), %d voted)",
         len(stored),
         len(lines),
-        len(scope.symbols),
+        len(symbols),
         len(scope.prefixes | added),
         len(added),
     )

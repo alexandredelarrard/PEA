@@ -381,7 +381,7 @@ def test_ac104_p21_acquired_and_event_only_lines_never_reach_the_canonical_ticke
     gm = [q for (t, _), q in grain.items() if t == "GM"]
     assert gm and all(q == 0.0 for q in gm)
     assert _role(security, "62010A105", "2010-01-04") == ("GM", "acquired_constituent")
-    assert security.loc[security["cusip"].eq("370442105"), "security_id"].isna().all()
+    assert security.loc[security["cusip"].eq("370442105"), ["ticker", "lineage_role"]].isna().all().all()
     # SGP is an acquired constituent of MRK before its merger.
     assert grain[("MRK", "2009-11-03")] == 3647.0 and grain[("MRK", "2009-11-04")] == 804174.0 and grain[("MRK", "2009-11-05")] == 373679.0
     assert _role(security, "806605101", "2009-11-03") == ("MRK", "acquired_constituent")
@@ -512,7 +512,7 @@ def test_e9_e10_open_start_and_bankruptcy_overlap(sqlite_store):
 def test_e11_a_symbol_reused_by_another_issuer_is_not_stored(sqlite_store):
     _rebuild(sqlite_store)
     security = _security(sqlite_store)
-    assert security.loc[security["cusip"].isin(["02520N106", "370442105"]), "security_id"].isna().all()
+    assert security.loc[security["cusip"].isin(["02520N106", "370442105"]), ["ticker", "lineage_role"]].isna().all().all()
     assert not any(t == "APO" for t, _ in _grain(sqlite_store))
     print("\n=== SANITY CHECK: E11 symbol reuse ===")
     print("  APO 2009 (American Community Properties, 02520N106) has no master security: never counted")

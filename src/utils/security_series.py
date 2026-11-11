@@ -39,7 +39,6 @@ T2_FROM = pd.Timestamp("2017-09-05")
 T1_FROM = pd.Timestamp("2024-05-28")
 #: The `universe_cusip` columns read for stamping FTD lines.
 FTD_MASTER_COLUMNS = [
-    "security_id",
     "canonical_company",
     "cusip",
     "source_symbol",
@@ -49,7 +48,6 @@ FTD_MASTER_COLUMNS = [
     "lineage_role",
     "valid_from",
     "valid_to",
-    "scope_changed_at",
 ]
 #: Roles whose lines are summed into a company's series.
 SUMMED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
@@ -83,7 +81,6 @@ def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
     out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"], errors="coerce").astype("float64")
     company = out["canonical_company"].astype(object)
     out["canonical_company"] = company.where(company.notna() & company.astype(str).ne(""), None)
-    out["scope_changed_at"] = pd.to_datetime(out["scope_changed_at"], errors="coerce")
     return out.reset_index(drop=True)
 
 
@@ -98,16 +95,17 @@ def summed_lines(stamped: pd.DataFrame, tickers: Collection[str] | None) -> pd.D
     return summed if tickers is None else summed[summed["ticker"].isin(set(tickers))]
 
 
-def _covering(frame: pd.DataFrame) -> pd.DataFrame:
-    return frame[(frame["trade_date"] >= frame["valid_from"]) & (frame["trade_date"] < frame["valid_to"])]
+def _covering(frame: pd.DataFrame, day: str = "trade_date") -> pd.DataFrame:
+    """The rows whose `day` lies in their `[valid_from, valid_to)` window (open ends are far dates)."""
+    return frame[(frame[day] >= frame["valid_from"]) & (frame[day] < frame["valid_to"])]
 
 
 def stamp_lines(lines: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
-    """`lines` with `security_id`, `ticker`, `lineage_role`, `security_class`, `conversion_ratio` and `market_symbol`.
+    """`lines` with `ticker`, `lineage_role`, `conversion_ratio` and `market_symbol`.
 
     The answer is the master row of the line's (CUSIP, symbol) covering its trade date, else the one answer every
-    row of its CUSIP covering that date agrees on. A CUSIP the master lacks keeps a NULL `security_id` (out of
-    scope); a known CUSIP with no answer on that date keeps a NULL role and is never summed.
+    row of its CUSIP covering that date agrees on. A line with no answer on its date (its CUSIP unknown to the master,
+    or no row covering that date) keeps a NULL ticker and role and is never summed.
     """
     out = lines.reset_index(drop=True).copy()
     trade = pd.to_datetime(out["trade_date"]) if "trade_date" in out.columns else pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns]")
@@ -126,10 +124,8 @@ def stamp_lines(lines: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     loose = _covering(rest.merge(master.drop(columns="source_symbol"), on="cusip")).drop_duplicates(["_row", *_HIT_COLUMNS])
     agreed = loose[~loose["_row"].duplicated(keep=False)]
     hits = pd.concat([exact[["_row", *_HIT_COLUMNS]], agreed[["_row", *_HIT_COLUMNS]]], ignore_index=True).set_index("_row")
-    out["security_id"] = nullable(("C" + keys["cusip"]).where(keys["cusip"].isin(set(master["cusip"]))))
     out["ticker"] = nullable(hits["canonical_company"].reindex(out.index))
     out["lineage_role"] = nullable(hits["lineage_role"].reindex(out.index))
-    out["security_class"] = nullable(hits["security_class"].reindex(out.index))
     out["conversion_ratio"] = hits["conversion_ratio"].reindex(out.index).astype("float64")
     out["market_symbol"] = hits["market_symbol"].reindex(out.index)
     return out
@@ -205,16 +201,21 @@ def uncertain_dates(stamped: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame
     return touched[["ticker", "date"]].drop_duplicates().reset_index(drop=True)
 
 
+def _span_positions(days: np.ndarray, starts: pd.Series, stops: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    """`(which, at)` of `[start, stop)` spans over the sorted `days`: per covered day, its span's position and its own."""
+    lo = np.searchsorted(days, starts.to_numpy(dtype="datetime64[ns]"), side="left")
+    hi = np.searchsorted(days, stops.to_numpy(dtype="datetime64[ns]"), side="left")
+    counts = np.maximum(hi - lo, 0)
+    which = np.repeat(np.arange(len(lo)), counts)
+    at = np.concatenate([np.arange(a, b) for a, b in zip(lo, hi, strict=True) if b > a]) if counts.sum() else np.array([], dtype=int)
+    return which, at
+
+
 def _supported_dates(dates: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     """`[ticker, date, period, conversion_ratio]`: each served date x each summed master row covering its trade date."""
     rows = master.loc[master["canonical_company"].notna() & master["lineage_role"].isin(SUMMED_ROLES)].reset_index(drop=True)
     days = dates.sort_values("trade_date", kind="mergesort", ignore_index=True)
-    trade = days["trade_date"].to_numpy(dtype="datetime64[ns]")
-    lo = np.searchsorted(trade, rows["valid_from"].to_numpy(dtype="datetime64[ns]"), side="left")
-    hi = np.searchsorted(trade, rows["valid_to"].to_numpy(dtype="datetime64[ns]"), side="left")
-    counts = np.maximum(hi - lo, 0)
-    which = np.repeat(np.arange(len(rows)), counts)
-    at = np.concatenate([np.arange(a, b) for a, b in zip(lo, hi, strict=True) if b > a]) if counts.sum() else np.array([], dtype=int)
+    which, at = _span_positions(days["trade_date"].to_numpy(dtype="datetime64[ns]"), rows["valid_from"], rows["valid_to"])
     return pd.DataFrame(
         {
             "ticker": rows["canonical_company"].to_numpy(dtype=object)[which],
@@ -402,8 +403,7 @@ def _lineage_tape(lineage: pd.DataFrame) -> pd.DataFrame:
 def _security_hits(pairs: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     """Per `_row` of `pairs` (`key`, `day`), the one `universe_cusip` line of its key covering its day; several lines all
     summed or acquired keep the summed ones (a CUSIP-change day under one symbol); still several -> no answer."""
-    hits = pairs[["_row", "key", "day"]].merge(master, on="key")
-    hits = hits.loc[hits["day"].ge(hits["valid_from"]) & hits["day"].lt(hits["valid_to"])]
+    hits = _covering(pairs[["_row", "key", "day"]].merge(master, on="key"), "day")
     summed = hits["lineage_role"].isin(SUMMED_ROLES)
     several = hits.groupby("_row")["security_id"].transform("nunique").gt(1)
     benign = hits["lineage_role"].isin((*SUMMED_ROLES, ACQUIRED_CONSTITUENT)).groupby(hits["_row"]).transform("all")
@@ -472,11 +472,8 @@ def _short_sums(stamped: pd.DataFrame, universe: Collection[str]) -> pd.DataFram
 
 def _day_spans(spans: pd.DataFrame, days: np.ndarray) -> pd.DataFrame:
     """`[ticker, date]`: each `[start, stop)` span of `spans` over the sorted served `days`."""
-    lo = np.searchsorted(days, spans["start"].to_numpy(dtype="datetime64[ns]"), side="left")
-    hi = np.searchsorted(days, spans["stop"].to_numpy(dtype="datetime64[ns]"), side="left")
-    counts = np.maximum(hi - lo, 0)
-    at = np.concatenate([np.arange(a, b) for a, b in zip(lo, hi, strict=True) if b > a]) if counts.sum() else np.array([], dtype=int)
-    return pd.DataFrame({"ticker": np.repeat(spans["ticker"].to_numpy(dtype=object), counts), "date": days[at]})
+    which, at = _span_positions(days, spans["start"], spans["stop"])
+    return pd.DataFrame({"ticker": spans["ticker"].to_numpy(dtype=object)[which], "date": days[at]})
 
 
 def _supported_short(universe: Collection[str], days: np.ndarray, master: pd.DataFrame, tape: pd.DataFrame) -> pd.DataFrame:
@@ -512,10 +509,11 @@ def _blocked_short(stamped: pd.DataFrame, master: pd.DataFrame, universe: Collec
     covering its day, and the dates a summed line of a `universe` company covers with an invalid ratio."""
     unresolved = stamped.loc[stamped["lineage_role"].isna()]
     symbol = unresolved["source_symbol"].astype(str)
-    keyed = pd.DataFrame({"key": _by_symbol(symbol, finra_key).astype(str), "date": unresolved["date"]}).loc[_by_symbol(symbol, finra_marker_kind).isna()]
+    keyed = pd.DataFrame({"key": _by_symbol(symbol, finra_key).astype(str), "date": unresolved["date"]}).loc[
+        _by_symbol(symbol, finra_marker_kind).isna()
+    ]
     owners = master.loc[master["ticker"].notna() & master["lineage_role"].isin(SUMMED_ROLES), ["key", "ticker", "valid_from", "valid_to"]]
-    incomplete = keyed.merge(owners, on="key")
-    incomplete = incomplete.loc[incomplete["date"].ge(incomplete["valid_from"]) & incomplete["date"].lt(incomplete["valid_to"]), ["ticker", "date"]]
+    incomplete = _covering(keyed.merge(owners, on="key"), "date")[["ticker", "date"]]
     ratio = master["conversion_ratio"]
     bad = master.loc[master["ticker"].isin(set(universe)) & master["lineage_role"].isin(SUMMED_ROLES) & ~(np.isfinite(ratio) & ratio.gt(0))]
     invalid = _day_spans(bad.rename(columns={"valid_from": "start", "valid_to": "stop"}), days)

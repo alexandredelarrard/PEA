@@ -1235,7 +1235,9 @@ def _feature_eligibility_start(
         field = "is_10b5_1" if characteristic in {"ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d"} else None
         dependencies = ((Tables.insider_transactions, field),)
     elif family == "short_flow":
-        dependencies = ((Tables.sec_fails_to_deliver_security, None),) if characteristic.startswith("ic_ftd_") else ((Tables.sec_short_volume_security, None),)
+        dependencies = (
+            ((Tables.sec_fails_to_deliver_security, None),) if characteristic.startswith("ic_ftd_") else ((Tables.sec_short_volume_security, None),)
+        )
     elif family == "beneficial_ownership":
         dependencies = ((Tables.sec_13d, None),) if characteristic.startswith("ic_act_") else ((Tables.sec_13d, None), (Tables.sec_13g, None))
     else:

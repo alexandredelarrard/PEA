@@ -10,7 +10,7 @@ from types import MappingProxyType
 
 import pandas as pd
 
-from src.utils.identity_tables import sum_company_rows
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import sum_company_rows
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
 
 type BookKey = tuple[str, pd.Timestamp]

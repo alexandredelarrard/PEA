@@ -24,7 +24,7 @@ _NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_fr
 
 
 def _config() -> SimpleNamespace:
-    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="sec_fails_to_deliver")
+    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes")
     return SimpleNamespace(local=SimpleNamespace(paths=paths), data_extract=SimpleNamespace(years_history=15))
 
 

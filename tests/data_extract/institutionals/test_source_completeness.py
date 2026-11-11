@@ -306,12 +306,12 @@ def test_ftd_bad_cached_payload_is_skipped_and_kept(sqlite_store: DataStore, mon
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
     assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
-    assert ftd.read_ftd_period(context, path.parent, "202607a") is None, "the bad cached period is skipped"
+    assert ftd.read_ftd_period(path.parent, "202607a") is None, "the bad cached period is skipped"
     assert path.exists() and not requests
     path.unlink()
     assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
     assert len(requests) == 1 and path.exists()
-    read = ftd.read_ftd_period(context, path.parent, "202607a")
+    read = ftd.read_ftd_period(path.parent, "202607a")
     assert read is not None and read["cusip"].tolist() == ["526057104"]
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.sec_fails_to_deliver_security), before_raw)
     print(
@@ -462,7 +462,7 @@ def test_ftd_b_zip_retains_documented_day15_overlap(tmp_path: Path) -> None:
     cache = tmp_path / context.config.local.paths.fails_deliver
     path = cache / "cnsfails202607b.zip"
     _archive(path, {"fails.txt": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260715|526057104|LEN|12|LEN|10\n"})
-    source = ftd.read_ftd_period(context, cache, "202607b")
+    source = ftd.read_ftd_period(cache, "202607b")
     assert source is not None and source["period"].tolist() == ["202607b"] and source["date"].tolist() == [pd.Timestamp("2026-07-15")]
     assert path.exists()
     print("SANITY: the documented day15 b-ZIP overlap retains its actual assigned source tag and publication clock.")

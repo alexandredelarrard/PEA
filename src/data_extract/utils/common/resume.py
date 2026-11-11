@@ -13,7 +13,8 @@ stored rows gets none once the run date is past its grace end plus the table's o
 `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
 parsed for every key; plus, only on a run that parses a new cached period, every cached stored period re-parsed for
 the (key, lineage CIK) pairs stamped (`universe_cik_symbol.scope_changed_at`) or added to the universe after the
-newest stored period ended that have no archive row: once per change, a CIK that never files is not re-read nightly.
+newest stored period ended that have no archive row. Such a pair that already has rows is not rescanned: every run
+warns with the full-rescan command instead.
 """
 
 from __future__ import annotations
@@ -273,6 +274,15 @@ def series_windows(
     return SeriesWork(windows=windows, key_class=key_class, last=last, timings=timings)
 
 
+@dataclass(frozen=True)
+class ZipScope:
+    """One ingest's tickers (the `-t` subset or the universe), the run date and `full` re-parse."""
+
+    tickers: list[str]
+    run_date: pd.Timestamp
+    full: bool
+
+
 @dataclass
 class ArchiveWork:
     """An archive fetcher's work list.
@@ -348,26 +358,51 @@ def rescan_lineage(identity: Identity, roles: Collection[str] = (ROLE_WINDOW,)) 
     return lineage.loc[lineage["role"].isin(list(roles)), ["canonical_ticker", "cik", "scope_changed_at"]]
 
 
-def _rowless_pairs(
-    context: Context, tables: Sequence[Table], keys: Collection[str], since: pd.Timestamp, lineage: pd.DataFrame, as_of: pd.Timestamp
-) -> dict[str, frozenset[str]]:
-    """`{key: CIKs}` of the `lineage` rows (`rescan_lineage`) of `keys` stamped after `since`, or of a key added to the
-    universe after it, that have no archive row of that CIK in any of `tables`. An archive row carries its period; a row
-    without one (an EDGAR row or marker of a table both legs write) does not make the pair's archive history stored."""
+def _changed_pairs(
+    context: Context, tables: Sequence[Table], keys: Sequence[str], since: pd.Timestamp, lineage: pd.DataFrame, start_date: pd.Timestamp
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """`(changed, held)`: the (key, CIK) pairs of the `lineage` rows (`rescan_lineage`) of `keys` stamped after `since`, or
+    of a key added to the universe after it, and those of them with an archive row of that CIK in any of `tables`. An
+    archive row carries its period; a row without one (an EDGAR row or marker of a table both legs write) is not one."""
     lineage = lineage[lineage["canonical_ticker"].isin(list(keys))]
-    joined = {key for key, added in context.universe.added_on_dates(keys, run_date(as_of)).items() if added > since}
+    joined = {key for key, added in context.universe.added_on_dates(keys, start_date).items() if added > since}
     changed = lineage[pd.to_datetime(lineage["scope_changed_at"]).gt(since) | lineage["canonical_ticker"].isin(joined)]
     pairs = set(zip(changed["canonical_ticker"].astype(str), pad_cik_series(changed["cik"]), strict=True))
+    held: set[tuple[str, str]] = set()
     for table in tables:
         key_col, cik_col, period_col = cast(str, cast(Resume, table.resume).key), PURGE_TABLES_BY_NAME[table.name].cik_col, _period_column(table)
         if pairs and {key_col, cik_col, period_col} <= set(context.store.columns(table)):
-            scope = {key_col: sorted({key for key, _ in pairs}), period_col: context.store.NOT_NULL}
-            held = context.store.summarize(table, [key_col, cik_col], {"rows": ("count", None)}, where=scope)
-            pairs -= set(zip(held[key_col].astype(str), pad_cik_series(held[cik_col]), strict=True))
+            where = {key_col: sorted({key for key, _ in pairs}), period_col: context.store.NOT_NULL}
+            rows = context.store.summarize(table, [key_col, cik_col], {"rows": ("count", None)}, where=where)
+            held |= pairs & set(zip(rows[key_col].astype(str), pad_cik_series(rows[cik_col]), strict=True))
+    return pairs, held
+
+
+def _by_key(pairs: set[tuple[str, str]]) -> dict[str, frozenset[str]]:
+    """`{key: CIKs}` of (key, CIK) pairs, keys sorted."""
     out: dict[str, set[str]] = {}
     for key, cik in pairs:
         out.setdefault(key, set()).add(cik)
     return {key: frozenset(ciks) for key, ciks in sorted(out.items())}
+
+
+def _warn_partial_pairs(tables: Sequence[Table], pairs: set[tuple[str, str]], since: pd.Timestamp) -> None:
+    """One warning naming the changed (key, CIK) pairs that already have archive rows (never rescanned automatically) and
+    the full-rescan command that fills their newly covered periods."""
+    if not pairs:
+        return
+    named = [f"{key} {cik}" for key, cik in sorted(pairs)]
+    family = "insider" if tables[0] is Tables.insider_transactions else "notes"
+    logger.warning(
+        "%s: %d (ticker, CIK) pair(s) changed after %s already have archive rows, so their newly covered periods may be "
+        "missing; a full rescan is needed: run `zips-ingest --only %s -F` (%s%s)",
+        tables[0].name,
+        len(named),
+        since.date(),
+        family,
+        ", ".join(named[:20]),
+        ", ..." if len(named) > 20 else "",
+    )
 
 
 def archive_worklist(
@@ -375,26 +410,29 @@ def archive_worklist(
     tables: Sequence[Table],
     published: Sequence[str],
     cached: Collection[str],
-    keys: Sequence[str],
-    as_of: pd.Timestamp,
-    *,
-    full: bool = False,
+    scope: ZipScope,
     lineage: pd.DataFrame | None = None,
 ) -> ArchiveWork:
-    """Which archive periods to parse, and for which keys, from the stored periods of `tables` alone.
+    """Which archive periods to parse, and for which of the `scope` keys, from the stored periods of `tables` alone.
 
     Pending = listed periods missing from any table. Rescan = listed periods stored in every table and cached on disk
-    (any stored period under `full`, for every key); outside `full`, only on a full-universe run with a cached pending
-    period after stored ones, for the rowless (key, `lineage` CIK) pairs changed after the newest stored period ended.
+    (any stored period under `scope.full`, for every key); outside `full`, only on a full-universe run with a cached
+    pending period after stored ones, for the rowless (key, `lineage` CIK) pairs changed after the newest stored period
+    ended. Every run outside `full` warns about the changed pairs that already have rows.
     """
-    keys = sorted(set(keys))
+    keys, full = sorted(set(scope.tickers)), scope.full
     listed, stored = archive_periods(context, tables, published)
     missing = [p for p in listed if p not in stored]
     scoped = not context.universe.is_full(keys)
     on_disk = set(cached)
     since = pd.Timestamp(max(period_end(p) for p in stored)) if stored else None
-    growth = lineage is not None and not full and not scoped and since is not None and any(p in on_disk for p in missing)
-    rescan_ciks = _rowless_pairs(context, tables, keys, cast(pd.Timestamp, since), cast(pd.DataFrame, lineage), as_of) if growth else {}
+    tracked = lineage is not None and not full and since is not None
+    changed, held = (
+        _changed_pairs(context, tables, keys, cast(pd.Timestamp, since), cast(pd.DataFrame, lineage), scope.run_date) if tracked else (set(), set())
+    )
+    _warn_partial_pairs(tables, changed & held, cast(pd.Timestamp, since))
+    growth = tracked and not scoped and any(p in on_disk for p in missing)
+    rescan_ciks = _by_key(changed - held) if growth else {}
     rescan_keys = keys if full else sorted(rescan_ciks)
     rescan = [p for p in listed if p in stored and (full or p in on_disk)] if rescan_keys else []
     if rescan_ciks:

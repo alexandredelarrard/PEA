@@ -16,10 +16,10 @@ from src.data_aggregate.utils.sec_thirteen import holdings_clean, inputs
 from src.data_aggregate.utils.sec_thirteen import institutional_books as books
 from src.data_aggregate.utils.sec_thirteen import institutional_features as features_module
 from src.data_aggregate.utils.sec_thirteen import value_basis as values
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import COMPANY_CUSIP, clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history
 from src.data_store.schema import Tables
-from src.utils.identity_tables import COMPANY_CUSIP, LINE_COLUMNS, CusipTags
+from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books, iter_snapshot_books, snapshot_feature_history
 
 

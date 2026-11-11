@@ -8,11 +8,11 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.sec_thirteen import superinvestor_books
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import COMPANY_CUSIP
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import (
     PublicBookSnapshot,
     prepare_superinvestor_book_history,
 )
-from src.utils.identity_tables import COMPANY_CUSIP
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate import sec_thirteen_legacy_reference as institutional_vintages
 

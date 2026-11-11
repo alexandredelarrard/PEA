@@ -1,4 +1,4 @@
-"""Pieces the period-archive ingests share: the run scope and the one `ensure_zip -> clock -> skip` block."""
+"""Pieces the period-archive ingests share: the archive source and the one `ensure_zip -> clock -> skip` block."""
 
 from __future__ import annotations
 
@@ -6,20 +6,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
-
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached
 from src.data_extract.utils.common.resume import period_end
-
-
-@dataclass(frozen=True)
-class ZipScope:
-    """One ingest's tickers (the `-t` subset or the universe), the run date and `full` re-parse."""
-
-    tickers: list[str]
-    run_date: pd.Timestamp
-    full: bool
 
 
 @dataclass(frozen=True)

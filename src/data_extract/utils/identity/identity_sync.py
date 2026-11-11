@@ -1,4 +1,4 @@
-"""`identity --only sync`: carry the published identity into the CIK-keyed stored rows, SQL only (REQ-009, decision Q1).
+"""`identity --only sync`: carry the published identity into the CIK-keyed stored rows, SQL only.
 
 `run_sync` re-checks the tickers whose lineage stamp (`universe_cik_symbol.scope_changed_at`) is inside
 `resume.recently_changed`'s window on the run date, every ticker on a first build or `--full` (PD-13). Per filer-CIK

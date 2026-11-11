@@ -117,13 +117,7 @@ class StepCubeInstitutionals(Step):
 
         # Load shared price and class inputs once.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
-        df_lines = read_identity(
-            self._store,
-            Tables.universe_cusip,
-            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role", "cusip"),
-            where={"source": "ftd"},
-            optional=True,
-        )
+        df_lines = institutional_inputs.load_ftd_lines(self._store)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
 
         # Build each family sequentially so raw sources do not overlap in memory.

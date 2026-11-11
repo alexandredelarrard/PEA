@@ -34,10 +34,10 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.resume import archive_worklist, period_end, rescan_lineage
+from src.data_extract.utils.common.resume import ZipScope, archive_worklist, period_end, rescan_lineage
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
-from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive
+from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik_series, run_date
 
@@ -395,10 +395,8 @@ def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, perio
         _NOTES_TABLES,
         periods,
         cached_periods(cache, suffix="_notes.zip"),
-        scope.tickers,
-        scope.run_date,
-        full=scope.full,
-        lineage=rescan_lineage(identity),
+        scope,
+        rescan_lineage(identity),
     )
     units = dict(work.units())
     n_num = n_txt = 0

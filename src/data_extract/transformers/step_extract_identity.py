@@ -398,7 +398,7 @@ class StepExtractIdentity(Step):
         return written
 
     def run_sync(self) -> SyncResult:
-        """Carry the published identity into the CIK-keyed stored rows, SQL only (Q1): move the rows another company's
+        """Carry the published identity into the CIK-keyed stored rows, SQL only: move the rows another company's
         scope now holds, purge the rows filed outside each changed company's scope, re-stamp the insider lineage. A first
         build or `--full` re-checks every ticker (PD-13)."""
         # load: the resolver rebuilt from the published tables, over each universe ticker's published current CIK (U-49), bound to

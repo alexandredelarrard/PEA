@@ -11,6 +11,7 @@ from src.data_extract.utils.common.resume import (
     KEY_ESTABLISHED,
     KEY_NEW,
     KEY_ROWLESS,
+    ZipScope,
     archive_worklist,
 )
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
@@ -371,8 +372,8 @@ def _save_notes(store, table, ticker: str, periods: list[str]) -> None:
     store.save(table, pd.DataFrame(rows))
 
 
-def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, **kwargs):
-    return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, keys, _AS_OF, **kwargs)
+def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, full: bool = False, lineage=None):
+    return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, ZipScope(keys, _AS_OF, full), lineage)
 
 
 def test_notes_period_counts_only_when_in_both_tables(tmp_path, sqlite_store):
@@ -448,6 +449,55 @@ def test_m3_a_rowless_new_cik_is_rescanned_for_that_cik_once_on_a_new_period_run
     print("\n=== SANITY CHECK: M3 (ticker, new CIK) rescan, once on a new-period run (Q2) ===")
     print(f"  night 1 stores 2026q3 and rescans {night1.rescan} for {night1.rescan_ciks} (BBB's 88 changed before 2026q2 ended: not read);")
     print("  night 2 stores no period and rescans nothing, although CIK 77 is still rowless: no nightly re-read.")
+
+
+def _partial_warnings(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING" and "full rescan is needed" in record.getMessage()]
+
+
+def test_m3_a_changed_pair_with_rows_warns_with_the_full_rescan_command_on_every_run(tmp_path, sqlite_store, caplog):
+    """AAA's window CIK 1 is stamped 2026-07-05, after 2026q2 (the newest stored period) ended, and already has rows: it is
+    not rescanned, so each run, with or without a new period, warns once with `zips-ingest --only notes -F`."""
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
+    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
+    lineage = _lineage([("AAA", "0000000001", "cik_window", "2026-07-05")])
+
+    with caplog.at_level("INFO"):
+        new_period = _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2", "2026q3"], ["AAA"], lineage=lineage)
+        same_day = _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2"], ["AAA"], lineage=lineage)
+    warnings = _partial_warnings(caplog)
+
+    print(f"\nSANITY (partial pair warning): {len(warnings)} warning(s), one per run; first: {warnings[0] if warnings else None}")
+    assert len(warnings) == 2, "one warning per run, on the new-period run and on the run with no new period"
+    assert all("zips-ingest --only notes -F" in text and "AAA 0000000001" in text for text in warnings)
+    assert new_period.rescan_ciks == {} and same_day.rescan == [], "the warning does not change what is rescanned"
+
+
+def test_m3_a_rowless_changed_pair_does_not_warn(tmp_path, sqlite_store, caplog):
+    """AAA's CIK 77 is stamped after the boundary with no row: it is rescanned automatically, so no warning."""
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
+    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
+    lineage = _lineage([("AAA", "0000000001", "cik_window", "2020-01-01"), ("AAA", "0000000077", "cik_window", "2026-07-05")])
+
+    with caplog.at_level("INFO"):
+        work = _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2", "2026q3"], ["AAA"], lineage=lineage)
+
+    print(f"\nSANITY (rowless pair): rescan {work.rescan_ciks}, warnings {_partial_warnings(caplog)} (expected none)")
+    assert work.rescan_ciks == {"AAA": frozenset({"0000000077"})}
+    assert _partial_warnings(caplog) == []
+
+
+def test_m3_an_old_stamp_does_not_warn(tmp_path, sqlite_store, caplog):
+    """AAA's CIK 1 has rows and was stamped before 2026q2 ended: nothing is owed, no warning."""
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
+    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
+    lineage = _lineage([("AAA", "0000000001", "cik_window", "2026-06-01")])
+
+    with caplog.at_level("INFO"):
+        _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2", "2026q3"], ["AAA"], lineage=lineage)
+
+    print(f"\nSANITY (old stamp): warnings {_partial_warnings(caplog)} (expected none)")
+    assert _partial_warnings(caplog) == []
 
 
 def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlite_store):

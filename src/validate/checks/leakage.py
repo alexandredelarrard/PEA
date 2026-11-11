@@ -117,18 +117,27 @@ def _first_per_ticker(frame: pd.DataFrame, ticker_col: str, date_col: str, leg: 
 
 
 def _security_owners(context: Context, key_col: str, spelling: Callable[[object], str]) -> pd.DataFrame:
-    """`[key, ticker]`: each FTD-line key of a `universe_cusip` line with its company, undated (a key some company held at
-    any time counts for it, so a source can only look earlier, never later)."""
-    lines = read_identity(context.store, Tables.universe_cusip, columns=[key_col, "canonical_company"], where={"source": "ftd"}, optional=True)
+    """`[key, ticker, valid_from, valid_to]`: each FTD-line key of a `universe_cusip` line with its company and the dates
+    the line covers (`valid_from <= date < valid_to`, a NULL end open)."""
+    columns = [key_col, "canonical_company", "valid_from", "valid_to"]
+    lines = read_identity(context.store, Tables.universe_cusip, columns=columns, where={"source": "ftd"}, optional=True)
     if lines is None:
-        return pd.DataFrame(columns=["key", "ticker"])
-    owners = lines.dropna().astype(str).rename(columns={key_col: "key", "canonical_company": "ticker"})
-    return owners.assign(key=owners["key"].map(spelling)).drop_duplicates(ignore_index=True)
+        return pd.DataFrame(columns=["key", "ticker", "valid_from", "valid_to"])
+    lines = lines.dropna(subset=[key_col, "canonical_company"])
+    owners = pd.DataFrame(
+        {
+            "key": lines[key_col].astype(str).map(spelling),
+            "ticker": lines["canonical_company"].astype(str),
+            "valid_from": as_ts(lines["valid_from"]),
+            "valid_to": as_ts(lines["valid_to"]),
+        }
+    )
+    return owners.drop_duplicates(ignore_index=True)
 
 
 def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     """Per ticker, the first date this source PUBLISHED anything, streamed. A security-grain source (`_SECURITY_KEYS`)
-    carries no ticker: its key maps to the companies through `universe_cusip`.
+    carries no ticker: its key maps to the companies through `universe_cusip`, on the dates each line covers.
 
     Returns `(series, clock)` where `clock` names the column used, so the result can show
     which clock each family was judged against rather than asking the reader to trust it."""
@@ -148,7 +157,9 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
         keys = chunk[key_col].map(security[1]) if security is not None else chunk[key_col].astype(str).str.strip().str.upper()
         chunk = chunk.assign(**{clock: as_ts(chunk[clock])}, key=keys)
         if owners is not None:
-            chunk = chunk.merge(owners, on="key").assign(key=lambda frame: frame["ticker"])
+            chunk = chunk.merge(owners, on="key")
+            covered = chunk[clock].ge(chunk["valid_from"]) & (chunk["valid_to"].isna() | chunk[clock].lt(chunk["valid_to"]))
+            chunk = chunk.loc[covered].assign(key=lambda frame: frame["ticker"])
         part = chunk.groupby("key")[clock].min()
         running = part if running is None else pd.concat([running, part]).groupby(level=0).min()
     return (running if running is not None else pd.Series(dtype="datetime64[ns]")), clock

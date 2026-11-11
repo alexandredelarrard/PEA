@@ -35,6 +35,7 @@ from src.validate.checks import (
     check_profile,
     check_redundancy,
     check_timeseries,
+    leakage,
 )
 from src.validate.spec import UndeclaredTableError
 from tests.support.universe import seed_universe
@@ -562,7 +563,14 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     ftd.to_sql("sec_fails_to_deliver_security", sqlite_store.engine, index=False)
     # The FINRA lines too (symbol grain): `BRK/A`-style spellings meet the FTD key (`BBBA` here) through `finra_key`.
     lines = pd.DataFrame(
-        {"cusip": ["000000001", "000000002"], "canonical_company": ["AAA", "BBB"], "source": ["ftd", "ftd"], "source_symbol": ["AAA", "BBBA"]}
+        {
+            "cusip": ["000000001", "000000002"],
+            "canonical_company": ["AAA", "BBB"],
+            "source": ["ftd", "ftd"],
+            "source_symbol": ["AAA", "BBBA"],
+            "valid_from": [pd.Timestamp("2000-01-01")] * 2,
+            "valid_to": [pd.NaT] * 2,
+        }
     )
     lines.to_sql("universe_cusip", sqlite_store.engine, index=False)
     short = pd.DataFrame(
@@ -613,3 +621,33 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
             f"AAA short volume {leak.evidence['worst']['lead_days']} days before its own "
             f"RegSHO event"
         )
+
+
+def test_leakage_maps_a_reused_symbol_to_each_company_only_on_its_own_dates(sqlite_store):
+    """The FINRA symbol `DOW` is old Dow Chemical's (now DD) until 2019-04-01 and Dow Inc's from then: a 2015 `DOW` line
+    counts for DD only, so Dow Inc's first short-volume day is its own 2020 line, not the 2015 one."""
+    lines = pd.DataFrame(
+        {
+            "cusip": ["260543103", "260557103"],
+            "canonical_company": ["DD", "DOW"],
+            "source": ["ftd", "ftd"],
+            "source_symbol": ["DOW", "DOW"],
+            "valid_from": [pd.Timestamp("2009-01-02"), pd.Timestamp("2019-04-01")],
+            "valid_to": [pd.Timestamp("2019-04-01"), pd.NaT],
+        }
+    )
+    lines.to_sql("universe_cusip", sqlite_store.engine, index=False)
+    short = pd.DataFrame(
+        {
+            "source_symbol": ["DOW", "DOW"],
+            "date": [pd.Timestamp("2015-06-01"), pd.Timestamp("2020-06-01")],
+            "short_volume": [1.0, 2.0],
+            "total_volume": [10.0, 20.0],
+        }
+    )
+    short.to_sql("sec_short_volume_security", sqlite_store.engine, index=False)
+
+    first, clock = leakage._source_first(cast(Any, _Ctx(sqlite_store, _config())), Tables.sec_short_volume_security)
+
+    print(f"\n  leakage dated mapping: first {clock} per company {first.to_dict()} (DD 2015-06-01, DOW 2020-06-01 expected)")
+    assert first.to_dict() == {"DD": pd.Timestamp("2015-06-01"), "DOW": pd.Timestamp("2020-06-01")}, "a symbol counts only on its line's dates"

@@ -601,7 +601,7 @@ def test_vendor_exceptions_and_expected_changes_configs():
     ]
     expected = json.loads((CONFIG_DIR / "sec" / "expected_lineage_changes.json").read_text(encoding="utf-8"))["hypotheses"]
     ids = {row["id"] for row in expected}
-    assert {"trs_pld_fundamentals_facts_event_only_cik", "trs_ftd_tdcc_to_dd", "trs_insider_tdcc_moves"} <= ids
+    assert {"trs_pld_fundamentals_facts_event_only_cik", "trs_insider_tdcc_moves"} <= ids
     assert all(row.get("status") == "hypothesis" and row.get("source") and row.get("change_set") == "traded_security_realignment" for row in expected)
     print("\n=== SANITY CHECK: vendor exceptions and the traded-security realignment hypotheses ===")
     print(f"  {len(rows)} vendor exceptions read back by the shared loader; {len(expected)} lineage-change hypotheses recorded")

@@ -22,10 +22,10 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.resume import ZipScope
 from src.data_extract.utils.edgar_extract.insider_common import screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_notes as fn
 from src.data_extract.utils.zips import zip_archive
-from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Tables
 from src.utils.string import run_date
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity

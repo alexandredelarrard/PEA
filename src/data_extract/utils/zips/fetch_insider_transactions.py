@@ -43,7 +43,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.identity_contract import ROLE_EVENT, ROLE_WINDOW
-from src.data_extract.utils.common.resume import ArchiveWork, archive_worklist, rescan_lineage
+from src.data_extract.utils.common.resume import ArchiveWork, ZipScope, archive_worklist, rescan_lineage
 from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
@@ -511,10 +511,8 @@ def fetch_insider_transactions(
         (Tables.insider_transactions,),
         quarters,
         cached_periods(cache),
-        tickers,
-        start_date,
-        full=reparse,
-        lineage=rescan_lineage(identity, (ROLE_WINDOW, ROLE_EVENT)),
+        ZipScope(tickers, start_date, reparse),
+        rescan_lineage(identity, (ROLE_WINDOW, ROLE_EVENT)),
     )
 
     units, rescanned = _insider_work_units(work, cached_periods(cache))

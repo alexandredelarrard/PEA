@@ -202,24 +202,31 @@ def move_filer_rows(store: DataStore, spec: FilerTable, moved: pd.DataFrame) -> 
     records: list[dict] = []
     for (ticker, cik, new), group in moved.groupby(["ticker", spec.cik_col, "new_ticker"], sort=True):
         keys = sorted(group[spec.key_col].astype(str).unique())
-        rows = kept = 0
-        for start in range(0, len(keys), _KEY_CHUNK):
-            chunk = keys[start : start + _KEY_CHUNK]
-            with store.transaction() as bound:
-                where = {"ticker": ticker, spec.cik_col: cik, spec.key_col: chunk}
-                df_rows = bound.load(spec.table, where=where, optional=True)
-                df_held = bound.load(spec.table, columns=list(spec.table.pk), where={"ticker": new, spec.key_col: chunk}, optional=True)
-                df_new = _new_keys(df_rows.assign(ticker=new) if df_rows is not None else pd.DataFrame(), df_held, spec.table.pk)
-                bound.delete(spec.table, where)
-                bound.insert(spec.table, df_new)
-            rows += 0 if df_rows is None else len(df_rows)
-            kept += (0 if df_rows is None else len(df_rows)) - len(df_new)
+        counts = [
+            _move_chunk(store, spec, {"ticker": ticker, spec.cik_col: cik}, new, keys[start : start + _KEY_CHUNK])
+            for start in range(0, len(keys), _KEY_CHUNK)
+        ]
+        rows, kept = sum(count[0] for count in counts), sum(count[1] for count in counts)
         first, last = filing_window(group[spec.date_col])
         records.append(
             {"table": spec.table.name, "ticker": str(ticker), "cik": str(cik), "new_ticker": str(new), "first_filed": first, "last_filed": last}
             | {"rows": rows, "kept": kept}
         )
     return records
+
+
+def _move_chunk(store: DataStore, spec: FilerTable, filer: dict[str, object], new: str, chunk: list[str]) -> tuple[int, int]:
+    """Re-ticker one key chunk of a `filer` (`ticker`, CIK) to `new` in one transaction; returns (rows read, rows dropped
+    because their new primary key is already stored)."""
+    with store.transaction() as bound:
+        where = {**filer, spec.key_col: chunk}
+        df_rows = bound.load(spec.table, where=where, optional=True)
+        df_held = bound.load(spec.table, columns=list(spec.table.pk), where={"ticker": new, spec.key_col: chunk}, optional=True)
+        df_new = _new_keys(df_rows.assign(ticker=new) if df_rows is not None else pd.DataFrame(), df_held, spec.table.pk)
+        bound.delete(spec.table, where)
+        bound.insert(spec.table, df_new)
+    read = 0 if df_rows is None else len(df_rows)
+    return read, read - len(df_new)
 
 
 def _new_keys(rows: pd.DataFrame, held: pd.DataFrame | None, pk: Sequence[str]) -> pd.DataFrame:

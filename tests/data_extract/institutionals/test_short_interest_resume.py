@@ -96,16 +96,60 @@ def test_a_stale_table_resumes_from_its_latest_day(sqlite_store):
 
 
 def test_the_first_run_of_a_new_half_month_plans_a_full_refresh(sqlite_store, caplog):
-    """The latest stored day 06-14 is in 1st-15th June; the run on 06-17 is the first in 16th-end June: full refresh."""
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-14", 1.0, 2.0)]))
-
+    """A run on day D stores at most the business day before D (FINRA publishes D in the evening). Latest 06-12, run on
+    Tue 06-16: the newest storable day 06-15 is still in 1st-15th June, so incremental. Latest 06-15, run 06-17: the
+    newest storable day 06-16 is the first of 16th-end June, so a full refresh."""
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2026-06-12", 1.0, 2.0)]))
     with caplog.at_level(logging.INFO, logger=si.__name__):
-        plan = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2024-06-17"))
+        before = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2026-06-16"))
+    assert not any("half-month" in record.getMessage() for record in caplog.records)
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2026-06-15", 1.0, 2.0)]))
+    with caplog.at_level(logging.INFO, logger=si.__name__):
+        first = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2026-06-17"))
 
-    assert plan.equals(pd.bdate_range("2018-08-01", "2024-06-17")), "a full refresh from the source start"
-    assert any("first run of a new half-month" in record.getMessage() for record in caplog.records), "one log line says why"
     print("\n=== SANITY CHECK: RegSHO day plan, first run of a half-month ===")
-    print(f"  latest 06-14, run 06-17 -> {len(plan)} day files from the 2018-08-01 source start (full refresh).")
+    print(f"  latest 06-12, run 06-16 -> {len(before)} day files from {before[0].date()} (incremental);")
+    print(f"  latest 06-15, run 06-17 -> {len(first)} day files from {first[0].date()} (full refresh).")
+    assert before.equals(pd.bdate_range("2026-06-09", "2026-06-16")), "06-15 is still 1st-15th June: incremental"
+    assert first.equals(pd.bdate_range("2018-08-01", "2026-06-17")), "a full refresh from the source start"
+    assert any("first run of a new half-month" in record.getMessage() for record in caplog.records), "one log line says why"
+
+
+@pytest.mark.parametrize(
+    ("latest", "run", "refresh"),
+    [
+        ("2026-06-30", "2026-07-01", False),  # month end: the newest storable day 06-30 is still June
+        ("2026-06-30", "2026-07-02", True),  # 07-01 is the first day of July
+        ("2026-12-31", "2027-01-01", False),  # year end: the newest storable day 12-31 is still 2026
+        ("2026-12-31", "2027-01-04", True),  # 2027-01-01 is the first business day of 2027
+        ("2026-05-15", "2026-05-16", False),  # the 16th on a Saturday: Sat, Sun and Mon can store at most Fri 15th
+        ("2026-05-15", "2026-05-17", False),
+        ("2026-05-15", "2026-05-18", False),
+        ("2026-05-15", "2026-05-19", True),  # Tue 19th: the newest storable day is Mon 18th
+    ],
+)
+def test_the_half_month_boundaries_follow_the_newest_storable_day(sqlite_store, latest, run, refresh):
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", latest, 1.0, 2.0)]))
+
+    plan = si._plan_days(_context(sqlite_store), False, pd.Timestamp(run))
+
+    print(f"\n=== SANITY CHECK: RegSHO half-month boundary === latest {latest}, run {run} -> plan from {plan[0].date()}")
+    assert (plan[0] == pd.Timestamp("2018-08-01")) is refresh
+
+
+def test_a_year_of_nightly_runs_does_one_full_refresh_per_half_month():
+    """Every calendar day of 2027 runs once and stores the business day before it (holidays ignored): 24 full refreshes."""
+    stored = {"latest": pd.Timestamp("2026-12-31")}
+    context = SimpleNamespace(store=SimpleNamespace(max_date=lambda table: stored["latest"]))
+    refreshes: list[pd.Timestamp] = []
+    for run in pd.date_range("2027-01-01", "2027-12-31"):
+        if si._plan_days(cast(Any, context), False, run)[0] == pd.Timestamp("2018-08-01"):
+            refreshes.append(run)
+        stored["latest"] = run - pd.offsets.BDay(1)
+
+    print(f"\n=== SANITY CHECK: RegSHO refreshes in 2027 === {len(refreshes)} full refreshes (one per half-month expected)")
+    assert len(refreshes) == 24
+    assert len({si._half_month(day - pd.offsets.BDay(1)) for day in refreshes}) == 24, "never two in the same half-month"
 
 
 def test_the_second_run_of_a_half_month_plans_incremental(sqlite_store, caplog):

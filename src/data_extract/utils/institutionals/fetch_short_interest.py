@@ -9,8 +9,9 @@ that symbol's lineage window or inside the span of the stored FTD lines of that 
 issuer's days), or, undated, when its FTD spelling (`finra_key`) is a symbol of a stored FTD line or a universe ticker
 that is no lineage symbol (a CUSIP-6 family class or preferred). The institutionals cube maps the lines to companies and sums the classes (`security_series.short_volume_series`). One file
 covers every ticker, so the day files read are the business days from the earlier of the table's latest day and today
-less the table's overlap, to today; `full`, an empty table and the first run of a new half-month (today's half-month,
-1st-15th or 16th-end, later than the latest stored day's) start at the table's source start, a keyed upsert. FINRA day
+less the table's overlap, to today; `full`, an empty table and the first run of a new half-month (the half-month,
+1st-15th or 16th-end, of the business day before today later than the latest stored day's) start at the table's source
+start, a keyed upsert. FINRA day
 files are not cached, so that half-monthly full refresh is how a symbol newly in scope gets its history. Missing the
 Lit exchange volumes.
 """
@@ -149,15 +150,17 @@ def _half_month(day: pd.Timestamp) -> tuple[int, int, bool]:
 def _plan_days(context: Context, full: bool, as_of: pd.Timestamp | None) -> pd.DatetimeIndex:
     """The business days to read, up to today: from the earlier of the table's latest day and today less its overlap
     (one file serves every ticker, so the latest day is table-wide), or from the source start when `full`, when the table
-    is empty, or on the first run of a half-month (today's half-month is later than the latest stored day's), so a
-    symbol newly in scope gets its history."""
+    is empty, or on the first run of a half-month (the half-month of the business day before today, the newest day a run
+    can store since FINRA publishes a day's file that evening, is later than the latest stored day's), so a symbol newly
+    in scope gets its history."""
     # load: the table's latest stored day
     resume = cast(Resume, Tables.sec_short_volume_security.resume)
     start_date = run_date(as_of)
     latest = context.store.max_date(Tables.sec_short_volume_security)
 
     # plan: a full refresh from the source start, else the incremental days
-    refresh = latest is not None and _half_month(start_date) > _half_month(pd.Timestamp(latest))
+    newest = start_date - pd.offsets.BDay(1)
+    refresh = latest is not None and _half_month(newest) > _half_month(pd.Timestamp(latest))
     if refresh and not full:
         logger.info(
             "RegSHO: first run of a new half-month (latest stored day %s): full refresh from %s", pd.Timestamp(latest).date(), resume.source_start

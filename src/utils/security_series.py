@@ -178,7 +178,7 @@ def _settlement_quantity(summed: pd.DataFrame, basis: ShareBasis) -> pd.Series:
 
 def uncertain_dates(stamped: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     """`[ticker, date]` an unresolved stamped line could belong to: a master row of the company carrying the line's CUSIP
-    or its symbol and covering the line's trade date (X93). The series blocks these dates; a symbol another issuer
+    or its symbol and covering the line's trade date. The series blocks these dates; a symbol another issuer
     reuses outside the company's row, or a line linked to a company only by a lineage symbol, is not the company's."""
     # the unresolved lines, keyed as the master is
     unresolved = stamped.loc[stamped["lineage_role"].isna() | stamped["ticker"].isna()]

@@ -182,8 +182,8 @@ def _settlement_quantity(summed: pd.DataFrame, basis: ShareBasis) -> pd.Series:
 
 def uncertain_dates(stamped: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     """`[ticker, date]` an unresolved stamped line could belong to: a master row of the company carrying the line's CUSIP
-    or its symbol (X93). The series blocks these dates; a line linked to a company only by a lineage symbol is not the
-    company's."""
+    or its symbol and covering the line's trade date (X93). The series blocks these dates; a symbol another issuer
+    reuses outside the company's row, or a line linked to a company only by a lineage symbol, is not the company's."""
     # the unresolved lines, keyed as the master is
     unresolved = stamped.loc[stamped["lineage_role"].isna() | stamped["ticker"].isna()]
     keys = pd.DataFrame(
@@ -191,14 +191,16 @@ def uncertain_dates(stamped: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame
             "cusip": unresolved["cusip"].astype(str).str.strip().str.upper(),
             "source_symbol": unresolved["source_symbol"].fillna("").map(normalise_ticker),
             "date": pd.to_datetime(unresolved["date"]).dt.normalize(),
+            "trade_date": pd.to_datetime(unresolved["trade_date"]),
         }
     )
 
-    # the companies whose master rows carry the CUSIP or the symbol
+    # the companies whose master rows carry the CUSIP or the symbol on the line's trade date
     owners = master.dropna(subset=["canonical_company"])
-    by_cusip = keys.merge(owners[["cusip", "canonical_company"]].drop_duplicates(), on="cusip")
-    named = owners.loc[owners["source_symbol"].ne(""), ["source_symbol", "canonical_company"]].drop_duplicates()
-    by_symbol = keys.loc[keys["source_symbol"].ne("")].merge(named, on="source_symbol")
+    spans = ["canonical_company", "valid_from", "valid_to"]
+    by_cusip = _covering(keys.merge(owners[["cusip", *spans]], on="cusip"))
+    named = owners.loc[owners["source_symbol"].ne(""), ["source_symbol", *spans]]
+    by_symbol = _covering(keys.loc[keys["source_symbol"].ne("")].merge(named, on="source_symbol"))
     touched = pd.concat([by_cusip, by_symbol], ignore_index=True).rename(columns={"canonical_company": "ticker"})
     return touched[["ticker", "date"]].drop_duplicates().reset_index(drop=True)
 
@@ -506,13 +508,14 @@ def _supported_short(universe: Collection[str], days: np.ndarray, master: pd.Dat
 
 
 def _blocked_short(stamped: pd.DataFrame, master: pd.DataFrame, universe: Collection[str], days: np.ndarray) -> pd.DataFrame:
-    """`[ticker, date]` with no checked absence: an unresolved unmarked line whose key is any summed line of the company,
-    and the dates a summed line of a `universe` company covers with an invalid ratio."""
+    """`[ticker, date]` with no checked absence: an unresolved unmarked line whose key is a summed line of the company
+    covering its day, and the dates a summed line of a `universe` company covers with an invalid ratio."""
     unresolved = stamped.loc[stamped["lineage_role"].isna()]
     symbol = unresolved["source_symbol"].astype(str)
     keyed = pd.DataFrame({"key": _by_symbol(symbol, finra_key).astype(str), "date": unresolved["date"]}).loc[_by_symbol(symbol, finra_marker_kind).isna()]
-    owners = master.loc[master["ticker"].notna() & master["lineage_role"].isin(SUMMED_ROLES), ["key", "ticker"]].drop_duplicates()
-    incomplete = keyed.merge(owners, on="key")[["ticker", "date"]]
+    owners = master.loc[master["ticker"].notna() & master["lineage_role"].isin(SUMMED_ROLES), ["key", "ticker", "valid_from", "valid_to"]]
+    incomplete = keyed.merge(owners, on="key")
+    incomplete = incomplete.loc[incomplete["date"].ge(incomplete["valid_from"]) & incomplete["date"].lt(incomplete["valid_to"]), ["ticker", "date"]]
     ratio = master["conversion_ratio"]
     bad = master.loc[master["ticker"].isin(set(universe)) & master["lineage_role"].isin(SUMMED_ROLES) & ~(np.isfinite(ratio) & ratio.gt(0))]
     invalid = _day_spans(bad.rename(columns={"valid_from": "start", "valid_to": "stop"}), days)

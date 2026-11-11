@@ -107,6 +107,47 @@ def test_classes_sum_times_ratio_with_a_supported_absence_and_a_lineage_fallback
     print("  AAA, never in FTD, maps through its window CIK as S0000000100:AAA (30 / 300); the builders' four columns kept.")
 
 
+def test_an_unresolved_finra_key_blocks_a_company_only_inside_its_master_line(sqlite_store):
+    """R-C-01: META's FB line ends 2022-06-09. In 2021 two symbols sharing the key FB clash, so META's date is unknown;
+    in 2025 `FB` is a ProShares ETF with no covering line and META's date keeps its own META line."""
+    meta = [
+        ("META", "FB", 1.0, "2012-05-18", "2022-06-09", "C30303M102", "ftd", "FB", "common", "canonical_current", "30303M102"),
+        ("META", "META", 1.0, "2022-06-09", None, "C30303M102", "ftd", "META", "common", "canonical_current", "30303M102"),
+    ]
+    master = pd.DataFrame(meta, columns=LINE_READ)
+    master = master.assign(valid_from=pd.to_datetime(master["valid_from"]), valid_to=pd.to_datetime(master["valid_to"]))
+    lineage = pd.DataFrame(
+        [
+            ("E0001326801", "META", "0001326801", "cik_window", "", "1900-01-01", None),
+            ("E0001326801", "META", "0001326801", "symbol", "FB", "2012-05-18", "2022-06-09"),
+            ("E0001326801", "META", "0001326801", "symbol", "META", "2022-06-09", None),
+        ],
+        columns=["company_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to"],
+    )
+    lineage = lineage.assign(
+        valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"]), status="corroborated", sources="roster"
+    )[LINEAGE_READ]
+    sqlite_store.save(
+        Tables.sec_short_volume_security,
+        _stored(
+            [
+                ("2021-06-15", "FB", 100.0, 200.0),
+                ("2021-06-15", "F/B", 3.0, 6.0),
+                ("2025-06-17", "META", 50.0, 100.0),
+                ("2025-06-17", "FB", 9.0, 30.0),
+            ]
+        ),
+    )
+
+    short, _ = inputs.load_short_volume(sqlite_store, ["META"], master, lineage)
+
+    assert short is not None
+    got = {f"{d:%Y-%m-%d}": (s, v) for d, _, s, v in short.itertuples(index=False)}
+    assert got == {"2025-06-17": (50.0, 100.0)}, got
+    print("\nSANITY: the FB / F/B clash blocks META on 2021-06-15 (META's FB line covers the day); the 2025 ProShares FB")
+    print(f"  line does not (the FB line ended 2022-06-09): META 2025-06-17 = {got.get('2025-06-17')}")
+
+
 # --------------------------------------------------------------------------- known-truth rules (ported from the extraction stamp)
 
 # The real Q2a master rows and the hand-written E25 lineage of `test_short_volume_security`.

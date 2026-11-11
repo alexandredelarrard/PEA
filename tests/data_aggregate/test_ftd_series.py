@@ -60,8 +60,9 @@ def _stored(rows: list[tuple[str, str, str, float, float]]) -> pd.DataFrame:
 
 
 def test_class_lines_sum_times_ratio_with_supported_zeros_and_an_uncertain_date(sqlite_store):
-    """03-04: BRK-A 2 + BRK-B 100 = 3,100 B shares; 03-05: no Berkshire line -> 0; 03-06: a BRK-A line after its line ended
-    is unresolved, so the date is unknown for BRK-B, never 0 or 3,100."""
+    """03-04: BRK-A 2 + BRK-B 100 = 3,100 B shares; 03-05: no Berkshire line -> 0; 03-06: a BRKB line on a CUSIP the
+    master lacks is unresolved inside BRK-B's BRKB row, so the date is unknown for BRK-B, never 0 or 3,100; 03-07: a BRK-A
+    line after its row ended is not BRK-B's (the CUSIP match is dated too), so 03-07 is a supported zero."""
     sqlite_store.save(
         Tables.sec_fails_to_deliver_security,
         _stored(
@@ -71,7 +72,9 @@ def test_class_lines_sum_times_ratio_with_supported_zeros_and_an_uncertain_date(
                 ("2025-03-04", AAPL, "AAPL", 10.0, 240.0),
                 ("2025-03-05", AAPL, "AAPL", 5.0, 241.0),
                 ("2025-03-06", AAPL, "AAPL", 7.0, 242.0),
-                ("2025-03-06", BRK_A, "BRKA", 1.0, 700_000.0),
+                ("2025-03-06", "084670999", "BRKB", 1.0, 470.0),
+                ("2025-03-07", AAPL, "AAPL", 8.0, 243.0),
+                ("2025-03-07", BRK_A, "BRKA", 1.0, 700_000.0),
             ]
         ),
     )
@@ -79,15 +82,53 @@ def test_class_lines_sum_times_ratio_with_supported_zeros_and_an_uncertain_date(
     fails, coverage = inputs.load_fails(sqlite_store, ["AAPL", "BRK-B"], _lines(), {})
 
     got = {(t, f"{d:%m-%d}"): q for t, d, q in fails[["ticker", "date", "fails_quantity"]].itertuples(index=False)}
-    assert got == {("AAPL", "03-04"): 10.0, ("AAPL", "03-05"): 5.0, ("AAPL", "03-06"): 7.0, ("BRK-B", "03-04"): 3_100.0, ("BRK-B", "03-05"): 0.0}
-    assert fails.loc[fails["ticker"].eq("BRK-B"), "fails_value"].tolist() == [2 * 700_000.0 + 100 * 470.0, 0.0]
-    assert pd.to_datetime(coverage["date"]).dt.strftime("%m-%d").tolist() == ["03-04", "03-05", "03-06"]
+    aapl = {("AAPL", "03-04"): 10.0, ("AAPL", "03-05"): 5.0, ("AAPL", "03-06"): 7.0, ("AAPL", "03-07"): 8.0}
+    assert got == {**aapl, ("BRK-B", "03-04"): 3_100.0, ("BRK-B", "03-05"): 0.0, ("BRK-B", "03-07"): 0.0}, got
+    assert fails.loc[fails["ticker"].eq("BRK-B"), "fails_value"].tolist() == [2 * 700_000.0 + 100 * 470.0, 0.0, 0.0]
+    assert pd.to_datetime(coverage["date"]).dt.strftime("%m-%d").tolist() == ["03-04", "03-05", "03-06", "03-07"]
 
-    idx = pd.DatetimeIndex(pd.to_datetime(["2025-03-04", "2025-03-05", "2025-03-06"]))
+    idx = pd.DatetimeIndex(pd.to_datetime(["2025-03-04", "2025-03-05", "2025-03-06", "2025-03-07"]))
     settlement = prepare_fails_quantities(fails, coverage, idx, pd.Index(["AAPL", "BRK-B"], name="ticker"), None)
-    assert settlement.quantities["BRK-B"].tolist()[:2] == [3_100.0, 0.0] and np.isnan(settlement.quantities["BRK-B"].iloc[2])
+    brk = settlement.quantities["BRK-B"].tolist()
+    assert brk[:2] == [3_100.0, 0.0] and np.isnan(brk[2]) and brk[3] == 0.0
     print("\nSANITY: BRK-B 03-04 = 2 x 1,500 + 100 = 3,100 (dollars summed as filed); 03-05 a supported zero; 03-06 unknown")
-    print(f"  (an unresolved BRK-A line); AAPL {settlement.quantities['AAPL'].tolist()}; the builder frame carries the same values.")
+    print(f"  (an unresolved in-window BRKB line); 03-07 a zero (the BRK-A row ended); AAPL {settlement.quantities['AAPL'].tolist()}.")
+
+
+META_CUSIP, PROSHARES_FB, OTHER_FB = "30303M102", "74349Y101", "74349Y999"
+
+
+def _meta_lines() -> pd.DataFrame:
+    """META's one CUSIP listed as FB until 2022-06-09 (trade-date basis), then as META."""
+    rows = [
+        ("META", "FB", 1.0, "2012-05-18", "2022-06-09", f"C{META_CUSIP}", "ftd", "FB", "common", "canonical_current", META_CUSIP),
+        ("META", "META", 1.0, "2022-06-09", None, f"C{META_CUSIP}", "ftd", "META", "common", "canonical_current", META_CUSIP),
+    ]
+    frame = pd.DataFrame(rows, columns=LINE_READ)
+    return frame.assign(valid_from=pd.to_datetime(frame["valid_from"]), valid_to=pd.to_datetime(frame["valid_to"]))
+
+
+def test_an_unresolved_symbol_line_blocks_a_company_only_inside_its_symbol_row(sqlite_store):
+    """R-C-01: an unresolved `FB` line (a CUSIP the master lacks) blocks META in 2021, when META's FB row covers its trade
+    date, and not in 2025, when `FB` is a ProShares ETF: META's 2025 date keeps its own line's sum."""
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver_security,
+        _stored(
+            [
+                ("2021-06-15", META_CUSIP, "FB", 100.0, 330.0),
+                ("2021-06-15", OTHER_FB, "FB", 7.0, 20.0),
+                ("2025-06-17", META_CUSIP, "META", 50.0, 690.0),
+                ("2025-06-17", PROSHARES_FB, "FB", 9.0, 30.0),
+            ]
+        ),
+    )
+
+    fails, _ = inputs.load_fails(sqlite_store, ["META"], _meta_lines(), {})
+
+    got = {f"{d:%Y-%m-%d}": q for d, q in fails[["date", "fails_quantity"]].itertuples(index=False)}
+    assert got == {"2025-06-17": 50.0}, got
+    print("\nSANITY: an FB line on an unknown CUSIP blocks META on 2021-06-15 (META's FB row covers it) but not on")
+    print(f"  2025-06-17 (FB row ended 2022-06-09): META 2025-06-17 = its own line, {got.get('2025-06-17')}")
 
 
 def test_real_stored_lines_reach_the_builder_as_company_series() -> None:

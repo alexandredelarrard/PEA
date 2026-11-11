@@ -599,7 +599,7 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
     _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13g()
 
 
-@cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
+@cli.command(help="Filing text: 10-K Item 1 (Business) + Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)

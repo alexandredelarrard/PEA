@@ -1,4 +1,4 @@
-"""10-K Item 1A (Risk Factors) + Item 7 (MD&A) and 10-Q Item 2 (MD&A) as raw text.
+"""10-K Item 1 (Business), Item 1A (Risk Factors) and Item 7 (MD&A), and 10-Q Item 2 (MD&A), as raw text.
 
 Writes `sec_filing_text`, one row per (ticker, accession, section). Primary path: edgartools' typed
 `TenK`/`TenQ` section parser; fallback: a regex carve over the filing text, used only for a section the
@@ -18,6 +18,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, Filing
 from src.data_extract.utils.edgar_extract.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_store.schema import Tables
 
+FILING_SECTION_BUSINESS = "business"  # 10-K Item 1
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
 FILING_SECTION_MDA = "mda"  # 10-K Item 7 / 10-Q Item 2
 FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
@@ -25,9 +26,19 @@ FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
 _MAX_CHARS = 300_000  # cap a stored section (risk factors can be enormous)
 
 # Item markers are content-anchored; the "management's" apostrophe is matched with \W because EDGAR encodes it several ways.
-# Risk Factors (10-K Item 1A) ends at Item 1B, Item 1C (for filers that omit 1B) or Item 2 (Properties).
-_RISK_START = item_heading("1a", r"risk\s+factors")
-_RISK_END = re.compile(rf"item{ITEM_SEP}1b\b|item{ITEM_SEP}1c\b|unresolved\s+staff\s+comments|item{ITEM_SEP}2\b{ITEM_SEP}propert", re.I)
+# Business and Risk Factors match headings that start a line: a cross-reference ("described in Item 1A") sits inside a
+# sentence. Business ("Item 1.", "Items 1 and 2.", "Description of Business") ends at the next Item 1A/1B/2/3 heading,
+# whatever its caption (filers before 2005 have no Item 1A).
+_LINE_SEP = rf"(?:{ITEM_SEP}\|?{ITEM_SEP})"  # "Item 1 | Business" (table-cell headings) besides "Item 1. -"
+_BUSINESS_START = re.compile(
+    rf"^[ \t]*items?{_LINE_SEP}1\b(?:{_LINE_SEP}(?:and|&){_LINE_SEP}(?:items?{_LINE_SEP})?2\b)?{_LINE_SEP}"
+    r"(?:description\s+of\s+(?:the\s+)?)?business[^\n]*",
+    re.I | re.M,
+)
+_BUSINESS_END = re.compile(rf"^[ \t]*item{_LINE_SEP}(?:1a|1b|2|3)\b", re.I | re.M)
+# Risk Factors (10-K Item 1A) ends at Item 1B, Item 1C (for filers that omit 1B) or Item 2.
+_RISK_START = re.compile(rf"^[ \t]*item{_LINE_SEP}1a\b{_LINE_SEP}risk\s+factors[^\n]*", re.I | re.M)
+_RISK_END = re.compile(rf"^[ \t]*(?:item{_LINE_SEP}(?:1b|1c|2)\b|unresolved\s+staff\s+comments)", re.I | re.M)
 # MD&A start: 10-K Item 7, 10-Q Item 2, each followed by "management".
 _MDA_START_10K = item_heading(7, "management")
 _MDA_START_10Q = item_heading(2, "management")
@@ -42,17 +53,28 @@ _MDA_END_10Q_FALL = re.compile(rf"item{ITEM_SEP}4\b{ITEM_SEP}controls|part{ITEM_
 # broader at END so an intro cross-reference cannot truncate the body.
 _CROSS_REFS = CrossRefCues(
     start=re.compile(r"\b(see|refer|conjunction|pursuant|incorporat)\b\W{0,4}$", re.I),
-    end=re.compile(r"\b(see|refer|conjunction|pursuant|incorporat|with|under|within)\b\W{0,4}$", re.I),
+    end=re.compile(r"\b(see|refer|conjunction|pursuant|incorporat|with|under|within|in)\b\W{0,4}$", re.I),
 )
 
 
-def _best_span(text: str, start_re: re.Pattern, min_chars: int, end_primary: re.Pattern, end_fallback: re.Pattern | None = None) -> str | None:
+def _best_span(
+    text: str,
+    start_re: re.Pattern,
+    min_chars: int,
+    end_primary: re.Pattern,
+    end_fallback: re.Pattern | None = None,
+    *,
+    require_end: bool = False,
+) -> str | None:
     """The LONGEST body between a real start HEADING and the next real end HEADING (cross-references
     skipped at both ends; `end_fallback` only when no primary end follows the start), compared on
-    whitespace-stripped bounds. None if no span reaches `min_chars`."""
+    whitespace-stripped bounds. `require_end` drops a span that runs to the end of the text. None if no
+    span reaches `min_chars`."""
     best_s = best_e = 0
     fallback = (end_fallback,) if end_fallback is not None else ()
     for s, e in carve_spans(text, start_re, (end_primary,), fallback_end_res=fallback, cross_refs=_CROSS_REFS):
+        if require_end and e == len(text):
+            continue
         while s < e and text[s].isspace():
             s += 1
         while e > s and text[e - 1].isspace():
@@ -65,7 +87,7 @@ def _best_span(text: str, start_re: re.Pattern, min_chars: int, end_primary: re.
 def extract_item_sections(text: str, form: str) -> dict[str, str]:
     """{section: body_text} carved from a filing's plain text (the fallback path).
 
-    10-K -> Risk Factors (Item 1A) + MD&A (Item 7); 10-Q -> MD&A (Item 2) only. MD&A tries the
+    10-K -> Business (Item 1) + Risk Factors (Item 1A) + MD&A (Item 7); 10-Q -> MD&A (Item 2) only. MD&A tries the
     form's item anchor first, then the standalone title."""
     if not text or len(text) < FILING_TEXT_MIN_CHARS:
         return {}
@@ -75,8 +97,11 @@ def extract_item_sections(text: str, form: str) -> dict[str, str]:
     end_fall = _MDA_END_10K_FALL if is_10k else _MDA_END_10Q_FALL
 
     out: dict[str, str] = {}
-    if is_10k:  # substantive annual risk factors
-        rf = _best_span(text, _RISK_START, FILING_TEXT_MIN_CHARS, _RISK_END)
+    if is_10k:  # substantive annual business description and risk factors
+        business = _best_span(text, _BUSINESS_START, FILING_TEXT_MIN_CHARS, _BUSINESS_END, require_end=True)
+        if business:
+            out[FILING_SECTION_BUSINESS] = business
+        rf = _best_span(text, _RISK_START, FILING_TEXT_MIN_CHARS, _RISK_END, require_end=True)
         if rf:
             out[FILING_SECTION_RISK] = rf
     md = _best_span(text, mda_start, FILING_TEXT_MIN_CHARS, end_pri, end_fall)
@@ -93,6 +118,9 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
     is_10k = str(form).upper().startswith("10-K")
     try:
         if is_10k:
+            business = obj.business
+            if business and len(business) >= FILING_TEXT_MIN_CHARS:
+                out[FILING_SECTION_BUSINESS] = business[:_MAX_CHARS]
             rf = obj.risk_factors
             if rf and len(rf) >= FILING_TEXT_MIN_CHARS:
                 out[FILING_SECTION_RISK] = rf[:_MAX_CHARS]
@@ -107,15 +135,17 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
 
 
 def _filing_sections(filing: Any) -> dict[str, str]:
-    """Structured sections from the parsed filing, with the regex carve filling whichever section it missed."""
+    """Structured sections from the parsed filing, with the regex carve filling whichever section it missed. A 10-K's
+    Business takes the carve whenever it finds one: edgartools' Item 1 can stop at a sub-heading inside the item."""
     form = filing.form
-    needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}
+    is_10k = str(form).upper().startswith("10-K")
+    needed = {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA} if is_10k else {FILING_SECTION_MDA}
     try:
         obj = filing_obj(filing)
     except ParseFailureError:
         obj = None
     sections = _structured_sections(obj, form) if obj is not None else {}
-    missing = needed - sections.keys()
+    missing = needed - (sections.keys() - {FILING_SECTION_BUSINESS})
     if not missing:
         return sections
     try:

@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.edgar_extract.fetch_filing_text import (
+    FILING_SECTION_BUSINESS,
     FILING_SECTION_MDA,
     FILING_SECTION_RISK,
     FILING_TEXT_FETCH,
@@ -34,6 +35,14 @@ def _pad(text: str, min_chars: int = FILING_TEXT_MIN_CHARS) -> str:
 
 # --- Real-data-shaped 10-K sample (trimmed excerpt style, like the 13D fixture) - #
 _REAL_10K_TEXT_SAMPLE = f"""
+Table of Contents
+Item 1. Business 3
+Item 1A. Risk Factors 9
+
+Item 1. Business
+
+{_pad("The Company designs, manufactures and markets smartphones and personal computers. See Item 1A for risks.")}
+
 Item 1A. Risk Factors
 
 {_pad("Our business is subject to numerous risks, including competition, regulation.")}
@@ -51,6 +60,59 @@ Item 7A. Quantitative and Qualitative Disclosures About Market Risk
 We are exposed to interest rate and foreign currency risk.
 """
 
+# A 10-K filed before 2005 has no Item 1A: Business runs to Item 2 (Properties).
+_PRE_2005_10K_TEXT_SAMPLE = f"""
+Item 1. Business
+
+{_pad("The Company operates retail stores selling general merchandise and groceries.")}
+
+Item 2. Properties
+
+The Company owns its headquarters.
+"""
+
+# Cross-references inside sentences (Item 1 pointing at Item 1A, MD&A pointing back at Items 1 and 1A) are not headings:
+# Business must keep its whole body and neither section may be re-anchored on the MD&A mention.
+_CROSS_REF_10K_TEXT_SAMPLE = f"""
+Item 1. Business
+
+{_pad("The Company sells industrial equipment. These risks are described in Item 1A. Risk Factors of this report.")}
+KEEP-AFTER-CROSS-REF {_pad("Our segments are Machinery and Services.")}
+
+Item 1A. Risk Factors
+
+{_pad("Demand for our equipment is cyclical.")}
+
+Item 1B. Unresolved Staff Comments
+
+None.
+
+Item 7. Management's Discussion and Analysis
+
+{_pad("As discussed in Item 1. Business, our segments grew. Risks described in Item 1A. Risk Factors remain.")}
+{_pad("FINANCIAL STATEMENTS AND PART III TEXT THAT IS NOT BUSINESS ", 6000)}
+"""
+
+# Headings older filers use: combined Items 1 and 2, "Description of Business", "Description of Property".
+_COMBINED_10K_TEXT_SAMPLE = f"""
+Items 1 and 2. Business and Properties
+
+{_pad("The Trust owns shopping centers across the United States.")}
+
+Item 3. Legal Proceedings
+
+None.
+"""
+_DESCRIPTION_10K_TEXT_SAMPLE = f"""
+Item 1. Description of Business
+
+{_pad("The Bank takes deposits and makes commercial loans.")}
+
+Item 2. Description of Property
+
+The Bank owns its branches.
+"""
+
 _REAL_10Q_TEXT_SAMPLE = f"""
 Item 2. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
@@ -62,17 +124,45 @@ No material change.
 """
 
 
-def test_extract_item_sections_10k_recovers_risk_and_mda():
+def test_extract_item_sections_10k_recovers_business_risk_and_mda():
     sections = extract_item_sections(_REAL_10K_TEXT_SAMPLE, "10-K")
+    business = sections[FILING_SECTION_BUSINESS]
+    assert business.startswith("The Company designs") and "Risk Factors" not in business, business[:200]
     assert "numerous risks" in sections[FILING_SECTION_RISK]
     assert "Revenue increased" in sections[FILING_SECTION_MDA]
 
 
+def test_extract_item_sections_pre_2005_business_ends_at_properties():
+    business = extract_item_sections(_PRE_2005_10K_TEXT_SAMPLE, "10-K")[FILING_SECTION_BUSINESS]
+    assert business.startswith("The Company operates retail stores") and "headquarters" not in business
+
+
+def test_extract_item_sections_ignores_cross_references():
+    sections = extract_item_sections(_CROSS_REF_10K_TEXT_SAMPLE, "10-K")
+    business, risk = sections[FILING_SECTION_BUSINESS], sections[FILING_SECTION_RISK]
+    assert business.startswith("The Company sells industrial equipment") and "KEEP-AFTER-CROSS-REF" in business, business[:300]
+    assert "FINANCIAL STATEMENTS" not in business
+    assert risk.startswith("Demand for our equipment") and "FINANCIAL STATEMENTS" not in risk, risk[:300]
+
+
+def test_extract_item_sections_older_business_headings():
+    combined = extract_item_sections(_COMBINED_10K_TEXT_SAMPLE, "10-K")[FILING_SECTION_BUSINESS]
+    assert combined.startswith("The Trust owns shopping centers") and "Legal Proceedings" not in combined
+    described = extract_item_sections(_DESCRIPTION_10K_TEXT_SAMPLE, "10-K")[FILING_SECTION_BUSINESS]
+    assert described.startswith("The Bank takes deposits") and "branches" not in described
+
+
+def test_extract_item_sections_business_without_an_end_heading_is_not_stored():
+    """A Business heading with no later Item heading would run to the end of the filing: nothing is stored."""
+    text = "Item 1. Business\n\n" + _pad("Body with no end.", 5000)
+    assert FILING_SECTION_BUSINESS not in extract_item_sections(text, "10-K")
+
+
 def test_extract_item_sections_10q_recovers_mda_only():
-    """10-Q must never carry a risk_factors key (Part II Item 1A is usually
+    """10-Q must never carry a business or risk_factors key (Part II Item 1A is usually
     'no material change' -- deliberately not extracted, per module docstring)."""
     sections = extract_item_sections(_REAL_10Q_TEXT_SAMPLE, "10-Q")
-    assert FILING_SECTION_RISK not in sections
+    assert FILING_SECTION_RISK not in sections and FILING_SECTION_BUSINESS not in sections
     assert "Net sales" in sections[FILING_SECTION_MDA]
 
 
@@ -81,13 +171,16 @@ def test_extract_item_sections_below_min_chars_returns_empty():
 
 
 # --- PRIMARY: edgartools structured TenK/TenQ access -------------------------- #
-def _fake_ten_k(risk_factors=None, management_discussion=None):
-    return SimpleNamespace(risk_factors=risk_factors, management_discussion=management_discussion)
+def _fake_ten_k(risk_factors=None, management_discussion=None, business=None):
+    return SimpleNamespace(business=business, risk_factors=risk_factors, management_discussion=management_discussion)
 
 
 def test_structured_sections_reads_ten_k_named_properties():
-    obj = _fake_ten_k(risk_factors=_pad("structured risk body"), management_discussion=_pad("structured mda body"))
+    obj = _fake_ten_k(
+        risk_factors=_pad("structured risk body"), management_discussion=_pad("structured mda body"), business=_pad("structured business body")
+    )
     sections = _structured_sections(obj, "10-K")
+    assert "structured business body" in sections[FILING_SECTION_BUSINESS]
     assert "structured risk body" in sections[FILING_SECTION_RISK]
     assert "structured mda body" in sections[FILING_SECTION_MDA]
 
@@ -145,6 +238,7 @@ def test_filing_sections_falls_back_to_regex_carve_when_structured_empty():
     obj = _fake_ten_k(risk_factors=None, management_discussion=None)
     filing = _fake_filing(obj=obj, text=_REAL_10K_TEXT_SAMPLE)
     sections = _filing_sections(filing)
+    assert "smartphones" in sections[FILING_SECTION_BUSINESS]
     assert "numerous risks" in sections[FILING_SECTION_RISK]
     assert "Revenue increased" in sections[FILING_SECTION_MDA]
 
@@ -158,6 +252,15 @@ def test_filing_sections_only_falls_back_for_the_missing_section():
     sections = _filing_sections(filing)
     assert "STRUCTURED RISK BODY MARKER" in sections[FILING_SECTION_RISK]
     assert "Revenue increased" in sections[FILING_SECTION_MDA]
+
+
+def test_filing_sections_business_prefers_the_carve_and_keeps_edgartools_otherwise():
+    """Business takes the regex carve over edgartools' Item 1 when the carve finds it, and keeps edgartools' when not."""
+    obj = _fake_ten_k(risk_factors=_pad("STRUCTURED RISK"), management_discussion=_pad("STRUCTURED MDA"), business=_pad("STRUCTURED BUSINESS"))
+    carved = _filing_sections(_fake_filing(obj=obj, text=_REAL_10K_TEXT_SAMPLE))
+    assert "smartphones" in carved[FILING_SECTION_BUSINESS] and "STRUCTURED RISK" in carved[FILING_SECTION_RISK]
+    kept = _filing_sections(_fake_filing(obj=obj, text=_REAL_10Q_TEXT_SAMPLE))
+    assert "STRUCTURED BUSINESS" in kept[FILING_SECTION_BUSINESS]
 
 
 def test_filing_sections_survives_a_totally_unparseable_filing():
@@ -175,11 +278,11 @@ def _parse(filing) -> pd.DataFrame:
     ]
 
 
-def test_filing_text_parse_returns_both_sections_stamped_with_the_filing_date():
-    obj = _fake_ten_k(risk_factors=_pad("risk body"), management_discussion=_pad("mda body"))
+def test_filing_text_parse_returns_all_sections_stamped_with_the_filing_date():
+    obj = _fake_ten_k(risk_factors=_pad("risk body"), management_discussion=_pad("mda body"), business=_pad("business body"))
     out = _parse(_fake_filing(accession="0001-new", filing_date="2024-06-01", obj=obj))
     assert set(out["accession_number"]) == {"0001-new"}
-    assert set(out["section"]) == {FILING_SECTION_RISK, FILING_SECTION_MDA}
+    assert set(out["section"]) == {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA}
     assert (out["filed"] == pd.Timestamp("2024-06-01")).all()
 
 
@@ -190,11 +293,13 @@ def test_filing_text_parse_returns_no_rows_for_an_unparseable_filing():
 
 def test_sanity_check_prints_conclusion():
     print("\n=== SANITY CHECK: edgartools 10-K/10-Q filing-text extraction ===")
-    print("  Structured PRIMARY path (TenK.risk_factors/.management_discussion,")
+    print("  Structured PRIMARY path (TenK.business/.risk_factors/.management_discussion,")
     print("  TenQ['Part I, Item 2']) is used first; a stub/cross-reference result under")
     print("  FILING_TEXT_MIN_CHARS is discarded so ONLY that missing section falls back")
     print("  to the hardened regex carve over filing.text() -- the other, successfully")
     print("  structured section passes through untouched (not re-derived/overwritten).")
+    print("  10-K Item 1 (Business) and Item 1A match headings that start a line: in-sentence cross-references neither")
+    print("  start nor cut a section; Business ends at the next Item 1A/1B/2/3 heading, else nothing is stored.")
     print("  Both .obj() and .text() failing yields an empty dict, not a crash.")
     print("  FILING_TEXT_FETCH.parse returns one filing's rows keyed by destination table; the")
     print("  shared driver lists only unstored index filings. No local HTML cache involved anywhere.")

@@ -398,7 +398,7 @@ def _add_frames(frames: dict[Table, list[pd.DataFrame]], outcome: dict[Table, pd
             frames.setdefault(table, []).append(df)
 
 
-def _save_key(
+def save_key(
     context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]], *, rewrite: bool = False
 ) -> tuple[dict[Table, int], bool]:
     """Upsert one key's frames, the done table last. Returns `(rows per table, failed_save)`; after a
@@ -454,7 +454,7 @@ def _walk_key(context: Context, fetch: EdgarFetch, identity: Identity, units: di
     """The pool worker: read then save one key's listed documents."""
     df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
     frames, failed, markers = _read_key(fetch, identity, ticker, cik, df_units)
-    saved, failed_save = (fetch.save or _save_key)(context, fetch, ticker, frames)
+    saved, failed_save = (fetch.save or save_key)(context, fetch, ticker, frames)
     if failed_save:
         return KeyOutcome(listed=len(df_units), failed=df_units, saved=saved)
     return KeyOutcome(listed=len(df_units), failed=failed, markers=markers, saved=saved)
@@ -598,7 +598,7 @@ def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_w
         if prepared.parse is None:
             raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
         if run.full and prepared.rewrite_on_full:
-            prepared = replace(prepared, save=partial(_save_key, rewrite=True))
+            prepared = replace(prepared, save=partial(save_key, rewrite=True))
         context.ensure_edgar_identity()
         configure(context)
         work = plan_fetch(context, prepared, run)

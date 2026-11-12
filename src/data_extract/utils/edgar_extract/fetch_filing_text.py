@@ -3,25 +3,31 @@
 Writes `sec_filing_text`, one row per (ticker, accession, section). Primary path: edgartools' typed
 `TenK`/`TenQ` section parser; fallback: a regex carve over the filing text, used only for a section the
 structured parse missed or returned as a sub-`FILING_TEXT_MIN_CHARS` stub. A transient SEC failure
-raises and fails the filing; a parse failure falls back as above; a filing with no readable section
-becomes an empty-filing marker.
+raises and fails the filing; a parse failure falls back as above. An expected section the filing lacks
+(Items 1, 1A and 7 for an original 10-K, MD&A for any other form) is stored as an empty-text row, so a
+filing is done once every expected section has a row, and one with a missing row is read again.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from functools import partial
 from typing import Any
 
+import pandas as pd
+
+from src.context import Context
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows, save_key
 from src.data_extract.utils.edgar_extract.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 
 FILING_SECTION_BUSINESS = "business"  # 10-K Item 1
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
 FILING_SECTION_MDA = "mda"  # 10-K Item 7 / 10-Q Item 2
 FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
+_TEN_K_SECTIONS = (FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA)
 
 _MAX_CHARS = 300_000  # cap a stored section (risk factors can be enormous)
 
@@ -139,7 +145,7 @@ def _filing_sections(filing: Any) -> dict[str, str]:
     Business takes the carve whenever it finds one: edgartools' Item 1 can stop at a sub-heading inside the item."""
     form = filing.form
     is_10k = str(form).upper().startswith("10-K")
-    needed = {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA} if is_10k else {FILING_SECTION_MDA}
+    needed = set(_TEN_K_SECTIONS) if is_10k else {FILING_SECTION_MDA}
     try:
         obj = filing_obj(filing)
     except ParseFailureError:
@@ -163,11 +169,15 @@ def _filing_sections(filing: Any) -> dict[str, str]:
     return sections
 
 
+def expected_sections(form: object) -> tuple[str, ...]:
+    """The sections a filing of `form` must hold a row for: Items 1, 1A and 7 for an original 10-K, MD&A otherwise."""
+    return _TEN_K_SECTIONS if str(form).upper() == "10-K" else (FILING_SECTION_MDA,)
+
+
 def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
-    """One row per extracted section of the filing; none when no section could be read."""
-    sections = _filing_sections(stamp.filing)
-    if not sections:
-        return []
+    """One row per section read, plus an empty-text row (NULL `text`, 0 words) for each expected section the filing
+    lacks: that row records the attempt, so the filing is not read again."""
+    sections: dict[str, str | None] = {**dict.fromkeys(expected_sections(stamp.form)), **_filing_sections(stamp.filing)}
     stamped = stamp.columns(Tables.filing_risk_text)
     return [
         {
@@ -176,13 +186,61 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
             **stamped,
             "section": section,
             "text": body,
-            "n_words": len(body.split()),
+            "n_words": len(body.split()) if body else 0,
         }
         for section, body in sections.items()
     ]
 
 
+def filing_text_done(context: Context, keys: Sequence[str], runtime_floor: pd.Timestamp | None) -> dict[str, set[str]]:
+    """Accessions holding a row, text or empty, for every section their form expects (`expected_sections`; an
+    accession is a 10-K when any of its rows says so). An empty-filing marker is no section, so its filing is read
+    once more."""
+    rows = context.store.load(
+        Tables.filing_risk_text, columns=["ticker", "accession_number", "form", "section"], where={"ticker": list(keys)}, optional=True
+    )
+    done: dict[str, set[str]] = {key: set() for key in keys}
+    if rows is None or rows.empty:
+        return done
+    section = rows["section"].where(rows["section"].isin(_TEN_K_SECTIONS))
+    per_filing = (
+        rows.assign(ten_k=rows["form"].astype("string").str.upper().eq("10-K").fillna(False), section=section, mda=section.eq(FILING_SECTION_MDA))
+        .groupby(["ticker", "accession_number"])
+        .agg(ten_k=("ten_k", "any"), n_sections=("section", "nunique"), mda=("mda", "any"))
+    )
+    complete = per_filing["n_sections"].eq(len(_TEN_K_SECTIONS)).where(per_filing["ten_k"], per_filing["mda"])
+    for ticker, accessions in per_filing[complete.astype(bool)].reset_index().groupby("ticker")["accession_number"]:
+        done[str(ticker)] = set(accessions.astype(str))
+    return done
+
+
+def save_filing_text(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
+    """`save_key` without the empty-text rows whose section is already stored: a re-read never blanks stored text."""
+    table = Tables.filing_risk_text
+    if not frames.get(table):
+        return save_key(context, fetch, ticker, frames)
+    df = pd.concat(frames[table], ignore_index=True)
+    empty = df["text"].isna()
+    stored = (
+        context.store.load(
+            table,
+            columns=["accession_number", "section"],
+            where={"ticker": ticker, "accession_number": sorted(df.loc[empty, "accession_number"].astype(str).unique())},
+            optional=True,
+        )
+        if empty.any()
+        else None
+    )
+    if stored is not None and not stored.empty:
+        taken = pd.MultiIndex.from_frame(stored.astype(str))
+        empty &= pd.MultiIndex.from_frame(df[["accession_number", "section"]].astype(str)).isin(taken)
+        df = df[~empty]
+    return save_key(context, fetch, ticker, {**frames, table: [df]})
+
+
 FILING_TEXT_FETCH = EdgarFetch(
     tables=(Tables.filing_risk_text,),
     parse=partial(parse_filing_rows, table=Tables.filing_risk_text, row_fn=_filing_rows),
+    done_accessions=filing_text_done,
+    save=save_filing_text,
 )

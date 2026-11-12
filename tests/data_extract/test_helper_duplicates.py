@@ -60,6 +60,10 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.structure.def14a.carve": (frozenset({"prepare_def14a_payloads"}), _DEF14A),
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),
     "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods"}), _NOTES_CACHE),
+    "src.data_extract.utils.zips.thirteen_f_datasets": (
+        frozenset({"DataSet", "cached_data_sets", "thirteen_f_cache"}),
+        "the 13F data-set cache owned by the zip download; the 13F backfill reads the same cached zips",
+    ),
 }
 
 

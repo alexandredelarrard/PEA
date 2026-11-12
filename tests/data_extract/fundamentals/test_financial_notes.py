@@ -309,6 +309,41 @@ def test_notes_periods_uses_scrape_when_available(monkeypatch):
     assert got == ["2025_07", "2026_06"]  # 2009/2020 outside 3y window
 
 
+#: Landing-page links as the SEC serves them: the republished 2010q1-q3 files carry a `_N` suffix.
+_LANDING_LINKS = "".join(
+    f'<a href="/files/dera/data/financial-statement-notes-data-sets/{name}" download>x</a>'
+    for name in ("2009q4_notes.zip", "2010q1_notes_1.zip", "2010q2_notes_0.zip", "2010q3_notes_0.zip", "2010q4_notes.zip")
+)
+
+
+def test_a_missing_republished_period_is_listed_and_downloaded(monkeypatch, tmp_path):
+    """A notes zip absent from the cache is downloaded, also when the SEC links it under a suffixed file name."""
+    monkeypatch.setattr(fn, "sec_get", lambda context, url, timeout: SimpleNamespace(text=_LANDING_LINKS))
+    requested: list[str] = []
+
+    def fake_zip(context: Any, path: Path, url: str, **kwargs: Any) -> Path:
+        if not bulk_cache.is_cached(path):  # the real `ensure_zip` contract: download only what the cache lacks
+            requested.append(url)
+            path.write_bytes(b"zip")
+        return path
+
+    monkeypatch.setattr(fn, "ensure_zip", fake_zip)
+    for cached in ("2009q4", "2010q3", "2010q4"):
+        (tmp_path / f"{cached}_notes.zip").write_bytes(b"zip")
+
+    periods = fn.notes_periods(cast(Any, None), years_history=20, today=pd.Timestamp("2026-11-11"))
+    available = fn.download_notes_periods(cast(Any, None), tmp_path, periods)
+
+    assert periods == ["2009q4", "2010q1", "2010q2", "2010q3", "2010q4"], periods
+    assert requested == [fn.SEC_FINNOTES_URL_TEMPLATE.format(period=p) for p in ("2010q1", "2010q2")], requested
+    assert available == 5 and fn.cached_notes_periods(tmp_path) == periods
+    print("\n=== SANITY CHECK: missing notes zip triggers a download ===")
+    print(f"  landing page lists {periods} (2010q1-q3 under suffixed names); cache missed 2010q1, 2010q2")
+    print(
+        f"  downloaded {len(requested)} zip(s): {[u.rsplit('/', 1)[1] for u in requested]}; cached ones untouched; {available}/5 available. Validated."
+    )
+
+
 def test_notes_periods_falls_back_to_generator(monkeypatch):
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: None)
     got = fn.notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))

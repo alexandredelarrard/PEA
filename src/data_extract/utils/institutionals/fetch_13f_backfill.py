@@ -2,7 +2,7 @@
 fetch_13f_backfill.py (src/data_extract/utils/institutionals/fetch_13f_backfill.py)
 -----------------------------------------------------------------------------------
 `sec13f_hr` history for tickers new to the universe, read from the SEC Form 13F data sets (one ZIP per
-filing window from 2013 Q2), each downloaded once into the `sec_13f_datasets` cache.
+filing window from 2013 Q2), read from the `sec_13f_datasets` cache the zips-download step fills; it never downloads.
 
 A ticker selects filing windows. A projected pass discovers relevant managers across those windows;
 the second pass retains their full original/amended accession books, including omissions and empty
@@ -18,23 +18,18 @@ dated the gap start, so each ticker's gap is walked once.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import cast
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
+from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
-from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.institutionals.fetch_13f import (
     _pick,
@@ -45,6 +40,7 @@ from src.data_extract.utils.institutionals.fetch_13f import (
     save_hr,
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
+from src.data_extract.utils.zips.thirteen_f_datasets import DataSet, cached_data_sets, thirteen_f_cache
 from src.data_store.schema import Resume, Tables
 from src.utils.identity_tables import universe_cusips
 from src.utils.string import pad_cik_series
@@ -52,55 +48,9 @@ from src.utils.superinvestor_roster import roster_cik_union
 
 logger = logging.getLogger(__name__)
 
-_LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
-_ZIP_URL = "https://www.sec.gov/files/{section}/data/form-13f-data-sets/{name}_form13f.zip"
-# Quarterly names through 2023 ("2013q2"), then rolling windows ("01jun2024-31aug2024").
-_ZIP_NAME = re.compile(r"(\d{4}q[1-4]|\d{2}[a-z]{3}\d{4}-\d{2}[a-z]{3}\d{4})_form13f\.zip", re.IGNORECASE)
-_DOWNLOAD_TIMEOUT = 600  # seconds; each ZIP is 73-100 MB
 _CHUNK_ROWS = 500_000
 
 _INFO_COLS = frozenset({"ACCESSION_NUMBER", "CUSIP", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"})
-
-
-@dataclass(frozen=True)
-class DataSet:
-    """One published 13F data set: its name and the filing-date window it covers."""
-
-    name: str
-    start: pd.Timestamp
-    end: pd.Timestamp
-
-    @classmethod
-    def parse(cls, name: str) -> DataSet:
-        name = name.lower()
-        if "-" in name:
-            first, last = (pd.Timestamp(datetime.strptime(part, "%d%b%Y")) for part in name.split("-"))
-            return cls(name, first, last)
-        quarter = pd.Period(name.upper(), freq="Q")
-        return cls(name, quarter.start_time.normalize(), quarter.end_time.normalize())
-
-    @property
-    def url(self) -> str:
-        return self.urls[0]
-
-    @property
-    def urls(self) -> tuple[str, ...]:
-        return tuple(_ZIP_URL.format(section=section, name=self.name) for section in ("structureddata", "datastandardsinnovation"))
-
-    @property
-    def filename(self) -> str:
-        return f"{self.name}_form13f.zip"
-
-
-def published_data_sets(context: Context) -> list[DataSet] | None:
-    """Every data set the SEC landing page links, oldest first; None when the page cannot be read."""
-    try:
-        response = sec_get(context, _LANDING_URL, timeout=60)
-    except (TransientReadError, requests.HTTPError) as exc:
-        logger.warning("13F backfill: the data-set landing page could not be read (%s); retried next run", exc)
-        return None
-    names = {name.lower() for name in _ZIP_NAME.findall(response.text)}
-    return sorted((DataSet.parse(name) for name in names), key=lambda d: d.start)
 
 
 def backfill_targets(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, full: bool) -> list[str]:
@@ -252,16 +202,11 @@ def mark_gap_walked(context: Context, tickers: list[str], since: pd.Timestamp) -
     return save_hr(context, pd.concat(markers, ignore_index=True)) if markers else 0
 
 
-def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], as_of: pd.Timestamp, full: bool) -> None:
+def _walk_gap(context: Context, data_sets: list[DataSet], tickers: list[str], as_of: pd.Timestamp, full: bool) -> None:
     """One EDGAR walk from the day after the newest cached data set ends to the latest join date, for
-    the gap tickers only, then one marker per ticker. A listed data set whose ZIP is not cached (not
-    published yet) is no coverage; with none cached the walk waits for the next run. A walk that raises
-    or leaves a filing unread writes no marker, so the next run walks the gap again."""
-    available = [d.end for d in data_sets if is_cached(cache / d.filename)]
-    if not available:
-        logger.warning("13F backfill: no data set is cached, so the gap start is unknown; the EDGAR gap walk is retried next run")
-        return
-    since = max(available) + pd.Timedelta(days=1)
+    the gap tickers only, then one marker per ticker. A walk that raises or leaves a filing unread writes
+    no marker, so the next run walks the gap again."""
+    since = max(d.end for d in data_sets) + pd.Timedelta(days=1)
     due = gap_tickers(context, tickers, since, as_of, full)
     if not due:
         return
@@ -286,7 +231,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     """Fill `sec13f_hr` from the 13F data sets for the tickers `backfill_targets` selects, then walk
     EDGAR over their gap after the newest data set. Roster managers' full books are saved too.
     Returns broad rows saved from the data sets. With no
-    ticker due it reads nothing but the universe and downloads nothing."""
+    ticker due it reads nothing but the universe."""
     targets = backfill_targets(context, tickers, as_of, full)
     if not targets:
         logger.info("13F backfill: no new ticker; nothing to do")
@@ -297,19 +242,20 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     if unmapped:
         logger.warning("13F backfill: no CUSIP in %s or %s maps to %s; skipped", Tables.universe_cusip, Tables.cusip_ticker_map, ", ".join(unmapped))
     targets = [t for t in targets if t not in unmapped]
-    data_sets = published_data_sets(context) if targets else None
+    if not targets:
+        return 0
+    cache = thirteen_f_cache(context)
+    data_sets = cached_data_sets(cache)
     if not data_sets:
+        logger.warning("13F backfill: no 13F data set is cached; run `zips-download --only 13f` first")
         return 0
     work = backfill_work(data_sets, targets)
     roster_ciks = roster_cik_union(context)
-    cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets))
     archived: list[tuple[DataSet, list[str], Path, pd.DataFrame]] = []
     cusips = target_cusips(cmap, lines, targets)
     relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cusip": sorted(cusips)}))
     for data_set, due in tqdm(work, desc="13F source scope"):
-        path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT)
-        if path is None:
-            continue
+        path = cache / data_set.filename
         scope = _archive_scope(path, cusips)
         if scope is None:
             logger.warning("13F backfill %s: unverifiable archive scope; retried next run", data_set.name)
@@ -323,7 +269,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
-    _walk_gap(context, data_sets, cache, targets, as_of, full)
+    _walk_gap(context, data_sets, targets, as_of, full)
     return saved
 
 

@@ -255,7 +255,7 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
 
 @cli.command(
     name="thirteen-f-backfill",
-    help="13F history of NEW universe tickers: SEC 13F data sets (cached ZIPs), then one EDGAR walk over the gap after them.",
+    help="13F history of NEW universe tickers: SEC 13F data sets (cached by zips-download), then one EDGAR walk over the gap after them.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -426,13 +426,13 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
     _edgar_step(config_path, tickers, None, full, as_of, no_cap).run_insider()
 
 
-_ZIP_DOWNLOADS = ("insider", "notes", "ftd")
+_ZIP_DOWNLOADS = ("insider", "notes", "ftd", "13f")
 _ZIP_INGESTS = ("insider", "notes", "ftd")
 
 
 @cli.command(
     name="zips-download",
-    help=f"Cache the SEC bulk zips (Form 3/4/5, Notes, FTD); writes no table. --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
+    help=f"Cache the SEC bulk zips (Form 3/4/5, Notes, FTD, Form 13F); writes no table. --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -445,6 +445,7 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
         "insider": step.run_download_insider,
         "notes": step.run_download_financial_notes,
         "ftd": step.run_download_fails_to_deliver,
+        "13f": step.run_download_13f,
     }
     for name in only or _ZIP_DOWNLOADS:
         sources[name]()

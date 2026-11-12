@@ -137,12 +137,15 @@ def _period_year(tag: str) -> int:
 
 
 def _scrape_available_periods(context: Context) -> list[str] | None:
-    """Available period tags scraped from the SEC landing page; None on any failure (caller falls back to the generator)."""
+    """Available period tags scraped from the SEC landing page; None on any failure (caller falls back to the generator).
+
+    A republished period links a suffixed file (`2010q1_notes_1.zip`); its canonical `{period}_notes.zip` still serves.
+    """
     try:
         r = sec_get(context, _LANDING_URL, timeout=60)
     except Exception:  # noqa: BLE001 (best-effort)
         return None
-    tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
+    tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes(?:_\d+)?\.zip", r.text)
     return sorted(set(tags)) or None
 
 

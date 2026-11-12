@@ -6,7 +6,7 @@ Nightly DATA-EXTRACTION DAG. One task PER SOURCE (fetcher, or one step sub-run),
 LOAD, not by big group: the light sources fan out freely, while the heavy / long / rate-limited ones are
 capped by Airflow POOLS (created in airflow-init):
 
-  * sec_bulk (2 slots)  — the SEC bulk zips: sec_submissions (submissions.zip), zips_download (Form 3/4/5, Notes and FTD
+  * sec_bulk (2 slots)  — the SEC bulk zips: sec_submissions (submissions.zip), zips_download (Form 3/4/5, Notes, FTD and 13F
                           zips), zips_ingest_insider (the Form 3/4/5 zip
                           parse) and zips_ingest_datasets (notes, FTD; disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both

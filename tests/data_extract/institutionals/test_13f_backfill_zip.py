@@ -64,17 +64,6 @@ def _dmy(day: str) -> str:
     return pd.Timestamp(day).strftime("%d-%b-%Y").upper()
 
 
-@pytest.mark.parametrize("name", ["2013q2", "01jun2026-31aug2026"])
-def test_data_set_urls_keep_both_sec_locations(name: str) -> None:
-    data_set = fb.DataSet.parse(name)
-    assert data_set.urls == (
-        f"https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{name}_form13f.zip",
-        f"https://www.sec.gov/files/datastandardsinnovation/data/form-13f-data-sets/{name}_form13f.zip",
-    )
-    assert data_set.url == data_set.urls[0]
-    print(f"SANITY: {name} keeps structureddata first and datastandardsinnovation as fallback; the existing primary URL is unchanged.")
-
-
 def _write_zip(path: Any, filings: list[tuple], *, confidential: str | None = "N", omit_confidential: bool = False) -> None:
     """A data-set ZIP with the SEC member names and upper-case headers."""
     sub = pd.DataFrame(
@@ -183,22 +172,14 @@ def _ctx(tmp_path: Any, store: Any, added_on: dict[str, str]) -> Any:
     return ctx
 
 
-def _offline(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """The landing page lists the two fixture data sets; a download or an unexpected GET fails the test."""
-    pages: list[str] = []
-
-    def _landing(context: Any, url: str, **kwargs: Any) -> Any:
-        pages.append(url)
-        links = "".join(f'<a href="/files/structureddata/data/form-13f-data-sets/{n}_form13f.zip">{n}</a>' for n in _DATA_SETS)
-        return SimpleNamespace(text=f"<html>{links}</html>")
+def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backfill reads the two cached fixture data sets; any download fails the test."""
 
     def _no_download(*args: Any, **kwargs: Any) -> int:
         raise AssertionError("the backfill must read the cached ZIPs, not download")
 
-    monkeypatch.setattr(fb, "sec_get", _landing)
     monkeypatch.setattr(bulk_cache, "download", _no_download)
     _patch_gap_walk(monkeypatch)
-    return pages
 
 
 def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False, cut: bool = False, unread: int = 0) -> list[dict[str, Any]]:
@@ -296,16 +277,16 @@ def test_earliest_stored_period_does_not_hide_missing_source_filings(tmp_path, f
 
 def test_no_new_ticker_reads_and_downloads_nothing(tmp_path, filing_store, monkeypatch):
     ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-01"})  # added 29 days ago: past the 7-day window
-    pages = _offline(monkeypatch)
+    _offline(monkeypatch)
 
     started = time.perf_counter()
     saved = fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     elapsed = time.perf_counter() - started
 
-    assert saved == 0 and pages == [] and elapsed < 1.0
+    assert saved == 0 and elapsed < 1.0
     assert filing_store.load(Tables.sec13f_hr, optional=True) is None
     print("\n=== SANITY: backfill no-op ===")
-    print(f"  no ticker added inside 7 days: no landing page, no download, nothing saved, {elapsed:.3f}s. Validated.")
+    print(f"  no ticker added inside 7 days: no ZIP read, no download, nothing saved, {elapsed:.3f}s. Validated.")
 
 
 def test_a_stored_row_filed_later_is_kept(tmp_path, filing_store, monkeypatch):
@@ -375,24 +356,6 @@ def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, f
     print("\n=== SANITY: 13F gap walk ===")
     print(f"  NEWCO joined 2026-09-28, newest data set ends 2024-08-31 -> one EDGAR walk {walks[0]['filing_window']};")
     print("  night 2 finds the walk's NEWCO marker and walks nothing. Validated.")
-
-
-def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp_path, filing_store, monkeypatch):
-    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
-    _offline(monkeypatch)
-    walks = _patch_gap_walk(monkeypatch)
-    listed = [*_DATA_SETS, "01sep2024-30nov2024"]  # the newest is listed but its ZIP answers HTTP 404
-    links = "".join(f'<a href="/files/structureddata/data/form-13f-data-sets/{n}_form13f.zip">{n}</a>' for n in listed)
-    monkeypatch.setattr(fb, "sec_get", lambda *a, **k: SimpleNamespace(text=f"<html>{links}</html>"))
-    asked: list[str] = []
-    monkeypatch.setattr(bulk_cache, "download", lambda context, url, path, **k: asked.append(url) or 404)
-
-    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-
-    assert asked == list(fb.DataSet.parse("01sep2024-30nov2024").urls)
-    assert len(walks) == 1 and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28"), walks
-    print("\n=== SANITY: 13F gap start after a missing data set ===")
-    print(f"  01sep2024-30nov2024 listed but HTTP 404 -> the walk starts after 01jun2024-31aug2024: {walks[0]['filing_window']}. Validated.")
 
 
 def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, filing_store, monkeypatch):
@@ -594,11 +557,11 @@ def test_an_established_ticker_has_no_gap(tmp_path, filing_store, monkeypatch):
 
 def test_a_ticker_added_after_as_of_is_not_backfilled_yet(tmp_path, filing_store, monkeypatch):
     ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-10-03"})  # three days after the run date
-    pages = _offline(monkeypatch)
+    _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
 
     nightly = fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-    assert nightly == 0 and pages == [] and walks == []
+    assert nightly == 0 and walks == []
     assert filing_store.load(Tables.sec13f_hr, optional=True) is None
 
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)

@@ -1,4 +1,4 @@
-"""`StepExtractZips`: phase order, one Notes period list, options reaching each source, per-source failures, CLI `--only`."""
+"""`StepExtractZips`: phase order (the 13F data sets download last), one Notes period list, options reaching each source, per-source failures, CLI `--only`."""
 
 from __future__ import annotations
 
@@ -16,12 +16,13 @@ from src.data_extract.transformers import step_extract_zips as module
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from tests.support.universe import universe_of
 
-DOWNLOADS = ("insider_download", "notes_download", "ftd_download")
+DOWNLOADS = ("insider_download", "notes_download", "ftd_download", "13f_download")
 INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 METHODS = {
     "insider_download": "run_download_insider",
     "notes_download": "run_download_financial_notes",
     "ftd_download": "run_download_fails_to_deliver",
+    "13f_download": "run_download_13f",
     "insider_ingest": "run_ingest_insider",
     "notes_ingest": "run_ingest_financial_notes",
     "ftd_ingest": "run_ingest_fails_to_deliver",
@@ -54,6 +55,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]],
     monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(module, "download_notes_periods", mark("notes_download"))
     monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
+    monkeypatch.setattr(module, "download_13f_datasets", mark("13f_download"))
     monkeypatch.setattr(module, "fetch_insider_transactions", mark("insider_ingest"))
     monkeypatch.setattr(module, "ingest_financial_notes", mark("notes_ingest"))
     monkeypatch.setattr(module, "repair_notes_availability", mark("notes_repair"))
@@ -143,11 +145,14 @@ def test_cli_only_runs_the_named_sources(monkeypatch: pytest.MonkeyPatch) -> Non
     runner = CliRunner()
     ingest = runner.invoke(cli_mod.cli, ["zips-ingest", "--only", "notes", "--only", "ftd"])
     download = runner.invoke(cli_mod.cli, ["zips-download", "--only", "insider"])
+    thirteen_f = runner.invoke(cli_mod.cli, ["zips-download", "--only", "13f"])
     everything = runner.invoke(cli_mod.cli, ["zips-ingest"])
+    all_downloads = runner.invoke(cli_mod.cli, ["zips-download"])
 
-    assert ingest.exit_code == download.exit_code == everything.exit_code == 0, (ingest.output, download.output, everything.output)
+    results = (ingest, download, thirteen_f, everything, all_downloads)
+    assert all(r.exit_code == 0 for r in results), [r.output for r in results]
     order = [name for name, _, _ in calls]
-    assert order == ["notes_ingest", "ftd_ingest", "insider_download", *INGESTS], order
+    assert order == ["notes_ingest", "ftd_ingest", "insider_download", "13f_download", *INGESTS, *DOWNLOADS], order
 
     print("\n=== SANITY CHECK: CLI --only (D-16) ===")
-    print("  zips-ingest --only notes --only ftd -> 2 sources; zips-download --only insider -> 1; zips-ingest -> all 3")
+    print("  zips-ingest --only notes --only ftd -> 2; zips-download --only insider / --only 13f -> 1 each; zips-ingest -> 3; zips-download -> 4")

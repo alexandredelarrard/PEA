@@ -1,7 +1,7 @@
-"""Zips step: the SEC bulk data sets (Form 3/4/5, Notes, fails-to-deliver).
+"""Zips step: the SEC bulk data sets (Form 3/4/5, Notes, fails-to-deliver, Form 13F).
 
 The download phase only caches archives; the identity step reads those caches; the ingest phase then parses the cached archives into their tables, still downloading a
-pending period not cached yet. The insider ingest runs without an insider source run: the EDGAR walk owns its own.
+pending period not cached yet. The 13F data sets are only cached here; the 13F backfill reads them. The insider ingest runs without an insider source run: the EDGAR walk owns its own.
 The Notes period list (one landing-page scrape) is shared by both phases.
 """
 
@@ -23,6 +23,7 @@ from src.data_extract.utils.zips.fetch_financial_notes import (
     repair_notes_availability,
 )
 from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
+from src.data_extract.utils.zips.thirteen_f_datasets import download_13f_datasets
 from src.utils.step import Step
 from src.utils.string import run_date
 
@@ -68,10 +69,14 @@ class StepExtractZips(Step):
     def run_download_fails_to_deliver(self) -> int:
         return download_fails_to_deliver(self._context, self._years_history, self._run_date)
 
+    def run_download_13f(self) -> int:
+        return download_13f_datasets(self._context)
+
     def run_download(self) -> None:
         self.run_download_insider()
         self.run_download_financial_notes()
         self.run_download_fails_to_deliver()
+        self.run_download_13f()
 
     def run_ingest_insider(self) -> int:
         scope = self._scope

@@ -912,6 +912,8 @@ def test_valuation_engine_kpis_exact():
     )
     idx = pd.bdate_range("2021-03-01", periods=3)
     close = pd.DataFrame({t: 2.0 for t in ("GEN", "REI", "OIL")}, index=idx)
+    # signed growth is only defined on fiscal-period matches, so the annual rows carry their period end
+    fund["fiscal_end"] = pd.to_datetime(fund["as_of"]) - pd.Timedelta(days=45)
     F = _derived_fields(
         FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
         replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=idx),

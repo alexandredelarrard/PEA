@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -51,6 +50,7 @@ FUNDAMENTAL_TRANSFORM_SEMANTICS = {
 _HYPER_GROWTH = 0.25  # YoY revenue growth above which a name is "hyper-growth"
 _QUARTERLY_MAX_AGE_DAYS = 185
 _ANNUAL_MAX_AGE_DAYS = 460
+_MIN_FSCORE_SIGNALS = 7  # of the 9 Piotroski signals that must be computable for a score
 
 
 @dataclass(frozen=True, slots=True)
@@ -843,7 +843,7 @@ def _growth_trend_fields(view: _FiscalView) -> dict[str, pd.DataFrame]:
     yoy_periods, prior = view.yoy_periods, view.prior
     F: dict[str, pd.DataFrame] = {}
     for name, field, kind in (
-        ("fcf_growth", "freeCashflow", "pct"),
+        ("fcf_growth", "freeCashflow", "signed_pct"),
         ("shares_growth", "sharesOutstanding", "pct"),
         ("gross_margin_chg", "grossMargins", "diff"),
     ):
@@ -949,18 +949,33 @@ def _quality_regime_fields(view: _FiscalView, fund_hist: pd.DataFrame) -> dict[s
         prior_lev = ratio(prior("longTermDebt"), prior_assets, positive_den=True)
         prior_turn = ratio(prior("totalRevenue"), prior_assets, positive_den=True)
         df_prior_shares = prior("sharesOutstanding").reindex_like(df_source_shares)
-        parts = [
-            (_roa > 0),
-            (_ocf > 0),
-            (_roa > prior_roa),
-            (ratio(_ocf, _oa, positive_den=True) > _roa),  # accruals: cash > profit
-            (_lev < prior_lev),
-            (_cr > prior_cr),
-            (_sh <= df_prior_shares * 1.001),  # no net dilution on common comparison units
-            (_gm > prior("grossMargins")),
-            (_turn > prior_turn),
+        grid = net_income
+        ocf_cash = ratio(_ocf, _oa, positive_den=True)
+        prior_gm = prior("grossMargins")
+        # (condition, inputs it needs): a signal is awarded only where every input exists, so a ticker
+        # without a current-assets series (banks, REITs) loses that signal instead of the whole score.
+        signals = [
+            (_roa > 0, [_roa]),
+            (_ocf > 0, [_ocf]),
+            (_roa > prior_roa, [_roa, prior_roa]),
+            (ocf_cash > _roa, [ocf_cash, _roa]),  # accruals: cash > profit
+            (_lev < prior_lev, [_lev, prior_lev]),
+            (_cr > prior_cr, [_cr, prior_cr]),
+            (_sh <= df_prior_shares * 1.001, [_sh, df_prior_shares]),  # no net dilution on common comparison units
+            (_gm > prior_gm, [_gm, prior_gm]),
+            (_turn > prior_turn, [_turn, prior_turn]),
         ]
-        fscore = cast(pd.DataFrame, sum(p.astype("float64") for p in parts))
+        awarded = pd.DataFrame(0.0, index=grid.index, columns=grid.columns)
+        available = pd.DataFrame(0.0, index=grid.index, columns=grid.columns)
+        for condition, inputs in signals:
+            known = pd.DataFrame(True, index=grid.index, columns=grid.columns)
+            for frame in inputs:
+                known &= frame.reindex_like(grid).notna()
+            awarded += condition.reindex_like(grid).fillna(False).astype("float64").where(known, 0.0)
+            available += known.astype("float64")
+        # rescaled to the 0-9 range so a name missing signals is not scored below the rest; fewer than
+        # _MIN_FSCORE_SIGNALS known signals is not a score
+        fscore = (awarded * (len(signals) / available.where(available > 0))).where(available >= _MIN_FSCORE_SIGNALS)
         df_raw_pair = df_source_shares.notna() & prior("_source_shares_outstanding").reindex_like(df_source_shares).notna()
         df_converted_pair = _sh.notna() & df_prior_shares.notna()
         df_unknown_units = (df_raw_pair & ~df_converted_pair).reindex_like(fscore).fillna(False).astype(bool)
@@ -1024,7 +1039,7 @@ def _quarter_momentum_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
     q_ni_values = fiscal_change_values(
         fund_hist,
         "netIncome_q",
-        kind="pct",
+        kind="signed_pct",
         periods=yoy_periods,
         years=1,
     )
@@ -1214,7 +1229,7 @@ def _valuation_engine_fields(view: _FiscalView) -> dict[str, pd.DataFrame]:
     yoy_periods, prior = view.yoy_periods, view.prior
     F: dict[str, pd.DataFrame] = {}
     oi_growth = fiscal_change_to_daily(
-        fund_hist, "operatingIncome", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+        fund_hist, "operatingIncome", idx, kind="signed_pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
     )
     rev_growth_f = fiscal_change_to_daily(
         fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS

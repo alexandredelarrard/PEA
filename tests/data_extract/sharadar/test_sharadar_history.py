@@ -197,6 +197,27 @@ def test_same_date_collapse_keeps_the_greatest_period():
     assert not kept.duplicated(["ticker", "as_of"]).any()
 
 
+@pytest.mark.parametrize(
+    ("vendor_shares", "eps", "income", "expected"),
+    [
+        (np.nan, 0.5, 50.0, 100.0),  # null vendor count: net income / EPS = 100 shares, inside the band around 100 basic
+        (np.nan, 0.01, 1.0, np.nan),  # EPS rounded to cents: too small to divide by
+        (np.nan, 0.5, 300.0, np.nan),  # implies 600 shares against 100 basic: rejected
+        (np.nan, -0.5, 50.0, np.nan),  # EPS and net income disagree in sign
+        (104.0, 0.5, 50.0, 104.0),  # the vendor count is never replaced
+    ],
+)
+def test_null_diluted_shares_are_rebuilt_from_eps_only_when_trustworthy(field_map, vendor_shares, eps, income, expected):
+    vendor = _vendor_arq(field_map).assign(shareswadil=vendor_shares, shareswa=100.0, epsdil=eps, netinccmn=income)
+    frame = build_frame(vendor, None, field_map, splits=pd.DataFrame(columns=["ticker", "date", "ratio"]))
+    got = frame["dilutedShares"].iloc[-1]
+    print(f"vendor={vendor_shares} eps={eps} income={income} -> dilutedShares={got} (expected {expected})")
+    if np.isnan(expected):
+        assert np.isnan(got)
+    else:
+        assert got == pytest.approx(expected)
+
+
 def test_history_grain_is_one_row_per_publication(built):
     """PK (ticker, as_of), asserted on the built frame rather than trusted to the upsert."""
     duplicated = built[built.duplicated(["ticker", "as_of"], keep=False)]

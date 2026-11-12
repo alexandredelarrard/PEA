@@ -208,6 +208,84 @@ def test_piotroski_uses_prior_fiscal_year_not_a_daily_grid_offset() -> None:
     )
 
 
+def _piotroski_rows() -> list[dict]:
+    base = {"ticker": "BNK", "totalAssets": 100.0, "sharesOutstanding": 100.0, "grossMargins": 0.40, "totalRevenue": 100.0, "longTermDebt": 30.0}
+    return [
+        {**base, "as_of": "2023-05-01", "fiscal_end": "2023-03-31", "netIncome": 10.0, "operatingCashFlow": 15.0},
+        {
+            **base,
+            "as_of": "2024-05-01",
+            "fiscal_end": "2024-03-31",
+            "netIncome": 20.0,
+            "operatingCashFlow": 25.0,
+            "longTermDebt": 20.0,
+            "grossMargins": 0.50,
+            "totalRevenue": 120.0,
+        },
+    ]
+
+
+@pytest.mark.parametrize("dropped", [("currentAssets", "currentLiabilities"), ("currentAssets", "currentLiabilities", "longTermDebt")])
+def test_piotroski_is_rescaled_when_a_signal_has_no_inputs(dropped: tuple[str, ...]) -> None:
+    """Banks and REITs report no current assets: the signals they cannot compute are dropped and the rest rescaled to 0-9."""
+    idx = pd.bdate_range("2024-05-01", "2024-06-03")
+    rows = pd.DataFrame(_piotroski_rows())
+    full = rows.assign(currentAssets=50.0, currentLiabilities=25.0)
+    full.loc[1, ["currentAssets", "currentLiabilities"]] = [60.0, 20.0]
+    frames = PriceFrames(trading_index=idx, universe=(), peers={})
+    reduced = _derived_fields(FundamentalHistory(raw_history=full.drop(columns=list(dropped)), share_basis=known_no_share_events()), frames)
+    score = reduced["piotroski_f_score"].iloc[-1, 0]
+    # every computable signal improves (8 of 8, or 7 of 7) -> the full 9/9
+    assert score == pytest.approx(9.0)
+    print(f"\n=== SANITY CHECK: Piotroski without {dropped} ===\n  every computable signal is awarded; rescaled score {score:.1f}/9. Validated.")
+
+
+def test_piotroski_needs_seven_computable_signals() -> None:
+    idx = pd.bdate_range("2024-05-01", "2024-06-03")
+    rows = pd.DataFrame(_piotroski_rows()).drop(columns=["grossMargins", "longTermDebt"])
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=rows, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
+    assert "piotroski_f_score" not in fields
+    print("\n=== SANITY CHECK: 6 computable signals give no score. Validated.")
+
+
+def test_growth_on_a_negative_base_keeps_the_direction_of_change() -> None:
+    """A loss that halves is an improvement: +0.5, not -0.5."""
+    idx = pd.bdate_range("2024-05-01", "2024-06-03")
+    rows = pd.DataFrame(
+        [
+            {
+                "ticker": "LSS",
+                "as_of": "2023-05-01",
+                "fiscal_end": "2023-03-31",
+                "freeCashflow": -100.0,
+                "netIncome_q": -100.0,
+                "operatingIncome": -100.0,
+                "totalRevenue": 100.0,
+            },
+            {
+                "ticker": "LSS",
+                "as_of": "2024-05-01",
+                "fiscal_end": "2024-03-31",
+                "freeCashflow": -50.0,
+                "netIncome_q": 50.0,
+                "operatingIncome": -50.0,
+                "totalRevenue": 120.0,
+            },
+        ]
+    )
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=rows, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
+    last = idx[-1]
+    assert fields["fcf_growth"].loc[last, "LSS"] == pytest.approx(0.5)  # -100 -> -50
+    assert fields["q_earnings_growth"].loc[last, "LSS"] == pytest.approx(1.5)  # -100 -> +50
+    # op income -100 -> -50 is +0.5 over revenue growth 0.2 -> 2.5
+    assert fields["operating_leverage_elasticity"].loc[last, "LSS"] == pytest.approx(2.5)
+    print("\n=== SANITY CHECK: negative-base growth ===\n  loss halving = +0.5, loss to profit = +1.5, elasticity 2.5. Validated.")
+
+
 def test_quarterly_projection_expires_on_day_186() -> None:
     filed = pd.Timestamp("2024-01-01")
     idx = pd.date_range(filed, filed + pd.Timedelta(days=186))

@@ -295,6 +295,8 @@ def test_piotroski_masks_only_new_unit_uncertainty_in_existing_comparison_pairs(
     )
     df_history = df_history.assign(longTermDebt=30.0, currentAssets=50.0, currentLiabilities=25.0, grossMargins=0.4)
     fields = _derived_fields(FundamentalHistory(raw_history=df_history, share_basis=None), PriceFrames(trading_index=days, universe=(), peers={}))
-    assert fields["piotroski_f_score"].iloc[0, 0] == pytest.approx(3.0)
-    assert np.isnan(fields["piotroski_f_score"].iloc[1, 0])
-    print("SANITY: the first partial F-score keeps3/9; a later raw count pair with unresolved comparison units is unknown, with no raw fallback.")
+    # first year: only 3 of 9 signals have a prior-year comparator -> no score; second year: unresolved share units -> no score
+    assert "piotroski_f_score" not in fields
+    print(
+        "SANITY: a first-year row with 3 computable signals is unscored; a later raw count pair with unresolved comparison units is unknown, with no raw fallback."
+    )

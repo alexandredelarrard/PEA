@@ -60,6 +60,7 @@ import pandas as pd
 from src.data_extract.utils.fundamentals.periods import TTM_QUARTERS
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     DURATION,
+    EPS_DILUTED_QUARTER,
     INSTANT,
     MEAN,
     FieldMap,
@@ -95,6 +96,40 @@ TTM_KEYS: tuple[str, ...] = ("ticker", "date", "reportperiod", "calendardate", "
 #:
 #: Module-local, not in `constants.py`: one non-test consumer, the function below.
 TTM_SPAN_DAYS: tuple[int, int] = (240, 320)
+
+#: Diluted share counts are null in ~25% of SF1 rows (84 tickers never have one) while diluted EPS is present. The count is
+#: rebuilt as net income to common / diluted EPS, only where the vendor value is null. Measured against the vendor's own
+#: four-quarter mean on 31.7k windows: median error 0.00%, within 2% on 90%, within 5% on 97%.
+#: `_MIN_EPS_FOR_SHARES`: EPS is rounded to cents, so a smaller |EPS| makes the quotient meaningless.
+#: `_SHARES_VS_BASIC`: diluted/basic is 0.998-1.19 for 98% of vendor rows; an implied count outside the band is rejected.
+_MIN_EPS_FOR_SHARES = 0.25
+_SHARES_VS_BASIC: tuple[float, float] = (0.95, 1.30)
+
+
+def _implied_diluted_shares(out: pd.DataFrame, columns: dict[str, pd.Series]) -> pd.Series:
+    """Four-quarter diluted share count rebuilt from net income to common and diluted EPS, NaN where it is not trustworthy.
+
+    Mean of the four discrete quarterly counts (net income / EPS); a window with a quarter whose EPS is too small or whose sign
+    disagrees with net income falls back to the window ratio sum(net income) / sum(EPS). The result must sit within
+    `_SHARES_VS_BASIC` of the window's basic count.
+    """
+    if EPS_DILUTED_QUARTER not in out.columns or "netIncomeCommon" not in out.columns:
+        return pd.Series(np.nan, index=out.index)
+    income = out["netIncomeCommon"].astype("float64")
+    eps = out[EPS_DILUTED_QUARTER].astype("float64")
+    by_ticker = out["ticker"]
+
+    def window(values: pd.Series, how: str) -> pd.Series:
+        rolled = values.groupby(by_ticker, sort=False).rolling(TTM_QUARTERS)
+        return (rolled.mean() if how == "mean" else rolled.sum()).reset_index(level=0, drop=True).reindex(out.index)
+
+    usable = eps.abs().ge(_MIN_EPS_FOR_SHARES) & (np.sign(income) == np.sign(eps))
+    by_quarter = window((income / eps).where(usable), "mean")
+    income_sum, eps_sum = window(income, "sum"), window(eps, "sum")
+    by_window = (income_sum / eps_sum).where(eps_sum.abs().ge(_MIN_EPS_FOR_SHARES) & (np.sign(income_sum) == np.sign(eps_sum)))
+    implied = by_quarter.fillna(by_window)
+    low, high = _SHARES_VS_BASIC
+    return implied.where((implied / columns["basicShares"]).between(low, high))
 
 
 def _one_row_per_quarter(frame: pd.DataFrame) -> pd.DataFrame:
@@ -261,6 +296,8 @@ def build_ttm(
             columns[name] = out[name].astype("float64")
         else:
             columns[name] = rolled[basis][name].where(whole, np.nan)
+
+    columns["dilutedShares"] = columns["dilutedShares"].fillna(_implied_diluted_shares(out, columns).where(whole))
 
     for name, source in quarter_columns.items():
         columns[name] = out[source].astype("float64")

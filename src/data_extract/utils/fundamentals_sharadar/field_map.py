@@ -488,10 +488,15 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationRe
     for name, spec in field_map.outputs.items():
         if spec.kind == "null":
             columns[name] = pd.Series(np.nan, index=cleaned.index)
+    if EPS_DILUTED_QUARTER_SOURCE in cleaned.columns:
+        columns[EPS_DILUTED_QUARTER] = cleaned[EPS_DILUTED_QUARTER_SOURCE].astype("float64")
 
     keys = cleaned[[c for c in KEY_COLUMNS if c in cleaned.columns]]
     return pd.concat([keys, pd.DataFrame(columns, index=cleaned.index)], axis=1)
 
+
+#: Vendor diluted EPS of the discrete quarter, carried (not an output column) so `build_ttm` can rebuild diluted share counts the vendor leaves null.
+EPS_DILUTED_QUARTER_SOURCE, EPS_DILUTED_QUARTER = "epsdil", "epsDilutedQuarter"
 
 #: Direct columns whose declared `non_negative` sign is enforced at map time by nulling (not flipping) negatives.
 SIGN_ENFORCED: frozenset[str] = frozenset({"interestExpense"})

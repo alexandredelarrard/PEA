@@ -64,7 +64,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
         # 13F, 13F-manager books (superinvestors takes no window; short interest plans from its latest stored day)
-        StepExtractInstitutionals: (inspect.getsource(StepExtractInstitutionals.run), "years_history=years_history", 2),
+        StepExtractInstitutionals: (inspect.getsource(StepExtractInstitutionals.run), "years_history=years_history", 1),
         # insider EDGAR, 13D, 13G, 8-K, filing text, DEF 14A ECD: the init declares one `EdgarRun`, whose loader reads
         # the window (unless `-y` gives it) and which every walk receives
         StepExtractEdgar: (inspect.getsource(StepExtractEdgar) + inspect.getsource(EdgarRun.load), "EdgarRun.load(", 1),

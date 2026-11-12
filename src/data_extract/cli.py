@@ -54,8 +54,6 @@ from src.constants.command_line_interface import (
     TIMINGS_KWARGS,
     VERIFY_HISTORY_ARGS,
     VERIFY_HISTORY_KWARGS,
-    VINTAGES_ARGS,
-    VINTAGES_KWARGS,
     YEARS_ARGS,
     YEARS_KWARGS,
 )
@@ -80,7 +78,7 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
 )
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
-from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
+from src.data_extract.utils.institutionals.fetch_13f_vintages import recover_13f_vintages
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
@@ -270,10 +268,11 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
     fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=run_date(as_of), full=full)
 
 
-@cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
+@cli.command(
+    name="thirteen-f-vintages",
+    help="Manual recovery of named 13F accessions into sec13f_hr (an original a later amendment superseded); --dry-run previews.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
-@click.option(*VINTAGES_ARGS, **VINTAGES_KWARGS)
 @click.option(*CIK_ARGS, **CIK_KWARGS)
 @click.option(*ACCESSION_ARGS, **ACCESSION_KWARGS)
 @click.option(*PERIOD_START_ARGS, **PERIOD_START_KWARGS)
@@ -282,10 +281,8 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
 @click.option(*MAX_FILINGS_ARGS, **MAX_FILINGS_KWARGS)
 @click.option(*ARCHIVE_ARGS, **ARCHIVE_KWARGS)
 @click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
-def thirteen_f_managers(
+def thirteen_f_vintages(
     config_path: str,
-    years: int | None,
-    vintages: bool,
     ciks: tuple[str, ...],
     accessions: tuple[str, ...],
     period_start: str | None,
@@ -295,27 +292,21 @@ def thirteen_f_managers(
     archives: tuple[Path, ...],
     dry_run: bool,
 ) -> None:
-    """Scope is the union of every CIK ever in `superinvestor_roster`, so a departed manager keeps its history.
-    An empty roster raises: run `superinvestors -F` first on a cold database."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    if vintages:
-        if not (period_start and period_end and filed_through and max_filings):
-            raise click.UsageError("--vintages requires --period-start, --period-end, --filed-through and --max-filings")
-        recover_13f_vintages(
-            context,
-            ciks=list(ciks),
-            start_period=period_start,
-            end_period=period_end,
-            filed_through=filed_through,
-            accessions=list(accessions),
-            max_filings=max_filings,
-            dry_run=dry_run,
-            archives=list(archives) or None,
-        )
-    else:
-        if ciks or accessions or archives or dry_run or period_start or period_end or filed_through or max_filings is not None:
-            raise click.UsageError("Version recovery options require --vintages")
-        fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
+    """Bounded by explicit CIKs, accessions, report periods, a filing-date cutoff and a filing cap."""
+    if not (period_start and period_end and filed_through and max_filings):
+        raise click.UsageError("thirteen-f-vintages requires --period-start, --period-end, --filed-through and --max-filings")
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    recover_13f_vintages(
+        context,
+        ciks=list(ciks),
+        start_period=period_start,
+        end_period=period_end,
+        filed_through=filed_through,
+        accessions=list(accessions),
+        max_filings=max_filings,
+        dry_run=dry_run,
+        archives=list(archives) or None,
+    )
 
 
 @cli.command(

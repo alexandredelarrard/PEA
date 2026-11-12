@@ -37,7 +37,7 @@ def test_institutionals_build_no_identity_and_store_regsho_as_filed(monkeypatch)
 
         return call
 
-    for name in ("fetch_13f", "upsert_roster_snapshot", "fetch_13f_managers", "fetch_short_interest"):
+    for name in ("fetch_13f", "upsert_roster_snapshot", "fetch_short_interest"):
         monkeypatch.setattr(module, name, mark(name))
 
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
@@ -47,7 +47,7 @@ def test_institutionals_build_no_identity_and_store_regsho_as_filed(monkeypatch)
     step.config = config
     step.run(["AAA"])
 
-    assert order == ["fetch_13f", "upsert_roster_snapshot", "fetch_13f_managers", "fetch_short_interest"], order
+    assert order == ["fetch_13f", "upsert_roster_snapshot", "fetch_short_interest"], order
     assert not hasattr(module, "run_edgar_fetch"), "the EDGAR walks belong to StepExtractEdgar"
     assert not hasattr(module, "load_identity"), "the RegSHO tape needs no resolver"
 

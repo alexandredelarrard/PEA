@@ -154,7 +154,7 @@ _ACCESSOR = {
     "src/data_extract/utils/identity/cusip_history.py",
 }
 #: 13F managers are listed by their own CIK, not an issuer (00-run N1).
-_MANAGER_LISTING = "src/data_extract/utils/institutionals/fetch_13f_managers.py"
+_MANAGER_LISTING = "src/data_extract/utils/institutionals/fetch_13f_vintages.py"
 _RETIRED = {"cik_to_ticker", "drop_rows_outside_segment", "entity_ticker", "resolve_symbol_rows", "resolve_symbol_ticker", "candidate_symbols"}
 _REGISTER = {"load_registrants", "_registrants_at", "REGISTRANT_CONFIG_FILENAME"}
 

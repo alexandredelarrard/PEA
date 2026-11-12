@@ -45,10 +45,10 @@ def test_filing_text_parse_stores_none_when_period_of_report_raises() -> None:
     filing.obj = lambda: SimpleNamespace(business=None, risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
     df = FILING_TEXT_FETCH.parse("AAPL", "0000320193", _stamp(filing, "0000320193"), identity_for({"AAPL": "320193"}))[Tables.filing_risk_text]
 
-    assert len(df) == 1
-    row = df.iloc[0]
-    assert row["period_of_report"] is None
+    assert df["text"].notna().sum() == 1 and len(df) == 3, "MD&A read; Items 1 and 1A stored empty"
+    row = df[df["section"].eq("mda")].iloc[0]
+    assert df["period_of_report"].isna().all()
     assert row["cik"] == "0000320193"
     assert row["filed"] == pd.Timestamp("2024-05-03")
     print("\n=== SANITY: filing-text period_of_report guard ===")
-    print(f"  1 MD&A row kept, period_of_report={row['period_of_report']!r}: a raising property no longer aborts the walk.")
+    print(f"  MD&A row kept (+2 empty 10-K rows), period_of_report={row['period_of_report']!r}: a raising property no longer aborts the walk.")

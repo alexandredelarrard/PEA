@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, plan_fetch
 from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     FILING_SECTION_BUSINESS,
     FILING_SECTION_MDA,
@@ -23,9 +23,11 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     _filing_sections,
     _structured_sections,
     extract_item_sections,
+    filing_text_done,
+    save_filing_text,
 )
 from src.data_store.schema import Tables
-from tests.data_extract.edgar_fixtures import identity_for
+from tests.data_extract.edgar_fixtures import fake_context, identity_for, seed_index
 
 
 def _pad(text: str, min_chars: int = FILING_TEXT_MIN_CHARS) -> str:
@@ -286,9 +288,133 @@ def test_filing_text_parse_returns_all_sections_stamped_with_the_filing_date():
     assert (out["filed"] == pd.Timestamp("2024-06-01")).all()
 
 
-def test_filing_text_parse_returns_no_rows_for_an_unparseable_filing():
-    """No readable section -> no row; the driver stores one empty-filing marker for it."""
-    assert _parse(_fake_filing(accession="0001-bad")).empty  # obj/text both raise
+def test_filing_text_parse_stores_an_empty_row_per_expected_section_it_cannot_read():
+    """An unreadable 10-K gets an empty-text row for Items 1, 1A and 7; a 10-K/A or 10-Q expects MD&A only, and a
+    10-K/A keeps any other section it does carry."""
+    ten_k = _parse(_fake_filing(accession="0001-bad"))  # obj/text both raise
+    assert set(ten_k["section"]) == {FILING_SECTION_BUSINESS, FILING_SECTION_RISK, FILING_SECTION_MDA}
+    assert ten_k["text"].isna().all() and ten_k["n_words"].eq(0).all()
+    assert list(_parse(_fake_filing(form="10-Q", accession="0001-q"))["section"]) == [FILING_SECTION_MDA]
+    amended = _parse(_fake_filing(form="10-K/A", accession="0001-a", obj=_fake_ten_k(risk_factors=_pad("risk body"))))
+    assert dict(zip(amended["section"], amended["text"].notna(), strict=True)) == {FILING_SECTION_MDA: False, FILING_SECTION_RISK: True}
+    print("\n=== SANITY CHECK: an expected section the filing lacks is stored empty ===")
+    print(f"  unreadable 10-K -> {sorted(ten_k['section'])} with NULL text; 10-Q -> [mda]; 10-K/A -> mda empty + its risk_factors")
+
+
+def _stored(accession: str, form: str, sections: dict[str, str | None]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "ticker": "AAPL",
+                "cik": "0000320193",
+                "accession_number": accession,
+                "form": form,
+                "filed": pd.Timestamp("2024-03-01"),
+                "period_of_report": pd.Timestamp("2023-12-31"),
+                "section": section,
+                "text": text,
+                "n_words": len(text.split()) if text else 0,
+            }
+            for section, text in sections.items()
+        ]
+    )
+
+
+def test_a_filing_is_done_once_every_expected_section_has_a_row(sqlite_store):
+    """Done = a row, text or empty, per expected section. A 10-K missing Item 1 and a legacy empty-filing marker are
+    listed again; an amendment and a 10-Q need MD&A only."""
+    table = Tables.filing_risk_text
+    sqlite_store.save(table, _stored("k-full", "10-K", {"business": None, "risk_factors": _pad("r"), "mda": _pad("m")}))
+    sqlite_store.save(table, _stored("k-old", "10-K", {"risk_factors": _pad("r"), "mda": _pad("m")}))
+    sqlite_store.save(table, _stored("k-amend", "10-K/A", {"mda": None}))
+    sqlite_store.save(table, _stored("q-full", "10-Q", {"mda": _pad("m")}))
+    sqlite_store.save(table, _stored("q-legacy", "10-Q", {"_empty": None}))
+    context = SimpleNamespace(store=sqlite_store)
+
+    done = filing_text_done(context, ["AAPL", "MSFT"], None)  # type: ignore[arg-type]
+
+    assert done == {"AAPL": {"k-full", "k-amend", "q-full"}, "MSFT": set()}, done
+    print("\n=== SANITY CHECK: filing-text done rule ===")
+    print(f"  done {sorted(done['AAPL'])}; listed again: k-old (no business row), q-legacy (marker only). Validated.")
+
+
+def test_a_re_read_adds_the_missing_section_and_never_blanks_stored_text(sqlite_store):
+    """A 10-K re-read for its missing Item 1 stores it, while its empty re-read MD&A keeps the stored text; the filing
+    is then done and not read again."""
+    table = Tables.filing_risk_text
+    sqlite_store.save(table, _stored("k-old", "10-K", {"risk_factors": _pad("stored risk"), "mda": _pad("stored mda")}))
+    context = SimpleNamespace(store=sqlite_store, log=SimpleNamespace(warning=lambda *a, **k: None))
+    re_read = _stored("k-old", "10-K", {"business": _pad("new business"), "risk_factors": None, "mda": None})
+
+    counts, failed = save_filing_text(context, FILING_TEXT_FETCH, "AAPL", {table: [re_read]})  # type: ignore[arg-type]
+
+    rows = sqlite_store.load(table).set_index("section")
+    assert not failed and counts == {table: 1}, counts
+    assert rows.loc["mda", "text"].startswith("stored mda") and rows.loc["risk_factors", "text"].startswith("stored risk")
+    assert rows.loc["business", "text"].startswith("new business")
+    assert filing_text_done(context, ["AAPL"], None) == {"AAPL": {"k-old"}}  # type: ignore[arg-type]
+    print("\n=== SANITY CHECK: re-read save ===")
+    print("  1 row saved (business); the empty re-read mda/risk rows dropped, stored text kept; k-old now done. Validated.")
+
+
+def test_a_null_or_mixed_form_still_counts_the_accession_done(sqlite_store):
+    """An accession is a 10-K when any of its rows says so, and a NULL form expects MD&A only, so neither is listed
+    again every night."""
+    table = Tables.filing_risk_text
+    mixed = _stored("k-mixed", "10-K", {"business": None, "risk_factors": _pad("r"), "mda": _pad("m")})
+    mixed.loc[mixed["section"].eq("business"), "form"] = None
+    sqlite_store.save(table, mixed)
+    sqlite_store.save(table, _stored("k-short", "10-K", {"business": None, "mda": _pad("m")}).assign(form=["10-K", None]))
+    sqlite_store.save(table, _stored("q-null", "10-Q", {"mda": _pad("m")}).assign(form=None))
+
+    done = filing_text_done(SimpleNamespace(store=sqlite_store), ["AAPL"], None)  # type: ignore[arg-type]
+
+    assert done == {"AAPL": {"k-mixed", "q-null"}}, done
+    print("\n=== SANITY CHECK: NULL / mixed form ===")
+    print("  k-mixed (one NULL-form row) done; q-null (NULL form, mda) done; k-short (10-K, no risk row) listed again. Validated.")
+
+
+def test_a_key_that_read_nothing_saves_nothing_without_failing(sqlite_store):
+    """Every filing of the key failed to read: no frame, no row, no save failure, so the filings are simply listed again."""
+    context = SimpleNamespace(store=sqlite_store, log=SimpleNamespace(warning=lambda *a, **k: None))
+
+    counts, failed = save_filing_text(context, FILING_TEXT_FETCH, "AAPL", {})  # type: ignore[arg-type]
+
+    assert counts == {} and not failed and not sqlite_store.exists(Tables.filing_risk_text)
+    print("\n=== SANITY CHECK: empty key save ===")
+    print("  no frames -> counts {}, failed_save False, no table written. Validated.")
+
+
+_AAPL = {"AAPL": "320193"}
+_INDEX = [
+    (320193, "Apple Inc", "10-K", "2024-11-01", "0000320193-24-000123"),
+    (320193, "Apple Inc", "10-Q", "2025-01-31", "0000320193-25-000008"),
+    (320193, "Apple Inc", "10-K", "2023-11-03", "0000320193-23-000106"),
+]
+
+
+def test_the_planner_lists_only_filings_missing_an_expected_section_and_full_lists_all(tmp_path, sqlite_store):
+    """Through `plan_fetch`: the stored complete 10-K and 10-Q are skipped, the 10-K without Item 1 is listed; `full`
+    lists all three."""
+    ctx = fake_context(tmp_path, sqlite_store, list(_AAPL), ciks=list(_AAPL.values()))
+    seed_index(ctx, _INDEX)
+    table = Tables.filing_risk_text
+    sqlite_store.save(table, _stored(_INDEX[0][4], "10-K", {"business": None, "risk_factors": _pad("r"), "mda": _pad("m")}))
+    sqlite_store.save(table, _stored(_INDEX[1][4], "10-Q", {"mda": _pad("m")}))
+    sqlite_store.save(table, _stored(_INDEX[2][4], "10-K", {"risk_factors": _pad("r"), "mda": _pad("m")}))
+    cik_map = pd.DataFrame({"ticker": ["AAPL"], "cik": ["0000320193"]})
+
+    def plan(full: bool) -> list[str]:
+        run = EdgarRun(["AAPL"], cik_map, identity_for(_AAPL), pd.Timestamp("2025-03-01"), 5, full=full)
+        work = plan_fetch(ctx, FILING_TEXT_FETCH, run)
+        return sorted(work.units["AAPL"]["accession"]) if "AAPL" in work.units else []
+
+    daily, full = plan(False), plan(True)
+
+    assert daily == [_INDEX[2][4]], daily
+    assert full == sorted(row[4] for row in _INDEX), full
+    print("\n=== SANITY CHECK: filing-text planner ===")
+    print(f"  daily lists {daily} (10-K without business); -F lists all {len(full)}. Validated.")
 
 
 def test_sanity_check_prints_conclusion():

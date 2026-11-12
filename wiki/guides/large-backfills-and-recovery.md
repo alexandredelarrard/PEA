@@ -153,7 +153,7 @@ rtk "$PY" -m src data_extract resume-plan --table sec_def14a_text --timings
 
 A text-walk `-F` re-read saves over the stored rows but never deletes one. After a DEF 14A carve change, or a lineage edit that changes which proxies a multi-window ticker accepts, delete the affected accessions' `sec_def14a_text` rows (sections, `_none` and `_empty` markers) and let the next walk read them again; then delete their LLM rows to re-decide. The same applies to `sec_employees_text` after a candidate-window change.
 
-## 13F holes and new tickers
+## 13F holes and missing accessions
 
 The nightly `thirteen-f` walk starts at the newest stored `filing_date` minus the 7-day overlap and keeps a low watermark: a filing inside the overlap that still fails after the retry rounds holds back every filing after it, so the next run starts at or before it; an older failure is skipped with an ERROR naming its accession. A hole older than the overlap needs an explicit window:
 
@@ -161,9 +161,15 @@ The nightly `thirteen-f` walk starts at the newest stored `filing_date` minus th
 rtk "$PY" -m src data_extract thirteen-f --filing-window 2024-01-01:2024-03-01
 ~~~
 
-`thirteen-f-backfill` fills the history of tickers added within the last 7 days from the SEC ZIP windows `zips-download --only 13f` cached (it never downloads), then runs the existing EDGAR gap walk after the newest cached window. `-t X` narrows recent additions; an established X requires `-t X -F`. ZIP discovery retains all relevant managers across history. Ordinary reruns skip only verified complete accessions in `sec13f_hr`; missing/failed/legacy packets remain pending. A completed archive needs no second information-table read, but the first discovery scan remains necessary to find unpreserved holders. Explicit `-F` revalidates source and immutable checksums. Cached downloads alone do not eliminate decompression/scanning.
+Filings older than the overlap that a published SEC 13F data set holds need no window: `zips-ingest --only 13f` (nightly task `zips_ingest_13f`) stores every 13F-HR(/A) accession of each window `zips-download --only 13f` cached that `sec13f_hr` does not hold, through the walk's writer (it never downloads). An accession with a `complete` or `invalid` marker is skipped; a window with nothing pending never reads its information table. A packet that fails validation is logged by accession and marked `invalid` (the reason in `value_unit_evidence`); `-F` retries it, and a valid packet of that accession from the EDGAR walk or a ZIP replaces the marker:
 
-The backfill writes full source books, roster managers included, to `sec13f_hr`; it reads the roster created by `superinvestors` to widen the archive scope. One full CUSIP map and saver are reused across archives. Writer preparation is cached per DataStore lifecycle; atomic per-accession writes and integrity checks remain. Source-unit admission uses declared units and the shared count/value reconciliation, with the aggregate market check retained. Run the first historical backfill outside the scheduled extraction window and inspect pending-accession errors. No source-table or cube rebuild is needed solely to adopt this performance refactor; restart the running extraction process to load the changed code. Recovery of older overwritten versions is a separate source reload.
+~~~bash
+rtk "$PY" -m src data_extract zips-ingest --only 13f
+~~~
+
+`-F` re-decodes every cached window and re-verifies stored accessions by checksum; an accession stored under another (cik, period) is logged and never written. The EDGAR walk stays authoritative. Filings after the newest published data set (on 2026-11-12, September 2026 onward) need the `thirteen-f --filing-window` run above.
+
+One full CUSIP map and saver are reused across windows. Atomic per-accession writes and integrity checks remain. Run the first historical ingest outside the scheduled extraction window and inspect the per-accession errors. Recovery of older overwritten versions is a separate source reload.
 
 The material legacy-parser fixes recover formerly rejected intact books through the same thirteen-f reader and saver. Rebuilding only a cube cannot recover a source filing that extraction skipped. For the named early-2013 failures, the bounded existing recovery command is:
 

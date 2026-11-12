@@ -429,9 +429,9 @@ def test_the_accession_prefilter_drops_only_accessions_the_row_screen_drops(iden
     for quarter in GOLDEN_QUARTERS:
         tables = ins._read_tables(INSIDER_CACHE / f"{quarter}.zip")
         assert tables is not None
-        sub, own, nonderiv, deriv, _ = tables
+        sub, own, nonderiv, deriv, _, *holdings = tables
         fetched_at = pd.Timestamp("2026-10-03 12:00")
-        df_built = build_insider_frame(*ins.extract_bulk_strings(sub, own, nonderiv, deriv), date_formats=BULK_DATE_FORMATS)
+        df_built = build_insider_frame(*ins.extract_bulk_strings(sub, own, nonderiv, deriv, *holdings), date_formats=BULK_DATE_FORMATS)
         full_kept, full_rejected = screen_insider_rows(df_built.assign(source="zip", quarter=quarter, fetched_at=fetched_at), UNIVERSE, identity)
         kept, rejected, _ = ins._parse_quarter(tables, quarter, UNIVERSE, identity, fetched_at)
         accessions = screened_accessions(ins._member_strings(sub, "filing"), UNIVERSE, identity)

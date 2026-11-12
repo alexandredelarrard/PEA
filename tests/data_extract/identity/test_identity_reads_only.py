@@ -40,7 +40,7 @@ OWNERS = (
     "src/data_extract/utils/institutionals/fetch_cusip_map.py",  # `cusip_ticker_map` builder (OpenFIGI cache)
 )
 #: The only callers of `build_cusip_ticker_map` besides its module.
-MAP_BUILDERS = ("src/data_extract/utils/institutionals/fetch_13f.py", "src/data_extract/utils/institutionals/fetch_13f_backfill.py")
+MAP_BUILDERS = ("src/data_extract/utils/institutionals/fetch_13f.py",)
 
 
 def _identity_table(node: ast.AST) -> str | None:

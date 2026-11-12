@@ -42,7 +42,6 @@ REQUIRED_COMMANDS = {
     "zips-ingest",
     "edgar-index",
     "thirteen-f",
-    "thirteen-f-backfill",
     "insider-edgar",
     "sec-fundamentals-facts",
     "sec-fundamentals-history",
@@ -101,8 +100,8 @@ def test_freshness_inventory_comes_only_from_schema():
 #: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, FTD, SEC current tickers),
 #: then the identity step (captures, build, sync).
 IDENTITY_DOWNLOADS = {"zips_download"}
-#: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
-ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
+#: the zip ingests (D-16a): the insider quarters alone, notes + FTD, and the 13F data sets after the walk.
+ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd", "zips_ingest_13f": "13f"}
 #: the eight EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
 EDGAR_WALKS = {
     "insider_edgar",
@@ -142,7 +141,7 @@ DERIVED_PARENTS = {
     **LLM_TEXT_TASKS,
     "sec_fundamentals_history": {"sec_fundamentals_facts"},
     "fundamentals_check": {"sec_fundamentals_history", "fundamentals_sharadar"},
-    "thirteen_f_backfill": {"thirteen_f"},
+    "zips_ingest_13f": {"identity", "thirteen_f"},
 }
 IDENTITY_INDEPENDENT = {"macro"}
 
@@ -234,15 +233,15 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     source = _source(DAG_FILE)
     assert '"retries": 3' in source
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
-    assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
-    assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
+    assert "[identity, thirteen_f] >> zips_ingest_13f" in source  # the 13F ZIP ingest follows the nightly walk
+    assert "backfill" not in source, "the 13F ZIP ingest replaced the backfill task"
     assert "fundamentals >> fundamentals_sharadar" not in source  # the two producers are independent (AC-009)
     assert "sec_employees_llm] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
     assert "[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
-    print("  three retries per task, sec_api tasks take both pool slots, the backfill follows the 13F walk")
+    print("  three retries per task, sec_api tasks take both pool slots, the 13F ZIP ingest follows the 13F walk")
     print("  OK: every fetcher -> extraction_status -> identity_check -> trigger_aggregation")
 
 
@@ -405,8 +404,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
         task_id for task_id in dag.tasks if task_id not in {*UNIVERSE_TASKS, "identity_check", "extraction_status", "trigger_data_aggregation"}
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
-    assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
-    lenient = {"identity", "price_history", "earnings_surprises", "fundamentals_check"}
+    lenient = {"identity", "price_history", "earnings_surprises", "fundamentals_check", "zips_ingest_13f"}
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
@@ -441,12 +439,28 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     print("  F-106: a failed zip download still runs identity, the consumers and price_history; a failed build still runs prices")
 
 
+def test_the_13f_zip_ingest_runs_after_identity_and_the_walk_even_when_the_walk_fails():
+    """AC-007: `zips-ingest --only 13f` in sec_bulk, after [identity, thirteen_f] on ALL_DONE; no backfill task is left."""
+    dag = load_dag(DAG_FILE)
+    task = dag.tasks["zips_ingest_13f"]
+    assert task.kwargs["pool"] == "sec_bulk" and " zips-ingest --only 13f -c " in str(task.kwargs["bash_command"])
+    assert task.trigger_rule == ALL_DONE
+    assert task.upstream == {"universe_sync", "identity", "thirteen_f"}, sorted(task.upstream)  # universe_sync feeds every fetcher
+    assert not any("backfill" in task_id for task_id in dag.tasks), sorted(dag.tasks)
+    assert not [name for name in extraction_cli.cli.commands if "backfill" in name], sorted(extraction_cli.cli.commands)
+    walk_failed = replay(dag, ["thirteen_f"])
+    assert walk_failed["zips_ingest_13f"] == "success" and walk_failed["trigger_data_aggregation"] == "success", walk_failed
+
+    print("\n=== SANITY CHECK: 13F ZIP ingest task (AC-007) ===")
+    print(f"  zips_ingest_13f: pool {task.kwargs['pool']}, trigger {task.trigger_rule}, upstream {sorted(task.upstream)}")
+    print("  replay: thirteen_f failed -> zips_ingest_13f still runs; no backfill task or CLI command remains. Validated.")
+
+
 #: Modules whose entry points walk EDGAR filing by filing (the document walks, the EDGAR step running them, the 13F walks).
 EDGAR_WALK_FILES = (
     *STRICT_EDGAR_FILES,
     "src/data_extract/transformers/step_extract_edgar.py",
     "src/data_extract/utils/institutionals/fetch_13f.py",
-    "src/data_extract/utils/institutionals/fetch_13f_backfill.py",
     "src/data_extract/utils/institutionals/fetch_13f_vintages.py",
 )
 
@@ -603,7 +617,7 @@ INPUT_PRODUCERS = {
     "sec_fails_to_deliver_security": {"zips_ingest_datasets"},  # the FTD ingest stores the lines as filed
     "sec_short_volume_security": {"short_interest"},
     "prices": {"price_history"},
-    "sec13f_hr": {"thirteen_f", "thirteen_f_backfill"},
+    "sec13f_hr": {"thirteen_f", "zips_ingest_13f"},
     "sec_13d": {"sec_13d"},
     "sec_13g": {"sec_13g"},
 }

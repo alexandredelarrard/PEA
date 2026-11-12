@@ -3,8 +3,7 @@ test_13f_low_watermark.py (tests/data_extract/institutionals/test_13f_low_waterm
 ---------------------------------------------------------------------------------------
 The nightly 13F walk (M4) on a real SQLite `DataStore` with fake filings (no network): the resume
 window is `max(sec13f_hr.filing_date)` minus the overlap to the run date. Successful books save
-in batches while failed reads alone get retry rounds after the first pass. M4 case 2 (a new ticker) is the data-set backfill, in
-`test_13f_backfill_zip.py`.
+in batches while failed reads alone get retry rounds after the first pass. The 13F data-set ingest is in `test_13f_zips.py`.
 """
 
 from __future__ import annotations

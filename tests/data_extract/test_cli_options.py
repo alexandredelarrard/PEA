@@ -111,21 +111,6 @@ def test_cli_subset_reaches_the_source(command: list[str], target: str, sqlite_s
     print(f"SANITY: {command} passes the normalized CSV subset; the source judges the scope against context.universe.")
 
 
-def test_cli_backfill_keeps_the_missing_subset_distinct(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    context = SimpleNamespace(config=config, log=Mock(), universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
-    fetch = Mock()
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    monkeypatch.setattr(cli_mod, "fetch_13f_backfill", fetch)
-    runner = CliRunner()
-
-    for flags, expected in (([], None), (["-t", " aaa ,bbb"], ["AAA", "BBB"])):
-        result = runner.invoke(cli_mod.cli, ["thirteen-f-backfill", *flags])
-        assert result.exit_code == 0, result.exception
-        assert fetch.call_args.kwargs["tickers"] == expected and "all_tickers" not in fetch.call_args.kwargs
-    print("SANITY: 13F backfill retains None for omitted -t (new names); explicit CSV reaches the source as a list.")
-
-
 def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, context: SimpleNamespace) -> None:
     """Make `StepExtractIdentity` constructible on a stub config and context: caches, universe and resolver stubbed."""
     config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))

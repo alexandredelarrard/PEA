@@ -35,7 +35,6 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
-from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, RetryRounds
@@ -128,12 +127,10 @@ class ReadFailure:
 
 @dataclass
 class _WalkState:
-    """Running state of one 13F walk: the CUSIP map built so far, the `universe_cusip` lines read once (the backfill's
-    holder scope) and rows saved per table."""
+    """Running state of one 13F walk: the CUSIP map built so far and rows saved per table."""
 
     looked_up: set[str] = field(default_factory=set)
     cmap: pd.DataFrame | None = None
-    lines: pd.DataFrame | None = None
     hr_saved: int = 0
     hr_suspect: int = 0
 
@@ -540,12 +537,6 @@ class _Saver:
         _ticker_map(self.context, pd.DataFrame({"cusip": pd.concat([book["cusip"] for _, book in pending], ignore_index=True)}), self.walk)
         for manifest, book in pending:
             self.save_packet(manifest, book)
-
-    def cusip_lines(self) -> pd.DataFrame:
-        """The `universe_cusip` lines of this walk, read on first use."""
-        if self.walk.lines is None:
-            self.walk.lines = load_identity(self.context).cusip_lines
-        return self.walk.lines
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
         """Preserve the source book in `sec13f_hr` as filed, each CUSIP tagged by `cusip_ticker_map`."""

@@ -77,7 +77,6 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
 )
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
-from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_vintages import recover_13f_vintages
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
@@ -251,21 +250,6 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         filing_window=window,
         as_of=run_date(as_of),
     )
-
-
-@cli.command(
-    name="thirteen-f-backfill",
-    help="13F history of NEW universe tickers: SEC 13F data sets (cached by zips-download), then one EDGAR walk over the gap after them.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
-    `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=run_date(as_of), full=full)
 
 
 @cli.command(

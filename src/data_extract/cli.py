@@ -77,7 +77,6 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_sp500,
 )
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
-from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_vintages import recover_13f_vintages
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
@@ -254,21 +253,6 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
 
 
 @cli.command(
-    name="thirteen-f-backfill",
-    help="13F history of NEW universe tickers: SEC 13F data sets (cached by zips-download), then one EDGAR walk over the gap after them.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
-    `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=run_date(as_of), full=full)
-
-
-@cli.command(
     name="thirteen-f-vintages",
     help="Manual recovery of named 13F accessions into sec13f_hr (an original a later amendment superseded); --dry-run previews.",
 )
@@ -428,6 +412,8 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
 
 _ZIP_DOWNLOADS = ("insider", "notes", "ftd", "13f")
 _ZIP_INGESTS = ("insider", "notes", "ftd")
+#: `13f` runs by name only: it stores what the EDGAR walk (`thirteen-f`) left out, so it follows the walk.
+_ZIP_INGEST_SOURCES = (*_ZIP_INGESTS, "13f")
 
 
 @cli.command(
@@ -454,7 +440,8 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 @cli.command(
     name="zips-ingest",
     help="Parse the cached SEC bulk zips into insider_transactions (zip quarters), notes_num/notes_text and the "
-    f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGESTS)}); "
+    f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGEST_SOURCES)}); "
+    "`--only 13f` (never in the default) stores the cached 13F data-set accessions missing from sec13f_hr, after `thirteen-f`. "
     "-F re-parses every cached period; --repair-availability only repairs the stored Notes clocks. SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
@@ -462,7 +449,7 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
-@click.option("--only", "only", type=click.Choice(_ZIP_INGESTS), multiple=True, help="Run only this source; repeatable.")
+@click.option("--only", "only", type=click.Choice(_ZIP_INGEST_SOURCES), multiple=True, help="Run only this source; repeatable.")
 def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, repair_availability: bool, only: tuple[str, ...]) -> None:
     if repair_availability and set(only) != {"notes"}:
         raise click.UsageError("--repair-availability needs `--only notes` and no other source.")
@@ -475,6 +462,7 @@ def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: dateti
         "insider": step.run_ingest_insider,
         "notes": step.run_ingest_financial_notes,
         "ftd": step.run_ingest_fails_to_deliver,
+        "13f": step.run_ingest_13f,
     }
     for name in only or _ZIP_INGESTS:
         sources[name]()

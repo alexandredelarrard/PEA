@@ -4,8 +4,8 @@ Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, Sharadar actions, S
 -> zip downloads (Form 3/4/5,
 Notes, FTD) -> `StepExtractIdentity` (Notes cover-page capture, symbol_tenure + universe_cik_symbol + universe_cusip
 from the stored FTD lines -> SQL-only sync of the CIK-keyed tables) -> zip ingests (insider zip quarters, notes,
-FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
-Sharadar -> EDGAR (insider, 13D, 13G, 8-K, filing text, employees text, DEF 14A text, SEC fundamentals facts) -> SEC
+FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) -> the 13F zip ingest
+(the cached 13F accessions the walk left out) -> Sharadar -> EDGAR (insider, 13D, 13G, 8-K, filing text, employees text, DEF 14A text, SEC fundamentals facts) -> SEC
 fundamentals history + SEC vs Sharadar check -> LLM (DEF 14A, 8-K votes)
 -> behavioral. Every domain step only reads the published lineage. The LLM step is built only once the EDGAR step
 has run, so a missing API key fails from there on; employees stay on their own command (`sec-employees-llm`).
@@ -56,6 +56,7 @@ class StepExtractAllData(Step):
         # run each extract big block
         self._prices.run(tickers=tickers)
         self._institutionals.run(tickers=tickers)
+        zips.run_ingest_13f()
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
         StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()
         self._fundamentals.run(tickers=tickers, full=False)  # reads the facts the EDGAR step just stored

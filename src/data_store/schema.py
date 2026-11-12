@@ -817,12 +817,12 @@ class Tables:
         ),
         # Option quantities are optional for older sources; never synthesize them.
         optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
-        # Market-wide nightly walk; a new ticker is backfilled per ticker from `source_start`.
+        # Market-wide nightly walk; `zips-ingest --only 13f` then stores every 13F-HR(/A) accession of
+        # the cached SEC 13F data sets that is not stored yet, through the walk's writer.
         resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="2013-06-30"),
-        # A completed new-ticker EDGAR gap walk (`fetch_13f_backfill`) saves one marker per ticker,
-        # cik and cusip '_empty', period = filing_date = the gap start. That day follows every
-        # data-set row and precedes the nightly frontier, so neither max(filing_date) nor a
-        # ticker's min(period) moves.
+        # One marker per accession, cusip and ticker '_empty': parse_status 'complete' for a stored
+        # book, 'invalid' (reason in value_unit_evidence) for a data-set packet that failed
+        # validation; the ZIP ingest skips both, the walk reads 'complete' only.
         empty_marker=("cusip", _EMPTY),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in

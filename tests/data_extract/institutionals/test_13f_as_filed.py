@@ -1,6 +1,6 @@
 """REQ-005: `sec13f_hr` stores each 13F book as filed, one row per manager x CUSIP x accession.
 
-Known truth (hand-made books, the dated `universe_cusip` lines of BRK-B and GOOGL as published):
+Known truth (hand-made books, BRK-A/BRK-B and GOOG/GOOGL as separate `cusip_ticker_map` entries):
 - a walk save of 2 BRK-A + 100 BRK-B + 10 AVB stores 3 rows on their own CUSIPs with the filed shares, tickers from
   `cusip_ticker_map` only (BRK-A stays BRK-A), and a marker counting the 3 filed rows;
 - GOOG 10 + GOOGL 5 stay two rows, GOOG and GOOGL; a CUSIP the map does not know is stored on the sentinel.
@@ -22,16 +22,6 @@ from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _line
 BRK_A, BRK_B = "084670108", "084670702"
 GOOG, GOOGL = "02079K107", "02079K305"
 AVB, UNMAPPED = "053484101", "999999999"
-#: The published lines a merging save would use; the as-filed save must not.
-LINES = pd.DataFrame(
-    [
-        (BRK_B, "BRK-B", "canonical_current", "BRK-B", 1.0, "1998-12-31", None),
-        (BRK_A, "BRK-B", "secondary_class", "BRK-A", 1500.0, "2010-01-21", None),
-        (GOOGL, "GOOGL", "canonical_current", "GOOGL", 1.0, "2015-10-01", None),
-        (GOOG, "GOOGL", "secondary_class", "GOOG", 1.0, "2015-10-01", None),
-    ],
-    columns=["cusip", "canonical_company", "lineage_role", "market_symbol", "conversion_ratio", "valid_from", "valid_to"],
-)
 CMAP = pd.DataFrame({"cusip": [BRK_A, BRK_B, GOOG, GOOGL, AVB], "ticker": ["BRK-A", "BRK-B", "GOOG", "GOOGL", "AVB"]})
 
 
@@ -68,7 +58,6 @@ def test_the_walk_stores_each_share_class_as_filed_with_its_map_ticker(filing_st
         [_line(GOOG, "ALPHABET C", 1_750.0, 10), _line(GOOGL, "ALPHABET A", 875.0, 5), _line(UNMAPPED, "NOBODY", 100.0, 1)],
     )
     saver = f13._Saver(SimpleNamespace(store=filing_store), save_every=1)
-    saver.walk.lines = LINES
     saver.save_packet(*berkshire)
     saver.save_packet(*alphabet)
 

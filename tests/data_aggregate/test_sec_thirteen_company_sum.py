@@ -157,6 +157,26 @@ def test_a_superinvestor_book_as_filed_holds_one_position_per_company(sqlite_sto
     )
 
 
+def test_an_invalid_marker_never_reaches_the_cube_input(sqlite_store: Any) -> None:
+    empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
+    invalid = {"cik": MERGED, "period": PERIOD, "filing_date": pd.Timestamp("2024-05-10"), "accession_number": "invalid-1"}
+    marker = {**invalid, "cusip": empty, "ticker": empty, "parse_status": "invalid", "value_unit_evidence": "declared rows disagree"}
+    sqlite_store.save(Tables.sec13f_hr, pd.concat([_book(FILED, "2024-05-10", AS_FILED, MARKET), pd.DataFrame([marker])], ignore_index=True))
+    assert "invalid-1" in set(sqlite_store.load(Tables.sec13f_hr, markers=True).accession_number), "the marker is stored"
+
+    reads = {
+        "whole books": iter_filing_vintages(sqlite_store, GRID.max(), [FILED, MERGED]),
+        "universe-scoped": iter_filing_vintages(sqlite_store, GRID.max(), universe=UNIVERSE, cusips=universe_cusips(TAGS.lines, UNIVERSE)),
+    }
+    for name, packets in reads.items():
+        assert packets is not None
+        with closing(packets):
+            batches = list(packets)
+        accessions = {a for df_filings, df_holdings in batches for a in (*df_filings["accession_number"], *df_holdings["accession_number"])}
+        assert accessions == {f"{FILED}-2024-05-10"}, (name, accessions)
+    print("SANITY: an `invalid` 13F marker is in sec13f_hr but neither the whole-book nor the universe-scoped cube read returns it.")
+
+
 def test_real_stored_books_reach_the_builders_at_company_grain() -> None:
     """Real rows: the managers holding a multi-class universe company in the newest complete stored quarter (read-only)."""
     store = _store()

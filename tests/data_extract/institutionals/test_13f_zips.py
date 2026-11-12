@@ -165,16 +165,43 @@ def _ctx(tmp_path: Any, store: Any, data_sets: dict[str, list[tuple]] | None = N
     return ctx
 
 
-def _set_summary(path: Path, accession: str, column: str, value: object) -> None:
-    """Rewrite one SUMMARYPAGE cell of a fixture ZIP (an invalid packet: the cover no longer reconciles)."""
+def _set_cell(path: Path, member: str, accession: str, column: str, value: object) -> None:
+    """Rewrite one cell of a fixture ZIP member."""
     with zipfile.ZipFile(path) as archive:
         entries = {name: archive.read(name) for name in archive.namelist()}
-    summary = pd.read_csv(BytesIO(entries["SUMMARYPAGE.tsv"]), sep="\t")
-    summary.loc[summary.ACCESSION_NUMBER.eq(accession), column] = value
-    entries["SUMMARYPAGE.tsv"] = summary.to_csv(sep="\t", index=False).encode()
+    table = pd.read_csv(BytesIO(entries[member]), sep="\t", dtype=str, keep_default_na=False)
+    table.loc[table.ACCESSION_NUMBER.eq(accession), column] = str(value)
+    entries[member] = table.to_csv(sep="\t", index=False).encode()
     with zipfile.ZipFile(path, "w") as archive:
         for name, content in entries.items():
             archive.writestr(name, content)
+
+
+def _set_summary(path: Path, accession: str, column: str, value: object) -> None:
+    """Rewrite one SUMMARYPAGE cell of a fixture ZIP (an invalid packet: the cover no longer reconciles)."""
+    _set_cell(path, "SUMMARYPAGE.tsv", accession, column, value)
+
+
+def _drop_member(path: Path, member: str) -> None:
+    """Rewrite a fixture ZIP without `member`."""
+    with zipfile.ZipFile(path) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist() if name != member}
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+
+
+def _break_crc(path: Path, member: str) -> None:
+    """Flip one byte of a stored member's data in place: the member reads, then fails its CRC check."""
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo(member)
+        content = archive.read(member)
+    raw = bytearray(path.read_bytes())
+    offset = info.header_offset
+    start = offset + 30 + int.from_bytes(raw[offset + 26 : offset + 28], "little") + int.from_bytes(raw[offset + 28 : offset + 30], "little")
+    position = start + content.rindex(b"SOLE") + 3  # an unread column: only the CRC can tell
+    raw[position] = ord("F")
+    path.write_bytes(bytes(raw))
 
 
 def _markers(store: Any, **where: object) -> pd.DataFrame:
@@ -415,6 +442,61 @@ def test_valid_packet_replaces_an_invalid_marker(tmp_path: Any, filing_store: An
     assert len(_positions(filing_store, accession_number=_A1[1])) == 2
     print("\n=== SANITY CHECK: a valid packet replaces an invalid marker ===")
     print("  -F re-decodes invalid A1; save_hr_filing swaps its marker for the complete one (2 rows); a walk replay saves 0. Validated.")
+
+
+@pytest.mark.parametrize("damage", ["missing SUMMARYPAGE", "INFOTABLE CRC error"])
+def test_unreadable_window_is_logged_and_skipped(tmp_path: Any, filing_store: Any, caplog: pytest.LogCaptureFixture, damage: str) -> None:
+    ctx = _ctx(tmp_path, filing_store)
+    path = _cache(ctx) / "2023q2_form13f.zip"
+    if damage == "missing SUMMARYPAGE":
+        _drop_member(path, "SUMMARYPAGE.tsv")
+    else:
+        _break_crc(path, "INFOTABLE.tsv")
+
+    with caplog.at_level(logging.ERROR):
+        saved = z13.ingest_13f_datasets(ctx, full=False)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR and path.name in r.getMessage()]
+    assert errors, "the unreadable window is logged by name"
+    assert saved == 1 and set(_markers(filing_store).accession_number) == {_B1[1]}, "the next window is still saved"
+    assert not {_A1[1], _A2[1]} & set(f13.completed_accessions(ctx, ["complete", "invalid"])), "nothing marked: retried next run"
+    print("\n=== SANITY CHECK: an unreadable window ===")
+    print(f"  {damage} in 2023q2 -> logged ({errors[-1][:70]!r}), no marker written; B1 in the next window saved ({saved} row). Validated.")
+
+
+def test_invalid_packet_without_a_period_is_logged_not_marked(tmp_path: Any, filing_store: Any, caplog: pytest.LogCaptureFixture) -> None:
+    ctx = _ctx(tmp_path, filing_store)
+    path = _cache(ctx) / "2023q2_form13f.zip"
+    _set_summary(path, _A1[1], "TABLEENTRYTOTAL", 99)
+    _set_cell(path, "SUBMISSION.tsv", _A1[1], "PERIODOFREPORT", "not a date")
+    _set_cell(path, "COVERPAGE.tsv", _A1[1], "REPORTCALENDARORQUARTER", "not a date")
+
+    with caplog.at_level(logging.ERROR):
+        saved = z13.ingest_13f_datasets(ctx, full=False)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR and _A1[1] in r.getMessage()]
+    assert any("period" in e for e in errors), errors
+    assert _markers(filing_store, accession_number=_A1[1]).empty, "no marker without a period"
+    assert saved == 3 and {_A2[1], _B1[1]} <= set(_markers(filing_store).accession_number)
+    print("\n=== SANITY CHECK: an invalid packet with no report period ===")
+    print(f"  A1 invalid with unparsable periods -> logged ({len(errors)} errors), not marked; A2 and B1 saved ({saved} rows). Validated.")
+
+
+def test_full_never_downgrades_a_complete_marker(tmp_path: Any, filing_store: Any, caplog: pytest.LogCaptureFixture) -> None:
+    ctx = _ctx(tmp_path, filing_store)
+    z13.ingest_13f_datasets(ctx, full=False)
+    before = _snapshot(filing_store)
+    _set_summary(_cache(ctx) / "2023q2_form13f.zip", _A1[1], "TABLEENTRYTOTAL", 99)  # A1 now decodes invalid
+
+    with caplog.at_level(logging.ERROR):
+        assert z13.ingest_13f_datasets(ctx, full=True) == 0
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any(_A1[1] in e for e in errors), errors
+    assert _markers(filing_store, accession_number=_A1[1]).parse_status.tolist() == ["complete"]
+    pd.testing.assert_frame_equal(before, _snapshot(filing_store))
+    print("\n=== SANITY CHECK: -F never downgrades a complete marker ===")
+    print("  stored A1 decodes invalid under -F: the error is logged, its marker stays 'complete', the table is unchanged. Validated.")
 
 
 def test_pending_beyond_one_batch_are_all_saved(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:

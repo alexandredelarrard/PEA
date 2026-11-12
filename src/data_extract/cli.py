@@ -428,6 +428,8 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
 
 _ZIP_DOWNLOADS = ("insider", "notes", "ftd", "13f")
 _ZIP_INGESTS = ("insider", "notes", "ftd")
+#: `13f` runs by name only: it stores what the EDGAR walk (`thirteen-f`) left out, so it follows the walk.
+_ZIP_INGEST_SOURCES = (*_ZIP_INGESTS, "13f")
 
 
 @cli.command(
@@ -454,7 +456,8 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 @cli.command(
     name="zips-ingest",
     help="Parse the cached SEC bulk zips into insider_transactions (zip quarters), notes_num/notes_text and the "
-    f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGESTS)}); "
+    f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGEST_SOURCES)}); "
+    "`--only 13f` (never in the default) stores the cached 13F data-set accessions missing from sec13f_hr, after `thirteen-f`. "
     "-F re-parses every cached period; --repair-availability only repairs the stored Notes clocks. SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
@@ -462,7 +465,7 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
-@click.option("--only", "only", type=click.Choice(_ZIP_INGESTS), multiple=True, help="Run only this source; repeatable.")
+@click.option("--only", "only", type=click.Choice(_ZIP_INGEST_SOURCES), multiple=True, help="Run only this source; repeatable.")
 def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, repair_availability: bool, only: tuple[str, ...]) -> None:
     if repair_availability and set(only) != {"notes"}:
         raise click.UsageError("--repair-availability needs `--only notes` and no other source.")
@@ -475,6 +478,7 @@ def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: dateti
         "insider": step.run_ingest_insider,
         "notes": step.run_ingest_financial_notes,
         "ftd": step.run_ingest_fails_to_deliver,
+        "13f": step.run_ingest_13f,
     }
     for name in only or _ZIP_INGESTS:
         sources[name]()

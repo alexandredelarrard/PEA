@@ -75,6 +75,9 @@ _COVER_UNITS = (
 )
 _COVER_DOLLARS = re.compile(r"\bdollars?\b", re.I)
 
+#: The `parse_status` of a marker recording an accession whose source packet failed validation.
+INVALID_STATUS = "invalid"
+
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
 
@@ -458,20 +461,25 @@ def _filing_checksum(manifest: pd.DataFrame, holdings: pd.DataFrame) -> str:
 
 def save_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
     """Preserve one immutable accession and its completion marker in `sec13f_hr` as filed: one row per CUSIP, tagged by
-    `cmap` alone (unmapped on the sentinel). Returns rows saved; 0 when the accession is stored."""
+    `cmap` alone (unmapped on the sentinel). Returns rows saved; 0 when the accession is stored. Checksums are compared
+    only against a complete marker; an invalid marker of the accession is replaced in the same transaction."""
     checksum = _filing_checksum(manifest, book)
     rows = _hr_rows(book, cmap)
     row = manifest.iloc[0]
     empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
     with store.transaction() as bound:
+        marker_key = {"cik": row["cik"], "period": row["period"], "accession_number": row["accession_number"], "cusip": empty}
         df_existing = bound.load(
             Tables.sec13f_hr,
-            columns=["content_checksum", "declared_row_count", "declared_value_total"],
-            where={"cik": row["cik"], "period": row["period"], "accession_number": row["accession_number"], "cusip": empty},
+            columns=["content_checksum", "declared_row_count", "declared_value_total", "parse_status"],
+            where=marker_key,
             markers=True,
             optional=True,
         )
 
+        if df_existing is not None and df_existing["parse_status"].eq(INVALID_STATUS).all():
+            bound.delete(Tables.sec13f_hr, marker_key)
+            df_existing = None
         if df_existing is not None:
             existing = df_existing.iloc[0]
             declared_count = None if pd.isna(row["declared_row_count"]) else int(row["declared_row_count"])
@@ -546,11 +554,16 @@ class _Saver:
         self.walk.hr_suspect += _suspect_prices(book)
 
 
+def completed_accessions(context: Context, statuses: list[str]) -> frozenset[str]:
+    """The accessions whose `sec13f_hr` marker has a `parse_status` in `statuses`: one table-wide read."""
+    return frozenset(stored_accessions(context, Tables.sec13f_hr, [""], DONE_TABLE, where={"parse_status": statuses})[""])
+
+
 def _done_in(context: Context, joint_ciks: set[str]) -> Callable[[FilingStamp], bool]:
     """Whether a listed filing is complete in `sec13f_hr` (markers count): one table-wide read, plus one
     per-CIK read for the filers of an accession listed under several CIKs, stored once per filer."""
     where = {"parse_status": "complete"}
-    everywhere = stored_accessions(context, Tables.sec13f_hr, [""], DONE_TABLE, where=where)[""]
+    everywhere = completed_accessions(context, ["complete"])
     per_cik = stored_accessions(context, Tables.sec13f_hr, sorted(joint_ciks), DONE_PER_KEY, where=where) if joint_ciks else {}
     return lambda stamp: stamp.accession_number in per_cik.get(stamp.cik, everywhere)
 

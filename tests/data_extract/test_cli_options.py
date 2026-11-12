@@ -149,6 +149,7 @@ def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespa
     [
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
+        ("zips-ingest --only 13f", "ingest_13f_datasets", "full"),
         ("sec-fundamentals-history", "build_fundamentals_history", "rebuild_history"),
         ("identity --only sync", "recheck_tickers", "every"),
         ("edgar-index", "refresh", "rebuild"),

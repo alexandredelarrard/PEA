@@ -44,7 +44,6 @@ REQUIRED_COMMANDS = {
     "thirteen-f",
     "thirteen-f-backfill",
     "insider-edgar",
-    "superinvestors",
     "sec-fundamentals-facts",
     "sec-fundamentals-history",
     "fundamentals-check",
@@ -144,7 +143,6 @@ DERIVED_PARENTS = {
     "sec_fundamentals_history": {"sec_fundamentals_facts"},
     "fundamentals_check": {"sec_fundamentals_history", "fundamentals_sharadar"},
     "thirteen_f_backfill": {"thirteen_f"},
-    "superinvestors": {"thirteen_f"},
 }
 IDENTITY_INDEPENDENT = {"macro"}
 

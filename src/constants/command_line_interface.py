@@ -62,9 +62,6 @@ FILING_WINDOW_KWARGS: dict[str, Any] = dict(
     help="Backfill a lost filing season, e.g. 2024-01-01:2024-03-01. Replaces the watermark and advances nothing. ONE EDGAR WALK AT A TIME.",
 )
 
-VINTAGES_ARGS = ("--vintages",)
-VINTAGES_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Preserve explicit accession versions.")
-
 CIK_ARGS = ("--cik", "ciks")
 CIK_KWARGS: dict[str, Any] = dict(multiple=True, help="Filer CIK to recover (repeat for several filers).")
 

@@ -12,7 +12,7 @@ capped by Airflow POOLS (created in airflow-init):
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time (edgar_index and insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises, identity,
-                          superinvestors, earnings calls, the employees and DEF 14A LLM passes and the 8-K
+                          earnings calls, the employees and DEF 14A LLM passes and the 8-K
                           vote parser (stored text only, no SEC read)  (+ the one heavy yfinance pull: price_history)
 
 Flow: [sec_company_tickers, sharadar_tickers, sharadar_actions, sec_submissions] -> universe_sync -> zips_download -> identity
@@ -24,7 +24,7 @@ has finished, failed or not. The aggregation trigger runs only when `identity_ch
 hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `universe_tickers`
 differs from `configs/universe.yml`. Identity stage: zips_download -> identity
 (captures, symbol_tenure + universe_cik_symbol + universe_cusip, the SQL-only sync; offline, reads tables and cached Form 3/4/5 and Notes zips) -> every task that reads
-the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_cusip`, and the backfill, superinvestors and
+the lineage, the two zip ingests, thirteen_f (13F rows are tagged by `universe_cusip`, and the backfill and
 manager books follow it) and the earnings calls included (price_history waits for identity: it reads the master's current
 secondary classes, and earnings_surprises its trading symbols); a failed identity run leaves those consumers unrun. identity, price_history and earnings_surprises run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
@@ -129,8 +129,7 @@ zips_ingest_datasets = fetch("zips-ingest --only notes --only ftd", pool="sec_bu
 thirteen_f = fetch("thirteen-f", pool="sec_api")
 # new tickers' 13F history (cached data-set ZIPs + one EDGAR walk); a no-op on nights with no new ticker
 thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")
-superinvestors = fetch("superinvestors")  # light, needs 13F
-#   ^ institutionals step: thirteen_f, superinvestors, short-interest
+#   ^ institutionals step: thirteen_f, short-interest (the superinvestor roster is a manual `superinvestors` run)
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per night, before the EDGAR walks
@@ -206,14 +205,13 @@ all_fetchers = [
     sec_employees_llm,
     sec_def14a_llm,
     extract_earnings_calls,
-    superinvestors,
 ]
 
 identity_consumers = [
     zips_ingest_insider,
     zips_ingest_datasets,
     short_interest,
-    thirteen_f,  # tags universe CUSIPs by `universe_cusip`; the backfill, superinvestors and manager books follow it
+    thirteen_f,  # tags universe CUSIPs by `universe_cusip`; the backfill follows it
     extract_earnings_calls,  # resolves each call's symbol through the published lineage
     sec_fundamentals_facts,
     fundamentals_sharadar,  # keys the vendor history through the lineage
@@ -236,7 +234,6 @@ zips_download >> identity >> identity_consumers
 identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and skip their own refresh
 zips_ingest_insider >> insider_edgar  # zips fill first; EDGAR resumes after their last quarter and replaces each filing it re-reads
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
-thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 sec_fundamentals_facts >> sec_fundamentals_history
 [sec_fundamentals_history, fundamentals_sharadar] >> fundamentals_check  # no edge between the producers
 sec_employees_text >> sec_employees_llm  # the LLM decides what the walk stored tonight

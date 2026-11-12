@@ -20,4 +20,5 @@ if __name__ == "__main__":
 # docker run --rm -v stock_pick_strat_pgdata:/volume -v "/c/Users/de larrard alexandre/Downloads:/backup:ro" alpine tar -xzf /backup/stock_pick_strat_pgdata.tar.gz -C /volume
 
 # Save tlocally
-#  docker run --rm -v stock_pick_strat_pgdata:/volume -v "/c/Users/alarr/Downloads:/backup" alpine tar -czf /backup/stock_pick_strat_pgdata.tar.gz -C /volume .
+#  docker run --rm -v stock_pick_strat_pgdata:/volume   -v "/D/:/backup" alpine tar -czf /backup/stock_pick_strat_pgdata.tar.gz -C /volume .
+ 

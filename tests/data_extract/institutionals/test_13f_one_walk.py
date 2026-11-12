@@ -1,8 +1,7 @@
 """
 test_13f_one_walk.py (tests/data_extract/institutionals/test_13f_one_walk.py)
 ------------------------------------------------------------------------------
-`fetch_13f` saves every book to `sec13f_hr` from one parse, and `fetch_13f_managers` is the per-CIK
-catch-up of the roster's books there. Fake filings (no network) on a real SQLite `DataStore`;
+`fetch_13f` saves every book to `sec13f_hr` from one parse. Fake filings (no network) on a real SQLite `DataStore`;
 known-truth infotables, plus the pre-P7 `_holdings_frame` + `_resolve_tickers` logic as the
 oracle for `sec13f_hr`.
 """
@@ -23,10 +22,8 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from src.data_extract.utils.edgar_extract import parallel_fetch
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_extract.utils.institutionals import fetch_13f_managers as f13m
 from src.data_store.schema import Tables
 from src.utils.institutional_vintages import public_books
 from src.utils.string import pad_cik
@@ -328,242 +325,6 @@ def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(filing_st
     print("  resumes before every unsaved filing. Validated.")
 
 
-def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
-    """Store one legacy AAPL row and one complete AAPL accession per `(cik, period, filing_date)`."""
-    store.save(
-        Tables.sec13f_hr,
-        (
-            pd.DataFrame(
-                [
-                    {
-                        "cik": cik,
-                        "period": pd.Timestamp(period),
-                        "filing_date": pd.Timestamp(filed),
-                        "cusip": "037833100",
-                        "ticker": "AAPL",
-                        "issuer_name": "APPLE INC",
-                        "title_of_class": "COM",
-                        "position_type": "common",
-                        "shares": 1.0,
-                        "value_usd": 100.0,
-                        "call_shares": 0.0,
-                        "call_value": 0.0,
-                        "put_shares": 0.0,
-                        "put_value": 0.0,
-                        "debt_prn": 0.0,
-                        "debt_value": 0.0,
-                        "other_value": 0.0,
-                    }
-                    for cik, period, filed in rows
-                ]
-            )
-        ).assign(accession_number="_legacy"),
-    )
-
-    for cik, period, filed in rows:
-        filing = _FakeFiling(cik, filed, period, [_line("037833100", "APPLE INC", 1000.0, 10)])
-        packet = f13.read_filing_vintage(FilingStamp.of(filing, cik))
-        assert not isinstance(packet, f13.ReadFailure)
-        f13.save_hr_filing(store, *packet, CMAP)
-
-
-def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_FakeFiling]], down: set[str] | None = None) -> None:
-    """`Company(cik).get_filings` returns `listings[cik]`; a CIK in `down` raises on listing."""
-    down = set() if down is None else down
-
-    class _FakeCompany:
-        def __init__(self, cik: str) -> None:
-            if cik in down:
-                raise ConnectionError("listing throttled")
-            self.cik = cik
-
-        def get_filings(self, form: Any) -> list[_FakeFiling]:
-            return listings[self.cik]
-
-    monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
-    monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
-
-
-def _stored_periods(store: Any, cik: str) -> list[str]:
-    df = store.load(Tables.sec13f_hr, columns=["cik", "period"], where={"cik": cik}, optional=True)
-    return [] if df is None else sorted(pd.to_datetime(df["period"]).dt.strftime("%Y-%m-%d").unique())
-
-
-def _three_quarters(cik: str, fail_reads_middle: int = 0) -> list[_FakeFiling]:
-    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
-    return [  # edgartools order: newest first
-        _FakeFiling(cik, "2026-05-15", "2026-03-31", aapl),
-        _FakeFiling(cik, "2026-02-14", "2025-12-31", aapl, fail_reads=fail_reads_middle),
-        _FakeFiling(cik, "2025-11-14", "2025-09-30", aapl),
-    ]
-
-
-def test_a_failed_read_is_retried_next_run_even_when_later_filings_saved(filing_store, monkeypatch, caplog):
-    listing = _three_quarters(ROSTER, fail_reads_middle=1)
-    _seed_roster(filing_store, [ROSTER])
-    _patch_company(monkeypatch, {ROSTER: listing})
-
-    with caplog.at_level(logging.WARNING):
-        f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-    after_run1 = _stored_periods(filing_store, ROSTER)
-    for f in listing:
-        f.reads.clear()
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-
-    assert after_run1 == ["2025-09-30", "2026-03-31"]  # the later filing saved despite the failure
-    assert _stored_periods(filing_store, ROSTER) == ["2025-09-30", "2025-12-31", "2026-03-31"]
-    assert [f.filing_date for f in listing if f.reads] == ["2026-02-14"]  # run 2 re-reads only the gap
-    assert any("read(s) failed" in r.getMessage() for r in caplog.records)  # the failure is reported, not silent
-    print("\n=== SANITY: transient read failure ===")
-    print(f"  run 1 stored {after_run1} and warned; run 2 read only the failed 2026-02-14 filing and filled 2025-12-31. Validated.")
-
-
-def test_a_new_cik_whose_newest_filing_was_written_inline_still_backfills(filing_store, monkeypatch):
-    new_cik = "0000000077"
-    listing = _three_quarters(new_cik)
-    _seed_roster(filing_store, [new_cik])
-    _patch_company(monkeypatch, {new_cik: listing}, down={new_cik})
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)  # day 1: listing throttled
-    assert _stored_periods(filing_store, new_cik) == []
-    _save_book_rows(filing_store, [(new_cik, "2026-03-31", "2026-05-15")])  # day 2: `fetch_13f` writes the newest inline
-    _patch_company(monkeypatch, {new_cik: listing})
-
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-
-    assert _stored_periods(filing_store, new_cik) == ["2025-09-30", "2025-12-31", "2026-03-31"]
-    assert sorted(f.filing_date for f in listing if f.reads) == ["2025-11-14", "2026-02-14"]  # the inline filing is not re-read
-    print("\n=== SANITY: new roster CIK back-fill ===")
-    print("  day-1 listing failed, day-2 inline write of 2026-03-31; the catch-up still back-filled 2025-09-30 and 2025-12-31. Validated.")
-
-
-def test_catch_up_saves_to_and_resumes_on_sec13f_hr(filing_store, monkeypatch):
-    """A roster accession already complete in `sec13f_hr` (saved by the market walk) is not re-read; the
-    unstored one is saved there as a complete book."""
-    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
-    stored = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", aapl, accession="0000000001-26-000001")
-    pending = _FakeFiling(ROSTER, "2026-08-14", "2026-06-30", aapl, accession="0000000001-26-000002")
-    manifest, book = f13.read_filing_vintage(FilingStamp.of(stored, ROSTER))
-    f13.save_hr_filing(filing_store, manifest, book, CMAP)
-    stored.reads.clear()
-    _seed_roster(filing_store, [ROSTER])
-    _patch_company(monkeypatch, {ROSTER: [pending, stored]})
-
-    saved = f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-
-    complete = filing_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
-    assert stored.reads == [] and pending.reads == [pending.accession_number]
-    assert saved == 1 and set(complete.accession_number) == {stored.accession_number, pending.accession_number}
-    assert _stored_periods(filing_store, ROSTER) == ["2026-03-31", "2026-06-30"]
-    print(f"SANITY: catch-up skipped the accession complete in sec13f_hr, read only {pending.reads}, saved it there ({saved} row). Validated.")
-
-
-def test_stored_accession_and_verified_empty_book_are_never_reread(filing_store, monkeypatch, caplog):
-    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
-    stored = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", aapl)
-    empty = _FakeFiling(ROSTER, "2026-08-14", "2026-06-30", [])
-    _seed_roster(filing_store, [ROSTER])
-    _save_book_rows(filing_store, [(ROSTER, "2026-03-31", "2026-05-15")])
-    _patch_company(monkeypatch, {ROSTER: [empty, stored]})
-
-    with caplog.at_level(logging.WARNING):
-        saved = [f13m.fetch_13f_managers(_ctx(filing_store), years_history=15) for _ in range(2)]
-
-    assert stored.reads == []  # the old frontier re-read the newest stored filing on every run
-    assert len(empty.reads) == 1 and saved == [0, 0]  # read once, stored as a complete empty marker, never re-read
-    assert not any("read(s) failed" in r.getMessage() for r in caplog.records)  # empty is not a failure
-    print("\n=== SANITY: done-set cost ===")
-    print(
-        f"  stored filing reads {len(stored.reads)}; empty-info-table filing read once ({len(empty.reads)} over 2 runs), marked complete, not a failure. Validated."
-    )
-
-
-def test_catch_up_reads_every_unstored_filing_and_warns_only_for_bookless_ciks(filing_store, monkeypatch, caplog):
-    with_book, no_book, failing, idle = "0000000001", "0000000002", "0000000003", "0000000004"
-    _seed_roster(filing_store, [with_book, no_book, failing, idle])
-    _save_book_rows(filing_store, [(with_book, "2026-03-31", "2026-05-15"), (idle, "2026-06-30", "2026-08-14")])
-    filing_store.save(
-        Tables.sec13f_hr,
-        (
-            pd.DataFrame(
-                [
-                    {
-                        "cik": "3",
-                        "period": pd.Timestamp("2025-12-31"),
-                        "ticker": "AAPL",
-                        "cusip": "037833100",
-                        "filing_date": pd.Timestamp("2026-02-10"),
-                    }
-                ]
-            )
-        ).assign(accession_number="_legacy"),
-    )
-    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
-    listings = {
-        with_book: [
-            _FakeFiling(with_book, "2026-08-14", "2026-06-30", aapl),
-            _FakeFiling(with_book, "2026-05-15", "2026-03-31", aapl),
-            _FakeFiling(with_book, "2026-02-14", "2025-12-31", aapl),
-        ],
-        no_book: [
-            _FakeFiling(no_book, "2026-05-15", "2026-03-31", aapl),
-            _FakeFiling(no_book, "2016-02-14", "2015-12-31", aapl),
-            _FakeFiling(no_book, "2009-02-14", "2008-12-31", aapl),  # period older than years_history
-            _FakeFiling(no_book, "2026-01-10", None, aapl),  # null period
-        ],
-        idle: [_FakeFiling(idle, "2026-08-14", "2026-06-30", [])],
-    }
-    _patch_company(monkeypatch, listings, down={failing})
-
-    with caplog.at_level(logging.WARNING):
-        saved = f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-
-    read = {f.filing_date for f in listings[with_book] if f.reads}
-    assert read == {"2026-08-14", "2026-02-14"}  # the stored 2026-05-15 filing is skipped, the older unstored one is not
-    read_nf = {f.filing_date for f in listings[no_book] if f.reads}
-    assert read_nf == {"2026-05-15", "2016-02-14"}  # whole window, minus old and null periods
-    assert not listings[idle][0].reads
-    assert saved == 4
-    empty_warnings = [r.getMessage() for r in caplog.records if "produced NO rows" in r.getMessage()]
-    assert len(empty_warnings) == 1
-    assert "1/4 roster CIK(s)" in empty_warnings[0] and failing in empty_warnings[0] and idle not in empty_warnings[0]
-    print("\n=== SANITY: 13F manager catch-up ===")
-    print(f"  CIK with a book read {sorted(read)}; book-less read {sorted(read_nf)}; listing failure -> 0 rows;")
-    print(f"  NO-rows warning names only the book-less failing CIK: {empty_warnings[0][-40:]!r}. Validated.")
-
-
-def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(filing_store, monkeypatch):
-    listing = [_roster_amendment(), _roster_original()]  # edgartools order: newest filing first
-    _seed_roster(filing_store, [ROSTER])
-
-    class _FakeCompany:
-        def __init__(self, cik: str) -> None:
-            self.cik = cik
-
-        def get_filings(self, form: Any) -> list[_FakeFiling]:
-            return list(listing)
-
-    sent: list[pd.DataFrame] = []
-    real_save_book = f13m.save_hr_filing
-
-    def _spy_save_book(store: Any, manifest: pd.DataFrame, book: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
-        sent.append(book.copy())
-        return real_save_book(store, manifest, book, cmap)
-
-    monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
-    monkeypatch.setattr(f13m, "save_hr_filing", _spy_save_book)
-    monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
-
-    saved = f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-
-    df_sent = pd.concat(sent, ignore_index=True)
-    assert not df_sent.duplicated(subset=["cik", "accession_number", "cusip"]).any()
-    assert saved == 3
-    assert len(_stored(filing_store, Tables.sec13f_hr)) == 3
-    latest = _resolved(filing_store, Tables.sec13f_hr)
-    assert len(latest) == 1 and latest.iloc[0].value_usd == 1_200_000
-    print("SANITY: catch-up preserves all source accessions; original two-position book resolves to the one-position replacement only when public.")
-
-
 def _same_day_pair() -> list[_FakeFiling]:
     """A 13F-HR and its 13F-HR/A filed the same day by two filer agents: the original's accession
     prefix sorts AFTER the amendment's, so an (filed, accession) order puts the original last."""
@@ -574,131 +335,17 @@ def _same_day_pair() -> list[_FakeFiling]:
     return [amendment, original]
 
 
-@pytest.mark.parametrize("path", ["walk", "catch_up"])
-def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(filing_store, monkeypatch, path):
+def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(filing_store, monkeypatch):
     filings = _same_day_pair()
     _seed_roster(filing_store, [ROSTER])
-    if path == "walk":
-        _patch_walk(monkeypatch, filings)
-        f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=600)
-    else:
-        _patch_company(monkeypatch, {ROSTER: filings})
-        f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
+    _patch_walk(monkeypatch, filings)
+    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=600)
 
     raw = _stored(filing_store, Tables.sec13f_hr)
     assert len(raw.loc[raw.cusip.eq("037833100")]) == 2
     latest = _resolved(filing_store, Tables.sec13f_hr)
     assert latest.loc[latest.cusip.eq("037833100"), "value_usd"].iloc[0] == 1_200_000
-    print(f"SANITY: same-day amendment wins by source semantics ({path}); both accessions remain stored despite inverse accession order.")
-
-
-def _book_by_period(store: Any, cik: str) -> dict[str, tuple[float, str]]:
-    """`{period: (AAPL value_usd, filing_date)}` of the CIK's stored book."""
-    df = store.load(Tables.sec13f_hr, columns=["period", "value_usd", "filing_date"], where={"cik": cik}, optional=True)
-    if df is None:
-        return {}
-    return {
-        f"{pd.Timestamp(p):%Y-%m-%d}": (float(v), f"{pd.Timestamp(d):%Y-%m-%d}")
-        for p, v, d in zip(df["period"], df["value_usd"], df["filing_date"], strict=True)
-    }
-
-
-def test_a_failed_same_day_amendment_of_a_stored_period_is_retried(filing_store, monkeypatch):
-    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
-    original = _FakeFiling(ROSTER, "2025-11-14", "2025-09-30", aapl, accession="0000000001-25-000001")
-    new_quarter = _FakeFiling(ROSTER, "2026-02-14", "2025-12-31", aapl, accession="0000000001-26-000002")
-    amendment = _FakeFiling(
-        ROSTER,
-        "2026-02-14",
-        "2025-09-30",
-        [_line("037833100", "APPLE INC", 9_000.0, 90)],
-        form="13F-HR/A",
-        accession="0000000001-26-000003",
-        fail_reads=1,
-    )
-    _seed_roster(filing_store, [ROSTER])
-    _patch_company(monkeypatch, {ROSTER: [original]})
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)  # run 0: the P1 original is stored
-    _patch_company(monkeypatch, {ROSTER: [amendment, new_quarter, original]})
-
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)  # run 1: the P1 amendment fails, P2 saves the same day
-    after_run1 = _book_by_period(filing_store, ROSTER)
-    for f in (original, new_quarter, amendment):
-        f.reads.clear()
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)  # run 2
-    after_run2 = _book_by_period(filing_store, ROSTER)
-
-    assert after_run1 == {"2025-09-30": (1_000.0, "2025-11-14"), "2025-12-31": (1_000.0, "2026-02-14")}
-    assert amendment.reads == ["0000000001-26-000003"] and not original.reads and not new_quarter.reads  # only the failed filing is re-read
-    assert after_run2["2025-09-30"] == (9_000.0, "2026-02-14")  # the amendment supersedes the original
-    print("\n=== SANITY: same-day failed amendment (F-010) ===")
-    print(
-        f"  P1 period and the 2026-02-14 date were each stored by OTHER filings; run 2 re-read only the amendment and stored {after_run2['2025-09-30']}. Validated."
-    )
-
-
-@pytest.mark.parametrize("unreadable", ["original", "amendment"])
-def test_a_parse_failure_skips_only_its_filing_and_the_quarter_saves(filing_store, monkeypatch, caplog, unreadable):
-    original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
-    amendment = _FakeFiling(
-        ROSTER, "2026-06-01", "2026-03-31", [_line("037833100", "APPLE INC", 2_000.0, 20)], form="13F-HR/A", accession="0000000001-26-000002"
-    )
-    broken, readable = (original, amendment) if unreadable == "original" else (amendment, original)
-    broken.unparseable = True
-    _seed_roster(filing_store, [ROSTER])
-    _patch_company(monkeypatch, {ROSTER: [amendment, original]})
-
-    with caplog.at_level(logging.WARNING):
-        f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-
-    book = _book_by_period(filing_store, ROSTER)
-    readable_value = 2_000.0 if readable is amendment else 1_000.0
-    assert book == {"2026-03-31": (readable_value, readable.filing_date)}  # the readable sibling saved in run 1
-    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 1 and all(s in errors[0] for s in (ROSTER, broken.accession_number, "2026-03-31")), errors
-    print(f"\n=== SANITY: deterministic parse failure of the {unreadable} (F-011) ===")
-    print(
-        f"  the period saved from the readable {('amendment' if readable is amendment else 'original')} {book['2026-03-31']}; one ERROR: {errors[0][:110]!r}. Validated."
-    )
-
-
-# `sec_io` retries a "429" up to its 3 attempts, so that failure must last 3 reads to outlive the
-# policy; a network error edgartools already retried fails at once.
-@pytest.mark.parametrize(("fail_error", "fail_reads"), [(RuntimeError, 3), (ConnectionError, 1), (TimeoutError, 1)])
-def test_a_transient_failure_preserves_original_and_retries_only_amendment(filing_store, monkeypatch, caplog, fail_error, fail_reads):
-    original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
-    amendment = _FakeFiling(
-        ROSTER,
-        "2026-06-01",
-        "2026-03-31",
-        [_line("037833100", "APPLE INC", 2_000.0, 20)],
-        form="13F-HR/A",
-        accession="0000000001-26-000002",
-        fail_reads=fail_reads,
-        fail_error=fail_error,
-    )
-    other_quarter = _FakeFiling(ROSTER, "2026-02-14", "2025-12-31", [_line("037833100", "APPLE INC", 500.0, 5)], accession="0000000001-26-000000")
-    _seed_roster(filing_store, [ROSTER])
-    _patch_company(monkeypatch, {ROSTER: [amendment, original, other_quarter]})
-
-    with caplog.at_level(logging.WARNING):
-        f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-    after_run1 = _book_by_period(filing_store, ROSTER)
-    f13m.fetch_13f_managers(_ctx(filing_store), years_history=15)
-    after_run2 = _book_by_period(filing_store, ROSTER)
-
-    assert after_run1 == {
-        "2025-12-31": (500.0, "2026-02-14"),
-        "2026-03-31": (1_000.0, "2026-05-15"),
-    }  # the verified original stays public; only the unread amendment is retried
-    assert after_run2["2026-03-31"] == (2_000.0, "2026-06-01")  # filled next run, the amendment winning
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and amendment.accession_number in r.getMessage()]
-    assert warnings and all(s in warnings[0] for s in (ROSTER, "2026-03-31")), warnings
-    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
-    print(f"\n=== SANITY: transient read failure ({fail_error.__name__}) preserves readable source versions (F-011) ===")
-    print(
-        f"  run 1 stored {sorted(after_run1)} only; run 2 filled 2026-03-31 with {after_run2['2026-03-31']}; WARNING: {warnings[0][:100]!r}. Validated."
-    )
+    print("SANITY: same-day amendment wins by source semantics; both accessions remain stored despite inverse accession order.")
 
 
 @pytest.mark.parametrize(
@@ -980,23 +627,6 @@ def test_empty_cover_over_a_zero_valued_cusip_line_fails():
     failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
     assert isinstance(failure, f13.ReadFailure) and "cover declares an empty book" in failure.reason, failure
     print(f"SANITY: SYNTHETIC 0/0 cover over one zero-valued 002824100 line -> ReadFailure {failure.reason[:80]!r}; a CUSIP is a holding.")
-
-
-def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(filing_store, monkeypatch, tmp_path):
-    ctx = _ctx(filing_store)
-    original = _FakeFiling(ROSTER, "2024-08-14", "2024-06-30", [_line("037833100", "APPLE INC", 1000, 100)])
-    amendment = _FakeFiling(ROSTER, "2024-10-17", "2024-06-30", [_line("037833100", "APPLE INC", 1500, 150)], form="13F-HR/A")
-    stamp = FilingStamp.of(amendment, ROSTER)
-    manifest, book = f13.read_filing_vintage(stamp)
-    f13.save_hr_filing(filing_store, manifest, book, CMAP)
-    amendment.reads.clear()
-    _patch_company(monkeypatch, {ROSTER: [original, amendment]})
-    f13m._catch_up_cik("truth", ROSTER, context=ctx, since=pd.Timestamp("2024-01-01"), cmap=CMAP)
-    stored = _stored(filing_store, Tables.sec13f_hr)
-    assert stored.set_index("accession_number").shares.to_dict() == {amendment.accession_number: 150, original.accession_number: 100}
-    assert len(filing_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)) == 2
-    assert len(original.reads) == 1 and amendment.reads == []
-    print("SANITY: accession catch-up restores missing original without overwriting the already-preserved amended150 version.")
 
 
 def _spy_done_reads(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, int]]:

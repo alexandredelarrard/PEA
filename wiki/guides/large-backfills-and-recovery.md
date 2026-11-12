@@ -256,12 +256,12 @@ Finish with the project’s required sanity conclusion and the appropriate [vali
 
 ## Bounded 13F vintage recovery
 
-The existing `thirteen-f-managers --vintages` command recovers verified accessions into the two declared holdings tables. Require explicit manager CIKs, report-period bounds, filing cutoff and accession cap. Preview source cost and back up the existing destination prestate before an authorized bounded live append. A complete manager copy alone cannot certify a missing broad copy. Run the following examples from the repository root.
+The `thirteen-f-vintages` command recovers verified accessions into `sec13f_hr`. Require explicit manager CIKs, report-period bounds, filing cutoff and accession cap. Preview source cost and back up the existing destination prestate before an authorized bounded live append. Run the following examples from the repository root.
 
 Example preview for the verified Morgan Q2 pair (replace `<PY>` with the configured Python 3.13 executable):
 
 ~~~powershell
-rtk "<PY>" -m src data_extract thirteen-f-managers --vintages --cik 0000895421 --period-start 2024-06-30 --period-end 2024-06-30 --filed-through 2025-05-14 --max-filings 2 --accession 0000895421-24-000408 --accession 0000895421-25-000378 --archive "./data/sec_13f_datasets/01jun2024-31aug2024_form13f.zip" --archive "./data/sec_13f_datasets/01mar2025-31may2025_form13f.zip" --dry-run -c ./configs
+rtk "<PY>" -m src data_extract thirteen-f-vintages --cik 0000895421 --period-start 2024-06-30 --period-end 2024-06-30 --filed-through 2025-05-14 --max-filings 2 --accession 0000895421-24-000408 --accession 0000895421-25-000378 --archive "./data/sec_13f_datasets/01jun2024-31aug2024_form13f.zip" --archive "./data/sec_13f_datasets/01mar2025-31may2025_form13f.zip" --dry-run -c ./configs
 ~~~
 
 Use resolved absolute archive/configuration paths when working outside the repository root. Archives stay read-only. The scoped CLI, missing-original resume, cap, dry-run and immutable replay have bounded controls. Failed source reconciliation stops recovery without removing or relabeling existing versions. The cached-backfill performance refactor does not itself run this recovery or modify production sources.

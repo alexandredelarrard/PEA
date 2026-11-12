@@ -72,7 +72,7 @@ def test_both_spellings_of_the_renamed_schedules_are_declared():
 # AC-001: CIK only, never a symbol                                             #
 # --------------------------------------------------------------------------- #
 #: Non-issuer `Company(...)` call sites allowed a string: 13F managers are listed by their own CIK, not a symbol (00-run N1).
-_COMPANY_ALLOWLIST = {"src/data_extract/utils/institutionals/fetch_13f_managers.py"}
+_COMPANY_ALLOWLIST = {"src/data_extract/utils/institutionals/fetch_13f_vintages.py"}
 
 
 def test_no_issuer_listing_builds_company_from_anything_but_an_int_cik():

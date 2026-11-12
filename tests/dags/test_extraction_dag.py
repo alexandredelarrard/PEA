@@ -45,7 +45,6 @@ REQUIRED_COMMANDS = {
     "thirteen-f-backfill",
     "insider-edgar",
     "superinvestors",
-    "thirteen-f-managers",
     "sec-fundamentals-facts",
     "sec-fundamentals-history",
     "fundamentals-check",
@@ -146,7 +145,6 @@ DERIVED_PARENTS = {
     "fundamentals_check": {"sec_fundamentals_history", "fundamentals_sharadar"},
     "thirteen_f_backfill": {"thirteen_f"},
     "superinvestors": {"thirteen_f"},
-    "thirteen_f_managers": {"superinvestors"},
 }
 IDENTITY_INDEPENDENT = {"macro"}
 
@@ -451,7 +449,7 @@ EDGAR_WALK_FILES = (
     "src/data_extract/transformers/step_extract_edgar.py",
     "src/data_extract/utils/institutionals/fetch_13f.py",
     "src/data_extract/utils/institutionals/fetch_13f_backfill.py",
-    "src/data_extract/utils/institutionals/fetch_13f_managers.py",
+    "src/data_extract/utils/institutionals/fetch_13f_vintages.py",
 )
 
 

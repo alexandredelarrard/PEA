@@ -130,8 +130,7 @@ thirteen_f = fetch("thirteen-f", pool="sec_api")
 # new tickers' 13F history (cached data-set ZIPs + one EDGAR walk); a no-op on nights with no new ticker
 thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")
 superinvestors = fetch("superinvestors")  # light, needs 13F
-thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster books, needs roster
-#   ^ institutionals step: thirteen_f, superinvestors, thirteen_f_managers, short-interest
+#   ^ institutionals step: thirteen_f, superinvestors, short-interest
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per night, before the EDGAR walks
@@ -208,7 +207,6 @@ all_fetchers = [
     sec_def14a_llm,
     extract_earnings_calls,
     superinvestors,
-    thirteen_f_managers,
 ]
 
 identity_consumers = [
@@ -239,7 +237,6 @@ identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and 
 zips_ingest_insider >> insider_edgar  # zips fill first; EDGAR resumes after their last quarter and replaces each filing it re-reads
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
-superinvestors >> thirteen_f_managers  # roster IS the walk scope
 sec_fundamentals_facts >> sec_fundamentals_history
 [sec_fundamentals_history, fundamentals_sharadar] >> fundamentals_check  # no edge between the producers
 sec_employees_text >> sec_employees_llm  # the LLM decides what the walk stored tonight

@@ -25,9 +25,9 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_extract.utils.institutionals import fetch_13f_managers as managers
+from src.data_extract.utils.institutionals import fetch_13f_vintages as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_hr_filing
-from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
+from src.data_extract.utils.institutionals.fetch_13f_vintages import pending_vintages
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -934,20 +934,16 @@ def test_completed_empty_book_can_create_schema_first(filing_store: DataStore) -
     print("SANITY: empty-first source completion creates a stable schema that accepts later holdings.")
 
 
-def test_vintage_recovery_cli_scope_and_legacy_compatibility(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_vintage_recovery_cli_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     module = importlib.import_module("src.data_extract.cli")
     context = SimpleNamespace(store=None)
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=9))
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(module, "get_config_context", lambda *args, **kwargs: (config, context))
     monkeypatch.setattr(module, "recover_13f_vintages", lambda ctx, **kwargs: calls.append(kwargs))
-    monkeypatch.setattr(module, "fetch_13f_managers", lambda ctx, **kwargs: calls.append(kwargs))
     runner = CliRunner()
     options = [
-        "thirteen-f-managers",
-        "--vintages",
+        "thirteen-f-vintages",
         "--cik",
         "0000895421",
         "--accession",
@@ -974,11 +970,10 @@ def test_vintage_recovery_cli_scope_and_legacy_compatibility(
         dry_run=True,
         archives=None,
     )
-    assert runner.invoke(module.cli, ["thirteen-f-managers", "--vintages"]).exit_code == 2
-    assert runner.invoke(module.cli, ["thirteen-f-managers", "--max-filings", "1"]).exit_code == 2
-    assert runner.invoke(module.cli, ["thirteen-f-managers"]).exit_code == 0
-    assert calls[-1] == {"years_history": 9}
-    print("SANITY: exact scoped recovery CLI passes; missing scope is rejected; legacy invocation preserved.")
+    assert runner.invoke(module.cli, ["thirteen-f-vintages"]).exit_code == 2
+    assert runner.invoke(module.cli, ["thirteen-f-vintages", "--max-filings", "1"]).exit_code == 2
+    assert runner.invoke(module.cli, ["thirteen-f-managers"]).exit_code == 2, "the nightly manager catch-up is removed"
+    print("SANITY: exact scoped recovery CLI passes; missing scope is rejected; thirteen-f-managers no longer exists.")
 
 
 def test_recovered_real_amendments_and_active_prior_are_causal() -> None:

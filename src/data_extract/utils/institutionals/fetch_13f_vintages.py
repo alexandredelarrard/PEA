@@ -1,15 +1,14 @@
 """
-fetch_13f_managers.py (src/data_extract/utils/institutionals/fetch_13f_managers.py)
+fetch_13f_vintages.py (src/data_extract/utils/institutionals/fetch_13f_vintages.py)
 ------------------------------------------------------------------------------------
-Per-CIK immutable-accession catch-up of `sec13f_hr` for every ever-listed roster manager. Complete source
+Manual, bounded recovery of named 13F accessions into `sec13f_hr` (`thirteen-f-vintages`): an original filing a later
+amendment superseded before versions were kept, read from EDGAR or a cached 13F data-set archive. Complete source
 packets are saved atomically; originals and amendments remain separate. Only a completed accession is skipped.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-from functools import partial
 from pathlib import Path
 from typing import cast
 from zipfile import ZipFile
@@ -21,25 +20,15 @@ from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
-from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 from src.data_extract.utils.institutionals.fetch_13f import (
-    _IMPLIED_PRICE_BAND,
     ReadFailure,
-    _suspect_prices,
     read_filing_vintage,
     save_hr_filing,
 )
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
 from src.utils.identity_tables import load_cusip_map
-from src.utils.string import pad_cik, run_date
-from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
-
-logger = logging.getLogger(__name__)
-
-
-class SuperinvestorRosterEmptyError(RuntimeError):
-    """`superinvestor_roster` holds no CIK; the roster is the walk's entire input, so the run stops."""
+from src.utils.string import pad_cik
 
 
 def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd.Timestamp]]:
@@ -50,116 +39,6 @@ def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd
     stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.is_amendment, s.accession_number))
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
-
-
-def _log_read_failure(context: Context, cik: str, stamp: FilingStamp, period: pd.Timestamp, failure: ReadFailure) -> None:
-    """WARNING for a transient failure (only this accession remains pending), ERROR for a deterministic one."""
-    if failure.transient:
-        context.log.warning(
-            "13F managers: CIK %s %s (period %s) failed transiently (%s); this accession is retried next run; verified sibling filings are saved",
-            cik,
-            stamp.accession_number,
-            period.date(),
-            failure.reason,
-        )
-        return
-    context.log.error(
-        "13F managers: CIK %s %s (period %s) is unreadable (%s); the filing is skipped and the quarter's readable filings are saved",
-        cik,
-        stamp.accession_number,
-        period.date(),
-        failure.reason,
-    )
-
-
-def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp, cmap: pd.DataFrame) -> tuple[int, int, int]:
-    """Save each complete pending accession to `sec13f_hr` independently, as filed and tagged by the stored `cmap`;
-    failed siblings remain pending. Returns (rows saved, suspect-price rows, transient failures)."""
-    frames: list[pd.DataFrame] = []
-    held_periods: list[pd.Timestamp] = []
-    # Only a verified completed accession leaves the pending set.
-    listed = _listed_filings(cik, since)
-    pending = set(pending_vintages(context, cik, [stamp.accession_number for stamp, _ in listed]))
-    for stamp, period in (item for item in listed if item[0].accession_number in pending):
-        rows = read_filing_vintage(stamp)
-        if isinstance(rows, ReadFailure):
-            _log_read_failure(context, cik, stamp, period, rows)
-        else:
-            manifest, book = rows
-            save_hr_filing(context.store, manifest, book, cmap)
-            if not book.empty:
-                frames.append(book)
-        if isinstance(rows, ReadFailure) and rows.transient:
-            held_periods.append(period)
-    if not frames:
-        return 0, 0, len(held_periods)
-    book = pd.concat(frames, ignore_index=True)
-    return len(book), _suspect_prices(book), len(held_periods)
-
-
-def _warn_empty_books(context: Context, empty: list[str], n_ciks: int) -> None:
-    """Warn on book-less roster CIKs that produced no rows, naming those with `sec13f_hr`
-    history: those were throttled or failed transiently and must be re-run; the rest never filed."""
-    if not empty:
-        return
-    known_filers = set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cik": [c.lstrip("0") for c in empty] + empty}))
-    known = {c for c in empty if c in known_filers or c.lstrip("0") in known_filers}
-    context.log.warning(
-        "13F managers: %d/%d roster CIK(s) with no stored book produced NO rows; %d of them have "
-        "history in %s and must be re-run (throttling or a transient listing failure, not an "
-        "absent filer): %s",
-        len(empty),
-        n_ciks,
-        len(known),
-        Tables.sec13f_hr,
-        ", ".join(sorted(known)) or "none",
-    )
-
-
-def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
-    """Catch every roster CIK's book up with every listed filing it does not show yet; returns rows
-    saved. `years_history` bounds by PERIOD. A failed CIK counts as zero rows. Raises
-    `SuperinvestorRosterEmptyError` when the roster holds no CIK."""
-    context.ensure_edgar_identity()
-    configure(context)
-    ciks = sorted(roster_cik_union(context))
-    if not ciks:
-        raise SuperinvestorRosterEmptyError(
-            "superinvestor_roster is empty -- run `data_extract superinvestors -F` first. "
-            "The roster is this walk's entire scope; there is nothing to fetch without it."
-        )
-    names = roster_map_as_of(context)  # latest snapshot; only used for log lines
-    with_book = set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cik": ciks}))
-    cmap = load_cusip_map(context.store)
-    since = run_date(None) - pd.DateOffset(years=years_history)
-    logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book), since.date())
-
-    worker = partial(_catch_up_cik, context=context, since=since, cmap=cmap)
-    df_scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
-    guarded = run_per_ticker(df_scope, worker, desc="13F manager books", key_cols=("cik_label", "cik"))
-    results = [result or (0, 0, 0) for result in guarded]
-    saved = sum(n for n, _, _ in results)
-    suspect = sum(s for _, s, _ in results)
-    failed = [(c, f) for c, (_, _, f) in zip(ciks, results, strict=True) if f]
-
-    _warn_empty_books(context, [c for c, (n, _, _) in zip(ciks, results, strict=True) if n == 0 and c not in with_book], len(ciks))
-    if failed:
-        logger.warning(
-            "13F managers: %d filing read(s) failed transiently across %d CIK(s); those accessions are retried next run: %s",
-            sum(f for _, f in failed),
-            len(failed),
-            ", ".join(c for c, _ in failed),
-        )
-    if suspect:
-        logger.warning(
-            "13F managers: %d/%d saved rows imply a share price outside %s -- check "
-            "source units/positions; aggregate P1 validates against report-date quotes",
-            suspect,
-            saved,
-            _IMPLIED_PRICE_BAND,
-        )
-    logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s", saved, len(ciks), Tables.sec13f_hr)
-    return saved
 
 
 def pending_vintages(context: Context, cik: str, accessions: list[str]) -> list[str]:

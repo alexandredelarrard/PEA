@@ -70,7 +70,7 @@ A general post-assembly drift monitor remains proposed, not implemented. The cur
 
 | Table | Observed scale | Observed coverage | Operational implication |
 | --- | --- | --- | --- |
-| `sec13f_hr` | about 23.8M rows / 6.2 GB | period rows from 1987, usable broad coverage much later | Stream and scope every read; evaluate coverage on manager counts. |
+| `sec13f_hr` | about 95.8M rows / 31 GB, 369,417 complete accessions (2026-11-11) | period rows from 1987, usable broad coverage much later; 2025-2026 hole (see below) | Stream and scope every read; evaluate coverage on manager counts. |
 | `prices` | about 1.78M rows | 2011-08 to 2026-08, 500 tickers | Price-dependent integration tests can run only when this table is present and current. |
 | `earnings_call_sections` | 2,804,060 paragraph rows, 33,591 calls (2026-10-02 full load) | 2005-10 to the load date, 487 tickers | Text is the payload; project and scope by ticker. |
 | `sec_filing_text` | about 34K rows / 1.2 GB | 2011-07 to 2026-08 | Do not perform unbounded text reads. |
@@ -173,6 +173,15 @@ Pre-mandate rows reliably preserve event identity and filing dates, but numeric 
 ### 13F source versus market coverage
 
 Early stored periods can contain valid-looking holdings from only a small subset of managers. Use measured manager breadth, known hole/break masks, per-ticker prior-holder thresholds, and publication-date availability. Never infer completeness from ticker count or `min(period)`.
+
+### 13F accessions missing versus the SEC data sets — 12 November 2026
+
+Measured read-only against the 54 cached SEC 13F data-set ZIPs (2013q2 to 01jun2026-31aug2026): `sec13f_hr` held 369,417 complete accessions (about 95.8M rows / 31 GB). Of the 322,955 13F-HR(/A) accessions in the ZIPs, 62,052 were not stored:
+
+- 5,985 in the 47 windows up to `01sep2024-30nov2024`. Sampled ones are almost all packets that fail `reconcile_13f_source` (row count outside 85-110% of the declared count, often `TABLEENTRYTOTAL` = 0 as filed), not filings the walk missed; the ingest gives them `invalid` markers.
+- 56,067 in the 7 windows from `01dec2024-28feb2025` (8,151 of 8,811 in `01jun2025-31aug2025`, all 9,900 in `01jun2026-31aug2026`); about 0.7% of these fail validation. This is the walk's 2025-2026 hole.
+
+The bounded live test of `zips-ingest --only 13f` (2013q2 and `01jan2024-29feb2024`) stored 4 accessions and 66 `invalid` markers and changed no pre-existing row. The backlog run is not done yet: run `zips-ingest --only 13f` once (decode about 0.17 s per accession, about 3 h plus OpenFIGI mapping of new CUSIPs). September 2026 onward has no data set yet and needs `thirteen-f --filing-window`. Local evidence: `reports/validate/2026-11-11-13f-zip-ingest/` (03-implementation.md P5, 03-validation.md).
 
 ### Fundamentals fact grain
 

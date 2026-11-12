@@ -31,6 +31,7 @@ IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
     "ftd_download",
+    "13f_download",
     "dei_capture",
     "form345_scan",
     "symbol_tenure",
@@ -68,6 +69,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(zips_module, "download_notes_periods", mark("notes_download", 0))
     monkeypatch.setattr(zips_module, "download_fails_to_deliver", mark("ftd_download", 0))
+    monkeypatch.setattr(zips_module, "download_13f_datasets", mark("13f_download", 0))
     monkeypatch.setattr(zips_module, "fetch_insider_transactions", mark("insider_ingest", 0))
     monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))

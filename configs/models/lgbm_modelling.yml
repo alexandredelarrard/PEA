@@ -327,6 +327,44 @@ lgbm:
   - f_ic_shortvol_ratio_60d
   - f_ic_shortvol_turnover_20d
 
+  # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
+  - f_ic_inst_holders
+  - f_ic_inst_breadth_chg
+  - f_ic_inst_shares_chg
+  - f_ic_inst_new_buyer_ratio
+  - f_ic_inst_exit_ratio
+  - f_ic_inst_cluster_buying
+  - f_ic_inst_concentration
+  - f_ic_inst_net_options_ratio
+  - f_ic_inst_ownership_pct
+  - f_ic_inst_value_to_mcap
+  - f_ic_super_holders
+  - f_ic_super_holders_yoy
+  - f_ic_super_conviction_weight
+  - f_ic_super_max_conviction
+  - f_ic_super_top10_holders
+  - f_ic_super_breadth_chg
+  - f_ic_super_shares_chg
+  - f_ic_super_shares_chg_yoy
+  - f_ic_super_quarters_held
+  - f_ic_super_trade_balance
+  - f_ic_super_relative_position_chg
+  - f_ic_super_pooled_weight
+  - f_ic_super_pooled_weight_chg
+  - f_ic_super_topk_holders
+  - f_ic_super_topk_holders_yoy
+  - f_ic_super_topk_conviction_weight
+  - f_ic_super_topk_max_conviction
+  - f_ic_super_topk_top10_holders
+  - f_ic_super_topk_breadth_chg
+  - f_ic_super_topk_shares_chg
+  - f_ic_super_topk_shares_chg_yoy
+  - f_ic_super_topk_quarters_held
+  - f_ic_super_topk_trade_balance
+  - f_ic_super_topk_relative_position_chg
+  - f_ic_super_topk_pooled_weight
+  - f_ic_super_topk_pooled_weight_chg
+
   # GOVERNANCE cube (101)
   - f_auditor_changed
   - f_auditor_dissent_gt_05
@@ -523,6 +561,44 @@ lgbm:
     - f_ic_insider_ceo_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
 
+    # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
+    - f_ic_inst_holders
+    - f_ic_inst_breadth_chg
+    - f_ic_inst_shares_chg
+    - f_ic_inst_new_buyer_ratio
+    - f_ic_inst_exit_ratio
+    - f_ic_inst_cluster_buying
+    - f_ic_inst_concentration
+    - f_ic_inst_net_options_ratio
+    - f_ic_inst_ownership_pct
+    - f_ic_inst_value_to_mcap
+    - f_ic_super_holders
+    - f_ic_super_holders_yoy
+    - f_ic_super_conviction_weight
+    - f_ic_super_max_conviction
+    - f_ic_super_top10_holders
+    - f_ic_super_breadth_chg
+    - f_ic_super_shares_chg
+    - f_ic_super_shares_chg_yoy
+    - f_ic_super_quarters_held
+    - f_ic_super_trade_balance
+    - f_ic_super_relative_position_chg
+    - f_ic_super_pooled_weight
+    - f_ic_super_pooled_weight_chg
+    - f_ic_super_topk_holders
+    - f_ic_super_topk_holders_yoy
+    - f_ic_super_topk_conviction_weight
+    - f_ic_super_topk_max_conviction
+    - f_ic_super_topk_top10_holders
+    - f_ic_super_topk_breadth_chg
+    - f_ic_super_topk_shares_chg
+    - f_ic_super_topk_shares_chg_yoy
+    - f_ic_super_topk_quarters_held
+    - f_ic_super_topk_trade_balance
+    - f_ic_super_topk_relative_position_chg
+    - f_ic_super_topk_pooled_weight
+    - f_ic_super_topk_pooled_weight_chg
+
     # GOVERNANCE cube (101)
     - f_board_independence_delta_1y
     - f_board_size_vs_peers
@@ -629,6 +705,44 @@ lgbm:
     - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
 
+    # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
+    - f_ic_inst_holders
+    - f_ic_inst_breadth_chg
+    - f_ic_inst_shares_chg
+    - f_ic_inst_new_buyer_ratio
+    - f_ic_inst_exit_ratio
+    - f_ic_inst_cluster_buying
+    - f_ic_inst_concentration
+    - f_ic_inst_net_options_ratio
+    - f_ic_inst_ownership_pct
+    - f_ic_inst_value_to_mcap
+    - f_ic_super_holders
+    - f_ic_super_holders_yoy
+    - f_ic_super_conviction_weight
+    - f_ic_super_max_conviction
+    - f_ic_super_top10_holders
+    - f_ic_super_breadth_chg
+    - f_ic_super_shares_chg
+    - f_ic_super_shares_chg_yoy
+    - f_ic_super_quarters_held
+    - f_ic_super_trade_balance
+    - f_ic_super_relative_position_chg
+    - f_ic_super_pooled_weight
+    - f_ic_super_pooled_weight_chg
+    - f_ic_super_topk_holders
+    - f_ic_super_topk_holders_yoy
+    - f_ic_super_topk_conviction_weight
+    - f_ic_super_topk_max_conviction
+    - f_ic_super_topk_top10_holders
+    - f_ic_super_topk_breadth_chg
+    - f_ic_super_topk_shares_chg
+    - f_ic_super_topk_shares_chg_yoy
+    - f_ic_super_topk_quarters_held
+    - f_ic_super_topk_trade_balance
+    - f_ic_super_topk_relative_position_chg
+    - f_ic_super_topk_pooled_weight
+    - f_ic_super_topk_pooled_weight_chg
+
     # GOVERNANCE cube (101)
     - f_board_size
     - f_board_size_vs_peers
@@ -720,6 +834,44 @@ lgbm:
     - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_director_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
+
+    # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
+    - f_ic_inst_holders
+    - f_ic_inst_breadth_chg
+    - f_ic_inst_shares_chg
+    - f_ic_inst_new_buyer_ratio
+    - f_ic_inst_exit_ratio
+    - f_ic_inst_cluster_buying
+    - f_ic_inst_concentration
+    - f_ic_inst_net_options_ratio
+    - f_ic_inst_ownership_pct
+    - f_ic_inst_value_to_mcap
+    - f_ic_super_holders
+    - f_ic_super_holders_yoy
+    - f_ic_super_conviction_weight
+    - f_ic_super_max_conviction
+    - f_ic_super_top10_holders
+    - f_ic_super_breadth_chg
+    - f_ic_super_shares_chg
+    - f_ic_super_shares_chg_yoy
+    - f_ic_super_quarters_held
+    - f_ic_super_trade_balance
+    - f_ic_super_relative_position_chg
+    - f_ic_super_pooled_weight
+    - f_ic_super_pooled_weight_chg
+    - f_ic_super_topk_holders
+    - f_ic_super_topk_holders_yoy
+    - f_ic_super_topk_conviction_weight
+    - f_ic_super_topk_max_conviction
+    - f_ic_super_topk_top10_holders
+    - f_ic_super_topk_breadth_chg
+    - f_ic_super_topk_shares_chg
+    - f_ic_super_topk_shares_chg_yoy
+    - f_ic_super_topk_quarters_held
+    - f_ic_super_topk_trade_balance
+    - f_ic_super_topk_relative_position_chg
+    - f_ic_super_topk_pooled_weight
+    - f_ic_super_topk_pooled_weight_chg
 
     # GOVERNANCE cube (101)
     - f_board_size

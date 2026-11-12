@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_ROWS = 500_000
 #: Pending accessions decoded, CUSIP-mapped and saved together: one INFOTABLE scan and one OpenFIGI pass per batch.
-_BATCH_ACCESSIONS = 2_000
+_BATCH_ACCESSIONS = 4_000
 
 _INFO_COLS = frozenset({"ACCESSION_NUMBER", "CUSIP", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"})
 _HEADS = {"SUBMISSION.tsv": ZipRead(upper=True), "COVERPAGE.tsv": ZipRead(upper=True)}

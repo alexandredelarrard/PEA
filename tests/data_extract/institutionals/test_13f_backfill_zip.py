@@ -29,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import activity_
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import HR_COLS, ROSTER, _seed_roster
+from tests.data_extract.institutionals.test_13f_zips import write_filings_zip as _write_zip
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
@@ -58,80 +59,6 @@ _A2 = (
 _A3 = ("3", "0000000003-23-000003", "13F-NT", "2023-05-16", "2023-03-31", [])
 _B1 = ("1", "0000000001-24-000004", "13F-HR", "2024-08-14", "2024-06-30", [(_NEW_CUSIP, "NEWCO", 4_000_000, 25_000, "")])
 _DATA_SETS = {"2023q2": [_A1, _A2, _A3], "01jun2024-31aug2024": [_B1]}
-
-
-def _dmy(day: str) -> str:
-    return pd.Timestamp(day).strftime("%d-%b-%Y").upper()
-
-
-def _write_zip(path: Any, filings: list[tuple], *, confidential: str | None = "N", omit_confidential: bool = False) -> None:
-    """A data-set ZIP with the SEC member names and upper-case headers."""
-    sub = pd.DataFrame(
-        [
-            {"ACCESSION_NUMBER": a, "FILING_DATE": _dmy(f), "SUBMISSIONTYPE": form, "CIK": c, "PERIODOFREPORT": _dmy(p)}
-            for c, a, form, f, p, _ in filings
-        ]
-    )
-    cover = pd.DataFrame(
-        [
-            {
-                "ACCESSION_NUMBER": a,
-                "REPORTCALENDARORQUARTER": _dmy(p),
-                "ISAMENDMENT": "Y" if form.endswith("/A") else "N",
-                "AMENDMENTTYPE": "RESTATEMENT" if form.endswith("/A") else "",
-                "AMENDMENTNO": 1 if form.endswith("/A") else 0,
-                "REPORTTYPE": "13F HOLDINGS REPORT",
-            }
-            for _, a, form, _, p, _ in filings
-        ]
-    )
-    summary = pd.DataFrame(
-        [
-            {
-                "ACCESSION_NUMBER": a,
-                "TABLEENTRYTOTAL": len(lines),
-                "TABLEVALUETOTAL": sum(line[2] for line in lines),
-                "ISCONFIDENTIALOMITTED": confidential,
-            }
-            for _, a, _, _, _, lines in filings
-        ]
-    )
-    if omit_confidential:
-        summary = summary.drop(columns="ISCONFIDENTIALOMITTED")
-    info = pd.DataFrame(
-        [
-            {
-                "ACCESSION_NUMBER": a,
-                "INFOTABLE_SK": i,
-                "NAMEOFISSUER": name,
-                "TITLEOFCLASS": "COM",
-                "CUSIP": cusip,
-                "VALUE": value,
-                "SSHPRNAMT": shares,
-                "SSHPRNAMTTYPE": "SH",
-                "PUTCALL": putcall,
-                "INVESTMENTDISCRETION": "SOLE",
-            }
-            for _, a, _, _, _, lines in filings
-            for i, (cusip, name, value, shares, putcall) in enumerate(lines)
-        ]
-    )
-    with zipfile.ZipFile(path, "w") as archive:
-        for name, frame in (("SUBMISSION.tsv", sub), ("COVERPAGE.tsv", cover), ("SUMMARYPAGE.tsv", summary), ("INFOTABLE.tsv", info)):
-            archive.writestr(name, frame.to_csv(sep="\t", index=False))
-
-
-@pytest.mark.parametrize(("flag", "restricted"), [(None, False), ("N", False), ("false", False), ("Y", True), ("true", True)])
-@pytest.mark.parametrize("omit_column", [False, True])
-def test_optional_zip_confidentiality_requires_affirmative_evidence(tmp_path: Any, flag: str | None, restricted: bool, omit_column: bool) -> None:
-    path = tmp_path / "source.zip"
-    _write_zip(path, [_B1], confidential=flag, omit_confidential=omit_column)
-    packets = fb.cached_filing_vintages(path, [_B1[1]])
-    assert len(packets) == 1
-    manifest, holdings = packets[0]
-    assert bool(manifest.restricted.iloc[0]) is (restricted and not omit_column)
-    assert holdings.shares.iloc[0] == 25000 and holdings.value_usd.iloc[0] == 4000000
-    print(f"SANITY: ZIP flag {flag!r}, absent column={omit_column}; only affirmative metadata restricts a complete book.")
 
 
 def _xml(lines: list[tuple]) -> str:

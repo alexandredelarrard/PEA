@@ -25,7 +25,7 @@ from src.data_extract.utils.institutionals.fetch_13f import (
     read_filing_vintage,
     save_hr_filing,
 )
-from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
+from src.data_extract.utils.institutionals.fetch_13f_zips import cached_filing_vintages, zip_submissions
 from src.data_store.schema import Resume, Tables
 from src.utils.identity_tables import load_cusip_map
 from src.utils.string import pad_cik
@@ -74,7 +74,7 @@ def recover_13f_vintages(
             tables = read_zip_tables(path, {"SUBMISSION.tsv": ZipRead(upper=True), "COVERPAGE.tsv": ZipRead(upper=True)}, on_corrupt="skip")
             if not tables:
                 raise ValueError(f"Unverifiable recovery metadata: {path}")
-            for row in _submissions(tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]).itertuples():
+            for row in zip_submissions(tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]).itertuples():
                 if row.accession in accessions and row.cik in ciks and first <= row.report_period <= last and row.filing_date <= through:
                     selected.append(
                         {

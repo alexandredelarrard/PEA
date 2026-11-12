@@ -62,7 +62,7 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods"}), _NOTES_CACHE),
     "src.data_extract.utils.zips.thirteen_f_datasets": (
         frozenset({"DataSet", "cached_data_sets", "thirteen_f_cache"}),
-        "the 13F data-set cache owned by the zip download; the 13F backfill reads the same cached zips",
+        "the 13F data-set cache owned by the zip download; the 13F ZIP ingest and readers in institutionals read the same cached zips",
     ),
 }
 

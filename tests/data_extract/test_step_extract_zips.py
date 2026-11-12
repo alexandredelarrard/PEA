@@ -1,4 +1,5 @@
-"""`StepExtractZips`: phase order (the 13F data sets download last), one Notes period list, options reaching each source, per-source failures, CLI `--only`."""
+"""`StepExtractZips`: phase order (the 13F data sets download last), one Notes period list, options reaching each source, per-source failures, CLI `--only`,
+the 13F ingest outside `run`."""
 
 from __future__ import annotations
 
@@ -60,6 +61,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]],
     monkeypatch.setattr(module, "ingest_financial_notes", mark("notes_ingest"))
     monkeypatch.setattr(module, "repair_notes_availability", mark("notes_repair"))
     monkeypatch.setattr(module, "fetch_fails_to_deliver", mark("ftd_ingest"))
+    monkeypatch.setattr(module, "ingest_13f_datasets", mark("13f_ingest"))
     return scrapes
 
 
@@ -148,11 +150,29 @@ def test_cli_only_runs_the_named_sources(monkeypatch: pytest.MonkeyPatch) -> Non
     thirteen_f = runner.invoke(cli_mod.cli, ["zips-download", "--only", "13f"])
     everything = runner.invoke(cli_mod.cli, ["zips-ingest"])
     all_downloads = runner.invoke(cli_mod.cli, ["zips-download"])
+    ingest_13f = runner.invoke(cli_mod.cli, ["zips-ingest", "--only", "13f"])
 
-    results = (ingest, download, thirteen_f, everything, all_downloads)
+    results = (ingest, download, thirteen_f, everything, all_downloads, ingest_13f)
     assert all(r.exit_code == 0 for r in results), [r.output for r in results]
     order = [name for name, _, _ in calls]
-    assert order == ["notes_ingest", "ftd_ingest", "insider_download", "13f_download", *INGESTS, *DOWNLOADS], order
+    assert order == ["notes_ingest", "ftd_ingest", "insider_download", "13f_download", *INGESTS, *DOWNLOADS, "13f_ingest"], order
 
     print("\n=== SANITY CHECK: CLI --only (D-16) ===")
     print("  zips-ingest --only notes --only ftd -> 2; zips-download --only insider / --only 13f -> 1 each; zips-ingest -> 3; zips-download -> 4")
+    print("  zips-ingest --only 13f -> the 13F ingest alone; the bare zips-ingest never runs it")
+
+
+def test_13f_ingest_runs_by_name_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    _stub(monkeypatch, calls)
+    step = StepExtractZips(_context(), _config(), ZipsOptions(full=True))  # type: ignore[arg-type]
+    step.run()
+    step.run_ingest()
+    in_run = [name for name, _, _ in calls]
+    step.run_ingest_13f()
+
+    assert "13f_ingest" not in in_run, in_run
+    assert calls[-1][0] == "13f_ingest" and calls[-1][2] == {"full": True}, calls[-1]
+
+    print("\n=== SANITY CHECK: 13F ingest outside run() ===")
+    print(f"  run() + run_ingest() -> {len(in_run)} calls, none the 13F ingest; run_ingest_13f() passes full=True alone")

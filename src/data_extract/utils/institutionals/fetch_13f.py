@@ -5,7 +5,8 @@ One oldest-first walk over every 13F-HR by filing date (edgartools), saving each
 Originals and amendments have separate accession keys. Tickers come from the
 CUSIP map (OpenFIGI), never from issuer names.
 
-The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date. Successful
+The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date; rows and `invalid`
+markers stored by the 13F ZIP ingest count toward that frontier, but its windows lag the walk by months. Successful
 filings are saved in batches while failed reads alone are queued for retry rounds after the listing.
 Exhausted failures are logged by accession and remain incomplete; holes older than the overlap require
 an explicit filing window. A scoped (`-t`) run never reads past the stored frontier.
@@ -35,7 +36,6 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
-from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, RetryRounds
@@ -74,6 +74,9 @@ _COVER_UNITS = (
     (re.compile(r"\bthou(?:sands?)?\b|\(\s*0{3}'?s\s*\)|\b1,?000'?s\b|x\s*\$?\s*1,?000\b|\(\s*\$\s*1,?000\s*\)", re.I), 1e3),
 )
 _COVER_DOLLARS = re.compile(r"\bdollars?\b", re.I)
+
+#: The `parse_status` of a marker recording an accession whose source packet failed validation.
+INVALID_STATUS = "invalid"
 
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -125,17 +128,15 @@ class ReadFailure:
 
 @dataclass
 class _WalkState:
-    """Running state of one 13F walk: the CUSIP map built so far, the `universe_cusip` lines read once (the backfill's
-    holder scope) and rows saved per table."""
+    """Running state of one 13F walk: the CUSIP map built so far and rows saved per table."""
 
     looked_up: set[str] = field(default_factory=set)
     cmap: pd.DataFrame | None = None
-    lines: pd.DataFrame | None = None
     hr_saved: int = 0
     hr_suspect: int = 0
 
 
-def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
+def pick_column(df: pd.DataFrame, *candidates: str) -> pd.Series:
     """Return the first present column (case-insensitive) among candidates."""
     lower = {c.lower(): c for c in df.columns}
     for cand in candidates:
@@ -147,10 +148,10 @@ def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
 def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Series, pd.Series]:
     """`({position_type: mask}, amount, value)` for one info table: the single definition of a
     stock/option/debt/other line, shared by `_classify_holdings` and `position_type`."""
-    putcall = _pick(infotable, "PUTCALL").astype("string").str.strip().str.upper().fillna("")
-    amttype = _pick(infotable, "SSHPRNAMTTYPE", "Type").astype("string").str.strip().str.upper().fillna("")
-    amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce").fillna(0.0)
-    val = pd.to_numeric(_pick(infotable, "VALUE"), errors="coerce")
+    putcall = pick_column(infotable, "PUTCALL").astype("string").str.strip().str.upper().fillna("")
+    amttype = pick_column(infotable, "SSHPRNAMTTYPE", "Type").astype("string").str.strip().str.upper().fillna("")
+    amt = pd.to_numeric(pick_column(infotable, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce").fillna(0.0)
+    val = pd.to_numeric(pick_column(infotable, "VALUE"), errors="coerce")
     if "raw_value" not in infotable:
         val = val.fillna(0.0)
 
@@ -193,7 +194,7 @@ def _typed_lines(infotable: pd.DataFrame, masks: dict[str, pd.Series], amt: pd.S
 
     return pd.DataFrame(
         {
-            "cusip": _pick(infotable, "CUSIP").map(literal_13f_cusip),
+            "cusip": pick_column(infotable, "CUSIP").map(literal_13f_cusip),
             "shares": amt.where(is_stock, 0.0),
             "value_usd": val.where(is_stock, 0.0),
             "call_shares": amt.where(is_call, 0.0),
@@ -220,8 +221,8 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     masks, amt, val = _holding_masks(infotable)
     typed = _typed_lines(infotable, masks, amt, val)
     numeric = list(typed.columns.drop("cusip"))
-    typed["issuer_name"] = _pick(infotable, "NAMEOFISSUER", "Issuer").astype("string")
-    typed["title_of_class"] = _pick(infotable, "TITLEOFCLASS", "Class").astype("string")
+    typed["issuer_name"] = pick_column(infotable, "NAMEOFISSUER", "Issuer").astype("string")
+    typed["title_of_class"] = pick_column(infotable, "TITLEOFCLASS", "Class").astype("string")
     aggregations = {**{c: "sum" for c in numeric}, "issuer_name": "first", "title_of_class": "first"}
     source = "raw_value" in infotable
     if source:
@@ -458,20 +459,25 @@ def _filing_checksum(manifest: pd.DataFrame, holdings: pd.DataFrame) -> str:
 
 def save_hr_filing(store: DataStore, manifest: pd.DataFrame, book: pd.DataFrame, cmap: pd.DataFrame | None) -> int:
     """Preserve one immutable accession and its completion marker in `sec13f_hr` as filed: one row per CUSIP, tagged by
-    `cmap` alone (unmapped on the sentinel). Returns rows saved; 0 when the accession is stored."""
+    `cmap` alone (unmapped on the sentinel). Returns rows saved; 0 when the accession is stored. Checksums are compared
+    only against a complete marker; an invalid marker of the accession is replaced in the same transaction."""
     checksum = _filing_checksum(manifest, book)
     rows = _hr_rows(book, cmap)
     row = manifest.iloc[0]
     empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
     with store.transaction() as bound:
+        marker_key = {"cik": row["cik"], "period": row["period"], "accession_number": row["accession_number"], "cusip": empty}
         df_existing = bound.load(
             Tables.sec13f_hr,
-            columns=["content_checksum", "declared_row_count", "declared_value_total"],
-            where={"cik": row["cik"], "period": row["period"], "accession_number": row["accession_number"], "cusip": empty},
+            columns=["content_checksum", "declared_row_count", "declared_value_total", "parse_status"],
+            where=marker_key,
             markers=True,
             optional=True,
         )
 
+        if df_existing is not None and df_existing["parse_status"].eq(INVALID_STATUS).all():
+            bound.delete(Tables.sec13f_hr, marker_key)
+            df_existing = None
         if df_existing is not None:
             existing = df_existing.iloc[0]
             declared_count = None if pd.isna(row["declared_row_count"]) else int(row["declared_row_count"])
@@ -529,15 +535,14 @@ class _Saver:
         if not self.pending:
             return
         pending, self.pending = self.pending, []
-        _ticker_map(self.context, pd.DataFrame({"cusip": pd.concat([book["cusip"] for _, book in pending], ignore_index=True)}), self.walk)
+        self.map_books(pending)
         for manifest, book in pending:
             self.save_packet(manifest, book)
 
-    def cusip_lines(self) -> pd.DataFrame:
-        """The `universe_cusip` lines of this walk, read on first use."""
-        if self.walk.lines is None:
-            self.walk.lines = load_identity(self.context).cusip_lines
-        return self.walk.lines
+    def map_books(self, packets: list[tuple[pd.DataFrame, pd.DataFrame]]) -> None:
+        """Map the unseen CUSIPs of every book in `packets` in one OpenFIGI pass."""
+        if packets:
+            _ticker_map(self.context, pd.DataFrame({"cusip": pd.concat([book["cusip"] for _, book in packets], ignore_index=True)}), self.walk)
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
         """Preserve the source book in `sec13f_hr` as filed, each CUSIP tagged by `cusip_ticker_map`."""
@@ -546,11 +551,16 @@ class _Saver:
         self.walk.hr_suspect += _suspect_prices(book)
 
 
+def completed_accessions(context: Context, statuses: list[str]) -> frozenset[str]:
+    """The accessions whose `sec13f_hr` marker has a `parse_status` in `statuses`: one table-wide read."""
+    return frozenset(stored_accessions(context, Tables.sec13f_hr, [""], DONE_TABLE, where={"parse_status": statuses})[""])
+
+
 def _done_in(context: Context, joint_ciks: set[str]) -> Callable[[FilingStamp], bool]:
     """Whether a listed filing is complete in `sec13f_hr` (markers count): one table-wide read, plus one
     per-CIK read for the filers of an accession listed under several CIKs, stored once per filer."""
     where = {"parse_status": "complete"}
-    everywhere = stored_accessions(context, Tables.sec13f_hr, [""], DONE_TABLE, where=where)[""]
+    everywhere = completed_accessions(context, ["complete"])
     per_cik = stored_accessions(context, Tables.sec13f_hr, sorted(joint_ciks), DONE_PER_KEY, where=where) if joint_ciks else {}
     return lambda stamp: stamp.accession_number in per_cik.get(stamp.cik, everywhere)
 
@@ -678,8 +688,8 @@ def filing_vintage(
     declared_rows = None if pd.isna(declared_rows) else int(declared_rows)
     declared_value = None if pd.isna(declared_value) else float(declared_value)
     raw = information_table.copy()
-    raw["VALUE"] = pd.to_numeric(_pick(raw, "VALUE"), errors="coerce")
-    amounts = pd.to_numeric(_pick(raw, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce")
+    raw["VALUE"] = pd.to_numeric(pick_column(raw, "VALUE"), errors="coerce")
+    amounts = pd.to_numeric(pick_column(raw, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce")
     if not amounts.map(math.isfinite).all() or amounts.lt(0).any() or not raw["VALUE"].map(math.isfinite).all() or raw["VALUE"].lt(0).any():
         raise ValueError("13F source quantities/values are incomplete or negative")
     total = float(raw["VALUE"].sum())
@@ -723,14 +733,14 @@ def filing_vintage(
         )
     raw["raw_value"] = raw["VALUE"]
     book = _book_frame(cik, filing_date, period, raw)
-    cusips = _pick(raw, "CUSIP").map(literal_13f_cusip)
+    cusips = pick_column(raw, "CUSIP").map(literal_13f_cusip)
     if cusips.isna().any():
         raise ValueError("13F source CUSIP identity is missing")
     for column in _VALUE_BY_TYPE.values():
         book["raw_" + column] = book[column]
         book[column] = book[column] * units.factor if units.factor is not None else book[column].where(book[column].eq(0))
     classes: dict[str, set[str]] = {}
-    titles = _pick(raw, "TITLEOFCLASS", "Class").fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+    titles = pick_column(raw, "TITLEOFCLASS", "Class").fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
     for cusip, title in zip(cusips, titles, strict=True):
         classes.setdefault(cusip, set()).add(title)
     book["class_evidence"] = book["cusip"].map({cusip: json.dumps(sorted(seen)) for cusip, seen in classes.items()})

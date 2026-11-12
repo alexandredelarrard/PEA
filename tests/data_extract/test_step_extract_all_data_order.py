@@ -1,5 +1,5 @@
 """`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, anchor,
-CIK / symbol / CUSIP history, SQL-only sync) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> `StepExtractEdgar`
+CIK / symbol / CUSIP history, SQL-only sync) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> the 13F zip ingest -> Sharadar -> `StepExtractEdgar`
 (the SEC facts walk included) -> SEC fundamentals history + check -> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
 
 from __future__ import annotations
@@ -23,14 +23,17 @@ from tests.support.universe import seed_universe
 #: an empty published lineage, as the stubbed resolver inputs carry
 _NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
 
-PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar")
+PRE_EDGAR_STEPS = ("prices", "institutionals", "13f_ingest", "fundamentals_sharadar")
 EDGAR_AND_LLM = ("edgar", "fundamentals", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
+#: the domain steps stubbed as step attributes (the 13F zip ingest runs on the zips step)
+STEP_ATTRIBUTES = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals", "behavioral")
 UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "sharadar_actions", "sec_submissions", "universe_sync")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
     "ftd_download",
+    "13f_download",
     "dei_capture",
     "form345_scan",
     "symbol_tenure",
@@ -68,9 +71,11 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(zips_module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(zips_module, "download_notes_periods", mark("notes_download", 0))
     monkeypatch.setattr(zips_module, "download_fails_to_deliver", mark("ftd_download", 0))
+    monkeypatch.setattr(zips_module, "download_13f_datasets", mark("13f_download", 0))
     monkeypatch.setattr(zips_module, "fetch_insider_transactions", mark("insider_ingest", 0))
     monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
+    monkeypatch.setattr(zips_module, "ingest_13f_datasets", mark("13f_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(identity_module, "pending_dei_periods", lambda context, cache, full: mark("dei_capture", [])())
 
@@ -136,7 +141,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     step._context = SimpleNamespace(config=config, config_dir="./configs", store=store, universe=seed_universe(store, ["AAA", "BBB"]))
     step._config = config
     step._log = logging.getLogger("test_step_extract_all_data_order")
-    for name in (*PRE_EDGAR_STEPS, "fundamentals", "behavioral"):
+    for name in STEP_ATTRIBUTES:
         setattr(step, f"_{name}", SimpleNamespace(run=mark(name)))
 
     def edgar_step(context, config, options):
@@ -165,7 +170,7 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch, sqlite_store)
     print(f"  then zip ingests: {' -> '.join(ZIP_INGESTS)}")
     print(f"  then domain steps: {' -> '.join(DOMAIN_STEPS)}")
     print(
-        "  OK: decision-1 order; Sharadar -> EDGAR (facts walk) -> SEC history + check; the LLM step is built after; every consumer reads the published lineage"
+        "  OK: decision-1 order; the 13F zip ingest right after the 13F walk; Sharadar -> EDGAR (facts walk) -> SEC history + check; the LLM step is built after; every consumer reads the published lineage"
     )
 
 

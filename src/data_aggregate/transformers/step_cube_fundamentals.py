@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
+from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
@@ -235,7 +235,11 @@ class StepCubeFundamentals(Step):
             joined.sharadar_unmatched,
             joined.sec_unmatched,
         )
-        return self._universe.attach_gics(add_cube_time_growth(joined.frame))
+        frame = joined.frame.assign(
+            as_of=pd.to_datetime(joined.frame["as_of"])
+            + pd.Timedelta(days=SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sharadar_fundamentals_history.name])
+        )
+        return self._universe.attach_gics(add_cube_time_growth(frame))
 
     def _load_optional(
         self,

@@ -162,7 +162,8 @@ def test_the_cube_left_joins_three_sec_columns_onto_the_sharadar_spine(monkeypat
     frame = _history_step(store)._load_fundamentals(("AAA", "BBB"))
 
     keys = list(zip(frame["ticker"], frame["as_of"].dt.strftime("%Y-%m-%d"), strict=True))
-    assert keys == [("AAA", "2024-02-01"), ("AAA", "2024-05-01"), ("BBB", "2024-02-10")]
+    # every filing is read the following night: the history is shifted by the one-day source buffer
+    assert keys == [("AAA", "2024-02-02"), ("AAA", "2024-05-02"), ("BBB", "2024-02-11")]
     assert frame["totalRevenue"].tolist() == [10.0, 11.0, 20.0]
     assert not set(_CARRIED) & set(frame.columns), "a bare SEC name would change meaning in fundamentals_to_daily"
     matched = frame.iloc[0]

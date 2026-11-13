@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
+from src.data_store.schema import Tables
+
 # --------------------------------------------------------------------------- #
 # Date formats                                                                #
 # --------------------------------------------------------------------------- #
@@ -487,6 +489,14 @@ DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
 # Fundamentals can change when monthly notes metadata arrives after its filing date, so its
 # incremental build rewrites a wider bounded tail than the shared five-session price repair.
 FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
+
+# Calendar days added to a source table's `as_of` before its rows reach the daily cube, keyed
+# by table name. A filing dated d may be accepted after the close, so it is read the following
+# night: usable from d + buffer, rolled forward to the first session on or after that date.
+SOURCE_AVAILABILITY_BUFFER_DAYS: dict[str, int] = {
+    Tables.sharadar_fundamentals_history.name: 1,
+    Tables.sec_fundamentals_history.name: 1,
+}
 
 
 # The cube + the ad-hoc intermediate `cube_part_*` tables the sub-steps hand to each other are

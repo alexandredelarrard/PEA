@@ -16,8 +16,8 @@ forgetting to pass one:
     3.0  the LABEL          RMSE stability: a handful of extreme residuals must not
                             dominate the loss the model is fitted against.
     4.0  a CHARACTERISTIC   factor/regression weights: keep the tail, bound its leverage.
-    8.0  the OWN-HISTORY z  `self_history_z` (then winsorised per day at 1%/99%). The PEER z of
-                            `panel.peer_relative` carries no output clip at all.
+    5.0  the OWN-HISTORY z  `self_history_z`, clipped at `Z_CLIP` with no per-day winsorize.
+                            The PEER z of `panel.peer_relative` carries no output clip at all.
 
 Likewise the ZERO-DISPERSION policy is explicit rather than incidental. On a day where
 every name shares one value, `sd == 0`, so an unguarded divide yields +/-inf which `clip`
@@ -46,6 +46,7 @@ _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 # the three clip policies, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
 XS_CLIP_CHARACTERISTIC = 4.0  # factor characteristic / regressor (factors.py)
+Z_CLIP = 5.0  # the one fixed bound of a feature z-score (own-history today; later phases reuse it)
 
 #: Smallest dispersion a standardizer will divide by, as a FRACTION of the same day's
 PEER_DISPERSION_FLOOR = 0.10
@@ -229,12 +230,15 @@ def self_history_z(
     field_df: pd.DataFrame,
     window: int = HIST_WINDOW,
     min_periods: int = HIST_MIN_PERIODS,
-    clip: float = 8.0,
+    clip: float = Z_CLIP,
     output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Time-series z-score of each ticker versus its OWN trailing `window`:
 
         z(t) = (x(t) - trailing_mean(t)) / trailing_std(t)
+
+    The value is clipped to +-`clip` (default `Z_CLIP`); a fixed bound, so one raw value gives the
+    same z on every day (no per-day quantile trim).
 
     The rolling window is trailing (right-edge = today), so it uses only current-and-past
     values -- strictly point-in-time, no look-ahead. On a valuation YIELD a high z means the
@@ -262,4 +266,4 @@ def self_history_z(
     z = zscore(field_df, mean, std.where(std > 0), clip).replace([np.inf, -np.inf], np.nan)
     if output_since is not None:
         z = z.loc[z.index >= pd.Timestamp(output_since)]
-    return winsorize_xs(z)  # trim per-day cross-sectional 1%/99% outliers
+    return z

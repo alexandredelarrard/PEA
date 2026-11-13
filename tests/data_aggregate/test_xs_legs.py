@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.panel import peer_relative
-from src.data_aggregate.utils.common.xs import HIST_MIN_PERIODS, self_history_z, xs_rank_pct, xs_z, zscore
+from src.data_aggregate.utils.common.xs import HIST_MIN_PERIODS, Z_CLIP, self_history_z, xs_rank_pct, xs_z, zscore
 
 DATES = pd.bdate_range("2021-01-04", periods=6)
 
@@ -94,3 +94,30 @@ def test_universe_rank_is_the_average_percentile_per_day() -> None:
     rank = xs_rank_pct(day).iloc[0]
     assert rank.tolist() == [0.25, 0.625, 0.625, 1.0], "ties share the average rank"
     print("SANITY: ranks 1, 2.5, 2.5, 4 of 4 -> 0.25, 0.625, 0.625, 1.0.")
+
+
+def _spike_frame(n_days: int) -> pd.DataFrame:
+    """A noisy universe plus one name that is flat then jumps on the last day: its z is exactly (n - 1) / sqrt(n)."""
+    rng = np.random.default_rng(11)
+    index = pd.bdate_range("2021-01-04", periods=n_days)
+    frame = pd.DataFrame(rng.normal(size=(n_days, 99)), index=index, columns=[f"T{i}" for i in range(99)])
+    frame["SPIKE"] = 0.0
+    frame.iloc[-1, frame.columns.get_loc("SPIKE")] = 7.0
+    return frame
+
+
+def test_own_history_value_below_the_clip_is_not_winsorized() -> None:
+    frame = _spike_frame(26)
+    z = self_history_z(frame, window=26, min_periods=26).iloc[-1]
+    expected = 25 / np.sqrt(26)
+    assert np.isclose(z["SPIKE"], expected), f"a value under the clip must pass through untouched: {z['SPIKE']}"
+    assert z["SPIKE"] > z.drop("SPIKE").quantile(0.99), "the spike is the top of the day, a 99% trim would have cut it"
+    print(f"SANITY: the spike keeps its exact z {z['SPIKE']:.4f} = 25/sqrt(26) although it is the day's maximum.")
+
+
+def test_own_history_is_clipped_at_the_shared_constant() -> None:
+    frame = _spike_frame(30)
+    z = self_history_z(frame, window=30, min_periods=30).iloc[-1]
+    assert 29 / np.sqrt(30) > Z_CLIP, "fixture must exceed the bound"
+    assert z["SPIKE"] == Z_CLIP == 5.0, f"the clip is the shared +-5: {z['SPIKE']}"
+    print(f"SANITY: raw z {29 / np.sqrt(30):.3f} is clipped to exactly {z['SPIKE']}; 8 no longer binds.")

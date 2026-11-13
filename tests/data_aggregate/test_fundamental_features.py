@@ -25,7 +25,7 @@ from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
-from src.data_aggregate.utils.common.xs import self_history_z
+from src.data_aggregate.utils.common.xs import Z_CLIP, self_history_z
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
@@ -549,8 +549,8 @@ def test_self_history_z_mean_reversion():
     # into the 0.08 regime: current > own trailing mean -> positive z
     z_jump = z["AAA"].iloc[-1]
     assert np.isfinite(z_jump) and z_jump > 0, f"expected positive z in the jump, got {z_jump}"
-    # winsorized
-    assert z["AAA"].abs().max() <= 8.0 + 1e-9
+    # clipped at the shared bound
+    assert z["AAA"].abs().max() <= Z_CLIP + 1e-9
 
     print("\n=== SANITY CHECK: valuation mean-reversion (self-history z) ===")
     print(f"  yield below own norm -> z={z_dip:+.2f} (<0);  above own norm -> z={z_jump:+.2f} (>0)")

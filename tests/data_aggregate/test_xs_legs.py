@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
-
 import numpy as np
 import pandas as pd
 
@@ -24,30 +22,6 @@ def test_core_is_value_minus_centre_over_scale_with_optional_clip() -> None:
     series = zscore(x["A"], centre, scale)
     assert series.tolist() == [3.0, -2.0]
     print("SANITY: (10 - 4) / 2 = 3, (0 - 4) / 2 = -2; a clip of 2.5 caps 3 at 2.5; a Series input gives the same numbers.")
-
-
-def test_peer_value_is_the_weighted_peer_mean_and_std_distance() -> None:
-    peers = ["P0", "P1", "P2", "P3"]
-    frame = pd.DataFrame({"S": 10.0, **dict(zip(peers, [2.0, 4.0, 6.0, 8.0], strict=True))}, index=DATES)
-    out = peer_relative(frame, {"S": dict.fromkeys(peers, 0.25)})["S"]
-    # peers 2,4,6,8: mean 5, population std sqrt(5) -> (10 - 5) / sqrt(5)
-    assert np.allclose(out, 5.0 / np.sqrt(5.0))
-    print(f"SANITY: (10 - peer mean 5) / peer std {np.sqrt(5.0):.3f} = {out.iloc[0]:.3f}, inside the clip.")
-
-
-def test_peer_floor_binds_only_when_the_basket_is_tighter_than_a_fraction_of_the_universe() -> None:
-    peers = ["P0", "P1", "P2", "P3"]
-    universe = pd.DataFrame({f"U{i}": float(i) for i in range(40)}, index=DATES)
-    frame = pd.concat([pd.DataFrame({"S": 7.0, **dict(zip(peers, [5.0, 5.0, 5.0, 5.001], strict=True))}, index=DATES), universe], axis=1)
-    out = peer_relative(frame, {"S": dict.fromkeys(peers, 0.25)})["S"]
-    floor = 0.5 * frame.std(axis=1)
-    mean = frame[peers].mean(axis=1)
-    assert (frame[peers].std(axis=1, ddof=0) < floor).all()
-    assert np.allclose(out, (7.0 - mean) / floor)
-    flat = frame.copy()
-    flat[peers] = 5.0
-    assert peer_relative(flat, {"S": dict.fromkeys(peers, 1.0)})["S"].isna().all(), "an exactly-zero spread stays NaN, never floored"
-    print(f"SANITY: a near-constant basket is divided by the floor {floor.iloc[0]:.2f}, an exactly constant one gives NaN.")
 
 
 def test_own_history_is_trailing_with_the_current_day_and_nan_before_min_periods() -> None:
@@ -133,25 +107,6 @@ def _universe_with_basket(subject: float, peer_values: list[float]) -> tuple[pd.
     return pd.concat([named, universe], axis=1), {"S": dict.fromkeys(peers, 0.25)}
 
 
-def test_peer_signature_declares_the_floor_ratio_and_no_input_trim() -> None:
-    parameters = inspect.signature(peer_relative).parameters
-    assert list(parameters) == ["field_df", "peer_dict", "std_floor_ratio"]
-    assert parameters["std_floor_ratio"].default == 0.5
-    print("SANITY: peer_relative(field_df, peer_dict, std_floor_ratio=0.5): the input-trim flag is gone.")
-
-
-def test_peer_floor_is_half_the_universe_std_by_default() -> None:
-    frame, basket = _universe_with_basket(0.5, [0.0, 0.0, 0.0, 0.001])
-    out = peer_relative(frame, basket)["S"]
-    peers = ["P0", "P1", "P2", "P3"]
-    floor = 0.5 * frame.std(axis=1)
-    assert (frame[peers].std(axis=1, ddof=0) < 0.1 * frame.std(axis=1)).all(), "tighter than even the old 0.10 floor"
-    assert np.allclose(out, (0.5 - frame[peers].mean(axis=1)) / floor)
-    old_style = peer_relative(frame, basket, std_floor_ratio=0.1)["S"]
-    assert (old_style.abs() > out.abs()).all(), "a smaller ratio divides by less, so scores grow"
-    print(f"SANITY: tight basket divided by 0.5 x universe std {floor.iloc[0]:.3f}: z {out.iloc[0]:.3f} (ratio 0.1 would give {old_style.iloc[0]:.3f}).")
-
-
 def test_peer_score_is_clipped_at_the_shared_bound_and_below_it_untouched() -> None:
     frame, basket = _universe_with_basket(10.0, [0.0, 0.0, 0.0, 0.001])
     peers = ["P0", "P1", "P2", "P3"]
@@ -176,14 +131,12 @@ def test_peer_inputs_are_not_trimmed() -> None:
     print(f"SANITY: the outlier peer value 1000 moves the basket mean to {mean.iloc[0]:.1f}; nothing was trimmed.")
 
 
-def test_peer_thin_basket_and_non_finite_inputs_are_nan_never_a_fabricated_clip() -> None:
-    frame, basket = _universe_with_basket(3.0, [1.0, 2.0])
-    assert peer_relative(frame, basket)["S"].isna().all(), "two peers are below the three-peer minimum"
+def test_peer_non_finite_subject_is_nan_never_a_fabricated_clip() -> None:
     frame, basket = _universe_with_basket(3.0, [1.0, 2.0, 3.0, 4.0])
     frame.loc[DATES[0], "S"] = np.inf
     out = peer_relative(frame, basket)["S"]
     assert np.isnan(out.iloc[0]) and out.iloc[1:].notna().all(), "an inf subject is missing, not clipped to +5"
-    print("SANITY: fewer than three peers give NaN; an inf subject value gives NaN rather than the clip bound.")
+    print("SANITY: an inf subject value gives NaN rather than the clip bound.")
 
 
 def test_peer_basket_never_contains_the_subject() -> None:

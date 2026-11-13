@@ -64,11 +64,11 @@ def safe_div(num: pd.Series, den: pd.Series | None, den_positive: bool = False) 
     return num / den
 
 
-def clip_tax_rate[Shaped: (pd.Series, pd.DataFrame)](rate: Shaped, default: float = 0.21) -> Shaped:
+def clip_tax_rate[Shaped: (pd.Series, pd.DataFrame)](rate: Shaped) -> Shaped:
     """An effective tax rate bounded to [0, 0.5] and defaulted to the US statutory ~21% where missing (NOPAT's tax leg)."""
     # Bound first so an out-of-range rate is never mistaken for a missing one, then default the missing.
     bounded = rate.clip(0.0, 0.5)
-    return bounded.fillna(default)
+    return bounded.fillna(0.21)
 
 
 def normalize_date_col(df: pd.DataFrame | None) -> pd.DataFrame | None:

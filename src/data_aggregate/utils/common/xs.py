@@ -3,27 +3,19 @@ xs.py  (src/data_aggregate/utils/common/xs.py)
 ---------------------------------------------
 CROSS-SECTIONAL operations: every per-day, across-tickers transform in one place.
 
-Four separate implementations of "standardize within a date" had accumulated --
-`factors._xs_z` (clip 4), `features.cross_sectional_standardize` (rank | z clip 3),
-`targets.cross_sectional_zscore` (clip 3 + a min_names gate) and the inline z inside
-`targets`' neutralization design (clip 4, zero-sd -> NaN) -- plus four independent
-`rank(axis=1, pct=True)` call sites.
+`clip` is a REQUIRED argument of `xs_z` with no default, so a call site always states its bound.
+There are two bounds:
 
-THE CLIPS ARE NOT AN ACCIDENT AND ARE NOT HARMONISED HERE. They encode two different
-jobs, so `clip` is a REQUIRED argument with no default -- nobody can unify them by
-forgetting to pass one:
-
-    3.0  the LABEL          RMSE stability: a handful of extreme residuals must not
-                            dominate the loss the model is fitted against.
-    5.0  every z a FEATURE  `Z_CLIP`: the own-history z (`self_history_z`), the peer z of
-         or REGRESSOR uses  `panel.peer_relative` and the factor/neutralization characteristic
-                            (`XS_CLIP_CHARACTERISTIC`, the same value); no winsorize, no input trim.
+    3.0  `XS_CLIP_LABEL`  the modelling LABEL: a handful of extreme residuals must not dominate
+                          the loss the model is fitted against.
+    5.0  `Z_CLIP`         every z a FEATURE or REGRESSOR uses: the own-history z (`self_history_z`),
+                          the peer z of `panel.peer_relative` and the factor/neutralization
+                          characteristic.
 
 Likewise the ZERO-DISPERSION policy is explicit rather than incidental. On a day where
 every name shares one value, `sd == 0`, so an unguarded divide yields +/-inf which `clip`
 then turns into a FABRICATED +/-clip; the two guarded call sites instead produce NaN.
-Both behaviours are reproduced exactly (`zero_sd_to_nan`) because changing either would
-move live numbers -- that is a separate, declared decision, not a refactor.
+`zero_sd_to_nan` selects between the two.
 
 The GROUP-PRESENCE FLOOR (`MIN_GROUP_SIZE_FOR_NEUTRALIZATION`) is the same spirit applied to
 `xs_project_out`'s indicator block: a named threshold instead of silently accepting a
@@ -43,10 +35,9 @@ import pandas as pd
 
 _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 
-# the three clip policies, named so a call site documents its intent
+# the two clip bounds, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
-Z_CLIP = 5.0  # the one fixed bound of a feature z-score (own-history and peer)
-XS_CLIP_CHARACTERISTIC = Z_CLIP  # factor characteristic / regressor (factors.py, targets.py)
+Z_CLIP = 5.0  # every feature or regressor z: own-history, peer, factor characteristic
 
 #: How many PRESENT members a design CELL needs on a day before the group block may split the
 MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5
@@ -94,11 +85,8 @@ def xs_z(df: pd.DataFrame, clip: float | None, *, zero_sd_to_nan: bool = False, 
     so the floor could never bind. It is only meaningful for a SUBGROUP dispersion (a peer
     basket) measured against a wider reference.
 
-    Input winsorization is likewise not applied: this function standardizes the MODELLING
-    LABEL (`targets.cross_sectional_zscore`) as well as characteristics, and trimming the
-    label's inputs is a decision about the target, not about a feature's outlier policy.
-    The fundamentals cube never reaches this function anyway -- its `_xs` suffix is
-    `xs_rank_pct`, a percentile rank, which is outlier-proof by construction."""
+    Inputs are not trimmed: this function standardizes the MODELLING LABEL
+    (`targets.cross_sectional_zscore`) as well as characteristics."""
     mu = df.mean(axis=1)
     sd = df.std(axis=1)
     if zero_sd_to_nan:
@@ -226,15 +214,13 @@ def self_history_z(
     field_df: pd.DataFrame,
     window: int = HIST_WINDOW,
     min_periods: int = HIST_MIN_PERIODS,
-    clip: float = Z_CLIP,
     output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Time-series z-score of each ticker versus its OWN trailing `window`:
 
         z(t) = (x(t) - trailing_mean(t)) / trailing_std(t)
 
-    The value is clipped to +-`clip` (default `Z_CLIP`); a fixed bound, so one raw value gives the
-    same z on every day (no per-day quantile trim).
+    The value is clipped to +-`Z_CLIP`.
 
     The rolling window is trailing (right-edge = today), so it uses only current-and-past
     values -- strictly point-in-time, no look-ahead. On a valuation YIELD a high z means the
@@ -259,7 +245,7 @@ def self_history_z(
         return pd.DataFrame()
     mean = field_df.rolling(window, min_periods=min_periods).mean()
     std = field_df.rolling(window, min_periods=min_periods).std()
-    z = zscore(field_df, mean, std.where(std > 0), clip).replace([np.inf, -np.inf], np.nan)
+    z = zscore(field_df, mean, std.where(std > 0), Z_CLIP)
     if output_since is not None:
         z = z.loc[z.index >= pd.Timestamp(output_since)]
     return z

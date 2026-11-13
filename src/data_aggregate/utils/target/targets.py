@@ -45,8 +45,8 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.xs import (
     MIN_GROUP_SIZE_FOR_NEUTRALIZATION,
-    XS_CLIP_CHARACTERISTIC,
     XS_CLIP_LABEL,
+    Z_CLIP,
     xs_group_dummies,
     xs_project_out,
     xs_rank_pct,
@@ -249,7 +249,7 @@ def _neutralizing_design(
     # carrying NaN and raise. This reindex is what makes the later one harmless.
     active = close_total.notna()
     exposures = [
-        xs_z(f.where(active), clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None
+        xs_z(f.where(active), clip=Z_CLIP, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None
     ]
 
     # industry_group is NESTED in sector, so industry indicators span both levels; fall back to
@@ -278,7 +278,7 @@ def _neutral_label(eps: pd.DataFrame, label: str, min_names: int, exposures: lis
     `compute_epsilon`'s docstring carries the same numbers so the two do not drift apart.
 
     ⚠ `MIN_GROUP_SIZE_FOR_NEUTRALIZATION` is hardcoded here the way `_neutralizing_design`
-    hardcodes `XS_CLIP_CHARACTERISTIC`: it is a fixed policy of THIS label, not a per-call
+    hardcodes `Z_CLIP`: it is a fixed policy of THIS label, not a per-call
     choice, so it does not reach `build_targets_multi`'s signature. A group with fewer present
     members than that on a day is simply not in that day's design -- no dummy, no forced group
     mean -- and the name still gets every other regressor. Without it, a group with one present

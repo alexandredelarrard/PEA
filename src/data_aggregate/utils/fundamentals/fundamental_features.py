@@ -139,7 +139,7 @@ def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -
 # `feature_views` then applies the approved raw/self-history contract downstream.
 # `daily` is the memoized accessor from _derived_fields (field -> date x ticker).
 # --------------------------------------------------------------------------- #
-def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
+def _nopat_tax_rate(daily) -> pd.DataFrame:
     """Point-in-time effective tax rate = tax / pretax, clipped to [0, 0.5] and
     defaulted to the US statutory ~21% where missing/nonsensical. INTERNAL ONLY: used to
     tax-adjust special items (core earnings) and to build NOPAT (ROIC).
@@ -150,7 +150,7 @@ def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
     tax, pre = daily("incomeTaxExpense"), daily("pretaxIncome")
     if tax.empty or pre.empty:
         return pd.DataFrame()
-    return clip_tax_rate(ratio(tax, pre.where(pre > 0)), default)
+    return clip_tax_rate(ratio(tax, pre.where(pre > 0)))
 
 
 def _da_realism_fields(daily) -> dict:

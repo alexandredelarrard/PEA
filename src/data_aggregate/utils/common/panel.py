@@ -82,8 +82,7 @@ def peer_relative(field_df: pd.DataFrame, peer_dict: dict, std_floor_ratio: floa
     similar companies report near-identical values, so the std is floored at `std_floor_ratio` of
     the whole universe's std that day.
 
-    Inputs are used as they are (no trim): the fixed output clip bounds one bad value's effect on
-    its own score, and the same value gives the same score on every day.
+    Inputs are not trimmed; the output clip bounds a bad value's effect.
     """
     # The floor is a fraction of the day's universe dispersion (sample std, as in `xs.xs_z`).
     floor = field_df.std(axis=1) * std_floor_ratio

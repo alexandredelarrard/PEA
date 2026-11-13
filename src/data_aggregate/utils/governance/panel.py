@@ -37,6 +37,7 @@ from src.data_aggregate.utils.governance.pay_features import (
     UNSHIPPED_FIELDS,
     log_growth,
     pay_fields,
+    prior_annual_leg,
 )
 from src.data_aggregate.utils.governance.provisions_features import (
     PEER_RELATIVE_FIELDS as PROVISION_PEER_FIELDS,
@@ -185,7 +186,10 @@ def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str
 
 
 def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
-    """Expand filing pay log growth (clipped to +-`PAY_LOG_GROWTH_BOUND`) point-in-time and null CEO-transition comparisons."""
+    """Expand filing pay log growth (clipped to +-`PAY_LOG_GROWTH_BOUND`) point-in-time and null CEO-transition comparisons.
+
+    A cross-filing change counts only between two filings 250-550 days apart (`pay_features` annual gate); the
+    filing's own SCT pair is kept whatever the gap."""
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
     keep = [
@@ -202,8 +206,10 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     d = d.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"])
     if d.empty:
         return pd.DataFrame(index=idx)
-    # Log of the ratio of two positive totals: a prior year filed as $0 has no growth rate.
-    prior = d.groupby("ticker", sort=False)["ceo_total_comp"].shift(1)
+    # Log of the ratio of two positive totals: a prior year filed as $0 has no growth rate. The prior
+    # is the previous filing only when it is about one year earlier, so a skipped proxy gives NaN
+    # (a carry barrier), never a two-year change labelled as yearly growth.
+    prior = prior_annual_leg(d, "ceo_total_comp")
     d["chg"] = np.log(d["ceo_total_comp"].where(d["ceo_total_comp"] > 0) / prior.where(prior > 0))
     # a bridged total's change is the bridge's slope, so neither change touching it is data
     d["chg"] = d["chg"].mask(d["_bridged"] | d.groupby("ticker", sort=False)["_bridged"].shift(1, fill_value=False).astype(bool))

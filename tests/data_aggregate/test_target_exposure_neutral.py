@@ -137,7 +137,7 @@ def test_label_is_orthogonal_to_the_size_characteristic():
     precision. Uses a COLUMN SUBSET because `pit.daily_market_cap` returns one -- a ticker with
     no filing history is absent, not NaN -- which is what makes the `reindex_like` in
     `_neutralizing_design` load-bearing rather than redundant. Uses `logspace` because a
-    linearly-spaced $1bn-$400bn grid skews `log(mcap)` enough for XS_CLIP_CHARACTERISTIC to
+    linearly-spaced $1bn-$400bn grid skews `log(mcap)` enough for Z_CLIP to
     bind, which would break exact orthogonality for a legitimate reason.
     """
     close, *_ = _panel_with_beta_tilt()

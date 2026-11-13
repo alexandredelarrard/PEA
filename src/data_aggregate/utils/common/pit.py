@@ -308,6 +308,22 @@ def fiscal_values_to_daily(
     )
 
 
+def filing_count_prior(fund_hist: pd.DataFrame, values: pd.Series, periods: int) -> pd.Series:
+    """Row-aligned value `periods` filings earlier within the ticker: the fallback when no `fiscal_end` is known."""
+    work = pd.DataFrame(
+        {
+            "ticker": fund_hist["ticker"].astype(str),
+            "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
+            "value": values.to_numpy(),
+            "position": np.arange(len(fund_hist)),
+        }
+    ).sort_values(["ticker", "as_of", "position"])
+    work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(periods))
+    prior_values = np.full(len(fund_hist), np.nan, dtype="float64")
+    prior_values[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
+    return pd.Series(prior_values, index=fund_hist.index)
+
+
 def fiscal_change_values(
     fund_hist: pd.DataFrame,
     field: str,
@@ -338,18 +354,7 @@ def fiscal_change_values(
             positions=positions,
         )
     else:
-        work = pd.DataFrame(
-            {
-                "ticker": fund_hist["ticker"].astype(str),
-                "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
-                "value": current,
-                "position": np.arange(len(fund_hist)),
-            }
-        ).sort_values(["ticker", "as_of", "position"])
-        work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(periods))
-        prior_values = np.full(len(fund_hist), np.nan, dtype="float64")
-        prior_values[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
-        prior = pd.Series(prior_values, index=fund_hist.index)
+        prior = filing_count_prior(fund_hist, current, periods)
     if kind == "pct":
         result = current / prior.where(prior != 0) - 1.0
     elif kind == "signed_pct":

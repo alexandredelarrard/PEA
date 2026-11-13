@@ -64,6 +64,11 @@ def safe_div(num: pd.Series, den: pd.Series | None, den_positive: bool = False) 
     return num / den
 
 
+def clip_tax_rate[Shaped: (pd.Series, pd.DataFrame)](rate: Shaped, default: float = 0.21) -> Shaped:
+    """An effective tax rate bounded to [0, 0.5] and defaulted to the US statutory ~21% where missing (NOPAT's tax leg)."""
+    return rate.clip(0.0, 0.5).fillna(default)
+
+
 def normalize_date_col(df: pd.DataFrame | None) -> pd.DataFrame | None:
     """Normalize a frame's `date` column to midnight so merges across parts align."""
     if df is not None and not df.empty and "date" in df.columns:

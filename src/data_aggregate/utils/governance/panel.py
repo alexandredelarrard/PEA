@@ -118,6 +118,11 @@ _PANEL_SETTINGS = PanelSettings(peer_transform=_PEER_TRANSFORM, trim_peer_inputs
 PAY_LOG_GROWTH_BOUND: float = 3.0
 
 
+def _bound_pay_growth[Shaped: (pd.Series, pd.DataFrame)](growth: Shaped) -> Shaped:
+    """Clip a pay log growth (or its gap to revenue log growth) to +-`PAY_LOG_GROWTH_BOUND`."""
+    return growth.clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
+
+
 def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame | None:
     """Return the same-filing condition for a conditional domain gate."""
     col = _DOMAIN_ONLY_WHERE.get(field)
@@ -206,7 +211,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
         # The filing's own FY vs FY-1 pair wins over the cross-filing change.
         sct = cast(pd.Series, pd.to_numeric(d[SCT_GROWTH], errors="coerce"))
         d["chg"] = sct.where(sct.notna(), d["chg"])
-    d["chg"] = d["chg"].clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
+    d["chg"] = _bound_pay_growth(d["chg"])
     names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # Unknown identity does not prove a change, so it does not mask the growth rate.
@@ -311,7 +316,7 @@ def _governance_fields(
                 cols = pay_growth.columns.intersection(rev_growth.columns)
                 if len(cols) > 0:
                     # Pay growth is already expired; subtraction preserves that mask.
-                    f_dict["ceo_pay_vs_revenue_growth"] = (pay_growth[cols] - rev_growth[cols]).clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
+                    f_dict["ceo_pay_vs_revenue_growth"] = _bound_pay_growth(pay_growth[cols] - rev_growth[cols])
 
     # Voting power minus economic ownership has a meaningful zero and is already bounded.
     wedge = _control_wedge(def14a_hist, idx, tally)

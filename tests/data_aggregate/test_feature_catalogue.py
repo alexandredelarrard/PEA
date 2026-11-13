@@ -41,16 +41,12 @@ from tests.support.cube_governance_catalogue import GOVERNANCE
 from tests.support.cube_institutionals_catalogue import INSTITUTIONALS
 from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
 
-#: ⚠ THE ONE ALLOWED DECLARED-BUT-ABSENT FIELD, named rather than filtered.
+#: DECLARED-BUT-ABSENT FIELDS, named rather than filtered. None today.
 #:
-#: `poison_pill_added` is in `provisions_features.ALL_FIELDS` and has no column, deliberately:
-#: `_MIN_EVENTS` suppresses it because it fires ZERO times on the live archive, and a constant-0
-#: column is worse than an absent one because it looks like evidence.
-#:
-#: Named explicitly, as a one-element set, because a loose filter ("skip anything that looks
+#: Name each one explicitly, because a loose filter ("skip anything that looks
 #: suppressed") would silently absorb the NEXT genuinely-missing column -- which is the exact
 #: failure mode this whole test exists to prevent.
-SUPPRESSED: frozenset[str] = frozenset({"poison_pill_added"})
+SUPPRESSED: frozenset[str] = frozenset()
 
 
 def _declared() -> dict[str, set[str]]:

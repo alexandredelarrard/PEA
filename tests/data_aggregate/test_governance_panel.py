@@ -387,7 +387,7 @@ def test_governance_panel_encoding_and_empty_guard():
     assert "f_ceo_is_board_chair_vs_peers" not in cols, "a Bernoulli has no peer norm"
     # 8. phase 5's families reached the panel, raw and raw only
     for name in (
-        "f_classified_board_added",
+        "f_classified_board_change",
         "f_governance_deterioration_count",
         "f_net_governance_change",
         "f_board_independence_delta_1y",

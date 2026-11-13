@@ -321,22 +321,15 @@ add(
 
 # ------------------------------------------- provisions and auditor (provisions_features.py) #
 add(
-    "classified_board_added",
+    "classified_board_change",
     "provisions",
-    "1 in the year a staggered (classified) board was ADOPTED.",
-    "A TRANSITION, not a level. A classified board is a fact about a company; adopting one is "
-    "an act by a board, and it is the act that carries information. The NULL rows are dropped "
-    "BEFORE the diff, so a silent proxy year can neither manufacture a transition nor hide one.",
-    "Binary and very sparse -- adoptions are rare in the modern era, which is why the aggregate counts ship alongside every individual flag.",
-)
-add(
-    "classified_board_removed",
-    "provisions",
-    "1 in the year a staggered board was removed. Declassification is the improvement leg.",
-    "Same tri-state discipline as its `_added` twin. Both directions ship separately because "
-    "adopting and removing are not one signed variable: the populations that do each are "
-    "different.",
-    "Binary and sparse, but the commoner direction of the pair -- declassification campaigns were a sustained governance-activist theme.",
+    "+1 in the year a staggered (classified) board was ADOPTED, -1 in the year it was removed, 0 when unchanged.",
+    "A TRANSITION, not a level. A classified board is a fact about a company; adopting or removing "
+    "one is an act by a board, and it is the act that carries information. The NULL rows are "
+    "dropped BEFORE the diff, so a silent proxy year can neither manufacture a transition nor "
+    "hide one. One signed column replaces the former `_added` / `_removed` pair, which both still feed the aggregate counts.",
+    "Ternary and sparse -- adoptions are rare in the modern era, declassification the commoner direction, "
+    "which is why the aggregate counts ship alongside. Note +1 is the deterioration direction here.",
 )
 add(
     "dual_class_added",
@@ -350,84 +343,48 @@ add(
     "as a governance decision.",
 )
 add(
-    "majority_voting_removed",
+    "majority_voting_change",
     "provisions",
-    "1 in the year majority voting for director elections was dropped.",
+    "+1 in the year director elections moved from plurality to majority voting, -1 in the year they moved back, 0 when unchanged.",
     "`majority_voting` is deliberately TRI-STATE -- NULL when the proxy is silent -- because "
     "inferring FALSE from silence flipped it 21.2% year-over-year on a bylaw that does not "
-    "change. The transition is computed only between two DISCLOSED years.",
-    "Binary and sparse. The tri-state discipline is what makes it trustworthy: nearly all of "
-    "the apparent churn in this bylaw was an artefact of reading silence as a value.",
+    "change. The change is computed only between two DISCLOSED proxies, against the previous "
+    "proxy that stated a value. One signed column replaces the former `_added` / `_removed` pair, "
+    "which both still feed the aggregate counts.",
+    "Ternary, sparse and time-clustered: plurality-to-majority was a decade-long governance shift, "
+    "so a pooled model can read the era from it. Prefer it inside the aggregate counts.",
 )
 add(
-    "majority_voting_added",
+    "ceo_board_chair_change",
     "provisions",
-    "1 in the year majority voting for directors was adopted.",
-    "Same tri-state gate as its twin. The improvement direction, and the commoner one: plurality-to-majority was a decade-long governance shift.",
-    "Binary, sparse, and time-clustered rather than spread evenly -- a pooled model can read "
-    "the era from it, so prefer it inside the aggregate counts.",
-)
-add(
-    "poison_pill_removed",
-    "provisions",
-    "1 in the year a shareholder-rights plan (poison pill) lapsed or was withdrawn.",
-    "⚠ Its `_added` twin fires ZERO times on the live archive and is deliberately NOT "
-    "exported -- a constant-0 column is worse than an absent one, because it looks like "
-    "evidence. `poison_pill` is tri-state for the same reason as `majority_voting`: inferring "
-    "FALSE from silence made it read TRUE for 0.1% of rows.",
-    "Binary and one-directional in practice. The asymmetry is real: pills are adopted in "
-    "response to a specific threat and rarely disclosed in the proxy that adopts them.",
-)
-add(
-    "ceo_became_board_chair",
-    "provisions",
-    "1 in the year the CEO also took the board chair. Deterioration.",
+    "+1 in the year the CEO also took the board chair, -1 in the year the CEO gave it up, 0 when unchanged.",
     "Board-leadership structure ships as transitions for the same reason the bylaws do -- the "
-    "ACT is the information. Combining the CEO and chair roles removes the board's most "
-    "direct check on the executive.",
-    "Binary, sparse, and one of the more legible deterioration events in the panel; its reversal ships as `ceo_stopped_being_chair`.",
+    "ACT is the information. Combining the CEO and chair roles removes the board's most direct "
+    "check on the executive. One signed column replaces the former `_became` / `_stopped` pair.",
+    "Ternary and sparse. +1 is the deterioration direction. Often co-fires with `independent_chair_change` -- "
+    "usually one board decision seen from two sides, which is why both feed the aggregate counts "
+    "rather than being multiplied together.",
 )
 add(
-    "ceo_stopped_being_chair",
+    "independent_chair_change",
     "provisions",
-    "1 in the year the CEO gave up the board chair. Improvement.",
-    "The other direction of the same event, as its own column rather than as a sign, because "
-    "the firms that split the roles are not the firms that combine them.",
-    "Binary and sparse. Frequently co-fires with `independent_chair_added` -- the two are "
-    "usually one board decision seen from two sides, which is why both feed the aggregate "
-    "counts rather than being multiplied together.",
+    "+1 in the year an independent chair was installed, -1 in the year an independent chair ceased to be independent or the role lapsed, 0 when unchanged.",
+    "Tracks the chair's INDEPENDENCE, a distinct fact from whether the CEO holds the chair -- a "
+    "non-CEO insider chair is neither an independent chair nor a combined role. One signed "
+    "column replaces the former `_added` / `_lost` pair.",
+    "Ternary and sparse, time-clustered with the post-2003 governance reforms. The -1 side "
+    "catches the founder-returns-as-chair case, which `ceo_board_chair_change` misses entirely.",
 )
 add(
-    "independent_chair_lost",
+    "lead_independent_director_change",
     "provisions",
-    "1 in the year an independent board chair ceased to be independent, or the role lapsed.",
-    "Tracks the chair's INDEPENDENCE, which is a distinct fact from whether the CEO holds the "
-    "chair -- a non-CEO insider chair is neither an independent chair nor a combined role.",
-    "Binary and sparse. This is the column that catches the founder-returns-as-chair case, which `ceo_became_board_chair` misses entirely.",
-)
-add(
-    "independent_chair_added",
-    "provisions",
-    "1 in the year an independent chair was installed. Improvement.",
-    "Same independence basis as its `_lost` twin.",
-    "Binary, sparse, and time-clustered with the post-2003 governance reforms.",
-)
-add(
-    "lead_independent_director_lost",
-    "provisions",
-    "1 in the year the lead-independent-director role disappeared.",
+    "+1 in the year the lead-independent-director role was created, -1 in the year it disappeared, 0 when unchanged.",
     "The lead independent director is the structural substitute for an independent chair when "
     "the roles are combined, so losing it is a real deterioration even at a firm whose formal "
-    "structure did not change.",
-    "Binary and sparse. Most informative at firms with a combined CEO/chair, where it is the only remaining independent counterweight.",
-)
-add(
-    "lead_independent_director_added",
-    "provisions",
-    "1 in the year the lead-independent-director role was created.",
-    "The improvement direction, and typically the board's answer to pressure over a combined CEO/chair rather than an independent action.",
-    "Binary, sparse, and often the year AFTER a say-on-pay or director-election revolt -- "
-    "worth reading against `sop_dissent_gt_20` rather than in isolation.",
+    "structure did not change. Creation is typically the board's answer to pressure over a "
+    "combined CEO/chair. One signed column replaces the former `_added` / `_lost` pair.",
+    "Ternary and sparse. Most informative at firms with a combined CEO/chair; +1 often follows a "
+    "say-on-pay or director-election revolt, so read it against `sop_dissent_gt_20`.",
 )
 add(
     "governance_deterioration_count",
@@ -729,7 +686,7 @@ add(
     "crossing it triggers engagement obligations and adverse vote recommendations the "
     "following year.",
     "Binary and sparse. Often the best single predictor of the NEXT year's "
-    "`lead_independent_director_added` or pay-structure change -- boards respond to it.",
+    "`lead_independent_director_change` or pay-structure change -- boards respond to it.",
 )
 add(
     "sop_dissent_delta_1y",

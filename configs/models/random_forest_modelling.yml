@@ -222,7 +222,7 @@ random_forest:
     - f_ceo_to_director_pay_ratio
     - f_director_equity_pay_pct
 
-    # - f_lead_independent_director_added   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
+    # - f_lead_independent_director_change   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_log_ceo_total_comp
     - f_pay_return_peer_misalignment
     - f_pay_revenue_peer_misalignment

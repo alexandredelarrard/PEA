@@ -3,8 +3,8 @@ provisions_features.py  (src/data_aggregate/utils/governance/provisions_features
 -----------------------------------------------------------------------------------
 The last three governance families, all off `def14a_llm` alone:
 
-  * **8 — entrenchment-provision TRANSITIONS.** Thirteen 0->1 / 1->0 flags on seven bylaw and
-    board-leadership columns, plus the two aggregate counts and the board-independence delta.
+  * **8 — entrenchment-provision TRANSITIONS.** Six columns on six bylaw and board-leadership
+    fields (five ship as signed +1 / 0 / -1 changes, dual class as a 0/1 event), plus the two aggregate counts and the board-independence delta.
   * **9 — board busyness.** `avg_other_public_boards`, a column nothing has ever consumed.
   * **10 — the auditor block.** Change, tenure and big-4, on the CANONICAL firm from
     `auditors.py` rather than the raw string.
@@ -14,10 +14,9 @@ one is an act by a board, and it is the act that carries information. So the sev
 columns ship as transitions and only two levels ship at all (`board_busyness`,
 `ceo_is_board_chair`).
 
-⚠ **A SILENT YEAR IS NOT A CHANGE.** `poison_pill` and `majority_voting` are tri-state by
-design -- NULL when the proxy says nothing -- because inferring FALSE from silence made
-`poison_pill` read TRUE for 0.1% of rows and flipped `majority_voting` 21.2% year-over-year on a
-bylaw that does not change. `_transitions` therefore drops the NULL rows BEFORE it diffs, which
+⚠ **A SILENT YEAR IS NOT A CHANGE.** `majority_voting` is tri-state by design -- NULL
+when the proxy says nothing -- because inferring FALSE from silence flipped it 21.2%
+year-over-year on a bylaw that does not change. `_transitions` therefore drops the NULL rows BEFORE it diffs, which
 both stops a silent year manufacturing a transition and stops it hiding one.
 
 ⚠ **NO INTERACTION FEATURES** (D16). GPT §13's five products are not built; every leg of every
@@ -26,10 +25,9 @@ existed *only* inside a product -- `ceo_is_board_chair`, X05's left half -- ship
 level. There must be no column with `_x_` in its name, and a test asserts it.
 
 MEASURED 2026-09-08 on the live archive (12,343 proxies, 488 tickers) -- the numbers that
-decided three things the plan had specified differently. Each is recorded next to the set it
+decided two things the plan had specified differently. Each is recorded next to the set it
 changed:
 
-  * `poison_pill_added` fires **zero** times, so it is not exported (`_MIN_EVENTS`);
   * two thirds of `board_busyness_delta_1y`'s pairs had an INTERPOLATED leg, so both deltas
     are now gated on provenance (`_DISCLOSED_ONLY_DELTAS`);
   * nothing in this module earns a peer leg (`PEER_RELATIVE_FIELDS`).
@@ -56,12 +54,11 @@ from src.data_aggregate.utils.governance.staleness import (
     stint_to_daily,
 )
 
-#: The seven tri-state / boolean provision columns the transition detector runs over. Every one
+#: The six tri-state / boolean provision columns the transition detector runs over. Every one
 #: is stored 1.0 / 0.0 / NULL by `flatten._bnum`, and NULL means the proxy was silent.
 PROVISION_COLUMNS: tuple[str, ...] = (
     "classified_board",
     "dual_class_shares",
-    "poison_pill",
     "majority_voting",
     "ceo_is_board_chair",
     "independent_chair",
@@ -69,7 +66,7 @@ PROVISION_COLUMNS: tuple[str, ...] = (
 )
 
 #: exported flag -> (source column, direction). The detector computes BOTH directions on all
-#: seven columns generically; only these thirteen are exported.
+#: six columns generically; `SIGNED_FLAGS` folds majority voting's two directions into one column.
 #:
 #: ⚠ There is deliberately no `dual_class_removed`: GPT does not ask for it, and the two
 #: directions are not symmetric evidence -- an unwind is usually a recapitalisation retiring a
@@ -77,7 +74,6 @@ PROVISION_COLUMNS: tuple[str, ...] = (
 TRANSITION_FLAGS: dict[str, tuple[str, str]] = {
     # deterioration
     "classified_board_added": ("classified_board", "up"),
-    "poison_pill_added": ("poison_pill", "up"),
     "dual_class_added": ("dual_class_shares", "up"),
     "majority_voting_removed": ("majority_voting", "down"),
     "ceo_became_board_chair": ("ceo_is_board_chair", "up"),
@@ -85,16 +81,31 @@ TRANSITION_FLAGS: dict[str, tuple[str, str]] = {
     "lead_independent_director_lost": ("lead_independent_director", "down"),
     # improvement
     "classified_board_removed": ("classified_board", "down"),
-    "poison_pill_removed": ("poison_pill", "down"),
     "majority_voting_added": ("majority_voting", "up"),
     "ceo_stopped_being_chair": ("ceo_is_board_chair", "down"),
     "independent_chair_added": ("independent_chair", "up"),
     "lead_independent_director_added": ("lead_independent_director", "up"),
 }
 
+#: Exported column -> (flag worth +1, flag worth -1). The two directions of one provision ship as a
+#: single signed column named after the provision: +1 when its value goes 0 -> 1, -1 when it goes
+#: 1 -> 0, 0 when it stays. The sign is the direction of the provision, not good or bad. Both
+#: component flags are still computed, because the aggregate counts sum them one by one.
+SIGNED_FLAGS: dict[str, tuple[str, str]] = {
+    "classified_board_change": ("classified_board_added", "classified_board_removed"),
+    "majority_voting_change": ("majority_voting_added", "majority_voting_removed"),
+    "ceo_board_chair_change": ("ceo_became_board_chair", "ceo_stopped_being_chair"),
+    "independent_chair_change": ("independent_chair_added", "independent_chair_lost"),
+    "lead_independent_director_change": ("lead_independent_director_added", "lead_independent_director_lost"),
+}
+
+_FOLDED_FLAGS: frozenset[str] = frozenset(flag for pair in SIGNED_FLAGS.values() for flag in pair)
+
+#: The transition columns the module ships: every flag not folded into a signed column, plus the signed ones.
+EXPORTED_FLAGS: frozenset[str] = frozenset(set(TRANSITION_FLAGS) - _FOLDED_FLAGS) | frozenset(SIGNED_FLAGS)
+
 DETERIORATION_FLAGS: tuple[str, ...] = (
     "classified_board_added",
-    "poison_pill_added",
     "dual_class_added",
     "majority_voting_removed",
     "ceo_became_board_chair",
@@ -103,29 +114,16 @@ DETERIORATION_FLAGS: tuple[str, ...] = (
 )
 IMPROVEMENT_FLAGS: tuple[str, ...] = (
     "classified_board_removed",
-    "poison_pill_removed",
     "majority_voting_added",
     "ceo_stopped_being_chair",
     "independent_chair_added",
     "lead_independent_director_added",
 )
 
-#: ⚠ A TRANSITION FLAG THAT NEVER FIRES IS NOT EXPORTED, and this is a measured correction to
-#: the plan rather than a tidy-up. Phase 5 was written expecting `poison_pill_added` to be
-#: "near-empty, and that is the honest answer": a transition needs two disclosed observations of
-#: a field disclosed 20% of the time. Measured on the live archive it is not near-empty, it is
-#: **exactly empty** -- 1,585 adjacent disclosed pairs of `poison_pill`, of which **0 are 0->1
-#: and 23 are 1->0**. So the column would ship as a literal constant 0.0, which is worse than
-#: absent: `poison_pill_added == 0` reads as "this firm adopted no rights plan" when the
-#: truthful statement is "the 80% of proxies that say nothing still say nothing".
-#:
-#: The gate counts fired events at the FILING grain, so the column REAPPEARS by itself the first
-#: time a filer in this universe adopts a pill between two disclosing proxies. The count is
-#: logged either way, which is what the plan actually asked for.
-#:
-#: ⚠ A dropped flag is still summed into its aggregate count. Adding a constant 0.0 changes no
-#: total, and keeping it in preserves the count's COVERAGE -- dropping it from the sum would
-#: shrink the `min_count=1` population for no gain.
+#: A transition flag that never fires is not exported: a constant 0.0 column reads as "no change"
+#: when the truthful statement is that the source never spoke. The gate counts fired events at the
+#: FILING grain, so the column reappears by itself the first time one fires. A dropped flag is still
+#: summed into its aggregate count, which keeps the count's coverage.
 _MIN_EVENTS = 1
 
 #: ⚠ DELTAS GATED ON PROVENANCE, the second measured correction. Both these columns are in
@@ -249,7 +247,7 @@ PEER_RELATIVE_FIELDS: frozenset[str] = frozenset()
 #: direction. It ships as an unsigned flag. `sec_8k` DOES carry the 4.01 rows and reading their
 #: narratives is the obvious follow-up; it is not in this plan.
 RAW_FLAG_FIELDS: frozenset[str] = frozenset(
-    set(TRANSITION_FLAGS) | {"board_independence_drop_10pp", "auditor_changed", "auditor_is_big4", "auditor_tenure_censored", "ceo_is_board_chair"}
+    set(EXPORTED_FLAGS) | {"board_independence_drop_10pp", "auditor_changed", "auditor_is_big4", "auditor_tenure_censored", "ceo_is_board_chair"}
 )
 
 #: Fields describing an EVENT, which expire 395 days after the filing that disclosed them.
@@ -264,7 +262,7 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset(
 #: already-expired flags, so they inherit the mask exactly and cannot disagree with their own
 #: components. `test_provisions_features` asserts that inheritance.
 EVENT_FIELDS: frozenset[str] = frozenset(
-    set(TRANSITION_FLAGS)
+    set(EXPORTED_FLAGS)
     | {
         "governance_deterioration_count",
         "governance_improvement_count",
@@ -280,7 +278,7 @@ EVENT_FIELDS: frozenset[str] = frozenset(
 #: needed: `pay_up_stock_down` sat in two classification sets while no code path produced it,
 #: and the two fields that WERE produced sat in neither and silently skipped their expiry.
 ALL_FIELDS: frozenset[str] = frozenset(
-    set(TRANSITION_FLAGS)
+    set(EXPORTED_FLAGS)
     | {
         "governance_deterioration_count",
         "governance_improvement_count",
@@ -296,6 +294,10 @@ ALL_FIELDS: frozenset[str] = frozenset(
         "auditor_is_big4",
     }
 )
+
+#: Event names the expiry pass ages: the shipped events plus the folded components, which feed the signed
+#: column and the counts and must expire exactly like the flags they replace.
+_EXPIRING_EVENT_FIELDS: frozenset[str] = EVENT_FIELDS | _FOLDED_FLAGS
 
 #: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon.
 #:
@@ -472,7 +474,7 @@ def _expire(
     quietly acquire no horizon at all: it is in one set or the other, and `LEVEL_FIELDS` is
     defined as the complement of `EVENT_FIELDS` so the two are exhaustive by construction.
     """
-    capped, stats = expire_event_fields(frames, hist, EVENT_FIELDS, sources=sources)
+    capped, stats = expire_event_fields(frames, hist, _EXPIRING_EVENT_FIELDS, sources=sources)
     for name, (expired, before) in stats.items():
         if expired:
             tally[f"expired >{GOVERNANCE_EVENT_MAX_AGE_DAYS}d: {name}"] = expired
@@ -516,11 +518,22 @@ def _provision_transitions(
             continue
         frame = _expire({flag: daily}, h, tally)[flag]
         for_counts[flag] = frame
+        if flag in _FOLDED_FLAGS:
+            continue
         if fired < _MIN_EVENTS:
-            # A constant 0.0 column, measured rather than assumed. See `_MIN_EVENTS`.
+            # A constant 0.0 column. See `_MIN_EVENTS`.
             tally[f"NOT exported (0 events, constant column): {flag}"] = 1
             continue
         exported[flag] = frame
+
+    for name, (plus, minus) in SIGNED_FLAGS.items():
+        if plus not in for_counts or minus not in for_counts:
+            continue
+        if tally.get(f"events: {plus}", 0) + tally.get(f"events: {minus}", 0) < _MIN_EVENTS:
+            tally[f"NOT exported (0 events, constant column): {name}"] = 1
+            continue
+        # Both legs share one source column and one expiry mask, so NaN lines up and a silent pair stays NaN.
+        exported[name] = for_counts[plus] - for_counts[minus]
     return exported, for_counts
 
 

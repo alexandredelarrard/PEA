@@ -21,6 +21,13 @@ from src.data_aggregate.utils.institutionals.insider_positions import cumulative
 from src.data_aggregate.utils.institutionals.insider_quality import (
     FLAG_PCT_SHARES_OUTSTANDING,
     OTHER_OFFICER,
+    ROLE_CEO,
+    ROLE_CFO,
+    ROLE_CHAIR,
+    ROLE_COO,
+    ROLE_OTHER_C_SUITE,
+    ROLE_PRESIDENT,
+    ROLE_VP_LEVEL,
     account_other_flows,
     common_stock_mask,
     report_oversized,
@@ -42,13 +49,13 @@ ROLE_BUY_FEATURES: dict[str, tuple[str, int]] = {
     f"ic_insider_{suffix}_buy_mcap_{days}d": (role, days)
     for days in (WINDOW_60, WINDOW_180)
     for suffix, role in {
-        "ceo": "CEO",
-        "cfo": "CFO",
-        "coo": "COO",
-        "president": "PRESIDENT",
-        "chair": "CHAIR",
-        "csuite_other": "OTHER_C_SUITE",
-        "vp": "VP_LEVEL",
+        "ceo": ROLE_CEO,
+        "cfo": ROLE_CFO,
+        "coo": ROLE_COO,
+        "president": ROLE_PRESIDENT,
+        "chair": ROLE_CHAIR,
+        "csuite_other": ROLE_OTHER_C_SUITE,
+        "vp": ROLE_VP_LEVEL,
         "other": OTHER_OFFICER,
     }.items()
 }

@@ -28,6 +28,8 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 )
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
+    OTHER_OFFICER,
+    ROLE_PATTERNS,
     clean_transactions,
     common_stock_mask,
     normalize_insider_dates,
@@ -1690,3 +1692,24 @@ def test_action_cap_future_declaration_recovers_on_an_explicit_row_date_correcti
     assert panel.loc["2024-05-07", feature] == 0.0
     pd.testing.assert_series_equal(panel.loc[:"2024-03-11", feature], prefix.loc[:"2024-03-11", feature])
     print("SANITY: independent full-row proof corrects the action to March 4 only on March 12, giving 1m/100m until the original May 7 expiry.")
+
+
+def test_role_buy_features_cover_exactly_the_roles_the_role_map_emits() -> None:
+    """A renamed or added role must fail here, not turn its role features all-NaN."""
+    declared = {role for role, _ in ROLE_BUY_FEATURES.values()}
+    emitted = {name for name, _ in ROLE_PATTERNS} | {OTHER_OFFICER}
+    titles = {
+        "Chief Executive Officer": "CEO",
+        "Chief Financial Officer": "CFO",
+        "Chief Operating Officer": "COO",
+        "Chief Technology Officer": "OTHER_C_SUITE",
+        "President": "PRESIDENT",
+        "Chairman": "CHAIR",
+        "SVP, Sales": "VP_LEVEL",
+        "Secretary": OTHER_OFFICER,
+    }
+    mapped = {title: officer_role(title) for title in titles}
+    assert declared == emitted, f"undeclared: {sorted(emitted - declared)}, dead: {sorted(declared - emitted)}"
+    assert mapped == titles, mapped
+    assert set(mapped.values()) <= declared
+    print(f"SANITY: {len(declared)} role features' roles equal the role map's roles, and one title per role resolves to its own role.")

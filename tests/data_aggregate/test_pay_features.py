@@ -23,7 +23,6 @@ from src.data_aggregate.utils.governance.pay_features import (
     ALL_FIELDS,
     EVENT_FIELDS,
     PEER_RELATIVE_FIELDS,
-    RAW_FLAG_FIELDS,
     _comp_history,
     _slice_history,
     _top5_history,
@@ -215,8 +214,6 @@ def test_the_encoding_and_expiry_contracts():
     emptiness is asserted so no future edit can re-add a peer leg without re-measuring.
     """
     assert PEER_RELATIVE_FIELDS == frozenset(), "a peer leg needs a measured peer norm"
-    assert not (PEER_RELATIVE_FIELDS & RAW_FLAG_FIELDS)
-    assert RAW_FLAG_FIELDS <= EVENT_FIELDS, "a flag records an event and must expire with it"
     # the two LEVELS are the only non-events: a package and a share of the top five are
     # standing facts between proxies, where "pay grew 40% last year" stops being true
     assert not ({"log_ceo_total_comp", "ceo_pay_slice"} & EVENT_FIELDS)
@@ -224,7 +221,6 @@ def test_the_encoding_and_expiry_contracts():
     # LABEL, so a name in a set that no code path builds, or a built name in no set, is only
     # visible by comparing the sets to the builder's output.
     assert EVENT_FIELDS <= ALL_FIELDS, f"dead names: {sorted(EVENT_FIELDS - ALL_FIELDS)}"
-    assert RAW_FLAG_FIELDS <= ALL_FIELDS, f"dead names: {sorted(RAW_FLAG_FIELDS - ALL_FIELDS)}"
     assert ALL_FIELDS - EVENT_FIELDS == {"log_ceo_total_comp", "ceo_pay_slice"}, "every field except the two standing levels must expire"
 
     f, _ = pay_fields(_def14a(), _exec_comp(), None, None, PEERS, IDX)
@@ -241,7 +237,6 @@ def test_the_encoding_and_expiry_contracts():
     print("\n=== SANITY CHECK: encoding + 395-day expiry ===")
     print(
         f"  {len(PEER_RELATIVE_FIELDS)} peer-encoded fields (the plan expected 2; both "
-        f"failed at 2.4% / 4.1% peer R^2 against a 7.7% floor), {len(RAW_FLAG_FIELDS)} raw "
-        f"flags, {len(EVENT_FIELDS)} event fields."
+        f"failed at 2.4% / 4.1% peer R^2 against a 7.7% floor), {len(EVENT_FIELDS)} event fields."
     )
     print("  CONCLUSION: every pay field ships raw; annual levels and growth both expire.")

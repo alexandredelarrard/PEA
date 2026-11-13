@@ -55,17 +55,6 @@ from src.data_aggregate.utils.governance.staleness import (
     measurement_to_daily,
 )
 
-#: Fields that are already 0/1 indicators and must NOT be peer-z-scored or percentile-ranked:
-#: the cross-sectional rank of a binary column is a re-encoding of its base rate, and a peer
-#: z of a flag is dominated by how many peers happened to trip it. `panel.py` reads this set
-#: to route them; membership is the ONLY thing that distinguishes a flag downstream, so a new
-#: flag that is not listed here silently becomes a z-score.
-RAW_FLAG_FIELDS: frozenset[str] = frozenset(
-    {
-        "auditor_dissent_gt_10",
-    }
-)
-
 #: THE ONLY fields that also get a peer-relative leg. Everything this module emits ships RAW
 #: as `f_<name>`; these ten additionally get `f_<name>_vs_peers`. Nothing gets `_xs`.
 #:
@@ -551,7 +540,7 @@ def vote_dissent_fields(
     exception, because `sec_8k_votes` accrues as the 8-K fetcher runs and a half-built
     database must still produce a cube.
 
-    The returned dict mixes peer-panelled fields and raw flags; `RAW_FLAG_FIELDS` is what
+    The returned dict mixes peer-panelled fields and raw flags; `PEER_RELATIVE_FIELDS` is what
     tells them apart.
     """
     tally: dict[str, int] = {}

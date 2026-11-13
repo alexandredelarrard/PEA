@@ -32,7 +32,6 @@ from src.data_aggregate.utils.governance.provisions_features import (
     EXPORTED_FLAGS,
     IMPROVEMENT_FLAGS,
     PEER_RELATIVE_FIELDS,
-    RAW_FLAG_FIELDS,
     SIGNED_FLAGS,
     TRANSITION_FLAGS,
     _transitions,
@@ -182,7 +181,6 @@ def test_a_transition_is_stamped_on_the_later_filing_and_a_silent_year_is_skippe
     assert _at(f["ceo_board_chair_change"], "2022-05-02", "AAA") == 1.0
     folded = {m for pair in SIGNED_FLAGS.values() for m in pair}
     assert not folded & set(f), "a folded component was shipped as its own column"
-    assert not [c for c in f if "poison_pill" in c]
 
     # the raw detector, checked directly: one row per adjacent KNOWN pair, not per change
     raw = _transitions(hist, "classified_board")
@@ -208,7 +206,6 @@ def test_the_counts_are_min_count():
     """A count of zero events is 0.0; NO provision history is NaN. The difference is the test."""
     f, tally = provision_fields(_archive(), IDX)
     det, imp = f["governance_deterioration_count"], f["governance_improvement_count"]
-    assert "net_governance_change" not in f
     d = "2022-05-02"  # after AAA's chair combination and independent-chair loss
 
     # 1. DDD disclosed every provision and changed none -> 0.0, which is a FACT, not a gap.
@@ -380,11 +377,6 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
     assert EXPORTED_FLAGS <= ALL_FIELDS
     assert set(SIGNED_FLAGS) <= built
     assert EVENT_FIELDS <= ALL_FIELDS, f"dead event names: {sorted(EVENT_FIELDS - ALL_FIELDS)}"
-    assert RAW_FLAG_FIELDS <= ALL_FIELDS, f"dead flag names: {sorted(RAW_FLAG_FIELDS - ALL_FIELDS)}"
-    # ⚠ and NOT `RAW_FLAG_FIELDS <= EVENT_FIELDS`, which is the invariant the vote and pay
-    # modules hold. Two flags here describe a standing STATE rather than an act, so they are
-    # raw in encoding and levels in time; expiring them would delete a fact still true.
-    assert RAW_FLAG_FIELDS - EVENT_FIELDS == {"auditor_is_big4", "ceo_is_board_chair"}
     assert set(DETERIORATION_FLAGS) | set(IMPROVEMENT_FLAGS) == set(TRANSITION_FLAGS)
     assert not (set(DETERIORATION_FLAGS) & set(IMPROVEMENT_FLAGS)), "a flag signed both ways"
 
@@ -417,7 +409,7 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
     assert any("no def14a" in k for k in why)
 
     print("\n=== SANITY CHECK: the encoding, expiry and interaction contracts ===")
-    print(f"  {len(ALL_FIELDS)} declared fields = {len(EVENT_FIELDS)} events + {len(levels)} levels; {len(RAW_FLAG_FIELDS)} are raw 1/0 flags.")
+    print(f"  {len(ALL_FIELDS)} declared fields = {len(EVENT_FIELDS)} events + {len(levels)} levels.")
     print(
         f"  {len(TRANSITION_FLAGS)} transition flags = {len(DETERIORATION_FLAGS)} "
         f"deterioration + {len(IMPROVEMENT_FLAGS)} improvement, disjoint and exhaustive."

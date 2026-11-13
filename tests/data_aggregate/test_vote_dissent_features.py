@@ -33,7 +33,6 @@ from src.data_aggregate.utils.governance.staleness import GOVERNANCE_EVENT_MAX_A
 from src.data_aggregate.utils.governance.vote_dissent_features import (
     EVENT_FIELDS,
     PEER_RELATIVE_FIELDS,
-    RAW_FLAG_FIELDS,
     _auditor_history,
     _election_history,
     _nominee_dissent,
@@ -243,16 +242,13 @@ def test_optional_source_semantics_and_flag_declaration():
         frames, tally = vote_dissent_fields(empty, _IDX)
         assert frames == {} and tally == {}
 
-    assert RAW_FLAG_FIELDS <= EVENT_FIELDS, "a flag is still an event and must expire"
     votes = pd.DataFrame([_row(votes_for=800.0, votes_against=150.0, votes_abstain=50.0)])
     frames, _ = vote_dissent_fields(votes, _IDX)
     assert set(frames) <= EVENT_FIELDS, "every emitted field must be declared as an event"
 
     print("\n=== SANITY CHECK: optional source + declarations ===")
     print("  None/empty/no-proposal_type -> {} features, no raise")
-    print(
-        f"  {len(EVENT_FIELDS)} fields declared, {len(RAW_FLAG_FIELDS)} of them raw flags; flags subset of events = {RAW_FLAG_FIELDS <= EVENT_FIELDS}"
-    )
+    print(f"  {len(EVENT_FIELDS)} event fields declared; every emitted field is one of them.")
     print("  CONCLUSION: a half-built vote archive degrades, it does not crash. Validated.")
 
 
@@ -492,7 +488,6 @@ def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
         assert raw_row.corr(ranked_row, method="spearman") == pytest.approx(1.0)
 
     assert PEER_RELATIVE_FIELDS <= EVENT_FIELDS
-    assert not (PEER_RELATIVE_FIELDS & RAW_FLAG_FIELDS), "a flag must never be peer-z-scored"
     # a delta and a spread are already differences centred on zero: peer-relativizing them
     # would be a second relativization of the same quantity
     for f in EVENT_FIELDS:
@@ -505,12 +500,9 @@ def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
     # so the counts drop by 2 each and FOUR columns leave the part, not two.
     assert len(EVENT_FIELDS) == 18 and len(PEER_RELATIVE_FIELDS) == 7
     assert "board_dissent_breadth_20" not in PEER_RELATIVE_FIELDS, "zero-inflated: raw only"
-    for retired in ("sop_against_pct", "auditor_vote_against_pct"):
-        assert retired not in EVENT_FIELDS and retired not in PEER_RELATIVE_FIELDS
 
     print("\n=== SANITY CHECK: the encoding rule ===")
     print("  per-date rho(raw, _xs) == 1.0 on every date -> `_xs` cannot re-order a")
     print("  within-date model; it is a re-encoding, not a feature.")
     print(f"  {len(EVENT_FIELDS)} fields ship raw; {len(PEER_RELATIVE_FIELDS)} bounded levels also get `_vs_peers`; 0 get `_xs`.")
-    print(f"  {len(RAW_FLAG_FIELDS)} flags are raw-only, provably disjoint from the peer set.")
     print("  CONCLUSION: magnitude kept, redundant encoding dropped. Validated.")

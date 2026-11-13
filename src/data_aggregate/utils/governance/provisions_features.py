@@ -3,16 +3,16 @@ provisions_features.py  (src/data_aggregate/utils/governance/provisions_features
 -----------------------------------------------------------------------------------
 The last three governance families, all off `def14a_llm` alone:
 
-  * **8 — entrenchment-provision TRANSITIONS.** Six columns on six bylaw and board-leadership
-    fields (five ship as signed +1 / 0 / -1 changes, dual class as a 0/1 event), plus the two aggregate counts and the board-independence delta.
+  * **8 — entrenchment-provision TRANSITIONS.** Signed +1 / 0 / -1 changes on the bylaw and
+    board-leadership fields (dual class as a 0/1 event), the two aggregate counts, the
+    board-independence delta and the female-share change.
   * **9 — board busyness.** `avg_other_public_boards`, a column nothing has ever consumed.
   * **10 — the auditor block.** Change, tenure and big-4, on the CANONICAL firm from
     `auditors.py` rather than the raw string.
 
 ⚠ **CHANGES, NOT LEVELS** (GPT §11). A classified board is a fact about a company; *adopting*
-one is an act by a board, and it is the act that carries information. So the seven provision
-columns ship as transitions and only two levels ship at all (`board_busyness`,
-`ceo_is_board_chair`).
+one is an act by a board, and it is the act that carries information. So the provision
+columns ship as transitions, and the levels that ship are exactly `LEVEL_FIELDS`.
 
 ⚠ **A SILENT YEAR IS NOT A CHANGE.** `majority_voting` is tri-state by design -- NULL
 when the proxy says nothing -- because inferring FALSE from silence flipped it 21.2%
@@ -200,29 +200,18 @@ _TENURE_YEAR_BAND: tuple[int, int] = (1850, 2100)
 #:     firm-level facts.
 PEER_RELATIVE_FIELDS: frozenset[str] = frozenset()
 
-#: Fields that ship as a raw 1/0 flag: no peer leg (which `PEER_RELATIVE_FIELDS` already
-#: settles) and, more importantly, no assumed SIGN.
+#: Fields describing an EVENT, which expire on `GOVERNANCE_EVENT_MAX_AGE_DAYS` after the filing that disclosed them.
 #:
-#: ⚠ UNLIKE the other two family modules, this set is NOT a subset of `EVENT_FIELDS`. There the
-#: invariant "a flag records an event and must expire with it" holds because every flag they emit
-#: is an act. Here two are 0/1 descriptions of a standing STATE -- `auditor_is_big4`,
-#: `ceo_is_board_chair` -- so they are raw in ENCODING and levels in TIME. Expiring them would delete a fact that is still true.
+#: ⚠ `auditor_changed` ships as an unsigned flag, and GPT's objection to that stands (D32): without
+#: Item 4.01's reasons -- was the auditor dismissed, did it resign, was there an accounting
+#: disagreement -- a change carries no direction.
 #:
-#: ⚠ `auditor_changed` is the one that needs saying out loud, because GPT's objection to it
-#: stands and was overridden rather than answered (D32): without Item 4.01's reasons -- was the
-#: auditor dismissed, did it resign, was there an accounting disagreement -- a change carries no
-#: direction. It ships as an unsigned flag. `sec_8k` DOES carry the 4.01 rows and reading their
-#: narratives is the obvious follow-up; it is not in this plan.
-RAW_FLAG_FIELDS: frozenset[str] = frozenset(set(EXPORTED_FLAGS) | {"auditor_changed", "auditor_is_big4", "ceo_is_board_chair"})
-
-#: Fields describing an EVENT, which expire 395 days after the filing that disclosed them.
-#:
-#: The four LEVELS are excluded and each for a stated reason: `board_busyness` and
+#: The LEVELS are excluded and each for a stated reason: `board_busyness` and
 #: `ceo_is_board_chair` are standing facts between proxies; `auditor_tenure` ACCRUES daily off a
 #: start date, so ageing it out would delete a number that is more current than the filing;
 #: `auditor_is_big4` describes that standing level rather than an act.
 #:
-#: ⚠ The two COUNTS are declared events but are not aged directly -- they are summed FROM the
+#: ⚠ The two aggregate counts are declared events but are not aged directly -- they are summed FROM the
 #: already-expired flags, so they inherit the mask exactly and cannot disagree with their own
 #: components. `test_provisions_features` asserts that inheritance.
 EVENT_FIELDS: frozenset[str] = frozenset(
@@ -259,7 +248,7 @@ ALL_FIELDS: frozenset[str] = frozenset(
 #: column and the counts and must expire exactly like the flags they replace.
 _EXPIRING_EVENT_FIELDS: frozenset[str] = EVENT_FIELDS | _FOLDED_FLAGS
 
-#: The four structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon.
+#: The structural LEVELS, on `LEVEL_MAX_AGE_DAYS` rather than on no horizon.
 #:
 #: ⚠ DEFINED AS THE COMPLEMENT so the two horizons are EXHAUSTIVE by construction. Every field
 #: this module emits is now in exactly one of `EVENT_FIELDS` / `LEVEL_FIELDS`, which is what
@@ -428,11 +417,10 @@ def _expire(
 ) -> dict[str, pd.DataFrame]:
     """BOTH horizons plus the tally lines, which every caller here wants together.
 
-    ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. Four fields here are
-    structural levels (`auditor_is_big4`, `auditor_tenure`, `board_busyness`, `ceo_is_board_chair`), correctly kept off the annual event clock and
-    then, until this pass existed, forward-filled with NO cutoff -- so a single parsed proxy
-    was asserted as current for as long as the trading index ran. "Not an event" is not the
-    same statement as "never expires"; see `directors.LEVEL_FIELDS` for the measured size.
+    ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. The structural levels
+    (`auditor_is_big4`, `auditor_tenure`, `board_busyness`, `ceo_is_board_chair`) are kept off the
+    annual event clock, but "not an event" is not the same statement as "never expires": without
+    a cutoff a single parsed proxy would be asserted as current for as long as the trading index runs.
 
     Applying both here rather than at each call site means a field added to this module cannot
     quietly acquire no horizon at all: it is in one set or the other, and `LEVEL_FIELDS` is
@@ -555,9 +543,9 @@ def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[s
 
 
 def _female_change(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
-    """`female_board_chg_pct`: the female share of the board minus its mean over the previous three proxies.
+    """`female_board_chg_pct`: the female share of the board minus its mean over the trailing proxies before it.
 
-    A difference of shares in fraction units. Whichever of the previous three proxies exist are used,
+    A difference of shares in fraction units. Whichever trailing proxies exist are used,
     one is enough; a proxy with none reads blank and ends the previous value.
     """
     field = "pct_female_directors"

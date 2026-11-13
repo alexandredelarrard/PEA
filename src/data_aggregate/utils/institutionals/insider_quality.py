@@ -48,29 +48,31 @@ FLAG_PCT_SHARES_OUTSTANDING: float = 0.25
 CHIEF = r"(?:CHIEF|CHF)"
 OFFICER = r"OFF(?:ICER|CR|R)"
 OPERATIONS = r"OP(?:ER(?:ATION(?:S)?|ATING)?)?"
+ROLE_CEO, ROLE_CFO, ROLE_COO = "CEO", "CFO", "COO"
+ROLE_OTHER_C_SUITE, ROLE_PRESIDENT, ROLE_CHAIR, ROLE_VP_LEVEL = "OTHER_C_SUITE", "PRESIDENT", "CHAIR", "VP_LEVEL"
 #: Order matters: the first role whose pattern matches wins. A chief title beats PRESIDENT/CHAIR, and PRESIDENT beats
 #: CHAIR, so "Chairman, President & CEO" is CEO and "Vice Chairman and President" is PRESIDENT. "Vice President",
 #: "Group President" and "President, <unit>" never reach PRESIDENT.
 ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
     (
-        "CEO",
+        ROLE_CEO,
         rf"\b{CHIEF}\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bC\s*E\s*O\b",
     ),
-    ("CFO", rf"\b{CHIEF}\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bC\s*F\s*O\b"),
-    ("COO", rf"\b{CHIEF}\s+{OPERATIONS}\s+{OFFICER}\b" rf"|\bC\s*O\s*O\b"),
+    (ROLE_CFO, rf"\b{CHIEF}\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bC\s*F\s*O\b"),
+    (ROLE_COO, rf"\b{CHIEF}\s+{OPERATIONS}\s+{OFFICER}\b" rf"|\bC\s*O\s*O\b"),
     # Any other "Chief ... Officer" (technology, marketing, accounting, legal, product, information, people, strategy ...).
     (
-        "OTHER_C_SUITE",
+        ROLE_OTHER_C_SUITE,
         rf"\b{CHIEF}\s+[A-Z][A-Z&/ \-]*?\s*{OFFICER}\b" rf"|\bC\s*[A-Z]\s*O\b(?!\w)" rf"|\bC\s*H\s*R\s*O\b" rf"|\bPRINCIPAL\s+[A-Z]+\s+{OFFICER}\b",
     ),
-    ("PRESIDENT", r"(?<!VICE )(?<!VICE-)(?<!GROUP )(?<!V )(?<!SR )(?<!SENIOR )\bPRES(?:IDENT)?\b"),
-    ("CHAIR", r"\bCHAIR(?:MAN|WOMAN|PERSON)?\b"),
-    ("VP_LEVEL", r"\b(?:SE|S|E)?\s*V\s*P\b|\bTREASURER\b|\bCONTROLLER\b|\bVICE[\s-]+PRES(?:IDENT)?\b"),
+    (ROLE_PRESIDENT, r"(?<!VICE )(?<!VICE-)(?<!GROUP )(?<!V )(?<!SR )(?<!SENIOR )\bPRES(?:IDENT)?\b"),
+    (ROLE_CHAIR, r"\bCHAIR(?:MAN|WOMAN|PERSON)?\b"),
+    (ROLE_VP_LEVEL, r"\b(?:SE|S|E)?\s*V\s*P\b|\bTREASURER\b|\bCONTROLLER\b|\bVICE[\s-]+PRES(?:IDENT)?\b"),
 )
 OTHER_OFFICER = "other_named_officer"
 
 #: Roles whose title may be followed by a named functional area (a VP of Sales is still a VP of the issuer).
-_NO_TAIL_CHECK = frozenset({"VP_LEVEL"})
+_NO_TAIL_CHECK = frozenset({ROLE_VP_LEVEL})
 
 _ROLE_COMPILED = tuple((name, re.compile(pat, re.I)) for name, pat in ROLE_PATTERNS)
 
@@ -210,7 +212,7 @@ def _canonical_inputs(df_insider: pd.DataFrame, df_roles: pd.DataFrame | None) -
     df_rows["role"] = _clean_map_dict(df_rows["officer_title_clean"], clean_func=officer_role)
     df_rows["role_unknown"] = _clean_map_dict(df_rows["officer_title_clean"], clean_func=unresolved_role) & ~df_rows["is_officer"].eq(0)
     df_rows = _fill_prior_roles(df_rows, df_roles)
-    df_rows["is_management"] = df_rows["role"].isin(["CEO", "CFO", "COO"])
+    df_rows["is_management"] = df_rows["role"].isin([ROLE_CEO, ROLE_CFO, ROLE_COO])
     df_rows["is_management"] &= ~df_rows["is_officer"].eq(0)
     return df_rows
 

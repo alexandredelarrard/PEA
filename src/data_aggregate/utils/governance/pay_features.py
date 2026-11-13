@@ -72,16 +72,6 @@ from src.data_aggregate.utils.governance.staleness import (
 )
 from src.utils.names import person_key
 
-#: Binary indicators. A flag ships RAW and is never peer-z-scored: the peer z of a Bernoulli
-#: draw over ~7 peers divides by the standard deviation of that draw, so it answers "how many
-#: of my peers ALSO did this" rather than "did this happen here" (the measured 32%-coverage
-#: failure of the retired `f_founder_ceo_vs_peers`).
-RAW_FLAG_FIELDS: frozenset[str] = frozenset(
-    {
-        "ceo_turnover_flag",
-    }
-)
-
 #: ⚠ EMPTY, AND THAT IS A MEASURED RESULT THAT REFUTED THE PLAN. Phase 4 was written
 #: expecting the two LEVELS to be peer-panelled -- "a $30M package is unremarkable for a
 #: mega-cap bank and extreme for a regional utility" -- so the peer basket was supposed to say

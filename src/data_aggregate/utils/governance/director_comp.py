@@ -183,12 +183,7 @@ EVENT_FIELDS: frozenset[str] = frozenset()
 #: `log_median_director_pay` and `ceo_to_director_pay_ratio` ship RAW: the first is a scale and
 #: the second is a RATIO whose absolute level is the thesis -- 80x is entrenchment at any firm in
 #: any sector, and re-centring it on a sector mean encodes the whole sector's excess as normal.
-PEER_RELATIVE_FIELDS: frozenset[str] = frozenset(
-    {
-        "director_cash_fee_pct",
-        "director_equity_pay_pct",
-    }
-)
+PEER_RELATIVE_FIELDS: frozenset[str] = frozenset({"director_equity_pay_pct"})
 
 
 def impute_director_comp(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:

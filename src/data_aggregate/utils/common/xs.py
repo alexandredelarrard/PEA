@@ -45,38 +45,11 @@ _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 # the three clip policies, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
 XS_CLIP_CHARACTERISTIC = 4.0  # factor characteristic / regressor (factors.py)
-XS_CLIP_PEER = 8.0  # peer-relative z (panel.py), winsorised again downstream
 
 #: Smallest dispersion a standardizer will divide by, as a FRACTION of the same day's
-#: cross-sectional std. Generalises the `sd > 0` degenerate-case guard from *zero* to
-#: *negligible*, and reads as: this group is too homogeneous to resolve a difference this
-#: small.
-#:
-#: The defect it closes was measured, not assumed. 3-12% of non-null `_vs_peers` cells sat at
-#: the +-8 clip (`f_pbo_to_mcap_vs_peers` 11.89%, `f_pegy_vs_peers` 6.70%), where a normal law
-#: gives P(|z| > 4) ~ 6e-5. Decomposing those cells: they have FULL 6-7-name baskets and a
-#: peer dispersion of 0.5%-8% of the day's universe dispersion -- the denominator collapsed,
-#: the numerator is fine. The embedding basket works too well.
-#:
-#: 0.10 rather than 0.25: on five real fields over 1995-2026 it cut clip saturation ~3x on the
-#: worst fields (`interest_coverage` 5.79% -> 1.85%) and ~1.75x on the mildest, while 0.25
-#: goes further (-> 1.21%) at the cost of muting real dispersion in genuinely tight groups.
-#: Residual saturation on legitimately extreme names is expected and correct.
 PEER_DISPERSION_FLOOR = 0.10
 
 #: How many PRESENT members a design CELL needs on a day before the group block may split the
-#: day's names on it (`_floored_group_block` -- read it before changing this, the rule is about
-#: cells and not columns). See the module docstring for the defect it closes: a 1-member cell
-#: forces an exactly-zero residual and a 2-member cell an exactly-halved one -- measured 5,230
-#: exactly-zero and 16,960 halved cells at h=60, `F` losing 48.7% of its history and `CSGP`
-#: 21.5%.
-#:
-#: The bar is 5 rather than the 2 or 3 that would close only the arithmetically degenerate
-#: cases: a 3- or 4-member demean still removes a third to a quarter of the name's own variance
-#: as if it were a group effect, which is the same defect with a smaller coefficient. The cost
-#: is the other side of that trade -- below the floor the name still gets the FULL rest of the
-#: projection (betas, momentum, log market cap) and is simply not forced to a group-zero mean.
-#: No cell is nulled by this rule.
 MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5
 
 

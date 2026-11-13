@@ -108,7 +108,7 @@ def test_same_filing_growth_is_preferred_and_guarded() -> None:
     assert np.isclose(g["FFF"], np.log(2.0))  # component-sum SCT total refused: cross-filing pair
 
     daily = _ceo_pay_growth(d, IDX).loc["2022-06-01"]
-    assert np.isclose(daily["AAA"], 0.2) and np.isclose(daily["CCC"], 0.5) and np.isclose(daily["DDD"], 1.0)
+    assert np.isclose(daily["AAA"], np.log(1.2)) and np.isclose(daily["CCC"], np.log(1.5)) and np.isclose(daily["DDD"], np.log(2.0))
     assert np.isnan(daily["BBB"])
 
     second = d.loc[d["accession_number"] == "EEE-2022"].iloc[0]
@@ -296,7 +296,7 @@ def test_bridged_totals_feed_no_cross_filing_growth() -> None:
     assert g[[2017, 2018]].isna().all(), f"growth touching the bridged 2017 total must be NaN: {g.tolist()}"
     assert np.isclose(g[2019], np.log(1.1))
     daily = _ceo_pay_growth(d.reset_index(drop=True), pd.bdate_range("2016-01-04", "2019-12-31"))["BRG"]
-    assert daily.loc["2017-06-01":"2019-03-29"].isna().all() and np.isclose(daily.loc["2019-06-03"], 0.1)
+    assert daily.loc["2017-06-01":"2019-03-29"].isna().all() and np.isclose(daily.loc["2019-06-03"], np.log(1.1))
     print(
         f"SANITY: bridged 2017 total {d.loc[2017, 'ceo_total_comp'] / 1e6:.0f}M flagged comp_imputed; growth 2017/2018 {g[[2017, 2018]].tolist()}, 2019 {g[2019]:.3f} -> PASS"
     )

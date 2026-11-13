@@ -128,11 +128,9 @@ PEER_RELATIVE_FIELDS: frozenset[str] = frozenset(
     {
         "sop_dissent",
         "board_dissent_mean",
-        "board_dissent_median",
         "board_dissent_max",
         "board_dissent_p90",
         "board_dissent_breadth_10",
-        "board_dissent_breadth_20",
         "ceo_director_dissent",
         "auditor_vote_dissent",
     }

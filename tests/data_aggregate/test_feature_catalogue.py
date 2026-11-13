@@ -66,7 +66,7 @@ def _declared() -> dict[str, set[str]]:
         # column, so no `(source, name)` pair in the module declares them
         | {"ceo_tenure", "ceo_pay_growth", "ceo_pay_vs_revenue_growth", "control_wedge"}
     )
-    raw = legacy | set(pay.ALL_FIELDS) | set(pv.ALL_FIELDS) | set(dr.ALL_FIELDS) | set(dc.ALL_FIELDS) | set(vd.EVENT_FIELDS)
+    raw = legacy | (set(pay.ALL_FIELDS) - pay.UNSHIPPED_FIELDS) | set(pv.ALL_FIELDS) | set(dr.ALL_FIELDS) | set(dc.ALL_FIELDS) | set(vd.EVENT_FIELDS)
     peers = (
         set(pn._PEER_LEGACY)
         | set(pay.PEER_RELATIVE_FIELDS)

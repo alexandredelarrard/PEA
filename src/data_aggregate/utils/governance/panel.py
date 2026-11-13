@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 
 import numpy as np
@@ -15,7 +16,7 @@ from src.data_aggregate.utils.common.pit import (
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.common.typing import frame_column
-from src.data_aggregate.utils.common.xs import self_history_z, winsorize_xs
+from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.governance.def14a_impute import bridged_total
 from src.data_aggregate.utils.governance.director_comp import (
     PEER_RELATIVE_FIELDS as DIRECTOR_PAY_PEER_FIELDS,
@@ -35,6 +36,8 @@ from src.data_aggregate.utils.governance.pay_features import (
 )
 from src.data_aggregate.utils.governance.pay_features import (
     SCT_GROWTH,
+    UNSHIPPED_FIELDS,
+    log_growth,
     pay_fields,
 )
 from src.data_aggregate.utils.governance.provisions_features import (
@@ -52,7 +55,9 @@ from src.data_aggregate.utils.governance.staleness import (
     ultimate_source_dates,
 )
 from src.data_aggregate.utils.governance.vote_dissent_features import (
-    PEER_RELATIVE_FIELDS,
+    PEER_RELATIVE_FIELDS as VOTE_PEER_FIELDS,
+)
+from src.data_aggregate.utils.governance.vote_dissent_features import (
     vote_dissent_fields,
 )
 
@@ -94,7 +99,22 @@ _PEER_LEGACY = frozenset(
     }
 )
 _VS_HIST_LEGACY = frozenset({"avg_board_tenure"})
-_RAW_ONLY_COMPUTED = frozenset({"ceo_pay_growth", "ceo_pay_vs_revenue_growth"})
+
+
+def _nonnegative(frame: pd.DataFrame) -> pd.DataFrame:
+    """A share or ratio below zero is not a measurement."""
+    return frame.where(frame >= 0)
+
+
+#: Variance-stabilising transform applied to a field before it is centred on its peers; fields not listed are used as is.
+_PEER_TRANSFORM: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
+    "ceo_pay_ratio": lambda frame: np.log1p(_nonnegative(frame)),
+    "insider_ownership_pct": lambda frame: np.sqrt(_nonnegative(frame)),
+    **dict.fromkeys(VOTE_PEER_FIELDS, lambda frame: np.sqrt(_nonnegative(frame))),
+}
+
+#: Fixed bound on the CEO pay log growth (and on its gap to revenue log growth): log(20) is a 20x year, -log(20) a 95% cut.
+PAY_LOG_GROWTH_BOUND: float = 3.0
 
 
 def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame | None:
@@ -154,12 +174,12 @@ def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str
 
 # Every governance feature ships raw. Only `_PEER_LEGACY` gets a peer leg and only
 # `_VS_HIST_LEGACY` gets self-history; binary and meaningful-zero features stay raw.
-# `_RAW_ONLY_COMPUTED` is winsorized because percentage changes can explode from genuine
-# near-zero compensation. `control_wedge` is already bounded in [0, 1].
+# The two pay-growth features are log ratios clipped to `PAY_LOG_GROWTH_BOUND`, the same on every date.
+# `control_wedge` is already bounded in [0, 1].
 
 
 def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
-    """Expand filing pay growth point-in-time and null CEO-transition comparisons."""
+    """Expand filing pay log growth (clipped to +-`PAY_LOG_GROWTH_BOUND`) point-in-time and null CEO-transition comparisons."""
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
     keep = [
@@ -176,15 +196,16 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     d = d.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"])
     if d.empty:
         return pd.DataFrame(index=idx)
-    # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
-    # filed as $0 makes `pct_change` infinite, and an infinity is not a growth rate.
-    d["chg"] = d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1).replace([np.inf, -np.inf], np.nan)
+    # Log of the ratio of two positive totals: a prior year filed as $0 has no growth rate.
+    prior = d.groupby("ticker", sort=False)["ceo_total_comp"].shift(1)
+    d["chg"] = np.log(d["ceo_total_comp"].where(d["ceo_total_comp"] > 0) / prior.where(prior > 0))
     # a bridged total's change is the bridge's slope, so neither change touching it is data
     d["chg"] = d["chg"].mask(d["_bridged"] | d.groupby("ticker", sort=False)["_bridged"].shift(1, fill_value=False).astype(bool))
     if SCT_GROWTH in d.columns:
         # The filing's own FY vs FY-1 pair wins over the cross-filing change.
         sct = cast(pd.Series, pd.to_numeric(d[SCT_GROWTH], errors="coerce"))
-        d["chg"] = np.expm1(sct).where(sct.notna(), d["chg"])
+        d["chg"] = sct.where(sct.notna(), d["chg"])
+    d["chg"] = d["chg"].clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
     names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # Unknown identity does not prove a change, so it does not mask the growth rate.
@@ -284,21 +305,18 @@ def _governance_fields(
         f_dict["ceo_pay_growth"] = pay_growth
         # pay-for-performance misalignment: CEO pay growing faster than the business.
         if fundamentals is not None and not fundamentals.empty:
-            rev_growth = fiscal_change_to_daily(fundamentals, "totalRevenue", idx, kind="pct", periods=infer_yoy_periods(fundamentals))
+            rev_growth = log_growth(fiscal_change_to_daily(fundamentals, "totalRevenue", idx, kind="pct", periods=infer_yoy_periods(fundamentals)))
             if not rev_growth.empty and rev_growth.notna().any().any():
                 cols = pay_growth.columns.intersection(rev_growth.columns)
                 if len(cols) > 0:
                     # Pay growth is already expired; subtraction preserves that mask.
-                    f_dict["ceo_pay_vs_revenue_growth"] = pay_growth[cols] - rev_growth[cols]
+                    f_dict["ceo_pay_vs_revenue_growth"] = (pay_growth[cols] - rev_growth[cols]).clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
 
     # Voting power minus economic ownership has a meaningful zero and is already bounded.
     wedge = _control_wedge(def14a_hist, idx, tally)
     if not wedge.empty and wedge.notna().any().any():
         f_dict["control_wedge"] = wedge
 
-    # Raw percentage changes need their own cross-sectional tail guard.
-    for name in _RAW_ONLY_COMPUTED & f_dict.keys():
-        f_dict[name] = winsorize_xs(f_dict[name])
     return f_dict
 
 
@@ -328,7 +346,7 @@ def _peer_only(
     peer_dict: dict,
     availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Build peer z-scores without the cross-sectional percentile twin."""
+    """Build peer-relative legs (`peer_relative` on the transformed value) without the percentile twin."""
     rel: dict[str, pd.DataFrame] = {}
     for name, fdf in fields.items():
         if fdf is None or fdf.empty:
@@ -336,7 +354,7 @@ def _peer_only(
         fdf = mask_to_availability(fdf.apply(pd.to_numeric, errors="coerce"), availability)
         if not fdf.notna().any().any():
             continue
-        rel[name] = winsorize_xs(peer_relative(fdf, peer_dict))
+        rel[name] = peer_relative(_PEER_TRANSFORM.get(name, lambda frame: frame)(fdf), peer_dict)
     return _stack(rel, "_vs_peers", availability)
 
 
@@ -371,7 +389,7 @@ def build_governance_feature_panel(
 
     # Executive-pay families own their child-table and return-series inputs.
     pay_frames, pay_tally = pay_fields(def14a_history, exec_comp, fundamentals, close_total, peer_dict, trading_index, availability)
-    raw.update(pay_frames)
+    raw.update({k: v for k, v in pay_frames.items() if k not in UNSHIPPED_FIELDS})
     pay_peers = {k: v for k, v in pay_frames.items() if k in PAY_PEER_FIELDS}
 
     # Provision changes are differenced in filing space before daily expansion.
@@ -397,7 +415,7 @@ def build_governance_feature_panel(
 
     # Vote fields ship raw; selected bounded levels also get a peer leg.
     raw.update(vote_fields)
-    peers_only = {k: v for k, v in vote_fields.items() if k in PEER_RELATIVE_FIELDS}
+    peers_only = {k: v for k, v in vote_fields.items() if k in VOTE_PEER_FIELDS}
 
     parts = [
         _peer_only({**legacy_peers, **pay_peers, **prov_peers, **quality_peers, **dpay_peers, **peers_only}, peer_dict, availability),

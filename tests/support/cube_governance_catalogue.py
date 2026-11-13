@@ -152,24 +152,23 @@ add(
 add(
     "ceo_pay_growth",
     "proxy levels",
-    "Year-on-year PCT change in CEO total compensation, filing to filing.",
+    "Year-on-year LOG growth in CEO total compensation, filing to filing, clipped to +-3.",
     "Nulled across a CEO change, using the SAME `names.ceo_identity_changed` key as the "
-    "`ceo_comp_growth_1y` family so the two can never disagree about a transition. A raw "
-    "string comparison would manufacture 356 spurious turnovers out of 1,625 (21.9%) from "
-    "filers' own spelling drift alone. Infinities from a $0 prior year are dropped, not kept.",
-    "A PCT change with no positivity floor under the denominator, bounded only by a "
-    "cross-sectional 1%/99% trim -- so it is heavier-tailed than the log-based "
-    "`ceo_comp_growth_1y` by construction. The two run at Spearman 0.958 and are near "
-    "rank-identical; prefer the log leg where a magnitude matters.",
+    "pay families so they can never disagree about a transition. A raw string comparison "
+    "would manufacture 356 spurious turnovers out of 1,625 (21.9%) from filers' own spelling "
+    "drift alone. A $0 prior year has no growth rate and is dropped, not kept.",
+    "A log ratio clipped to a fixed +-3 (a 20x year, a 95% cut), the same on every date, so one "
+    "raw growth is always one value whatever the other tickers do. Symmetric in log space: a "
+    "halving and a doubling are equal and opposite. Mega-grants and tiny prior years sit at the "
+    "bound rather than setting a date-dependent cap.",
 )
 add(
     "ceo_pay_vs_revenue_growth",
     "proxy levels",
     "CEO pay growth MINUS TTM revenue growth: pay racing ahead of the business.",
     "Inherits the pay leg's CEO-change guard and its staleness horizon by subtraction, so it "
-    "needs neither of its own. ⚠ It mixes bases -- a PCT pay change against a PCT revenue "
-    "change -- where `pay_revenue_gap` does the same comparison in log space on both legs. "
-    "Both ship; they are not interchangeable.",
+    "needs neither of its own. Pay and revenue are both LOG growth, clipped to +-3, "
+    "the same revenue leg as `pay_revenue_gap`; the two differ only by the pay leg's guards and this feature's clip.",
     "The high tail is the misalignment case the feature exists to find: a package growing "
     "while the business shrinks. Read it alongside `pay_up_revenue_down`, which flags the same "
     "state as a binary and is far less sensitive to a small revenue denominator.",
@@ -201,19 +200,6 @@ add(
     "expense FY2006-08, grant-date fair value FY2009+), so a long time series of this level "
     "crosses two regime boundaries even though the identity total = sum(parts) holds in all "
     "three.",
-)
-add(
-    "ceo_comp_growth_1y",
-    "exec pay",
-    "log(comp_t / comp_{t-1}) in CEO total compensation, filing to filing.",
-    "Triple-guarded where the legacy leg is not: both comps must be positive, the filings must "
-    "be ADJACENT, and the CEO must be the same person by `ceo_identity`. A partial-year "
-    "incoming CEO's package is not organic pay growth, and that is the whole reason the family "
-    "exists.",
-    "Symmetric in log space, so a halving and a doubling are equal and opposite -- which a "
-    "percentage change is not. Compare with `ceo_pay_growth`: Pearson 0.516 but Spearman "
-    "0.958, i.e. the two differ almost only in the tails, and this is the leg to use when the "
-    "magnitude rather than the ordering is what matters.",
 )
 add(
     "ceo_turnover_flag",

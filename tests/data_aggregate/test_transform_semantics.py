@@ -11,7 +11,6 @@ from omegaconf import OmegaConf
 
 import src.data_aggregate.utils.common.panel as panel_module
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.xs import winsorize_xs
 from src.data_aggregate.utils.fundamentals.dividend_features import (
     DIVIDEND_TRANSFORM_SEMANTICS,
 )
@@ -46,13 +45,7 @@ def test_binary_semantic_preserves_state_and_bypasses_input_winsorization(monkey
     ).set_index("ticker")
 
     expected = field.loc[date].dropna().sort_index().astype("float32")
-    expected_peer = winsorize_xs(
-        real_peer_relative(
-            field,
-            _all_peers(tickers),
-            winsorize_inputs=False,
-        )
-    ).loc[date]
+    expected_peer = real_peer_relative(field, _all_peers(tickers), winsorize_inputs=False).loc[date]
     actual = panel["f_flag_xs"].sort_index()
     pd.testing.assert_series_equal(actual.dropna(), expected, check_names=False)
     pd.testing.assert_series_equal(
@@ -88,7 +81,7 @@ def test_structural_zero_semantic_ranks_only_nonzero_support():
     assert panel.loc["T7", ["f_intensity_xs", "f_intensity_vs_peers"]].isna().all()
     comparable = field.mask(field.eq(0))
     expected_peer = (
-        winsorize_xs(panel_module.peer_relative(comparable, peers))
+        panel_module.peer_relative(comparable, peers, winsorize_inputs=True)
         .where(
             ~field.eq(0),
             0.0,

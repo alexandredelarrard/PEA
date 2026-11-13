@@ -264,7 +264,7 @@ def test_the_encoding_and_expiry_contracts():
     """
     assert EVENT_FIELDS == frozenset(), "director pay was declared an event"
     assert LEVEL_FIELDS == ALL_FIELDS, "a director-pay field is on neither horizon -- that is the phase-3 defect's own shape"
-    assert PEER_RELATIVE_FIELDS == {"director_cash_fee_pct", "director_equity_pay_pct"}, "the peer-leg set changed without a re-measured sector share"
+    assert PEER_RELATIVE_FIELDS == {"director_equity_pay_pct"}, "the cash share ships raw only: -0.47 with the equity share and no signal of its own"
     assert PEER_RELATIVE_FIELDS < ALL_FIELDS
     assert "ceo_to_director_pay_ratio" not in PEER_RELATIVE_FIELDS, "a ratio whose absolute level is the thesis was peer-centred"
     assert ALL_FIELDS == {"log_median_director_pay", "director_equity_pay_pct", "director_cash_fee_pct", "ceo_to_director_pay_ratio"}

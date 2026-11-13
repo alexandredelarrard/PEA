@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 
 from src.context import define_global_paths
 from src.data_aggregate.utils.common.frames import ratio
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import SelfHistory, build_peer_relative_panel
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.fundamentals.feature_views import (
@@ -227,8 +227,6 @@ def test_new_valuation_views_real_yearly_cross_sections() -> None:
         values = frame.stack().dropna()
         assert len(values) > 0
         assert np.isfinite(values).all()
-        if name.endswith("_vs_peers"):
-            assert values.abs().le(8).all()
         tails = values.quantile([0, 0.001, 0.01, 0.5, 0.99, 0.999, 1]).round(6).to_list()
         yearly = frame.notna().mean(axis=1).mul(100).round(1).to_dict()
         sectors = {sector: round(frame.loc[:, rows.ticker].notna().to_numpy().mean() * 100, 1) for sector, rows in metadata.groupby("sector")}
@@ -272,17 +270,18 @@ def test_seeded_incremental_raw_history_matches_full_tail() -> None:
         full_fields,
         {},
         emission=emission,
-        history_window=20,
-        history_min_periods=4,
+        history=SelfHistory(window=20, min_periods=4),
     )
     incremental = build_peer_relative_panel(
         {name: frame.loc[current_dates] for name, frame in full_fields.items()},
         {},
         emission=emission,
-        history_window=20,
-        history_min_periods=4,
-        history_fields={name: frame.loc[dates[:-10]] for name, frame in full_fields.items()},
-        output_since=output_since,
+        history=SelfHistory(
+            window=20,
+            min_periods=4,
+            prefix={name: frame.loc[dates[:-10]] for name, frame in full_fields.items()},
+            output_since=output_since,
+        ),
     )
 
     expected = full.loc[full["date"] >= output_since].reset_index(drop=True)

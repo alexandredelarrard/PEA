@@ -300,19 +300,28 @@ def test_governance_fields_pay_growth_and_misalignment():
     last = ten[["CCC", "DDD"]].dropna().index[-1]
     assert ten.loc[last, "CCC"] > ten.loc[last, "DDD"]  # 2005 vs 2022 start
 
-    # CEO pay grew ~20%/yr; the latest observed pay_growth should be ~0.20
+    # CEO pay grew ~20%/yr; the latest observed pay_growth is its log, log(1.2)
     pay_g = f["ceo_pay_growth"]["AAA"].dropna()
-    assert pay_g.iloc[-1] == pytest.approx(0.20, abs=1e-6)
-    # misalignment = pay growth (~20%) - revenue TTM growth (~12%) -> clearly positive
+    assert pay_g.iloc[-1] == pytest.approx(np.log(1.2), abs=1e-6)
+    # misalignment = pay log growth (~0.18) - revenue log growth (~0.11) -> clearly positive
     mis = f["ceo_pay_vs_revenue_growth"]["AAA"].dropna()
     assert mis.iloc[-1] > 0.05
 
     print("\n=== SANITY CHECK: governance pay dynamics + CEO tenure ===")
-    print(f"  ceo_pay_growth(last)={pay_g.iloc[-1]:.3f} (~0.20); pay_vs_revenue_growth(last)={mis.iloc[-1]:.3f} (>0 = pay outpacing revenue).")
+    print(
+        f"  ceo_pay_growth(last)={pay_g.iloc[-1]:.3f} (~log 1.2 = 0.182); pay_vs_revenue_growth(last)={mis.iloc[-1]:.3f} (>0 = pay outpacing revenue)."
+    )
     print(
         f"  ceo_tenure AAA(since 2010): {aaa_2025.iloc[-1]:.0f}y in 2025 -> {aaa_2026.iloc[-1]:.0f}y in 2026 "
         f"(accrues by calendar year); CCC {ten.loc[last, 'CCC']:.0f}y > DDD {ten.loc[last, 'DDD']:.0f}y. Validated."
     )
+
+
+def _widened(frame: pd.DataFrame) -> pd.DataFrame:
+    """The frame plus a renamed copy of three tickers, so a basket can have the four reporting peers a peer leg needs."""
+    renamed = {"AAA": "EEE", "BBB": "FFF", "CCC": "GGG"}
+    clones = frame[frame["ticker"].isin(renamed)].assign(ticker=lambda d: d["ticker"].map(renamed))
+    return pd.concat([frame, clones], ignore_index=True)
 
 
 def test_governance_panel_encoding_and_empty_guard():
@@ -333,9 +342,16 @@ def test_governance_panel_encoding_and_empty_guard():
         1.0), so a within-date model cannot tell the two apart, and nothing consumes it.
     """
     idx = pd.date_range("2023-01-02", "2026-07-01", freq="B")
-    peers = {t: {p: 1.0 for p in ("AAA", "BBB", "CCC", "DDD") if p != t} for t in ("AAA", "BBB", "CCC", "DDD")}
+    names = ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG")
+    peers = {t: {p: 1.0 for p in names if p != t} for t in names}
     panel, _ = build_governance_feature_panel(
-        _def14a(), peers, idx, fundamentals=_fundamentals(), votes=_votes(), directors=_directors(), director_comp=_director_comp()
+        _widened(_def14a()),
+        peers,
+        idx,
+        fundamentals=_widened(_fundamentals()),
+        votes=_widened(_votes()),
+        directors=_widened(_directors()),
+        director_comp=_widened(_director_comp()),
     )
     cols = [c for c in panel.columns if c not in ("date", "ticker")]
     assert not panel.empty
@@ -401,8 +417,8 @@ def test_governance_panel_encoding_and_empty_guard():
     for name in ("f_log_median_director_pay", "f_ceo_to_director_pay_ratio"):
         assert name in cols, f"missing phase-6 director-pay field {name}"
         assert f"{name}_vs_peers" not in cols, f"{name} has no measured peer norm"
-    for name in ("f_director_cash_fee_pct", "f_director_equity_pay_pct"):
-        assert name in cols and f"{name}_vs_peers" in cols, f"{name} earned a peer leg on the sector share and did not get one"
+    assert "f_director_equity_pay_pct" in cols and "f_director_equity_pay_pct_vs_peers" in cols
+    assert "f_director_cash_fee_pct" in cols and "f_director_cash_fee_pct_vs_peers" not in cols, "the cash share ships raw only"
 
     # 9b. the four Item 5.07 vote families reached the panel, and TWELVE of their fields carry a
     #     peer leg -- read off `vote_dissent_features.PEER_RELATIVE_FIELDS` rather than typed, so
@@ -414,7 +430,7 @@ def test_governance_panel_encoding_and_empty_guard():
     for name in sorted(VOTE_PEER_FIELDS):
         assert f"f_{name}" in cols, f"missing vote field {name}"
         assert f"f_{name}_vs_peers" in cols, f"{name} declares a peer leg and did not get one"
-    assert len([c for c in cols if c.endswith("_vs_peers")]) == 4 + len(VOTE_PEER_FIELDS) + 2
+    assert len([c for c in cols if c.endswith("_vs_peers")]) == 4 + len(VOTE_PEER_FIELDS) + 1
 
     # 10. D3, asserted where it is actually observable: all TWELVE previously-shipped governance
     #     features are present under their exact old names. The list is read off
@@ -451,12 +467,12 @@ def test_governance_panel_encoding_and_empty_guard():
         f" + {len([c for c in cols if c.endswith('_vs_peers')])} _vs_peers"
         f" + {len([c for c in cols if c.endswith('_vs_hist')])} _vs_hist + 0 _xs"
     )
-    print(f"  differences and flags ship raw only; the peer legs are 4 legacy levels + {len(VOTE_PEER_FIELDS)} vote-dissent + 2 director pay-mix;")
+    print(f"  differences and flags ship raw only; the peer legs are 4 legacy levels + {len(VOTE_PEER_FIELDS)} vote-dissent + 1 director pay-mix;")
     print("  avg_board_tenure is the sole _vs_hist survivor. None archive -> empty, no crash.")
     print("  ZERO columns contain `_x_`: GPT §13's five products are not built (D16), and")
     print("  ceo_is_board_chair -- the one leg that existed only inside one -- ships as a level.")
     print("  phase 6: 6 board-quality fields raw only (sector share 2.9%-7.2%), 4 director-pay")
-    print("  fields of which the two pay-MIX shares earned a peer leg (11.94% / 8.17%).")
+    print("  fields of which the equity pay-MIX share keeps a peer leg and the cash share ships raw.")
     print(f"  the two child tables are OPTIONAL: without them the panel still builds {len(kid_cols)} features.")
     print(f"  all {len(LEGACY_EXEMPT_FROM_EXPIRY)} legacy features survive the move to their own part under unchanged names (D3);")
     print(f"  votes=None -> {len(nv_cols)} features, every DEF 14A family intact and no vote family left (vote history starts 2010-03).")

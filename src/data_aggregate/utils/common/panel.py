@@ -17,6 +17,8 @@ the one thing that is genuinely about PEERS.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -24,7 +26,6 @@ from src.data_aggregate.utils.common.xs import (
     HIST_MIN_PERIODS,
     HIST_WINDOW,
     PEER_DISPERSION_FLOOR,
-    XS_CLIP_PEER,
     self_history_z,
     winsorize_xs,
     xs_rank_pct,
@@ -42,121 +43,59 @@ def mask_to_availability(
     return frame.where(active)
 
 
-def peer_relative(
-    field_df: pd.DataFrame,
-    peer_dict: dict,
-    min_peers: int = 3,
-    clip: float = XS_CLIP_PEER,
-    dispersion_floor: float = PEER_DISPERSION_FLOOR,
-    winsorize_inputs: bool = True,
-) -> pd.DataFrame:
+#: A peer statistic needs at least this many peers with a value on the day.
+_MIN_PEERS = 3
+
+
+def _peer_z(df_values: pd.DataFrame, ticker: str, peers: dict, floor: pd.Series) -> pd.Series | None:
+    """Daily z-score of one ticker against its own peers; None when it has too few peers to ever score."""
+    names = [peer for peer in peers if peer in df_values.columns]
+    if ticker not in df_values.columns or len(names) < _MIN_PEERS:
+        return None
+    df_peers = df_values[names]
+    weights = pd.Series({peer: float(peers[peer]) for peer in names}, dtype="float64")
+
+    # Weight carried by the peers that report on each day: a missing peer drops out of both moments.
+    present = df_peers.notna()
+    day_weight = present.mul(weights, axis=1).sum(axis=1)
+    usable = (present.sum(axis=1) >= _MIN_PEERS) & (day_weight > 0)
+    day_weight = day_weight.where(usable)
+
+    # Weighted mean and weighted standard deviation of the peers.
+    mean = df_peers.mul(weights, axis=1).sum(axis=1).div(day_weight)
+    variance = df_peers.sub(mean, axis=0).pow(2).mul(weights, axis=1).sum(axis=1).div(day_weight)
+    std = np.sqrt(variance)
+
+    # Peers that all report the same value cannot rank anything (NaN). The floor is applied after
+    # that test, so only a negligible spread is floored, never an exactly-zero one.
+    std = std.clip(lower=floor).where(std > 0)
+    return (df_values[ticker] - mean) / std
+
+
+def peer_relative(field_df: pd.DataFrame, peer_dict: dict, winsorize_inputs: bool = False) -> pd.DataFrame:
+    """Score every ticker against its peers, per date: (X - weighted peer mean) / max(weighted peer std, 0.10 x universe std).
+
+    `field_df` is a (date x ticker) frame and `peer_dict` maps a ticker to {peer: weight}; the
+    ticker itself is never in its own basket. The score is NaN when fewer than 3 peers have a value
+    that day. Dividing by the peer std alone explodes when similar companies report near-identical
+    values, so the std is floored at 10% of the whole universe's std that day.
+
+    The result is neither trimmed nor clipped. `winsorize_inputs` trims each day's cross-section to
+    its 1%/99% quantiles before any statistic is taken, for fields where one bad value would move a
+    basket's mean.
     """
-    (stock - peer_weighted_mean) / peer_weighted_std, per date, per stock.
-    Self excluded by construction of the peer dict. NaN-tolerant: peer stats use
-    whichever peers have data on the date (weights renormalized).
+    df_values = winsorize_xs(field_df) if winsorize_inputs else field_df
 
-    Robustness (critical): when only a couple of peers report or their values
-    nearly coincide, the peer std collapses toward zero and the raw z-score
-    explodes to ~1e13. We therefore (a) require at least `min_peers` peers with
-    data on the date, (b) FLOOR the peer std at `dispersion_floor` x the day's
-    cross-sectional std, (c) winsorize the INPUTS 1%/99% per day before the moments
-    are taken, and (d) clip the result to +-`clip`.
+    # The floor is a fraction of the day's universe dispersion (sample std, as in `xs.xs_z`).
+    floor = df_values.std(axis=1) * PEER_DISPERSION_FLOOR
 
-    ⚠ WHY THE FLOOR IS THE LOAD-BEARING GUARD, and the input trim only the junior
-    partner. Decomposing the cells that landed at the +-8 clip on five real fields over the
-    full 1995-2026 history (1.8-2.5 M non-null cells each) showed those cells have FULL
-    baskets -- 6 to 7 peers present, not thin -- and a peer dispersion of 0.5% to 8% of that
-    day's UNIVERSE dispersion. The z explodes because the denominator collapsed, not because
-    the numerator is wild: the embedding basket does its job too well, so 7 business-text-
-    similar companies have nearly identical fundamentals and a subject that differs even
-    modestly is divided by a near-zero std.
-
-    Measured share of cells at the clip, on the full 1995-2026 universe. The first three
-    columns are the single-treatment A/B arms, which can only be produced by re-running with
-    each treatment disabled; the last is what this function does and is re-measurable from
-    `cube_part_fundamentals` at any time -- the figures below are that re-measurement:
-
-        field               base   winsor only   floor only   BOTH (shipped)   cells
-        returnOnEquity      3.24%        2.70%        1.85%            1.60%   3,057,212
-        debtToEquity        3.49%        2.97%        1.86%            2.11%   3,179,024
-        interest_coverage   5.79%        5.63%        1.85%            2.80%   2,584,176
-        cash_to_debt        5.64%        5.54%        1.80%            2.60%   2,980,320
-        profitMargins       1.06%        0.76%        0.61%            0.12%   3,056,867
-        mean                3.84%                                      1.85%
-
-    (`|z| > 4` moves the same way: `interest_coverage` 9.22% -> 4.42%.)
-
-    ⚠ CLIP RATE IS DRIVEN BY COVERAGE, NOT BY EXTREMENESS. `f_pbo_to_mcap_vs_peers` sits at
-    8.59% -- 3.1x the next-worst field -- on **70,921** cells, against 2.58-3.18 M for every
-    field above. It is not a wilder quantity; it is a thinner one. A sparse field's peer basket
-    is drawn from the few names that also report it, those names resemble each other, basket
-    dispersion collapses, and the floor binds. That is the reason a sparse field must never
-    carry a peer leg, and it is also why the fix for a high clip rate is a coverage or
-    definition change -- raising `XS_CLIP_PEER` would only hide the diagnostic.
-
-    ⚠ THE TWO TREATMENTS PARTLY WORK AGAINST EACH OTHER, which is why BOTH lands above
-    floor-only on four of the five fields. Trimming the inputs shrinks the day's
-    cross-sectional std, the floor is a FRACTION of that std, so the floor itself drops and
-    binds less often. Keeping the reference std un-trimmed would bind harder and score closer
-    to the floor-only column -- but it would do so because a single mis-parsed extreme
-    inflated the reference, which is the opposite of the robustness being bought. The trimmed
-    reference is the honest one and the interaction is the price.
-
-    Input winsorization alone moves `interest_coverage` 5.79% -> 5.63%, which is nothing; the
-    floor is what fixes it. The trim is kept because it still removes the one genuine tail
-    case the floor cannot -- a mis-parsed extreme in the SUBJECT's own value.
-
-    The floor GENERALISES the `pstd > 0` degenerate-case guard from *zero* to *negligible*,
-    and reads as: this basket is too homogeneous to resolve a difference this small.
-    Residual saturation is expected and correct: a genuinely extreme name should reach the
-    clip, and `f_pbo_to_mcap_vs_peers` (the worst field, 8.59%) still does.
-    """
-    # Trim the day's cross-section BEFORE the peer moments are taken, so a single mis-parsed
-    # extreme cannot move its basket's mean and std. Done once here rather than per ticker:
-    # `winsorize_xs` is per-ROW (per date) over the whole universe, so it is the same bound
-    # for every basket on that day.
-    #
-    # The two treatments are separately switchable (`winsorize_inputs=False`,
-    # `dispersion_floor=0.0`) so each can be reverted or A/B-ed on its own -- they were
-    # measured as separate arms and they interact (see the table above).
-    if winsorize_inputs:
-        field_df = winsorize_xs(field_df)
-    # The day's universe dispersion, which the floor is expressed as a fraction of. Sample
-    # std (ddof=1) to match `xs.xs_z`, the repo's other standardizer.
-    universe_sd = field_df.std(axis=1)
-    floor = universe_sd * float(dispersion_floor)
-
-    rel = pd.DataFrame(index=field_df.index, columns=field_df.columns, dtype="float64")
+    # One score column per ticker that has a usable basket.
+    df_z = pd.DataFrame(np.nan, index=df_values.index, columns=df_values.columns)
     for ticker, peers in peer_dict.items():
-        if not peers or ticker not in field_df.columns:
-            continue
-        cols = [p for p in peers if p in field_df.columns]
-        if len(cols) < min_peers:
-            continue
-        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
-        w = w / w.sum()
-        peer_vals = field_df[cols]
-        present = peer_vals.notna()
-        n_present = present.sum(axis=1)
-        wsum = present.mul(w, axis=1).sum(axis=1)
-        valid = (n_present >= min_peers) & (wsum > 0)
-
-        pmean = peer_vals.mul(w, axis=1).sum(axis=1, min_count=1).div(wsum.where(valid))
-        var = (peer_vals.sub(pmean, axis=0) ** 2).mul(w, axis=1).sum(axis=1, min_count=1)
-        pstd = np.sqrt(var.div(wsum.where(valid)))
-        # ⚠ THE ZERO-DISPERSION GUARD IS EVALUATED ON THE RAW STD, BEFORE THE FLOOR, and the
-        # order is the whole point. Flooring first would turn a basket whose peers all report
-        # the SAME value into a finite z divided by the floor -- silently overriding the
-        # zero-dispersion policy `xs.py` documents as a declared decision rather than an
-        # accident. The floor is for NEGLIGIBLE dispersion; exactly-zero dispersion still
-        # means "these peers cannot rank anything" and still yields NaN.
-        degenerate = ~(pstd > 0)
-        pstd = pstd.clip(lower=floor).where(~degenerate)
-
-        z = (field_df[ticker] - pmean) / pstd
-        z = z.where(valid)
-        rel[ticker] = z.clip(-clip, clip)
-    return rel.replace([np.inf, -np.inf], np.nan)
+        z = _peer_z(df_values, ticker, peers, floor)
+        if z is not None:
+            df_z[ticker] = z
+    return df_z.replace([np.inf, -np.inf], np.nan)
 
 
 #: The emission modes a field may declare. The DEFAULT -- a field absent from the emission map
@@ -174,56 +113,31 @@ _EMISSION_MODES = ("raw", "raw+xs", "raw+peers", "raw+hist")
 _SEMANTIC_MODES = ("binary", "structural_zero")
 
 
-def build_peer_relative_panel(
-    fields: dict,
-    peer_dict: dict,
-    emission: dict | None = None,
-    semantics: dict | None = None,
-    history_window: int = HIST_WINDOW,
-    history_min_periods: int = HIST_MIN_PERIODS,
-    history_fields: dict[str, pd.DataFrame] | None = None,
-    output_since: pd.Timestamp | None = None,
-    availability: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Turn a {name: daily wide frame} dict into the long feature panel, each
-    characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
-    `f_<name>_xs` (universe percentile). Shared by every panel builder.
+@dataclass(frozen=True)
+class SelfHistory:
+    """Settings of the `raw+hist` leg and of the emitted date window.
 
-    `emission` overrides that per field with one of `_EMISSION_MODES`. Fields left out of the
-    map -- and every caller that passes no map at all -- keep the exact two-leg behaviour
-    above, unchanged. The `raw+hist` mode adds a trailing within-firm z-score without a
-    peer or universe-relative leg.
-
-    `semantics` is an equally optional transform declaration. `binary` preserves the exact
-    0/1 state in the public `_xs` column and bypasses continuous input winsorization on the
-    peer leg. `structural_zero` preserves zero as a state while ranking/standardizing only
-    non-zero comparable support. Undeclared fields remain bit-identical to the continuous
-    default.
-
-    ⚠ The RAW leg is deliberately NOT winsorized and NOT clipped. Those treatments belong to
-    the z-score, whose scale is only meaningful after outlier control; the raw value is a
-    quantity in its own units and trimming it would destroy the thing it was emitted for. It is
-    still cast to float32 like the other legs, to keep a 100-feature panel off the OOM killer.
-
-    `history_fields` optionally supplies an earlier raw daily prefix for self-history only.
-    This lets an incremental caller recompute a short current window while reusing the raw
-    values already persisted by a prior full build. `output_since` then emits only the
-    repaired tail; the prefix exists solely as rolling context.
-
-    `availability` constrains both input observations and emitted (date, ticker) keys.
+    `prefix` is an earlier raw daily frame per field, used only as rolling context so an
+    incremental caller can recompute a short current window; `output_since` then emits only
+    that repaired tail.
     """
-    if not fields:
-        return pd.DataFrame(columns=["date", "ticker"])
-    emission = emission or {}
-    semantics = semantics or {}
+
+    window: int = HIST_WINDOW
+    min_periods: int = HIST_MIN_PERIODS
+    prefix: dict[str, pd.DataFrame] | None = None
+    output_since: pd.Timestamp | None = None
+
+
+def _validate_declarations(fields: dict, emission: dict, semantics: dict) -> None:
+    """Reject emission/semantics declarations that name an unknown mode or a field that does not exist."""
     unknown = {m for m in emission.values() if m not in _EMISSION_MODES}
     if unknown:
         raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; expected one of {list(_EMISSION_MODES)}")
+
+    # A name in the map that no field produces is a silent no-op: fail loudly rather than emit a
+    # panel missing the column the caller thinks it declared.
     stray = set(emission) - set(fields)
     if stray:
-        # A name in the map that no field produces is a silent no-op -- exactly the drift the
-        # parts registry was built to end. Fail loudly rather than emit a panel missing the
-        # column the caller thinks it declared.
         raise KeyError(f"emission declares field(s) not present in `fields`: {sorted(stray)}")
     unknown_semantics = {mode for mode in semantics.values() if mode not in _SEMANTIC_MODES}
     if unknown_semantics:
@@ -232,95 +146,91 @@ def build_peer_relative_panel(
     if stray_semantics:
         raise KeyError(f"semantics declares field(s) not present in `fields`: {sorted(stray_semantics)}")
 
-    def _build_field(item: tuple[str, pd.DataFrame | None]) -> list[pd.Series]:
-        name, fdf = item
-        if fdf is None or fdf.empty:
-            return []
-        # Guarantee a numeric frame: a stray Python `None` / object cell — a KPI genuinely
-        # absent for a name (e.g. sparse earnings-call coverage, "no value to compare with") —
-        # must be coerced to NaN. Otherwise the NaN-tolerant peer-z math (`peer_relative`)
-        # AND the `_xs` rank below both raise "unsupported operand type(s): NoneType and float"
-        # the moment a single None reaches them. Coercion is the correct semantics here
-        # (absent = NaN), not a workaround, and a no-op on already-float frames.
-        fdf = fdf.apply(pd.to_numeric, errors="coerce")
-        fdf = mask_to_availability(fdf, availability)
-        if fdf.empty or not fdf.notna().any().any():
-            return []
-        output = fdf if output_since is None else fdf.loc[fdf.index >= pd.Timestamp(output_since)]
-        if output.empty:
-            return []
-        result: list[pd.Series] = []
-        # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
-        # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
-        # The stacked long columns are cast to float32: these are z-scores / percentile ranks
-        # bounded to O(1), so float64 storage is wasted — halving them keeps the
-        # many-feature panels off the OOM killer.
-        mode = emission.get(name)
-        semantic = semantics.get(name)
-        zero_state = fdf.eq(0) if semantic == "structural_zero" else None
-        comparable = fdf.mask(zero_state) if zero_state is not None else fdf
-        if mode is not None:
-            raw = output.stack().astype("float32")
-            raw.index.set_names(["date", "ticker"], inplace=True)
-            result.append(raw.rename(f"f_{name}"))
-            del raw
-        if mode is None or mode == "raw+peers":
-            rel = winsorize_xs(
-                peer_relative(
-                    comparable,
-                    peer_dict,
-                    winsorize_inputs=semantic != "binary",
-                )
-            )
-            if zero_state is not None:
-                rel = rel.where(~zero_state, 0.0)
-            rel = rel.reindex(index=output.index, columns=output.columns)
-            s = rel.stack().astype("float32")
-            s.index.set_names(["date", "ticker"], inplace=True)
-            result.append(s.rename(f"f_{name}_vs_peers"))
-            del rel, s
-        if mode is None or mode == "raw+xs":
-            xs = fdf if semantic == "binary" else xs_rank_pct(comparable)
-            if zero_state is not None:
-                xs = xs.where(~zero_state, 0.0)
-            xs = xs.reindex(index=output.index, columns=output.columns)
-            s2 = xs.stack().astype("float32")
-            s2.index.set_names(["date", "ticker"], inplace=True)
-            result.append(s2.rename(f"f_{name}_xs"))
-            del xs, s2
-        if mode == "raw+hist":
-            history = None if history_fields is None else history_fields.get(name)
-            if history is not None and not history.empty:
-                history = history.apply(pd.to_numeric, errors="coerce")
-                history_input = pd.concat([history, fdf], axis=0).sort_index()
-                history_input = history_input.loc[~history_input.index.duplicated(keep="last")]
-            else:
-                history_input = fdf
-            hist = self_history_z(
-                history_input,
-                window=history_window,
-                min_periods=history_min_periods,
-                output_since=output_since,
-            )
-            hist = hist.reindex(index=output.index, columns=output.columns)
-            hist_long = hist.stack().astype("float32")
-            hist_long.index.set_names(["date", "ticker"], inplace=True)
-            result.append(hist_long.rename(f"f_{name}_vs_hist"))
-            del hist, hist_long, history_input
-        del fdf, output, comparable  # free per-field intermediates promptly
-        return result
 
-    items = list(fields.items())
-    groups = [_build_field(item) for item in items]
-    long_frames = [column for group in groups for column in group]
+def _clean_field(fdf: pd.DataFrame | None, availability: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Numeric, availability-masked field frame; None when nothing usable is left."""
+    if fdf is None or fdf.empty:
+        return None
 
-    if not long_frames:
-        return pd.DataFrame(columns=["date", "ticker"])
-    # Keep concat's independent float32 blocks. Consolidating this frame with `.copy()`
-    # needs another contiguous allocation for every output column: 2.23 GiB for the live
-    # 156-column x 3.83M-row fundamentals panel, on top of the blocks already resident.
-    # Build the two key columns separately instead of inserting them into a 100+ block
-    # frame: insertion emits a fragmentation warning, while this concat reuses the blocks.
+    # A stray Python None / object cell (a KPI absent for a name) must become NaN, or the
+    # peer-z math and the `_xs` rank raise on it. Absent = NaN; a no-op on float frames.
+    fdf = mask_to_availability(fdf.apply(pd.to_numeric, errors="coerce"), availability)
+    if fdf.empty or not fdf.notna().any().any():
+        return None
+    return fdf
+
+
+def _long_leg(frame: pd.DataFrame, column: str, output: pd.DataFrame | None = None) -> pd.Series:
+    """Stack a (date x ticker) frame (optionally reindexed to `output`) into a float32 (date, ticker) column."""
+    if output is not None:
+        frame = frame.reindex(index=output.index, columns=output.columns)
+    leg = frame.stack().astype("float32")
+    leg.index.set_names(["date", "ticker"], inplace=True)
+    return leg.rename(column)
+
+
+def _peer_leg(comparable: pd.DataFrame, zero_state: pd.DataFrame | None, binary: bool, peer_dict: dict) -> pd.DataFrame:
+    """Peer z-score of the comparable values; a binary field skips input winsorization."""
+    rel = peer_relative(comparable, peer_dict, winsorize_inputs=not binary)
+    return rel if zero_state is None else rel.where(~zero_state, 0.0)
+
+
+def _xs_leg(fdf: pd.DataFrame, comparable: pd.DataFrame, zero_state: pd.DataFrame | None, binary: bool) -> pd.DataFrame:
+    """Universe percentile of the comparable values; a binary field keeps its exact 0/1 state."""
+    xs = fdf if binary else xs_rank_pct(comparable)
+    return xs if zero_state is None else xs.where(~zero_state, 0.0)
+
+
+def _hist_leg(name: str, fdf: pd.DataFrame, history: SelfHistory) -> pd.DataFrame:
+    """Trailing self-history z-score, computed over the stored prefix (if any) followed by the current frame."""
+    prefix = None if history.prefix is None else history.prefix.get(name)
+    history_input = fdf
+    if prefix is not None and not prefix.empty:
+        history_input = pd.concat([prefix.apply(pd.to_numeric, errors="coerce"), fdf], axis=0).sort_index()
+        history_input = history_input.loc[~history_input.index.duplicated(keep="last")]
+    return self_history_z(
+        history_input,
+        window=history.window,
+        min_periods=history.min_periods,
+        output_since=history.output_since,
+    )
+
+
+def _field_legs(
+    name: str,
+    fdf: pd.DataFrame,
+    mode: str | None,
+    semantic: str | None,
+    peer_dict: dict,
+    history: SelfHistory,
+) -> list[pd.Series]:
+    """The long columns of one cleaned field, in the order raw, vs_peers, xs, vs_hist."""
+    output = fdf if history.output_since is None else fdf.loc[fdf.index >= pd.Timestamp(history.output_since)]
+    if output.empty:
+        return []
+
+    # Structural zeros are a state: masked out of the comparable support, then restored as 0.
+    zero_state = fdf.eq(0) if semantic == "structural_zero" else None
+    comparable = fdf if zero_state is None else fdf.mask(zero_state)
+    binary = semantic == "binary"
+
+    # The raw leg is deliberately neither winsorized nor clipped: it is a quantity in its own units.
+    legs: list[pd.Series] = []
+    if mode is not None:
+        legs.append(_long_leg(output, f"f_{name}"))
+    if mode is None or mode == "raw+peers":
+        legs.append(_long_leg(_peer_leg(comparable, zero_state, binary, peer_dict), f"f_{name}_vs_peers", output))
+    if mode is None or mode == "raw+xs":
+        legs.append(_long_leg(_xs_leg(fdf, comparable, zero_state, binary), f"f_{name}_xs", output))
+    if mode == "raw+hist":
+        legs.append(_long_leg(_hist_leg(name, fdf, history), f"f_{name}_vs_hist", output))
+    return legs
+
+
+def _assemble(long_frames: list[pd.Series], availability: pd.DataFrame | None) -> pd.DataFrame:
+    """Concat the legs, keep only available (date, ticker) keys, and turn the index into key columns."""
+    # Concat keeps the independent float32 blocks (a `.copy()` would re-allocate every column), and
+    # the key columns are built separately to avoid a fragmentation warning on a 100+ block frame.
     feature_frame = pd.concat(long_frames, axis=1)
     if availability is not None:
         active = availability.stack().reindex(feature_frame.index, fill_value=False).fillna(False)
@@ -328,3 +238,38 @@ def build_peer_relative_panel(
     keys = feature_frame.index.to_frame(index=False)
     feature_frame.index = keys.index
     return pd.concat([keys, feature_frame], axis=1)
+
+
+def build_peer_relative_panel(
+    fields: dict,
+    peer_dict: dict,
+    emission: dict | None = None,
+    semantics: dict | None = None,
+    history: SelfHistory | None = None,
+    availability: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Turn a {name: daily wide frame} dict into the long feature panel shared by every panel builder.
+
+    By default each field becomes `f_<name>_vs_peers` and `f_<name>_xs`; `emission` overrides that
+    per field with one of `_EMISSION_MODES`. `semantics` declares `binary` (exact 0/1 `_xs`, no
+    input winsorization on the peer leg) or `structural_zero` (zero kept as a state, only non-zero
+    support compared). `history` configures the `raw+hist` leg and the emitted window, and
+    `availability` masks both the input observations and the emitted (date, ticker) keys.
+    """
+    if not fields:
+        return pd.DataFrame(columns=["date", "ticker"])
+    emission = emission or {}
+    semantics = semantics or {}
+    history = history or SelfHistory()
+    _validate_declarations(fields, emission, semantics)
+
+    # Clean each field, then build its legs.
+    long_frames: list[pd.Series] = []
+    for name, raw_frame in fields.items():
+        fdf = _clean_field(raw_frame, availability)
+        if fdf is not None:
+            long_frames += _field_legs(name, fdf, emission.get(name), semantics.get(name), peer_dict, history)
+
+    if not long_frames:
+        return pd.DataFrame(columns=["date", "ticker"])
+    return _assemble(long_frames, availability)

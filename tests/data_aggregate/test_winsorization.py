@@ -68,7 +68,7 @@ def test_winsorize_xs_clips_each_row_to_1_99():
     )
 
 
-def test_peer_z_outlier_is_trimmed_but_rank_untouched():
+def test_peer_z_outlier_input_is_trimmed_but_rank_untouched():
     # 60 tickers, one field; ONE ticker is a wild outlier on the last date.
     dates = pd.bdate_range("2024-01-02", periods=3)
     tickers = [f"T{i}" for i in range(60)]
@@ -78,23 +78,22 @@ def test_peer_z_outlier_is_trimmed_but_rank_untouched():
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
     d = dates[-1]
-    raw = peer_relative(field, peers)  # un-winsorized peer-z
-    wins = winsorize_xs(raw)
+    untrimmed = peer_relative(field, peers)
+    trimmed = peer_relative(field, peers, winsorize_inputs=True)
 
-    # T0's raw peer-z is extreme (hits the internal +-8 clip); winsorize then pulls
-    # it down to the row's cross-sectional 99th percentile (< raw -> trimmed).
-    assert raw.loc[d, "T0"] >= 7.9
-    assert wins.loc[d, "T0"] == pytest.approx(raw.loc[d].quantile(0.99))
-    assert wins.loc[d, "T0"] < raw.loc[d, "T0"]
+    # No clip and no output winsorization: the outlier's z is whatever the formula gives, and
+    # trimming the INPUT pulls it down to the day's 99th-percentile value.
+    assert untrimmed.loc[d, "T0"] > 8.0
+    assert trimmed.loc[d, "T0"] < untrimmed.loc[d, "T0"]
 
-    # the built panel reflects the winsorized value; the rank `_xs` is untouched (T0 top).
+    # the built panel uses the trimmed input; the rank `_xs` is untouched (T0 top).
     last = build_peer_relative_panel({"metric": field}, peers)
     last = last[last["date"] == d].set_index("ticker")
-    assert last.loc["T0", "f_metric_vs_peers"] == pytest.approx(wins.loc[d, "T0"])
+    assert last.loc["T0", "f_metric_vs_peers"] == pytest.approx(trimmed.loc[d, "T0"], rel=1e-5)
     assert last.loc["T0", "f_metric_xs"] == pytest.approx(1.0, abs=1e-9)
 
-    print("\n=== SANITY CHECK: peer-z outlier trim + rank intact ===")
+    print("\n=== SANITY CHECK: peer-z outlier input trim + rank intact ===")
     print(
-        f"  T0 raw=1e6: peer-z {raw.loc[d, 'T0']:.2f} (at +-8 clip) -> winsorized "
-        f"{wins.loc[d, 'T0']:.3f} (day 99th pct); f_metric_xs rank still 1.00. Validated."
+        f"  T0 raw=1e6: peer-z {untrimmed.loc[d, 'T0']:.2f} untrimmed -> {trimmed.loc[d, 'T0']:.3f} "
+        f"with the 1%/99% input trim (the panel's setting); f_metric_xs rank still 1.00. Validated."
     )

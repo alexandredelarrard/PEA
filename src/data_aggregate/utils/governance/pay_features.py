@@ -57,7 +57,6 @@ from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
     infer_yoy_periods,
 )
-from src.data_aggregate.utils.common.xs import winsorize_xs
 from src.data_aggregate.utils.governance.def14a_impute import bridged_total
 from src.data_aggregate.utils.governance.names import (
     ceo_identity_changed,
@@ -132,9 +131,9 @@ EVENT_FIELDS: frozenset[str] = frozenset(
 )
 
 #: Fields whose value depends on the WHOLE CROSS-SECTION on their date, not only on the
-#: filer's own archive. Both are built as `winsorize_xs(peer_relative(pay)) -
-#: winsorize_xs(peer_relative(prf))`, so a ticker's value moves when the peer basket changes
-#: OR when the 1%/99% trim bound moves -- neither of which requires the ticker's own filings to
+#: filer's own archive. Both are built as `peer_relative(pay) -
+#: peer_relative(prf)` on 1%/99%-trimmed inputs, so a ticker's value moves when the peer basket changes
+#: OR when the trim bound moves -- neither of which requires the ticker's own filings to
 #: change at all.
 #:
 #: Declared because a per-ticker attribution check cannot otherwise tell them apart from a raw
@@ -163,6 +162,10 @@ ALL_FIELDS: frozenset[str] = frozenset(
 #: ⚠ The `EVENT_FIELDS` note above says these two are "standing facts between proxies", and
 #: that is right -- it just is not an argument for keeping them forever. A package set in 2014
 #: is no more evidence about today than a 2019 say-on-pay vote is. Both now use the annual cap.
+#: Built because the pay-vs-performance legs and the CEO-change checks read it, but not shipped as a cube column:
+#: `ceo_pay_growth` is the same log growth.
+UNSHIPPED_FIELDS: frozenset[str] = frozenset({"ceo_comp_growth_1y"})
+
 #: Defined as the complement of `EVENT_FIELDS` so the two are exhaustive over `ALL_FIELDS`.
 #:
 #: These two carry the largest measured exposure of the twelve fields this change reaches:
@@ -473,7 +476,7 @@ def _slice_history(comp_src: pd.DataFrame, top5: pd.DataFrame, tally: dict[str, 
     return out.reset_index(drop=True) if not out.empty else None
 
 
-def _log_growth(pct: pd.DataFrame) -> pd.DataFrame:
+def log_growth(pct: pd.DataFrame) -> pd.DataFrame:
     """A percentage change re-expressed as a LOG growth, so it is subtractable from the pay leg.
 
     `where(pct > -1)` because a total wipe-out (-100%) has no finite log growth, and `log1p` of
@@ -538,8 +541,8 @@ def _alignment_family(
         # faster than peers' by MORE than performance is growing faster than peers' by".
         # The result is a difference of two z-scores and therefore ships RAW; peer-z-scoring it
         # a second time would relativize the same quantity twice.
-        pz = winsorize_xs(peer_relative(pay, peer_dict))
-        rz = winsorize_xs(peer_relative(prf, peer_dict))
+        pz = peer_relative(pay, peer_dict, winsorize_inputs=True)
+        rz = peer_relative(prf, peer_dict, winsorize_inputs=True)
         pz, rz = _aligned(pz, rz)
         if not pz.empty:
             out[f"pay_{label}_peer_misalignment"] = pz - rz
@@ -618,7 +621,7 @@ def pay_fields(
     else:
         rev_growth = pd.DataFrame()
         if fundamentals is not None and not fundamentals.empty:
-            rev_growth = _log_growth(fiscal_change_to_daily(fundamentals, "totalRevenue", idx, kind="pct", periods=infer_yoy_periods(fundamentals)))
+            rev_growth = log_growth(fiscal_change_to_daily(fundamentals, "totalRevenue", idx, kind="pct", periods=infer_yoy_periods(fundamentals)))
         if rev_growth.empty:
             tally["skipped: no totalRevenue -> no revenue-based misalignment"] = 1
         else:
@@ -626,7 +629,7 @@ def pay_fields(
 
         ret = pd.DataFrame()
         if close_total is not None and not close_total.empty:
-            ret = _log_growth(close_total.pct_change(_RETURN_WINDOW))
+            ret = log_growth(close_total.pct_change(_RETURN_WINDOW))
         if ret.empty:
             tally["skipped: no close_total -> no return-based misalignment"] = 1
         else:

@@ -269,60 +269,57 @@ def test_fiscal_change_pct_and_diff():
 def test_peer_relative_zscore_correct():
     """The z-score arithmetic, with the INPUT WINSORIZATION turned off.
 
-    `peer_relative` trims the day's cross-section to its 1%/99% quantiles before taking the
-    peer moments, so on a 4-name universe the quantile interpolation pulls A in from 4.0 and
-    the textbook hand calculation no longer applies (it lands at 2.437, not 2.449). That is
-    the treatment working, not a defect -- but it is not what THIS test is about, so the
-    trim is disabled here and asserted separately below."""
+    With `winsorize_inputs=True` the day's cross-section is trimmed to its 1%/99% quantiles
+    first, so on a 4-name universe the quantile interpolation pulls A in from 4.0 and the
+    textbook hand calculation no longer applies (it lands at 2.437, not 2.449). The default
+    is no trim, which is what the hand calculation below uses."""
     idx = pd.bdate_range("2020-01-01", periods=1)
     field = pd.DataFrame({"A": [4.0], "B": [1.0], "C": [2.0], "D": [3.0]}, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
-    rel = peer_relative(field, peers, winsorize_inputs=False)
+    rel = peer_relative(field, peers)
     # peer mean=2, population std=sqrt(2/3)=0.8165 -> (4-2)/0.8165 = 2.449
     assert abs(rel.loc[idx[0], "A"] - 2.449) < 1e-2
 
-    # with the trim ON (production default) the subject is pulled toward the pack
-    trimmed = peer_relative(field, peers)
+    # with the input trim ON the subject is pulled toward the pack
+    trimmed = peer_relative(field, peers, winsorize_inputs=True)
     assert trimmed.loc[idx[0], "A"] < rel.loc[idx[0], "A"]
 
     print("\n=== SANITY CHECK: peer-relative z-score ===")
     print(
         f"  A=4 vs peers[1,2,3] -> z={rel.loc[idx[0], 'A']:.3f} (expected ~2.449) "
-        f"with inputs untrimmed; {trimmed.loc[idx[0], 'A']:.3f} with the production "
+        f"with inputs untrimmed; {trimmed.loc[idx[0], 'A']:.3f} with the "
         f"1%/99% input trim, which pulls the subject toward its peers."
     )
 
 
 def test_peer_dispersion_floor_bounds_a_homogeneous_basket():
     """The FLOOR: a basket too homogeneous to resolve a difference must not manufacture a
-    huge z. Peers at 5.0/5.0/5.001 have a near-zero std; without the floor the subject's
-    deviation is divided by ~0.0005 and pins at the clip. The floor divides by
-    0.10 x the day's UNIVERSE std instead."""
+    huge z. Peers at 5.0/5.0/5.001 have a near-zero std; the subject's deviation is divided
+    by 0.10 x the day's UNIVERSE std instead of by ~0.0005."""
     idx = pd.bdate_range("2020-01-01", periods=1)
     # a wide universe (so the universe std, and therefore the floor, is meaningful)
     field = pd.DataFrame({"A": [6.0], "B": [5.0], "C": [5.0], "D": [5.001], "E": [0.0], "F": [10.0], "G": [20.0]}, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
-    floored = peer_relative(field, peers, winsorize_inputs=False)
-    unfloored = peer_relative(field, peers, winsorize_inputs=False, dispersion_floor=0.0)
-
-    assert abs(unfloored.loc[idx[0], "A"]) >= 7.99, "without the floor this pins at the clip"
-    assert abs(floored.loc[idx[0], "A"]) < 7.99, "the floor must keep it off the clip"
+    floored = peer_relative(field, peers)
+    floor = 0.10 * field.std(axis=1).iloc[0]
+    peer_values = field[["B", "C", "D"]].iloc[0]
+    assert peer_values.std(ddof=0) < floor, "the basket must be tighter than the floor"
+    assert abs(floored.loc[idx[0], "A"] - (6.0 - peer_values.mean()) / floor) < 1e-9
 
     print("\n=== SANITY CHECK: peer dispersion floor ===")
     print(
-        f"  peers 5.0/5.0/5.001 (std ~5e-4), subject 6.0: unfloored z="
-        f"{unfloored.loc[idx[0], 'A']:.2f} (at the +-8 clip) vs floored z="
-        f"{floored.loc[idx[0], 'A']:.2f} -- the denominator is now 0.10 x the day's "
-        f"universe std, not the collapsed basket std."
+        f"  peers 5.0/5.0/5.001 (std ~5e-4), subject 6.0: z="
+        f"{floored.loc[idx[0], 'A']:.2f} -- the denominator is 0.10 x the day's "
+        f"universe std ({floor:.2f}), not the collapsed basket std."
     )
 
 
 def test_peer_relative_does_not_explode_on_degenerate_peers():
     idx = pd.bdate_range("2020-01-01", periods=2)
     # day 0: peers identical -> std 0 -> must be NaN, never inf/1e13
-    # day 1: peers nearly identical -> huge raw z -> must be clipped to +-8
+    # day 1: peers nearly identical -> the std is floored at 0.10 x the universe std
     field = pd.DataFrame(
         {
             "A": [10.0, 10.0],
@@ -334,12 +331,13 @@ def test_peer_relative_does_not_explode_on_degenerate_peers():
     )
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
-    rel = peer_relative(field, peers, clip=8.0)
+    rel = peer_relative(field, peers)
     assert np.isnan(rel.loc[idx[0], "A"]), "identical peers (std 0) must give NaN"
-    assert abs(rel.loc[idx[1], "A"]) <= 8.0 + 1e-9, "near-degenerate std must be clipped"
+    floor = 0.10 * field.loc[idx[1]].std()
+    assert abs(rel.loc[idx[1], "A"] - (10.0 - 5.0) / floor) < 1e-6, "near-degenerate std must be floored"
 
     print("\n=== SANITY CHECK: peer-std explosion guard ===")
-    print(f"  identical peers -> {rel.loc[idx[0], 'A']}; near-degenerate -> {rel.loc[idx[1], 'A']:.1f} (clipped to +-8, not 1e13).")
+    print(f"  identical peers -> {rel.loc[idx[0], 'A']}; near-degenerate -> {rel.loc[idx[1], 'A']:.1f} (floored denominator, not 1e13).")
 
 
 # --------------------------------------------------------------------------- #
@@ -403,9 +401,9 @@ def test_real_panel_wellformed_and_bounded(fundamental_panel):
     assert set(vp) == {"f_fcf_to_ev_vs_peers", "f_roic_incl_intangibles_vs_peers"}
     assert not xs
 
-    # The two explicit peer views retain the established +/-8 policy.
+    # The two explicit peer views are neither trimmed nor clipped: finite, never inf.
     vp_vals = panel[vp].to_numpy()
-    assert np.nanmax(np.abs(vp_vals)) <= 8.0 + 1e-6, "vs_peers not winsorized"
+    assert np.isfinite(vp_vals[~np.isnan(vp_vals)]).all(), "vs_peers holds an infinite value"
     covered_raw = [c for c in ["f_profitMargins", "f_sales_yield", "f_returnOnEquity"] if c in panel.columns]
     assert covered_raw, "expected core raw fundamental features to be present"
     coverage = panel[covered_raw].notna().mean().max()
@@ -413,7 +411,7 @@ def test_real_panel_wellformed_and_bounded(fundamental_panel):
     assert panel[vp].notna().mean().max() > 0.02, "vs_peers has no coverage at all"
 
     print("\n=== SANITY CHECK: real fundamental panel ===")
-    print(f"  Exactly two approved peer views, no XS copies; |vs_peers| max={np.nanmax(np.abs(vp_vals)):.2f} (<=8).")
+    print(f"  Exactly two approved peer views, no XS copies; |vs_peers| max={np.nanmax(np.abs(vp_vals)):.2f} (no clip).")
     print(f"  Core raw feature coverage = {coverage:.0%}. Panel is well-formed.")
 
 

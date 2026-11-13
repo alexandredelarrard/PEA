@@ -16,7 +16,8 @@ forgetting to pass one:
     3.0  the LABEL          RMSE stability: a handful of extreme residuals must not
                             dominate the loss the model is fitted against.
     4.0  a CHARACTERISTIC   factor/regression weights: keep the tail, bound its leverage.
-    8.0  the PEER z         `panel.peer_relative`, already winsorised at 1%/99% downstream.
+    8.0  the OWN-HISTORY z  `self_history_z` (then winsorised per day at 1%/99%). The PEER z of
+                            `panel.peer_relative` carries no output clip at all.
 
 Likewise the ZERO-DISPERSION policy is explicit rather than incidental. On a day where
 every name shares one value, `sd == 0`, so an unguarded divide yields +/-inf which `clip`
@@ -71,6 +72,16 @@ def xs_rank_pct(df: pd.DataFrame) -> pd.DataFrame:
     return df.rank(axis=1, pct=True, method="average")
 
 
+def zscore[Pandas: (pd.DataFrame, pd.Series)](x: Pandas, centre: Pandas, scale: Pandas, clip: float | None = None) -> Pandas:
+    """THE z-score arithmetic every leg shares: `(x - centre) / scale`, optionally clipped to +/-`clip`.
+
+    The caller supplies the centre (peer weighted mean, universe mean or own trailing mean) and the
+    scale, already guarded for its own zero-dispersion policy; inf handling, input trimming and
+    output winsorizing stay with the caller, in its own order."""
+    z = x.sub(centre, axis=0).div(scale, axis=0)
+    return z if clip is None else z.clip(-clip, clip)
+
+
 def xs_z(df: pd.DataFrame, clip: float | None, *, zero_sd_to_nan: bool = False, eps: float = 1e-12) -> pd.DataFrame:
     """THE cross-sectional z-score, per date across tickers.
 
@@ -98,8 +109,7 @@ def xs_z(df: pd.DataFrame, clip: float | None, *, zero_sd_to_nan: bool = False, 
     else:
         # Guard against sd being zero or near-zero due to floating point precision
         sd = sd.mask(sd < eps, np.nan)
-    z = df.sub(mu, axis=0).div(sd, axis=0)
-    return z if clip is None else z.clip(-clip, clip)
+    return zscore(df, mu, sd, clip)
 
 
 def xs_group_dummies(group_map: dict[str, str], tickers: pd.Index) -> pd.DataFrame:
@@ -242,15 +252,14 @@ def self_history_z(
     for a new field.
 
     ⚠ WHY IT LIVES HERE. It is the fifth standardizer this module exists to hold in one place,
-    and it now has two consumers (the fundamentals valuation panel and the governance board
-    panel). `fundamental_features` keeps a private alias so its own call sites are unchanged.
+    and its consumers are the shared panel builder (fundamentals valuation panel, governance board
+    tenure) and the short-flow families.
     """
     if field_df is None or field_df.empty:
         return pd.DataFrame()
     mean = field_df.rolling(window, min_periods=min_periods).mean()
     std = field_df.rolling(window, min_periods=min_periods).std()
-    z = (field_df - mean) / std.where(std > 0)
-    z = z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
+    z = zscore(field_df, mean, std.where(std > 0), clip).replace([np.inf, -np.inf], np.nan)
     if output_since is not None:
         z = z.loc[z.index >= pd.Timestamp(output_since)]
     return winsorize_xs(z)  # trim per-day cross-sectional 1%/99% outliers

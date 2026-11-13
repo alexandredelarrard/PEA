@@ -25,6 +25,7 @@ from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
+from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
@@ -32,7 +33,6 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _derived_fields,
     _FiscalView,
     _pegy_fields,
-    _self_history_z,
     build_fundamental_feature_panel,
     load_notes_num_scoped,
 )
@@ -530,7 +530,7 @@ def test_yearly_ttm_features_computed_correctly() -> None:
 # 8. Valuation MEAN-REVERSION (self-history z-score)                           #
 # --------------------------------------------------------------------------- #
 def test_self_history_z_mean_reversion():
-    """`_self_history_z` z-scores each ticker vs its OWN trailing window: NaN
+    """`self_history_z` z-scores each ticker vs its OWN trailing window: NaN
     until min_periods, negative when the yield sits BELOW its own norm
     (expensive), positive when ABOVE (cheap). Strictly trailing -> no leak."""
     idx = pd.bdate_range("2020-01-01", periods=300)
@@ -539,7 +539,7 @@ def test_self_history_z_mean_reversion():
     vals = np.concatenate([np.full(200, 0.05), np.full(50, 0.02), np.full(50, 0.08)])
     yld = pd.DataFrame({"AAA": vals}, index=idx)
 
-    z = _self_history_z(yld, window=120, min_periods=60)
+    z = self_history_z(yld, window=120, min_periods=60)
 
     # insufficient history -> NaN
     assert z["AAA"].iloc[:59].isna().all(), "z must be NaN before min_periods"

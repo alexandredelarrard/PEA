@@ -29,6 +29,7 @@ from src.data_aggregate.utils.common.xs import (
     self_history_z,
     winsorize_xs,
     xs_rank_pct,
+    zscore,
 )
 
 
@@ -69,7 +70,7 @@ def _peer_z(df_values: pd.DataFrame, ticker: str, peers: dict, floor: pd.Series)
     # Peers that all report the same value cannot rank anything (NaN). The floor is applied after
     # that test, so only a negligible spread is floored, never an exactly-zero one.
     std = std.clip(lower=floor).where(std > 0)
-    return (df_values[ticker] - mean) / std
+    return zscore(df_values[ticker], mean, std)
 
 
 def peer_relative(field_df: pd.DataFrame, peer_dict: dict, winsorize_inputs: bool = False) -> pd.DataFrame:

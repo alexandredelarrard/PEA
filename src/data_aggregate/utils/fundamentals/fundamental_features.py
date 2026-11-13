@@ -27,9 +27,6 @@ from src.data_aggregate.utils.common.pit import (
     null_invalid_gross_profit_sentinels,
 )
 from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns, row_gate
-from src.data_aggregate.utils.common.xs import (
-    self_history_z,
-)
 from src.data_aggregate.utils.fundamentals.earnings_features import reported_events
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
@@ -143,11 +140,6 @@ def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -
         if part is not None and not part.empty:
             ev = ev - part.reindex(columns=mcap.columns).fillna(0.0)
     return ev
-
-
-#: The self-history z now lives in `common/xs.py` beside the other standardizers; this alias
-#: keeps every call site in this module (and its test) working unchanged.
-_self_history_z = self_history_z
 
 
 # --------------------------------------------------------------------------- #

@@ -193,8 +193,6 @@ class StepCubeInstitutionals(Step):
 
     def _ownership_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
-        activist_halflife = self._decay_halflife("act")
-        ownership_halflife = self._decay_halflife("bo")
 
         # Load the two schedules and independent global completeness frontiers.
         df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe)
@@ -202,18 +200,12 @@ class StepCubeInstitutionals(Step):
         complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
         complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
 
-        # Canonicalize events and apply schedule/identity masks in the builder.
+        # Count filings per schedule and apply each schedule's coverage mask in the builder.
         return build_ownership_feature_panel(
             frames,
             df_13d,
             df_13g,
-            decay_halflife_act=activist_halflife,
-            decay_halflife_bo=ownership_halflife,
             availability=self._availability,
             complete_through_13d=complete_through_13d,
             complete_through_13g=complete_through_13g,
         )
-
-    def _decay_halflife(self, family: str) -> float:
-        cfg = self._cfg.get("institutionals", {}).get("decay_halflife", {})
-        return float(cfg.get(family, 63))

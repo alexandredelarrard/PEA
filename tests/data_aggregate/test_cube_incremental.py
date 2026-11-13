@@ -609,12 +609,9 @@ def test_read_projection_covers_builder_needs():
         Tables.sec_short_volume_security: {"date", "source_symbol", "short_volume", "total_volume"},
         # the institutionals loader builds the ticker FTD series from the as-filed lines (`security_series.LINE_COLUMNS`)
         Tables.sec_fails_to_deliver_security: {"date", "trade_date", "cusip", "source_symbol", "fails_quantity", "fails_value", "period"},
-        # ownership_features (13D/13G). `accession_number` + `cusip` are the canonical-event
-        # key (a group files one 13D under many reporting persons; summing their
-        # `percent_of_class` would double-count the same block), and `filing_date` is the ONLY
-        # legal stamp -- `date_of_event` is never projected, which is what makes L4 structural.
-        Tables.sec_13d: {"ticker", "accession_number", "cusip", "filing_date", "is_amendment", "percent_of_class", "reporting_person_cik"},
-        Tables.sec_13g: {"ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik"},
+        # ownership_features (13D/13G) counts filings per (ticker, accession_number) on the filing_date stamp.
+        Tables.sec_13d: {"ticker", "accession_number", "filing_date"},
+        Tables.sec_13g: {"ticker", "accession_number", "filing_date"},
         # the two per-person DEF 14A children, read by StepCubeGovernance. `accession_number`
         # is in the directors set because the per-FILING aggregates key on it (an `as_of` can
         # carry two filings), and every one of the six Item 402(k) components is required

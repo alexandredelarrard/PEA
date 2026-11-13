@@ -472,7 +472,7 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
             "f_ic_shortvol_ratio_20d_vs_peers": np.linspace(1.0, -1.0, 8),
             "f_ic_inst_holders_xs": np.linspace(0.1, 0.9, 8),
             "f_ic_inst_flow_to_mcap": np.linspace(-0.01, 0.01, 8),
-            "f_ic_act_initial_13d": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "f_ic_act_13d_count_126d_z": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         }
     )
     metadata = _write_snapshot(baseline, frame)
@@ -519,7 +519,7 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
     assert len(decisions) == len(frame.columns) - 2
     assert decisions.set_index("baseline_column").loc["f_ic_inst_holders_xs", "requested_decision"] == "remove_cross_sectional_normalization"
     assert decisions.set_index("baseline_column").loc["f_ic_inst_flow_to_mcap", "requested_decision"] == "remove_characteristic"
-    assert decisions.set_index("baseline_column").loc["f_ic_act_initial_13d", "kind"] == "event"
+    assert decisions.set_index("baseline_column").loc["f_ic_act_13d_count_126d_z", "kind"] == "normalized"
     assert set(peers["characteristic"]) == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
     assert set(peers["status"]) == {"abstain"}
     assert set(schema["removed"]) == {"f_ic_inst_holders_xs", "f_ic_inst_flow_to_mcap"}
@@ -535,7 +535,7 @@ def test_analyze_uses_configured_source_eligibility_and_reconciles_artifacts(tmp
             "date": np.tile(dates, 2),
             "ticker": ["AAA"] * 10 + ["BBB"] * 10,
             "f_ic_inst_holders": [np.nan, 1.0, 2.0, np.nan, 4.0, 5.0, 6.0, 7.0, np.nan, np.nan] + [np.nan] * 10,
-            "f_ic_act_initial_13d": [np.nan, np.nan, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [np.nan] * 10,
+            "f_ic_act_13d_count_126d_z": [np.nan, np.nan, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [np.nan] * 10,
         }
     )
     metadata = _write_snapshot(snapshot, frame)

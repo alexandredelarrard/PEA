@@ -16,11 +16,9 @@ data_availability:
 
     sec_13d:
       __all__: "1995-09-06"  # First usable historical Schedule 13D event.
-      percent_of_class: "2024-12-17"  # Structured Schedule 13D/G mandate.
 
     sec_13g:
       __all__: "1996-01-26"  # First usable historical Schedule 13G event.
-      percent_of_class: "2024-12-17"  # Earlier isolated values do not establish coverage.
 
     sec_short_volume_security:
       __all__: "2018-08-01"  # First continuously retrievable FINRA RegSHO history.

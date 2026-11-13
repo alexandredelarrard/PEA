@@ -7,7 +7,7 @@ import pytest
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import ROLE_BUY_FEATURES, InsiderCoverage
-from src.data_aggregate.utils.institutionals.insider_positions import position_units
+from src.data_aggregate.utils.institutionals.insider_positions import _accumulate_intervals, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, officer_role
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
@@ -984,3 +984,15 @@ def test_cross_account_pool_requires_compatible_share_units(title: str, event_ev
     print(
         "SANITY: single-account ratios stay scale-free; pooled split units must be certified or share one economic date; genuine normalized pool is80/400."
     )
+
+
+def test_interval_sum_is_exact_when_overlapping_lots_expire() -> None:
+    """Known truth: days with no active lot sum to exactly 0, so a zero-holdings denominator never reads as positive."""
+    values = np.array([0.1, 0.2, 1234567.891, 0.3, 77.7])
+    start = np.array([0, 1, 2, 3, 3])
+    stop = np.array([5, 4, 6, 5, 4])
+    out = _accumulate_intervals(values, start, stop, np.zeros(5, dtype=int), (9, 1))[:, 0]
+    assert out[6:].tolist() == [0.0, 0.0]
+    assert out[5] == pytest.approx(1234567.891)
+    assert out[3] == pytest.approx(values.sum())
+    print("sanity: interval sums return to exactly 0 after the last expiry; no float residue reaches the denominator test")

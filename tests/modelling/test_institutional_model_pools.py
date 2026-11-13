@@ -58,12 +58,8 @@ def test_institutional_43_candidates_declared_and_selected_without_fitting(
         "f_ic_shortvol_market_coverage",
         "f_ic_ftd_to_adv20",
         "f_ic_ftd_persistence_30d",
-        "f_ic_act_initial_13d",
-        "f_ic_act_amendment_intensity",
-        "f_ic_act_repeat_activist",
-        "f_ic_bo_new_holder",
-        "f_ic_bo_escalation_13g_to_13d",
-        "f_ic_bo_de_escalation_13d_to_13g",
+        "f_ic_act_13d_count_126d_z",
+        "f_ic_bo_13g_count_126d_z",
     ]
     config_dir = Path(__file__).resolve().parents[2] / "configs"
     config = read_config(str(config_dir))

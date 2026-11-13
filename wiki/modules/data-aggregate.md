@@ -240,7 +240,7 @@ Adoption requires a full rebuild of both affected parts, cube reassembly and fre
 
 ## Institutional corrections adopted 2026-10-25
 
-The institutional part carries 43 predictors: 27 insider (13 existing plus 14 role-split purchase fields), 8 short-volume, 2 FTD and 6 unchanged Schedule13D/G event fields. The separate SEC13F and superinvestor part keeps its own contract. No extract-DAG step is added.
+The institutional part carries 43 predictors: 27 insider (13 existing plus 14 role-split purchase fields), 8 short-volume, 2 FTD and 2 Schedule 13D/13G filing-flow z-scores (`ic_act_13d_count_126d_z`, `ic_bo_13g_count_126d_z`: filings per accession on the ticker over the trailing 126 trading days, standardised across the universe on each date and clipped at +/-5 so filing-regime changes cancel; no filer identity or `date_of_event`). The separate SEC13F and superinvestor part keeps its own contract. No extract-DAG step is added.
 
 | Concern | Current calculation and support |
 | --- | --- |

@@ -10,6 +10,8 @@ import pandas as pd
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
 
+MICRO = 1_000_000
+
 
 def position_units(trades: pd.DataFrame, df_factor: pd.DataFrame | None) -> pd.DataFrame:
     """Put unclassed transaction-day shares and holdings in terminal units, `q * F_T / F_d`; keep source execution USD.
@@ -212,8 +214,13 @@ def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex, value: str) -> pd.DataFra
 
 
 def _accumulate_intervals(values: np.ndarray, start: np.ndarray, stop: np.ndarray, columns: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    """Sum each value on its half-open grid interval using start/stop differences."""
-    differences = np.zeros(shape)
-    np.add.at(differences, (start, columns), values)
-    np.add.at(differences, (stop, columns), -values)
-    return differences.cumsum(axis=0)[:-1]
+    """Sum each value on its half-open grid interval using start/stop differences, exactly.
+
+    Values are accumulated as integer micro-shares: a float add-then-subtract leaves ~1e-6 residue where the
+    true sum is 0, and a positive-denominator test then reads that residue as holdings.
+    """
+    scaled = np.rint(values * MICRO).astype(np.int64)
+    differences = np.zeros(shape, dtype=np.int64)
+    np.add.at(differences, (start, columns), scaled)
+    np.add.at(differences, (stop, columns), -scaled)
+    return differences.cumsum(axis=0)[:-1] / MICRO

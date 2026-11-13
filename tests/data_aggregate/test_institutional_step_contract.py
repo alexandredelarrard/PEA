@@ -65,12 +65,8 @@ INSTITUTIONAL_COLUMNS = (
     "f_ic_shortvol_market_coverage",
     "f_ic_ftd_to_adv20",
     "f_ic_ftd_persistence_30d",
-    "f_ic_act_initial_13d",
-    "f_ic_act_amendment_intensity",
-    "f_ic_act_repeat_activist",
-    "f_ic_bo_new_holder",
-    "f_ic_bo_escalation_13g_to_13d",
-    "f_ic_bo_de_escalation_13d_to_13g",
+    "f_ic_act_13d_count_126d_z",
+    "f_ic_bo_13g_count_126d_z",
 )
 
 
@@ -257,10 +253,10 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
 
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: panel("ic_insider_buy_value_mcap_60d"))
     monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_ratio_5d"))
-    monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_initial_13d"))
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_13d_count_126d_z"))
     result = step.build_panel()
     assert step._store is sqlite_store
-    assert calls == ["ic_insider_buy_value_mcap_60d", "ic_shortvol_ratio_5d", "ic_act_initial_13d"]
+    assert calls == ["ic_insider_buy_value_mcap_60d", "ic_shortvol_ratio_5d", "ic_act_13d_count_126d_z"]
     assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
     present = ["f_" + name for name in calls]
     assert result[present].eq(0.0).all().all()
@@ -330,7 +326,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     monkeypatch.setattr(institutional_step, "clean_transactions", clean)
     monkeypatch.setattr(institutional_step, "position_units", rebase)
-    fields = ["f_ic_insider_distinct_buyers_120d", "f_ic_shortvol_ratio_5d", "f_ic_act_initial_13d"]
+    fields = ["f_ic_insider_distinct_buyers_120d", "f_ic_shortvol_ratio_5d", "f_ic_act_13d_count_126d_z"]
     monkeypatch.setattr(institutional_step, "build_insider_feature_panel", lambda frames, *args: panel(frames, fields[0], 2.0))
     monkeypatch.setattr(institutional_step, "build_short_flow_feature_panel", lambda frames, *args: panel(frames, fields[1], 0.5))
     monkeypatch.setattr(institutional_step, "build_ownership_feature_panel", lambda frames, *args, **kwargs: panel(frames, fields[2], 0.0))

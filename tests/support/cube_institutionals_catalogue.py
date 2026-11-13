@@ -60,14 +60,10 @@ INSTITUTIONALS["ic_insider_management_position_change_60d"] = (
 _add_group(
     "beneficial_ownership",
     (
-        "ic_act_initial_13d",
-        "ic_act_amendment_intensity",
-        "ic_act_repeat_activist",
-        "ic_bo_new_holder",
-        "ic_bo_escalation_13g_to_13d",
-        "ic_bo_de_escalation_13d_to_13g",
+        "ic_act_13d_count_126d_z",
+        "ic_bo_13g_count_126d_z",
     ),
-    "Schedule 13D/13G event history; ownership numerics are intentionally excluded",
+    "Schedule 13D (active) and 13G (passive) filing counts over the trailing 126 trading days, standardised across the universe each date and clipped at +/-5; filer identity is not used",
 )
 _add_group(
     "short_flow",

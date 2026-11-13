@@ -297,12 +297,8 @@ lgbm:
   - f_ec_questions_tone_delta
 
   # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-  - f_ic_act_amendment_intensity
-  - f_ic_act_initial_13d
-  - f_ic_act_repeat_activist
-  - f_ic_bo_de_escalation_13d_to_13g
-  - f_ic_bo_escalation_13g_to_13d
-  - f_ic_bo_new_holder
+  - f_ic_act_13d_count_126d_z
+  - f_ic_bo_13g_count_126d_z
   - f_ic_ftd_persistence_30d
   - f_ic_ftd_to_adv20
   - f_ic_insider_buy_value_mcap_180d
@@ -546,7 +542,6 @@ lgbm:
     - f_ec_questions_only_qq_distance
 
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-    - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_ceo_buy_mcap_180d
@@ -704,7 +699,6 @@ lgbm:
     - f_ec_questions_only_qq_distance
 
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-    - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_ceo_buy_mcap_180d
@@ -847,7 +841,6 @@ lgbm:
     - f_ec_questions_only_qq_distance
 
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-    - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_ceo_buy_mcap_180d

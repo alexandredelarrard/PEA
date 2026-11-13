@@ -151,7 +151,6 @@ random_forest:
     - f_ec_questions_only_qq_distance
 
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-    - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_ceo_buy_mcap_180d
@@ -311,7 +310,6 @@ random_forest:
     - f_ec_questions_only_qq_distance
 
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-    - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_ceo_buy_mcap_180d
@@ -452,7 +450,6 @@ random_forest:
     - f_ec_questions_only_qq_distance
 
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
-    - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_ceo_buy_mcap_180d

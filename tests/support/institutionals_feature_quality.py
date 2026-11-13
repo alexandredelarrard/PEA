@@ -121,11 +121,6 @@ REMOVED_CHARACTERISTICS.update(
 _EVENT = {
     "ic_inst_cluster_buying",
     "ic_insider_cluster_buy_120d",
-    "ic_act_initial_13d",
-    "ic_act_repeat_activist",
-    "ic_bo_new_holder",
-    "ic_bo_escalation_13g_to_13d",
-    "ic_bo_de_escalation_13d_to_13g",
     "ic_shortvol_high_x_weak_price",
     "ic_shortvol_high_x_strong_price",
 }
@@ -154,8 +149,9 @@ _BOUNDED = {
     "ic_ftd_persistence_30d",
 }
 _NORMALIZED = {
+    "ic_act_13d_count_126d_z",
+    "ic_bo_13g_count_126d_z",
     "ic_insider_management_position_change_60d",
-    "ic_act_amendment_intensity",
     "ic_ftd_to_adv20",
     "ic_insider_buy_value_mcap_180d",
     "ic_insider_buy_value_mcap_60d",
@@ -1253,7 +1249,7 @@ def _feature_eligibility_start(
             ((Tables.sec_fails_to_deliver_security, None),) if characteristic.startswith("ic_ftd_") else ((Tables.sec_short_volume_security, None),)
         )
     elif family == "beneficial_ownership":
-        dependencies = ((Tables.sec_13d, None),) if characteristic.startswith("ic_act_") else ((Tables.sec_13d, None), (Tables.sec_13g, None))
+        dependencies = ((Tables.sec_13d, None),) if characteristic.startswith("ic_act_") else ((Tables.sec_13g, None),)
     else:
         raise KeyError(f"No coverage dependency declaration for {characteristic!r} ({family!r})")
     starts = [availability.source_date(table, field) for table, field in dependencies]

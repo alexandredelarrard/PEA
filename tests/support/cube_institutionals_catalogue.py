@@ -20,43 +20,37 @@ _add_group(
     "insider",
     (
         "ic_insider_buy_value_mcap_60d",
+        "ic_insider_buy_value_mcap_120d",
         "ic_insider_buy_value_mcap_180d",
+        "ic_insider_c_suite_buy_mcap_180d",
+        "ic_insider_management_buy_mcap_180d",
+        "ic_insider_ten_pct_buy_mcap_180d",
         "ic_insider_distinct_buyers_120d",
-        "ic_insider_cluster_buy_120d",
-        "ic_insider_ceo_buy_mcap_60d",
-        "ic_insider_cfo_buy_mcap_60d",
-        "ic_insider_coo_buy_mcap_60d",
-        "ic_insider_president_buy_mcap_60d",
-        "ic_insider_chair_buy_mcap_60d",
-        "ic_insider_csuite_other_buy_mcap_60d",
-        "ic_insider_vp_buy_mcap_60d",
-        "ic_insider_other_buy_mcap_60d",
-        "ic_insider_ceo_buy_mcap_180d",
-        "ic_insider_cfo_buy_mcap_180d",
-        "ic_insider_coo_buy_mcap_180d",
-        "ic_insider_president_buy_mcap_180d",
-        "ic_insider_chair_buy_mcap_180d",
-        "ic_insider_csuite_other_buy_mcap_180d",
-        "ic_insider_vp_buy_mcap_180d",
-        "ic_insider_other_buy_mcap_180d",
-        "ic_insider_director_buy_mcap_180d",
-        "ic_insider_purchase_pct_prior",
-        "ic_insider_owner_surprise_120d",
+        "ic_insider_distinct_sellers_120d",
+        "ic_insider_buyer_breadth_120d",
+        "ic_insider_net_buy_ratio_60d",
+        "ic_insider_net_buy_ratio_120d",
         "ic_insider_net_buy_ratio_180d",
-        "ic_insider_discretionary_sell_mcap_60d",
-        "ic_insider_planned_sell_mcap_60d",
     ),
     "Forms 3/4/5 filing-date history",
 )
-INSTITUTIONALS["ic_insider_management_position_change_60d"] = (
-    "insider",
-    "Trailing 60-calendar-day net open-market P/S shares of supported direct CEO/CFO/COO common-stock accounts "
-    "divided by pooled starting holdings, counted once per active owner/share-class account.",
-    "Scales disclosed management buying and selling by the holdings supporting those trades; each lot keeps its "
-    "original disclosure expiry and public corrections apply prospectively.",
-    "Positive means net accumulation and negative means net reduction. Pooling requires compatible share classes "
-    "and units; unsupported balances and uncertain shares abstain, while corroborated complete quiet windows may be zero.",
-)
+for _name in (
+    "ic_insider_purchase_pct_prior_60d",
+    "ic_insider_purchase_pct_prior_120d",
+    "ic_insider_purchase_pct_prior_180d",
+    "ic_insider_c_suite_purchase_pct_prior_180d",
+    "ic_insider_management_purchase_pct_prior_180d",
+    "ic_insider_ten_pct_purchase_pct_prior_180d",
+):
+    INSTITUTIONALS[_name] = (
+        "insider",
+        "Trailing-window net open-market P minus S shares of the supported direct common-stock accounts that traded, divided by "
+        "those accounts' pooled holdings just before their first window trade; all insiders or one population.",
+        "Scales disclosed insider buying and selling by the holdings supporting those trades; each lot keeps its "
+        "original disclosure expiry and public corrections apply prospectively.",
+        "Positive means net accumulation and negative means net reduction (never below -1). Pooling requires compatible share "
+        "classes and units; every trading account must be supported, so unsupported balances abstain.",
+    )
 _add_group(
     "beneficial_ownership",
     (

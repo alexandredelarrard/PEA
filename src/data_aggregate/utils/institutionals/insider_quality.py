@@ -71,6 +71,28 @@ ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 OTHER_OFFICER = "other_named_officer"
 
+#: Insider populations, disjoint and ordered by precedence (a lower code wins a row). `POP_UNKNOWN` is an officer whose
+#: title says nothing, so it may belong to any population; `POP_OTHER` appears only in all-insider features.
+POP_UNKNOWN, POP_C_SUITE, POP_MANAGEMENT, POP_TEN_PCT, POP_OTHER = 0, 1, 2, 3, 4
+
+#: Cleaned `officer_title` -> population, first match wins. A director flag or a blank-title 10%-owner is resolved from the
+#: flags in `_assign_population`, not here. Former/retired titles never match.
+TITLE_POPULATIONS: tuple[tuple[int, str], ...] = (
+    (
+        POP_C_SUITE,
+        r"\bCHIEF\b|\bCHF\b|\bC\s*[A-Z]\s*O\b|\bPRINCIPAL\s+(?:EXEC|FIN|ACC|OPER)|\bFOUNDER\b"
+        r"|\b(?:E|EX|SE)\s*V\s*P\b|\bEXEC(?:UTIVE)?\b|\bCHAIR|\bCHARIMAN\b|\bCOB\b"
+        r"|(?<!VICE )(?<!VICE-)(?<!GROUP )(?<!V )(?<!SR )(?<!SENIOR )(?<!ASSISTANT )(?<!ASST )\bPRES(?:IDENT)?\b",
+    ),
+    (
+        POP_MANAGEMENT,
+        r"\b[A-Z]{0,3}\s*V\s*P\b|\bVICE\b|\bSENIOR\b|\bSR\b|\bPRES(?:IDENT)?\b|\bGENERAL\s+(?:COUNSEL|MANAGER)\b|\bGEN\s+COUNSEL\b|\bCOUNSEL\b"
+        r"|\bGC\b|\bTREASURER\b|\b(?:CONTROLLER|COMPTROLLER)\b|\bSECRETARY\b|\bSTRATEG|\bVENTURES\b|\bMANAGING\b|\bDIRECTOR\b|\bOFFICER\b|\bHEAD\b|\bPARTNER\b",
+    ),
+)
+_TITLE_POPULATIONS_COMPILED = tuple((code, re.compile(pattern, re.I)) for code, pattern in TITLE_POPULATIONS)
+_FORMER_TITLE = re.compile(r"\b(?:FORMER|FORMERLY|RETIRED|EMERITUS)\b", re.I)
+
 #: Roles whose title may be followed by a named functional area (a VP of Sales is still a VP of the issuer).
 _NO_TAIL_CHECK = frozenset({ROLE_VP_LEVEL})
 
@@ -113,6 +135,25 @@ def officer_role(title: object) -> str:
             return name
         return OTHER_OFFICER
     return OTHER_OFFICER
+
+
+def title_population(title: object) -> int:
+    """Population code a cleaned `officer_title` alone resolves to, else `POP_OTHER`."""
+    clean = clean_officer_title(title)
+    if not clean or _FORMER_TITLE.search(clean):
+        return POP_OTHER
+    return next((code for code, rx in _TITLE_POPULATIONS_COMPILED if rx.search(clean)), POP_OTHER)
+
+
+def _assign_population(df_rows: pd.DataFrame) -> pd.Series:
+    """Disjoint population per row: title C-suite, unresolved officer, then director or management title, then 10% owner."""
+    from_title = _clean_map_dict(df_rows["officer_title_clean"], clean_func=title_population).astype(int)
+    unresolved = df_rows["is_officer"].eq(1) & (df_rows["role_unknown"] | df_rows["officer_title_clean"].map(role_needs_evidence).astype(bool))
+    population = pd.Series(POP_OTHER, index=df_rows.index)
+    population = population.mask(df_rows["is_ten_pct_owner"].eq(1), POP_TEN_PCT)
+    population = population.mask(df_rows["is_director"].eq(1) | from_title.eq(POP_MANAGEMENT), POP_MANAGEMENT)
+    population = population.mask(unresolved & from_title.eq(POP_OTHER), POP_UNKNOWN)
+    return population.mask(from_title.eq(POP_C_SUITE), POP_C_SUITE)
 
 
 def clean_officer_title(value: object) -> str:
@@ -212,8 +253,7 @@ def _canonical_inputs(df_insider: pd.DataFrame, df_roles: pd.DataFrame | None) -
     df_rows["role"] = _clean_map_dict(df_rows["officer_title_clean"], clean_func=officer_role)
     df_rows["role_unknown"] = _clean_map_dict(df_rows["officer_title_clean"], clean_func=unresolved_role) & ~df_rows["is_officer"].eq(0)
     df_rows = _fill_prior_roles(df_rows, df_roles)
-    df_rows["is_management"] = df_rows["role"].isin([ROLE_CEO, ROLE_CFO, ROLE_COO])
-    df_rows["is_management"] &= ~df_rows["is_officer"].eq(0)
+    df_rows["population"] = _assign_population(df_rows)
     return df_rows
 
 

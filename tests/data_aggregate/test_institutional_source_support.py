@@ -32,27 +32,26 @@ def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
         "is_director",
         "is_10b5_1",
         "in_exercise_package",
-        "is_management",
+        "population",
         "owner_cik",
         "security_title",
         "security_type",
         "direct_indirect",
     ]
-    activity = pd.DataFrame(columns=columns).astype({"in_exercise_package": bool, "is_management": bool, "role_unknown": bool})
-    names = [
-        "ic_insider_net_buy_ratio_180d",
-        "ic_insider_owner_surprise_120d",
-        "ic_insider_purchase_pct_prior",
-        "ic_insider_management_position_change_60d",
-        "ic_insider_distinct_buyers_120d",
-    ]
+    activity = pd.DataFrame(columns=columns).astype({"in_exercise_package": bool, "population": int, "role_unknown": bool})
+    names = list(insider.EMISSION)
+    ratios = [name for name in names if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
+    counts = [name for name in names if name not in ratios]
     fields = {name: pd.DataFrame(np.nan, index=idx, columns=["AAA"]) for name in names}
     coverage = insider.InsiderCoverage.from_availability(None, idx.max())
     insider._observe_quiet_windows(fields, activity, pd.Series({"AAA": pd.Timestamp("2020-01-01")}), frames, coverage)
-    for name in names[:-1]:
+    for name in ratios:
         assert fields[name].isna().all().all(), f"Undefined ratio {name} must remain NULL under a certified quiet window"
-    assert fields[names[-1]].eq(0).all().all()
-    print("SANITY: certified quiet counts are zero; net0/0, no scored buys and no eligible prior-position ratios remain NULL.")
+    for name in counts:
+        assert fields[name].eq(0).all().all(), f"Observed quiet count {name} must be zero"
+    print(
+        f"SANITY: {len(counts)} certified quiet counts and dollar sums are zero; {len(ratios)} undefined ratios (net 0/0, no prior holdings, no traders) remain NULL."
+    )
 
 
 def test_insider_frontier_is_the_whole_table_newest_filing_markers_included(sqlite_store: DataStore) -> None:

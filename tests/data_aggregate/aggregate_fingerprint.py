@@ -1066,7 +1066,7 @@ def compute() -> dict:
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
     df_insider = build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=share_events)
-    for column in ("f_ic_insider_purchase_pct_prior", "f_ic_insider_management_position_change_60d"):
+    for column in ("f_ic_insider_purchase_pct_prior_60d", "f_ic_insider_purchase_pct_prior_180d"):
         assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
     out["panel.insider"] = frame_digest(df_insider)
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))

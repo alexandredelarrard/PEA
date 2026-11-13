@@ -16,7 +16,7 @@ def _account_result(df_raw: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.Dat
     df_trades = position_units(df_trades, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_trades["ticker"], idx.max())))
     df_flows = diagnostics.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_trades, df_flows)
-    return df_trades, df_positions, cumulative_positions(df_trades, df_positions, df_flows, idx, 60)
+    return df_trades, df_positions, cumulative_positions(df_trades, df_positions, df_flows, idx, 60, {"ic_insider_purchase_pct_prior_60d": None})
 
 
 @pytest.mark.parametrize("action", [None, "0001-01-01", "2024-02-01"], ids=["missing", "ancient", "post-filing"])
@@ -56,7 +56,7 @@ def test_unknown_action_cannot_improve_a_mixed_common_account(code: str, action:
     ]
     idx = pd.date_range("2024-01-20", "2024-04-03")
     _, _, result = _account_result(source_frame(rows), idx)
-    values = result["ic_insider_management_position_change_60d"]["AAA"]
+    values = result["ic_insider_purchase_pct_prior_60d"]["AAA"]
     assert values.loc["2024-01-21"] == pytest.approx(0.3)
     assert values.loc["2024-01-22":"2024-01-25"].isna().all()
     assert values.loc["2024-04-02"] == pytest.approx(0.1)
@@ -126,7 +126,7 @@ def test_only_proved_independent_derivative_award_leaves_common_account_supporte
     ]
     idx = pd.date_range("2024-01-20", "2024-01-25")
     _, _, result = _account_result(source_frame(rows), idx)
-    values = result["ic_insider_management_position_change_60d"]["AAA"]
+    values = result["ic_insider_purchase_pct_prior_60d"]["AAA"]
     assert values.loc["2024-01-21"] == pytest.approx(0.3)
     if independent:
         assert values.loc["2024-01-22":].eq(0.3).all()
@@ -219,7 +219,7 @@ def test_blocker_account_metadata_amendment_changes_support_only_when_public(sam
         )
     idx = pd.date_range("2024-01-20", "2024-01-26")
     _, _, result = _account_result(source_frame(rows), idx)
-    values = result["ic_insider_management_position_change_60d"]["AAA"]
+    values = result["ic_insider_purchase_pct_prior_60d"]["AAA"]
     assert values.loc["2024-01-21"] == pytest.approx(0.3)
     assert values.loc["2024-01-22":"2024-01-23"].isna().all()
     if amendment_case in {"ambiguous", "partial", "changed-membership"}:

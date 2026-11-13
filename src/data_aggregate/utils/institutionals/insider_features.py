@@ -20,16 +20,11 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
     FLAG_PCT_SHARES_OUTSTANDING,
-    OTHER_OFFICER,
-    ROLE_CEO,
-    ROLE_CFO,
-    ROLE_CHAIR,
-    ROLE_COO,
-    ROLE_OTHER_C_SUITE,
-    ROLE_PRESIDENT,
-    ROLE_VP_LEVEL,
+    POP_C_SUITE,
+    POP_MANAGEMENT,
+    POP_TEN_PCT,
+    POP_UNKNOWN,
     account_other_flows,
-    common_stock_mask,
     report_oversized,
     security_class,
 )
@@ -39,67 +34,55 @@ from src.data_store.schema import Tables
 
 _log = logging.getLogger(__name__)
 
-#: Trailing calendar-day windows for the dense features. 20d is deliberately absent.
+#: Trailing calendar-day windows of the dense features; the population features use `POPULATION_WINDOW` only.
 WINDOW_60, WINDOW_120, WINDOW_180 = 60, 120, 180
+WINDOWS = (WINDOW_60, WINDOW_120, WINDOW_180)
+POPULATION_WINDOW = WINDOW_180
 
-#: Open-market purchases split by the buyer's role: feature name -> (`role`, trailing window days). The roles partition
-#: every buy, so for each window the role features sum to `ic_insider_buy_value_mcap_<window>d`; a buyer whose role is
-#: unresolved makes every role feature unknown for the window.
-ROLE_BUY_FEATURES: dict[str, tuple[str, int]] = {
-    f"ic_insider_{suffix}_buy_mcap_{days}d": (role, days)
-    for days in (WINDOW_60, WINDOW_180)
-    for suffix, role in {
-        "ceo": ROLE_CEO,
-        "cfo": ROLE_CFO,
-        "coo": ROLE_COO,
-        "president": ROLE_PRESIDENT,
-        "chair": ROLE_CHAIR,
-        "csuite_other": ROLE_OTHER_C_SUITE,
-        "vp": ROLE_VP_LEVEL,
-        "other": OTHER_OFFICER,
-    }.items()
+#: Window of the distinct-insider counts and of the breadth ratio built from them.
+BREADTH_WINDOW = WINDOW_120
+
+#: Disjoint insider populations (see `insider_quality.TITLE_POPULATIONS`): output suffix -> population code. Insiders in
+#: none of them appear only in the all-insider features.
+POPULATIONS: dict[str, int] = {"c_suite": POP_C_SUITE, "management": POP_MANAGEMENT, "ten_pct": POP_TEN_PCT}
+
+#: feature -> (population code or None for all insiders, trailing window days).
+BUY_VALUE_FEATURES: dict[str, tuple[int | None, int]] = {
+    **{f"ic_insider_buy_value_mcap_{days}d": (None, days) for days in WINDOWS},
+    **{f"ic_insider_{name}_buy_mcap_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in POPULATIONS.items()},
 }
+PURCHASE_PCT_FEATURES: dict[str, tuple[int | None, int]] = {
+    **{f"ic_insider_purchase_pct_prior_{days}d": (None, days) for days in WINDOWS},
+    **{f"ic_insider_{name}_purchase_pct_prior_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in POPULATIONS.items()},
+}
+NET_BUY_RATIO_FEATURES: dict[str, int] = {f"ic_insider_net_buy_ratio_{days}d": days for days in WINDOWS}
+DISTINCT_BUYERS = f"ic_insider_distinct_buyers_{BREADTH_WINDOW}d"
+DISTINCT_SELLERS = f"ic_insider_distinct_sellers_{BREADTH_WINDOW}d"
+BUYER_BREADTH = f"ic_insider_buyer_breadth_{BREADTH_WINDOW}d"
 
 #: Insider magnitudes, ratios, counts, and event intensities stay in their economic units.
 #: Same-day cross-sectional ranks would replace those units with universe-composition noise.
-EMISSION: dict[str, str] = {
-    "ic_insider_buy_value_mcap_60d": "raw",
-    "ic_insider_buy_value_mcap_180d": "raw",
-    "ic_insider_distinct_buyers_120d": "raw",  # 98.1% ties: a 0-8 integer count
-    "ic_insider_cluster_buy_120d": "raw",  # 98.3% ties: the same, gated
-    **dict.fromkeys(ROLE_BUY_FEATURES, "raw"),
-    "ic_insider_director_buy_mcap_180d": "raw",
-    "ic_insider_purchase_pct_prior": "raw",
-    "ic_insider_owner_surprise_120d": "raw",  # already a percentile in [0, 1]
-    "ic_insider_net_buy_ratio_180d": "raw",  # bounded [-1, 1] by construction
-    "ic_insider_discretionary_sell_mcap_60d": "raw",
-    "ic_insider_planned_sell_mcap_60d": "raw",
-    "ic_insider_management_position_change_60d": "raw",
-}
+EMISSION: dict[str, str] = dict.fromkeys(
+    [*BUY_VALUE_FEATURES, *PURCHASE_PCT_FEATURES, *NET_BUY_RATIO_FEATURES, DISTINCT_BUYERS, DISTINCT_SELLERS, BUYER_BREADTH], "raw"
+)
 
 #: No `_vs_peers` leg anywhere in this family, for the same reason as `ic_super_*` (D25): an
 #: insider purchase is an event about ONE company, and expressing it relative to a peer
 #: basket that mostly has no event at all measures the basket's emptiness, not the signal.
 
-#: Cluster definition: distinct buyers within `CLUSTER_WINDOW_DAYS`, at least `CLUSTER_MIN`.
-CLUSTER_WINDOW_DAYS, CLUSTER_MIN = 120, 2
-
-#: D16 hard cutoffs. Both are the measured first row of their own evidence, not a guess, and
-#: both emit NaN -- never 0 -- before the date. A 0 would read as "no insider bought", which
-#: is a claim the data cannot support for a year it does not cover.
+#: Hard cutoff: the first stored insider quarter. Emits NaN, never 0, before the date: a 0 would read as
+#: "no insider bought", a claim the data cannot support for a year it does not cover.
 INSIDER_FLOOR = pd.Timestamp("2006-01-03")
-TEN_B5_1_FLOOR = pd.Timestamp("2023-04-01")
 
 
 @dataclass(frozen=True)
 class InsiderCoverage:
-    """Independent public-source/plan floors and the observation frontier: `complete_through` is the newest
+    """Public-source floor and the observation frontier: `complete_through` is the newest
     stored insider filing date (whole table, markers included); a quiet window after it is unknown."""
 
     complete_through: pd.Timestamp | None = None
     availability: InstitutionalAvailability | None = None
     insider_floor: pd.Timestamp = INSIDER_FLOOR
-    plan_floor: pd.Timestamp = TEN_B5_1_FLOOR
     identity_intervals: pd.DataFrame | None = None
 
     @classmethod
@@ -110,7 +93,6 @@ class InsiderCoverage:
             complete_through,
             availability,
             availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR,
-            availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR,
             identity_intervals,
         )
 
@@ -144,28 +126,28 @@ def build_insider_feature_panel(
     df_positions = _daily_positions(df_position_trades, df_other_flows)
 
     # Calculate raw feature groups before applying source and identity masks.
-    insider_floor, ten_b5_floor = coverage.insider_floor, coverage.plan_floor
+    seen = _first_filing(df_buys, df_sells, idx)
     fields = {
-        **_dense_fields(df_buys, df_sells, idx, df_mcap, ten_b5_floor),
-        **_breadth_fields(df_buys, idx),
-        **_sparse_fields(df_buys, idx, df_mcap),
-        **cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, WINDOW_60),
+        **_value_fields(df_buys, idx, df_mcap, seen),
+        **_net_ratio_fields(df_buys, df_sells, idx, seen),
+        **_breadth_fields(df_buys, df_sells, idx),
     }
-    fields = _gate_dates(fields, idx, insider_floor)
+    for days in WINDOWS:
+        names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
+        fields.update(cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names))
+    fields = _gate_dates(fields, idx, coverage.insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures.
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
     df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
     _observe_quiet_windows(fields, df_activity, diag["source_first"], frames, coverage)
 
-    # Propagate uncertainty through dollar windows, account balances and prior-owner ranks.
+    # Propagate uncertainty through dollar windows and account balances.
     df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), df_unsupported], ignore_index=True)
     df_unknown = pd.concat([df_unpriced, df_uncertain], ignore_index=True)
     unpriced_masks = _unpriced_masks(df_unknown, idx)
     _add_position_uncertainty(unpriced_masks, df_uncertain, df_positions, idx)
-    _add_owner_uncertainty(unpriced_masks, df_unknown, df_buys, idx)
     _mask_unknown_windows(fields, unpriced_masks)
-    _mask_unknown_windows(fields, {"ic_insider_management_position_change_60d": _management_uncertainty(df_activity, idx)})
 
     # Emit the existing raw float32 fields with own-price availability.
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(df_trades), len(df_buys), len(df_sells))
@@ -180,51 +162,25 @@ def _add_position_uncertainty(masks: dict[str, pd.DataFrame], df_uncertain: pd.D
         return
 
     # Intersect account-position visibility with the uncertain disclosure's active window.
-    df_unknown = df_uncertain[keys + ["visible_from", "visible_until"]].copy()
-    df_unknown["visible_until"] = _window_stop(df_uncertain, WINDOW_60)
-    df_dependencies = df_positions.merge(df_unknown, on=keys, suffixes=("", "_unknown"))
-    df_dependencies["visible_from"] = df_dependencies[["visible_from", "visible_from_unknown"]].max(axis=1)
-    df_dependencies["visible_until"] = df_dependencies[["visible_until", "visible_until_unknown"]].min(axis=1)
-    df_dependencies = df_dependencies[df_dependencies["visible_until"].isna() | df_dependencies["visible_from"].lt(df_dependencies["visible_until"])]
-    df_seen = pd.DataFrame(True, index=idx, columns=pd.Index(sorted(df_dependencies["ticker"].unique()), name="ticker"))
+    for days in WINDOWS:
+        df_unknown = df_uncertain[keys + ["visible_from", "visible_until"]].copy()
+        df_unknown["visible_until"] = _window_stop(df_uncertain, days)
+        df_dependencies = df_positions.merge(df_unknown, on=keys, suffixes=("", "_unknown"))
+        df_dependencies["visible_from"] = df_dependencies[["visible_from", "visible_from_unknown"]].max(axis=1)
+        df_dependencies["visible_until"] = df_dependencies[["visible_until", "visible_until_unknown"]].min(axis=1)
+        df_dependencies = df_dependencies[
+            df_dependencies["visible_until"].isna() | df_dependencies["visible_from"].lt(df_dependencies["visible_until"])
+        ]
+        df_seen = pd.DataFrame(True, index=idx, columns=pd.Index(sorted(df_dependencies["ticker"].unique()), name="ticker"))
 
-    # Extend each field's existing unknown mask without erasing other uncertainty.
-    for name, selector in (
-        ("ic_insider_purchase_pct_prior", df_dependencies["buy_shares"].gt(0)),
-        ("ic_insider_management_position_change_60d", df_dependencies["is_management"]),
-    ):
-        df_affected = _rolling(df_dependencies[selector], idx, WINDOW_60, None, df_seen).gt(0)
-        df_previous = masks.get(name, pd.DataFrame())
-        masks[name] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
-
-
-def _add_owner_uncertainty(masks: dict[str, pd.DataFrame], df_unknown: pd.DataFrame, df_buys: pd.DataFrame, idx: pd.DatetimeIndex) -> None:
-    """Mask later ranks that depend on an earlier uncertain purchase by the same owner."""
-    if df_unknown.empty or "owner_cik" not in df_unknown or "owner_cik" not in df_buys:
-        return
-
-    # Find earlier purchases actually visible when the later purchase was disclosed.
-    df_pairs = df_buys[["ticker", "owner_cik", "anchor", "visible_from", "visible_until"]].merge(
-        df_unknown.loc[df_unknown["code"].eq("P"), ["owner_cik", "anchor", "visible_from", "visible_until"]],
-        on="owner_cik",
-        suffixes=("", "_prior"),
-    )
-    affected = (
-        df_pairs["owner_cik"].ne("")
-        & df_pairs["anchor_prior"].lt(df_pairs["anchor"])
-        & df_pairs["visible_from_prior"].le(df_pairs["visible_from"])
-        & (df_pairs["visible_until_prior"].isna() | df_pairs["visible_until_prior"].gt(df_pairs["visible_from"]))
-    )
-    df_dependencies = df_pairs.loc[affected, ["ticker", "anchor", "visible_from", "visible_until"]].drop_duplicates()
-    if df_dependencies.empty:
-        return
-
-    # Propagate the dependency through the same 120-day rank window.
-    columns = pd.Index(sorted(df_dependencies["ticker"].unique()), name="ticker")
-    df_seen = pd.DataFrame(True, index=idx, columns=columns)
-    df_affected = _rolling(df_dependencies, idx, WINDOW_120, None, df_seen).gt(0)
-    df_previous = masks.get("ic_insider_owner_surprise_120d", pd.DataFrame())
-    masks["ic_insider_owner_surprise_120d"] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
+        # Extend each field's existing unknown mask without erasing other uncertainty.
+        for name, (code, window) in PURCHASE_PCT_FEATURES.items():
+            if window != days:
+                continue
+            df_selected = df_dependencies if code is None else df_dependencies[df_dependencies["population"].isin([code, POP_UNKNOWN])]
+            df_affected = _rolling(df_selected, idx, days, None, df_seen).gt(0)
+            df_previous = masks.get(name, pd.DataFrame())
+            masks[name] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
 
 
 def _gate_dates(fields: dict[str, pd.DataFrame], idx: pd.DatetimeIndex, insider_floor: pd.Timestamp) -> dict[str, pd.DataFrame]:
@@ -273,65 +229,69 @@ def _observe_quiet_windows(
     """Fill only proven inactivity; unsupported active rows never become zero.
 
     Any issuer disclosure corroborates coverage prospectively. The table-wide frontier, a full
-    named source window, current listing and required denominator/flag coverage are also
-    necessary. Unknown officer/director attribution cannot establish role inactivity.
+    named source window and current listing are also necessary. A population feature stays unknown
+    while an unresolved officer is active in its window.
     """
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     columns = pd.Index(frames.universe, name="ticker")
     listed = _listed(frames.close_split, idx, columns)
-    insider_floor, plan_floor, frontier = coverage.insider_floor, coverage.plan_floor, coverage.complete_through
-    buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
-    role_unknown = activity["role_unknown"]
-    specifications = {
-        "ic_insider_buy_value_mcap_60d": (WINDOW_60, buy),
-        "ic_insider_buy_value_mcap_180d": (WINDOW_180, buy),
-        "ic_insider_distinct_buyers_120d": (WINDOW_120, buy),
-        "ic_insider_cluster_buy_120d": (WINDOW_120, buy),
-        **{name: (days, buy & (activity["role"].eq(role) | role_unknown)) for name, (role, days) in ROLE_BUY_FEATURES.items()},
-        "ic_insider_director_buy_mcap_180d": (WINDOW_180, buy & ~activity["is_director"].eq(0)),
-        "ic_insider_purchase_pct_prior": (WINDOW_60, buy),
-        "ic_insider_owner_surprise_120d": (WINDOW_120, buy),
-        "ic_insider_net_buy_ratio_180d": (WINDOW_180, buy | sell),
-        "ic_insider_discretionary_sell_mcap_60d": (WINDOW_60, sell & ~activity["is_10b5_1"].eq(1) & ~activity["in_exercise_package"]),
-        "ic_insider_planned_sell_mcap_60d": (WINDOW_60, sell & ~activity["is_10b5_1"].eq(0)),
-        "ic_insider_management_position_change_60d": (WINDOW_60, (buy | sell) & _possible_management(activity)),
-    }
+    frontier = coverage.complete_through
     seen = pd.DataFrame(True, index=idx, columns=columns)
     corroborated = pd.DataFrame({ticker: idx >= day for ticker, day in source_first.items()}, index=idx).reindex(columns=columns, fill_value=False)
-    for name, (window, selector) in specifications.items():
+    ratios = {*PURCHASE_PCT_FEATURES, *NET_BUY_RATIO_FEATURES, BUYER_BREADTH}
+    for name, (window, selector) in _window_specifications(activity).items():
         active = _rolling(activity[selector], idx, window, None, seen).fillna(0).gt(0)
         if frontier is None:
             if name in fields:
                 fields[name] = fields[name].reindex(index=idx, columns=columns).where(active)
             continue
-        floor = max(insider_floor, plan_floor) if "sell_mcap" in name else insider_floor
-        observed = _net_buy_mask(idx, columns, listed, floor, coverage, window) & corroborated
+        observed = _net_buy_mask(idx, columns, listed, coverage.insider_floor, coverage, window) & corroborated
         frame = fields.get(name, pd.DataFrame(index=idx)).reindex(index=idx, columns=columns)
-        ratios = {
-            "ic_insider_purchase_pct_prior",
-            "ic_insider_owner_surprise_120d",
-            "ic_insider_net_buy_ratio_180d",
-            "ic_insider_management_position_change_60d",
-        }
-        if name == "ic_insider_net_buy_ratio_180d":
-            bv = _rolling(activity[buy], idx, WINDOW_180, "value", seen).fillna(0.0)
-            sv = _rolling(activity[sell], idx, WINDOW_180, "value", seen).fillna(0.0)
+        if name in NET_BUY_RATIO_FEATURES:
+            bv = _rolling(activity[activity["code"].eq("P")], idx, window, "value", seen).fillna(0.0)
+            sv = _rolling(activity[activity["code"].eq("S")], idx, window, "value", seen).fillna(0.0)
             verified = (bv - sv) / (bv + sv).where((bv + sv).gt(0))
             frame = frame.where(~observed, verified)
         fields[name] = (frame if name in ratios else frame.mask(observed & ~active, 0.0)).where(active | observed)
-    unknown_roles = activity[role_unknown & buy]
-    for name, (_, days) in ROLE_BUY_FEATURES.items():
-        if name in fields:
-            fields[name] = fields[name].mask(_rolling(unknown_roles, idx, days, None, seen).gt(0))
-    unknown_flags = activity[sell & activity["is_10b5_1"].isna()]
-    for name in ("ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d"):
-        if name in fields:
-            fields[name] = fields[name].mask(_rolling(unknown_flags, idx, WINDOW_60, None, seen).gt(0))
-    for name, selector, days in (
-        ("ic_insider_director_buy_mcap_180d", buy & activity["is_director"].isna(), WINDOW_180),
-        ("ic_insider_distinct_buyers_120d", buy & activity["owner_cik"].eq(""), WINDOW_120),
-        ("ic_insider_cluster_buy_120d", buy & activity["owner_cik"].eq(""), WINDOW_120),
-    ):
+    _mask_unresolved_rows(fields, activity, idx, seen)
+
+
+def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Series]]:
+    """feature -> (window days, the activity rows that make its window observed); a population includes unresolved officers."""
+    buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
+    traded = buy | sell
+    specifications: dict[str, tuple[int, pd.Series]] = {}
+    for name, (code, days) in BUY_VALUE_FEATURES.items():
+        specifications[name] = (days, buy & _member(activity, code))
+    for name, (code, days) in PURCHASE_PCT_FEATURES.items():
+        specifications[name] = (days, traded & _member(activity, code))
+    for name, days in NET_BUY_RATIO_FEATURES.items():
+        specifications[name] = (days, traded)
+    specifications[DISTINCT_BUYERS] = (BREADTH_WINDOW, buy)
+    specifications[DISTINCT_SELLERS] = (BREADTH_WINDOW, sell)
+    specifications[BUYER_BREADTH] = (BREADTH_WINDOW, traded)
+    return specifications
+
+
+def _member(rows: pd.DataFrame, code: int | None) -> pd.Series:
+    """Rows of a population or of unresolved population (which may belong to it); every row for `None`."""
+    if code is None:
+        return pd.Series(True, index=rows.index)
+    return rows["population"].isin([code, POP_UNKNOWN])
+
+
+def _mask_unresolved_rows(fields: dict[str, pd.DataFrame], activity: pd.DataFrame, idx: pd.DatetimeIndex, seen: pd.DataFrame) -> None:
+    """Unknown while an active row's population or owner identity is unresolved."""
+    buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
+    unresolved, anonymous = activity["population"].eq(POP_UNKNOWN), activity["owner_cik"].eq("")
+    rules = [
+        (name, (buy if name in BUY_VALUE_FEATURES else buy | sell) & unresolved, days)
+        for name, (code, days) in {**BUY_VALUE_FEATURES, **PURCHASE_PCT_FEATURES}.items()
+        if code is not None
+    ]
+    rules += [(DISTINCT_BUYERS, buy & anonymous, BREADTH_WINDOW), (DISTINCT_SELLERS, sell & anonymous, BREADTH_WINDOW)]
+    rules += [(BUYER_BREADTH, (buy | sell) & anonymous, BREADTH_WINDOW)]
+    for name, selector, days in rules:
         if name in fields:
             fields[name] = fields[name].mask(_rolling(activity[selector], idx, days, None, seen).gt(0))
 
@@ -341,41 +301,32 @@ def _observe_quiet_windows(
 # --------------------------------------------------------------------------- #
 
 
-def _dense_fields(
-    buys: pd.DataFrame,
-    sells: pd.DataFrame,
-    idx: pd.DatetimeIndex,
-    mcap: pd.DataFrame | None,
-    ten_b5_floor: pd.Timestamp = TEN_B5_1_FLOOR,
-) -> dict[str, pd.DataFrame]:
-    """Dense trailing sums over calendar windows, sampled onto
-    the trading grid, so a day only ever sees transactions already filed by it."""
-    out: dict[str, pd.DataFrame] = {}
-    seen = _first_filing(buys, sells, idx)
-    buy_val_180 = _rolling(buys, idx, WINDOW_180, "value", seen)
-    sell_val_180 = _rolling(sells, idx, WINDOW_180, "value", seen)
+def _value_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame | None, seen: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Purchase dollars over market cap, summed over trailing calendar windows and sampled onto the trading grid,
+    so a day only ever sees transactions already filed by it. A population is observed from its first purchase."""
+    if mcap is None or mcap.empty or buys.empty:
+        return {}
+    out = {}
+    for name, (code, days) in BUY_VALUE_FEATURES.items():
+        selected = buys if code is None else buys[buys["population"].eq(code)]
+        if selected.empty:
+            continue
+        first = selected.groupby("ticker")["visible_from"].min()
+        eligible = seen.loc[:, first.index] & pd.DataFrame({ticker: idx >= day for ticker, day in first.items()}, index=idx)
+        out[name] = _action_sum(selected, idx, days, eligible)
+    return out
 
-    if mcap is not None and not mcap.empty:
-        out["ic_insider_buy_value_mcap_180d"] = _action_sum(buys, idx, WINDOW_180, seen)
 
-    bv = buy_val_180.where(_rolling(buys, idx, WINDOW_180, None, seen).gt(0))
-    sv = sell_val_180.where(_rolling(sells, idx, WINDOW_180, None, seen).gt(0))
-    denom = bv + sv
+def _net_ratio_fields(buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex, seen: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Buy minus sell dollars over their sum, bounded [-1, 1], per window.
 
-    # Unobserved opposite legs require inventory proof; an actual 0/0 always stays undefined.
-    # The bounded [-1, 1] range is what keeps this one `raw`.
-    out["ic_insider_net_buy_ratio_180d"] = ((bv - sv) / denom.where(denom > 0)).replace([np.inf, -np.inf], np.nan)
-
-    if mcap is not None and not mcap.empty:
-        planned = sells["is_10b5_1"]
-        # Discretionary requires BOTH: not on a plan, and not the sell leg of an
-        # exercise-and-sell package (35.0% of all `S` rows). A NaN plan flag is not a 0 --
-        # before 2023-04-01 the field was not compulsory, and the floor removes that region
-        # rather than letting "unknown" masquerade as "discretionary".
-        disc = sells[planned.eq(0) & ~sells["in_exercise_package"].astype(bool)]
-        for name, sub in (("ic_insider_discretionary_sell_mcap_60d", disc), ("ic_insider_planned_sell_mcap_60d", sells[planned.eq(1)])):
-            frame = _action_sum(sub, idx, WINDOW_60, seen)
-            out[name] = frame.where(pd.Series(idx >= ten_b5_floor, index=idx), axis=0)
+    An unobserved opposite leg requires inventory proof; an actual 0/0 always stays undefined."""
+    out = {}
+    for name, days in NET_BUY_RATIO_FEATURES.items():
+        bv = _rolling(buys, idx, days, "value", seen).where(_rolling(buys, idx, days, None, seen).gt(0))
+        sv = _rolling(sells, idx, days, "value", seen).where(_rolling(sells, idx, days, None, seen).gt(0))
+        denom = bv + sv
+        out[name] = ((bv - sv) / denom.where(denom > 0)).replace([np.inf, -np.inf], np.nan)
     return out
 
 
@@ -466,45 +417,25 @@ def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd
     """Feature windows made unknown by an excluded, unpriced open-market transaction."""
     if events.empty:
         return {}
-    groups = (
-        (("P",), WINDOW_60, ("ic_insider_buy_value_mcap_60d", *(name for name, (_, days) in ROLE_BUY_FEATURES.items() if days == WINDOW_60))),
-        (
-            ("P",),
-            WINDOW_180,
-            (*(name for name, (_, days) in ROLE_BUY_FEATURES.items() if days == WINDOW_180), "ic_insider_director_buy_mcap_180d"),
-        ),
-        (
-            ("P",),
-            WINDOW_120,
-            ("ic_insider_distinct_buyers_120d", "ic_insider_cluster_buy_120d", "ic_insider_owner_surprise_120d"),
-        ),
-        (
-            ("P",),
-            WINDOW_180,
-            (
-                "ic_insider_buy_value_mcap_180d",
-                "ic_insider_buy_shares_so_180d",
-            ),
-        ),
-        (("P", "S"), WINDOW_180, ("ic_insider_net_buy_ratio_180d",)),
-        (("S",), WINDOW_60, ("ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d")),
-    )
     columns = pd.Index(sorted(events["ticker"].astype(str).unique()), name="ticker")
     seen = pd.DataFrame(True, index=idx, columns=columns)
     masks: dict[str, pd.DataFrame] = {}
-    for codes, days, names in groups:
-        affected_events = events[events["code"].isin(codes)]
-        if affected_events.empty:
-            continue
-        affected = _rolling(affected_events, idx, days, None, seen).gt(0)
-        masks.update(dict.fromkeys(names, affected))
-    if "is_management" in events:
-        quantity_unknown = events[events["direct_indirect"].eq("D") & events["quality_uncertain"].fillna(False)]
-        if not quantity_unknown.empty:
-            masks["ic_insider_purchase_pct_prior"] = _rolling(quantity_unknown, idx, WINDOW_60, None, seen).gt(0)
-        management = events[events["is_management"] & events["direct_indirect"].eq("D") & events["quality_uncertain"].fillna(False)]
-        if not management.empty:
-            masks["ic_insider_management_position_change_60d"] = _rolling(management, idx, WINDOW_60, None, seen).gt(0)
+    groups: list[tuple[str, tuple[str, ...], int, int | None]] = [
+        *((name, ("P",), days, code) for name, (code, days) in BUY_VALUE_FEATURES.items()),
+        *((name, ("P", "S"), days, None) for name, days in NET_BUY_RATIO_FEATURES.items()),
+        (DISTINCT_BUYERS, ("P",), BREADTH_WINDOW, None),
+        (DISTINCT_SELLERS, ("S",), BREADTH_WINDOW, None),
+        (BUYER_BREADTH, ("P", "S"), BREADTH_WINDOW, None),
+    ]
+    for name, codes, days, code in groups:
+        affected_events = events[events["code"].isin(codes) & _member(events, code)]
+        if not affected_events.empty:
+            masks[name] = _rolling(affected_events, idx, days, None, seen).gt(0)
+    quantity_unknown = events[events["direct_indirect"].eq("D") & events["quality_uncertain"].fillna(False)]
+    for name, (code, days) in PURCHASE_PCT_FEATURES.items():
+        affected_events = quantity_unknown[_member(quantity_unknown, code)]
+        if not affected_events.empty:
+            masks[name] = _rolling(affected_events, idx, days, None, seen).gt(0)
     return masks
 
 
@@ -514,40 +445,6 @@ def _mask_unknown_windows(fields: dict[str, pd.DataFrame], masks: dict[str, pd.D
             field = fields[name]
             aligned = unknown.reindex(index=field.index, columns=field.columns, fill_value=False).astype(bool)
             fields[name] = field.mask(aligned)
-
-
-def _possible_management(activity: pd.DataFrame) -> pd.Series:
-    """Potential direct common management scope, excluding only proved indirect, joint or noncommon accounts."""
-    owners = pd.to_numeric(activity.get("n_reporting_owners", pd.Series(np.nan, index=activity.index)), errors="coerce")
-    titles = activity["security_title"].fillna("").astype(str).str.strip()
-    common = common_stock_mask(titles) | titles.eq("")
-    kinds = activity["security_type"].fillna("").astype(str).str.lower()
-    return (
-        (activity["is_management"] | activity["role_unknown"])
-        & ~activity["direct_indirect"].eq("I")
-        & ~(owners.gt(1) & owners.mod(1).eq(0))
-        & common
-        & ~kinds.eq("deriv")
-    )
-
-
-def _management_uncertainty(activity: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Unsupported or unclassified potential managers invalidate finite partial pools over their public windows."""
-    owners = pd.to_numeric(activity.get("n_reporting_owners", pd.Series(np.nan, index=activity.index)), errors="coerce")
-    unknown = (
-        activity["role_unknown"]
-        | activity["owner_cik"].eq("")
-        | activity["transaction_day"].isna()
-        | ~activity["direct_indirect"].eq("D")
-        | ~owners.eq(1)
-        | ~activity["shares_n"].gt(0)
-        | activity["scope_unknown"].fillna(False)
-        | activity["quality_uncertain"].fillna(False)
-    )
-    df_unknown = activity.loc[activity["code"].isin(["P", "S"]) & _possible_management(activity) & unknown]
-    columns = pd.Index(sorted(activity["ticker"].unique()), name="ticker")
-    seen = pd.DataFrame(True, index=idx, columns=columns)
-    return _rolling(df_unknown, idx, WINDOW_60, None, seen).gt(0)
 
 
 def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: PriceFrames, identity_intervals: pd.DataFrame | None) -> pd.DataFrame:
@@ -660,60 +557,37 @@ def _action_sum(trades: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, s
 # --------------------------------------------------------------------------- #
 
 
-def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame | None) -> dict[str, pd.DataFrame]:
-    """Cumulative dollar intensities and a dollar-weighted historical rank."""
-    if buys.empty:
-        return {}
-    seen = _first_filing(buys, buys.iloc[:0], idx)
+def _breadth_fields(buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+    """Distinct buyers and sellers in `BREADTH_WINDOW` days, and buyers over all distinct insiders who traded.
+
+    Rolling distinct counts, deliberately not decayed: a decayed sum of events is not a count of people. Breadth is
+    undefined (NaN) when nobody traded in the window."""
+    buyers, sellers = _distinct_owners(buys, idx), _distinct_owners(sells, idx)
+    insiders = _distinct_owners(pd.concat([buys, sells], ignore_index=True), idx)
     out = {}
-    if mcap is not None and not mcap.empty:
-        out["ic_insider_buy_value_mcap_60d"] = _action_sum(buys, idx, WINDOW_60, seen)
-        roles = {
-            **{name: (buys["role"].eq(role), days) for name, (role, days) in ROLE_BUY_FEATURES.items()},
-            "ic_insider_director_buy_mcap_180d": (buys["is_director"].eq(1), WINDOW_180),
-        }
-        for name, (selector, days) in roles.items():
-            selected = buys[selector]
-            if not selected.empty:
-                role_seen = seen.loc[:, selected["ticker"].unique()]
-                # A role's flow becomes observed only at its first eligible disclosure.
-                first = selected.groupby("ticker")["visible_from"].min()
-                role_seen = role_seen & pd.DataFrame({ticker: idx >= day for ticker, day in first.items()}, index=idx)
-                out[name] = _action_sum(selected, idx, days, role_seen)
-    surprise = _owner_surprise(buys)
-    if surprise is not None and not surprise.empty:
-        scores = surprise.assign(_num=surprise["value"] * surprise["surprise"])
-        numerator = _rolling(scores, idx, WINDOW_120, "_num", seen)
-        denominator = _rolling(scores, idx, WINDOW_120, "value", seen)
-        out["ic_insider_owner_surprise_120d"] = numerator / denominator.where(denominator.gt(0))
+    if buyers is not None:
+        out[DISTINCT_BUYERS] = buyers
+    if sellers is not None:
+        out[DISTINCT_SELLERS] = sellers
+    if insiders is not None:
+        bought = buyers.reindex_like(insiders).fillna(0.0) if buyers is not None else insiders * 0.0
+        out[BUYER_BREADTH] = bought / insiders.where(insiders.gt(0))
     return out
 
 
-def _breadth_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
-    """#31 distinct buyers in 120 days, and #32 the same count gated at `CLUSTER_MIN`.
-
-    Rolling distinct counts, deliberately not decayed (a departure from D13): a decayed sum of
-    events is not a count of people, and this family has no `_vs_peers` leg, so the sparse-flag
-    failure D13 guards against cannot occur here.
-    """
-    if buys.empty or "owner_cik" not in buys.columns:
-        return {}
-    df_counted = buys.assign(start=buys["visible_from"], stop=_window_stop(buys, CLUSTER_WINDOW_DAYS))
+def _distinct_owners(records: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame | None:
+    """Per-ticker rolling distinct owner count of `records`, or None when there is nothing to count."""
+    if records.empty or "owner_cik" not in records.columns:
+        return None
+    df_counted = records.assign(start=records["visible_from"], stop=_window_stop(records, BREADTH_WINDOW))
     df_per_owner = df_counted.drop_duplicates(["start", "stop", "ticker", "owner_cik"])
     frames = {tkr: _rolling_distinct(g, idx) for tkr, g in df_per_owner.groupby("ticker")}
     df_grid = pd.DataFrame({t: s for t, s in frames.items() if s is not None})
-    if df_grid.empty:
-        return {}
-    return {
-        "ic_insider_distinct_buyers_120d": df_grid,
-        # Gated, not masked: below the threshold the answer is "no cluster" = 0, which is
-        # a fact, while before the first purchase it is unknown = NaN, inherited above.
-        "ic_insider_cluster_buy_120d": df_grid.where(df_grid >= CLUSTER_MIN, 0.0).where(df_grid.notna()),
-    }
+    return None if df_grid.empty else df_grid
 
 
 def _rolling_distinct(g: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.Series | None:
-    """Distinct owners buying in the trailing `CLUSTER_WINDOW_DAYS`, stepped onto `idx`.
+    """Distinct owners in the trailing `BREADTH_WINDOW` days, stepped onto `idx`.
 
     Exact rather than approximate. Each record counts on `[start, stop)` (its visible days
     inside the window after its anchor), so the count changes only on a start or a stop day;
@@ -747,7 +621,7 @@ def _rolling_distinct(g: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.Series | Non
         counts[k] = distinct
 
     s = pd.Series(counts, index=pd.DatetimeIndex(points)).reindex(pd.DatetimeIndex(points).union(idx)).ffill().fillna(0.0).reindex(idx)
-    # NaN before the ticker's first purchase: "nobody has ever bought this name" and "the
+    # NaN before the ticker's first record: "nobody has ever traded this name" and "the
     # window has emptied" are different facts, and only the second is a zero.
     return s.where(idx >= first)
 
@@ -790,9 +664,7 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
         "visible_until",
         "starting",
         "net_shares",
-        "buy_shares",
-        "value",
-        "is_management",
+        "population",
     ]
     if trades.empty or "shares_owned_after" not in trades:
         return pd.DataFrame(columns=columns)
@@ -802,8 +674,6 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
         return pd.DataFrame(columns=columns)
     df_rows["klass"] = security_class(df_rows["security_title"])
     df_rows["delta"] = df_rows["shares_n"].where(df_rows["code"].eq("P"), -df_rows["shares_n"])
-    df_rows["buy_shares"] = df_rows["shares_n"].where(df_rows["code"].eq("P"), 0.0)
-    df_rows["buy_value"] = df_rows["value"].where(df_rows["code"].eq("P"), 0.0)
     df_rows["missing_after"] = df_rows["shares_owned_after"].isna()
     keys = ["ticker", "owner_cik", "klass", "transaction_day"]
     df_rows["other_day"] = pd.NaT
@@ -825,9 +695,7 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
         missing_after=("missing_after", "max"),
         terminal=("shares_owned_after", "first"),
         net_shares=("delta", "sum"),
-        buy_shares=("buy_shares", "sum"),
-        value=("buy_value", "sum"),
-        is_management=("is_management", "max"),
+        population=("population", "min"),
         other_day=("other_day", "min"),
     )
     fast = (
@@ -900,47 +768,10 @@ def _account_day_versions(df_group: pd.DataFrame, account: Mapping[str, object],
             visible_until=points[i + 1] if i + 1 < len(points) else pd.NaT,
             starting=start,
             net_shares=float(df_visible["delta"].sum()),
-            buy_shares=float(df_visible["buy_shares"].sum()),
-            value=float(df_visible["buy_value"].sum()),
-            is_management=bool(df_visible["is_management"].any()),
+            population=int(df_visible["population"].min()),
         )
         records.append(record)
     return records
-
-
-def _owner_surprise(ev: pd.DataFrame) -> pd.DataFrame | None:
-    """Each purchase's percentile among that OWNER's own strictly earlier purchases (no look-ahead).
-
-    The prior set of a record is that owner's earlier-anchored records visible on its own
-    `visible_from`, so a later restatement never re-ranks it. An owner's first purchase has no
-    prior distribution and is NaN, never 0.5.
-    """
-    if "owner_cik" not in ev.columns:
-        return None
-    df_purchases = ev.dropna(subset=["value"]).sort_values(["owner_cik", "anchor"], kind="stable")
-    if df_purchases.empty:
-        return None
-    df_purchases = df_purchases[df_purchases["owner_cik"].notna() & df_purchases["owner_cik"].ne("")]
-    df_purchases["surprise"] = _visible_prior_rank(df_purchases)
-    return df_purchases.dropna(subset=["surprise"])
-
-
-def _visible_prior_rank(d: pd.DataFrame) -> pd.Series:
-    """Fraction of each record's prior set (see `_owner_surprise`) at or below its value; `d` is sorted by owner then anchor."""
-    out = pd.Series(np.nan, index=d.index, dtype=float)
-    for _, group in d.groupby("owner_cik", sort=False):
-        if len(group) < 2:
-            continue
-        anchor = group["anchor"].to_numpy(dtype="datetime64[ns]")
-        start = group["visible_from"].to_numpy(dtype="datetime64[ns]")
-        stop = group["visible_until"].to_numpy(dtype="datetime64[ns]")
-        value = group["value"].to_numpy(dtype=float)
-        prior = (anchor[None, :] < anchor[:, None]) & (start[None, :] <= start[:, None])
-        prior &= np.isnat(stop)[None, :] | (stop[None, :] > start[:, None])
-        count = prior.sum(axis=1)
-        below = (prior & (value[None, :] <= value[:, None])).sum(axis=1)
-        out.loc[group.index] = below / np.where(count > 0, count, np.nan)
-    return out
 
 
 # --------------------------------------------------------------------------- #

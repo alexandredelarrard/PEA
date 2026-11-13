@@ -287,8 +287,7 @@ def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsuppor
     df_panel = _build_action_cap([source], df_close, df_history)
     unknown = [
         "f_ic_insider_buy_value_mcap_60d",
-        "f_ic_insider_purchase_pct_prior",
-        "f_ic_insider_management_position_change_60d",
+        "f_ic_insider_purchase_pct_prior_60d",
     ]
 
     assert not df_positions["units_known"].any()

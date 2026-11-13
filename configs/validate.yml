@@ -92,14 +92,40 @@ validate:
         f_ic_bo_: sec_13g
       pit_observed_zero_sources:
         f_ic_ftd_: sec_fails_to_deliver_security
+        f_ic_insider_net_buy_ratio_60d: insider_transactions
+        f_ic_insider_net_buy_ratio_120d: insider_transactions
         f_ic_insider_net_buy_ratio_180d: insider_transactions
       bounds:
+        f_ic_insider_net_buy_ratio_60d:
+        - -1.0
+        - 1.0
+        f_ic_insider_net_buy_ratio_120d:
+        - -1.0
+        - 1.0
         f_ic_insider_net_buy_ratio_180d:
         - -1.0
         - 1.0
-        f_ic_insider_owner_surprise_120d:
+        f_ic_insider_buyer_breadth_120d:
         - 0.0
         - 1.0
+        f_ic_insider_purchase_pct_prior_60d:
+        - -1.0
+        - 1000.0
+        f_ic_insider_purchase_pct_prior_120d:
+        - -1.0
+        - 1000.0
+        f_ic_insider_purchase_pct_prior_180d:
+        - -1.0
+        - 1000.0
+        f_ic_insider_c_suite_purchase_pct_prior_180d:
+        - -1.0
+        - 1000.0
+        f_ic_insider_management_purchase_pct_prior_180d:
+        - -1.0
+        - 1000.0
+        f_ic_insider_ten_pct_purchase_pct_prior_180d:
+        - -1.0
+        - 1000.0
         f_ic_shortvol_ratio_5d:
         - 0.0
         - 1.0

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.quotes import lookup_asof
-from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
+from src.data_aggregate.utils.institutionals.insider_quality import POP_UNKNOWN, account_other_flows, security_class
 
 MICRO = 1_000_000
 
@@ -34,18 +35,23 @@ def position_units(trades: pd.DataFrame, df_factor: pd.DataFrame | None) -> pd.D
 
 
 def cumulative_positions(
-    trades: pd.DataFrame, positions: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.DatetimeIndex, days: int
+    trades: pd.DataFrame,
+    positions: pd.DataFrame,
+    other_flows: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    days: int,
+    populations: Mapping[str, int | None],
 ) -> dict[str, pd.DataFrame]:
-    """Pool window shares only when every eligible management account is supported.
+    """Net shares bought minus sold over holdings before the first window trade, one panel per output name.
 
-    Each lot retains its own original disclosure expiry. The denominator is the latest
-    included economic-day terminal minus active net shares, after balance-chain checks.
-    Silent executives are absent; unsupported or possibly eligible management stays unknown.
+    `populations` maps each output name to its population code (`None` = all insiders). A cell pools every direct
+    account that traded in the window and is known only when each of them is supported; each lot keeps its own
+    original disclosure expiry. The denominator is the latest included economic-day terminal minus active net shares,
+    after balance-chain checks. An account of unresolved population blocks every population output.
     """
     if trades.empty or idx.empty:
         return {}
     multiplicity = pd.to_numeric(trades.get("n_reporting_owners", pd.Series(np.nan, index=trades.index)), errors="coerce")
-    role_unknown = trades.get("role_unknown", trades["officer_title_clean"].eq("") & trades["is_officer"].eq(1)).fillna(False)
     account_known = (
         trades["direct_indirect"].eq("D")
         & trades["owner_cik"].ne("")
@@ -62,37 +68,23 @@ def cumulative_positions(
     day_groups = {} if positions.empty else dict(tuple(positions.groupby(keys, sort=False)))
     df_flows = pd.concat([other_flows, trades.loc[trades["transaction_day"].isna()]], ignore_index=True)
     flows = {} if df_flows.empty else dict(tuple(df_flows.dropna(subset=["day"]).groupby("ticker", sort=False)))
-    possible = (trades["is_management"] | role_unknown) & ~trades["direct_indirect"].eq("I")
-    possible &= ~(multiplicity.gt(1) & multiplicity.mod(1).eq(0)) & (~account_known | role_unknown)
-    intervals = _possible_intervals(trades[possible], days)
+    intervals: list[dict[str, object]] = []
     for key, group in rows.groupby(keys, sort=False):
         account_days = day_groups.get(key, positions.iloc[:0])
         df_flows = flows.get(key[0], pd.DataFrame(columns=["ticker", "owner_cik", "transaction_day", "day"]))
         blocked = account_other_flows(df_flows, key[0], key[1])
         intervals.extend(_account_intervals(cast(tuple[str, str, str], key), group, account_days, blocked, idx))
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
-    unknown = pd.DataFrame(np.nan, index=idx, columns=columns)
-    out = {}
-    if rows["code"].eq("P").any():
-        out["ic_insider_purchase_pct_prior"] = unknown.copy()
-    if trades["is_management"].any() or possible.any():
-        out["ic_insider_management_position_change_60d"] = unknown.copy()
+    out = {name: pd.DataFrame(np.nan, index=idx, columns=columns) for name in populations} if not rows.empty else {}
     if intervals:
         events = pd.DataFrame(intervals)
-        if "ic_insider_purchase_pct_prior" in out:
-            out["ic_insider_purchase_pct_prior"] = _pool(events[events["buy"].gt(0)], idx, "buy").reindex(columns=columns)
-        if "ic_insider_management_position_change_60d" in out:
-            out["ic_insider_management_position_change_60d"] = _pool(events[events["management"]], idx, "net").reindex(columns=columns)
+        for name, code in populations.items():
+            events_in = events
+            if code is not None:
+                events_in = events[events["population"].isin([code, POP_UNKNOWN])]
+                events_in = events_in.assign(net=events_in["net"].where(events_in["population"].ne(POP_UNKNOWN)))
+            out[name] = _pool(events_in, idx).reindex(columns=columns)
     return out
-
-
-def _possible_intervals(trades: pd.DataFrame, days: int) -> list[dict[str, object]]:
-    """Keep unresolved management candidates visible until each original lot expires."""
-    stop = trades["anchor"] + pd.Timedelta(days=days)
-    stop = stop.where(trades["visible_until"].isna() | stop.le(trades["visible_until"]), trades["visible_until"])
-    return trades.assign(start=trades["visible_from"], stop=stop, net=np.nan, buy=np.nan, prior=np.nan, management=True, unit_basis="UNKNOWN")[
-        ["ticker", "owner_cik", "klass", "start", "stop", "net", "buy", "prior", "management", "unit_basis"]
-    ].to_dict("records")
 
 
 def _account_intervals(
@@ -123,9 +115,7 @@ def _account_intervals(
     points = points[~np.isnat(points)]
     points = points[(points >= idx.min().to_datetime64()) & (points <= (idx.max() + pd.Timedelta(days=1)).to_datetime64())]
     delta = lots["delta"].to_numpy(dtype=float)
-    purchase = lots["code"].eq("P").to_numpy()
-    manager = lots["is_management"].to_numpy(dtype=bool)
-    blank_officer = (lots["officer_title_clean"].eq("") & lots["is_officer"].eq(1)).to_numpy()
+    population = lots["population"].to_numpy(dtype=int)
     units = lots["units_known"].to_numpy(dtype=bool)
     uncertain = lots["quality_uncertain"].fillna(False).to_numpy(dtype=bool)
     starting = positions["starting"].to_numpy(dtype=float)
@@ -143,10 +133,9 @@ def _account_intervals(
             "start": point,
             "stop": stop,
             "net": np.nan,
-            "buy": np.nan,
             "prior": np.nan,
             "unit_basis": "NORMALIZED" if units[active].all() else np.datetime_as_string(first, unit="D"),
-            "management": bool(manager[active].any()),
+            "population": int(population[active].min()),
         }
         output.append(event)
         public = (lot["visible_from"] <= point) & (np.isnat(lot["visible_until"]) | (lot["visible_until"] > point))
@@ -171,11 +160,11 @@ def _account_intervals(
         prior = float(terminal[ordered[-1]] - net)
         if not np.isfinite(prior) or prior < 0 or not np.isfinite(delta[active]).all():
             continue
-        event.update(net=net if (manager[active] | blank_officer[active]).all() else np.nan, buy=float(delta[active & purchase].sum()), prior=prior)
+        event.update(net=net, prior=prior)
     return output
 
 
-def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex, value: str) -> pd.DataFrame:
+def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Add complete account totals once; require compatible units and positive pooled holdings."""
     if events.empty:
         return pd.DataFrame(index=idx)
@@ -186,8 +175,8 @@ def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex, value: str) -> pd.DataFra
     shape = (len(idx) + 1, len(columns))
 
     # Sum account intervals in the same order for numerator, holdings and support count.
-    supported = np.isfinite(events[value]) & np.isfinite(events["prior"]) & events["prior"].ge(0)
-    numerator = _accumulate_intervals(events[value].where(supported, 0).to_numpy(dtype=float), start, stop, col, shape)
+    supported = np.isfinite(events["net"]) & np.isfinite(events["prior"]) & events["prior"].ge(0)
+    numerator = _accumulate_intervals(events["net"].where(supported, 0).to_numpy(dtype=float), start, stop, col, shape)
     denominator = _accumulate_intervals(events["prior"].where(supported, 0).to_numpy(dtype=float), start, stop, col, shape)
     count = _accumulate_intervals(np.ones(len(events)), start, stop, col, shape)
     supported_count = _accumulate_intervals(supported.to_numpy(dtype=float), start, stop, col, shape)

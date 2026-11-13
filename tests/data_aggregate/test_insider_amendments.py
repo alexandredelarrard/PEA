@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from src.data_aggregate.utils.institutionals import insider_features
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.conftest import make_frames
@@ -41,9 +39,7 @@ def _acc(n: int) -> str:
 def mixed_rows() -> list[dict]:
     """Every case on two tickers: partial value-changing 4/A with a new cell, identical 4/A, unlinked 4/A,
     copy pair, coincidence pair, sell-side 4/A, a 4/A filed after the window, a 4/A chain, and an
-    unpriced sale priced by its 4/A, plus the `sentinel_rows`. An amendment's rows precede its original's, so the as-of
-    re-ranking of an owner's earlier purchases equals the frozen prior set (see
-    `test_owner_surprise_prior_set_is_frozen_at_the_visible_day`)."""
+    unpriced sale priced by its 4/A, plus the `sentinel_rows`."""
     ceo, cfo = "Chief Executive Officer", "Chief Financial Officer"
     o1 = dict(accession_number=_acc(11), owner_cik="0000000003", filing_date="2024-02-01")
     a1 = dict(accession_number=_acc(12), owner_cik="0000000003", filing_date="2024-02-08", document_type="4/A", original_submission_date="2024-02-01")
@@ -335,59 +331,8 @@ def test_every_insider_field_matches_the_brute_force_as_of_reference_on_every_da
     )
 
 
-def _leak_full_sample(d: pd.DataFrame) -> pd.Series:
-    """Leaky: rank against every record of the owner, later ones included."""
-    df = d[["owner_cik", "value"]].assign(order=np.arange(len(d)))
-    pairs = df.merge(df, on="owner_cik", suffixes=("", "_prior"))
-    other = pairs["order_prior"] != pairs["order"]
-    n = other.groupby(pairs["order"]).sum().to_numpy()
-    le = (other & (pairs["value_prior"] <= pairs["value"])).groupby(pairs["order"]).sum().to_numpy()
-    return pd.Series(le / np.where(n > 0, n, np.nan), index=d.index)
-
-
-def _leak_visibility_blind(d: pd.DataFrame) -> pd.Series:
-    """Leaky: earlier-anchored records counted before they are filed."""
-    df = d[["owner_cik", "value"]].assign(order=np.arange(len(d)))
-    pairs = df.merge(df, on="owner_cik", suffixes=("", "_prior"))
-    prior = pairs["order_prior"] < pairs["order"]
-    n = prior.groupby(pairs["order"]).sum().to_numpy()
-    le = (prior & (pairs["value_prior"] <= pairs["value"])).groupby(pairs["order"]).sum().to_numpy()
-    return pd.Series(le / np.where(n > 0, n, np.nan), index=d.index)
-
-
-@pytest.mark.parametrize("leak", [_leak_full_sample, _leak_visibility_blind], ids=["full-sample", "visibility-blind"])
-def test_a_leaky_owner_surprise_is_caught_by_the_reference(monkeypatch: pytest.MonkeyPatch, leak):
-    df_rows = frame(mixed_rows())
-    ref = reference_panel(df_rows, IDX, _build)
-    monkeypatch.setattr(insider_features, "_visible_prior_rank", leak)
-    report = compare(_build(df_rows), ref, IDX, TICKERS)
-    column = "f_ic_insider_owner_surprise_120d"
-    assert report[column]["mismatch"] > 0
-    print(
-        f"SANITY: the {leak.__name__.removeprefix('_leak_')} owner surprise differs from the as-of reference on {report[column]['mismatch']} cells; the honest one on 0."
-    )
-
-
-def test_owner_surprise_prior_set_is_frozen_at_the_visible_day():
-    """A purchase is ranked against the owner's records visible on its own visible day; a later 4/A of a prior never re-ranks it."""
-    rows = [
-        row(accession_number=_acc(1), filing_date="2024-02-01", transaction_date="2024-01-30", shares=500.0, shares_owned_after=5_500.0),
-        row(accession_number=_acc(2), filing_date="2024-02-05", transaction_date="2024-02-02", shares=600.0, shares_owned_after=6_100.0),
-        row(accession_number=_acc(3), filing_date="2024-02-08", transaction_date="2024-01-30", shares=900.0, shares_owned_after=5_500.0)
-        | {"document_type": "4/A", "original_submission_date": "2024-02-01"},
-    ]
-    surprise = _series(_build(frame(rows)), "f_ic_insider_owner_surprise_120d")
-    # the 2024-02-05 purchase ($60k) is above the $50k it saw; the 4/A's $90k never re-ranks it
-    assert surprise.loc["2024-02-05"] == pytest.approx(1.0, abs=1e-12)
-    assert surprise.loc["2024-03-01"] == pytest.approx(1.0, abs=1e-12)
-    print(
-        f"SANITY: the second purchase scores {surprise.loc['2024-02-05']:.2f} against the $50k prior it saw on its day, and still "
-        f"{surprise.loc['2024-03-01']:.2f} after the prior is restated to $90k: no later record re-ranks it."
-    )
-
-
 def test_a_restatement_that_leaves_a_leg_keeps_the_leg_observed():
-    """`has event` comes from the positive leg: a CEO purchase restated as a director's reads 0 on the CEO leg, not NaN."""
+    """`has event` comes from the positive leg: a CEO purchase restated as a director's reads 0 on the C-suite leg, not NaN."""
     rows = [
         row(
             accession_number=_acc(1), filing_date="2024-03-01", transaction_date="2024-02-28", officer_title="Chief Executive Officer", is_officer=1.0
@@ -395,8 +340,8 @@ def test_a_restatement_that_leaves_a_leg_keeps_the_leg_observed():
         row(accession_number=_acc(2), filing_date="2024-03-07", transaction_date="2024-02-28", officer_title="Director", is_officer=0.0)
         | {"document_type": "4/A", "original_submission_date": "2024-03-01", "shares_owned_after": 11_001.0},
     ]
-    ceo = _series(_build(frame(rows)), "f_ic_insider_ceo_buy_mcap_180d")
+    ceo = _series(_build(frame(rows)), "f_ic_insider_c_suite_buy_mcap_180d")
     assert ceo.loc["2024-03-06"] > 0 and ceo.loc["2024-03-07":].eq(0.0).all() and ceo.loc[:"2024-02-29"].isna().all()
     print(
-        f"SANITY: the CEO leg reads {ceo.loc['2024-03-06']:.6f} until the 4/A, then exactly 0 (observed, emptied), and NaN before the first filing."
+        f"SANITY: the C-suite leg reads {ceo.loc['2024-03-06']:.6f} until the 4/A, then exactly 0 (observed, emptied), and NaN before the first filing."
     )

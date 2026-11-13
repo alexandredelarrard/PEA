@@ -1168,3 +1168,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - source_commit: e755a864 (the changes land in the commits that follow it on `dev`)
 - Coverage: signed provision columns replace eight added/lost flags, the poison-pill flag and fifteen low-value governance features are removed, `ceo_pay_ratio` is smoothed over three proxies, `board_size` and `avg_board_tenure` come from the director rows, auditor tenure is filled across a run, and `youngest_director_age` and `f_female_board_chg_pct` are added. The model configs and the feature recap `reports/data_check/11-12-2026/governance_feature_recap.md` follow.
 - Pages: [Data aggregate](./modules/data-aggregate.md).
+
+## 2026-11-13: refresh (insider features)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` insider feature contract rewritten for the 18-feature, three-population design (branch `fix/institutionals-cube-datacheck`); TODO gained the redesign follow-ups.

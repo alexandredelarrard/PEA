@@ -29,32 +29,23 @@ from tests.support.sec_thirteen_panel import unsaved_panel
 
 INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_buy_value_mcap_60d",
+    "f_ic_insider_buy_value_mcap_120d",
     "f_ic_insider_buy_value_mcap_180d",
-    "f_ic_insider_distinct_buyers_120d",
-    "f_ic_insider_cluster_buy_120d",
-    "f_ic_insider_ceo_buy_mcap_60d",
-    "f_ic_insider_cfo_buy_mcap_60d",
-    "f_ic_insider_coo_buy_mcap_60d",
-    "f_ic_insider_president_buy_mcap_60d",
-    "f_ic_insider_chair_buy_mcap_60d",
-    "f_ic_insider_csuite_other_buy_mcap_60d",
-    "f_ic_insider_vp_buy_mcap_60d",
-    "f_ic_insider_other_buy_mcap_60d",
-    "f_ic_insider_ceo_buy_mcap_180d",
-    "f_ic_insider_cfo_buy_mcap_180d",
-    "f_ic_insider_coo_buy_mcap_180d",
-    "f_ic_insider_president_buy_mcap_180d",
-    "f_ic_insider_chair_buy_mcap_180d",
-    "f_ic_insider_csuite_other_buy_mcap_180d",
-    "f_ic_insider_vp_buy_mcap_180d",
-    "f_ic_insider_other_buy_mcap_180d",
-    "f_ic_insider_director_buy_mcap_180d",
-    "f_ic_insider_purchase_pct_prior",
-    "f_ic_insider_owner_surprise_120d",
+    "f_ic_insider_c_suite_buy_mcap_180d",
+    "f_ic_insider_management_buy_mcap_180d",
+    "f_ic_insider_ten_pct_buy_mcap_180d",
+    "f_ic_insider_purchase_pct_prior_60d",
+    "f_ic_insider_purchase_pct_prior_120d",
+    "f_ic_insider_purchase_pct_prior_180d",
+    "f_ic_insider_c_suite_purchase_pct_prior_180d",
+    "f_ic_insider_management_purchase_pct_prior_180d",
+    "f_ic_insider_ten_pct_purchase_pct_prior_180d",
+    "f_ic_insider_net_buy_ratio_60d",
+    "f_ic_insider_net_buy_ratio_120d",
     "f_ic_insider_net_buy_ratio_180d",
-    "f_ic_insider_discretionary_sell_mcap_60d",
-    "f_ic_insider_planned_sell_mcap_60d",
-    "f_ic_insider_management_position_change_60d",
+    "f_ic_insider_distinct_buyers_120d",
+    "f_ic_insider_distinct_sellers_120d",
+    "f_ic_insider_buyer_breadth_120d",
     "f_ic_shortvol_ratio_5d",
     "f_ic_shortvol_ratio_20d",
     "f_ic_shortvol_ratio_60d",
@@ -263,7 +254,9 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
     assert result[[name for name in INSTITUTIONAL_COLUMNS if name not in present]].isna().all().all()
     assert len(result) == len(days) and result["date"].tolist() == days.tolist()
     assert not result.duplicated(["date", "ticker"]).any()
-    print("SANITY: three source panels retain40price keys/observed zeros; all29 declared fields exist and26unsupported fields stay NULL.")
+    print(
+        f"SANITY: three source panels retain {len(days)} price keys and observed zeros; all {len(INSTITUTIONAL_COLUMNS)} declared fields exist and {len(INSTITUTIONAL_COLUMNS) - len(present)} unsupported fields stay NULL."
+    )
 
 
 # fmt: off
@@ -520,7 +513,9 @@ def test_public_step_preserves_unusable_insider_source_boundary(
     result = step.build_panel()
     assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
     assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
-    print("SANITY: absent, empty or malformed insider payload never enters share reconstruction; all29 declared unsupported fields remain NULL.")
+    print(
+        f"SANITY: absent, empty or malformed insider payload never enters share reconstruction; all {len(INSTITUTIONAL_COLUMNS)} declared unsupported fields remain NULL."
+    )
 
 
 def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
@@ -548,20 +543,16 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     step = StepCubeInstitutionals(ctx, ctx.config)
     monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     panel = step.build_panel().set_index(["date", "ticker"])
-    ratios = [
-        "f_ic_insider_net_buy_ratio_180d",
-        "f_ic_insider_owner_surprise_120d",
-        "f_ic_insider_purchase_pct_prior",
-        "f_ic_insider_management_position_change_60d",
-    ]
-    gross = ["f_ic_insider_buy_value_mcap_60d", "f_ic_insider_distinct_buyers_120d", "f_ic_insider_cluster_buy_120d"]
+    insider = [name for name in INSTITUTIONAL_COLUMNS if name.startswith("f_ic_insider_")]
+    ratios = [name for name in insider if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
+    gross = [name for name in insider if name not in ratios]
     quiet_gross = panel.loc[(days[-1], "AAA"), gross]
     assert isinstance(quiet_gross, pd.Series)
     assert quiet_gross.eq(0).to_numpy().all()
     assert list(panel.columns) == list(INSTITUTIONAL_COLUMNS)
     assert panel[ratios].isna().all().all()
     print(
-        "SANITY: actual loader/public step accepts a real empty accession without fetched_at; supported quiet gross/counts are 0 and all four undefined ratios remain NULL."
+        "SANITY: actual loader/public step accepts a real empty accession without fetched_at; supported quiet gross/counts are 0 and all undefined ratios remain NULL."
     )
 
 

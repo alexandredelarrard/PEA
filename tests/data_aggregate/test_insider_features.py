@@ -16,20 +16,17 @@ import pytest
 
 from src.data_aggregate.utils.institutionals.inputs import load_insider_role_evidence
 from src.data_aggregate.utils.institutionals.insider_features import (
-    CLUSTER_MIN,
+    BUY_VALUE_FEATURES,
     EMISSION,
     INSIDER_FLOOR,
-    ROLE_BUY_FEATURES,
-    TEN_B5_1_FLOOR,
     InsiderCoverage,
     _action_values,
-    _owner_surprise,
     _unpriced_masks,
 )
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
-    OTHER_OFFICER,
-    ROLE_PATTERNS,
+    POP_C_SUITE,
+    POP_UNKNOWN,
     clean_transactions,
     common_stock_mask,
     normalize_insider_dates,
@@ -237,7 +234,7 @@ def test_prior_role_recovery_requires_dated_issuer_person_proof(
         cleaned, _ = clean_transactions(_frame(rows))
         actual = cleaned.set_index("accession_number").loc["current-role"]
         assert actual["role"] == expected
-        assert bool(actual["is_management"]) == recovered
+        assert (actual["population"] == POP_C_SUITE) == (recovered or actual["officer_title"] == "President")
         assert actual["is_director"] == 0
         assert actual["role_source"] == ("prior_form4" if recovered else "filed")
         if recovered:
@@ -315,7 +312,7 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
     cleaned, _ = clean_transactions(_frame(rows), df_roles=evidence)
     actual = cleaned.set_index("accession_number").loc["current-role"]
     assert actual["role"] == ("CEO" if recovered else "other_named_officer")
-    assert bool(actual["is_management"]) == recovered
+    assert actual["population"] == (POP_C_SUITE if recovered else POP_UNKNOWN)
     assert actual["is_director"] == 0
     assert actual["role_source"] == ("explicit_proxy_title" if recovered else "filed")
     if recovered:
@@ -341,34 +338,6 @@ def test_dated_share_claim_masks_tail_and_retires_prospectively() -> None:
     print("SANITY: disputed dollars contaminate only their real60-day contributor window; public invalidation never revives them.")
 
 
-def test_same_day_surprise_uses_only_strictly_earlier_day() -> None:
-    rows = [
-        _txn(accession_number="a", filing_date="2015-01-02", transaction_date="2015-01-01", value_usd=50_000),
-        _txn(accession_number="b", filing_date="2015-02-02", transaction_date="2015-01-30", value_usd=100_000),
-        _txn(accession_number="c", filing_date="2015-02-02", transaction_date="2015-01-30", value_usd=75_000),
-    ]
-    out, _ = clean_transactions(_frame(rows))
-    rank = _owner_surprise(out)
-    assert rank["surprise"].eq(1.0).all()
-    other = _owner_surprise(out.iloc[::-1]).set_index("accession_number")["surprise"]
-    pd.testing.assert_series_equal(rank.set_index("accession_number")["surprise"].sort_index(), other.sort_index())
-    print("SANITY: both same-day buys compare only with earlier50k; row permutation leaves ranks unchanged.")
-
-
-def test_surprise_expires_at_original_anchor_plus_120() -> None:
-    rows = [
-        _txn(accession_number="a", filing_date="2015-01-02", transaction_date="2015-01-01", value_usd=50_000),
-        _txn(accession_number="b", filing_date="2015-02-02", transaction_date="2015-01-30", value_usd=100_000),
-    ]
-    idx = pd.date_range("2015-01-01", "2015-07-01")
-    panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    score = panel["f_ic_insider_owner_surprise_120d"]
-    anchor = pd.Timestamp("2015-02-02")
-    assert score.loc[anchor + pd.Timedelta(days=119)] == 1
-    assert pd.isna(score.loc[anchor + pd.Timedelta(days=120)])
-    print("SANITY: surprise is present at age119, null at age120; old expanding reference history does not extend contributor life.")
-
-
 def test_daily_lots_reconstruct_prior_without_row_order() -> None:
     rows = [
         _txn(accession_number="a", shares=10, value_usd=1000, shares_owned_after=110),
@@ -377,7 +346,7 @@ def test_daily_lots_reconstruct_prior_without_row_order() -> None:
     idx = pd.bdate_range("2015-06-01", "2015-06-15")
     for order in (rows, rows[::-1]):
         panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(order)).set_index("date")
-        assert panel["f_ic_insider_purchase_pct_prior"].iloc[0] == pytest.approx(0.3)
+        assert panel["f_ic_insider_purchase_pct_prior_60d"].iloc[0] == pytest.approx(0.3)
     print("SANITY: two supported lots consolidate to30/100, independent of input order; terminal balances are not summed.")
 
 
@@ -401,12 +370,10 @@ def test_position_arithmetic_keeps_known_shares_without_prices(buy_price: float,
     idx = pd.date_range("2015-06-01", periods=62)
     for order in (rows, rows[::-1]):
         panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(order)).set_index("date")
-        management = panel["f_ic_insider_management_position_change_60d"]
+        management = panel["f_ic_insider_purchase_pct_prior_60d"]
         assert management.iloc[0] == pytest.approx(expected)
         assert management.iloc[59] == pytest.approx(expected)
         assert pd.isna(management.iloc[60])
-        if np.isfinite(buy_price):
-            assert panel["f_ic_insider_purchase_pct_prior"].iloc[0] == pytest.approx(0.1)
     print("SANITY: known disclosed shares survive missing execution prices; account math and 60-day expiry are order invariant.")
 
 
@@ -454,28 +421,13 @@ def test_uncertain_sale_masks_same_account_purchase_and_management() -> None:
     ]
     idx = pd.bdate_range("2016-10-18", "2017-04-01")
     panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    assert panel.loc["2016-10-18", "f_ic_insider_purchase_pct_prior"] == pytest.approx(0.1)
-    assert pd.isna(panel.loc["2016-10-19", "f_ic_insider_management_position_change_60d"])
-    assert pd.isna(panel.loc["2017-03-21", "f_ic_insider_purchase_pct_prior"])
-    assert pd.isna(panel.loc["2017-03-22", "f_ic_insider_purchase_pct_prior"])
+    assert panel.loc["2016-10-18", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(0.0)
+    assert pd.isna(panel.loc["2016-10-19", "f_ic_insider_purchase_pct_prior_60d"])
+    assert pd.isna(panel.loc["2017-03-21", "f_ic_insider_purchase_pct_prior_60d"])
+    assert pd.isna(panel.loc["2017-03-22", "f_ic_insider_purchase_pct_prior_60d"])
     print(
         "SANITY: an uncertain blank-title sale contaminates same-account holdings math; retirement after the60-day expiry cannot revive an aged-out purchase ratio."
     )
-
-
-def test_disputed_prior_masks_later_cross_ticker_score() -> None:
-    rows = [
-        _txn(accession_number="first", filing_date="2016-01-04", transaction_date="2016-01-01", value_usd=50_000),
-        _txn(accession_number="0001584209-16-000008", filing_date="2016-10-19", transaction_date="2016-10-19", value_usd=1_000_000),
-        _txn(accession_number="later", ticker="BBB", filing_date="2017-02-01", transaction_date="2017-01-30", value_usd=100_000),
-    ]
-    idx = pd.bdate_range("2016-01-01", "2017-06-15")
-    panel = build_insider_feature_panel(make_frames(idx, _peers(("AAA", "BBB"))), _frame(rows))
-    score = (
-        panel[panel["ticker"].eq("BBB")].set_index("date").reindex(columns=["f_ic_insider_owner_surprise_120d"])["f_ic_insider_owner_surprise_120d"]
-    )
-    assert score.loc["2017-02-02":"2017-05-31"].isna().all()
-    print("SANITY: uncertain prior onAAA masks derived BBB score, including after public invalidation; contaminated score is never merely unmasked.")
 
 
 def test_management_pools_holdings_and_expires_after_60_days() -> None:
@@ -486,7 +438,7 @@ def test_management_pools_holdings_and_expires_after_60_days() -> None:
     idx = pd.date_range("2015-06-01", "2015-08-15")
     for ordered in (rows, rows[::-1]):
         panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(ordered)).set_index("date")
-        score = panel["f_ic_insider_management_position_change_60d"]
+        score = panel["f_ic_insider_purchase_pct_prior_60d"]
         assert score.iloc[0] == pytest.approx(950 / 10100)
         assert score.loc["2015-07-30"] == pytest.approx(950 / 10100)
         assert pd.isna(score.loc["2015-07-31"])
@@ -498,7 +450,7 @@ def test_management_respects_opening_positions_and_full_exits(code: str, shares:
     rows = [_txn(officer_title="CEO and CFO", is_officer=1, transaction_code=code, shares=shares, shares_owned_after=after)]
     idx = pd.date_range("2015-06-01", periods=3)
     panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    score = panel.reindex(columns=["f_ic_insider_management_position_change_60d"]).iloc[0, 0]
+    score = panel.reindex(columns=["f_ic_insider_purchase_pct_prior_60d"]).iloc[0, 0]
     assert pd.isna(score) if expected is None else score == pytest.approx(expected)
     print(f"SANITY: {code} {shares}, ending{after}: signed supported change={score}; opening zero-prior account is undefined.")
 
@@ -510,14 +462,14 @@ def test_management_later_disclosure_updates_one_day_without_reaging() -> None:
     ]
     idx = pd.date_range("2015-06-01", "2015-08-10")
     panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    score = panel["f_ic_insider_management_position_change_60d"]
+    score = panel["f_ic_insider_purchase_pct_prior_60d"]
     assert score.loc["2015-06-09"] == pytest.approx(0.1)
     assert score.loc["2015-06-10"] == pytest.approx(110 / 200)
     assert score.loc["2015-07-31"] == pytest.approx(1.0)
     assert pd.isna(score.loc["2015-08-09"])
     rows[1]["security_title"] = "Class B Common Stock"
     mixed = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    mixed_score = mixed["f_ic_insider_management_position_change_60d"]
+    mixed_score = mixed["f_ic_insider_purchase_pct_prior_60d"]
     assert mixed_score.loc["2015-06-09"] == pytest.approx(0.1)
     assert mixed_score.loc["2015-06-10":"2015-07-30"].isna().all()
     assert mixed_score.loc["2015-07-31"] == pytest.approx(1.0)
@@ -563,7 +515,7 @@ def test_management_future_supported_account_cannot_shorten_past_window() -> Non
     frames = make_frames(idx, _peers())
     before = build_insider_feature_panel(frames, _frame(rows[:2])).set_index("date")
     after = build_insider_feature_panel(frames, _frame(rows)).set_index("date")
-    name = "f_ic_insider_management_position_change_60d"
+    name = "f_ic_insider_purchase_pct_prior_60d"
     pd.testing.assert_series_equal(before.loc[:"2015-08-31", name], after.loc[:"2015-08-31", name])
     assert after.loc["2015-08-01", name] == pytest.approx(0.1)
     print("SANITY: a future correction making an opening account eligible cannot shorten an already-known account's earlier window.")
@@ -594,7 +546,8 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
 
     evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
     clean, _ = clean_transactions(_frame(rows), df_roles=evidence)
-    assert clean["role"].tolist() == [blank_role] and not clean["is_management"].any()
+    assert clean["role"].tolist() == [blank_role]
+    assert clean["population"].tolist() == [POP_C_SUITE if blank_role == "PRESIDENT" else POP_UNKNOWN]
     print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward; the later blank title reads {blank_role}.")
 
 
@@ -787,47 +740,6 @@ def test_an_underpriced_row_is_counted_but_never_inflated():
     )
 
 
-def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
-    """35.0% of all `S` rows share an accession and a transaction date with an `M`."""
-    acc = "0001234567-23-000001"
-    rows = [
-        _txn(
-            accession_number=acc,
-            transaction_code="M",
-            security_type="deriv",
-            security_title="Stock Option",
-            filing_date="2024-06-03",
-            transaction_date="2024-05-31",
-        ),
-        _txn(accession_number=acc, transaction_code="S", filing_date="2024-06-03", transaction_date="2024-05-31", is_10b5_1=0.0),
-        _txn(
-            accession_number="0001234567-23-000002",
-            transaction_code="S",
-            filing_date="2024-06-03",
-            transaction_date="2024-05-31",
-            is_10b5_1=0.0,
-            shares_owned_after=12_000.0,
-        ),
-    ]
-    out, _ = clean_transactions(_frame(rows))
-    packaged = out.set_index("accession_number")["in_exercise_package"]
-    assert bool(packaged[acc]) and not bool(packaged["0001234567-23-000002"])
-
-    idx = pd.bdate_range("2024-01-01", "2024-12-31")
-    fh, close = _prices()
-    close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
-    col = "f_ic_insider_discretionary_sell_mcap_60d"
-    after = panel[panel["date"].ge("2024-06-03")][col].dropna()
-    one_sale = 100_000.0 / (1_000_000.0 * 100.0)
-    assert after.max() == pytest.approx(one_sale, rel=1e-6)
-    print(
-        f"SANITY: two identical $100k sales filed the same day, one of them the sell leg "
-        f"of an option exercise. Discretionary selling peaks at {after.max():.6f} of "
-        f"market cap = exactly ONE sale, not two."
-    )
-
-
 def test_the_role_map_reads_a_title_the_way_a_human_would():
     cases = {
         "Chairman, President & CEO": "CEO",
@@ -883,67 +795,6 @@ def test_security_class_and_common_stock_mask_agree_with_the_measured_titles():
 # --------------------------------------------------------------------------- #
 
 
-def test_owner_surprise_uses_only_that_owners_prior_purchases():
-    """The easiest place in the family to leak the future, so it is tested against a
-    deliberately-leaky full-sample version rather than by eye."""
-    # Two purchases, the SECOND smaller. Two is deliberate: with only one prior in the
-    # window the decay weighting cannot blur the answer, so the number the panel prints is
-    # the percentile itself and the honest and leaky versions give different numbers.
-    sizes = [100.0, 50.0]
-    rows = [
-        _txn(
-            accession_number=f"s{i}",
-            owner_cik="0007",
-            shares=v,
-            value_usd=v * 100.0,
-            price_per_share=100.0,
-            filing_date=f"2015-0{i + 1}-15",
-            transaction_date=f"2015-0{i + 1}-14",
-            shares_owned_after=v + 10_000.0,
-        )
-        for i, v in enumerate(sizes)
-    ]
-    fh, close = _prices()
-    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
-    got = panel.set_index("date")["f_ic_insider_owner_surprise_120d"]
-    on_second = got.loc["2015-02-16"]
-    leaky = float(pd.Series(sizes).rank(pct=True).iloc[1])  # = 0.5
-    assert on_second == pytest.approx(0.0, abs=1e-7)
-    assert on_second != pytest.approx(leaky, abs=1e-3)
-    assert got.loc[:"2015-01-14"].dropna().empty
-    print(
-        f"SANITY: a $5k purchase following a $10k one by the same owner scores "
-        f"{on_second:.2f} -- the smallest they have ever made. A full-sample percentile "
-        f"would score it {leaky:.2f} by ranking it against itself. The first purchase is "
-        f"NaN ({int(got.loc[:'2015-01-14'].notna().sum())} values before it): 'unusually "
-        f"large for this person' is undefined before there is a person."
-    )
-
-
-def test_owner_surprise_counts_ties_at_or_below_per_owner():
-    """Known truth by hand: each purchase's share of that owner's earlier purchases at or below it,
-    with ties counted, two owners interleaved, and the first purchase of each owner dropped."""
-    days = pd.to_datetime(["2015-01-05", "2015-01-06", "2015-01-07", "2015-01-08", "2015-01-09", "2015-01-12"])
-    ev = pd.DataFrame(
-        {
-            "owner_cik": ["A", "B", "A", "A", "B", "A"],
-            "value": [10.0, 7.0, 10.0, 5.0, 3.0, 7.0],
-            "anchor": days,
-            "visible_from": days,
-            "visible_until": pd.Series(pd.NaT, index=range(6), dtype="datetime64[ns]"),
-        }
-    )
-    got = _owner_surprise(ev)
-    assert got is not None
-    # A: 10 (first, dropped), 10 -> 1/1 (a tie), 5 -> 0/2, 7 -> 1/3 (the 5 only); B: 7 (first, dropped), 3 -> 0/1.
-    expected = pd.Series([1.0, 0.0, 0.0, 1 / 3], index=[2, 3, 4, 5], name="surprise")
-    pd.testing.assert_series_equal(got["surprise"].sort_index(), expected)
-    print(
-        f"=== SANITY CHECK: owner surprise on 6 hand-checked purchases = {got['surprise'].sort_index().round(3).tolist()}: "
-        f"ties count as at or below, each owner ranks only its own earlier purchases, first purchases are dropped ==="
-    )
-
-
 def test_nothing_is_emitted_before_the_measured_availability_floors():
     rows = [
         _txn(filing_date="2015-06-01", transaction_date="2015-05-29"),
@@ -956,14 +807,10 @@ def test_nothing_is_emitted_before_the_measured_availability_floors():
     cols = [c for c in panel.columns if c not in ("date", "ticker")]
     before = panel[panel["date"] < INSIDER_FLOOR]
     assert before[cols].notna().to_numpy().sum() == 0
-    plan_cols = [c for c in cols if "sell_mcap" in c]
-    early = panel[panel["date"] < TEN_B5_1_FLOOR]
-    assert early[plan_cols].notna().to_numpy().sum() == 0
     print(
         f"SANITY: {len(before):,} ticker-days before {INSIDER_FLOOR.date()} carry 0 "
-        f"non-null values across {len(cols)} columns, and the two 10b5-1 legs are empty "
-        f"across {len(early):,} rows before {TEN_B5_1_FLOOR.date()} -- NaN, never 0, so "
-        f"'not collected yet' cannot read as 'no insider sold'."
+        f"non-null values across {len(cols)} columns -- NaN, never 0, so "
+        f"'not collected yet' cannot read as 'no insider bought'."
     )
 
 
@@ -1067,69 +914,6 @@ def test_distinct_buyers_counts_people_not_filings():
     )
 
 
-def test_cluster_is_two_distinct_buyers_not_two_filings():
-    solo = [
-        _txn(accession_number=f"x{i}", owner_cik="0001", filing_date=f"2015-03-{2 + i:02d}", transaction_date=f"2015-03-{2 + i:02d}")
-        for i in range(4)
-    ]
-    pair = solo + [_txn(accession_number="y", owner_cik="0002", filing_date="2015-03-06", transaction_date="2015-03-06")]
-    fh, close = _prices()
-    col = "f_ic_insider_cluster_buy_120d"
-    got = {}
-    for name, rows in (("one buyer, 4 filings", solo), ("two buyers", pair)):
-        panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
-        got[name] = panel.set_index("date")[col].loc["2015-03-10"]
-    assert got["one buyer, 4 filings"] == 0.0
-    assert got["two buyers"] == 2.0 >= CLUSTER_MIN
-    print(
-        f"SANITY: {got['one buyer, 4 filings']:.0f} for one insider filing four times, "
-        f"{got['two buyers']:.0f} for two insiders filing once each. The threshold is "
-        f"{CLUSTER_MIN} PEOPLE -- measured occupancy 6.9% of ticker-days, against 0.6% "
-        f"for the 3-in-20-days the source research proposed."
-    )
-
-
-def test_the_ten_b5_1_split_separates_planned_from_discretionary():
-    rows = [
-        _txn(accession_number="d", transaction_code="S", filing_date="2024-03-01", transaction_date="2024-02-28", is_10b5_1=0.0, value_usd=100_000.0),
-        _txn(
-            accession_number="p",
-            transaction_code="S",
-            filing_date="2024-03-01",
-            transaction_date="2024-02-28",
-            is_10b5_1=1.0,
-            value_usd=300_000.0,
-            shares_owned_after=12_000.0,
-        ),
-        _txn(
-            accession_number="u",
-            transaction_code="S",
-            filing_date="2024-03-04",
-            transaction_date="2024-02-28",
-            is_10b5_1=np.nan,
-            value_usd=900_000.0,
-            shares_owned_after=13_000.0,
-        ),
-    ]
-    idx = pd.bdate_range("2024-01-01", "2024-12-31")
-    fh, _ = _prices()
-    close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
-    day = panel[panel["date"].eq("2024-03-01")].iloc[0]
-    mcap = 1_000_000.0 * 100.0
-    assert day["f_ic_insider_discretionary_sell_mcap_60d"] == pytest.approx(100_000 / mcap)
-    assert day["f_ic_insider_planned_sell_mcap_60d"] == pytest.approx(300_000 / mcap)
-    unknown_day = panel[panel["date"].eq("2024-03-04")].iloc[0]
-    assert pd.isna(unknown_day["f_ic_insider_discretionary_sell_mcap_60d"])
-    assert pd.isna(unknown_day["f_ic_insider_planned_sell_mcap_60d"])
-    print(
-        f"SANITY: $100k flagged not-on-plan, $300k on-plan and $900k with an UNKNOWN flag. "
-        f"Discretionary reads {day['f_ic_insider_discretionary_sell_mcap_60d']:.7f} and "
-        f"planned {day['f_ic_insider_planned_sell_mcap_60d']:.7f}; the later unknown flag "
-        f"makes both full totals unknown prospectively, since it cannot prove either classification."
-    )
-
-
 def test_net_buy_ratio_keeps_quiet_zero_over_zero_undefined() -> None:
     rows = [_txn(filing_date="2015-06-01", transaction_date="2015-05-29")]
     fh, close = _prices()
@@ -1149,13 +933,12 @@ def test_net_buy_ratio_keeps_quiet_zero_over_zero_undefined() -> None:
 
 
 def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
-    # Owner CIKs REPEAT on purpose: `owner_surprise` needs a prior purchase by the same
-    # person to exist at all, so a fixture of five one-off buyers would silently emit
-    # thirteen features and this test would pass against a map of fourteen.
+    # Every population buys (C_SUITE, MANAGEMENT via the director flag, TEN_PCT) and two insiders sell, so each
+    # declared feature is non-degenerate and the test cannot pass against a shorter map.
     rows = [
         _txn(
             accession_number=f"p{i}",
-            owner_cik=f"{i % 2:04d}",
+            owner_cik=f"{i:04d}",
             officer_title=title,
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
@@ -1180,9 +963,19 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
         )
     ]
     rows += [
-        _txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
+        _txn(
+            accession_number="t1",
+            owner_cik="0099",
+            is_director=0.0,
+            is_ten_pct_owner=1.0,
+            filing_date="2024-05-15",
+            transaction_date="2024-05-14",
+            shares_owned_after=21_000.0,
+        ),
+        _txn(accession_number="s1", owner_cik="0097", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
         _txn(
             accession_number="s2",
+            owner_cik="0098",
             transaction_code="S",
             filing_date="2024-07-01",
             transaction_date="2024-06-28",
@@ -1240,14 +1033,9 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
     )
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
     got = {c.removeprefix("f_").removesuffix("_xs") for c in panel.columns if c not in ("date", "ticker")}
-    scale_free = {
-        "ic_insider_distinct_buyers_120d",
-        "ic_insider_cluster_buy_120d",
-        "ic_insider_net_buy_ratio_180d",
-        "ic_insider_purchase_pct_prior",
-        "ic_insider_owner_surprise_120d",
-        "ic_insider_management_position_change_60d",
-    }
+    # The fixture has only a C-suite account: the two other populations' all-NULL ratios are not emitted.
+    absent_populations = {"ic_insider_management_purchase_pct_prior_180d", "ic_insider_ten_pct_purchase_pct_prior_180d"}
+    scale_free = {name for name in EMISSION if "mcap" not in name} - absent_populations
     assert got == scale_free, f"unexpected without mcap: {sorted(got - scale_free)}"
     print(
         f"SANITY: with no shares outstanding and no close, {len(got)} scale-free features "
@@ -1290,7 +1078,7 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     rows = [
         _txn(
             accession_number=f"p{i}",
-            owner_cik=f"{i % 2:04d}",
+            owner_cik=f"{i:04d}",
             officer_title=title,
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
@@ -1315,9 +1103,19 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
         )
     ]
     rows += [
-        _txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
+        _txn(
+            accession_number="t1",
+            owner_cik="0099",
+            is_director=0.0,
+            is_ten_pct_owner=1.0,
+            filing_date="2024-05-15",
+            transaction_date="2024-05-14",
+            shares_owned_after=21_000.0,
+        ),
+        _txn(accession_number="s1", owner_cik="0097", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
         _txn(
             accession_number="s2",
+            owner_cik="0098",
             transaction_code="S",
             filing_date="2024-07-01",
             transaction_date="2024-06-28",
@@ -1330,7 +1128,7 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
 
     mcap_feats = [f for f in EMISSION if "mcap" in f]
-    assert len(mcap_feats) == 5 + len(ROLE_BUY_FEATURES), mcap_feats
+    assert set(mcap_feats) == set(BUY_VALUE_FEATURES), mcap_feats
 
     saved_cap = pd.DataFrame(100_000_000.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close, close_pit=close, mcap_pit=saved_cap), _frame(rows))
@@ -1358,7 +1156,7 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     for m in logged:
         print(f"    WARNING {m}")
     print(
-        "  CONCLUSION: all 7 mcap features use saved capitalization; an unsupported cap "
+        "  CONCLUSION: all size-scaled features use saved capitalization; an unsupported cap "
         "cannot be reconstructed from a cached count, and missing support is "
         "REPORTED instead of silent. Validated."
     )
@@ -1378,11 +1176,9 @@ def _action_cap_inputs() -> tuple[pd.DatetimeIndex, pd.DataFrame, pd.DataFrame]:
     [
         ("buy_value_mcap_60d", "P", "", 0.0),
         ("buy_value_mcap_180d", "P", "", 0.0),
-        ("ceo_buy_mcap_180d", "P", "Chief Executive Officer", 0.0),
-        ("cfo_buy_mcap_180d", "P", "Chief Financial Officer", 0.0),
-        ("director_buy_mcap_180d", "P", "", 0.0),
-        ("discretionary_sell_mcap_60d", "S", "", 0.0),
-        ("planned_sell_mcap_60d", "S", "", 1.0),
+        ("buy_value_mcap_120d", "P", "", 0.0),
+        ("c_suite_buy_mcap_180d", "P", "Chief Executive Officer", 0.0),
+        ("management_buy_mcap_180d", "P", "", 0.0),
     ],
 )
 def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str, title: str, plan: float) -> None:
@@ -1524,23 +1320,21 @@ def test_action_cap_unknown_event_masks_only_its_eligible_scopes() -> None:
             is_officer=1.0,
         ),
         _txn(
-            accession_number="known-cfo",
+            accession_number="known-director",
             owner_cik="0002",
             filing_date="2024-03-07",
             transaction_date="2024-03-06",
             value_usd=1e6,
-            officer_title="Chief Financial Officer",
-            is_officer=1.0,
         ),
     ]
     panel = _build_action_cap(rows, close, history)
 
     assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
-    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_ceo_buy_mcap_180d"])
-    assert panel.loc["2024-03-08", "f_ic_insider_cfo_buy_mcap_180d"] == pytest.approx(0.005)
+    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_c_suite_buy_mcap_180d"])
+    assert panel.loc["2024-03-08", "f_ic_insider_management_buy_mcap_180d"] == pytest.approx(0.005)
     assert panel.loc["2024-03-08", "f_ic_insider_distinct_buyers_120d"] == 2.0
     assert panel.loc["2024-03-08", "f_ic_insider_net_buy_ratio_180d"] == 1.0
-    print("SANITY: missing CEO cap blocks the aggregate/CEO sum, retaining supported CFO/count/raw-dollar behavior.")
+    print("SANITY: missing CEO cap blocks the aggregate and C-suite sums, retaining the supported management/count/raw-dollar behavior.")
 
 
 @pytest.mark.parametrize("original_known", [False, True])
@@ -1692,24 +1486,3 @@ def test_action_cap_future_declaration_recovers_on_an_explicit_row_date_correcti
     assert panel.loc["2024-05-07", feature] == 0.0
     pd.testing.assert_series_equal(panel.loc[:"2024-03-11", feature], prefix.loc[:"2024-03-11", feature])
     print("SANITY: independent full-row proof corrects the action to March 4 only on March 12, giving 1m/100m until the original May 7 expiry.")
-
-
-def test_role_buy_features_cover_exactly_the_roles_the_role_map_emits() -> None:
-    """A renamed or added role must fail here, not turn its role features all-NaN."""
-    declared = {role for role, _ in ROLE_BUY_FEATURES.values()}
-    emitted = {name for name, _ in ROLE_PATTERNS} | {OTHER_OFFICER}
-    titles = {
-        "Chief Executive Officer": "CEO",
-        "Chief Financial Officer": "CFO",
-        "Chief Operating Officer": "COO",
-        "Chief Technology Officer": "OTHER_C_SUITE",
-        "President": "PRESIDENT",
-        "Chairman": "CHAIR",
-        "SVP, Sales": "VP_LEVEL",
-        "Secretary": OTHER_OFFICER,
-    }
-    mapped = {title: officer_role(title) for title in titles}
-    assert declared == emitted, f"undeclared: {sorted(emitted - declared)}, dead: {sorted(declared - emitted)}"
-    assert mapped == titles, mapped
-    assert set(mapped.values()) <= declared
-    print(f"SANITY: {len(declared)} role features' roles equal the role map's roles, and one title per role resolves to its own role.")

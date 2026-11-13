@@ -6,7 +6,7 @@ import pytest
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
-from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
+from src.data_aggregate.utils.institutionals.insider_features import ROLE_BUY_FEATURES, InsiderCoverage
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, officer_role
 from src.data_store.schema import Tables
@@ -150,13 +150,15 @@ def test_complete_quiet_windows_do_not_require_a_prior_purchase() -> None:
         "f_ic_insider_purchase_pct_prior",
         "f_ic_insider_management_position_change_60d",
     ]
-    assert len(panel.columns) == 9 and not set(ratios).intersection(panel.columns)
+    assert len(panel.columns) == 7 + len(ROLE_BUY_FEATURES) and not set(ratios).intersection(panel.columns)
     assert panel.loc[("2024-07-01", "AAA")].eq(0).all()
     assert panel.loc[("2024-07-01", "BBB")].isna().all()
     assert panel.loc[("2024-09-01", "BBB")].eq(0).all()
     assert panel.loc[("2024-09-01", "CCC")].isna().all()
     assert panel.reindex(columns=ratios).isna().all().all()
-    print("SANITY: nine confirmed quiet gross/count signals are zero; four undefined ratios remain NULL and future/no issuer evidence stays unknown.")
+    print(
+        f"SANITY: {len(panel.columns)} confirmed quiet gross/count signals are zero; four undefined ratios remain NULL and future/no issuer evidence stays unknown."
+    )
 
 
 @pytest.mark.parametrize(
@@ -315,6 +317,58 @@ def test_account_counted_once_and_lots_expire_separately(same_economic_day: bool
     print("SANITY: 10/100 then30/100; first expiry20/110; second expiry unknown; one account denominator and invariant historical prefix/order.")
 
 
+_ROLE_TITLES = {
+    "ceo": "Chief Executive Officer",
+    "cfo": "Chief Financial Officer",
+    "coo": "Chief Operating Officer",
+    "president": "President",
+    "chair": "Executive Chairman",
+    "csuite_other": "Chief Legal Officer",
+    "vp": "Senior Vice President",
+    "other": "General Counsel",
+}
+
+
+def test_role_buy_features_partition_every_purchase_in_both_windows() -> None:
+    rows = [
+        _txn(
+            accession_number=f"role-{role}",
+            owner_cik=f"{n:04d}",
+            shares=1_000 * n,
+            value_usd=100_000 * n,
+            shares_owned_after=100_000,
+            officer_title=title,
+            is_officer=1,
+        )
+        for n, (role, title) in enumerate(_ROLE_TITLES.items(), start=1)
+    ]
+    idx = pd.date_range("2015-05-29", "2015-12-01")
+    close = pd.DataFrame({"AAA": 100.0}, index=idx)
+    shares = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2014-01-01"), "sharesOutstanding": 10_000_000.0}])
+
+    def build(extra: list[dict]) -> pd.DataFrame:
+        return build_insider_feature_panel(
+            make_frames(idx, _peers(), close_split=close),
+            _frame([*rows, *extra]),
+            shares_out_history=shares,
+            coverage=InsiderCoverage.from_availability(None, idx.max()),
+        ).set_index("date")
+
+    panel = build([])
+    unknown = build(
+        [_txn(accession_number="role-blank", owner_cik="9999", shares=1_000, value_usd=100_000, officer_title="See Remarks", is_officer=1)]
+    )
+    for days, day in ((60, "2015-06-15"), (180, "2015-09-01")):
+        each = {role: panel.loc[day, f"f_ic_insider_{role}_buy_mcap_{days}d"] for role in _ROLE_TITLES}
+        total = panel.loc[day, f"f_ic_insider_buy_value_mcap_{days}d"]
+        assert all(each[role] == pytest.approx(0.0001 * n) for n, role in enumerate(_ROLE_TITLES, start=1))
+        assert sum(each.values()) == pytest.approx(total)
+        assert all(pd.isna(unknown.loc[day, f"f_ic_insider_{role}_buy_mcap_{days}d"]) for role in _ROLE_TITLES)
+        print(
+            f"SANITY: {days}d role buys {sum(each.values()):.4f} = total buy value {total:.4f}; one 'See Remarks' buyer makes every role feature unknown."
+        )
+
+
 def test_dollar_totals_use_action_cap_and_real_expiry() -> None:
     rows = [_txn(accession_number="flow", shares=10_000, value_usd=1_000_000, shares_owned_after=110_000, officer_title="CEO", is_officer=1)]
     idx = pd.date_range("2015-05-29", "2015-12-01")
@@ -442,9 +496,9 @@ def test_action_cap_survives_missing_current_cap_and_quiet_needs_none() -> None:
         assert panel.loc["2024-06-11", f"f_ic_insider_buy_value_mcap_{window}d"] == pytest.approx(0.001)
     quiet = _action_panel([_source_row()], close, None, complete=True)
     columns = [name for name in quiet if "mcap" in name]
-    assert len(columns) == 7 and quiet.loc["2024-06-11", columns].eq(0).all()
+    assert len(columns) == 5 + len(ROLE_BUY_FEATURES) and quiet.loc["2024-06-11", columns].eq(0).all()
     print(
-        "SANITY: supported historical ratios survive missing current cap; all seven source-complete quiet intensities are zero without an action denominator."
+        f"SANITY: supported historical ratios survive missing current cap; all {len(columns)} source-complete quiet intensities are zero without an action denominator."
     )
 
 

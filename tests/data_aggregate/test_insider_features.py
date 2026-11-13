@@ -19,6 +19,7 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     CLUSTER_MIN,
     EMISSION,
     INSIDER_FLOOR,
+    ROLE_BUY_FEATURES,
     TEN_B5_1_FLOOR,
     InsiderCoverage,
     _action_values,
@@ -177,7 +178,7 @@ def test_canonical_titles_are_dated_and_identity_safe() -> None:
         _txn(accession_number="d", issuer_cik="123", shares=1003, filing_date="2015-06-15", officer_title="President", is_officer=1),
     ]
     out, _ = clean_transactions(_frame(rows))
-    assert list(out["role"]) == ["CFO", "CFO", "other_named_officer", "other_named_officer"]
+    assert list(out["role"]) == ["CFO", "CFO", "other_named_officer", "PRESIDENT"]
     assert out.loc[1, "role_source"] == "prior_form4"
     assert out.loc[2, "role_source"] == "filed"
     print("SANITY: punctuation normalized; blank title uses prior same-owner evidence; no future fill or contradictory-title promotion.")
@@ -229,7 +230,7 @@ def test_prior_role_recovery_requires_dated_issuer_person_proof(
     prior.update(prior_changes)
     current.update(current_changes)
     barriers = [dict(prior, accession_number=f"barrier-{i}", filing_date="2023-01-15", officer_title=title) for i, title in enumerate(barrier_titles)]
-    expected = "CEO" if recovered else "other_named_officer"
+    expected = "CEO" if recovered else officer_role(current["officer_title"])
     for rows in ([prior, *barriers, current], [current, *barriers[::-1], prior]):
         cleaned, _ = clean_transactions(_frame(rows))
         actual = cleaned.set_index("accession_number").loc["current-role"]
@@ -566,8 +567,15 @@ def test_management_future_supported_account_cannot_shorten_past_window() -> Non
     print("SANITY: a future correction making an opening account eligible cannot shorten an already-known account's earlier window.")
 
 
-@pytest.mark.parametrize("later_titles", [["Former Chief Executive Officer"], ["President"], ["Chief Financial Officer", "Chief Operating Officer"]])
-def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[str]) -> None:
+@pytest.mark.parametrize(
+    "later_titles,blank_role",
+    [
+        (["Former Chief Executive Officer"], "other_named_officer"),
+        (["President"], "PRESIDENT"),
+        (["Chief Financial Officer", "Chief Operating Officer"], "other_named_officer"),
+    ],
+)
+def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[str], blank_role: str) -> None:
     rows = [
         _txn(accession_number="identity", issuer_cik="123", filing_date="2024-01-01", transaction_code="A", is_officer=1),
         _txn(accession_number="blank", issuer_cik="123", filing_date="2024-05-01", is_officer=1),
@@ -584,8 +592,8 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
 
     evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
     clean, _ = clean_transactions(_frame(rows), df_roles=evidence)
-    assert clean["role"].eq("other_named_officer").all() and not clean["is_management"].any()
-    print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward into a later blank title.")
+    assert clean["role"].tolist() == [blank_role] and not clean["is_management"].any()
+    print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward; the later blank title reads {blank_role}.")
 
 
 # --------------------------------------------------------------------------- #
@@ -824,18 +832,27 @@ def test_the_role_map_reads_a_title_the_way_a_human_would():
         "Chief Executive Officer": "CEO",
         "SVP & CFO": "CFO",
         "Chief Financial Officer": "CFO",
-        "Treasurer": "other_named_officer",
+        "Treasurer": "VP_LEVEL",
+        "Controller": "VP_LEVEL",
         "President and Chief Operating Officer": "COO",
-        "Executive Chairman": "other_named_officer",
+        "Executive Chairman": "CHAIR",
+        "Vice Chairman and President": "PRESIDENT",
+        "President": "PRESIDENT",
+        "Vice President": "VP_LEVEL",
+        "EVP, Technology": "VP_LEVEL",
+        "Chief Technology Officer": "OTHER_C_SUITE",
+        "Chief Accounting Officer": "OTHER_C_SUITE",
+        "President & Chief Op. Officer": "COO",
+        "Group President": "other_named_officer",
+        "President, TALX": "other_named_officer",
         "": "other_named_officer",
     }
     got = {t: officer_role(t) for t in cases}
     assert got == cases
     print(
         f"SANITY: 'Chairman, President & CEO' -> {got['Chairman, President & CEO']} "
-        f"(longest concept first, so it is not read as a President). Measured "
-        f"fall-through to other_named_officer on live data: 32.0% of 10,390 titled "
-        f"officer purchases -- reported, not tuned away."
+        f"(a chief title beats President and Chair); a Vice President, "
+        f"a unit president and a Group President are never read as the issuer's President."
     )
 
 
@@ -1146,7 +1163,19 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,
         )
-        for i, title in enumerate(["Chief Executive Officer", "Chief Financial Officer", "", "Executive Vice President", ""])
+        for i, title in enumerate(
+            [
+                "Chief Executive Officer",
+                "Chief Financial Officer",
+                "",
+                "Executive Vice President",
+                "",
+                "Chief Operating Officer",
+                "President",
+                "Executive Chairman",
+                "Chief Technology Officer",
+            ]
+        )
     ]
     rows += [
         _txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
@@ -1237,7 +1266,7 @@ def test_no_usable_transaction_returns_an_empty_panel_not_a_crash():
 
 
 def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
-    """The seven `*_mcap_*` insider features must EXIST, and losing them must be AUDIBLE.
+    """The size-scaled `*_mcap_*` insider features must EXIST, and losing them must be AUDIBLE.
 
     ⚠ THE FAILURE MODE IS ABSENCE, WHICH IS WHY THIS TEST IS SHAPED AS A DELTA.
     `daily_market_cap` reads `sharesOutstanding` -- the VENDOR basis -- while the 13F and
@@ -1264,12 +1293,24 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
             filing_date=f"2024-0{i + 1}-15",
-            transaction_date="2024-01-12" if i == 0 else f"2024-0{i + 1}-14",
+            transaction_date="2024-01-12" if i == 0 else (pd.Timestamp(f"2024-0{i + 1}-15") - pd.offsets.BDay(1)).strftime("%Y-%m-%d"),
             shares=1_000.0 + 100 * i,
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,
         )
-        for i, title in enumerate(["Chief Executive Officer", "Chief Financial Officer", "", "Executive Vice President", ""])
+        for i, title in enumerate(
+            [
+                "Chief Executive Officer",
+                "Chief Financial Officer",
+                "",
+                "Executive Vice President",
+                "",
+                "Chief Operating Officer",
+                "President",
+                "Executive Chairman",
+                "Chief Technology Officer",
+            ]
+        )
     ]
     rows += [
         _txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
@@ -1287,7 +1328,7 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
 
     mcap_feats = [f for f in EMISSION if "mcap" in f]
-    assert len(mcap_feats) == 7, mcap_feats
+    assert len(mcap_feats) == 5 + len(ROLE_BUY_FEATURES), mcap_feats
 
     saved_cap = pd.DataFrame(100_000_000.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close, close_pit=close, mcap_pit=saved_cap), _frame(rows))

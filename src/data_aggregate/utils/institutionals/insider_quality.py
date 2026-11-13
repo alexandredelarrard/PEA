@@ -47,21 +47,30 @@ FLAG_PCT_SHARES_OUTSTANDING: float = 0.25
 #: Free-text `officer_title` -> role, first match wins (a "Chairman, President & CEO" is a CEO).
 CHIEF = r"(?:CHIEF|CHF)"
 OFFICER = r"OFF(?:ICER|CR|R)"
-OPERATIONS = r"OPER(?:ATION(?:S)?|ATING)?"
+OPERATIONS = r"OP(?:ER(?:ATION(?:S)?|ATING)?)?"
+#: Order matters: the first role whose pattern matches wins. A chief title beats PRESIDENT/CHAIR, and PRESIDENT beats
+#: CHAIR, so "Chairman, President & CEO" is CEO and "Vice Chairman and President" is PRESIDENT. "Vice President",
+#: "Group President" and "President, <unit>" never reach PRESIDENT.
 ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
     (
         "CEO",
-        rf"\b{CHIEF}\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bC\s*E\s*O\b",
+        rf"\b{CHIEF}\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bC\s*E\s*O\b",
     ),
     ("CFO", rf"\b{CHIEF}\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bC\s*F\s*O\b"),
     ("COO", rf"\b{CHIEF}\s+{OPERATIONS}\s+{OFFICER}\b" rf"|\bC\s*O\s*O\b"),
-    ("CTO_or_technology", rf"\b{CHIEF}\s+TECH(?:NOLOGY)?\s+{OFFICER}\b" rf"|\bC\s*T\s*O\b" rf"|\bTECH(?:NOLOGY)?\b"),
-    ("CMO_or_marketing", rf"\b{CHIEF}\s+MARKETING\s+{OFFICER}\b"),
+    # Any other "Chief ... Officer" (technology, marketing, accounting, legal, product, information, people, strategy ...).
+    (
+        "OTHER_C_SUITE",
+        rf"\b{CHIEF}\s+[A-Z][A-Z&/ \-]*?\s*{OFFICER}\b" rf"|\bC\s*[A-Z]\s*O\b(?!\w)" rf"|\bC\s*H\s*R\s*O\b" rf"|\bPRINCIPAL\s+[A-Z]+\s+{OFFICER}\b",
+    ),
+    ("PRESIDENT", r"(?<!VICE )(?<!VICE-)(?<!GROUP )(?<!V )(?<!SR )(?<!SENIOR )\bPRES(?:IDENT)?\b"),
+    ("CHAIR", r"\bCHAIR(?:MAN|WOMAN|PERSON)?\b"),
+    ("VP_LEVEL", r"\b(?:SE|S|E)?\s*V\s*P\b|\bTREASURER\b|\bCONTROLLER\b|\bVICE[\s-]+PRES(?:IDENT)?\b"),
 )
 OTHER_OFFICER = "other_named_officer"
 
-#: Expected share of titled officer rows falling through to `OTHER_OFFICER` (real named officers outside the map).
-ROLE_FALLTHROUGH_MEASURED: float = 0.320
+#: Roles whose title may be followed by a named functional area (a VP of Sales is still a VP of the issuer).
+_NO_TAIL_CHECK = frozenset({"VP_LEVEL"})
 
 _ROLE_COMPILED = tuple((name, re.compile(pat, re.I)) for name, pat in ROLE_PATTERNS)
 
@@ -97,8 +106,8 @@ def officer_role(title: object) -> str:
             continue
         # A named entity after the role is a unit/affiliate, not another issuer title.
         tail = s[match.end() :].strip(" ,;&/:-().")
-        companion = r"^(?:AND\s+)?(?:CHIEF\b|C\s*[BEFOT]\s*O\b|PRES(?:IDENT)?\b|(?:SR|SENIOR)\s+(?:VP|VICE|EXEC)\b|VP\b|VICE\b|[ES]VP\b|MD\b|MANAGING\s+DIRECTOR\b|INTERIM\b|ACTING\b|EXEC(?:UTIVE)?\b|CHAIR\w*\b|DIR(?:ECTOR)?\b|TREASURER\b|CONTROLLER\b|SECRETARY\b|PRINCIPAL\b|(?:CO[- ]?)?FOUNDER\b)"
-        if not tail or re.match(companion, tail, re.I):
+        companion = r"^(?:AND\s+)?(?:CHIEF\b|C\s*[A-Z]\s*O\b|GC\b|GENERAL\s+COUNSEL\b|PRES(?:IDENT)?\b|(?:SR|SENIOR)\s+(?:VP|VICE|EXEC)\b|VP\b|VICE\b|[ES]VP\b|MD\b|MANAGING\s+DIRECTOR\b|INTERIM\b|ACTING\b|EXEC(?:UTIVE)?\b|CHAIR\w*\b|OF\s+(?:THE\s+)?(?:BOARD|DIRECTORS|EXEC)\w*\b|DIR(?:ECTOR)?\b|TREASURER\b|CONTROLLER\b|SECRETARY\b|PRINCIPAL\b|(?:CO[- ]?)?FOUNDER\b)"
+        if name in _NO_TAIL_CHECK or not tail or re.match(companion, tail, re.I):
             return name
         return OTHER_OFFICER
     return OTHER_OFFICER
@@ -264,7 +273,7 @@ def _fill_prior_roles(df_rows: pd.DataFrame, df_roles: pd.DataFrame | None) -> p
     df_rows.loc[classified.index, "role_unknown"] = False
 
     # Update supported top roles
-    supported_match = df_match[df_match["role"].isin(["CEO", "CFO", "COO"])].set_index("index")
+    supported_match = df_match[df_match["role"].notna() & df_match["role"].ne(OTHER_OFFICER)].set_index("index")
     for col in ("role", "officer_title_clean", "role_source"):
         df_rows.loc[supported_match.index, col] = supported_match[col]
     df_rows.loc[supported_match.index, "role_as_of"] = supported_match["evidence_day"]

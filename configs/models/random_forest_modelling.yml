@@ -152,11 +152,27 @@ random_forest:
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
 
-    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
+    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
     - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
+    - f_ic_insider_ceo_buy_mcap_180d
+    - f_ic_insider_ceo_buy_mcap_60d
+    - f_ic_insider_cfo_buy_mcap_180d
+    - f_ic_insider_cfo_buy_mcap_60d
+    - f_ic_insider_chair_buy_mcap_180d
+    - f_ic_insider_chair_buy_mcap_60d
+    - f_ic_insider_coo_buy_mcap_180d
+    - f_ic_insider_coo_buy_mcap_60d
+    - f_ic_insider_csuite_other_buy_mcap_180d
+    - f_ic_insider_csuite_other_buy_mcap_60d
     - f_ic_insider_net_buy_ratio_180d
+    - f_ic_insider_other_buy_mcap_180d
+    - f_ic_insider_other_buy_mcap_60d
+    - f_ic_insider_president_buy_mcap_180d
+    - f_ic_insider_president_buy_mcap_60d
+    - f_ic_insider_vp_buy_mcap_180d
+    - f_ic_insider_vp_buy_mcap_60d
 
     # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
     - f_ic_inst_holders
@@ -296,12 +312,27 @@ random_forest:
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
 
-    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
+    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
     - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
+    - f_ic_insider_ceo_buy_mcap_180d
+    - f_ic_insider_ceo_buy_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
+    - f_ic_insider_cfo_buy_mcap_60d
+    - f_ic_insider_chair_buy_mcap_180d
+    - f_ic_insider_chair_buy_mcap_60d
+    - f_ic_insider_coo_buy_mcap_180d
+    - f_ic_insider_coo_buy_mcap_60d
+    - f_ic_insider_csuite_other_buy_mcap_180d
+    - f_ic_insider_csuite_other_buy_mcap_60d
     - f_ic_insider_net_buy_ratio_180d
+    - f_ic_insider_other_buy_mcap_180d
+    - f_ic_insider_other_buy_mcap_60d
+    - f_ic_insider_president_buy_mcap_180d
+    - f_ic_insider_president_buy_mcap_60d
+    - f_ic_insider_vp_buy_mcap_180d
+    - f_ic_insider_vp_buy_mcap_60d
 
     # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
     - f_ic_inst_holders
@@ -423,14 +454,29 @@ random_forest:
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
 
-    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
+    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (43)
     - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
+    - f_ic_insider_ceo_buy_mcap_180d
+    - f_ic_insider_ceo_buy_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
+    - f_ic_insider_cfo_buy_mcap_60d
+    - f_ic_insider_chair_buy_mcap_180d
+    - f_ic_insider_chair_buy_mcap_60d
+    - f_ic_insider_coo_buy_mcap_180d
+    - f_ic_insider_coo_buy_mcap_60d
+    - f_ic_insider_csuite_other_buy_mcap_180d
+    - f_ic_insider_csuite_other_buy_mcap_60d
     - f_ic_insider_director_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
+    - f_ic_insider_other_buy_mcap_180d
+    - f_ic_insider_other_buy_mcap_60d
+    - f_ic_insider_president_buy_mcap_180d
+    - f_ic_insider_president_buy_mcap_60d
     # - f_ic_insider_purchase_pct_prior
+    - f_ic_insider_vp_buy_mcap_180d
+    - f_ic_insider_vp_buy_mcap_60d
 
     # SEC 13F cube (broad 13F holders + superinvestor roster) (36)
     - f_ic_inst_holders

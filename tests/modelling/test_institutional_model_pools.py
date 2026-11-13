@@ -17,7 +17,9 @@ from src.modelling.transformers import LightGBMModel, LinearRegression, RandomFo
 from src.utils.config import read_config
 
 
-def test_institutional_29_candidates_declared_and_selected_without_fitting(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_institutional_43_candidates_declared_and_selected_without_fitting(
+    tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     names = [
         "f_ic_insider_buy_value_mcap_60d",
         "f_ic_insider_buy_value_mcap_180d",
@@ -25,6 +27,20 @@ def test_institutional_29_candidates_declared_and_selected_without_fitting(tmp_p
         "f_ic_insider_cluster_buy_120d",
         "f_ic_insider_ceo_buy_mcap_180d",
         "f_ic_insider_cfo_buy_mcap_180d",
+        "f_ic_insider_ceo_buy_mcap_60d",
+        "f_ic_insider_cfo_buy_mcap_60d",
+        "f_ic_insider_coo_buy_mcap_60d",
+        "f_ic_insider_president_buy_mcap_60d",
+        "f_ic_insider_chair_buy_mcap_60d",
+        "f_ic_insider_csuite_other_buy_mcap_60d",
+        "f_ic_insider_vp_buy_mcap_60d",
+        "f_ic_insider_other_buy_mcap_60d",
+        "f_ic_insider_coo_buy_mcap_180d",
+        "f_ic_insider_president_buy_mcap_180d",
+        "f_ic_insider_chair_buy_mcap_180d",
+        "f_ic_insider_csuite_other_buy_mcap_180d",
+        "f_ic_insider_vp_buy_mcap_180d",
+        "f_ic_insider_other_buy_mcap_180d",
         "f_ic_insider_director_buy_mcap_180d",
         "f_ic_insider_purchase_pct_prior",
         "f_ic_insider_owner_surprise_120d",

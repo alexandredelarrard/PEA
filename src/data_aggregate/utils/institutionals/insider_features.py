@@ -20,6 +20,7 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
     FLAG_PCT_SHARES_OUTSTANDING,
+    OTHER_OFFICER,
     account_other_flows,
     common_stock_mask,
     report_oversized,
@@ -31,6 +32,27 @@ from src.data_store.schema import Tables
 
 _log = logging.getLogger(__name__)
 
+#: Trailing calendar-day windows for the dense features. 20d is deliberately absent.
+WINDOW_60, WINDOW_120, WINDOW_180 = 60, 120, 180
+
+#: Open-market purchases split by the buyer's role: feature name -> (`role`, trailing window days). The roles partition
+#: every buy, so for each window the role features sum to `ic_insider_buy_value_mcap_<window>d`; a buyer whose role is
+#: unresolved makes every role feature unknown for the window.
+ROLE_BUY_FEATURES: dict[str, tuple[str, int]] = {
+    f"ic_insider_{suffix}_buy_mcap_{days}d": (role, days)
+    for days in (WINDOW_60, WINDOW_180)
+    for suffix, role in {
+        "ceo": "CEO",
+        "cfo": "CFO",
+        "coo": "COO",
+        "president": "PRESIDENT",
+        "chair": "CHAIR",
+        "csuite_other": "OTHER_C_SUITE",
+        "vp": "VP_LEVEL",
+        "other": OTHER_OFFICER,
+    }.items()
+}
+
 #: Insider magnitudes, ratios, counts, and event intensities stay in their economic units.
 #: Same-day cross-sectional ranks would replace those units with universe-composition noise.
 EMISSION: dict[str, str] = {
@@ -38,8 +60,7 @@ EMISSION: dict[str, str] = {
     "ic_insider_buy_value_mcap_180d": "raw",
     "ic_insider_distinct_buyers_120d": "raw",  # 98.1% ties: a 0-8 integer count
     "ic_insider_cluster_buy_120d": "raw",  # 98.3% ties: the same, gated
-    "ic_insider_ceo_buy_mcap_180d": "raw",
-    "ic_insider_cfo_buy_mcap_180d": "raw",
+    **dict.fromkeys(ROLE_BUY_FEATURES, "raw"),
     "ic_insider_director_buy_mcap_180d": "raw",
     "ic_insider_purchase_pct_prior": "raw",
     "ic_insider_owner_surprise_120d": "raw",  # already a percentile in [0, 1]
@@ -52,9 +73,6 @@ EMISSION: dict[str, str] = {
 #: No `_vs_peers` leg anywhere in this family, for the same reason as `ic_super_*` (D25): an
 #: insider purchase is an event about ONE company, and expressing it relative to a peer
 #: basket that mostly has no event at all measures the basket's emptiness, not the signal.
-
-#: Trailing calendar-day windows for the dense features. 20d is deliberately absent.
-WINDOW_60, WINDOW_120, WINDOW_180 = 60, 120, 180
 
 #: Cluster definition: distinct buyers within `CLUSTER_WINDOW_DAYS`, at least `CLUSTER_MIN`.
 CLUSTER_WINDOW_DAYS, CLUSTER_MIN = 120, 2
@@ -262,8 +280,7 @@ def _observe_quiet_windows(
         "ic_insider_buy_value_mcap_180d": (WINDOW_180, buy),
         "ic_insider_distinct_buyers_120d": (WINDOW_120, buy),
         "ic_insider_cluster_buy_120d": (WINDOW_120, buy),
-        "ic_insider_ceo_buy_mcap_180d": (WINDOW_180, buy & (activity["role"].eq("CEO") | role_unknown)),
-        "ic_insider_cfo_buy_mcap_180d": (WINDOW_180, buy & (activity["role"].eq("CFO") | role_unknown)),
+        **{name: (days, buy & (activity["role"].eq(role) | role_unknown)) for name, (role, days) in ROLE_BUY_FEATURES.items()},
         "ic_insider_director_buy_mcap_180d": (WINDOW_180, buy & ~activity["is_director"].eq(0)),
         "ic_insider_purchase_pct_prior": (WINDOW_60, buy),
         "ic_insider_owner_surprise_120d": (WINDOW_120, buy),
@@ -296,7 +313,7 @@ def _observe_quiet_windows(
             frame = frame.where(~observed, verified)
         fields[name] = (frame if name in ratios else frame.mask(observed & ~active, 0.0)).where(active | observed)
     unknown_roles = activity[role_unknown & buy]
-    for name, days in (("ic_insider_ceo_buy_mcap_180d", WINDOW_180), ("ic_insider_cfo_buy_mcap_180d", WINDOW_180)):
+    for name, (_, days) in ROLE_BUY_FEATURES.items():
         if name in fields:
             fields[name] = fields[name].mask(_rolling(unknown_roles, idx, days, None, seen).gt(0))
     unknown_flags = activity[sell & activity["is_10b5_1"].isna()]
@@ -443,8 +460,12 @@ def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd
     if events.empty:
         return {}
     groups = (
-        (("P",), WINDOW_60, ("ic_insider_buy_value_mcap_60d",)),
-        (("P",), WINDOW_180, ("ic_insider_ceo_buy_mcap_180d", "ic_insider_cfo_buy_mcap_180d", "ic_insider_director_buy_mcap_180d")),
+        (("P",), WINDOW_60, ("ic_insider_buy_value_mcap_60d", *(name for name, (_, days) in ROLE_BUY_FEATURES.items() if days == WINDOW_60))),
+        (
+            ("P",),
+            WINDOW_180,
+            (*(name for name, (_, days) in ROLE_BUY_FEATURES.items() if days == WINDOW_180), "ic_insider_director_buy_mcap_180d"),
+        ),
         (
             ("P",),
             WINDOW_120,
@@ -641,18 +662,17 @@ def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame
     if mcap is not None and not mcap.empty:
         out["ic_insider_buy_value_mcap_60d"] = _action_sum(buys, idx, WINDOW_60, seen)
         roles = {
-            "ic_insider_ceo_buy_mcap_180d": buys["role"].eq("CEO"),
-            "ic_insider_cfo_buy_mcap_180d": buys["role"].eq("CFO"),
-            "ic_insider_director_buy_mcap_180d": buys["is_director"].eq(1),
+            **{name: (buys["role"].eq(role), days) for name, (role, days) in ROLE_BUY_FEATURES.items()},
+            "ic_insider_director_buy_mcap_180d": (buys["is_director"].eq(1), WINDOW_180),
         }
-        for name, selector in roles.items():
+        for name, (selector, days) in roles.items():
             selected = buys[selector]
             if not selected.empty:
                 role_seen = seen.loc[:, selected["ticker"].unique()]
                 # A role's flow becomes observed only at its first eligible disclosure.
                 first = selected.groupby("ticker")["visible_from"].min()
                 role_seen = role_seen & pd.DataFrame({ticker: idx >= day for ticker, day in first.items()}, index=idx)
-                out[name] = _action_sum(selected, idx, WINDOW_180, role_seen)
+                out[name] = _action_sum(selected, idx, days, role_seen)
     surprise = _owner_surprise(buys)
     if surprise is not None and not surprise.empty:
         scores = surprise.assign(_num=surprise["value"] * surprise["surprise"])

@@ -128,6 +128,22 @@ def test_status_only_rows_are_ignored_and_do_not_cut_the_carry():
 # --------------------------------------------------------------------------- #
 # point in time and the as-of join                                             #
 # --------------------------------------------------------------------------- #
+def test_revenue_per_employee_is_log_scaled_and_undefined_for_non_positive_revenue():
+    """Dollars per head is multiplicative: the feature is its log, and a loss-making revenue line has no log."""
+    history = _history(["2020-05-01", "2021-05-01"], ["2020-03-31", "2021-03-31"], [4e6, -1e6])
+    employees = _employees(
+        [
+            {"ticker": "AAA", "as_of": "2020-05-01", "employees_total": 1_000, "basis": "total"},
+            {"ticker": "AAA", "as_of": "2021-05-01", "employees_total": 1_000, "basis": "total"},
+        ]
+    )
+    idx = pd.date_range("2020-05-01", "2021-06-01")
+    rpe = _fields(history, employees, idx)["revenue_per_employee"]["AAA"]
+    assert np.isclose(rpe.loc[pd.Timestamp("2020-06-01")], np.log(4_000.0))
+    assert pd.isna(rpe.loc[pd.Timestamp("2021-05-15")])
+    print(f"log revenue/employee: log(4,000)={rpe.loc[pd.Timestamp('2020-06-01')]:.3f}; negative revenue -> NaN. Validated.")
+
+
 def test_employee_row_filed_after_a_history_row_is_invisible_to_it():
     history = _history(["2020-02-01", "2020-05-01"], ["2019-12-31", "2020-03-31"], [1e6, 1e6])
     employees = _employees([{"ticker": "AAA", "as_of": "2020-02-05", "employees_total": 1_000, "basis": "total"}])
@@ -137,7 +153,7 @@ def test_employee_row_filed_after_a_history_row_is_invisible_to_it():
     idx = pd.date_range("2020-01-15", "2020-06-01")
     rpe = _fields(history, employees, idx)["revenue_per_employee"]["AAA"]
     assert rpe.loc[: pd.Timestamp("2020-04-30")].isna().all()
-    assert rpe.loc[pd.Timestamp("2020-05-01")] == 1_000.0
+    assert np.isclose(rpe.loc[pd.Timestamp("2020-05-01")], np.log(1_000.0))
     print("\n=== SANITY CHECK: point in time ===")
     print("  A count filed 2020-02-05 is not attached to the 2020-02-01 history row; it is first visible 2020-05-01. Validated.")
 
@@ -189,7 +205,7 @@ def test_growth_is_nan_across_a_basis_change_and_computed_within_one():
     assert np.isclose(F["headcount_elasticity"].loc[before, "AAA"], 1.0)
     for name in ("employee_growth", "revenue_per_employee_growth", "headcount_elasticity"):
         assert pd.isna(F[name].loc[switch, "AAA"]), f"{name} crossed the total -> full_part switch (or kept the stale pre-switch value)"
-    assert F["revenue_per_employee"].loc[switch, "AAA"] == 600_000.0 / 1_200.0
+    assert np.isclose(F["revenue_per_employee"].loc[switch, "AAA"], np.log(600_000.0 / 1_200.0))
     assert np.isclose(F["employee_growth"].loc[same, "AAA"], 1_560.0 / 1_200.0 - 1.0)
     assert np.isclose(F["revenue_per_employee_growth"].loc[same, "AAA"], (780_000.0 / 1_560.0) / 500.0 - 1.0)
     assert np.isclose(F["headcount_elasticity"].loc[same, "AAA"], 0.3 / 0.3)
@@ -274,11 +290,11 @@ def test_employee_fields_pit_growth_and_rev_per_employee():
         assert np.isnan(frame.loc[before_any, "AAA"]), f"{name} leaked before first as_of"
     growth = F["employee_growth"].loc[after_second, "AAA"]
     assert abs(growth - 0.20) < 0.02, f"expected ~+20% headcount growth, got {growth}"
-    assert abs(F["revenue_per_employee"].loc[after_second, "AAA"] - 500.0) < 1e-9
+    assert abs(F["revenue_per_employee"].loc[after_second, "AAA"] - np.log(500.0)) < 1e-9
 
     print("\n=== SANITY CHECK: workforce features (10-K headcount history) ===")
     print(f"  headcount 1,000 -> 1,200: YoY growth = {growth:+.1%} (expected +20%)")
-    print(f"  revenue/employee = 600,000/1,200 = {F['revenue_per_employee'].loc[after_second, 'AAA']:.0f}")
+    print(f"  log revenue/employee = log(600,000/1,200) = {F['revenue_per_employee'].loc[after_second, 'AAA']:.3f}")
     print("  Both NaN before the first filing -> historical & leak-free. Validated.")
 
 
@@ -355,7 +371,7 @@ def test_employee_features_follow_fiscal_year_and_expire_after_460_days():
     fields = _fields(history, employees, idx)
 
     assert np.isclose(fields["employee_growth"].loc[pd.Timestamp("2021-05-10"), "AAA"], 0.2)
-    assert np.isclose(fields["revenue_per_employee"].loc[pd.Timestamp("2022-08-13"), "AAA"], 600.0)
+    assert np.isclose(fields["revenue_per_employee"].loc[pd.Timestamp("2022-08-13"), "AAA"], np.log(600.0))
     assert pd.isna(fields["revenue_per_employee"].loc[pd.Timestamp("2022-08-14"), "AAA"])
     print("\n=== SANITY CHECK: fiscal workforce alignment and freshness ===")
     print("  Irregular filing dates still match adjacent fiscal years; day 460 is valid and day 461 is null. Validated.")

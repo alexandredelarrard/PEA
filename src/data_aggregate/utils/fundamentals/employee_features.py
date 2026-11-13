@@ -5,7 +5,7 @@ employee_features.py  (src/data_aggregate/utils/fundamentals/employee_features.p
 Peer-relative WORKFORCE features from `fundamentals_employees` (the 10-K headcount
 components and their basis) joined onto `sharadar_fundamentals_history` (revenue, fiscal dates):
 
-    revenue_per_employee         TTM revenue / headcount proxy
+    revenue_per_employee         log of TTM revenue / headcount proxy (positive values only)
     employee_growth              year-over-year change in the headcount proxy
     revenue_per_employee_growth  year-over-year change in revenue per employee
     headcount_elasticity         %Δheadcount / %Δrevenue (|%Δrevenue| ≥ 2 %)
@@ -175,7 +175,9 @@ def _employee_fields(
         max_age_days=_ANNUAL_MAX_AGE_DAYS,
     )
     if rev_per_emp.notna().any().any():
-        F["revenue_per_employee"] = rev_per_emp
+        # log: dollars per head span 50k to 8M across firms, so the level is multiplicative and unbounded above;
+        # the growth view below stays on the raw ratio
+        F["revenue_per_employee"] = np.log(rev_per_emp.where(rev_per_emp > 0))
         observations["_rpe"] = rpe_values
         rpe_growth_values = fiscal_change_values(
             observations,

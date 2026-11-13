@@ -132,6 +132,7 @@ Found by the [cube_part_fundamentals data check](../../reports/data-check/cube-p
 | FT only | `full_time_only` | FT |
 
   α is `build_cube.workforce.part_time_weight` in [build_cube.yml](../../configs/build_cube.yml) (0.65). It must lie in [0.5, 1]; any other value raises.
+- **Level is a log.** `f_revenue_per_employee` is the natural log of TTM revenue per headcount-proxy unit, defined for positive revenue only (dollars per head span $50k to $8M, so the level is multiplicative); `revenue_per_employee_growth` still uses the raw ratio. Rebuild `cube_part_fundamentals` with `-F` before using it historically.
 - **Basis rule.** `employee_growth`, `revenue_per_employee_growth` and `headcount_elasticity` are NaN when the proxy's basis differs from its basis a fiscal year earlier, and the daily carry stops at the switch, so a pre-switch growth never stays visible across it. `revenue_per_employee` uses the proxy and is not masked.
 
 After employee rows change, rebuild `cube_part_fundamentals` with `-F`: the 45-session incremental tail does not rewrite older feature dates.

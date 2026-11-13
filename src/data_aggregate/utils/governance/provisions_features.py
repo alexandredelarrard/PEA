@@ -55,49 +55,47 @@ from src.data_aggregate.utils.governance.staleness import (
     stint_to_daily,
 )
 
-#: The six tri-state / boolean provision columns the transition detector runs over. Every one
-#: is stored 1.0 / 0.0 / NULL by `flatten._bnum`, and NULL means the proxy was silent.
-PROVISION_COLUMNS: tuple[str, ...] = (
-    "classified_board",
-    "dual_class_shares",
-    "majority_voting",
-    "ceo_is_board_chair",
-    "independent_chair",
-    "lead_independent_director",
-)
+#: The tri-state / boolean provision columns the transition detector runs over, each with the direction
+#: of change that worsens governance and the name of the signed column its two directions fold into
+#: (None when the provision ships its flags unfolded). Every column is stored 1.0 / 0.0 / NULL by
+#: `flatten._bnum`, and NULL means the proxy was silent.
+_PROVISIONS: dict[str, tuple[str, str | None]] = {
+    "classified_board": ("up", "classified_board_change"),
+    "dual_class_shares": ("up", None),
+    "majority_voting": ("down", "majority_voting_change"),
+    "ceo_is_board_chair": ("up", "ceo_board_chair_change"),
+    "independent_chair": ("down", "independent_chair_change"),
+    "lead_independent_director": ("down", "lead_independent_director_change"),
+}
+PROVISION_COLUMNS: tuple[str, ...] = tuple(_PROVISIONS)
 
-#: exported flag -> (source column, direction). The detector computes BOTH directions on all
-#: six columns generically; `SIGNED_FLAGS` folds majority voting's two directions into one column.
+#: flag -> (source column, direction). The detector computes BOTH directions on every provision
+#: column generically; the signed columns fold each provision's two directions into one.
 #:
 #: ⚠ There is deliberately no `dual_class_removed`: GPT does not ask for it, and the two
 #: directions are not symmetric evidence -- an unwind is usually a recapitalisation retiring a
 #: share class rather than a board improving its own governance.
 TRANSITION_FLAGS: dict[str, tuple[str, str]] = {
-    # deterioration
     "classified_board_added": ("classified_board", "up"),
     "dual_class_added": ("dual_class_shares", "up"),
     "majority_voting_removed": ("majority_voting", "down"),
     "ceo_became_board_chair": ("ceo_is_board_chair", "up"),
     "independent_chair_lost": ("independent_chair", "down"),
     "lead_independent_director_lost": ("lead_independent_director", "down"),
-    # improvement
     "classified_board_removed": ("classified_board", "down"),
     "majority_voting_added": ("majority_voting", "up"),
     "ceo_stopped_being_chair": ("ceo_is_board_chair", "down"),
     "independent_chair_added": ("independent_chair", "up"),
     "lead_independent_director_added": ("lead_independent_director", "up"),
 }
+_FLAG_OF: dict[tuple[str, str], str] = {spec: flag for flag, spec in TRANSITION_FLAGS.items()}
 
 #: Exported column -> (flag worth +1, flag worth -1). The two directions of one provision ship as a
 #: single signed column named after the provision: +1 when its value goes 0 -> 1, -1 when it goes
 #: 1 -> 0, 0 when it stays. The sign is the direction of the provision, not good or bad. Both
 #: component flags are still computed, because the aggregate counts sum them one by one.
 SIGNED_FLAGS: dict[str, tuple[str, str]] = {
-    "classified_board_change": ("classified_board_added", "classified_board_removed"),
-    "majority_voting_change": ("majority_voting_added", "majority_voting_removed"),
-    "ceo_board_chair_change": ("ceo_became_board_chair", "ceo_stopped_being_chair"),
-    "independent_chair_change": ("independent_chair_added", "independent_chair_lost"),
-    "lead_independent_director_change": ("lead_independent_director_added", "lead_independent_director_lost"),
+    signed: (_FLAG_OF[(col, "up")], _FLAG_OF[(col, "down")]) for col, (_, signed) in _PROVISIONS.items() if signed is not None
 }
 
 _FOLDED_FLAGS: frozenset[str] = frozenset(flag for pair in SIGNED_FLAGS.values() for flag in pair)
@@ -105,21 +103,8 @@ _FOLDED_FLAGS: frozenset[str] = frozenset(flag for pair in SIGNED_FLAGS.values()
 #: The transition columns the module ships: every flag not folded into a signed column, plus the signed ones.
 EXPORTED_FLAGS: frozenset[str] = frozenset(set(TRANSITION_FLAGS) - _FOLDED_FLAGS) | frozenset(SIGNED_FLAGS)
 
-DETERIORATION_FLAGS: tuple[str, ...] = (
-    "classified_board_added",
-    "dual_class_added",
-    "majority_voting_removed",
-    "ceo_became_board_chair",
-    "independent_chair_lost",
-    "lead_independent_director_lost",
-)
-IMPROVEMENT_FLAGS: tuple[str, ...] = (
-    "classified_board_removed",
-    "majority_voting_added",
-    "ceo_stopped_being_chair",
-    "independent_chair_added",
-    "lead_independent_director_added",
-)
+DETERIORATION_FLAGS: tuple[str, ...] = tuple(flag for flag, (col, way) in TRANSITION_FLAGS.items() if way == _PROVISIONS[col][0])
+IMPROVEMENT_FLAGS: tuple[str, ...] = tuple(flag for flag in TRANSITION_FLAGS if flag not in DETERIORATION_FLAGS)
 
 #: A transition flag that never fires is not exported: a constant 0.0 column reads as "no change"
 #: when the truthful statement is that the source never spoke. The gate counts fired events at the
@@ -287,6 +272,11 @@ LEVEL_FIELDS: frozenset[str] = ALL_FIELDS - EVENT_FIELDS
 # --------------------------------------------------------------------------- #
 # primitives                                                                   #
 # --------------------------------------------------------------------------- #
+def _has_values(frame: pd.DataFrame) -> bool:
+    """True when `frame` holds at least one non-null cell."""
+    return bool(frame.notna().any().any())
+
+
 def _prepared(hist: pd.DataFrame, cols: list[str]) -> pd.DataFrame | None:
     """`hist` narrowed to `[ticker, as_of, *cols]`, dated and sorted.
 
@@ -464,6 +454,15 @@ def _expire(
 # --------------------------------------------------------------------------- #
 # family 8 -- provision transitions                                            #
 # --------------------------------------------------------------------------- #
+def _expired_measurement(h: pd.DataFrame, name: str, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+    """`{name: expired daily frame}` for the per-filing column `name` of `h`, or `{}` when nothing is left."""
+    daily = measurement_to_daily(h, name, idx)
+    if not _has_values(daily):
+        return {}
+    capped = _expire({name: daily}, h, tally)
+    return {k: v for k, v in capped.items() if _has_values(v)}
+
+
 def _provision_transitions(
     hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
@@ -476,6 +475,7 @@ def _provision_transitions(
     """
     exported: dict[str, pd.DataFrame] = {}
     for_counts: dict[str, pd.DataFrame] = {}
+    fired_by_flag: dict[str, int] = {}
 
     detected = {col: _transitions(hist, col) for col in PROVISION_COLUMNS}
     for flag, (col, direction) in TRANSITION_FLAGS.items():
@@ -485,10 +485,11 @@ def _provision_transitions(
             continue
         events = trans[f"{col}__{direction}"]
         fired = int((events > 0).sum())
+        fired_by_flag[flag] = fired
         tally[f"events: {flag}"] = fired
         h = _flag_frame(trans, flag, events)
         daily = fundamentals_to_daily(h, flag, idx)
-        if daily.empty or not daily.notna().any().any():
+        if not _has_values(daily):
             continue
         frame = _expire({flag: daily}, h, tally)[flag]
         for_counts[flag] = frame
@@ -500,15 +501,23 @@ def _provision_transitions(
             continue
         exported[flag] = frame
 
+    exported.update(_signed_flags(for_counts, fired_by_flag, tally))
+    return exported, for_counts
+
+
+def _signed_flags(for_counts: dict[str, pd.DataFrame], fired_by_flag: dict[str, int], tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+    """One signed column per provision whose two directions both have a daily frame and fired at least once."""
+    out: dict[str, pd.DataFrame] = {}
     for name, (plus, minus) in SIGNED_FLAGS.items():
         if plus not in for_counts or minus not in for_counts:
+            tally[f"NOT exported (a direction has no daily frame): {name}"] = 1
             continue
-        if tally.get(f"events: {plus}", 0) + tally.get(f"events: {minus}", 0) < _MIN_EVENTS:
+        if fired_by_flag[plus] + fired_by_flag[minus] < _MIN_EVENTS:
             tally[f"NOT exported (0 events, constant column): {name}"] = 1
             continue
         # Both legs share one source column and one expiry mask, so NaN lines up and a silent pair stays NaN.
-        exported[name] = for_counts[plus] - for_counts[minus]
-    return exported, for_counts
+        out[name] = for_counts[plus] - for_counts[minus]
+    return out
 
 
 def _aggregates(for_counts: dict[str, pd.DataFrame], tally: dict[str, int]) -> dict[str, pd.DataFrame]:
@@ -527,7 +536,7 @@ def _aggregates(for_counts: dict[str, pd.DataFrame], tally: dict[str, int]) -> d
         out["governance_deterioration_count"] = d
     if not i.empty:
         out["governance_improvement_count"] = i
-    return {k: v for k, v in out.items() if v.notna().any().any()}
+    return {k: v for k, v in out.items() if _has_values(v)}
 
 
 def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
@@ -542,11 +551,7 @@ def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[s
         tally["skipped: no disclosed annual pair of pct_independent_directors"] = 1
         return {}
     h = d.rename(columns={field: "board_independence_delta_1y"})
-    daily = measurement_to_daily(h, "board_independence_delta_1y", idx)
-    if daily.empty or not daily.notna().any().any():
-        return {}
-    capped = _expire({"board_independence_delta_1y": daily}, h, tally)
-    return {k: v for k, v in capped.items() if not v.empty and v.notna().any().any()}
+    return _expired_measurement(h, "board_independence_delta_1y", idx, tally)
 
 
 def _female_change(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
@@ -566,11 +571,7 @@ def _female_change(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, i
         return {}
     name = "female_board_chg_pct"
     h[name] = h[field] - trailing_proxy_mean(h, field, include_current=False)
-    daily = measurement_to_daily(h[["ticker", "as_of", name]], name, idx)
-    if daily.empty or not daily.notna().any().any():
-        return {}
-    capped = _expire({name: daily}, h, tally)
-    return {k: v for k, v in capped.items() if not v.empty and v.notna().any().any()}
+    return _expired_measurement(h[["ticker", "as_of", name]], name, idx, tally)
 
 
 # --------------------------------------------------------------------------- #
@@ -591,7 +592,7 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) 
         tally["skipped: no avg_other_public_boards -> no board busyness"] = 1
         return out
     level = fundamentals_to_daily(hist, field, idx)
-    if level.empty or not level.notna().any().any():
+    if not _has_values(level):
         tally["skipped: avg_other_public_boards all null -> no board busyness"] = 1
         return out
     # The LEVEL is expired against its own source column: the feature is called
@@ -605,7 +606,7 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) 
         return out
     h = d.rename(columns={field: "board_busyness_delta_1y"})
     delta = measurement_to_daily(h, "board_busyness_delta_1y", idx)
-    if delta.empty or not delta.notna().any().any():
+    if not _has_values(delta):
         return out
     out["board_busyness_delta_1y"] = _expire({"board_busyness_delta_1y": delta}, h, tally)["board_busyness_delta_1y"]
     return out
@@ -683,7 +684,7 @@ def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, 
 
     out: dict[str, pd.DataFrame] = {}
     big4 = fundamentals_to_daily(h, "auditor_is_big4", idx)
-    if not big4.empty and big4.notna().any().any():
+    if _has_values(big4):
         out["auditor_is_big4"] = big4
 
     # TENURE ACCRUES DAILY off the start date, exactly as `panel._governance_fields` accrues
@@ -691,14 +692,14 @@ def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, 
     # to a year, and the accrual needs no new information.
     # A blank start ends the previous run's value instead of carrying it into the next firm.
     start = measurement_to_daily(h, "_tenure_start_ord", idx)
-    if not start.empty and start.notna().any().any():
+    if _has_values(start):
         today = pd.Series(idx.map(pd.Timestamp.toordinal), index=idx, dtype="float64")
         tenure = start.rsub(today, axis=0).div(_DAYS_PER_YEAR).where(lambda t: t >= 0)
-        if tenure.notna().any().any():
+        if _has_values(tenure):
             out["auditor_tenure"] = tenure
 
     changed = fundamentals_to_daily(h, "auditor_changed", idx)
-    if not changed.empty and changed.notna().any().any():
+    if _has_values(changed):
         out["auditor_changed"] = _expire({"auditor_changed": changed}, h, tally)["auditor_changed"]
 
     # ⚠ THE LEVELS EXPIRE HERE, and `auditor_tenure` needs a `sources` entry because it
@@ -707,7 +708,7 @@ def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, 
     # date it accrues from. Re-expiring `auditor_changed` in the same call is idempotent -- the
     # event mask is the same one it already carries.
     out = _expire(out, h, tally, sources={"auditor_tenure": "_tenure_start_ord"})
-    return {k: v for k, v in out.items() if not v.empty and v.notna().any().any()}
+    return {k: v for k, v in out.items() if _has_values(v)}
 
 
 # --------------------------------------------------------------------------- #
@@ -751,7 +752,7 @@ def provision_fields(
     # second is the entrenchment leg the dropped interaction needed. Coverage 99.3% after
     # impute, 99.7% in the modern era.
     duality = stint_to_daily(def14a, "ceo_is_board_chair", idx)
-    if not duality.empty and duality.notna().any().any():
+    if _has_values(duality):
         # Filed under its own name, so it needs no `sources` mapping -- and it is on the LEVEL
         # horizon like the other four: whether the CEO holds the chair is a standing fact, but
         # a standing fact from 2018 is not evidence about today.

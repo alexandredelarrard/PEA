@@ -26,18 +26,11 @@ def _all_peers(tickers: list[str]) -> dict[str, dict[str, float]]:
     return {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
 
 
-def test_binary_semantic_preserves_state_and_bypasses_input_winsorization(monkeypatch):
+def test_binary_semantic_preserves_state_and_peer_scores_the_exact_states():
     tickers = [f"T{i}" for i in range(8)]
     date = pd.Timestamp("2024-01-02")
     field = pd.DataFrame([[0, 0, 0, 0, 1, 1, np.nan, 0]], index=[date], columns=tickers)
-    observed_winsor_flags: list[bool] = []
     real_peer_relative = panel_module.peer_relative
-
-    def spy_peer_relative(values, peers, **kwargs):
-        observed_winsor_flags.append(kwargs.get("winsorize_inputs", True))
-        return real_peer_relative(values, peers, **kwargs)
-
-    monkeypatch.setattr(panel_module, "peer_relative", spy_peer_relative)
     panel = build_peer_relative_panel(
         {"flag": field},
         _all_peers(tickers),
@@ -45,7 +38,7 @@ def test_binary_semantic_preserves_state_and_bypasses_input_winsorization(monkey
     ).set_index("ticker")
 
     expected = field.loc[date].dropna().sort_index().astype("float32")
-    expected_peer = real_peer_relative(field, _all_peers(tickers), winsorize_inputs=False).loc[date]
+    expected_peer = real_peer_relative(field, _all_peers(tickers)).loc[date]
     actual = panel["f_flag_xs"].sort_index()
     pd.testing.assert_series_equal(actual.dropna(), expected, check_names=False)
     pd.testing.assert_series_equal(
@@ -54,10 +47,9 @@ def test_binary_semantic_preserves_state_and_bypasses_input_winsorization(monkey
         check_names=False,
     )
     assert pd.isna(actual.loc["T6"])
-    assert observed_winsor_flags == [False]
     assert set(actual.dropna().unique()) == {0.0, 1.0}
     print("\n=== SANITY CHECK: binary transform semantics ===")
-    print("  _xs is the exact 0/1 state and the peer leg bypasses continuous input winsorization. Validated.")
+    print("  _xs is the exact 0/1 state and the peer leg scores the exact states. Validated.")
 
 
 def test_structural_zero_semantic_ranks_only_nonzero_support():
@@ -81,7 +73,7 @@ def test_structural_zero_semantic_ranks_only_nonzero_support():
     assert panel.loc["T7", ["f_intensity_xs", "f_intensity_vs_peers"]].isna().all()
     comparable = field.mask(field.eq(0))
     expected_peer = (
-        panel_module.peer_relative(comparable, peers, winsorize_inputs=True)
+        panel_module.peer_relative(comparable, peers)
         .where(
             ~field.eq(0),
             0.0,

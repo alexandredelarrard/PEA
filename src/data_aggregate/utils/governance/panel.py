@@ -112,8 +112,8 @@ _PEER_TRANSFORM: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     **dict.fromkeys(VOTE_PEER_FIELDS, lambda frame: np.sqrt(_nonnegative(frame))),
 }
 
-#: Every governance feature ships raw; the peer leg uses no input trim, and the blocks are laid out peers, history, raw.
-_PANEL_SETTINGS = PanelSettings(peer_transform=_PEER_TRANSFORM, trim_peer_inputs=False, leg_order=("vs_peers", "vs_hist", "raw"))
+#: Every governance feature ships raw; the blocks are laid out peers, history, raw.
+_PANEL_SETTINGS = PanelSettings(peer_transform=_PEER_TRANSFORM, leg_order=("vs_peers", "vs_hist", "raw"))
 
 #: Fixed bound on the CEO pay log growth (and on its gap to revenue log growth): log(20) is a 20x year, -log(20) a 95% cut.
 PAY_LOG_GROWTH_BOUND: float = 3.0

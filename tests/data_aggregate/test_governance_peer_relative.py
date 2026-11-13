@@ -1,4 +1,4 @@
-"""Governance peer legs use the shared `peer_relative`: (X - weighted peer mean) / max(weighted peer std, 0.10 x universe std), no trim, no clip."""
+"""Governance peer legs use the shared `peer_relative`: (X - weighted peer mean) / max(weighted peer std, 0.5 x universe std), no trim, clipped at +-5."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ def _expected(frame: pd.DataFrame) -> pd.Series:
     """Hand calculation of the definition for equal weights and a full basket."""
     mean = frame[PEERS].mean(axis=1)
     std = frame[PEERS].std(axis=1, ddof=0)
-    floor = 0.10 * frame.std(axis=1)
-    return (frame["S"] - mean) / std.clip(lower=floor)
+    floor = 0.5 * frame.std(axis=1)
+    return ((frame["S"] - mean) / std.clip(lower=floor)).clip(-5.0, 5.0)
 
 
 def test_value_is_centred_on_the_peer_mean_and_scaled_by_the_peer_std() -> None:
@@ -38,12 +38,12 @@ def test_value_is_centred_on_the_peer_mean_and_scaled_by_the_peer_std() -> None:
     print(f"SANITY: (10 - peer mean 4) / peer std 2 = {out['S'].iloc[0]:.3f}.")
 
 
-def test_the_peer_std_is_floored_at_a_tenth_of_the_universe_std() -> None:
+def test_the_peer_std_is_floored_at_half_of_the_universe_std() -> None:
     frame = _frame(subject=6.0, peer_values=[5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.001])
     universe = pd.DataFrame({f"U{i}": [float(i)] * len(DATES) for i in range(50)}, index=DATES)
     full = pd.concat([frame, universe], axis=1)
     out = peer_relative(full, BASKET)["S"]
-    floor = 0.10 * full.std(axis=1)
+    floor = 0.5 * full.std(axis=1)
     assert (full[PEERS].std(axis=1, ddof=0) < floor).all(), "the basket must be tighter than the floor"
     pd.testing.assert_series_equal(out, (6.0 - full[PEERS].mean(axis=1)) / floor, check_names=False)
     print(f"SANITY: peers 5.0..5.001, subject 6.0 -> z={out.iloc[0]:.2f}, divided by the floor {floor.iloc[0]:.2f}, not by ~4e-4.")
@@ -73,12 +73,12 @@ def test_the_peer_count_is_evaluated_per_date() -> None:
     print("SANITY: the same basket is blank on the first three dates (2 peers) and live afterwards (7 peers).")
 
 
-def test_an_extreme_value_is_not_trimmed_or_clipped() -> None:
+def test_an_extreme_value_is_not_trimmed_and_is_clipped_at_five() -> None:
     frame = _frame(subject=1_000.0, peer_values=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
     universe = pd.DataFrame({f"U{i}": [1.0 + i % 10] * len(DATES) for i in range(100)}, index=DATES)
     value = float(peer_relative(pd.concat([frame, universe], axis=1), BASKET)["S"].iloc[0])
-    assert value > 8.0, f"a clip or a winsorize reached the value: {value}"
-    print(f"SANITY: a 1000 against peers around 4 stays {value:.1f}, far beyond the former +-8 clip.")
+    assert value == 5.0, f"the value must sit at the fixed +-5 clip: {value}"
+    print(f"SANITY: a 1000 against peers around 4 is clipped to {value:.1f}, the fixed bound.")
 
 
 def test_each_governance_field_is_transformed_before_scoring() -> None:

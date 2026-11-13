@@ -16,8 +16,8 @@ forgetting to pass one:
     3.0  the LABEL          RMSE stability: a handful of extreme residuals must not
                             dominate the loss the model is fitted against.
     4.0  a CHARACTERISTIC   factor/regression weights: keep the tail, bound its leverage.
-    5.0  the OWN-HISTORY z  `self_history_z`, clipped at `Z_CLIP` with no per-day winsorize.
-                            The PEER z of `panel.peer_relative` carries no output clip at all.
+    5.0  the OWN-HISTORY z  `self_history_z` and the PEER z of `panel.peer_relative`, both clipped
+                            at `Z_CLIP`, no winsorize and no input trim.
 
 Likewise the ZERO-DISPERSION policy is explicit rather than incidental. On a day where
 every name shares one value, `sd == 0`, so an unguarded divide yields +/-inf which `clip`
@@ -46,10 +46,7 @@ _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 # the three clip policies, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
 XS_CLIP_CHARACTERISTIC = 4.0  # factor characteristic / regressor (factors.py)
-Z_CLIP = 5.0  # the one fixed bound of a feature z-score (own-history today; later phases reuse it)
-
-#: Smallest dispersion a standardizer will divide by, as a FRACTION of the same day's
-PEER_DISPERSION_FLOOR = 0.10
+Z_CLIP = 5.0  # the one fixed bound of a feature z-score (own-history and peer)
 
 #: How many PRESENT members a design CELL needs on a day before the group block may split the
 MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5
@@ -92,11 +89,10 @@ def xs_z(df: pd.DataFrame, clip: float | None, *, zero_sd_to_nan: bool = False, 
     (sd == 0 -> +/-inf -> clip -> +/-clip); `True` is the guarded behaviour a REGRESSOR needs
     (sd == 0 -> NaN), used by `targets._neutralizing_design`.
 
-    ⚠ `PEER_DISPERSION_FLOOR` IS DELIBERATELY NOT APPLIED HERE, and not for symmetry's sake.
-    The floor is defined as a fraction of THE DAY'S CROSS-SECTIONAL STD, and `sd` on this
-    line IS that std -- so `sd.clip(lower=0.10 * sd)` can never bind. The floor is only
-    meaningful for a SUBGROUP dispersion measured against a wider reference, which is
-    `panel.peer_relative`'s 7-name basket and nothing here.
+    ⚠ The peer std floor (`panel.peer_relative`'s `std_floor_ratio`) IS DELIBERATELY NOT APPLIED
+    HERE: it is a fraction of THE DAY'S CROSS-SECTIONAL STD, and `sd` on this line IS that std,
+    so the floor could never bind. It is only meaningful for a SUBGROUP dispersion (a peer
+    basket) measured against a wider reference.
 
     Input winsorization is likewise not applied: this function standardizes the MODELLING
     LABEL (`targets.cross_sectional_zscore`) as well as characteristics, and trimming the

@@ -284,7 +284,7 @@ def build_fundamental_views(
     peer_columns: dict[str, pd.Series] = {}
     keys = pd.MultiIndex.from_frame(panel[["date", "ticker"]])
     for name in sorted(selected_peers):
-        relative = peer_relative(retained[name], peer_dict, winsorize_inputs=True)
+        relative = peer_relative(retained[name], peer_dict)
         if output_since is not None:
             relative = relative.loc[relative.index >= pd.Timestamp(output_since)]
         column = relative.stack().astype("float32")

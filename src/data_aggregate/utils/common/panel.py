@@ -26,9 +26,8 @@ import pandas as pd
 from src.data_aggregate.utils.common.xs import (
     HIST_MIN_PERIODS,
     HIST_WINDOW,
-    PEER_DISPERSION_FLOOR,
+    Z_CLIP,
     self_history_z,
-    winsorize_xs,
     xs_rank_pct,
     zscore,
 )
@@ -74,30 +73,30 @@ def _peer_z(df_values: pd.DataFrame, ticker: str, peers: dict, floor: pd.Series)
     return zscore(df_values[ticker], mean, std)
 
 
-def peer_relative(field_df: pd.DataFrame, peer_dict: dict, winsorize_inputs: bool = False) -> pd.DataFrame:
-    """Score every ticker against its peers, per date: (X - weighted peer mean) / max(weighted peer std, 0.10 x universe std).
+def peer_relative(field_df: pd.DataFrame, peer_dict: dict, std_floor_ratio: float = 0.5) -> pd.DataFrame:
+    """Score every ticker against its peers, per date: (X - weighted peer mean) / max(weighted peer std, `std_floor_ratio` x universe std), clipped at +-`Z_CLIP`.
 
     `field_df` is a (date x ticker) frame and `peer_dict` maps a ticker to {peer: weight}; the
     ticker itself is never in its own basket. The score is NaN when fewer than 3 peers have a value
-    that day. Dividing by the peer std alone explodes when similar companies report near-identical
-    values, so the std is floored at 10% of the whole universe's std that day.
+    that day, or when the peers all share one value. Dividing by the peer std alone explodes when
+    similar companies report near-identical values, so the std is floored at `std_floor_ratio` of
+    the whole universe's std that day.
 
-    The result is neither trimmed nor clipped. `winsorize_inputs` trims each day's cross-section to
-    its 1%/99% quantiles before any statistic is taken, for fields where one bad value would move a
-    basket's mean.
+    Inputs are used as they are (no trim): the fixed output clip bounds one bad value's effect on
+    its own score, and the same value gives the same score on every day.
     """
-    df_values = winsorize_xs(field_df) if winsorize_inputs else field_df
-
     # The floor is a fraction of the day's universe dispersion (sample std, as in `xs.xs_z`).
-    floor = df_values.std(axis=1) * PEER_DISPERSION_FLOOR
+    floor = field_df.std(axis=1) * std_floor_ratio
 
     # One score column per ticker that has a usable basket.
-    df_z = pd.DataFrame(np.nan, index=df_values.index, columns=df_values.columns)
+    df_z = pd.DataFrame(np.nan, index=field_df.index, columns=field_df.columns)
     for ticker, peers in peer_dict.items():
-        z = _peer_z(df_values, ticker, peers, floor)
+        z = _peer_z(field_df, ticker, peers, floor)
         if z is not None:
             df_z[ticker] = z
-    return df_z.replace([np.inf, -np.inf], np.nan)
+
+    # A non-finite score is missing, and is made so BEFORE the clip: a clip would turn an inf into a fabricated +-Z_CLIP.
+    return df_z.replace([np.inf, -np.inf], np.nan).clip(-Z_CLIP, Z_CLIP)
 
 
 #: The emission modes a field may declare. The DEFAULT -- a field absent from the emission map
@@ -136,8 +135,7 @@ class PanelSettings:
 
     `history` configures the `raw+hist` leg and the emitted date window. `peer_transform` maps a
     field to a variance-stabilising transform applied to the peer INPUT only (the raw leg keeps the
-    value). `trim_peer_inputs` winsorizes each day's cross-section at 1%/99% before the peer
-    statistics (off for binary fields whatever its value). `leg_order` replaces the default
+    value). `leg_order` replaces the default
     one-block-per-field layout by one block per leg kind, in the order given (`raw`, `vs_peers`,
     `xs`, `vs_hist`): each block drops its all-NaN legs and all-NaN rows, and the blocks are
     outer-merged on (date, ticker), which sorts the keys.
@@ -145,7 +143,6 @@ class PanelSettings:
 
     history: SelfHistory = field(default_factory=SelfHistory)
     peer_transform: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] | None = None
-    trim_peer_inputs: bool = True
     leg_order: tuple[str, ...] | None = None
 
 
@@ -193,13 +190,12 @@ def _long_leg(frame: pd.DataFrame, column: str, output: pd.DataFrame | None = No
 def _peer_leg(
     comparable: pd.DataFrame,
     zero_state: pd.DataFrame | None,
-    trim: bool,
     peer_dict: dict,
     transform: Callable[[pd.DataFrame], pd.DataFrame] | None,
 ) -> pd.DataFrame:
-    """Peer z-score of the (optionally transformed) comparable values, with the input trim the caller chose."""
+    """Peer z-score of the (optionally transformed) comparable values."""
     values = comparable if transform is None else transform(comparable)
-    rel = peer_relative(values, peer_dict, winsorize_inputs=trim)
+    rel = peer_relative(values, peer_dict)
     return rel if zero_state is None else rel.where(~zero_state, 0.0)
 
 
@@ -248,9 +244,8 @@ def _field_legs(
     if mode is not None:
         legs.append(("raw", _long_leg(output, f"f_{name}")))
     if mode is None or mode == "raw+peers":
-        trim = settings.trim_peer_inputs and not binary
         transform = (settings.peer_transform or {}).get(name)
-        legs.append(("vs_peers", _long_leg(_peer_leg(comparable, zero_state, trim, peer_dict, transform), f"f_{name}_vs_peers", output)))
+        legs.append(("vs_peers", _long_leg(_peer_leg(comparable, zero_state, peer_dict, transform), f"f_{name}_vs_peers", output)))
     if mode is None or mode == "raw+xs":
         legs.append(("xs", _long_leg(_xs_leg(fdf, comparable, zero_state, binary), f"f_{name}_xs", output)))
     if mode == "raw+hist":
@@ -307,10 +302,10 @@ def build_peer_relative_panel(
     """Turn a {name: daily wide frame} dict into the long feature panel shared by every panel builder.
 
     By default each field becomes `f_<name>_vs_peers` and `f_<name>_xs`; `emission` overrides that
-    per field with one of `_EMISSION_MODES`. `semantics` declares `binary` (exact 0/1 `_xs`, no
-    input winsorization on the peer leg) or `structural_zero` (zero kept as a state, only non-zero
-    support compared). `settings` (`PanelSettings`) carries the history window, the per-field peer
-    transform, the peer input trim and the block layout, and `availability` masks both the input
+    per field with one of `_EMISSION_MODES`. `semantics` declares `binary` (exact 0/1 `_xs`) or
+    `structural_zero` (zero kept as a state, only non-zero support compared). `settings`
+    (`PanelSettings`) carries the history window, the per-field peer transform and the block
+    layout, and `availability` masks both the input
     observations and the emitted (date, ticker) keys.
     """
     if not fields:

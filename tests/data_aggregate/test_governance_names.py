@@ -108,9 +108,9 @@ def test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright():
             _row("NAMEGAP", "2020-04-01", ceo_name_proxy=None),
             _row("NAMEGAP", "2021-04-01", ceo_name_proxy="Ann Ash"),
             # a PROVISION gap must still carry forward
-            _row("PROV", "2019-04-01", classified_board=1.0, poison_pill=0.0),
-            _row("PROV", "2020-04-01", classified_board=np.nan, poison_pill=np.nan),
-            _row("PROV", "2021-04-01", classified_board=0.0, poison_pill=1.0),
+            _row("PROV", "2019-04-01", classified_board=1.0),
+            _row("PROV", "2020-04-01", classified_board=np.nan),
+            _row("PROV", "2021-04-01", classified_board=0.0),
             # a TRAILING gap -- filled now, refused by the old interior-only rule
             _row("TRAIL", "2019-04-01", board_size=10.0),
             _row("TRAIL", "2020-04-01", board_size=np.nan),
@@ -144,7 +144,6 @@ def test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright():
 
     # --- provisions carry, a trailing gap now fills, a stale one does not ---
     assert at("PROV", "2020-04-01", "classified_board") == 1.0
-    assert at("PROV", "2020-04-01", "poison_pill") == 0.0
     assert at("SAME", "2020-04-01", "classified_board") == 1.0
     assert at("TRAIL", "2020-04-01", "board_size") == 10.0, "the trailing gap was refused -- the live/backtest asymmetry is back"
     assert pd.isna(at("STALE", "2020-04-01", "board_size")), f"a {CARRY_MAX_DAYS}d-stale value was carried and would read as fresh downstream"
@@ -154,7 +153,7 @@ def test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright():
     for t, d, c, v in (
         ("SAME", "2019-04-01", "ceo_salary", 3_000_000.0),
         ("TURN", "1999-03-16", "ceo_salary", 500_000.0),
-        ("PROV", "2021-04-01", "poison_pill", 1.0),
+        ("PROV", "2021-04-01", "classified_board", 0.0),
         ("STALE", "2010-04-01", "board_size", 8.0),
     ):
         assert at(t, d, c) == v, f"{t} {c} was overwritten"

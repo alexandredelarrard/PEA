@@ -62,7 +62,6 @@ _CARRIED = [
     "insider_ownership_pct",
     "pct_independent_directors",
     "avg_other_public_boards",
-    "poison_pill",
     "majority_voting",
     "independent_chair",
     "ceo_salary",
@@ -86,7 +85,7 @@ def _parent() -> pd.DataFrame:
         for i, d in enumerate(dates):
             row: dict[str, object] = {"ticker": ticker, "accession_number": f"{ticker}-{i}", "as_of": d, "ceo_name_proxy": f"{ticker} Chief"}
             for col in _CARRIED:
-                row[col] = (0.5 if col not in ("poison_pill", "majority_voting", "independent_chair") else 1.0) if i in disclosed else np.nan
+                row[col] = (0.5 if col not in ("majority_voting", "independent_chair") else 1.0) if i in disclosed else np.nan
             rows.append(row)
     return pd.DataFrame(rows)
 

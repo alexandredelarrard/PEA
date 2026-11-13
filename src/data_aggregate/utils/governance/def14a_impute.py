@@ -19,7 +19,7 @@ of these, and no other kind of fill is allowed anywhere in the governance packag
 |---|---|---|---|
 | **A — structurally absent** | the disclosure regime did not exist at that `as_of` | **leave NaN, never fill.** The feature's history simply starts at the regime date | `ceo_total_comp` pre-2006 (Reg S-K), `say_on_pay_support_pct` pre-2011 (Dodd-Frank §951), `ceo_pay_ratio` pre-2018 (Item 402(u)) |
 | **B — disclosed but unextracted** | era-flat or era-noisy fill, no legislative cliff | **deduce**: within-row identities, then a bounded forward CARRY from the last known observation | `avg_other_public_boards`, `lead_independent_director`, the 42,386 NULL NEO totals |
-| **C — silent by choice (tri-state)** | the extraction deliberately writes NULL when the document says nothing | **carry the last known value forward**, bounded; never infer FALSE from silence | `poison_pill`, `majority_voting` |
+| **C — silent by choice (tri-state)** | the extraction deliberately writes NULL when the document says nothing | **carry the last known value forward**, bounded; never infer FALSE from silence | `majority_voting` |
 
 ⚠ **Kind A is NOT detected in code and must not be.** No date literal, no `if year < 2006`
 branch: a regime cliff is visible in the coverage report and belongs in prose, not in a
@@ -77,7 +77,6 @@ Measured recovery on the live table, 2026-09-09 — 12,372 rows, 489 tickers,
 | `ceo_total_comp` | 68.4% | 76.0% | +932 | 95.9% | 298 |
 | `say_on_pay_support_pct` | 37.8% | 44.8% | +861 | 75.8% | 1,749 |
 | `avg_board_tenure` | 89.7% | 95.9% | +773 | 97.3% | 197 |
-| `poison_pill` | 8.5% | 13.4% | +613 | 19.2% | 5,850 |
 | `ceo_salary` | 91.4% | 95.4% | +504 | 98.1% | 136 |
 | `ceo_is_board_chair` | 96.0% | 99.1% | +394 | 99.6% | 29 |
 | `ceo_pay_ratio` | 32.2% | 33.4% | +145 | 56.9% | 3,122 |
@@ -86,9 +85,9 @@ Measured recovery on the live table, 2026-09-09 — 12,372 rows, 489 tickers,
 
 The single most important column is the second-to-last: **in the modern era the fields the
 governance families need are 75-100% filled after impute**, and the remaining sparsity is
-concentrated in eras where the disclosure did not legally exist. `poison_pill` at 8.5% raw is
-kind C, not a defect — 91.5% "unknown" is the honest state of the world, and inferring FALSE
-from silence is what made it degenerate (TRUE in 0.1% of rows) before the tri-state fix.
+concentrated in eras where the disclosure did not legally exist. A tri-state flag that is mostly
+NULL is kind C, not a defect — "unknown" is the honest state of the world, and inferring FALSE
+from silence is what made such a flag degenerate before the tri-state fix.
 
 ⚠ THIS TABLE FELL when the fill went forward-only on 2026-09-09, and the drop is the point,
 not a regression. `avg_other_public_boards` went 84.9% → 72.0%, `ceo_salary` 97.4% → 95.4%,
@@ -160,7 +159,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue, trailing_proxy_mean
+from src.data_aggregate.utils.governance.accrual import TRAILING_PROXIES, accrual_anchor, accrue, trailing_proxy_window
 from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, key_at_last_value
 from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
@@ -264,16 +263,15 @@ DELTA_PROVENANCE_COLUMNS: tuple[str, ...] = ("avg_other_public_boards", "pct_ind
 # DECISION to write it was, and it produced the same live/backtest asymmetry: a gap at the live
 # edge has no "after" and so could never be filled.
 #
-# `poison_pill` and `majority_voting` are TRI-STATE at extraction (null when the proxy is
-# silent), so a carry-forward here fills a genuine gap rather than propagating a fabricated
-# FALSE -- which is what made `majority_voting` flip 21.2% year-over-year before.
+# `majority_voting` is TRI-STATE at extraction (null when the proxy is silent), so a
+# carry-forward here fills a genuine gap rather than propagating a fabricated FALSE -- which
+# is what made it flip 21.2% year-over-year before.
 FLAGS = [
     "ceo_is_board_chair",
     "independent_chair",
     "lead_independent_director",
     "classified_board",
     "dual_class_shares",
-    "poison_pill",
     "majority_voting",
     "ceo_name_proxy",
 ]
@@ -408,6 +406,10 @@ def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values: pd.Series, legs: 
         stats[tag] = stats.get(tag, 0) + n
 
 
+#: The columns the pay-ratio identities read.
+_PAY_RATIO_COLUMNS = frozenset({"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"})
+
+
 def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
     comps = [c for c in CEO_COMP if c in df.columns]
     if "ceo_total_comp" in df.columns and len(comps) == 6:
@@ -420,26 +422,37 @@ def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
     if {"n_directors", "board_size"} <= set(df.columns):
         _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], ["board_size"], stats, "n_directors = board_size")
         _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], ["n_directors"], stats, "board_size = n_directors")
-    if {"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"} <= set(df.columns):
+    if _PAY_RATIO_COLUMNS <= set(df.columns):
         r, tot = df["ceo_pay_ratio"], df["ceo_total_comp"]
         _fill(df, "median_employee_pay", (r > 0) & tot.notna(), tot / r, ["ceo_pay_ratio", "ceo_total_comp"], stats, "median_pay = total / ratio")
 
 
+def _oldest_window_source(df: pd.DataFrame, col: str, positions: pd.DataFrame) -> pd.Series:
+    """Row-wise oldest source date of the proxies of `col` that `positions` (a `trailing_proxy_window` result) counts."""
+    sources = ultimate_source_dates(df, col).to_numpy()
+    dated = [pd.Series(sources[slot.fillna(0).astype(int).to_numpy()], index=df.index).where(slot.notna()) for _, slot in positions.items()]
+    return pd.concat(dated, axis=1).min(axis=1)
+
+
 def _smooth_pay_ratio(df: pd.DataFrame, stats: dict) -> None:
-    """`ceo_pay_ratio` = `ceo_total_comp` / the mean `median_employee_pay` of the last three proxies that carry one.
+    """`ceo_pay_ratio` = `ceo_total_comp` / the mean `median_employee_pay` of the trailing proxies that carry one.
 
     The median employee's pay moves far less from year to year than the disclosed ratio, which carries
     the CEO's own pay noise. One disclosed median is enough. The ratio is blank where the total or every
-    median is missing: the disclosed ratio is not a fallback.
+    median is missing: the disclosed ratio is not a fallback. A recomputed ratio is dated at the oldest
+    source of the total and of the medians in its mean; a disclosed ratio the mean reproduces keeps its provenance.
     """
-    if not {"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"} <= set(df.columns):
+    if not _PAY_RATIO_COLUMNS <= set(df.columns):
         return
-    mean_median = trailing_proxy_mean(df, "median_employee_pay", include_current=True)
+    medians, positions = trailing_proxy_window(df, "median_employee_pay", include_current=True)
+    mean_median = medians.mean(axis=1)
     value = df["ceo_total_comp"] / mean_median.where(mean_median > 0)
     blank = value.isna() & df["ceo_pay_ratio"].notna()
-    write_with_provenance(df, value.notna(), "ceo_pay_ratio", value, FILL_IDENTITY, _oldest_leg(df, ["ceo_total_comp", "median_employee_pay"]))
+    recomputed = value.notna() & (value != df["ceo_pay_ratio"])
+    source = pd.concat([_oldest_leg(df, ["ceo_total_comp"]), _oldest_window_source(df, "median_employee_pay", positions)], axis=1).min(axis=1)
+    write_with_provenance(df, recomputed, "ceo_pay_ratio", value, FILL_IDENTITY, source)
     write_with_provenance(df, blank, "ceo_pay_ratio", None, None, None)
-    stats["pay_ratio = total / mean median pay of the last 3 proxies"] = int(value.notna().sum())
+    stats[f"pay_ratio = total / mean median pay of the last {TRAILING_PROXIES} proxies"] = int(value.notna().sum())
     stats["pay_ratio blanked (no total or no median)"] = int(blank.sum())
 
 

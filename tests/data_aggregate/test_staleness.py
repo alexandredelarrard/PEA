@@ -150,7 +150,6 @@ def test_expiry_bite_on_real_def14a() -> None:
         "avg_other_public_boards",
         "board_size",
         "pct_independent_directors",
-        "poison_pill",
         "majority_voting",
     ]
     try:

@@ -171,27 +171,43 @@ TRAILING_PROXIES = 3
 TRAILING_MAX_AGE_DAYS = 1460
 
 
-def trailing_proxy_mean(df: pd.DataFrame, value: str, *, include_current: bool) -> pd.Series:
-    """Mean of `value` over each ticker's last `TRAILING_PROXIES` proxies that carry one, aligned to `df`.
+def trailing_proxy_window(df: pd.DataFrame, value: str, *, include_current: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`(values, positions)`: the proxies of `value` that count for each row, one column per slot, aligned to `df`.
 
     Counted in proxies, not days, so a filing date a few days either way never changes how many values
-    enter the mean. With `include_current` the window is the row and the proxies before it, without it
+    enter the window. With `include_current` the window is the row and the proxies before it, without it
     only the proxies strictly before the row; a proxy older than `TRAILING_MAX_AGE_DAYS` is ignored.
-    Only rows at or before the row are read, so the result is point-in-time. NaN where no proxy
-    counts. `df` needs a unique index and `ticker` and `as_of` columns.
+    Only rows at or before the row are read, so the result is point-in-time. `positions` holds the
+    position in `df` of each counted proxy. Both frames are NaN where a slot holds no proxy. `df` needs a
+    unique index and `ticker` and `as_of` columns.
     """
     obs = pd.DataFrame(
-        {"key": df["ticker"], "date": pd.to_datetime(df["as_of"], errors="coerce"), "value": pd.to_numeric(df[value], errors="coerce")}
+        {
+            "key": df["ticker"],
+            "date": pd.to_datetime(df["as_of"], errors="coerce"),
+            "value": pd.to_numeric(df[value], errors="coerce"),
+            "pos": pd.Series(range(len(df)), index=df.index, dtype="float64"),
+        }
     )
     obs = obs.dropna(subset=["key", "date"]).sort_values(["key", "date"], kind="mergesort")
     valued = obs.dropna(subset=["value"]).groupby("key", sort=False)
     # the k-th previous valued proxy of every valued row, carried onto the rows that follow it
     members = pd.concat(
-        [pd.DataFrame({f"v{k}": valued["value"].shift(k), f"d{k}": valued["date"].shift(k)}) for k in range(TRAILING_PROXIES)],
+        [
+            pd.DataFrame({f"v{k}": valued["value"].shift(k), f"d{k}": valued["date"].shift(k), f"p{k}": valued["pos"].shift(k)})
+            for k in range(TRAILING_PROXIES)
+        ],
         axis=1,
     ).reindex(obs.index)
     members = members.groupby(obs["key"], sort=False).ffill()
     if not include_current:
         members = members.groupby(obs["key"], sort=False).shift(1)
-    counted = [members[f"v{k}"].where((obs["date"] - members[f"d{k}"]).dt.days <= TRAILING_MAX_AGE_DAYS) for k in range(TRAILING_PROXIES)]
-    return pd.concat(counted, axis=1).mean(axis=1).reindex(df.index)
+    within = [(obs["date"] - members[f"d{k}"]).dt.days <= TRAILING_MAX_AGE_DAYS for k in range(TRAILING_PROXIES)]
+    values = pd.concat([members[f"v{k}"].where(within[k]) for k in range(TRAILING_PROXIES)], axis=1)
+    positions = pd.concat([members[f"p{k}"].where(within[k]) for k in range(TRAILING_PROXIES)], axis=1)
+    return values.reindex(df.index), positions.reindex(df.index)
+
+
+def trailing_proxy_mean(df: pd.DataFrame, value: str, *, include_current: bool) -> pd.Series:
+    """Mean of the proxies `trailing_proxy_window` counts, aligned to `df`; NaN where no proxy counts."""
+    return trailing_proxy_window(df, value, include_current=include_current)[0].mean(axis=1)

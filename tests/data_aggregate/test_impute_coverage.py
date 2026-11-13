@@ -39,7 +39,6 @@ _REPORTED = [
     "ceo_is_founder",
     "ceo_since_year",
     "pct_independent_directors",
-    "poison_pill",
     "independent_chair",
     "avg_board_tenure",
     "ceo_is_board_chair",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import SelfHistory, build_peer_relative_panel, peer_relative
+from src.data_aggregate.utils.common.panel import PanelSettings, SelfHistory, build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.xs import HIST_MIN_PERIODS, HIST_WINDOW
 
 RAW_FEATURES: frozenset[str] = frozenset(
@@ -269,11 +269,13 @@ def build_fundamental_views(
         peer_dict,
         emission=emission,
         semantics=retained_semantics,
-        history=SelfHistory(
-            window=history_window,
-            min_periods=history_min_periods,
-            prefix=history_fields,
-            output_since=output_since,
+        settings=PanelSettings(
+            history=SelfHistory(
+                window=history_window,
+                min_periods=history_min_periods,
+                prefix=history_fields,
+                output_since=output_since,
+            )
         ),
     )
     selected_peers = PEER_FEATURES & retained.keys()

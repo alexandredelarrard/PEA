@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import peer_relative
-from src.data_aggregate.utils.governance.panel import _peer_only
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
+from src.data_aggregate.utils.governance.panel import _PANEL_SETTINGS
 
 DATES = pd.bdate_range("2020-01-01", periods=6)
 PEERS = [f"P{i}" for i in range(7)]
@@ -84,7 +84,7 @@ def test_an_extreme_value_is_not_trimmed_or_clipped() -> None:
 def test_each_governance_field_is_transformed_before_scoring() -> None:
     for name, transform in (("ceo_pay_ratio", np.log1p), ("insider_ownership_pct", np.sqrt), ("board_size", lambda x: x)):
         frame = _frame(subject=40.0, peer_values=[1.0, 2.0, 3.0, 4.0, 9.0, 16.0, 25.0])
-        long = _peer_only({name: frame}, BASKET)
+        long = build_peer_relative_panel({name: frame}, BASKET, emission={name: "raw+peers"}, settings=_PANEL_SETTINGS)
         got = long.set_index(["date", "ticker"])[f"f_{name}_vs_peers"].xs("S", level="ticker")
         expected = _expected(transform(frame))
         pd.testing.assert_series_equal(got, expected.astype("float32"), check_names=False, check_freq=False, rtol=1e-5)

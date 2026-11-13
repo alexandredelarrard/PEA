@@ -87,7 +87,7 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
             # rows in `prices_macro` now, not config-selected tickers inside `prices`
             "build_cube": {
                 "targets": {"horizons": [30, 60, 90]},
-                "earnings_calls": {"availability_lag_days": 2, "sentiment_model": "fixture/tone", "refresh_calendar_days": 30},
+                "earnings_calls": {"sentiment_model": "fixture/tone", "refresh_calendar_days": 30},
             },
             "gpt": {"embedding": {"model": "fixture/embedding", "batch_size": 128, "max_chars": 28000}},
         }

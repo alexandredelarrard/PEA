@@ -9,7 +9,7 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import EARNINGS_CALL_FEATURES
+from src.constants.constants import EARNINGS_CALL_FEATURES, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import PartWindow, write_part
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
@@ -51,7 +51,7 @@ class StepCubeText(Step):
         embedding = config.gpt.embedding
         self._sentiment_model = settings.sentiment_model
         self._embedding_model = embedding.model
-        self._lag = settings.availability_lag_days
+        self._lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.earnings_call_sections.name]
         self._refresh_days = settings.refresh_calendar_days
         self._embedding_batch = embedding.batch_size
         self._embedding_max_chars = embedding.max_chars
@@ -61,7 +61,6 @@ class StepCubeText(Step):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a nonempty model name")
         for name, value, minimum in (
-            ("availability_lag_days", self._lag, 0),
             ("refresh_calendar_days", self._refresh_days, 1),
             ("embedding.batch_size", self._embedding_batch, 1),
             ("embedding.max_chars", self._embedding_max_chars, 1),

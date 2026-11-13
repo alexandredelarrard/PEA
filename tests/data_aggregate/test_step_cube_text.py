@@ -126,13 +126,13 @@ def seeded_case(base: DataStore, stems: list[str]) -> tuple[Context, DictConfig,
     )
     config = OmegaConf.create(
         {
-            "build_cube": {
-                "earnings_calls": {"availability_lag_days": 2, "sentiment_model": "yiyanghkust/finbert-tone", "refresh_calendar_days": 30}
-            },
+            "build_cube": {"earnings_calls": {"sentiment_model": "yiyanghkust/finbert-tone", "refresh_calendar_days": 30}},
             "gpt": {"embedding": {"model": "text-embedding-3-small", "batch_size": 128, "max_chars": 28000}},
         }
     )
-    context = cast(Context, SimpleNamespace(store=store, log=logging.getLogger("test.text"), config=config, config_dir=Path("configs"), universe=universe))
+    context = cast(
+        Context, SimpleNamespace(store=store, log=logging.getLogger("test.text"), config=config, config_dir=Path("configs"), universe=universe)
+    )
     return context, config, store
 
 

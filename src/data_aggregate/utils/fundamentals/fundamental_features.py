@@ -47,6 +47,7 @@ FUNDAMENTAL_TRANSFORM_SEMANTICS = {
     "nci_income_share": "structural_zero",
     "rd_intensity": "structural_zero",
 }
+_PER_POSITIVE_EQUITY = frozenset({"returnOnEquity", "debtToEquity"})  # undefined when stockholders' equity <= 0
 _HYPER_GROWTH = 0.25  # YoY revenue growth above which a name is "hyper-growth"
 _QUARTERLY_MAX_AGE_DAYS = 185
 _ANNUAL_MAX_AGE_DAYS = 460
@@ -821,8 +822,13 @@ def _profitability_level_fields(daily, revenue: pd.DataFrame, net_income: pd.Dat
     """Profitability / moat: raw ratios straight from the history, plus FCF margin and
     accruals (the net-income-vs-cash gap)."""
     F: dict[str, pd.DataFrame] = {}
+    equity = daily("stockholdersEquity")
     for field in ["grossMargins", "operatingMargins", "profitMargins", "returnOnEquity", "debtToEquity", "revenueGrowth"]:
         f = daily(field)
+        if field in _PER_POSITIVE_EQUITY and not f.empty and not equity.empty:
+            # a ratio over non-positive equity carries the wrong sign (loss / negative equity reads as a positive ROE);
+            # `negative_equity` already carries that state
+            f = f.where(~equity.reindex_like(f).le(0.0))
         if not f.empty:
             F[field] = f
 

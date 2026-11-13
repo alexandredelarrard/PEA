@@ -286,6 +286,47 @@ def test_growth_on_a_negative_base_keeps_the_direction_of_change() -> None:
     print("\n=== SANITY CHECK: negative-base growth ===\n  loss halving = +0.5, loss to profit = +1.5, elasticity 2.5. Validated.")
 
 
+def test_equity_ratios_are_undefined_on_non_positive_equity() -> None:
+    """Loss / negative equity reads as a positive ROE and debt / negative equity as negative leverage: both undefined."""
+    idx = pd.bdate_range("2024-05-01", "2024-06-03")
+    rows = pd.DataFrame(
+        [
+            {
+                "ticker": "POS",
+                "as_of": "2024-05-01",
+                "fiscal_end": "2024-03-31",
+                "stockholdersEquity": 100.0,
+                "netIncome": 20.0,
+                "totalDebt": 50.0,
+                "returnOnEquity": 0.2,
+                "debtToEquity": 0.5,
+            },
+            {
+                "ticker": "NEG",
+                "as_of": "2024-05-01",
+                "fiscal_end": "2024-03-31",
+                "stockholdersEquity": -100.0,
+                "netIncome": -20.0,
+                "totalDebt": 50.0,
+                "returnOnEquity": 0.2,
+                "debtToEquity": -0.5,
+            },
+        ]
+    )
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=rows, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
+    last = idx[-1]
+    assert fields["returnOnEquity"].loc[last, "POS"] == pytest.approx(0.2)
+    assert fields["debtToEquity"].loc[last, "POS"] == pytest.approx(0.5)
+    assert pd.isna(fields["returnOnEquity"].loc[last, "NEG"]) and pd.isna(fields["debtToEquity"].loc[last, "NEG"])
+    kpis = compute_sector_kpis(rows.assign(dividendsPaid=0.0)).set_index("ticker")
+    assert pd.notna(kpis.loc["POS", "sustainable_growth_rate"]) and pd.isna(kpis.loc["NEG", "sustainable_growth_rate"])
+    print(
+        "\n=== SANITY CHECK: equity ratios ===\n  positive equity keeps ROE 0.20 / D/E 0.50 / SGR; negative equity -> NaN for all three. Validated."
+    )
+
+
 def test_quarterly_projection_expires_on_day_186() -> None:
     filed = pd.Timestamp("2024-01-01")
     idx = pd.date_range(filed, filed + pd.Timedelta(days=186))

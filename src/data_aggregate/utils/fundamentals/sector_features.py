@@ -283,7 +283,8 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     # SGR collapsed to `returnOnEquity` -- measured at Pearson r = 1.0000 against it. The
     # clip is still right (a payout above 100% of earnings is not a negative retention), but
     # it only reads as a payout ratio because the outflow is positive.
-    roe = g("returnOnEquity")
+    # ROE over non-positive equity has the wrong sign (a loss over negative equity reads as a positive return): undefined
+    roe = g("returnOnEquity").where(~g("stockholdersEquity").le(0.0))
     div_payout = safe_div(g("dividendsPaid"), ni, True).clip(lower=0.0, upper=1.0)
     df["sustainable_growth_rate"] = (roe * (1.0 - div_payout.fillna(0.0))).where(roe.notna())
     # fixed-cost coverage margin = (gross profit - EBITDA) / revenue = overhead intensity

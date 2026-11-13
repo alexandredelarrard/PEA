@@ -321,7 +321,7 @@ add(
     "growth",
     "Latest-quarter net income YoY.",
     "As above, on `netIncome_q`.",
-    "Very wide tails around loss-to-profit quarters; the peer-z clip and winsorization bound them.",
+    "Very wide tails around loss-to-profit quarters; the shared peer-z and own-history clip at +-5 bounds them.",
 )
 add(
     "rev_growth_accel",
@@ -363,7 +363,7 @@ add(
     "growth",
     "YoY growth in free cash flow, fiscal series.",
     "Standard YoY on a well-covered column.",
-    "Wide tails around sign changes in FCF, bounded by winsorization.",
+    "Wide tails around sign changes in FCF, bounded by the shared +-5 z clip on the peer and own-history legs.",
 )
 add(
     "rd_intensity",

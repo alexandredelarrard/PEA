@@ -1162,3 +1162,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Coverage: the 36 `cube_part_sec_thirteen` features (10 `f_ic_inst_*`, 26 `f_ic_super_*` / `f_ic_super_topk_*`) are added once to every `columns` and `columns_by_horizon` list of the LightGBM, linear and random-forest family YAMLs; no monotonic directions; no fit run. 2025-2026 values stay degraded until the 13F ZIP backlog is ingested and the part rebuilt.
 - Pages: [Configuration](./reference/configuration.md).
+
+## 2026-11-13: refresh — feature-leg unification
+
+- Coverage: one "Feature legs" section in [Cube aggregation](./modules/data-aggregate.md) states each preset once (peer z with the 0.5 universe-std floor, no trim, clip 5; own-history z clip 5, no winsorization; `_xs` rank; universe z and the characteristic clip 5, label clip 3; calendar-window dividend growth; CEO pay 250-550 day gate; source availability buffers) plus the declared exceptions table; the governance peer-leg and pay-misalignment sentences are corrected.
+- Pages: [Cube aggregation](./modules/data-aggregate.md).

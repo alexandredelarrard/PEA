@@ -98,8 +98,9 @@ CUBE_PARTS: tuple[CubePart, ...] = (
         1560,
         (
             ("fundamental", 1260),  # self_history_z rolling(1260)
-            # 5y growth shifts a 252-session TTM series: 1260 + (252 - 1).
-            ("dividend", 1511),
+            # 5y growth looks back 5 x 365 calendar days over a 365-day TTM series: 2,190 days
+            # = ~1,512 sessions at 252 a year; 1530 covers the years with more sessions.
+            ("dividend", 1530),
             ("employee", 0),  # fiscal match over FULL annual employee history
             ("sector", 0),  # _yearly_lag over the FULL fundamentals history
             ("earnings", 0),

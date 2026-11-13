@@ -15,11 +15,15 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_aggregate.utils.common.parts import PART_BY_NAME
 from src.data_aggregate.utils.fundamentals.dividend_features import (
+    _calendar_prior,
+    _cagr,
     _dividend_fields,
+    _ttm_dividends,
     build_dividend_feature_panel,
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
@@ -218,9 +222,83 @@ def test_panel_exposes_f_columns():
     )
 
 
+# --------------------------------------------------------------------------- #
+# calendar-window growth (365 days), brute-force known truth                   #
+# --------------------------------------------------------------------------- #
+def _first_session_of(idx: pd.DatetimeIndex, year: int, month: int) -> pd.Timestamp:
+    return idx[idx >= pd.Timestamp(year, month, 1)][0]
+
+
+def _brute_ttm(pay: dict[pd.Timestamp, float], day: pd.Timestamp) -> float:
+    """Sum of payments in the half-open window (day - 365 days, day]."""
+    return sum(v for d, v in pay.items() if day - pd.Timedelta(days=365) < d <= day)
+
+
+def test_ttm_window_drops_a_payment_exactly_365_days_old_and_not_a_day_earlier() -> None:
+    idx = pd.bdate_range("2021-01-04", "2022-12-30")
+    paid = pd.Timestamp("2021-06-01")
+    hist = pd.DataFrame([{"date": paid, "ticker": "P", "dividends": 3.0}])
+    calendar = _ttm_dividends(hist, idx, ["P"], "365D")["P"]
+    sessions = _ttm_dividends(hist, idx, ["P"])["P"]
+    day_before, edge = pd.Timestamp("2022-05-31"), pd.Timestamp("2022-06-01")
+    assert calendar[day_before] == 3.0 and calendar[edge] == 0.0, "right-closed: day 364 holds the payment, day 365 does not"
+    assert sessions[day_before] == 0.0, "the 252-session window (levels) already dropped it: it is a different clock"
+    print(f"SANITY: a 3.0 payment on {paid.date()} is in the calendar TTM on {day_before.date()} and out on {edge.date()}; the 252-session TTM drops it earlier.")
+
+
+def test_calendar_growth_matches_a_brute_force_year_over_year_and_first_year_is_undefined() -> None:
+    idx = pd.bdate_range("2019-01-02", "2022-12-30")
+    pay = {_first_session_of(idx, y, m): (1.0 if y < 2021 else 1.5) for y in range(2019, 2023) for m in (3, 6, 9, 12)}
+    hist = pd.DataFrame([{"date": d, "ticker": "P", "dividends": v} for d, v in pay.items()])
+    close = pd.DataFrame(100.0, index=idx, columns=["P"])
+    growth = _dividend_fields(hist, legacy_capital_frames(None, close))["dividend_growth"]["P"]
+    checked = 0
+    for day in idx[idx >= idx[0] + pd.Timedelta(days=365)][::7]:
+        prior_day = idx[idx <= day - pd.Timedelta(days=365)][-1]
+        base = _brute_ttm(pay, prior_day)
+        want = _brute_ttm(pay, day) / base - 1.0 if base > 0 else np.nan
+        assert np.isclose(growth[day], want, equal_nan=True), f"{day.date()}: {growth[day]} != {want}"
+        checked += 1
+    assert growth[idx < idx[0] + pd.Timedelta(days=365)].isna().all(), "no comparable year yet -> undefined, never a partial-window ratio"
+    print(f"SANITY: {checked} dates equal TTM(d)/TTM(last session <= d-365) - 1 by brute force; the first 365 days are NaN; 2021-12-31 growth {growth[pd.Timestamp('2021-12-31')]:.3f}.")
+
+
+def test_cash_paid_fallback_uses_the_same_365_day_prior() -> None:
+    idx = pd.bdate_range("2020-01-01", "2023-12-29")
+    close = pd.DataFrame(100.0, index=idx, columns=["A", "B"])
+    hist = pd.DataFrame([{"date": idx[10], "ticker": "A", "dividends": 1.0}])  # B has no ex-dates: source B only
+    step = _first_session_of(idx, 2021, 4)
+    rows = [{"ticker": t, "as_of": d, "sharesOutstanding": 1e3, "dividendsPaid": (1500.0 if d >= step else 1000.0) * (1 if t == "B" else 0)}
+            for t in ("A", "B") for d in [_first_session_of(idx, y, m) for y in range(2020, 2024) for m in (1, 4, 7, 10)]]
+    fund = pd.DataFrame(rows)
+    history = FundamentalHistory(raw_history=fund, share_basis=known_no_share_events())
+    growth = _dividend_fields(hist, legacy_capital_frames(fund, close), history)["dividend_growth"]["B"]
+    edge = step + pd.Timedelta(days=365)
+    last_before = idx[idx < edge][-1]
+    first_on = idx[idx >= edge][0]
+    assert np.isclose(growth[last_before], 0.5), f"prior (day-365) still holds the 1000 level: {growth[last_before]}"
+    assert np.isclose(growth[first_on], 0.0), f"prior is the 1500 level from the step session: {growth[first_on]}"
+    print(f"SANITY: cash paid steps 1000 -> 1500 on {step.date()}: growth is 0.5 on {last_before.date()} and 0.0 from {first_on.date()} (365 days later).")
+
+
+def test_cagr_is_five_calendar_years_with_a_known_step() -> None:
+    idx = pd.bdate_range("2019-06-03", "2026-01-30")
+    step = pd.Timestamp("2020-01-02")
+    now = pd.DataFrame({"P": np.where(idx >= step, 32.0, 1.0)}, index=idx)
+    out = _cagr(now, 5)["P"]
+    inside = step + pd.Timedelta(days=5 * 365 - 1)
+    outside = step + pd.Timedelta(days=5 * 365)
+    assert inside in idx and outside in idx
+    assert np.isclose(out[inside], 1.0), f"32^(1/5) - 1 = 1 while the 1825-day prior still sits before the step: {out[inside]}"
+    assert np.isclose(out[outside], 0.0), f"the prior date is the step session itself: {out[outside]}"
+    assert _calendar_prior(now, 365).iloc[0].isna().all()
+    print(f"SANITY: x32 step on {step.date()}: 5y CAGR 1.0 on day 1,824 ({inside.date()}), 0.0 on day 1,825 ({outside.date()}).")
+
+
 def test_incremental_dividend_window_reproduces_full_tail() -> None:
-    """The part warm-up must cover the 5y shift plus the TTM dividend window."""
-    dates = pd.bdate_range("2018-01-01", periods=7 * 252)
+    """The part warm-up must cover the 5y calendar look-back (1,825 days) plus the 365-day TTM window."""
+    # a real exchange calendar (~251 sessions a year), not 261 weekdays: the look-back is in calendar days
+    dates = pd.bdate_range("2018-01-01", periods=7 * 252, freq="C", holidays=USFederalHolidayCalendar().holidays("2018-01-01", "2026-12-31"))
     tickers = ["A", "B", "C", "D", "E"]
     close = pd.DataFrame(100.0, index=dates, columns=tickers)
     growth = dict(zip(tickers, (1.02, 1.05, 1.08, 1.11, 1.14), strict=True))
@@ -261,8 +339,8 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
 
     print("\n=== SANITY CHECK: incremental dividend panel matches full tail ===")
     print(
-        f"  {warmup} warm-up sessions preserve the 1,260-session CAGR shift plus its "
-        f"252-session TTM base; {len(full_tail)} rewritten/appended rows match. Validated."
+        f"  {warmup} warm-up sessions preserve the 1,825-day CAGR look-back plus its "
+        f"365-day TTM base; {len(full_tail)} rewritten/appended rows match. Validated."
     )
 
 

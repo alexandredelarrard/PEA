@@ -9,15 +9,15 @@ Four separate implementations of "standardize within a date" had accumulated --
 `targets`' neutralization design (clip 4, zero-sd -> NaN) -- plus four independent
 `rank(axis=1, pct=True)` call sites.
 
-THE CLIPS ARE NOT AN ACCIDENT AND ARE NOT HARMONISED HERE. They encode three different
+THE CLIPS ARE NOT AN ACCIDENT AND ARE NOT HARMONISED HERE. They encode two different
 jobs, so `clip` is a REQUIRED argument with no default -- nobody can unify them by
 forgetting to pass one:
 
     3.0  the LABEL          RMSE stability: a handful of extreme residuals must not
                             dominate the loss the model is fitted against.
-    4.0  a CHARACTERISTIC   factor/regression weights: keep the tail, bound its leverage.
-    5.0  the OWN-HISTORY z  `self_history_z` and the PEER z of `panel.peer_relative`, both clipped
-                            at `Z_CLIP`, no winsorize and no input trim.
+    5.0  every z a FEATURE  `Z_CLIP`: the own-history z (`self_history_z`), the peer z of
+         or REGRESSOR uses  `panel.peer_relative` and the factor/neutralization characteristic
+                            (`XS_CLIP_CHARACTERISTIC`, the same value); no winsorize, no input trim.
 
 Likewise the ZERO-DISPERSION policy is explicit rather than incidental. On a day where
 every name shares one value, `sd == 0`, so an unguarded divide yields +/-inf which `clip`
@@ -45,8 +45,8 @@ _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 
 # the three clip policies, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
-XS_CLIP_CHARACTERISTIC = 4.0  # factor characteristic / regressor (factors.py)
 Z_CLIP = 5.0  # the one fixed bound of a feature z-score (own-history and peer)
+XS_CLIP_CHARACTERISTIC = Z_CLIP  # factor characteristic / regressor (factors.py, targets.py)
 
 #: How many PRESENT members a design CELL needs on a day before the group block may split the
 MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5

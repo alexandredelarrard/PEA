@@ -1162,3 +1162,9 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Coverage: the 36 `cube_part_sec_thirteen` features (10 `f_ic_inst_*`, 26 `f_ic_super_*` / `f_ic_super_topk_*`) are added once to every `columns` and `columns_by_horizon` list of the LightGBM, linear and random-forest family YAMLs; no monotonic directions; no fit run. 2025-2026 values stay degraded until the 13F ZIP backlog is ingested and the part rebuilt.
 - Pages: [Configuration](./reference/configuration.md).
+
+## 2026-11-13: refresh — governance feature pruning
+
+- source_commit: e755a864 (the changes land in the commits that follow it on `dev`)
+- Coverage: signed provision columns replace eight added/lost flags, the poison-pill flag and fifteen low-value governance features are removed, `ceo_pay_ratio` is smoothed over three proxies, `board_size` and `avg_board_tenure` come from the director rows, auditor tenure is filled across a run, and `youngest_director_age` and `f_female_board_chg_pct` are added. The model configs and the feature recap `reports/data_check/11-12-2026/governance_feature_recap.md` follow.
+- Pages: [Data aggregate](./modules/data-aggregate.md).

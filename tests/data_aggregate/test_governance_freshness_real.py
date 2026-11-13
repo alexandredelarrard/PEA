@@ -157,9 +157,8 @@ def test_rebuilt_panel_passes_read_only_bounds_validator(
             "f_founder_ceo",
             "f_pct_long_tenured",
             "f_board_dissent_breadth_10",
-            "f_sop_dissent_gt_10",
+            "f_auditor_dissent_gt_10",
             "f_ceo_pay_slice",
-            "f_board_independence_drop_10pp",
         ]
         if field in rebuilt_governance
     }

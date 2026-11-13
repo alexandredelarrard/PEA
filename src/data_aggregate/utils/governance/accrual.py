@@ -163,3 +163,35 @@ def accrue(dates: pd.Series, keys: pd.Series, anchor: pd.Series) -> pd.Series:
     """`year(date) - anchor[key]`, aligned to `dates`' index. NaN where the key has no anchor."""
     years = pd.to_datetime(dates, errors="coerce").dt.year
     return years - keys.map(anchor)
+
+
+#: A trailing mean uses at most this many of a ticker's proxies that carry a value ...
+TRAILING_PROXIES = 3
+#: ... and no proxy older than this counts, so a long filing gap cannot pull in stale values.
+TRAILING_MAX_AGE_DAYS = 1460
+
+
+def trailing_proxy_mean(df: pd.DataFrame, value: str, *, include_current: bool) -> pd.Series:
+    """Mean of `value` over each ticker's last `TRAILING_PROXIES` proxies that carry one, aligned to `df`.
+
+    Counted in proxies, not days, so a filing date a few days either way never changes how many values
+    enter the mean. With `include_current` the window is the row and the proxies before it, without it
+    only the proxies strictly before the row; a proxy older than `TRAILING_MAX_AGE_DAYS` is ignored.
+    Only rows at or before the row are read, so the result is point-in-time. NaN where no proxy
+    counts. `df` needs a unique index and `ticker` and `as_of` columns.
+    """
+    obs = pd.DataFrame(
+        {"key": df["ticker"], "date": pd.to_datetime(df["as_of"], errors="coerce"), "value": pd.to_numeric(df[value], errors="coerce")}
+    )
+    obs = obs.dropna(subset=["key", "date"]).sort_values(["key", "date"], kind="mergesort")
+    valued = obs.dropna(subset=["value"]).groupby("key", sort=False)
+    # the k-th previous valued proxy of every valued row, carried onto the rows that follow it
+    members = pd.concat(
+        [pd.DataFrame({f"v{k}": valued["value"].shift(k), f"d{k}": valued["date"].shift(k)}) for k in range(TRAILING_PROXIES)],
+        axis=1,
+    ).reindex(obs.index)
+    members = members.groupby(obs["key"], sort=False).ffill()
+    if not include_current:
+        members = members.groupby(obs["key"], sort=False).shift(1)
+    counted = [members[f"v{k}"].where((obs["date"] - members[f"d{k}"]).dt.days <= TRAILING_MAX_AGE_DAYS) for k in range(TRAILING_PROXIES)]
+    return pd.concat(counted, axis=1).mean(axis=1).reindex(df.index)

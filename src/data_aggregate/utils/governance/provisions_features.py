@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.governance.accrual import trailing_proxy_mean
 from src.data_aggregate.utils.governance.auditors import (
     BIG4,
     canonical_auditor_series,
@@ -165,23 +166,6 @@ _DISCLOSED_ONLY_DELTAS: tuple[str, ...] = DELTA_PROVENANCE_COLUMNS
 #: 106 of 8,895 board-independence pairs (1.2%) and 38 of 3,448 busyness pairs (1.1%).
 _ANNUAL_GAP_DAYS: tuple[float, float] = (250.0, 550.0)
 
-#: The board-independence drop that fires `board_independence_drop_10pp`, in fraction units.
-#:
-#: ⚠ Read it for what it is. `pct_independent_directors` is a fraction, so -0.10 is one
-#: independent seat lost off a ten-person board -- which is why it fires on **10.2%** of
-#: adjacent pairs (1,143 of 11,224), and on **8.8%** of the shipped feature's non-null cells,
-#: rather than on the handful a "governance collapse" reading would suggest. It is a
-#: one-director event on a typical board, not a rare cliff.
-_INDEPENDENCE_DROP = -0.10
-
-#: ⚠ AND WHY THE THRESHOLD NEEDS A TOLERANCE. `0.80 - 0.90` is `-0.09999999999999998` in binary
-#: floating point, so a board going from 90% to 80% independent -- the textbook ten-point drop,
-#: and two numbers a proxy states exactly -- does NOT satisfy `<= -0.10`. The flag would have
-#: silently missed the very case it is named after. One part in a billion is far below any
-#: meaningful change in a board fraction (a 1,000-member board would move it by 0.001), so the
-#: tolerance cannot admit a case that is not genuinely at or past the threshold.
-_DROP_EPS = 1e-9
-
 #: Days per year, for a tenure measured from a start DATE rather than a start year.
 _DAYS_PER_YEAR = 365.25
 
@@ -205,7 +189,6 @@ _TENURE_YEAR_BAND: tuple[int, int] = (1850, 2100)
 #:     auditor_tenure                             2.7%              0.3%            0.3%
 #:     governance_deterioration_count             2.4%              0.3%           45.8%
 #:     governance_improvement_count               2.4%              0.3%           36.3%
-#:     net_governance_change                      2.3%              0.3%           20.4%
 #:     -- the floor the same rule kept in phase 3 --
 #:     insider_ownership_pct (kept)               7.7%               n/a
 #:     board_size (kept)                         12.4%             10.0%
@@ -237,28 +220,24 @@ PEER_RELATIVE_FIELDS: frozenset[str] = frozenset()
 #:
 #: ⚠ UNLIKE the other two family modules, this set is NOT a subset of `EVENT_FIELDS`. There the
 #: invariant "a flag records an event and must expire with it" holds because every flag they emit
-#: is an act. Here three are 0/1 descriptions of a standing STATE -- `auditor_is_big4`,
-#: `auditor_tenure_censored`, `ceo_is_board_chair` -- so they are raw in ENCODING and levels in
-#: TIME. Expiring them would delete a fact that is still true.
+#: is an act. Here two are 0/1 descriptions of a standing STATE -- `auditor_is_big4`,
+#: `ceo_is_board_chair` -- so they are raw in ENCODING and levels in TIME. Expiring them would delete a fact that is still true.
 #:
 #: ⚠ `auditor_changed` is the one that needs saying out loud, because GPT's objection to it
 #: stands and was overridden rather than answered (D32): without Item 4.01's reasons -- was the
 #: auditor dismissed, did it resign, was there an accounting disagreement -- a change carries no
 #: direction. It ships as an unsigned flag. `sec_8k` DOES carry the 4.01 rows and reading their
 #: narratives is the obvious follow-up; it is not in this plan.
-RAW_FLAG_FIELDS: frozenset[str] = frozenset(
-    set(EXPORTED_FLAGS) | {"board_independence_drop_10pp", "auditor_changed", "auditor_is_big4", "auditor_tenure_censored", "ceo_is_board_chair"}
-)
+RAW_FLAG_FIELDS: frozenset[str] = frozenset(set(EXPORTED_FLAGS) | {"auditor_changed", "auditor_is_big4", "ceo_is_board_chair"})
 
 #: Fields describing an EVENT, which expire 395 days after the filing that disclosed them.
 #:
-#: The five LEVELS are excluded and each for a stated reason: `board_busyness` and
+#: The four LEVELS are excluded and each for a stated reason: `board_busyness` and
 #: `ceo_is_board_chair` are standing facts between proxies; `auditor_tenure` ACCRUES daily off a
 #: start date, so ageing it out would delete a number that is more current than the filing;
-#: `auditor_is_big4` and `auditor_tenure_censored` describe that standing level rather than an
-#: act.
+#: `auditor_is_big4` describes that standing level rather than an act.
 #:
-#: ⚠ The three COUNTS are declared events but are not aged directly -- they are summed FROM the
+#: ⚠ The two COUNTS are declared events but are not aged directly -- they are summed FROM the
 #: already-expired flags, so they inherit the mask exactly and cannot disagree with their own
 #: components. `test_provisions_features` asserts that inheritance.
 EVENT_FIELDS: frozenset[str] = frozenset(
@@ -266,31 +245,27 @@ EVENT_FIELDS: frozenset[str] = frozenset(
     | {
         "governance_deterioration_count",
         "governance_improvement_count",
-        "net_governance_change",
         "board_independence_delta_1y",
-        "board_independence_drop_10pp",
+        "female_board_chg_pct",
         "board_busyness_delta_1y",
         "auditor_changed",
     }
 )
 
-#: Every field this module can emit -- the exhaustiveness anchor. Phase 4 learned why it is
-#: needed: `pay_up_stock_down` sat in two classification sets while no code path produced it,
-#: and the two fields that WERE produced sat in neither and silently skipped their expiry.
+#: Every field this module can emit -- the exhaustiveness anchor: a name in a set that no code path
+#: builds, or a built name in no set, would skip its expiry.
 ALL_FIELDS: frozenset[str] = frozenset(
     set(EXPORTED_FLAGS)
     | {
         "governance_deterioration_count",
         "governance_improvement_count",
-        "net_governance_change",
         "board_independence_delta_1y",
-        "board_independence_drop_10pp",
+        "female_board_chg_pct",
         "board_busyness",
         "board_busyness_delta_1y",
         "ceo_is_board_chair",
         "auditor_changed",
         "auditor_tenure",
-        "auditor_tenure_censored",
         "auditor_is_big4",
     }
 )
@@ -299,7 +274,7 @@ ALL_FIELDS: frozenset[str] = frozenset(
 #: column and the counts and must expire exactly like the flags they replace.
 _EXPIRING_EVENT_FIELDS: frozenset[str] = EVENT_FIELDS | _FOLDED_FLAGS
 
-#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon.
+#: The four structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon.
 #:
 #: ⚠ DEFINED AS THE COMPLEMENT so the two horizons are EXHAUSTIVE by construction. Every field
 #: this module emits is now in exactly one of `EVENT_FIELDS` / `LEVEL_FIELDS`, which is what
@@ -463,9 +438,8 @@ def _expire(
 ) -> dict[str, pd.DataFrame]:
     """BOTH horizons plus the tally lines, which every caller here wants together.
 
-    ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. Five fields here are
-    structural levels (`auditor_is_big4`, `auditor_tenure`, `auditor_tenure_censored`,
-    `board_busyness`, `ceo_is_board_chair`), correctly kept off the annual event clock and
+    ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. Four fields here are
+    structural levels (`auditor_is_big4`, `auditor_tenure`, `board_busyness`, `ceo_is_board_chair`), correctly kept off the annual event clock and
     then, until this pass existed, forward-filled with NO cutoff -- so a single parsed proxy
     was asserted as current for as long as the trading index ran. "Not an event" is not the
     same statement as "never expires"; see `directors.LEVEL_FIELDS` for the measured size.
@@ -538,7 +512,7 @@ def _provision_transitions(
 
 
 def _aggregates(for_counts: dict[str, pd.DataFrame], tally: dict[str, int]) -> dict[str, pd.DataFrame]:
-    """The two counts and their net. ONE EVENT, ONE POINT -- no estimated weights (GPT §11
+    """The two counts. ONE EVENT, ONE POINT -- no estimated weights (GPT §11
     GOV03): the literature has no agreed severity ordering over these provisions, and inventing
     one would bury a judgement inside a number that looks like a count."""
     det = [for_counts[f] for f in DETERIORATION_FLAGS if f in for_counts]
@@ -553,17 +527,11 @@ def _aggregates(for_counts: dict[str, pd.DataFrame], tally: dict[str, int]) -> d
         out["governance_deterioration_count"] = d
     if not i.empty:
         out["governance_improvement_count"] = i
-    if not d.empty and not i.empty:
-        cols = d.columns.intersection(i.columns)
-        if len(cols) > 0:
-            # Higher = improving. Both sums come from the same seven source columns, so they are
-            # non-null together and the difference does not silently drop a firm.
-            out["net_governance_change"] = i[cols] - d[cols]
     return {k: v for k, v in out.items() if v.notna().any().any()}
 
 
 def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
-    """`board_independence_delta_1y` and the -10pp flag derived from it.
+    """`board_independence_delta_1y`.
 
     `pct_independent_directors` keeps shipping as a LEVEL from `panel.py` (D3); this is
     additive to it.
@@ -577,11 +545,31 @@ def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[s
     daily = measurement_to_daily(h, "board_independence_delta_1y", idx)
     if daily.empty or not daily.notna().any().any():
         return {}
-    # NaN-preserving: `daily <= x` is False on NaN, which would turn "unknown" into "no drop".
-    # `_DROP_EPS` is what makes an exactly-ten-point drop fire -- see the constant.
-    drop = (daily <= _INDEPENDENCE_DROP + _DROP_EPS).astype("float64").where(daily.notna())
-    frames = {"board_independence_delta_1y": daily, "board_independence_drop_10pp": drop}
-    capped = _expire(frames, h, tally, sources={k: "board_independence_delta_1y" for k in frames})
+    capped = _expire({"board_independence_delta_1y": daily}, h, tally)
+    return {k: v for k, v in capped.items() if not v.empty and v.notna().any().any()}
+
+
+def _female_change(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+    """`female_board_chg_pct`: the female share of the board minus its mean over the previous three proxies.
+
+    A difference of shares in fraction units. Whichever of the previous three proxies exist are used,
+    one is enough; a proxy with none reads blank and ends the previous value.
+    """
+    field = "pct_female_directors"
+    h = _prepared(hist, [field])
+    if h is None or field not in h.columns:
+        tally["skipped: no pct_female_directors -> no female share change"] = 1
+        return {}
+    h[field] = pd.to_numeric(h[field], errors="coerce")
+    h = h.dropna(subset=[field]).reset_index(drop=True)
+    if h.empty:
+        return {}
+    name = "female_board_chg_pct"
+    h[name] = h[field] - trailing_proxy_mean(h, field, include_current=False)
+    daily = measurement_to_daily(h[["ticker", "as_of", name]], name, idx)
+    if daily.empty or not daily.notna().any().any():
+        return {}
+    capped = _expire({name: daily}, h, tally)
     return {k: v for k, v in capped.items() if not v.empty and v.notna().any().any()}
 
 
@@ -628,22 +616,16 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) 
 # --------------------------------------------------------------------------- #
 def _auditor_history(hist: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
     """Per filing: the canonical firm, whether it changed, whether it is big-4, and the start
-    date the tenure accrues from -- plus the flag saying which BASIS that start date came from.
+    date the tenure accrues from (blank when no proxy of the firm's run discloses it).
 
     ⚠ THE CANONICAL FIRM IS THE WHOLE POINT. 336 tickers show a changing raw `auditor_name`
     string against 165 showing a changing FIRM, so 51% of apparent auditor changes are the filer
     respelling its own auditor's name. An un-normalised flag would be half noise.
 
-    TWO BASES FOR TENURE, NEVER MIXED SILENTLY:
-      * DISCLOSED -- `auditor_since_year`, filled on only 14.2% of rows (1,758), mean disclosed
-        tenure 23.4 years, max 120;
-      * CENSORED -- the run-length of the canonical firm inside our own archive, computable
-        wherever `auditor_name` is (85.1%) but left-censored by the archive's own start, and
-        severely so at a 23-year mean tenure: the measured censored mean is **10.7 years against
-        the disclosed 23.4**, i.e. the fallback understates by more than half.
-
-    `auditor_tenure_censored` is 1.0 on the second basis. A censored 12 and a disclosed 12 are
-    different claims, and the flag is what keeps them distinguishable downstream.
+    TENURE IS DISCLOSED OR BLANK. The start year a proxy states is a fact about the firm's whole
+    run, so it fills every proxy of the run, earlier ones too (accepted lookahead, as for
+    `ceo_tenure`). A run no proxy discloses stays blank: the archive run length understates
+    tenure and is not a substitute.
     """
     h = _prepared(hist, ["auditor_name", "auditor_since_year"])
     if h is None or "auditor_name" not in h.columns:
@@ -675,23 +657,21 @@ def _auditor_history(hist: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame 
     # ordinal so two tickers cannot share a run id.
     breaks = (changed & paired).astype("int64")
     h["_run"] = g.ngroup().astype("str") + "|" + breaks.groupby(h["ticker"]).cumsum().astype("str")
-    start = h.groupby("_run", sort=False)["as_of"].transform("min")
 
     since = pd.to_numeric(h["auditor_since_year"], errors="coerce") if "auditor_since_year" in h.columns else pd.Series(np.nan, index=h.index)
     lo, hi = _TENURE_YEAR_BAND
     since = since.where(since.between(lo, hi))
-    since = since.groupby(h["_run"], sort=False).ffill()
+    # Any proxy of the run that states the year fills the whole run, earlier proxies too: the
+    # same accepted lookahead as `ceo_tenure`, for a start year that never changes within a run.
+    # Where proxies disagree the earliest wins: the first disclosure is the one nearest the filing that stated it.
+    since = since.groupby(h["_run"], sort=False).transform("first")
     disclosed_start = pd.to_datetime(since.map(lambda y: f"{int(y):04d}-01-01" if pd.notna(y) else None), errors="coerce")
-    # Disclosed where it exists, the archive run-length otherwise. `combine_first` keeps the
-    # disclosed leg wherever it survived the sanity band.
-    tenure_start = disclosed_start.combine_first(start)
-    h["auditor_tenure_censored"] = disclosed_start.isna().astype("float64")
-    h["_tenure_start_ord"] = tenure_start.map(lambda t: float(t.toordinal()) if pd.notna(t) else np.nan)
+    h["_tenure_start_ord"] = disclosed_start.map(lambda t: float(t.toordinal()) if pd.notna(t) else np.nan)
 
     tally["auditor: filings with a canonical firm"] = len(h)
     tally["auditor: changes detected (canonical firm)"] = int(h["auditor_changed"].fillna(0.0).sum())
-    tally["auditor: tenure on the DISCLOSED basis"] = int(disclosed_start.notna().sum())
-    tally["auditor: tenure on the CENSORED archive basis"] = int(disclosed_start.isna().sum())
+    tally["auditor: tenure disclosed"] = int(disclosed_start.notna().sum())
+    tally["auditor: tenure blank (run never discloses it)"] = int(disclosed_start.isna().sum())
     return h
 
 
@@ -702,15 +682,15 @@ def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, 
         return {}
 
     out: dict[str, pd.DataFrame] = {}
-    for name in ("auditor_is_big4", "auditor_tenure_censored"):
-        f = fundamentals_to_daily(h, name, idx)
-        if not f.empty and f.notna().any().any():
-            out[name] = f
+    big4 = fundamentals_to_daily(h, "auditor_is_big4", idx)
+    if not big4.empty and big4.notna().any().any():
+        out["auditor_is_big4"] = big4
 
     # TENURE ACCRUES DAILY off the start date, exactly as `panel._governance_fields` accrues
     # `ceo_tenure` off `ceo_since_year`: a snapshot taken at the proxy would under-report by up
     # to a year, and the accrual needs no new information.
-    start = fundamentals_to_daily(h, "_tenure_start_ord", idx)
+    # A blank start ends the previous run's value instead of carrying it into the next firm.
+    start = measurement_to_daily(h, "_tenure_start_ord", idx)
     if not start.empty and start.notna().any().any():
         today = pd.Series(idx.map(pd.Timestamp.toordinal), index=idx, dtype="float64")
         tenure = start.rsub(today, axis=0).div(_DAYS_PER_YEAR).where(lambda t: t >= 0)
@@ -721,7 +701,7 @@ def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, 
     if not changed.empty and changed.notna().any().any():
         out["auditor_changed"] = _expire({"auditor_changed": changed}, h, tally)["auditor_changed"]
 
-    # ⚠ THE THREE LEVELS EXPIRE HERE, and `auditor_tenure` needs a `sources` entry because it
+    # ⚠ THE LEVELS EXPIRE HERE, and `auditor_tenure` needs a `sources` entry because it
     # is DERIVED rather than filed: there is no `auditor_tenure` column in `h` for
     # `_expire_family` to age it against, so it ages against the filing that supplied the start
     # date it accrues from. Re-expiring `auditor_changed` in the same call is idempotent -- the
@@ -761,6 +741,7 @@ def provision_fields(
     frames.update(exported)
     frames.update(_aggregates(for_counts, tally))
     frames.update(_independence_delta(def14a, idx, tally))
+    frames.update(_female_change(def14a, idx, tally))
     frames.update(_busyness(def14a, idx, tally))
     frames.update(_auditor_fields(def14a, idx, tally))
 

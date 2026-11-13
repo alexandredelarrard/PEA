@@ -62,9 +62,6 @@ from src.data_aggregate.utils.governance.staleness import (
 #: flag that is not listed here silently becomes a z-score.
 RAW_FLAG_FIELDS: frozenset[str] = frozenset(
     {
-        "sop_dissent_gt_10",
-        "sop_dissent_gt_20",
-        "auditor_dissent_gt_05",
         "auditor_dissent_gt_10",
     }
 )
@@ -91,7 +88,7 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset(
 #:     centred on zero, so peer-relativizing is a second relativization of the same quantity;
 #:   * `management_dissent_spread`, whose peer leg measured 2.2% coverage on 102 tickers
 #:     because `min_peers=3` cannot be met on a field present in 17.7% of ballots;
-#:   * the four flags, where a peer z of a Bernoulli draw over ~7 peers reads as "how many of
+#:   * the flag, where a peer z of a Bernoulli draw over ~7 peers reads as "how many of
 #:     my peers also tripped this", close to the opposite of the intended signal.
 #:
 #: ⚠ `sop_against_pct` AND `auditor_vote_against_pct` LEFT THIS SET AND THE MODULE ENTIRELY on
@@ -111,9 +108,8 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset(
 #: nothing. The say-on-pay pair is an exact tie (identical non-null counts, identical 6,669
 #: distinct values), so two other arguments decide it:
 #:
-#:   1. `sop_dissent` is the PARENT of five derived features -- `_excess_10`, `_excess_20`,
-#:      `_gt_10`, `_gt_20`, `_delta_1y`. Dropping `_against_pct` costs nothing structurally;
-#:      dropping `_dissent` would orphan five columns.
+#:   1. `sop_dissent` is the PARENT of `_delta_1y`. Dropping `_against_pct` costs nothing
+#:      structurally; dropping `_dissent` would orphan that column.
 #:   2. ABSTENTION IS OPPOSITION in these two votes specifically. Auditor ratification is the
 #:      cheapest available protest vote and say-on-pay is advisory, so an abstention is a
 #:      deliberate withholding rather than an absence -- which is why ISS reads against +
@@ -137,13 +133,7 @@ PEER_RELATIVE_FIELDS: frozenset[str] = frozenset(
 )
 
 #: The say-on-pay family (proposal-level tallies).
-_SOP_LEVELS: tuple[str, ...] = (
-    "sop_dissent",
-    "sop_dissent_excess_10",
-    "sop_dissent_excess_20",
-    "sop_dissent_gt_10",
-    "sop_dissent_gt_20",
-)
+_SOP_LEVELS: tuple[str, ...] = ("sop_dissent",)
 _SOP_DELTAS: dict[str, str] = {"sop_dissent_delta_1y": "sop_dissent"}
 
 #: The board-wide (family 2) and CEO-specific (family 3) fields. They share a history frame
@@ -152,12 +142,10 @@ _SOP_DELTAS: dict[str, str] = {"sop_dissent_delta_1y": "sop_dissent"}
 #: and a chance for the two legs to drift apart.
 _ELECTION_LEVELS: tuple[str, ...] = (
     "board_dissent_mean",
-    "board_dissent_median",
     "board_dissent_max",
     "board_dissent_p90",
     "board_dissent_breadth_10",
     "board_dissent_breadth_20",
-    "board_pct_nominees_below_70_support",
     "ceo_director_dissent",
     "ceo_excess_dissent",
     "management_dissent_spread",
@@ -165,7 +153,6 @@ _ELECTION_LEVELS: tuple[str, ...] = (
 )
 _ELECTION_DELTAS: dict[str, str] = {
     "board_dissent_mean_delta_1y": "board_dissent_mean",
-    "board_dissent_median_delta_1y": "board_dissent_median",
     "board_dissent_max_delta_1y": "board_dissent_max",
     "board_dissent_breadth_10_delta_1y": "board_dissent_breadth_10",
     "ceo_dissent_delta_1y": "ceo_director_dissent",
@@ -176,7 +163,6 @@ _ELECTION_DELTAS: dict[str, str] = {
 #: tail, where say-on-pay routinely runs to 10%.
 _AUDITOR_LEVELS: tuple[str, ...] = (
     "auditor_vote_dissent",
-    "auditor_dissent_gt_05",
     "auditor_dissent_gt_10",
 )
 _AUDITOR_DELTAS: dict[str, str] = {"auditor_vote_dissent_delta_1y": "auditor_vote_dissent"}
@@ -333,12 +319,6 @@ def _say_on_pay_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFr
             # left computed-but-unselected, because `_sanitize` writes tally entries and a build
             # log reporting the hygiene of a column nobody ships is a trap for the next reader.
             # See `PEER_RELATIVE_FIELDS` for the r = 0.9949 that retired it.
-            # Excess-over-threshold: zero for a normal vote, and LINEAR in the tail beyond it, so
-            # a 35% revolt is distinguishable from a 21% one where the flag below saturates.
-            "sop_dissent_excess_10": (dissent - 0.10).clip(lower=0.0),
-            "sop_dissent_excess_20": (dissent - 0.20).clip(lower=0.0),
-            "sop_dissent_gt_10": _flag(dissent, 0.10),
-            "sop_dissent_gt_20": _flag(dissent, 0.20),
         }
     )
     return _collapse(hist, rows)
@@ -439,30 +419,21 @@ def _election_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
     # challenger being rejected, not the board being repudiated -- so the max is the family's
     # least interpretable member. Measured 2026-09-07: 23 of 70,205 nominee dissents exceed
     # 0.90, touching 13 of 7,884 election rows (0.165%). Small enough to leave alone, large
-    # enough that `board_dissent_mean` / `_median` are the ones to lean on.
+    # enough that `board_dissent_mean` is the one to lean on.
     mean = agg(np.mean)
     median = agg(np.median)
     ceo = _bucket_dissent(rows, "ceo", tally)
     non_employee = _bucket_dissent(rows, "non_employee", tally)
-
-    # `n_nominees_below_70pct` is derived from `min_support_pct`'s basis -- for/(for+against),
-    # WITHOUT abstentions -- which is a different denominator from D11's. Naming this ratio
-    # `..._support` rather than `..._dissent` is what keeps the two bases from being read as
-    # one family; `min_support_pct` itself is deliberately not re-exported for the same reason.
-    n_nominees = _num(rows, "n_nominees")
-    below_70 = _num(rows, "n_nominees_below_70pct")
 
     hist = pd.DataFrame(
         {
             "ticker": rows["ticker"].astype(str),
             "as_of": _as_of(rows),
             "board_dissent_mean": mean,
-            "board_dissent_median": median,
             "board_dissent_max": agg(np.max),
             "board_dissent_p90": agg(lambda a: float(np.quantile(a, 0.90))),
             "board_dissent_breadth_10": agg(lambda a: float((a >= 0.10).mean())),
             "board_dissent_breadth_20": agg(lambda a: float((a >= 0.20).mean())),
-            "board_pct_nominees_below_70_support": below_70 / n_nominees.where(n_nominees > 0),
             "ceo_director_dissent": ceo,
             # D15: the median INCLUDES the CEO's own nominee row, so this understates the excess
             # by roughly 1/n_nominees of it. Documented approximation, not an oversight -- the
@@ -527,7 +498,6 @@ def _auditor_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame
             "auditor_vote_dissent": dissent,
             # `auditor_vote_against_pct` used to be emitted here; `_dissent` is a strict SUPERSET
             # of it (254 cells more, 0 the other way) at r = 0.9867. Same reason as say-on-pay's.
-            "auditor_dissent_gt_05": _flag(dissent, 0.05),
             "auditor_dissent_gt_10": _flag(dissent, 0.10),
         }
     )

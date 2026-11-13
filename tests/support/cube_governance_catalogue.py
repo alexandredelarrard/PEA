@@ -36,11 +36,13 @@ def add(name: str, family: str, what: str, why: str, tail: str) -> None:
 add(
     "ceo_pay_ratio",
     "proxy levels",
-    "CEO-to-median-employee pay ratio exactly as the proxy discloses it.",
+    "CEO total pay over the mean median-employee pay of the last three proxies that carry one.",
     "Dodd-Frank s.953(b) created the disclosure, so the field is structurally absent before "
-    "FY2017 and is left NaN there rather than back-filled. Reported, never recomputed: Item "
-    "402(u) lets a filer annualise a partial-year CEO or use whoever served at year end, so "
-    "the disclosed ratio and total/median legitimately disagree after a mid-year change.",
+    "FY2017 and is left NaN there rather than back-filled. The median employee's pay moves far "
+    "less from year to year than the disclosed ratio, which carries the CEO's own pay noise, so "
+    "the denominator is the mean of the last three proxies that carry one. One disclosed median "
+    "is enough; blank only when the CEO total or the denominator is missing. The disclosed ratio "
+    "is not a fallback.",
     "The high tail is retail and hospitality, where a large hourly workforce sets the "
     "denominator -- a workforce-composition fact as much as a pay fact, which is why the "
     "feature also ships peer-relative.",
@@ -81,7 +83,7 @@ add(
 add(
     "board_size",
     "proxy levels",
-    "Number of board seats. Bloat versus lean.",
+    "Number of board seats. Bloat versus lean. The director roster row count where the roster exists, else the extracted value.",
     "Kept raw AND peer-relative: 12.4% of its cross-sectional variance is between-sector, the "
     "highest in the panel, against 9.0% for profitMargins on the identical measure -- so "
     "'large for this industry' is a coherent question where 'large' alone is a sector proxy.",
@@ -92,7 +94,7 @@ add(
 add(
     "avg_board_tenure",
     "proxy levels",
-    "Mean director tenure in years. Entrenchment versus freshness.",
+    "Mean director tenure in years. Entrenchment versus freshness. Supplied from the per-person tenure clock of the director rows only where the filing's own value is missing.",
     "The ONLY field in the panel that earns a self-history leg: a trailing five-year self-z "
     "beat both alternatives AND held its sign across both halves of the sample (+0.0128 then "
     "+0.0270), where raw and peer each flip. 'This board is more entrenched than it has been "
@@ -170,8 +172,7 @@ add(
     "needs neither of its own. Pay and revenue are both LOG growth, clipped to +-3, "
     "the same revenue leg as `pay_revenue_gap`; the two differ only by the pay leg's guards and this feature's clip.",
     "The high tail is the misalignment case the feature exists to find: a package growing "
-    "while the business shrinks. Read it alongside `pay_up_revenue_down`, which flags the same "
-    "state as a binary and is far less sensitive to a small revenue denominator.",
+    "while the business shrinks. A small revenue denominator inflates it, which is why it is clipped.",
 )
 add(
     "founder_ceo",
@@ -245,29 +246,7 @@ add(
     "percentage change and +0.69 as a log growth, so mixing bases would read +31pp of "
     "spurious misalignment on exactly the extreme observations the family exists to find. The "
     "revenue leg therefore goes through log1p before the subtraction.",
-    "Positive = pay outrunning the business. The tail is dominated by small revenue "
-    "denominators, which is why the binary `pay_up_revenue_down` and its severity leg ship "
-    "alongside rather than instead: the flag fires on the STATE, immune to the denominator.",
-)
-add(
-    "pay_up_revenue_down",
-    "exec pay",
-    "1 when CEO pay rose and revenue fell in the same year. The misalignment flag.",
-    "Deterministic from the two signs, so it cannot be distorted by a small denominator the "
-    "way the continuous gap can. A NaN on either leg gives a NaN flag, never a false 0 -- "
-    "'we could not measure this' and 'no misalignment' are opposite claims.",
-    "Binary and genuinely rare, which is what makes it informative; a flag that fires on a "
-    "third of the panel would be a business-cycle indicator rather than a governance one.",
-)
-add(
-    "pay_up_revenue_down_severity",
-    "exec pay",
-    "The size of the pay-versus-revenue gap in the years the flag fires, and 0 otherwise.",
-    "A hinge, not a mask: it keeps the flag's immunity to sign-flipping while restoring the "
-    "magnitude the flag discards, so a 5% divergence and a 90% one are distinguishable where "
-    "the binary saturates.",
-    "Zero-inflated by design -- the mass at 0 is every non-firing year and is a real state, "
-    "not missingness. Read the flag for frequency and this for depth.",
+    "Positive = pay outrunning the business. The tail is dominated by small revenue denominators.",
 )
 add(
     "pay_revenue_peer_misalignment",
@@ -291,23 +270,6 @@ add(
     "and its return leg moves every session, so the difference re-prices continuously between "
     "proxies -- do not read a change in it as a governance event without checking which leg "
     "moved.",
-)
-add(
-    "pay_up_return_down",
-    "exec pay",
-    "1 when CEO pay rose and the trailing shareholder return was negative.",
-    "The sharper half of the pay-for-performance test: a board can defend paying up through a "
-    "revenue dip far more easily than through a year in which owners lost money.",
-    "Binary, and more frequent than its revenue twin because returns are negative more often "
-    "than revenue falls. Same NaN discipline: unmeasurable is never 0.",
-)
-add(
-    "pay_up_return_down_severity",
-    "exec pay",
-    "The size of the pay-versus-return gap in the years that flag fires, and 0 otherwise.",
-    "Same hinge construction as the revenue severity leg, for the same reason -- magnitude without the sign-flip sensitivity of a ratio.",
-    "Zero-inflated by design. The deep tail is a large package granted into a large drawdown, "
-    "which is the single most legible governance failure in the whole panel.",
 )
 add(
     "pay_return_peer_misalignment",
@@ -384,7 +346,7 @@ add(
     "structure did not change. Creation is typically the board's answer to pressure over a "
     "combined CEO/chair. One signed column replaces the former `_added` / `_lost` pair.",
     "Ternary and sparse. Most informative at firms with a combined CEO/chair; +1 often follows a "
-    "say-on-pay or director-election revolt, so read it against `sop_dissent_gt_20`.",
+    "say-on-pay or director-election revolt, so read it against `sop_dissent`.",
 )
 add(
     "governance_deterioration_count",
@@ -405,16 +367,6 @@ add(
     "A small integer, overwhelmingly 0, and time-clustered around the major reform waves.",
 )
 add(
-    "net_governance_change",
-    "provisions",
-    "Improvement count minus deterioration count.",
-    "Ships alongside both legs rather than replacing them, because a 0 produced by no events "
-    "and a 0 produced by one change in each direction are different states and the difference "
-    "alone cannot tell them apart.",
-    "Symmetric, tightly massed at 0. Both tails are informative; there is no monotone "
-    "constraint because the sign convention is a labelling choice, not a measured direction.",
-)
-add(
     "board_independence_delta_1y",
     "provisions",
     "Year-on-year change in the independent share of the board.",
@@ -427,14 +379,14 @@ add(
     "smooth and small nonzero values are impossible rather than rare.",
 )
 add(
-    "board_independence_drop_10pp",
+    "female_board_chg_pct",
     "provisions",
-    "1 when the independent share fell by 10 percentage points or more in one year.",
-    "A threshold on the delta rather than a second measurement of it: on a typical board one "
-    "seat is about 9 points, so a 10-point bar is 'more than one seat' expressed in a unit "
-    "that is comparable across board sizes.",
-    "Binary and sparse. Fires on genuine board restructurings and on post-acquisition board "
-    "reconstitution, which are different causes with a similar signature.",
+    "Female share of the board minus its mean over the previous three proxies. A difference of shares, in fraction units.",
+    "Whichever of the previous three proxies exist are used, one is enough; the current "
+    "proxy is not in its own baseline, and a proxy older than 1,460 days is ignored. A proxy with no "
+    "earlier proxy reads blank and ends the previous value, so an old comparison is never bridged.",
+    "Zero for most boards in most years, with the tail where a board added or lost several women "
+    "at once. Read it as a change in fraction units, not percentage points.",
 )
 add(
     "board_busyness",
@@ -473,22 +425,12 @@ add(
 add(
     "auditor_tenure",
     "provisions",
-    "Years the current audit firm has been engaged.",
-    "Also canonical-firm-based, so a rebrand does not reset the clock. Long auditor tenure is "
-    "the classic independence-impairment concern and the reason the EU mandated rotation.",
-    "⚠ LEFT-CENSORED for any engagement that predates the disclosure, so the level is a LOWER "
-    "BOUND on the true tenure rather than a measurement. `auditor_tenure_censored` is the flag "
-    "that says which rows those are; using the level without it treats a floor as a fact.",
-)
-add(
-    "auditor_tenure_censored",
-    "provisions",
-    "1 when auditor tenure is left-censored -- the engagement predates the archive.",
-    "Shipped as its own column rather than encoded as a NaN in the level, because the level IS "
-    "informative on those rows, just as a bound. Nulling them would discard real information; "
-    "publishing them unflagged would understate long tenures systematically.",
-    "Binary, and concentrated in the early history where the archive itself is shallow -- so "
-    "it correlates with the date and should not be read as a firm characteristic.",
+    "Years the current audit firm has been engaged, from the start year a proxy discloses.",
+    "Also canonical-firm-based, so a rebrand does not reset the clock. A start year stated by any "
+    "proxy of the firm's run fills the whole run, earlier proxies included (accepted lookahead, "
+    "as for `ceo_tenure`). Long auditor tenure is the classic independence-impairment concern "
+    "and the reason the EU mandated rotation.",
+    "Blank for any run no proxy discloses: the archive run length understates tenure and is not a substitute, so most of the panel is blank.",
 )
 add(
     "auditor_changed",
@@ -578,6 +520,14 @@ add(
     "governance signal. Coverage tracks director-age disclosure, which is voluntary and "
     "uneven -- a missing value here is a disclosure fact, not an age fact.",
 )
+add(
+    "youngest_director_age",
+    "board quality",
+    "Age of the youngest serving director.",
+    "The same anchored per-person age clock as `oldest_director_age`, minimum instead of maximum. "
+    "A board with no younger member is a refreshment gap that the oldest age alone does not show.",
+    "Coverage tracks director-age disclosure, which is voluntary and uneven -- a missing value here is a disclosure fact, not an age fact.",
+)
 
 # ------------------------------------------------ director pay, phase 6 (director_comp.py) #
 add(
@@ -652,43 +602,6 @@ add(
     "about 2026, and a feature that keeps reporting it asserts an opinion nobody expressed.",
 )
 add(
-    "sop_dissent_excess_10",
-    "say-on-pay dissent",
-    "max(0, sop_dissent - 0.10). A hinge above the 10% opposition bar.",
-    "LINEAR in the tail where the companion flag saturates, so a 35% revolt is distinguishable "
-    "from a 21% one. The hinge keeps the flag's threshold interpretation and restores the "
-    "magnitude it discards.",
-    "Zero for a normal vote and that mass at 0 is a real state, not missingness. Read with `sop_dissent_gt_10` for frequency and this for depth.",
-)
-add(
-    "sop_dissent_excess_20",
-    "say-on-pay dissent",
-    "max(0, sop_dissent - 0.20). A hinge above the 20% bar.",
-    "20% is the ISS 'significant opposition' bar, the level at which a board is expected to "
-    "respond publicly, so the threshold is the market's rather than ours.",
-    "Zero-inflated and much sparser than the 10% hinge. Anything above zero here is a firm whose board owed shareholders an explanation.",
-)
-add(
-    "sop_dissent_gt_10",
-    "say-on-pay dissent",
-    "1 when say-on-pay dissent exceeds 10%.",
-    "Ships RAW and is never peer-z-scored or percentile-ranked: the cross-sectional rank of a "
-    "binary is a re-encoding of its base rate, and a peer z of a flag over ~7 peers reads as "
-    "'how many of my peers also tripped this' -- close to the opposite of the intended signal.",
-    "Binary. Membership in `RAW_FLAG_FIELDS` is the ONLY thing that keeps it out of the "
-    "z-scoring path, so a new flag not listed there silently becomes a z-score.",
-)
-add(
-    "sop_dissent_gt_20",
-    "say-on-pay dissent",
-    "1 when say-on-pay dissent exceeds 20% -- the ISS significant-opposition bar.",
-    "The threshold that carries an institutional consequence rather than a statistical one: "
-    "crossing it triggers engagement obligations and adverse vote recommendations the "
-    "following year.",
-    "Binary and sparse. Often the best single predictor of the NEXT year's "
-    "`lead_independent_director_change` or pay-structure change -- boards respond to it.",
-)
-add(
     "sop_dissent_delta_1y",
     "say-on-pay dissent",
     "Year-on-year change in say-on-pay dissent.",
@@ -711,13 +624,6 @@ add(
     "Massed near zero; uncontested director elections are near-unanimous. The high tail is a "
     "board under coordinated opposition rather than a single unpopular nominee, which is what "
     "`board_dissent_max` isolates.",
-)
-add(
-    "board_dissent_median",
-    "election dissent",
-    "Median per-nominee dissent across the slate.",
-    "Robust to the single-targeted-director case that pulls the mean, so the pair separates 'the whole board is unpopular' from 'one nominee is'.",
-    "Nearly always below the mean, and the GAP between them is the informative quantity -- a wide gap is a targeted campaign.",
 )
 add(
     "board_dissent_max",
@@ -754,15 +660,6 @@ add(
     "The stricter breadth bar, matching say-on-pay's significant-opposition threshold so the two families are read on a comparable scale.",
     "Bounded [0, 1], far sparser than the 10% version. Anything materially above 0 is a "
     "board-wide revolt, which is rare enough to be worth inspecting individually.",
-)
-add(
-    "board_pct_nominees_below_70_support",
-    "election dissent",
-    "Share of nominees drawing under 70% support.",
-    "Expressed on the SUPPORT basis rather than the dissent basis, deliberately: 70% support "
-    "is the conventional line below which a director's mandate is questioned, and stating it "
-    "as support is what keeps the two bases from being confused for one another.",
-    "Bounded [0, 1], very sparse. A firing nominee is one whose re-election is a live governance question rather than a formality.",
 )
 add(
     "ceo_director_dissent",
@@ -812,13 +709,6 @@ add(
     "Symmetric. Rising board-wide dissent is the deterioration reading; the level says how bad it is and the delta says which way it is moving.",
 )
 add(
-    "board_dissent_median_delta_1y",
-    "election dissent",
-    "Year-on-year change in median board dissent.",
-    "The robust twin of the mean delta, for the same targeted-versus-systemic reason as the levels.",
-    "Symmetric and quieter than the mean delta; a move here is a shift in the whole slate rather than in one nominee.",
-)
-add(
     "board_dissent_max_delta_1y",
     "election dissent",
     "Year-on-year change in the worst nominee's dissent.",
@@ -858,16 +748,6 @@ add(
     "SECULAR TREND (cross-sectional median 0.012 -> 0.047, a 3.9x rise as proxy advisers "
     "turned on audit firms), so a pooled model can read the date from the level -- difference "
     "it or use the delta leg if that matters.",
-)
-add(
-    "auditor_dissent_gt_05",
-    "auditor dissent",
-    "1 when auditor dissent exceeds 5%.",
-    "The bar is deliberately TIGHTER than say-on-pay's 10%: auditor ratification normally "
-    "passes with overwhelming support, so 5% opposition is already the tail here where "
-    "say-on-pay routinely runs to 10%. Using one threshold for both would make the auditor "
-    "flag near-constant.",
-    "Binary, in `RAW_FLAG_FIELDS`, so never z-scored. Its base rate rises through the sample with the underlying secular trend.",
 )
 add(
     "auditor_dissent_gt_10",

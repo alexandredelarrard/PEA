@@ -128,16 +128,13 @@ def test_unusable_tally_is_nan_and_the_flags_inherit_it():
     assert pd.isna(by.loc["BBB", "sop_dissent"]), "no votes_for leg -> unknown, not 100%"
     assert by.loc["CCC", "sop_dissent"] == pytest.approx(0.90)
 
-    for tk in ("AAA", "BBB"):
-        for flag in ("sop_dissent_gt_10", "sop_dissent_gt_20"):
-            assert pd.isna(by.loc[tk, flag]), f"{flag} must stay NaN for {tk}, not become 0.0"
-    assert by.loc["CCC", "sop_dissent_gt_20"] == 1.0
+    assert not [c for c in by.columns if c.startswith(("sop_dissent_gt", "sop_dissent_excess"))], "the retired threshold legs came back"
     assert tally["no votes_for leg (row dropped): say_on_pay"] == 1
 
     print("\n=== SANITY CHECK: unusable tallies stay NaN ===")
-    print(f"  all-zero tally      -> dissent={by.loc['AAA', 'sop_dissent']}, gt_10={by.loc['AAA', 'sop_dissent_gt_10']}")
+    print(f"  all-zero tally      -> dissent={by.loc['AAA', 'sop_dissent']}")
     print(f"  votes_for missing   -> dissent={by.loc['BBB', 'sop_dissent']} (would be 1.0000 with fill_value=0 on all three legs)")
-    print(f"  genuine 90% revolt  -> dissent={by.loc['CCC', 'sop_dissent']:.4f}, gt_20=1.0")
+    print(f"  genuine 90% revolt  -> dissent={by.loc['CCC', 'sop_dissent']:.4f}")
     print("  CONCLUSION: unreadable and unopposed are kept apart, flags included. Validated.")
 
 
@@ -187,20 +184,16 @@ def test_breadth_and_aggregates_over_a_hand_computed_ballot():
     hist = history.iloc[0]
 
     assert hist["board_dissent_mean"] == pytest.approx(0.168)
-    assert hist["board_dissent_median"] == pytest.approx(0.12)
+    assert "board_dissent_median" not in history.columns, "the median is internal to the CEO excess, not a shipped column"
     assert hist["board_dissent_max"] == pytest.approx(0.40)
     assert hist["board_dissent_breadth_10"] == pytest.approx(3 / 5)  # 0.12, 0.25, 0.40
     assert hist["board_dissent_breadth_20"] == pytest.approx(2 / 5)  # 0.25, 0.40
-    assert hist["board_pct_nominees_below_70_support"] == pytest.approx(0.20)
+    assert "board_pct_nominees_below_70_support" not in history.columns
 
     print("\n=== SANITY CHECK: board aggregates over a known ballot ===")
     print("  dissents 0.02/0.05/0.12/0.25/0.40 ->")
-    print(f"    mean={hist['board_dissent_mean']:.4f} median={hist['board_dissent_median']:.4f} max={hist['board_dissent_max']:.4f}")
-    print(
-        f"    breadth_10={hist['board_dissent_breadth_10']:.2f} "
-        f"breadth_20={hist['board_dissent_breadth_20']:.2f} "
-        f"pct_below_70_support={hist['board_pct_nominees_below_70_support']:.2f}"
-    )
+    print(f"    mean={hist['board_dissent_mean']:.4f} max={hist['board_dissent_max']:.4f}")
+    print(f"    breadth_10={hist['board_dissent_breadth_10']:.2f} breadth_20={hist['board_dissent_breadth_20']:.2f}")
     print("  CONCLUSION: broker non-votes excluded per nominee too. Validated.")
 
 
@@ -452,7 +445,7 @@ def test_real_data_panel_coverage():
         "auditor_vote_dissent",
         "management_dissent_spread",
         "sop_dissent_delta_1y",
-        "sop_dissent_gt_10",
+        "auditor_dissent_gt_10",
     ):
         f = frames[name]
         cov = float(f.notna().to_numpy().sum()) / (len(idx) * len(f.columns))
@@ -510,8 +503,8 @@ def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
     # measured r = 0.9949 and 0.9867 on the live part, with `auditor_vote_dissent` a strict
     # SUPERSET of its twin (254 cells more, 0 the other way). Both were levels with a peer leg,
     # so the counts drop by 2 each and FOUR columns leave the part, not two.
-    assert len(EVENT_FIELDS) == 26 and len(PEER_RELATIVE_FIELDS) == 7
-    assert not {"board_dissent_median", "board_dissent_breadth_20"} & PEER_RELATIVE_FIELDS, "redundant or zero-inflated: raw only"
+    assert len(EVENT_FIELDS) == 18 and len(PEER_RELATIVE_FIELDS) == 7
+    assert "board_dissent_breadth_20" not in PEER_RELATIVE_FIELDS, "zero-inflated: raw only"
     for retired in ("sop_against_pct", "auditor_vote_against_pct"):
         assert retired not in EVENT_FIELDS and retired not in PEER_RELATIVE_FIELDS
 

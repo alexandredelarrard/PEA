@@ -79,8 +79,6 @@ from src.utils.names import person_key
 RAW_FLAG_FIELDS: frozenset[str] = frozenset(
     {
         "ceo_turnover_flag",
-        "pay_up_revenue_down",
-        "pay_up_return_down",
     }
 )
 
@@ -123,10 +121,6 @@ EVENT_FIELDS: frozenset[str] = frozenset(
         "pay_return_gap",
         "pay_revenue_peer_misalignment",
         "pay_return_peer_misalignment",
-        "pay_up_revenue_down",
-        "pay_up_return_down",
-        "pay_up_revenue_down_severity",
-        "pay_up_return_down_severity",
     }
 )
 
@@ -146,15 +140,11 @@ CROSS_SECTIONAL_FIELDS: frozenset[str] = frozenset({f"pay_{lab}_peer_misalignmen
 
 #: Every field this module can emit. `_alignment_family` names its members from a LABEL
 #: (`revenue` / `return`), so the two sets above can only be checked against the builder by
-#: enumerating what it produces -- which is what caught `pay_up_stock_down`, a name the plan
-#: used, that no code path ever produces, sitting in both sets while the two fields actually
-#: built sat in neither.
+#: enumerating what it produces.
 ALL_FIELDS: frozenset[str] = frozenset(
     {"log_ceo_total_comp", "ceo_comp_growth_1y", "ceo_turnover_flag", "ceo_pay_slice", "ceo_pay_slice_delta_1y"}
     | {f"pay_{lab}_gap" for lab in ("revenue", "return")}
     | {f"pay_{lab}_peer_misalignment" for lab in ("revenue", "return")}
-    | {f"pay_up_{lab}_down" for lab in ("revenue", "return")}
-    | {f"pay_up_{lab}_down_severity" for lab in ("revenue", "return")}
 )
 
 #: The two pay LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon at all.
@@ -488,28 +478,6 @@ def log_growth(pct: pd.DataFrame) -> pd.DataFrame:
     return logged.replace([np.inf, -np.inf], np.nan)
 
 
-def _flag_pair(pay: pd.DataFrame, perf: pd.DataFrame) -> pd.DataFrame:
-    """`1.0` where pay rose while performance fell, `0.0` otherwise, NaN when either is NaN.
-
-    NaN-preserving on purpose: `(a > 0) & (b < 0)` on a NaN gives False, which would report
-    "no misalignment" for a company whose pay or performance is simply unknown.
-    """
-    both = pay.notna() & perf.notna()
-    return ((pay > 0) & (perf < 0)).astype("float64").where(both)
-
-
-def _severity(pay: pd.DataFrame, perf: pd.DataFrame) -> pd.DataFrame:
-    """`max(pay growth, 0) * max(-performance, 0)` -- a ONE-SIDED severity, not an interaction.
-
-    ⚠ A product is not a ratio and must not be sanitised as one: both legs are already finite
-    growth rates, and it is the `clip(lower=0)` BEFORE the multiplication that makes the result
-    "how badly pay rose while performance fell" rather than a sign-ambiguous cross term (where
-    pay falling as performance falls would otherwise multiply to a positive severity).
-    """
-    both = pay.notna() & perf.notna()
-    return (pay.clip(lower=0.0) * (-perf).clip(lower=0.0)).where(both)
-
-
 def _aligned(a: pd.DataFrame, b: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The two frames on their common tickers, or a pair of empties when they share none."""
     if a is None or a.empty or b is None or b.empty:
@@ -523,7 +491,7 @@ def _aligned(a: pd.DataFrame, b: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
 def _alignment_family(
     growth: pd.DataFrame, perf: pd.DataFrame, peer_dict: dict, label: str, availability: pd.DataFrame | None = None
 ) -> dict[str, pd.DataFrame]:
-    """One pay-vs-performance leg: gap, peer misalignment, flag and severity."""
+    """One pay-vs-performance leg: the gap and the peer misalignment."""
     pay, prf = _aligned(growth, perf)
     if pay.empty:
         return {}
@@ -531,8 +499,6 @@ def _alignment_family(
     prf = mask_to_availability(prf, availability)
     out = {
         f"pay_{label}_gap": pay - prf,
-        f"pay_up_{label}_down": _flag_pair(pay, prf),
-        f"pay_up_{label}_down_severity": _severity(pay, prf),
     }
     if peer_dict:
         # ⚠ The ONLY direct call to the low-level `peer_relative` in this module, and it is

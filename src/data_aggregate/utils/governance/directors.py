@@ -12,9 +12,10 @@ It does three jobs, and the first one is a REPAIR rather than a feature.
    with the filer's own scalar and then interpolation as the fallbacks (D35, D39).
 2. **Board quality** — what a board AVERAGE structurally cannot express: turnover,
    entrenchment, dispersion, and the ISS-style overboarded share (D40, D41).
-3. It leaves `pct_female_directors`, `pct_independent_directors`, `avg_board_tenure` and
-   `board_size` ALONE. All four are live D3-protected features and re-deriving them would move
-   cells the plan forbids moving (D36).
+3. It leaves `pct_female_directors` and `pct_independent_directors` ALONE: both are live
+   D3-protected features and re-deriving them would move cells the plan forbids moving (D36).
+   `avg_board_tenure` is supplied from the director rows only where the filing's own value is
+   missing, and `board_size` is the roster row count where roster rows exist.
 
 WHY THE RE-AGGREGATION IS NOT A NO-OP, which is the one thing to understand before reading the
 code. Measured 2026-09-07, the parent scalar ALREADY IS the mean of its own children --
@@ -186,16 +187,21 @@ SOURCE_INTERPOLATED = "interpolated"
 DERIVED_AGGREGATES: dict[str, str] = {
     "avg_other_public_boards": "other_public_company_boards",
     "avg_director_age": "age",
+    "avg_board_tenure": "tenure_years",
 }
+
+#: Aggregates the director rows only SUPPLY where the filer's own scalar is missing; they never
+#: override a filed value.
+SUPPLY_ONLY_AGGREGATES: frozenset[str] = frozenset({"avg_board_tenure"})
 
 #: Board-quality features (D40). All LEVELS except the first.
 #:
-#: ⚠ `board_turnover` IS EXPIRED and the other five are not, which DEVIATES from D40's blanket
-#: "every one is a level, not an event". The five really are standing descriptions of the board
+#: ⚠ `board_turnover` IS EXPIRED and the other six are not, which DEVIATES from D40's blanket
+#: "every one is a level, not an event". The six really are standing descriptions of the board
 #: that filed -- a board does not stop having a tenure dispersion between proxies. Turnover is a
 #: ONE-YEAR CHANGE, the same shape as `board_busyness_delta_1y` and `ceo_comp_growth_1y`, and
 #: forward-filling "this board replaced 10% of its seats" for six years asserts churn nobody
-#: disclosed. D21's argument applies to it verbatim; being listed beside five levels is not an
+#: disclosed. D21's argument applies to it verbatim; being listed beside six levels is not an
 #: argument that it is one. The cost is near-zero -- proxies are annual, so the 548-day horizon
 #: bites only where a whole cycle was missed.
 BOARD_QUALITY_FIELDS: tuple[str, ...] = (
@@ -204,14 +210,15 @@ BOARD_QUALITY_FIELDS: tuple[str, ...] = (
     "board_tenure_dispersion",
     "board_age_dispersion",
     "oldest_director_age",
+    "youngest_director_age",
     "pct_overboarded",
 )
 EVENT_FIELDS: frozenset[str] = frozenset({"board_turnover"})
 
-#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on NO horizon.
+#: The six structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on NO horizon.
 #:
 #: ⚠ "NOT AN EVENT" IS NOT THE SAME STATEMENT AS "NEVER EXPIRES", and until this set existed
-#: these five made it so: correctly kept off the annual event clock, then forward-filled with
+#: these six made it so: correctly kept off the annual event clock, then forward-filled with
 #: no cutoff at all, so one parsed proxy was asserted as current for as long as the trading
 #: index ran. That is the identical reasoning error phase 3 fixed for the twelve fields in
 #: `LEVEL_HORIZON_FIELDS`; these are the residue it did not reach.
@@ -494,7 +501,7 @@ def merge_board_aggregates(parent: pd.DataFrame, derived: pd.DataFrame) -> tuple
         better = cand.notna() & n_all.notna() & n_filed.notna() & (n_all > n_filed)
 
         parent_values = frame_column(out, f)
-        override = parent_values.notna() & better  # step 1
+        override = parent_values.notna() & better & (f not in SUPPLY_ONLY_AGGREGATES)  # step 1
         supply = parent_values.isna() & cand.notna()  # step 3
         moved = (cast(pd.Series, cand.loc[override]) - cast(pd.Series, out.loc[override, f])).abs()
         out.loc[override | supply, f] = cand[override | supply]
@@ -508,7 +515,31 @@ def merge_board_aggregates(parent: pd.DataFrame, derived: pd.DataFrame) -> tuple
         stats[f"{f}: median |move| of an override (x1000)"] = int(round(float(moved.median()) * 1000)) if len(moved) else 0
         stats[f"{f}: still NULL -> left to interpolation"] = int(frame_column(out, f).isna().sum())
         out = out.drop(columns=[c for c in out.columns if c.startswith("_d_") or c.startswith("n_reporting_")])
-    return out, stats
+    out, size_stats = _roster_board_size(out, derived)
+    return out, {**stats, **size_stats}
+
+
+def _roster_board_size(out: pd.DataFrame, derived: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    """`board_size` = the filing's roster row count in `def14a_directors` where roster rows exist.
+
+    The extracted `board_size` is the fallback for a filing with no roster rows. A roster row is one
+    director by filed name, so the count needs no person-key merge (which would undercount boards
+    holding two people with the same surname and initial).
+    """
+    if "board_size" not in out.columns or "n_directors_total" not in derived.columns:
+        return out, {}
+    cols = ["ticker", "accession_number"]
+    roster = out[cols].merge(derived[[*cols, "n_directors_total"]].drop_duplicates(cols), on=cols, how="left")["n_directors_total"]
+    size = pd.Series(roster.to_numpy(), index=out.index, dtype="float64")
+    use = size.gt(0)
+    was_null = out["board_size"].isna()
+    changed = use & ~was_null & (out["board_size"] != size)
+    out = out.copy()
+    out.loc[use, "board_size"] = size[use]
+    return out, {
+        "board_size: roster count replaced the extracted value": int(changed.sum()),
+        "board_size: roster count where the extracted value was NULL": int((use & was_null).sum()),
+    }
 
 
 def finalize_board_source(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
@@ -627,7 +658,7 @@ def board_quality_fields(
     directors: pd.DataFrame,
     idx: pd.DatetimeIndex,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
-    """The six board-quality features (D40, D41) as daily wide frames, plus the tallies.
+    """The seven board-quality features (D40, D41) as daily wide frames, plus the tallies.
 
     Takes the FILLED child frame: levels read the filled column, dispersions reconstruct the
     filed one from the provenance stamp, so both bases come out of one input.
@@ -655,11 +686,12 @@ def board_quality_fields(
     }
     if "age" in d.columns:
         age = cast(pd.Series, pd.to_numeric(frame_column(d, "age"), errors="coerce"))
-        oldest_values = cast(pd.Series, age.groupby([frame_column(d, key) for key in keys], sort=False).max())
-        oldest_values.name = "value"
-        oldest = oldest_values.reset_index()
-        oldest.columns = [*keys, "value"]
-        per_filing["oldest_director_age"] = oldest
+        for name, how in (("oldest_director_age", "max"), ("youngest_director_age", "min")):
+            extreme = cast(pd.Series, age.groupby([frame_column(d, key) for key in keys], sort=False).agg(how))
+            extreme.name = "value"
+            frame = extreme.reset_index()
+            frame.columns = [*keys, "value"]
+            per_filing[name] = frame
 
     frames: dict[str, pd.DataFrame] = {}
     hist: dict[str, pd.DataFrame] = {}
@@ -673,7 +705,7 @@ def board_quality_fields(
             tally[f"skipped: {name} empty on the daily grid"] = 1
             continue
         frames[name] = daily
-        # EVERY field needs its history now, not just the event members: the five levels are
+        # EVERY field needs its history now, not just the event members: the six levels are
         # on the 395-day annual horizon rather than on no horizon at all, and `_expire_family`
         # ages a cell against the `as_of` of the filing that produced it, which it can only
         # read from this frame.

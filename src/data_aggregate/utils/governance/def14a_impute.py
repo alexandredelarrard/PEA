@@ -121,8 +121,10 @@ Deductions:
   2. Board consistency. `n_directors == board_size` (either direction). The
      `pct_technology_directors == n_technology_directors / board_size` identity was removed
      with the fields themselves -- they were an opinion, not an extraction.
-  3. Pay ratio. `ceo_pay_ratio == ceo_total_comp / median_employee_pay` -> fill the median
-     employee pay (or the ratio) from the other two.
+  3. Pay ratio. Where only the ratio is disclosed the median employee pay is deduced from it and
+     `ceo_total_comp`. `ceo_pay_ratio` itself is then recomputed by `_smooth_pay_ratio` as
+     `ceo_total_comp` over the mean median employee pay of the last three proxies that carry one,
+     and is blank without a total or any median; the disclosed ratio is not a fallback.
   4. Temporal gap-fill. Per ticker (sorted by filing date), carry the last KNOWN value
      forward into a gap -- ONE rule for levels/ratios and stable flags alike -- bounded by
      `CARRY_MAX_DAYS` from the `as_of` that sourced it. Leading gaps stay NaN because there
@@ -158,7 +160,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
+from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue, trailing_proxy_mean
 from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, key_at_last_value
 from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
@@ -210,8 +212,6 @@ CARRY_LEVELS = [
     "insider_ownership_pct",
     "ceo_ownership_pct",
     "n_five_percent_holders",
-    "median_employee_pay",
-    "ceo_pay_ratio",
 ]
 #: Carried ONLY when the CEO named on the source row is the CEO named on THIS row (D31). A salary
 #: is a term of one person's CONTRACT, so carrying it across a succession states the outgoing
@@ -421,9 +421,26 @@ def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
         _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], ["board_size"], stats, "n_directors = board_size")
         _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], ["n_directors"], stats, "board_size = n_directors")
     if {"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"} <= set(df.columns):
-        r, med, tot = df["ceo_pay_ratio"], df["median_employee_pay"], df["ceo_total_comp"]
+        r, tot = df["ceo_pay_ratio"], df["ceo_total_comp"]
         _fill(df, "median_employee_pay", (r > 0) & tot.notna(), tot / r, ["ceo_pay_ratio", "ceo_total_comp"], stats, "median_pay = total / ratio")
-        _fill(df, "ceo_pay_ratio", (med > 0) & tot.notna(), tot / med, ["median_employee_pay", "ceo_total_comp"], stats, "pay_ratio = total / median")
+
+
+def _smooth_pay_ratio(df: pd.DataFrame, stats: dict) -> None:
+    """`ceo_pay_ratio` = `ceo_total_comp` / the mean `median_employee_pay` of the last three proxies that carry one.
+
+    The median employee's pay moves far less from year to year than the disclosed ratio, which carries
+    the CEO's own pay noise. One disclosed median is enough. The ratio is blank where the total or every
+    median is missing: the disclosed ratio is not a fallback.
+    """
+    if not {"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"} <= set(df.columns):
+        return
+    mean_median = trailing_proxy_mean(df, "median_employee_pay", include_current=True)
+    value = df["ceo_total_comp"] / mean_median.where(mean_median > 0)
+    blank = value.isna() & df["ceo_pay_ratio"].notna()
+    write_with_provenance(df, value.notna(), "ceo_pay_ratio", value, FILL_IDENTITY, _oldest_leg(df, ["ceo_total_comp", "median_employee_pay"]))
+    write_with_provenance(df, blank, "ceo_pay_ratio", None, None, None)
+    stats["pay_ratio = total / mean median pay of the last 3 proxies"] = int(value.notna().sum())
+    stats["pay_ratio blanked (no total or no median)"] = int(blank.sum())
 
 
 def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Series]:
@@ -671,6 +688,7 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     _temporal_fill(df, stats)  # cross-year interior gaps + the ceo_age accrual
     interp_comp = pd.Series(False, index=df.index) if comps is None or not comps else (comp_na_before & df[comps].notna()).any(axis=1)
     _reconcile_rows(df, stats)  # reconcile values the temporal fill unlocked
+    _smooth_pay_ratio(df, stats)
 
     if "ceo_total_comp" in df.columns:
         derived = total_na_before & df["ceo_total_comp"].notna() & interp_comp

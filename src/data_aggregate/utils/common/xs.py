@@ -235,11 +235,10 @@ def self_history_z(
     ⚠ ITS PRECONDITION IS WITHIN-FIRM MOVEMENT, and that is not a formality. The denominator is
     the firm's own trailing std, so on a characteristic that is effectively fixed per firm the
     std is zero and the z is NaN (guarded by `std > 0`) -- measured on governance fields
-    2026-09-08, the trailing std is zero on 79.1% of firm-days for
-    `board_pct_nominees_below_70_support`, 63.0% for `board_dissent_breadth_20` and 23.3% for
-    `insider_ownership_pct`, so a self-history view of those is mostly absent and, where it
-    does exist, inverts the sign of the raw signal. Check the zero-std rate before adopting it
-    for a new field.
+    2026-09-08, the trailing std is zero on 63.0% of firm-days for
+    `board_dissent_breadth_20` and 23.3% for `insider_ownership_pct`, so a self-history view
+    of those is mostly absent and, where it does exist, inverts the sign of the raw signal.
+    Check the zero-std rate before adopting it for a new field.
 
     ⚠ WHY IT LIVES HERE. It is the fifth standardizer this module exists to hold in one place,
     and it now has two consumers (the fundamentals valuation panel and the governance board

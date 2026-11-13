@@ -31,6 +31,7 @@ from src.data_aggregate.utils.governance.accrual import (
     accrual_anchor,
     accrual_dispersion,
     accrue,
+    trailing_proxy_mean,
 )
 from src.data_aggregate.utils.governance.def14a_impute import (
     CARRY_LEVELS,
@@ -408,3 +409,71 @@ def test_ceo_age_yield_and_the_ceo_since_year_marginal_gain():
     print("    NOT DONE: `ceo_since_year` feeds `ceo_tenure`, a LIVE monotone-list feature, so")
     print("    widening it changes a shipped feature's cells — D3 forbids that as a side")
     print("    effect. It is a decision for the modelling session, and now it has a number.")
+
+
+def test_trailing_proxy_mean_counts_proxies_and_ignores_a_stale_one() -> None:
+    """The last three proxies that carry a value, with or without the row, aligned by label."""
+    df = pd.DataFrame(
+        {
+            "ticker": ["A", "A", "A", "A", "B"],
+            "as_of": pd.to_datetime(["2019-05-01", "2020-05-01", "2021-05-01", "2023-05-01", "2020-05-01"]),
+            "v": [1.0, 2.0, np.nan, 4.0, 9.0],
+        }
+    ).iloc[::-1]  # rows out of date order: the result must still line up by label
+    inc = trailing_proxy_mean(df, "v", include_current=True).sort_index()
+    exc = trailing_proxy_mean(df, "v", include_current=False).sort_index()
+
+    assert inc.iloc[:3].tolist() == [1.0, 1.5, 1.5], "a blank current row still reads the proxies before it"
+    assert exc.iloc[0] != exc.iloc[0] and exc.iloc[1] == 1.0 and exc.iloc[2] == 1.5, "without the row only earlier proxies count"
+    assert inc.iloc[3] == 3.0 and exc.iloc[3] == 2.0, "the 2019 proxy is 1,461 days back and ignored; the 2020 one (1,096) counts"
+    assert inc.iloc[4] == 9.0 and exc.iloc[4] != exc.iloc[4], "another ticker's rows must not leak in"
+
+    four = pd.DataFrame(
+        {"ticker": ["C"] * 4, "as_of": pd.to_datetime(["2020-05-01", "2021-05-01", "2022-05-01", "2023-05-01"]), "v": [1.0, 2.0, 3.0, 4.0]}
+    )
+    assert trailing_proxy_mean(four, "v", include_current=True).iloc[3] == 3.0, "three proxies enter the mean, not four"
+    assert trailing_proxy_mean(four, "v", include_current=False).iloc[3] == 2.0
+    print("SANITY: a mean of the last three proxies with a value; the current one only when asked; a proxy beyond the age cap is ignored.")
+
+
+def test_a_jittered_filing_date_does_not_change_how_many_proxies_enter_the_pay_ratio() -> None:
+    """The oldest proxy is 1,094 days back for one ticker and 1,096 for the other: both average the same last three."""
+    medians = [100_000.0, 200_000.0, 300_000.0, 400_000.0]
+    rows = []
+    for ticker, dates in (
+        ("NEAR", ["2019-01-08", "2020-01-10", "2021-01-11", "2022-01-06"]),  # 2019-01-08 -> 2022-01-06 = 1,094 days
+        ("FAR", ["2019-01-06", "2020-01-10", "2021-01-11", "2022-01-06"]),  # 2019-01-06 -> 2022-01-06 = 1,096 days
+    ):
+        for date, median in zip(dates, medians, strict=True):
+            rows.append(_row(ticker, date, ceo_total_comp=30e6, median_employee_pay=median, ceo_pay_ratio=30e6 / median))
+    out, _ = impute_def14a(pd.DataFrame(rows))
+    last = {r.ticker: r.ceo_pay_ratio for r in out.itertuples() if r.as_of == pd.Timestamp("2022-01-06")}
+
+    assert last["NEAR"] == pytest.approx(30e6 / 300_000.0), "the mean of 200k, 300k and 400k, not of four medians"
+    assert last["FAR"] == pytest.approx(last["NEAR"]), "a filing date two days either side must not change the count"
+    print("SANITY: 1,094 and 1,096 days back both give 30M / mean(200k, 300k, 400k) = 100.0; the count is three either way.")
+
+
+def test_pay_ratio_is_total_over_the_mean_median_pay_of_three_proxies_and_blank_without_either_leg() -> None:
+    """One disclosed median is enough; the disclosed ratio is never a fallback."""
+    rows = [
+        _row("AAA", "2019-04-01", ceo_total_comp=10e6, median_employee_pay=100_000.0, ceo_pay_ratio=100.0),
+        _row("AAA", "2020-04-01", ceo_total_comp=12e6, median_employee_pay=np.nan, ceo_pay_ratio=np.nan),
+        _row("AAA", "2021-04-01", ceo_total_comp=15e6, median_employee_pay=np.nan, ceo_pay_ratio=np.nan),
+        _row("AAA", "2022-04-01", ceo_total_comp=18e6, median_employee_pay=200_000.0, ceo_pay_ratio=90.0),
+        _row("AAA", "2024-04-01", ceo_total_comp=np.nan, median_employee_pay=110_000.0, ceo_pay_ratio=250.0),
+        _row("BBB", "2023-04-01", ceo_total_comp=20e6, median_employee_pay=np.nan, ceo_pay_ratio=np.nan),
+    ]
+    out, stats = impute_def14a(pd.DataFrame(rows))
+    ratio = {(r.ticker, r.as_of.strftime("%Y")): r.ceo_pay_ratio for r in out.itertuples()}
+
+    assert ratio[("AAA", "2019")] == pytest.approx(100.0)
+    assert ratio[("AAA", "2020")] == pytest.approx(120.0), "12M over the one disclosed median"
+    assert ratio[("AAA", "2021")] == pytest.approx(150.0), "two of the three proxies carry no median: one is enough"
+    assert ratio[("AAA", "2022")] == pytest.approx(18e6 / 150_000.0), "mean of the 2019 and 2022 medians, not the disclosed 90"
+    assert pd.isna(ratio[("AAA", "2024")]), "the CEO total is missing: the disclosed 250 must not stand in"
+    assert pd.isna(ratio[("BBB", "2023")]), "no median at all -> blank"
+    print("\n=== SANITY CHECK: smoothed CEO pay ratio ===")
+    print("  2019 100; 2020 120 and 2021 150 (a single disclosed median is enough); 2022 120 not the disclosed 90.")
+    print(f"  blank where the total or every median is missing: {stats['pay_ratio blanked (no total or no median)']} cell(s) blanked.")
+    print("  CONCLUSION: total over the mean median pay of the last three proxies, blank only without a numerator or denominator. Validated.")

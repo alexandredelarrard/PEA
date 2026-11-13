@@ -58,8 +58,7 @@ def test_rejected_independence_delta_ends_the_previous_delta() -> None:
     delta = frames["board_independence_delta_1y"]
     assert pd.notna(delta.loc["2022-02-28", "AAA"])
     assert delta.loc["2022-03-01":, "AAA"].isna().all()
-    assert frames["board_independence_drop_10pp"].loc["2022-03-01":, "AAA"].isna().all()
-    print("SANITY: an interpolated annual pair ends the prior independence delta and its drop flag immediately.")
+    print("SANITY: an interpolated annual pair ends the prior independence delta immediately.")
 
 
 def test_invalid_new_vote_does_not_resurrect_an_older_vote() -> None:

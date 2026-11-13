@@ -396,10 +396,9 @@ def test_the_director_pay_family_declares_its_levels():
 #:   provisions_features "`board_busyness` and `ceo_is_board_chair` are standing facts between
 #:                        proxies; `auditor_tenure` ACCRUES daily off a start date, so ageing it
 #:                        out would delete a number that is more current than the filing;
-#:                        `auditor_is_big4` and `auditor_tenure_censored` describe that standing
-#:                        level rather than an act"
-#:   directors           "`board_turnover` IS expired and the other five are not... Turnover is
-#:                        a one-year CHANGE... The five levels are standing facts and must NOT
+#:                        `auditor_is_big4` describes that standing level rather than an act"
+#:   directors           "`board_turnover` IS expired and the other six are not... Turnover is
+#:                        a one-year CHANGE... The six levels are standing facts and must NOT
 #:                        expire" (an explicit deviation from D40, with its own test)
 #:
 #: ⚠ **NOW EMPTY, ON THE USER'S EXPLICIT AUTHORISATION (2026-09-09).** All twelve joined the

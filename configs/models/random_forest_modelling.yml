@@ -40,7 +40,6 @@ random_forest:
     # - f_option_overhang: 1   # OFF: sign differs between horizons; against literature: option overhang = future dilution -> negative (Core; Pontiff-Woodgate); linear sign opposite (coefficient and cluster net effect)
     # - f_fcf_to_ev_vs_peers: 1   # OFF: sign differs between horizons
     # - f_returnOnEquity: 1
-    # - f_board_dissent_median: 1
     # - f_accruals_ratio: -1
     # - f_reported_expected_eps_growth_qoq: -1
     # - f_diluted_shares_growth: -1   # OFF: linear sign opposite (coefficient and cluster net effect)
@@ -49,7 +48,6 @@ random_forest:
     # - f_book_yield: -1   # OFF: against literature: book-to-market value premium is positive (Fama-French); linear sign opposite (coefficient and cluster net effect)
     # - f_board_tenure_dispersion: -1
     # - f_payout_ratio: 1
-    # - f_board_dissent_breadth_20_vs_peers: 1
     # - f_rd_capitalized_roic: 1
     # - f_days_since_earnings: 1
     # - f_auditor_tenure: 1
@@ -212,10 +210,10 @@ random_forest:
     - f_ic_super_topk_pooled_weight
     - f_ic_super_topk_pooled_weight_chg
 
-    # GOVERNANCE cube (101)
+    # GOVERNANCE cube (8)
     - f_board_independence_delta_1y
+    - f_female_board_chg_pct
     - f_board_size_vs_peers
-    - f_ceo_comp_growth_1y
     - f_ceo_excess_dissent
     - f_ceo_pay_growth
     - f_ceo_pay_slice
@@ -372,11 +370,10 @@ random_forest:
     - f_ic_super_topk_pooled_weight
     - f_ic_super_topk_pooled_weight_chg
 
-    # GOVERNANCE cube (101)
+    # GOVERNANCE cube (6)
     - f_board_size_vs_peers
     - f_ceo_excess_dissent
     - f_ceo_pay_slice
-    - f_director_cash_fee_pct_vs_peers
     - f_director_equity_pay_pct
     - f_pay_return_peer_misalignment
     - f_pay_revenue_peer_misalignment
@@ -516,7 +513,7 @@ random_forest:
     - f_ic_super_topk_pooled_weight
     - f_ic_super_topk_pooled_weight_chg
 
-    # GOVERNANCE cube (101)
+    # GOVERNANCE cube (9)
     - f_board_size
     - f_board_size_vs_peers
     - f_ceo_excess_dissent

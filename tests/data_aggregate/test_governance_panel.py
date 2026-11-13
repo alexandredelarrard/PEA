@@ -389,7 +389,6 @@ def test_governance_panel_encoding_and_empty_guard():
     for name in (
         "f_classified_board_change",
         "f_governance_deterioration_count",
-        "f_net_governance_change",
         "f_board_independence_delta_1y",
         "f_board_busyness",
         "f_auditor_tenure",

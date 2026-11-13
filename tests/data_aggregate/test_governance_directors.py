@@ -427,3 +427,39 @@ def test_the_real_archive_readout():
         "the child fill is what makes it stronger evidence, and the delta artifact falls from "
         "65.5% to ~22.5% -- the number this phase exists to cut. Validated."
     )
+
+
+def test_avg_board_tenure_is_only_supplied_where_missing_and_board_size_is_the_roster_count() -> None:
+    """The director rows supply a missing tenure average, never override a filed one, and set the board size."""
+    names = ("Ann Ash", "Bob Birch", "Cy Cedar", "Dan Dogwood")
+    rows = [{"ticker": "AAA", "accession_number": "A-0", "as_of": "2020-05-01", "name": n, "tenure_years": 10.0} for n in names]
+    # 2021: Dan's tenure is blank, so the child fill adds a reporting director -> a derived value would override a thinner one
+    rows += [
+        {"ticker": "AAA", "accession_number": "A-1", "as_of": "2021-05-01", "name": n, "tenure_years": 11.0 if n != "Dan Dogwood" else np.nan}
+        for n in names
+    ]
+    filled, _ = fill_director_attributes(pd.DataFrame(rows))
+    parent = pd.DataFrame(
+        [
+            {"ticker": "AAA", "accession_number": "A-0", "as_of": "2020-05-01", "avg_board_tenure": np.nan, "board_size": 9.0},
+            {"ticker": "AAA", "accession_number": "A-1", "as_of": "2021-05-01", "avg_board_tenure": 99.0, "board_size": np.nan},
+            {"ticker": "AAA", "accession_number": "A-2", "as_of": "2022-05-01", "avg_board_tenure": np.nan, "board_size": 8.0},
+        ]
+    )
+    merged, stats = merge_board_aggregates(parent, board_aggregates(filled))
+    by = merged.set_index("accession_number")
+
+    assert by.loc["A-0", "avg_board_tenure"] == pytest.approx(10.0), "a missing average is supplied from the director rows"
+    assert by.loc["A-0", "avg_board_tenure_source"] == SOURCE_DERIVED
+    assert by.loc["A-1", "avg_board_tenure"] == 99.0, "a filed average is never overridden, even where the child fill added a reporter"
+    assert by.loc["A-1", "avg_board_tenure_source"] == SOURCE_FILED
+    assert pd.isna(by.loc["A-2", "avg_board_tenure"]), "no roster rows for this filing -> nothing to supply"
+    assert by.loc["A-0", "board_size"] == 4.0, "the roster row count replaces the extracted 9"
+    assert by.loc["A-1", "board_size"] == 4.0, "the roster row count supplies a missing size"
+    assert by.loc["A-2", "board_size"] == 8.0, "no roster rows -> the extracted size stands"
+    assert stats["board_size: roster count replaced the extracted value"] == 1
+    assert stats["board_size: roster count where the extracted value was NULL"] == 1
+    print("\n=== SANITY CHECK: tenure supply and roster board size ===")
+    print("  A-0 avg tenure NULL -> 10.0 from the rows; A-1 filed 99.0 kept; A-2 has no rows -> NULL.")
+    print("  board_size: 9 -> 4 (roster), NULL -> 4, and 8 kept where there is no roster.")
+    print("  CONCLUSION: the rows fill gaps in the tenure average and decide the board size. Validated.")

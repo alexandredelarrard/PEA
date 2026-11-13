@@ -112,15 +112,15 @@ def test_auditor_since_year_is_carried_only_inside_the_canonical_firm_run():
     bbb = history.loc[history["ticker"] == "BBB"].sort_values("as_of")
     ccc = history.loc[history["ticker"] == "CCC"].sort_values("as_of")
 
-    assert aaa["auditor_tenure_censored"].tolist() == [0.0, 0.0, 0.0]
-    assert bbb["auditor_tenure_censored"].tolist() == [0.0, 1.0]
-    assert ccc["auditor_tenure_censored"].tolist() == [1.0, 0.0]
+    assert aaa["_tenure_start_ord"].notna().tolist() == [True, True, True]
+    assert bbb["_tenure_start_ord"].notna().tolist() == [True, False], "a new firm must not inherit the prior firm's start"
+    assert ccc["_tenure_start_ord"].notna().tolist() == [True, True], "a later disclosure fills the earlier proxy of its run"
     assert aaa["auditor_changed"].fillna(0.0).sum() == 0.0
     assert bbb["auditor_changed"].fillna(0.0).sum() == 1.0
     print("\n=== SANITY CHECK: auditor start-year run boundary ===")
-    print("  same-firm and silent-name gaps remain disclosed; a new firm never inherits the prior year.")
-    print("  a later first disclosure stays forward-only and does not rewrite earlier censored output.")
-    print("  CONCLUSION: tenure basis is stable within, and isolated between, auditor runs.")
+    print("  same-firm and silent-name gaps keep the start year; a new firm never inherits the prior firm's start.")
+    print("  a later first disclosure fills the earlier proxies of its own run (accepted lookahead).")
+    print("  CONCLUSION: the start year is shared within, and isolated between, auditor runs.")
 
 
 def test_the_collapse_measured_on_the_live_archive():

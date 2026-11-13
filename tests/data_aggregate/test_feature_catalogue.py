@@ -124,10 +124,6 @@ def test_the_retired_vote_twins_are_absent_from_every_declaration():
     for name in (
         "sop_dissent",
         "auditor_vote_dissent",
-        "sop_dissent_excess_10",
-        "sop_dissent_excess_20",
-        "sop_dissent_gt_10",
-        "sop_dissent_gt_20",
         "sop_dissent_delta_1y",
     ):
         assert name in vd.EVENT_FIELDS, f"{name} was dropped with its twin"

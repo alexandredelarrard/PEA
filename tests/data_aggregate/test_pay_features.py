@@ -25,7 +25,6 @@ from src.data_aggregate.utils.governance.pay_features import (
     PEER_RELATIVE_FIELDS,
     RAW_FLAG_FIELDS,
     _comp_history,
-    _severity,
     _slice_history,
     _top5_history,
     pay_fields,
@@ -175,7 +174,7 @@ def test_exact_pay_slice_latest_fiscal_year_and_the_floors():
     )
 
 
-def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
+def test_gaps_are_log_on_both_legs():
     """⚠ THE BASIS TEST. A 20% raise against 20% revenue growth is PERFECT alignment, so the
     gap must be 0. It reads -0.018 if the revenue leg stays a percentage change -- small here,
     but 31pp on a doubled package, and always in the direction that invents misalignment."""
@@ -192,24 +191,16 @@ def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
     # AAA: pay +20% over 2022, revenue +20% over the same year -> gap 0 on a log basis
     gap = f["pay_revenue_gap"].loc["2023-01-03", "AAA"]
     assert gap == pytest.approx(0.0, abs=1e-9), f"log/pct basis mismatch: gap={gap}"
-    assert f["pay_up_revenue_down"].loc["2023-01-03", "AAA"] == 0.0
-
-    # one-sided severity: pay FALLING while performance falls is not a governance failure
-    pay = pd.DataFrame({"AAA": [-0.30, 0.30]}, index=IDX[:2])
-    perf = pd.DataFrame({"AAA": [-0.40, -0.40]}, index=IDX[:2])
-    sev = _severity(pay, perf)
-    assert sev.iloc[0, 0] == 0.0
-    assert sev.iloc[1, 0] == pytest.approx(0.30 * 0.40)
+    assert not [c for c in f if c.startswith("pay_up_")], "the retired flag and severity legs came back"
 
     # no close_total -> the return family is skipped by NAME, and the revenue one still builds
     assert "pay_return_gap" not in f
     assert tally["skipped: no close_total -> no return-based misalignment"] == 1
 
-    print("\n=== SANITY CHECK: pay-vs-performance basis and severity ===")
+    print("\n=== SANITY CHECK: pay-vs-performance basis ===")
     print(f"  +20% pay vs +20% revenue -> gap {gap:+.9f} (log on BOTH legs; a pct revenue leg would read {np.log(1.2) - 0.2:+.4f}).")
-    print(f"  severity is one-sided: pay -30% into perf -40% -> {sev.iloc[0, 0]:.2f}, pay +30% into perf -40% -> {sev.iloc[1, 0]:.2f}.")
     print("  absent close_total, the return family is skipped and the revenue one survives.")
-    print("  CONCLUSION: both legs share a basis and the products are one-sided. Validated.")
+    print("  CONCLUSION: both legs share a basis. Validated.")
 
 
 def test_the_encoding_and_expiry_contracts():
@@ -229,10 +220,9 @@ def test_the_encoding_and_expiry_contracts():
     # the two LEVELS are the only non-events: a package and a share of the top five are
     # standing facts between proxies, where "pay grew 40% last year" stops being true
     assert not ({"log_ceo_total_comp", "ceo_pay_slice"} & EVENT_FIELDS)
-    # ⚠ THE CLASSIFICATION MUST BE EXHAUSTIVE, and this is the assertion that caught a real
-    # defect: `_alignment_family` names its members from a LABEL, so the plan's
-    # `pay_up_stock_down` sat in both sets while the `pay_up_return_down` actually built sat in
-    # neither -- unclassified as a flag and skipped by the 548-day expiry.
+    # ⚠ THE CLASSIFICATION MUST BE EXHAUSTIVE: `_alignment_family` names its members from a
+    # LABEL, so a name in a set that no code path builds, or a built name in no set, is only
+    # visible by comparing the sets to the builder's output.
     assert EVENT_FIELDS <= ALL_FIELDS, f"dead names: {sorted(EVENT_FIELDS - ALL_FIELDS)}"
     assert RAW_FLAG_FIELDS <= ALL_FIELDS, f"dead names: {sorted(RAW_FLAG_FIELDS - ALL_FIELDS)}"
     assert ALL_FIELDS - EVENT_FIELDS == {"log_ceo_total_comp", "ceo_pay_slice"}, "every field except the two standing levels must expire"

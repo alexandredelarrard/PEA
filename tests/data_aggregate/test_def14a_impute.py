@@ -169,7 +169,14 @@ def test_impute_real_data_nondestructive():
         assert np.array_equal(a.loc[pres, c].to_numpy(dtype=float), kept), f"{c}_raw does not hold the filed value"
         raw_kept += int(pres.sum())
     unified = sum(int((a[c].notna() & ~np.isclose(a[c].to_numpy(dtype=float), b[c].to_numpy(dtype=float), equal_nan=True)).sum()) for c in stint_cols)
-    num = [c for c in a.select_dtypes("number").columns if c not in stint_cols]
+    # The smoothed `ceo_pay_ratio` is the other deliberate overwrite: total pay over the 3-year mean median pay.
+    num = [c for c in a.select_dtypes("number").columns if c not in stint_cols and c != "ceo_pay_ratio"]
+    smoothed = int(
+        (
+            a["ceo_pay_ratio"].notna()
+            & ~np.isclose(a["ceo_pay_ratio"].to_numpy(dtype=float), b["ceo_pay_ratio"].to_numpy(dtype=float), equal_nan=True)
+        ).sum()
+    )
     overwritten, filled = 0, 0
     for c in num:
         pres = a[c].notna()
@@ -185,6 +192,7 @@ def test_impute_real_data_nondestructive():
     print(f"  rows={len(raw)}  tickers={raw['ticker'].nunique()}  numeric cols={len(num)}")
     print(f"  cells filled = {filled}  |  present cells overwritten = {overwritten}")
     print(f"  stint constants unified (REQ-004) = {unified}  |  filed values kept in _raw = {raw_kept}")
+    print(f"  pay ratios replaced by the 3-year smoothed ratio = {smoothed}")
     print(f"  mean numeric-missing: {miss_before:.1f}% -> {miss_after:.1f}%")
     print(f"  top rules: {top}")
     print(

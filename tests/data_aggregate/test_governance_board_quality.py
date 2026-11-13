@@ -303,6 +303,17 @@ def test_overboarded_same_day_accessions_use_only_preceding_source_records(numer
     print(f"SANITY: numeric-first={numeric_first}; same-day gaps use only preceding raw numeric records and the next day carries the genuine source.")
 
 
+def test_youngest_director_age_is_the_board_minimum_beside_the_oldest() -> None:
+    people = [
+        {"name": name, "age": age, "tenure_years": 5, "other_public_company_boards": 1.0}
+        for name, age in (("Al One", 71), ("Bo Two", 48), ("Cy Three", 55))
+    ]
+    frames, _ = board_quality_fields(pd.DataFrame(_board("XXX", 0, people)), IDX)
+    assert _at(frames["youngest_director_age"], "2019-06-03", "XXX") == 48.0
+    assert _at(frames["oldest_director_age"], "2019-06-03", "XXX") == 71.0
+    print("SANITY: ages 71, 48 and 55 give an oldest of 71 and a youngest of 48 from the same anchored age column.")
+
+
 def test_the_real_board_quality_readout() -> None:
     """Live coverage must match independently reconstructed 395-day numeric-source support."""
     try:
@@ -344,6 +355,7 @@ def test_the_real_board_quality_readout() -> None:
         "board_tenure_dispersion": 10_500,
         "board_age_dispersion": 10_000,
         "oldest_director_age": 11_500,
+        "youngest_director_age": 11_500,
     }
     print("\n=== SANITY CHECK: §1.6 board quality on the live archive ===")
     print(f"  {n_filings:,} parent filings, {len(raw):,} director rows")

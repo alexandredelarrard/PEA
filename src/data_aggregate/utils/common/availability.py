@@ -19,8 +19,6 @@ _DERIVED_FEATURES = frozenset(
         "ic_inst_new_buyer_ratio",
         "ic_inst_exit_ratio",
         "ic_inst_cluster_buying",
-        "ic_insider_discretionary_sell_mcap_60d",
-        "ic_insider_planned_sell_mcap_60d",
         "ic_shortvol_high_x_weak_price",
     }
 )

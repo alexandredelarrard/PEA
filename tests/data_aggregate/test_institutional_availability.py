@@ -27,11 +27,7 @@ def test_config_inherits_table_dates_and_applies_field_and_derived_overrides() -
 
     assert rules.source_date(Tables.insider_transactions) == pd.Timestamp("2006-01-03")
     assert rules.source_date(Tables.insider_transactions, "filing_date") == pd.Timestamp("2006-01-03")
-    assert rules.source_date(Tables.insider_transactions, "is_10b5_1") == pd.Timestamp("2023-04-01")
-    assert rules.derived_date(
-        "ic_insider_discretionary_sell_mcap_60d",
-        [(Tables.insider_transactions, "is_10b5_1")],
-    ) == pd.Timestamp("2023-04-01")
+    assert rules.derived_date("ic_shortvol_high_x_weak_price", []) == pd.Timestamp("2019-02-14")
     assert "ic_inst_flow_to_mcap" not in rules.derived_features
 
     print("\n=== SANITY CHECK: compact availability inheritance ===")
@@ -39,7 +35,7 @@ def test_config_inherits_table_dates_and_applies_field_and_derived_overrides() -
 
 
 def test_source_mask_is_inclusive_and_combines_per_cell_requirements() -> None:
-    rules = _rules()
+    rules = InstitutionalAvailability.from_config({"institutionals": {"insider_transactions": {"__all__": "2006-01-03", "is_10b5_1": "2023-04-01"}}})
     idx = pd.date_range("2023-03-31", periods=3, freq="D")
     columns = pd.Index(["AAA", "BBB"], name="ticker")
     denominator = pd.DataFrame([[True, True], [True, False], [True, True]], index=idx, columns=columns)

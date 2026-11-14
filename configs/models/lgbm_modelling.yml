@@ -296,7 +296,7 @@ lgbm:
   - f_ec_questions_tone
   - f_ec_questions_tone_delta
 
-  # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (34)
+  # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (33)
   - f_ic_act_13d_count_126d_z
   - f_ic_bo_13g_count_126d_z
   - f_ic_ftd_persistence_30d
@@ -318,7 +318,6 @@ lgbm:
   - f_ic_insider_purchase_pct_prior_180d
   - f_ic_insider_purchase_pct_prior_60d
   - f_ic_insider_ten_pct_buy_mcap_180d
-  - f_ic_insider_ten_pct_purchase_pct_prior_180d
   - f_ic_shortvol_acceleration
   - f_ic_shortvol_high_x_strong_price
   - f_ic_shortvol_high_x_weak_price

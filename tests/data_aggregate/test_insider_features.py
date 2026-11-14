@@ -26,7 +26,7 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
     POP_C_SUITE,
-    POP_UNKNOWN,
+    POP_OTHER,
     clean_transactions,
     common_stock_mask,
     normalize_insider_dates,
@@ -312,7 +312,7 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
     cleaned, _ = clean_transactions(_frame(rows), df_roles=evidence)
     actual = cleaned.set_index("accession_number").loc["current-role"]
     assert actual["role"] == ("CEO" if recovered else "other_named_officer")
-    assert actual["population"] == (POP_C_SUITE if recovered else POP_UNKNOWN)
+    assert actual["population"] == (POP_C_SUITE if recovered else POP_OTHER)
     assert actual["is_director"] == 0
     assert actual["role_source"] == ("explicit_proxy_title" if recovered else "filed")
     if recovered:
@@ -422,11 +422,13 @@ def test_uncertain_sale_masks_same_account_purchase_and_management() -> None:
     idx = pd.bdate_range("2016-10-18", "2017-04-01")
     panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
     assert panel.loc["2016-10-18", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(0.0)
-    assert pd.isna(panel.loc["2016-10-19", "f_ic_insider_purchase_pct_prior_60d"])
+    assert panel.loc["2016-10-19", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(
+        0.0
+    )  # the disputed account is left out; the two others net to 0
     assert pd.isna(panel.loc["2017-03-21", "f_ic_insider_purchase_pct_prior_60d"])
     assert pd.isna(panel.loc["2017-03-22", "f_ic_insider_purchase_pct_prior_60d"])
     print(
-        "SANITY: an uncertain blank-title sale contaminates same-account holdings math; retirement after the60-day expiry cannot revive an aged-out purchase ratio."
+        "SANITY: an uncertain sale excludes its own account from the pool (the other two net to 0); retirement after the60-day expiry cannot revive an aged-out purchase ratio."
     )
 
 
@@ -547,7 +549,7 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
     evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
     clean, _ = clean_transactions(_frame(rows), df_roles=evidence)
     assert clean["role"].tolist() == [blank_role]
-    assert clean["population"].tolist() == [POP_C_SUITE if blank_role == "PRESIDENT" else POP_UNKNOWN]
+    assert clean["population"].tolist() == [POP_C_SUITE if blank_role == "PRESIDENT" else POP_OTHER]
     print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward; the later blank title reads {blank_role}.")
 
 
@@ -1034,7 +1036,7 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
     got = {c.removeprefix("f_").removesuffix("_xs") for c in panel.columns if c not in ("date", "ticker")}
     # The fixture has only a C-suite account: the two other populations' all-NULL ratios are not emitted.
-    absent_populations = {"ic_insider_management_purchase_pct_prior_180d", "ic_insider_ten_pct_purchase_pct_prior_180d"}
+    absent_populations = {"ic_insider_management_purchase_pct_prior_180d"}
     scale_free = {name for name in EMISSION if "mcap" not in name} - absent_populations
     assert got == scale_free, f"unexpected without mcap: {sorted(got - scale_free)}"
     print(

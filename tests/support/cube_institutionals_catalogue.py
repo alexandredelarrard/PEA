@@ -40,7 +40,6 @@ for _name in (
     "ic_insider_purchase_pct_prior_180d",
     "ic_insider_c_suite_purchase_pct_prior_180d",
     "ic_insider_management_purchase_pct_prior_180d",
-    "ic_insider_ten_pct_purchase_pct_prior_180d",
 ):
     INSTITUTIONALS[_name] = (
         "insider",

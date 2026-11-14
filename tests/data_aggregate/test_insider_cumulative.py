@@ -146,7 +146,7 @@ def test_complete_quiet_windows_do_not_require_a_prior_purchase() -> None:
     panel = _observed_panel(rows)
     ratios = [f"f_{name}" for name in EMISSION if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
     counts = [f"f_{name}" for name in EMISSION if f"f_{name}" not in ratios]
-    assert len(ratios) == 10 and len(counts) == 8
+    assert len(ratios) == 9 and len(counts) == 8
     assert panel.reindex(columns=counts).loc[("2024-07-01", "AAA")].eq(0).all()
     assert panel.loc[("2024-07-01", "BBB")].isna().all()
     assert panel.reindex(columns=counts).loc[("2024-09-01", "BBB")].eq(0).all()
@@ -178,7 +178,7 @@ def test_active_unsupported_trade_never_becomes_quiet_zero(changes: dict) -> Non
     name = "f_ic_insider_purchase_pct_prior_60d"
     panel = panel.reindex(columns=list(dict.fromkeys([*panel.columns, name])))
     if changes.get("officer_title") == "":
-        # A blank title is an unresolved population, not an unsupported account: the pooled ratio is 1,000 / 10,000.
+        # A blank title only leaves the population; the account is supported: the pooled ratio is 1,000 / 10,000.
         assert panel.loc[("2024-07-01", "AAA"), name] == pytest.approx(0.1)
     else:
         assert pd.isna(panel.loc[("2024-07-01", "AAA"), name])
@@ -534,17 +534,13 @@ def test_prepared_role_and_unsupported_scope_mask_finite_management(case: str) -
     pooled, c_suite = "f_ic_insider_purchase_pct_prior_60d", "f_ic_insider_c_suite_purchase_pct_prior_180d"
     assert panel.loc["2024-06-05", pooled] == pytest.approx(0.1)
     assert panel.loc["2024-06-05", c_suite] == pytest.approx(0.1)
-    # An unsupported quantity blocks every pool; an officer of unresolved population blocks only the population pools.
-    assert pd.isna(panel.loc["2024-06-06", pooled]) if case == "quantity" else panel.loc["2024-06-06", pooled] == pytest.approx(0.1)
-    assert (
-        pd.isna(panel.loc["2024-06-06", c_suite])
-        if case in {"remarks", "quantity", "indirect", "joint"}
-        else panel.loc["2024-06-06", c_suite] == pytest.approx(0.1)
-    )
+    # An account with an unsupported quantity is left out of every pool; an officer without a title is in no population.
+    assert panel.loc["2024-06-06", pooled] == pytest.approx(0.1)
+    assert panel.loc["2024-06-06", c_suite] == pytest.approx(0.1)
     if case == "remarks":
-        assert pd.isna(panel.loc["2024-06-06", "f_ic_insider_c_suite_buy_mcap_180d"])
+        assert panel.loc["2024-06-06", "f_ic_insider_c_suite_buy_mcap_180d"] == pytest.approx(0.000001)
     print(
-        f"SANITY: {case}: an unsupported quantity blocks the pooled ratio, an unresolved officer blocks only the population pools, "
+        f"SANITY: {case}: an account with an unsupported quantity is left out of the pool, an untitled officer is in no population, "
         "and proved indirect/joint/former rows leave the supported CFO's ratio intact."
     )
 
@@ -839,11 +835,13 @@ def test_ineligible_owner_does_not_refresh_another_owners_clock() -> None:
     panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
     name = "f_ic_insider_purchase_pct_prior_60d"
     assert panel.loc["2015-06-14", name] == pytest.approx(30 / 200)
-    assert panel.loc["2015-06-15":"2015-07-30", name].isna().all()
+    assert np.allclose(panel.loc["2015-06-15":"2015-07-30", name], 0.2, atol=1e-6)  # the CEO account is left out; the CFO's own 20/100
     assert panel.loc["2015-07-31", name] == pytest.approx(0.2)
     assert panel.loc["2015-08-08", name] == pytest.approx(0.2)
     assert pd.isna(panel.loc["2015-08-09", name])
-    print("SANITY: an unsupported active CEO keeps the pooled value unknown until its expiry; the CFO's June10 anchor remains valid through August8.")
+    print(
+        "SANITY: an unsupported active CEO is left out until its expiry (the CFO's own 0.2 stands); the CFO's June10 anchor remains valid through August8."
+    )
 
 
 def test_balance_identity_does_not_hide_one_share_on_a_large_account() -> None:

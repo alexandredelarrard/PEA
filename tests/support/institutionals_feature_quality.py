@@ -185,7 +185,6 @@ _NORMALIZED = {
     "ic_insider_purchase_pct_prior_180d",
     "ic_insider_c_suite_purchase_pct_prior_180d",
     "ic_insider_management_purchase_pct_prior_180d",
-    "ic_insider_ten_pct_purchase_pct_prior_180d",
     "ic_inst_breadth_chg",
     "ic_inst_shares_chg",
     "ic_inst_value_to_mcap",

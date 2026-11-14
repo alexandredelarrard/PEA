@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.quotes import lookup_asof
-from src.data_aggregate.utils.institutionals.insider_quality import POP_UNKNOWN, account_other_flows, security_class
+from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
 
 MICRO = 1_000_000
 
@@ -41,13 +41,16 @@ def cumulative_positions(
     idx: pd.DatetimeIndex,
     days: int,
     populations: Mapping[str, int | None],
+    excluded: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
     """Net shares bought minus sold over holdings before the first window trade, one panel per output name.
 
-    `populations` maps each output name to its population code (`None` = all insiders). A cell pools every direct
-    account that traded in the window and is known only when each of them is supported; each lot keeps its own
-    original disclosure expiry. The denominator is the latest included economic-day terminal minus active net shares,
-    after balance-chain checks. An account of unresolved population blocks every population output.
+    `populations` maps each output name to its population code (`None` = all insiders); `excluded` lists
+    `ticker, owner_cik, start, stop` intervals in which an account's quantities are disputed. A cell sums, per ticker
+    and over every share class, the direct accounts that traded in the window and have a supported balance chain;
+    an unsupported account is left out of numerator, denominator and counts, so one bad account never blanks a
+    ticker. Each lot keeps its own original disclosure expiry. The denominator is the latest included economic-day
+    terminal minus active net shares, after balance-chain checks.
     """
     if trades.empty or idx.empty:
         return {}
@@ -68,27 +71,27 @@ def cumulative_positions(
     day_groups = {} if positions.empty else dict(tuple(positions.groupby(keys, sort=False)))
     df_flows = pd.concat([other_flows, trades.loc[trades["transaction_day"].isna()]], ignore_index=True)
     flows = {} if df_flows.empty else dict(tuple(df_flows.dropna(subset=["day"]).groupby("ticker", sort=False)))
+    disputed = dict(tuple(excluded.groupby(["ticker", "owner_cik"], sort=False))) if not excluded.empty else {}
     intervals: list[dict[str, object]] = []
     for key, group in rows.groupby(keys, sort=False):
         account_days = day_groups.get(key, positions.iloc[:0])
         df_flows = flows.get(key[0], pd.DataFrame(columns=["ticker", "owner_cik", "transaction_day", "day"]))
         blocked = account_other_flows(df_flows, key[0], key[1])
-        intervals.extend(_account_intervals(cast(tuple[str, str, str], key), group, account_days, blocked, idx))
+        intervals.extend(
+            _account_intervals(cast(tuple[str, str, str], key), group, account_days, blocked, idx, disputed.get(key[:2], excluded.iloc[:0]))
+        )
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
     out = {name: pd.DataFrame(np.nan, index=idx, columns=columns) for name in populations} if not rows.empty else {}
     if intervals:
         events = pd.DataFrame(intervals)
         for name, code in populations.items():
-            events_in = events
-            if code is not None:
-                events_in = events[events["population"].isin([code, POP_UNKNOWN])]
-                events_in = events_in.assign(net=events_in["net"].where(events_in["population"].ne(POP_UNKNOWN)))
+            events_in = events if code is None else events[events["population"].eq(code)]
             out[name] = _pool(events_in, idx).reindex(columns=columns)
     return out
 
 
 def _account_intervals(
-    key: tuple[str, str, str], lots: pd.DataFrame, positions: pd.DataFrame, flows: pd.DataFrame, idx: pd.DatetimeIndex
+    key: tuple[str, str, str], lots: pd.DataFrame, positions: pd.DataFrame, flows: pd.DataFrame, idx: pd.DatetimeIndex, excluded: pd.DataFrame
 ) -> list[dict[str, object]]:
     """Sweep public version/expiry boundaries instead of allocating account-by-day frames."""
     time_cols = ["visible_from", "stop", "visible_until", "transaction_day"]
@@ -99,6 +102,8 @@ def _account_intervals(
     flow_filed = flows["day"].to_numpy(dtype="datetime64[ns]")
     flow_public = flows["visible_from"].to_numpy(dtype="datetime64[ns]")
     flow_stop = flows["visible_until"].to_numpy(dtype="datetime64[ns]")
+    dispute_start = excluded["start"].to_numpy(dtype="datetime64[ns]")
+    dispute_stop = excluded["stop"].to_numpy(dtype="datetime64[ns]")
     points = np.unique(
         np.concatenate(
             [
@@ -108,6 +113,8 @@ def _account_intervals(
                 pos["visible_until"],
                 flow_public,
                 flow_stop,
+                dispute_start,
+                dispute_stop,
                 np.array([idx.min(), idx.max() + pd.Timedelta(days=1)], dtype="datetime64[ns]"),
             ]
         )
@@ -138,6 +145,8 @@ def _account_intervals(
             "population": int(population[active].min()),
         }
         output.append(event)
+        if ((dispute_start <= point) & (point < dispute_stop)).any():
+            continue
         public = (lot["visible_from"] <= point) & (np.isnat(lot["visible_until"]) | (lot["visible_until"] > point))
         span = public & (lot["transaction_day"] >= first) & (lot["transaction_day"] <= last)
         visible = (pos["visible_from"] <= point) & (np.isnat(pos["visible_until"]) | (pos["visible_until"] > point))
@@ -165,24 +174,29 @@ def _account_intervals(
 
 
 def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Add complete account totals once; require compatible units and positive pooled holdings."""
+    """Add supported account totals once per ticker; require compatible units and positive pooled holdings.
+
+    An event without a supported balance chain contributes to nothing: not to the numerator, the holdings, the unit-basis
+    count or the support count.
+    """
     if events.empty:
         return pd.DataFrame(index=idx)
     columns = pd.Index(sorted(events["ticker"].unique()), name="ticker")
+    supported = np.isfinite(events["net"]) & np.isfinite(events["prior"]) & events["prior"].ge(0)
+    events = events[supported]
+    if events.empty:
+        return pd.DataFrame(np.nan, index=idx, columns=columns)
     col = columns.get_indexer(pd.Index(events["ticker"]))
     start = idx.searchsorted(events["start"].to_numpy(), side="left")
     stop = idx.searchsorted(events["stop"].to_numpy(), side="left")
     shape = (len(idx) + 1, len(columns))
 
     # Sum account intervals in the same order for numerator, holdings and support count.
-    supported = np.isfinite(events["net"]) & np.isfinite(events["prior"]) & events["prior"].ge(0)
-    numerator = _accumulate_intervals(events["net"].where(supported, 0).to_numpy(dtype=float), start, stop, col, shape)
-    denominator = _accumulate_intervals(events["prior"].where(supported, 0).to_numpy(dtype=float), start, stop, col, shape)
-    count = _accumulate_intervals(np.ones(len(events)), start, stop, col, shape)
-    supported_count = _accumulate_intervals(supported.to_numpy(dtype=float), start, stop, col, shape)
+    numerator = _accumulate_intervals(events["net"].to_numpy(dtype=float), start, stop, col, shape)
+    denominator = _accumulate_intervals(events["prior"].to_numpy(dtype=float), start, stop, col, shape)
     bases = np.zeros(shape)
     # Union each basis's intervals before counting; never allocate a panel per economic date.
-    for (ticker, _, _), group in events.assign(_start=start, _stop=stop).groupby(["ticker", "klass", "unit_basis"], sort=False):
+    for (ticker, _), group in events.assign(_start=start, _stop=stop).groupby(["ticker", "unit_basis"], sort=False):
         ordered = group.sort_values("_start")
         begins = ordered["_start"].to_numpy(dtype=np.intp)
         ends = np.maximum.accumulate(ordered["_stop"].to_numpy(dtype=np.intp))
@@ -191,14 +205,7 @@ def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
         column = cast(int, columns.get_loc(ticker))
         np.add.at(bases, (begins[segments], column), 1)
         np.add.at(bases, (ends[last], column), -1)
-    known = (
-        (count > 0)
-        & (count == supported_count)
-        & (denominator > 0)
-        & np.isfinite(denominator)
-        & np.isfinite(numerator)
-        & (bases.cumsum(axis=0)[:-1] == 1)
-    )
+    known = (denominator > 0) & np.isfinite(denominator) & np.isfinite(numerator) & (bases.cumsum(axis=0)[:-1] == 1)
     return pd.DataFrame(np.divide(numerator, denominator, out=np.full_like(numerator, np.nan), where=known), index=idx, columns=columns)
 
 

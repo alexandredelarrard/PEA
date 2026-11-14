@@ -12,7 +12,6 @@ data_availability:
 
     insider_transactions:
       __all__: "2006-01-03"  # First SEC insider bulk-data quarter, on filing date.
-      is_10b5_1: "2023-04-01"  # First fully populated quarter for the structured flag.
 
     sec_13d:
       __all__: "1995-09-06"  # First usable historical Schedule 13D event.
@@ -32,8 +31,6 @@ data_availability:
       ic_inst_new_buyer_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
       ic_inst_exit_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
       ic_inst_cluster_buying: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_insider_discretionary_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.
-      ic_insider_planned_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.
       ic_shortvol_high_x_weak_price: "2019-02-14"  # RegSHO plus z252 minimum history.
 
 # defeatbeta earnings-call transcript extraction (`extract-earnings-calls`).

@@ -39,7 +39,6 @@ INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_purchase_pct_prior_180d",
     "f_ic_insider_c_suite_purchase_pct_prior_180d",
     "f_ic_insider_management_purchase_pct_prior_180d",
-    "f_ic_insider_ten_pct_purchase_pct_prior_180d",
     "f_ic_insider_net_buy_ratio_60d",
     "f_ic_insider_net_buy_ratio_120d",
     "f_ic_insider_net_buy_ratio_180d",

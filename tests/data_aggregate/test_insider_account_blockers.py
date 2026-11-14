@@ -10,13 +10,19 @@ from src.data_aggregate.utils.institutionals.insider_positions import cumulative
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, row, source_frame
 
+NO_DISPUTES = pd.DataFrame(columns=["ticker", "owner_cik", "start", "stop"])
+
 
 def _account_result(df_raw: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
     df_trades, diagnostics = clean_transactions(df_raw)
     df_trades = position_units(df_trades, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_trades["ticker"], idx.max())))
     df_flows = diagnostics.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_trades, df_flows)
-    return df_trades, df_positions, cumulative_positions(df_trades, df_positions, df_flows, idx, 60, {"ic_insider_purchase_pct_prior_60d": None})
+    return (
+        df_trades,
+        df_positions,
+        cumulative_positions(df_trades, df_positions, df_flows, idx, 60, {"ic_insider_purchase_pct_prior_60d": None}, NO_DISPUTES),
+    )
 
 
 @pytest.mark.parametrize("action", [None, "0001-01-01", "2024-02-01"], ids=["missing", "ancient", "post-filing"])

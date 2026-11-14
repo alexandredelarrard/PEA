@@ -23,7 +23,6 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     POP_C_SUITE,
     POP_MANAGEMENT,
     POP_TEN_PCT,
-    POP_UNKNOWN,
     account_other_flows,
     report_oversized,
     security_class,
@@ -45,6 +44,8 @@ BREADTH_WINDOW = WINDOW_120
 #: Disjoint insider populations (see `insider_quality.TITLE_POPULATIONS`): output suffix -> population code. Insiders in
 #: none of them appear only in the all-insider features.
 POPULATIONS: dict[str, int] = {"c_suite": POP_C_SUITE, "management": POP_MANAGEMENT, "ten_pct": POP_TEN_PCT}
+#: Populations with a purchase_pct_prior feature: 10% owners mostly open zero-prior accounts, so their ratio is undefined.
+PCT_POPULATIONS: dict[str, int] = {name: code for name, code in POPULATIONS.items() if name != "ten_pct"}
 
 #: feature -> (population code or None for all insiders, trailing window days).
 BUY_VALUE_FEATURES: dict[str, tuple[int | None, int]] = {
@@ -53,7 +54,7 @@ BUY_VALUE_FEATURES: dict[str, tuple[int | None, int]] = {
 }
 PURCHASE_PCT_FEATURES: dict[str, tuple[int | None, int]] = {
     **{f"ic_insider_purchase_pct_prior_{days}d": (None, days) for days in WINDOWS},
-    **{f"ic_insider_{name}_purchase_pct_prior_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in POPULATIONS.items()},
+    **{f"ic_insider_{name}_purchase_pct_prior_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in PCT_POPULATIONS.items()},
 }
 NET_BUY_RATIO_FEATURES: dict[str, int] = {f"ic_insider_net_buy_ratio_{days}d": days for days in WINDOWS}
 DISTINCT_BUYERS = f"ic_insider_distinct_buyers_{BREADTH_WINDOW}d"
@@ -132,9 +133,12 @@ def build_insider_feature_panel(
         **_net_ratio_fields(df_buys, df_sells, idx, seen),
         **_breadth_fields(df_buys, df_sells, idx),
     }
+    df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), diag.get("unsupported_events", pd.DataFrame())], ignore_index=True)
     for days in WINDOWS:
         names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
-        fields.update(cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names))
+        fields.update(
+            cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names, _disputed_accounts(df_uncertain, days))
+        )
     fields = _gate_dates(fields, idx, coverage.insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures.
@@ -142,11 +146,9 @@ def build_insider_feature_panel(
     df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
     _observe_quiet_windows(fields, df_activity, diag["source_first"], frames, coverage)
 
-    # Propagate uncertainty through dollar windows and account balances.
-    df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), df_unsupported], ignore_index=True)
+    # Propagate uncertainty through the dollar windows; disputed accounts were left out of the position pools above.
     df_unknown = pd.concat([df_unpriced, df_uncertain], ignore_index=True)
     unpriced_masks = _unpriced_masks(df_unknown, idx)
-    _add_position_uncertainty(unpriced_masks, df_uncertain, df_positions, idx)
     _mask_unknown_windows(fields, unpriced_masks)
 
     # Emit the existing raw float32 fields with own-price availability.
@@ -155,32 +157,20 @@ def build_insider_feature_panel(
     return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 
 
-def _add_position_uncertainty(masks: dict[str, pd.DataFrame], df_uncertain: pd.DataFrame, df_positions: pd.DataFrame, idx: pd.DatetimeIndex) -> None:
-    """Mask account ratios while their visible holdings depend on uncertain quantities."""
-    keys = ["ticker", "owner_cik"]
-    if df_uncertain.empty or df_positions.empty:
-        return
-
-    # Intersect account-position visibility with the uncertain disclosure's active window.
-    for days in WINDOWS:
-        df_unknown = df_uncertain[keys + ["visible_from", "visible_until"]].copy()
-        df_unknown["visible_until"] = _window_stop(df_uncertain, days)
-        df_dependencies = df_positions.merge(df_unknown, on=keys, suffixes=("", "_unknown"))
-        df_dependencies["visible_from"] = df_dependencies[["visible_from", "visible_from_unknown"]].max(axis=1)
-        df_dependencies["visible_until"] = df_dependencies[["visible_until", "visible_until_unknown"]].min(axis=1)
-        df_dependencies = df_dependencies[
-            df_dependencies["visible_until"].isna() | df_dependencies["visible_from"].lt(df_dependencies["visible_until"])
-        ]
-        df_seen = pd.DataFrame(True, index=idx, columns=pd.Index(sorted(df_dependencies["ticker"].unique()), name="ticker"))
-
-        # Extend each field's existing unknown mask without erasing other uncertainty.
-        for name, (code, window) in PURCHASE_PCT_FEATURES.items():
-            if window != days:
-                continue
-            df_selected = df_dependencies if code is None else df_dependencies[df_dependencies["population"].isin([code, POP_UNKNOWN])]
-            df_affected = _rolling(df_selected, idx, days, None, df_seen).gt(0)
-            df_previous = masks.get(name, pd.DataFrame())
-            masks[name] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
+def _disputed_accounts(df_uncertain: pd.DataFrame, window_days: int) -> pd.DataFrame:
+    """Direct accounts with a disputed or unsupported quantity and the interval of a `window_days` window it affects."""
+    columns = ["ticker", "owner_cik", "start", "stop"]
+    if df_uncertain.empty or "direct_indirect" not in df_uncertain:
+        return pd.DataFrame(columns=columns)
+    df_direct = df_uncertain[df_uncertain["direct_indirect"].eq("D") & df_uncertain["owner_cik"].ne("")]
+    return pd.DataFrame(
+        {
+            "ticker": df_direct["ticker"],
+            "owner_cik": df_direct["owner_cik"],
+            "start": df_direct["visible_from"],
+            "stop": _window_stop(df_direct, window_days),
+        }
+    )
 
 
 def _gate_dates(fields: dict[str, pd.DataFrame], idx: pd.DatetimeIndex, insider_floor: pd.Timestamp) -> dict[str, pd.DataFrame]:
@@ -229,8 +219,7 @@ def _observe_quiet_windows(
     """Fill only proven inactivity; unsupported active rows never become zero.
 
     Any issuer disclosure corroborates coverage prospectively. The table-wide frontier, a full
-    named source window and current listing are also necessary. A population feature stays unknown
-    while an unresolved officer is active in its window.
+    named source window and current listing are also necessary.
     """
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     columns = pd.Index(frames.universe, name="ticker")
@@ -253,11 +242,11 @@ def _observe_quiet_windows(
             verified = (bv - sv) / (bv + sv).where((bv + sv).gt(0))
             frame = frame.where(~observed, verified)
         fields[name] = (frame if name in ratios else frame.mask(observed & ~active, 0.0)).where(active | observed)
-    _mask_unresolved_rows(fields, activity, idx, seen)
+    _mask_anonymous_owners(fields, activity, idx, seen)
 
 
 def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Series]]:
-    """feature -> (window days, the activity rows that make its window observed); a population includes unresolved officers."""
+    """feature -> (window days, the activity rows that make its window observed)."""
     buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
     traded = buy | sell
     specifications: dict[str, tuple[int, pd.Series]] = {}
@@ -274,22 +263,17 @@ def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Se
 
 
 def _member(rows: pd.DataFrame, code: int | None) -> pd.Series:
-    """Rows of a population or of unresolved population (which may belong to it); every row for `None`."""
+    """Rows of a population; every row for `None`."""
     if code is None:
         return pd.Series(True, index=rows.index)
-    return rows["population"].isin([code, POP_UNKNOWN])
+    return rows["population"].eq(code)
 
 
-def _mask_unresolved_rows(fields: dict[str, pd.DataFrame], activity: pd.DataFrame, idx: pd.DatetimeIndex, seen: pd.DataFrame) -> None:
-    """Unknown while an active row's population or owner identity is unresolved."""
+def _mask_anonymous_owners(fields: dict[str, pd.DataFrame], activity: pd.DataFrame, idx: pd.DatetimeIndex, seen: pd.DataFrame) -> None:
+    """Distinct-owner counts are unknown while an active row has no owner identity."""
     buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
-    unresolved, anonymous = activity["population"].eq(POP_UNKNOWN), activity["owner_cik"].eq("")
-    rules = [
-        (name, (buy if name in BUY_VALUE_FEATURES else buy | sell) & unresolved, days)
-        for name, (code, days) in {**BUY_VALUE_FEATURES, **PURCHASE_PCT_FEATURES}.items()
-        if code is not None
-    ]
-    rules += [(DISTINCT_BUYERS, buy & anonymous, BREADTH_WINDOW), (DISTINCT_SELLERS, sell & anonymous, BREADTH_WINDOW)]
+    anonymous = activity["owner_cik"].eq("")
+    rules = [(DISTINCT_BUYERS, buy & anonymous, BREADTH_WINDOW), (DISTINCT_SELLERS, sell & anonymous, BREADTH_WINDOW)]
     rules += [(BUYER_BREADTH, (buy | sell) & anonymous, BREADTH_WINDOW)]
     for name, selector, days in rules:
         if name in fields:
@@ -429,11 +413,6 @@ def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd
     ]
     for name, codes, days, code in groups:
         affected_events = events[events["code"].isin(codes) & _member(events, code)]
-        if not affected_events.empty:
-            masks[name] = _rolling(affected_events, idx, days, None, seen).gt(0)
-    quantity_unknown = events[events["direct_indirect"].eq("D") & events["quality_uncertain"].fillna(False)]
-    for name, (code, days) in PURCHASE_PCT_FEATURES.items():
-        affected_events = quantity_unknown[_member(quantity_unknown, code)]
         if not affected_events.empty:
             masks[name] = _rolling(affected_events, idx, days, None, seen).gt(0)
     return masks

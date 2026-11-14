@@ -71,9 +71,9 @@ ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 OTHER_OFFICER = "other_named_officer"
 
-#: Insider populations, disjoint and ordered by precedence (a lower code wins a row). `POP_UNKNOWN` is an officer whose
-#: title says nothing, so it may belong to any population; `POP_OTHER` appears only in all-insider features.
-POP_UNKNOWN, POP_C_SUITE, POP_MANAGEMENT, POP_TEN_PCT, POP_OTHER = 0, 1, 2, 3, 4
+#: Insider populations, disjoint and ordered by precedence (a lower code wins a row). `POP_OTHER` (including an officer
+#: whose title says nothing) appears only in all-insider features.
+POP_C_SUITE, POP_MANAGEMENT, POP_TEN_PCT, POP_OTHER = 1, 2, 3, 4
 
 #: Cleaned `officer_title` -> population, first match wins. A director flag or a blank-title 10%-owner is resolved from the
 #: flags in `_assign_population`, not here. Former/retired titles never match.
@@ -82,7 +82,7 @@ TITLE_POPULATIONS: tuple[tuple[int, str], ...] = (
         POP_C_SUITE,
         r"\bCHIEF\b|\bCHF\b|\bC\s*[A-Z]\s*O\b|\bPRINCIPAL\s+(?:EXEC|FIN|ACC|OPER)|\bFOUNDER\b"
         r"|\b(?:E|EX|SE)\s*V\s*P\b|\bEXEC(?:UTIVE)?\b|\bCHAIR|\bCHARIMAN\b|\bCOB\b"
-        r"|(?<!VICE )(?<!VICE-)(?<!GROUP )(?<!V )(?<!SR )(?<!SENIOR )(?<!ASSISTANT )(?<!ASST )\bPRES(?:IDENT)?\b",
+        r"|(?<!VICE )(?<!VICE-)(?<!V )(?<!SR )(?<!SENIOR )(?<!ASSISTANT )(?<!ASST )\bPRES(?:IDENT)?\b",
     ),
     (
         POP_MANAGEMENT,
@@ -146,13 +146,13 @@ def title_population(title: object) -> int:
 
 
 def _assign_population(df_rows: pd.DataFrame) -> pd.Series:
-    """Disjoint population per row: title C-suite, unresolved officer, then director or management title, then 10% owner."""
+    """Disjoint population per row: C-suite title, then director or management title, then 10% owner; an officer without a usable title is OTHER."""
     from_title = _clean_map_dict(df_rows["officer_title_clean"], clean_func=title_population).astype(int)
     unresolved = df_rows["is_officer"].eq(1) & (df_rows["role_unknown"] | df_rows["officer_title_clean"].map(role_needs_evidence).astype(bool))
     population = pd.Series(POP_OTHER, index=df_rows.index)
     population = population.mask(df_rows["is_ten_pct_owner"].eq(1), POP_TEN_PCT)
     population = population.mask(df_rows["is_director"].eq(1) | from_title.eq(POP_MANAGEMENT), POP_MANAGEMENT)
-    population = population.mask(unresolved & from_title.eq(POP_OTHER), POP_UNKNOWN)
+    population = population.mask(unresolved & from_title.eq(POP_OTHER), POP_OTHER)
     return population.mask(from_title.eq(POP_C_SUITE), POP_C_SUITE)
 
 

@@ -10,6 +10,8 @@ from src.data_aggregate.utils.institutionals.insider_positions import cumulative
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, row, source_frame
 
+NO_DISPUTES = pd.DataFrame(columns=["ticker", "owner_cik", "start", "stop"])
+
 
 def _pooled(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Series:
     df_clean, diagnostics = clean_transactions(source_frame(rows))
@@ -21,7 +23,7 @@ def _pooled(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Series:
     df_trades = position_units(df_trades, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_trades["ticker"], idx.max())))
     df_flows = diagnostics.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_trades, df_flows)
-    result = cumulative_positions(df_trades, df_positions, df_flows, idx, 60, {"ic_insider_purchase_pct_prior_60d": None})
+    result = cumulative_positions(df_trades, df_positions, df_flows, idx, 60, {"ic_insider_purchase_pct_prior_60d": None}, NO_DISPUTES)
     return result.get("ic_insider_purchase_pct_prior_60d", pd.DataFrame(index=idx)).reindex(columns=["AAA"])["AAA"]
 
 
@@ -29,7 +31,7 @@ def _pooled(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Series:
     "changes,expected",
     [
         ({}, 950 / 10100),
-        ({"shares_owned_after": np.nan}, None),
+        ({"shares_owned_after": np.nan}, -0.5),
         ({"officer_title": "Unspecified officer"}, 950 / 10100),
         ({"n_reporting_owners": np.nan}, -0.5),
         ({"n_reporting_owners": 0}, -0.5),
@@ -44,7 +46,7 @@ def _pooled(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Series:
     ],
     ids=[
         "complete",
-        "unsupported-ceo",
+        "unsupported-ceo-left-out",
         "unresolved-title",
         "unknown-multiplicity",
         "zero-multiplicity",
@@ -58,7 +60,7 @@ def _pooled(rows: list[dict[str, object]], idx: pd.DatetimeIndex) -> pd.Series:
         "former-title",
     ],
 )
-def test_pool_requires_every_supported_direct_account_and_ignores_unidentified_rows(changes: dict[str, object], expected: float | None) -> None:
+def test_pool_sums_the_supported_direct_accounts_and_leaves_out_every_other_row(changes: dict[str, object], expected: float | None) -> None:
     ceo = row(accession_number="ceo", officer_title="CEO", is_officer=1, shares=1000, shares_owned_after=11000)
     ceo.update(changes)
     cfo = row(accession_number="cfo", owner_cik="2", officer_title="CFO", is_officer=1, transaction_code="S", shares=50, shares_owned_after=50)
@@ -70,7 +72,7 @@ def test_pool_requires_every_supported_direct_account_and_ignores_unidentified_r
         assert np.allclose(values.loc[:"2024-03-09"], expected)
     assert values.loc["2024-03-10":].isna().all()
     print(
-        f"SANITY: {changes=}; pooled ratio={expected}; an unsupported direct account keeps the pool NULL, rows that are not an identified direct account are not pooled, original age 60 expires."
+        f"SANITY: {changes=}; pooled ratio={expected}; an unsupported or unidentified account is left out of the pool, the supported ones are summed, original age 60 expires."
     )
 
 

@@ -19,12 +19,10 @@ from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
-    FLAG_PCT_SHARES_OUTSTANDING,
     POP_C_SUITE,
     POP_MANAGEMENT,
     POP_TEN_PCT,
     account_other_flows,
-    report_oversized,
     security_class,
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import _proven_tenure_mask
@@ -134,11 +132,10 @@ def build_insider_feature_panel(
         **_breadth_fields(df_buys, df_sells, idx),
     }
     df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), diag.get("unsupported_events", pd.DataFrame())], ignore_index=True)
+    df_disputed = pd.concat([df_uncertain, diag.get("oversized_events", pd.DataFrame())], ignore_index=True)
     for days in WINDOWS:
         names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
-        fields.update(
-            cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names, _disputed_accounts(df_uncertain, days))
-        )
+        fields.update(cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names, _disputed_accounts(df_disputed, days)))
     fields = _gate_dates(fields, idx, coverage.insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures.
@@ -751,23 +748,3 @@ def _account_day_versions(df_group: pd.DataFrame, account: Mapping[str, object],
         )
         records.append(record)
     return records
-
-
-# --------------------------------------------------------------------------- #
-# helpers                                                                       #
-# --------------------------------------------------------------------------- #
-
-
-def report_oversized_positions(t: pd.DataFrame, shares_out: pd.DataFrame | None) -> None:
-    """Log, never drop. See `insider_quality.report_oversized` for why a threshold cannot
-    separate a fabricated filing from a genuine block disposal on this universe."""
-    flagged = report_oversized(t, shares_out)
-    if flagged.empty:
-        return
-    top = flagged.head(5)
-    _log.warning(
-        "insider: %s transaction(s) above %.0f%% of shares outstanding, kept and reported: %s",
-        len(flagged),
-        100 * FLAG_PCT_SHARES_OUTSTANDING,
-        ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} {r.pct_shares_outstanding:.1%}" for r in top.itertuples()),
-    )

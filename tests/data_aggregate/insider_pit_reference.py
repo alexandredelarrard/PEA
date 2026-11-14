@@ -21,7 +21,6 @@ from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
     build_insider_feature_panel,
-    report_oversized_positions,
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
@@ -55,7 +54,9 @@ def build_prepared_insider_panel(
         df_cap = daily_market_cap(shares_out_history, frames.close_split, level_factor=frames.level_factor)
     frames = replace(frames, close_pit=frames.close_pit if frames.close_pit is not None else frames.close_split, mcap_pit=df_cap)
     df_trades, diagnostics = clean_transactions(
-        source_frame(insider) if insider is not None else pd.DataFrame(), df_valuation_close=df_valuation_close
+        source_frame(insider) if insider is not None else pd.DataFrame(),
+        df_valuation_close=df_valuation_close,
+        df_shares_outstanding=frames.shares_outstanding_pit,
     )
     observation = coverage if coverage is not None else InsiderCoverage()
     if "source_first" not in diagnostics or not len(frames.trading_index):
@@ -66,7 +67,6 @@ def build_prepared_insider_panel(
         end = pd.DatetimeIndex(frames.trading_index).max()
         frames = replace(frames, security_basis=basis_frame(share_basis, [*frames.universe, *df_events["ticker"]], end))
     df_positions = position_units(df_events, None if frames.security_basis is None else terminal_basis_factor(frames.security_basis))
-    report_oversized_positions(df_trades, frames.shares_outstanding_pit)
     return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, observation)
 
 

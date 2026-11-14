@@ -25,7 +25,6 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
     build_insider_feature_panel,
-    report_oversized_positions,
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
@@ -141,15 +140,19 @@ class StepCubeInstitutionals(Step):
         df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
-        df_trades, diagnostics = clean_transactions(df_insider=source.transactions, df_valuation_close=frames.close_pit, df_roles=df_roles)
+        df_trades, diagnostics = clean_transactions(
+            df_insider=source.transactions,
+            df_valuation_close=frames.close_pit,
+            df_roles=df_roles,
+            df_shares_outstanding=frames.shares_outstanding_pit,
+        )
         if "source_first" not in diagnostics:
             return None
 
-        # Put unclassed positions in terminal units through the saved basis; report source-day trades against the saved count.
+        # Put unclassed positions in terminal units through the saved basis.
         diagnostics["source_first"] = source.first_filed
         df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
         df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), df_factor)
-        report_oversized_positions(df_trades, frames.shares_outstanding_pit)
 
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)

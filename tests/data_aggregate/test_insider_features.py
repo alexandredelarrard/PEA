@@ -714,32 +714,15 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
     )
 
 
-def test_an_underpriced_row_is_counted_but_never_inflated():
-    """The one-sided rule. Repairing upward is what turned nine real ~$25m AXON purchases
-    into $326m ones, because that ticker carries another company's rows."""
-    rows = [
-        _txn(
-            accession_number=f"g{i}",
-            owner_cik=f"{i:04d}",
-            transaction_date=f"2015-05-{20 + i:02d}",
-            shares=10.0,
-            price_per_share=100.0,
-            value_usd=1_000.0,
-        )
-        for i in range(6)
-    ]
-    rows.append(_txn(accession_number="low", owner_cik="9999", transaction_date="2015-05-25", shares=10.0, price_per_share=1.0, value_usd=10.0))
+def test_an_underpriced_row_is_repaired_to_the_quote():
+    """The two-sided rule: a price far below the as-traded close is replaced like one far above it."""
+    rows = [_txn(accession_number="low", owner_cik="9999", transaction_date="2015-05-25", shares=10.0, price_per_share=1.0, value_usd=10.0)]
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
     out, diag = clean_transactions(_frame(rows), df_valuation_close=quote)
     low = out[out["accession_number"].eq("low")].iloc[0]
-    assert diag["underpriced_rows"] == 1 and diag["repaired_rows"] == 0
-    assert not low["price_repaired"] and low["value"] == pytest.approx(10.0)
-    print(
-        f"SANITY: a price 100x BELOW the consensus is counted ({diag['underpriced_rows']} "
-        f"row) and left at its filed ${low['value']:,.0f}. A too-low price understates a "
-        f"flow; a too-high one invented $182,982,720tn, and only that direction is "
-        f"repaired."
-    )
+    assert diag["repaired_low"] == 1 and diag["repaired_high"] == 0 and low["price_repaired"] and low["price_estimated"]
+    assert low["value"] == pytest.approx(1_000.0)
+    print(f"SANITY: a price 100x BELOW the close is replaced by it: value ${low['value']:,.0f}, not the filed $10.")
 
 
 def test_the_role_map_reads_a_title_the_way_a_human_would():

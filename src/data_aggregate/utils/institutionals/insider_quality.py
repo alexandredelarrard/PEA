@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.data_utils import to_day
-from src.data_aggregate.utils.common.quotes import lookup_asof, period_close
+from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.utils.names import clean_person_name
 from src.utils.string import pad_cik
 
@@ -32,8 +32,13 @@ COMMON_STOCK_RE = re.compile(
     r"COMMON|COMON|COMMOM|COMM|ORDINARY|REGISTER|CLASS\s+[A-Z]\b|SHARES\s+OF\s+BENEFICIAL|DEPOSITARY|" r"^\s*(?:COM|STOCK|SHARES)\s*$", re.I
 )
 
-#: Max ratio of filed price to the trailing consensus before the price is treated as corrupt.
-PRICE_TOLERANCE: float = 10.0
+#: Filed price / as-traded close beyond which the filed price is replaced by the close: above `PRICE_BAND_HIGH` or below
+#: `PRICE_BAND_LOW` (a ratio exactly on a bound is kept).
+PRICE_BAND_HIGH: float = 2.0
+PRICE_BAND_LOW: float = 0.5
+
+#: Calendar days a quote may be older than the trade's reference day.
+MAX_QUOTE_AGE_DAYS: int = 7
 
 #: Share-class token in a security title, so the consensus is built within one class.
 _CLASS_RE = re.compile(r"\bCLASS\s+([A-Z])\b|\bSERIES\s+([A-Z])\b", re.I)
@@ -41,8 +46,8 @@ _CLASS_RE = re.compile(r"\bCLASS\s+([A-Z])\b|\bSERIES\s+([A-Z])\b", re.I)
 #: Trailing publication-time window behind the consensus median.
 CONSENSUS_WINDOW: str = "31D"
 
-#: A single transaction above this share of the company is reported, never dropped.
-FLAG_PCT_SHARES_OUTSTANDING: float = 0.25
+#: A transaction above this share of the shares outstanding on its day is removed, and its direct account is left out of the pooled ratio.
+MAX_PCT_SHARES_OUTSTANDING: float = 0.25
 
 #: Free-text `officer_title` -> role, first match wins (a "Chairman, President & CEO" is a CEO).
 CHIEF = r"(?:CHIEF|CHF)"
@@ -405,8 +410,12 @@ def clean_transactions(
     *,
     df_valuation_close: pd.DataFrame | None = None,
     df_roles: pd.DataFrame | None = None,
+    df_shares_outstanding: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict]:
-    """Return priced common-stock P/S versions and diagnostics for unsupported evidence."""
+    """Return priced common-stock P/S versions and diagnostics for unsupported evidence.
+
+    `df_valuation_close` is the saved point-in-time close and `df_shares_outstanding` the saved point-in-time share count.
+    """
 
     need = {"ticker", "filing_date", "transaction_code", "shares"}
     diag: dict = {"input_rows": 0 if df_insider is None else len(df_insider)}
@@ -431,8 +440,11 @@ def clean_transactions(
     diag["unsupported_events"] = df_trades.loc[unsupported].assign(quality_uncertain=True).copy()
     df_trades = df_trades[~unsupported]
 
+    # Remove trades above the share-count cap; their owner accounts stay out of the pooled ratio.
+    df_trades, diag["oversized_events"] = _split_oversized(df_trades, df_shares_outstanding)
+
     # Apply quote checks and dated source evidence, retaining unpriced share claims.
-    df_trades, price_counts = _clean_trade_prices(df_trades, df_valuation_close, PRICE_TOLERANCE, 7, None)
+    df_trades, price_counts = _clean_trade_prices(df_trades, df_valuation_close, MAX_QUOTE_AGE_DAYS, None)
     diag.update(price_counts)
 
     # Report the same economic and filing-version counts after cleaning.
@@ -559,36 +571,50 @@ def account_other_flows(df_flows: pd.DataFrame, ticker: str, owner: str) -> pd.D
     return df_rows.loc[~independent].copy()
 
 
+def _reference_quotes(df_trades: pd.DataFrame, quotes: pd.DataFrame | None, max_age_days: int) -> pd.Series:
+    """Per trade, the as-traded close of its reference day, else the last one within `max_age_days`; NaN for a class-titled row.
+
+    An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
+    """
+    reference = pd.Series(np.nan, index=df_trades.index, dtype=float)
+    if quotes is None or quotes.empty:
+        return reference
+    df_long = (
+        quotes.where(np.isfinite(quotes) & quotes.gt(0)).rename_axis(index="reference_day", columns="ticker").stack().rename("quote").reset_index()
+    )
+    df_long["reference_day"] = df_long["reference_day"].astype("datetime64[ns]")
+    df_wanted = df_trades.loc[df_trades["reference_day"].notna(), ["reference_day", "ticker"]].astype({"reference_day": "datetime64[ns]"})
+    df_found = pd.merge_asof(
+        df_wanted.rename_axis("row").reset_index().sort_values("reference_day"),
+        df_long.sort_values("reference_day"),
+        on="reference_day",
+        by="ticker",
+        tolerance=pd.Timedelta(days=max_age_days),
+    )
+    reference.loc[df_found["row"].to_numpy()] = df_found["quote"].to_numpy()
+    return reference.where(security_class(df_trades["security_title"]).eq("COMMON"))
+
+
 def _clean_trade_prices(
     df_trades: pd.DataFrame,
     as_traded_quotes: pd.DataFrame | None,
-    price_tolerance: float,
     max_price_age_days: int,
     assessments: tuple[dict[str, object], ...] | None,
 ) -> tuple[pd.DataFrame, dict]:
-    """Check execution prices against quotes and separate priced, unpriced and uncertain records."""
+    """Replace a filed price far from the as-traded close, price a missing one from it, and separate priced from unpriced records."""
     diag: dict = {}
-    filed_price = df_trades["price_per_share"]
+    filed_price = df_trades["price_per_share"].where(df_trades["price_per_share"].gt(0))
 
     # A filing-backed reference can estimate a price, never execution-time quantities or capital.
-    ref = pd.Series(np.nan, index=df_trades.index, dtype=float)
-    if as_traded_quotes is not None and not as_traded_quotes.empty:
-        quotes = period_close(as_traded_quotes, df_trades["reference_day"], max_price_age_days)
-        lookup = pd.MultiIndex.from_arrays([df_trades["reference_day"], df_trades["ticker"]], names=["period", "ticker"])
-        ref[:] = quotes.reindex(lookup).to_numpy()
-        # An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
-        ref = ref.where(security_class(df_trades["security_title"]).eq("COMMON"))
-
-    # Repair gross corruption and apply dated assessments in their original order.
-    ratio = filed_price / ref.where(ref.gt(0))
-    bad = ratio.gt(price_tolerance)
-    low = ratio.lt(1.0 / price_tolerance)
-    df_trades["price_check_ratio"] = ratio
-    df_trades["price_outside_band"] = ratio.notna() & ~ratio.between(0.90, 1.10)
-    df_trades["price_clean"] = filed_price.where(~bad, ref)
-    df_trades["price_repaired"] = bad
-    df_trades["price_estimated"] = bad
-    raw_value = pd.to_numeric(df_trades.loc[df_trades["price_clean"].gt(0), "value_usd"], errors="coerce")
+    ref = _reference_quotes(df_trades, as_traded_quotes, max_price_age_days)
+    ratio = filed_price / ref
+    high, low = ratio.gt(PRICE_BAND_HIGH), ratio.lt(PRICE_BAND_LOW)
+    replaced = high | low
+    filled = filed_price.isna() & ref.notna()
+    df_trades["price_clean"] = filed_price.where(~(replaced | filled), ref)
+    df_trades["price_repaired"] = replaced
+    df_trades["price_estimated"] = replaced | filled
+    value_filed = float((df_trades["shares_n"] * filed_price).sum())
     df_trades["value"] = df_trades["shares_n"] * df_trades["price_clean"]
     df_trades = _apply_assessments(df_trades, _source_assessments() if assessments is None else assessments)
 
@@ -602,15 +628,37 @@ def _clean_trade_prices(
     diag["uncertain_events"] = pd.concat([df_trades, diag["unpriced_events"]], ignore_index=True).loc[lambda rows: rows["quality_uncertain"]].copy()
 
     diag["repaired_rows"] = int(df_trades["price_repaired"].sum())
-    diag["underpriced_rows"] = int(low.sum())
-    diag["value_before"] = float(raw_value.sum())
+    diag["repaired_high"] = int(high.sum())
+    diag["repaired_low"] = int(low.sum())
+    diag["priced_from_quote"] = int(filled.sum())
+    diag["value_before"] = value_filed
     diag["value_after"] = float(df_trades["value"].sum())
-    diag["no_consensus_rows"] = int(ratio.isna().sum())
+    diag["no_consensus_rows"] = int(ref.isna().sum())
 
     diag["roles_imputed"] = int(df_trades["role_source"].ne("filed").sum())
-    diag["outside_price_band"] = int(df_trades["price_outside_band"].sum())
     diag["uncertain_rows"] = len(diag["uncertain_events"])
     return df_trades, diag
+
+
+def _split_oversized(df_trades: pd.DataFrame, df_shares_outstanding: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Trades above `MAX_PCT_SHARES_OUTSTANDING` of the shares outstanding on their reference day, split off from the rest.
+
+    The split-off frame carries `pct_shares_outstanding`; with no share count nothing is removed.
+    """
+    if df_trades.empty or df_shares_outstanding is None or df_shares_outstanding.empty:
+        return df_trades, df_trades.iloc[:0].copy()
+    outstanding = lookup_asof(df_shares_outstanding.ffill(), df_trades["ticker"], df_trades["reference_day"])
+    pct = df_trades["shares_n"] / outstanding.where(outstanding.gt(0))
+    oversized = pct.gt(MAX_PCT_SHARES_OUTSTANDING)
+    df_oversized = df_trades.loc[oversized].assign(pct_shares_outstanding=pct[oversized])
+    if not df_oversized.empty:
+        _log.warning(
+            "insider: %s trade(s) above %.0f%% of shares outstanding removed with their direct accounts: %s",
+            len(df_oversized),
+            100 * MAX_PCT_SHARES_OUTSTANDING,
+            ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} {r.pct_shares_outstanding:.1%}" for r in df_oversized.itertuples()),
+        )
+    return df_trades.loc[~oversized], df_oversized
 
 
 def _log_transaction_diagnostics(diag: dict) -> None:
@@ -623,13 +671,15 @@ def _log_transaction_diagnostics(diag: dict) -> None:
         diag["date_fallback_rows"],
     )
     _log.info(
-        "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
+        "insider: %s rows -> %s scoped, %s unpriced dropped, %s repaired (%s high, %s low), %s priced from the quote ($%.3fbn -> $%.3fbn)",
         diag["input_rows"],
         diag["scoped_rows"],
         diag["dropped_unpriced"],
         diag["repaired_rows"],
-        diag["underpriced_rows"],
-        diag["value_before"] / 1e12,
+        diag["repaired_high"],
+        diag["repaired_low"],
+        diag["priced_from_quote"],
+        diag["value_before"] / 1e9,
         diag["value_after"] / 1e9,
     )
     _log.info(
@@ -984,20 +1034,3 @@ def _collapse_copies(df: pd.DataFrame, df_key: pd.DataFrame, *, eligible: pd.Ser
             )
     df_owners = pd.DataFrame(records).set_index("row")
     return drop, df_owners, counts
-
-
-def report_oversized(t: pd.DataFrame, shares_outstanding: pd.DataFrame | None) -> pd.DataFrame:
-    """Transactions above `FLAG_PCT_SHARES_OUTSTANDING` of shares outstanding, as a frame to log (never a filter);
-    empty when no share count is available.
-    """
-    if t.empty or shares_outstanding is None or shares_outstanding.empty:
-        return pd.DataFrame()
-    so = lookup_asof(shares_outstanding.ffill(), t["ticker"], t["day"]).to_numpy()
-    pct = t["shares_n"].to_numpy() / np.where(so > 0, so, np.nan)
-    hit = pct > FLAG_PCT_SHARES_OUTSTANDING
-    if not hit.any():
-        return pd.DataFrame()
-    cols = [c for c in ("ticker", "day", "code", "owner_name", "shares_n", "value") if c in t]
-    flagged = t.loc[hit, cols].copy()
-    flagged["pct_shares_outstanding"] = pct[hit]
-    return flagged.sort_values("pct_shares_outstanding", ascending=False)

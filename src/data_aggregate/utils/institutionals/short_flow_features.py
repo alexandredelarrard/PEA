@@ -207,7 +207,7 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
 
     A class counts only on its `universe_cusip` dates. Yahoo volume is restated to today's split basis, so a class
     enters at its latest conversion ratio: a dated ratio step is a split of one class (BRK-B's 50:1, BRK-A 30 -> 1,500)
-    that Yahoo already restated. Ratios must be finite and positive; bars and converted quantities finite and nonnegative.
+    that Yahoo already restated. A class without a ratio enters at 1; other ratios must be finite and positive; bars and converted quantities finite and nonnegative.
     Unsupported active legs add nothing and flag the complete company denominator as unknown.
     """
     idx = pd.DatetimeIndex(idx).normalize()
@@ -227,6 +227,7 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
             active |= window & (idx < end) if pd.notna(end) else window
         bar = pd.to_numeric(tape[symbol], errors="coerce") if symbol in tape.columns else pd.Series(np.nan, index=idx)
         ratio = float(group["ratio"].iloc[-1])
+        ratio = 1.0 if np.isnan(ratio) else ratio
         raw = bar.to_numpy()
         with np.errstate(over="ignore", invalid="ignore"):
             converted = ratio * raw

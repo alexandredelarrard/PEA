@@ -59,8 +59,8 @@ def _cell(frame: pd.DataFrame, day: str, column: str) -> float:
 
 @pytest.mark.parametrize(
     ("ratio", "bar"),
-    [(np.nan, 10.0), (0.0, 10.0), (-1.0, 10.0), (np.inf, 10.0), (1.0, -10.0), (1.0, np.inf), (1e308, 2.0)],
-    ids=["missing-ratio", "zero-ratio", "negative-ratio", "infinite-ratio", "negative-bar", "infinite-bar", "product-overflow"],
+    [(0.0, 10.0), (-1.0, 10.0), (np.inf, 10.0), (1.0, -10.0), (1.0, np.inf), (1e308, 2.0)],
+    ids=["zero-ratio", "negative-ratio", "infinite-ratio", "negative-bar", "infinite-bar", "product-overflow"],
 )
 def test_invalid_active_class_inputs_are_unsupported(ratio: float, bar: float) -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=3), name="date")
@@ -75,6 +75,17 @@ def test_invalid_active_class_inputs_are_unsupported(ratio: float, bar: float) -
     print(f"  ratio={ratio}, bar={bar}: active day unsupported; inactive days add zero without a missing flag. Validated.")
 
 
+def test_a_class_without_a_ratio_enters_at_one() -> None:
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=3), name="date")
+    lines = _lines(("LEN", "LEN-B", np.nan, str(idx[1].date()), str(idx[2].date())))
+    class_volume, missing = secondary_class_volume(lines, _bars("LEN-B", idx, 10.0), idx)
+
+    assert missing["LEN"].tolist() == [False, False, False]
+    assert class_volume["LEN"].tolist() == [0.0, 10.0, 0.0]
+    print("\n=== SANITY CHECK: missing class ratio ===")
+    print("  NaN ratio is approximated by 1: active day carries 10 x 1 = 10 volume, no unknown flag. Validated.")
+
+
 def test_class_sum_overflow_is_unsupported_and_observed_zero_is_supported() -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=3), name="date")
     lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN), ("LEN", "LEN-C", 1.0, "1900-01-01", OPEN))
@@ -87,7 +98,7 @@ def test_class_sum_overflow_is_unsupported_and_observed_zero_is_supported() -> N
     print("  two finite class legs overflowing their sum are unsupported; observed zero and finite sum14 retain exact values. Validated.")
 
 
-@pytest.mark.parametrize("invalid", ["ratio", "bar", "product", "class-sum", "company-sum", "canonical-negative", "absent-bar"])
+@pytest.mark.parametrize("invalid", ["bar", "product", "class-sum", "company-sum", "canonical-negative", "absent-bar"])
 def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str) -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-03-08"), name="date")
     bad_day = pd.Timestamp("2024-01-02")
@@ -97,7 +108,7 @@ def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str
     regsho = pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 100.0, "total_volume": 300.0} for day in idx for ticker in volume])
     fails = pd.DataFrame([{"date": bad_day, "ticker": ticker, "fails_quantity": 300.0, "period": "202401a"} for ticker in volume])
     frames = make_frames(idx, {"LEN": {"MRK": 1.0}, "MRK": {"LEN": 1.0}}, volume=volume)
-    lines = _lines(("LEN", "LEN-B", np.nan if invalid == "ratio" else 1.0, "1900-01-01", OPEN))
+    lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN))
     bars = _bars("LEN-B", idx, 500.0)
     if invalid == "absent-bar":
         bars = bars[bars["date"].ne(bad_day)]

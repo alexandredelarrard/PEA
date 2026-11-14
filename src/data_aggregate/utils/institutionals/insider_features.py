@@ -460,12 +460,14 @@ def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: Pric
     """Attach `action_value = value / mcap_pit` on each trade's action session; clean execution dollars are unchanged.
 
     The session is the last trading day at or before the action, at most 7 days earlier, with the action already
-    public; a non-session action or a classed title also needs one continuous canonical identity across both dates.
+    public; a non-session action of an unclassed title also needs one continuous canonical identity across both
+    dates. A classed title without proved identity uses the ticker's own cap (ratio 1) and is flagged `class_approximated`.
     """
     df_trades = trades.copy()
     df_trades["action_session"] = pd.NaT
     df_trades["action_mcap"] = np.nan
     df_trades["action_value"] = np.nan
+    df_trades["class_approximated"] = False
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if df_trades.empty or mcap is None or mcap.empty or idx.empty or frames.close_pit is None:
         return df_trades
@@ -485,13 +487,14 @@ def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: Pric
     price = frames.close_pit.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)[rows, np.maximum(columns, 0)]
     supported &= (columns >= 0) & np.isfinite(capital) & (capital > 0) & np.isfinite(price) & (price > 0)
 
-    # A non-session action or a classed title needs one continuous canonical identity.
+    # A non-session action needs one continuous canonical identity; an unproved class is approximated, never dropped.
     klass = security_class(df_trades["security_title"])
     needs_identity = action.ne(chosen) | klass.ne("COMMON")
     continuous = pd.Series(False, index=df_trades.index)
     if needs_identity.any():
         continuous.loc[needs_identity] = _action_identity(df_trades.loc[needs_identity], chosen.loc[needs_identity], identity_intervals)
-    supported &= (action.eq(chosen) | continuous) & (klass.eq("COMMON") | continuous)
+    supported &= action.eq(chosen) | continuous | klass.ne("COMMON")
+    df_trades["class_approximated"] = klass.ne("COMMON") & ~continuous
 
     # Divide clean execution dollars by the session cap.
     values = pd.to_numeric(df_trades["value"], errors="coerce")

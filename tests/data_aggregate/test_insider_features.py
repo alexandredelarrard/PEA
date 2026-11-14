@@ -480,10 +480,10 @@ def test_management_later_disclosure_updates_one_day_without_reaging() -> None:
     mixed = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
     mixed_score = mixed["f_ic_insider_purchase_pct_prior_60d"]
     assert mixed_score.loc["2015-06-09"] == pytest.approx(0.1)
-    assert mixed_score.loc["2015-06-10":"2015-07-30"].isna().all()
-    assert mixed_score.loc["2015-07-31"] == pytest.approx(1.0)
-    assert mixed_score.loc["2015-08-09":].isna().all()
-    print("SANITY: later same-economic-day leg updates one pool prospectively; incompatible share classes abstain, original age preserved.")
+    pd.testing.assert_series_equal(mixed_score, score)
+    print(
+        "SANITY: later same-economic-day leg updates one pool prospectively; a class-titled leg is approximated on the ticker basis (ratio 1), original age preserved."
+    )
 
 
 def test_management_future_supported_account_cannot_shorten_past_window() -> None:
@@ -1480,3 +1480,12 @@ def test_action_cap_future_declaration_recovers_on_an_explicit_row_date_correcti
     assert panel.loc["2024-05-07", feature] == 0.0
     pd.testing.assert_series_equal(panel.loc[:"2024-03-11", feature], prefix.loc[:"2024-03-11", feature])
     print("SANITY: independent full-row proof corrects the action to March 4 only on March 12, giving 1m/100m until the original May 7 expiry.")
+
+
+def test_action_cap_class_titled_buy_without_proved_identity_uses_the_ticker_cap() -> None:
+    _, close, history = _action_cap_inputs()
+    rows = [_txn(filing_date="2024-03-05", transaction_date="2024-03-04", value_usd=1e6, security_title="Class P Common Stock")]
+    panel = _build_action_cap(rows, close, history)
+
+    assert panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
+    print("SANITY: a Class P buy with no conversion line is valued at ratio 1 on the ticker cap: 1m / 100m = 1.0%, not NaN.")

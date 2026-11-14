@@ -15,20 +15,25 @@ MICRO = 1_000_000
 
 
 def position_units(trades: pd.DataFrame, df_factor: pd.DataFrame | None) -> pd.DataFrame:
-    """Put unclassed transaction-day shares and holdings in terminal units, `q * F_T / F_d`; keep source execution USD.
+    """Put transaction-day shares and holdings in terminal units, `q * F_T / F_d`; keep source execution USD.
 
-    `df_factor` is `terminal_basis_factor` of the saved basis. Class-titled rows and rows without F keep source
-    quantities for scale-free same-day ratios, marked unsupported for cross-day and cross-account comparisons.
+    `df_factor` is `terminal_basis_factor` of the saved basis. A class-titled row is approximated with the ticker's own
+    factor (conversion ratio 1) and a row dated before the grid with the ticker's first factor; both are flagged
+    `class_approximated`, so every dated row of a ticker lands on one unit basis.
     """
     df_rows = trades.copy()
     df_rows["klass"] = security_class(df_rows["security_title"])
     df_rows["units_known"] = False
+    df_rows["class_approximated"] = df_rows["klass"].ne("COMMON")
     if df_factor is None or df_factor.empty:
         return df_rows
     factor = lookup_asof(df_factor, df_rows["ticker"], df_rows["transaction_day"])
+    early = factor.isna() & df_rows["transaction_day"].notna()
+    factor = factor.fillna(df_rows["ticker"].map(df_factor.bfill().iloc[0]).astype(float))
+    df_rows["class_approximated"] |= early & factor.notna()
 
-    # Convert only unclassed common rows with a known basis.
-    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna() & df_rows["klass"].eq("COMMON")
+    # Convert every dated row with a known basis.
+    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna()
     for column in ("shares_n", "shares_owned_after"):
         df_rows[column] = (df_rows[column] * factor).where(df_rows["units_known"], df_rows[column])
     return df_rows

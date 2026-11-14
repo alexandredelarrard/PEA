@@ -56,7 +56,7 @@ def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
     )
 
 
-def test_single_class_split_converts_through_saved_basis_and_class_rows_keep_source_units() -> None:
+def test_single_class_split_converts_through_saved_basis_and_class_rows_use_the_ticker_basis() -> None:
     # Saved forward basis F: AAA splits 10:1 on 2024-06-10; BBB's saved rows stop before the grid end.
     idx = pd.bdate_range("2024-06-03", "2024-06-14")
     df_basis = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2024-06-10"), 1.0, 10.0), "BBB": 1.0}, index=idx)
@@ -74,12 +74,13 @@ def test_single_class_split_converts_through_saved_basis_and_class_rows_keep_sou
 
     df_units = position_units(df_trades, terminal_basis_factor(df_basis))
 
-    assert df_units["shares_n"].tolist() == [50.0, 50.0, 5.0, 7.0]
-    assert df_units["shares_owned_after"].tolist() == [1050.0, 1100.0, 105.0, 70.0]
-    assert df_units["units_known"].tolist() == [True, True, False, True]
+    assert df_units["shares_n"].tolist() == [50.0, 50.0, 50.0, 7.0]
+    assert df_units["shares_owned_after"].tolist() == [1050.0, 1100.0, 1050.0, 70.0]
+    assert df_units["units_known"].tolist() == [True] * 4
+    assert df_units["class_approximated"].tolist() == [False, False, True, False]
     pd.testing.assert_series_equal(df_units["value"], df_trades["value"])
     print(
-        "SANITY: a pre-split common trade converts 5->50 by F_T/F_d=10; the class-B row keeps its source 5 shares (units unknown); "
+        "SANITY: a pre-split common trade converts 5->50 by F_T/F_d=10; the class-B row takes the ticker factor too (5->50, flagged class_approximated) so one unit basis holds; "
         "a ticker whose saved basis ends early converts at its last saved F; execution USD unchanged."
     )
 
@@ -423,7 +424,7 @@ def test_action_cap_non_session_requires_continuous_identity(case: str) -> None:
     identity = pd.DataFrame([line, dict(line, canonical_company="BBB")] if case == "conflict" else [line])
     panel = _action_panel([_source_row(), row], close, shares, None if case == "missing" else identity, complete=True)
     value = panel.loc["2024-06-10", "f_ic_insider_buy_value_mcap_60d"]
-    assert pd.isna(value) if case not in {"supported", "holiday"} else value == pytest.approx(0.001)
+    assert pd.isna(value) if case not in {"supported", "holiday", "class"} else value == pytest.approx(0.001)
     assert panel.loc["2024-06-06", "f_ic_insider_buy_value_mcap_60d"] == 0
     print(f"SANITY: {case} non-session action uses only the chosen prior exchange session with one coherent compatible canonical identity.")
 
@@ -918,7 +919,7 @@ def test_cross_account_pool_requires_compatible_share_units(title: str, event_ev
         df_valuation_close=quotes if quote_mode != "none" else None,
         share_basis=share_basis,
     ).set_index("date")
-    expected = 0.35 if same_day else 0.2 if title == "Common Stock" and event_evidence else np.nan
+    expected = 0.35 if same_day else 0.2 if event_evidence else np.nan
     for name in ("f_ic_insider_purchase_pct_prior_60d",):
         assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
         if pd.isna(expected):

@@ -582,9 +582,9 @@ def account_other_flows(df_flows: pd.DataFrame, ticker: str, owner: str) -> pd.D
 
 
 def _reference_quotes(df_trades: pd.DataFrame, quotes: pd.DataFrame | None, max_age_days: int) -> pd.Series:
-    """Per trade, the as-traded close of its reference day, else the last one within `max_age_days`; NaN for a class-titled row.
+    """Per trade, the as-traded close of its reference day, else the last one within `max_age_days`.
 
-    An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
+    A class-titled row is priced from the ticker's own quote (conversion ratio 1 when no ratio line exists).
     """
     reference = pd.Series(np.nan, index=df_trades.index, dtype=float)
     if quotes is None or quotes.empty:
@@ -602,7 +602,7 @@ def _reference_quotes(df_trades: pd.DataFrame, quotes: pd.DataFrame | None, max_
         tolerance=pd.Timedelta(days=max_age_days),
     )
     reference.loc[df_found["row"].to_numpy()] = df_found["quote"].to_numpy()
-    return reference.where(security_class(df_trades["security_title"]).eq("COMMON"))
+    return reference
 
 
 def _clean_trade_prices(

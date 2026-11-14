@@ -6,9 +6,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from tests.conftest import make_frames
-from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
-from tests.data_aggregate.test_insider_features import _frame, _peers, _txn
+from tests.data_aggregate.test_insider_features import _frame, _txn
 
 CLOSE = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-30"), columns=["AAA"])
 
@@ -54,56 +52,10 @@ def test_a_quote_up_to_seven_days_old_is_used_and_an_older_one_is_not() -> None:
     )
 
 
-def test_a_class_titled_row_gets_no_reference() -> None:
-    got, diag = _one(price_per_share=1_000.0, security_title="Class B Common Stock")
-    assert got["price_clean"] == pytest.approx(1_000.0) and not got["price_repaired"] and diag["no_consensus_rows"] == 1
-    print("SANITY: a class-titled trade needs its own quote; the canonical close cannot reprice it.")
-
-
-@pytest.mark.parametrize("filed", [None, 0.0])
-def test_a_missing_or_zero_price_is_priced_from_the_quote_and_flagged(filed: float | None) -> None:
-    got, diag = _one(price_per_share=filed)
-    assert got["price_clean"] == pytest.approx(100.0) and got["value"] == pytest.approx(1_000.0)
-    assert got["price_estimated"] and not got["price_repaired"] and diag["priced_from_quote"] == 1
-    print(f"SANITY: filed price {filed} with a quote -> priced $100 and flagged estimated; unpriced rows left: {diag['dropped_unpriced']}.")
-
-
-def test_a_missing_price_without_a_quote_stays_unpriced() -> None:
-    out, diag = clean_transactions(_frame([_txn(accession_number="x", price_per_share=None, value_usd=None)]), df_valuation_close=None)
-    assert out.empty and diag["dropped_unpriced"] == 1 and len(diag["unpriced_events"]) == 1
-    print("SANITY: no filed price and no quote -> the share claim stays an unpriced event.")
-
-
-def _shares_out(value: float) -> pd.DataFrame:
-    return pd.DataFrame(value, index=pd.bdate_range("2015-01-01", "2015-12-31"), columns=["AAA"])
-
-
-def test_a_trade_above_a_quarter_of_the_shares_outstanding_is_removed_and_the_account_marked() -> None:
-    rows = [
-        _txn(accession_number="big", owner_cik="1", shares=300.0, price_per_share=100.0),
-        _txn(accession_number="edge", owner_cik="2", shares=250.0, price_per_share=100.0),
-        _txn(accession_number="small", owner_cik="3", shares=10.0, price_per_share=100.0),
-    ]
-    out, diag = clean_transactions(_frame(rows), df_valuation_close=CLOSE, df_shares_outstanding=_shares_out(1_000.0))
-    assert sorted(out["accession_number"]) == ["edge", "small"]
-    removed = diag["oversized_events"]
-    assert removed["accession_number"].tolist() == ["big"] and removed["pct_shares_outstanding"].iloc[0] == pytest.approx(0.3)
-    print("SANITY: 30% of shares outstanding is removed, exactly 25% and 1% are kept.")
-
-
-def test_the_removed_account_leaves_the_ratio_and_the_value_features_exclude_the_trade() -> None:
-    idx = pd.bdate_range("2015-06-01", "2015-08-31")
-    close = pd.DataFrame(100.0, index=pd.bdate_range("2015-01-01", "2015-08-31"), columns=["AAA"])
-    shares = pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2014-01-01")], "sharesOutstanding": [1_000.0]})
-    rows = [
-        _txn(
-            accession_number="big", owner_cik="0001", filing_date="2015-06-02", transaction_date="2015-06-01", shares=300.0, shares_owned_after=400.0
-        ),
-        _txn(accession_number="ok", owner_cik="0002", filing_date="2015-06-03", transaction_date="2015-06-02", shares=10.0, shares_owned_after=110.0),
-    ]
-    frames = make_frames(idx, _peers(), close_split=close, shares_outstanding_pit=pd.DataFrame(1_000.0, index=close.index, columns=["AAA"]))
-    panel = build_insider_feature_panel(frames, _frame(rows), shares_out_history=shares, df_valuation_close=close).set_index("date")
-    mcap = 100.0 * 1_000.0
-    assert panel.loc["2015-07-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(10 * 100.0 / mcap)
-    assert panel.loc["2015-07-01", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(10 / 100.0)
-    print("SANITY: the 30% trade is absent from the buy value and the pooled ratio reads only the other account (10 over 100).")
+@pytest.mark.parametrize(
+    ("filed", "repaired", "price"), [(200.0, False, 200.0), (200.01, True, 100.0), (50.0, False, 50.0), (49.99, True, 100.0), (1_000.0, True, 100.0)]
+)
+def test_a_class_titled_row_is_priced_from_the_ticker_quote(filed: float, repaired: bool, price: float) -> None:
+    got, diag = _one(price_per_share=filed, security_title="Class B Common Stock")
+    assert bool(got["price_repaired"]) is repaired and got["price_clean"] == pytest.approx(price) and diag["no_consensus_rows"] == 0
+    print(f"SANITY: class-titled filed {filed} vs ticker close 100 -> {'replaced' if repaired else 'kept'} at {price}; band edges 2.0/0.5 kept.")

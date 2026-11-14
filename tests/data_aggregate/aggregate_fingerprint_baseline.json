@@ -1131,7 +1131,7 @@
    "f_ic_insider_purchase_pct_prior_60d",
    "ticker"
   ],
-  "hash": "c3d66bfa125d0a977bbc1d53232a6332",
+  "hash": "4c9bde3b9e4f24cbfcf7070ff5bc2bad",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
    "f_ic_insider_buy_value_mcap_120d": "515bf0dbb2a39f47",
@@ -1139,17 +1139,17 @@
    "f_ic_insider_buy_value_mcap_60d": "4b9f39aedbf04519",
    "f_ic_insider_buyer_breadth_120d": "1b7922d36435797b",
    "f_ic_insider_c_suite_buy_mcap_180d": "52e5f342dc6e33c1",
-   "f_ic_insider_c_suite_purchase_pct_prior_180d": "033259b638ecbc26",
+   "f_ic_insider_c_suite_purchase_pct_prior_180d": "1435c793cc034e3f",
    "f_ic_insider_distinct_buyers_120d": "183ce393a1b8489c",
    "f_ic_insider_distinct_sellers_120d": "01b16e004eee9ddc",
    "f_ic_insider_management_buy_mcap_180d": "c1694bf99f0141b7",
-   "f_ic_insider_management_purchase_pct_prior_180d": "9932bc04b211f003",
+   "f_ic_insider_management_purchase_pct_prior_180d": "9ce9a72d979a31ef",
    "f_ic_insider_net_buy_ratio_120d": "4fcb9610f20ba1e5",
    "f_ic_insider_net_buy_ratio_180d": "0e8dfc6f9baff293",
    "f_ic_insider_net_buy_ratio_60d": "9bcb7acfe7ef4589",
-   "f_ic_insider_purchase_pct_prior_120d": "7ca0ff6435aa909b",
-   "f_ic_insider_purchase_pct_prior_180d": "bd67f996045df455",
-   "f_ic_insider_purchase_pct_prior_60d": "0bfc9e6569bc0fd3",
+   "f_ic_insider_purchase_pct_prior_120d": "8b590b5758424466",
+   "f_ic_insider_purchase_pct_prior_180d": "8b456982ac314022",
+   "f_ic_insider_purchase_pct_prior_60d": "72a5995d747be526",
    "ticker": "20baf79a52b9d113"
   },
   "rows": 43010

@@ -1193,3 +1193,9 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` insider contract (two-sided price band against `close_pit`, 25% share-count cap, Form 4 publication clock, exclusion policy of the dense legs); `concepts/source-availability.md` insider lag; TODO follow-ups (13D/G lag, class-titled guard, class identity gaps, acceptance-time rule, rebuild).
+
+
+## 2026-11-14: refresh (13D/G markers, class approximation, same-filing cap)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` ownership counts read marker filings; class-titled insider rows priced, capped and unit-based with ratio 1 (`class_approximated`); a filing carrying a trade above the 25% cap loses its other rows (BAC YNOFACE 2016-08-15).

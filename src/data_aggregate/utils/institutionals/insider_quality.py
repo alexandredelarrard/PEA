@@ -48,7 +48,7 @@ _CLASS_RE = re.compile(r"\bCLASS\s+([A-Z])\b|\bSERIES\s+([A-Z])\b", re.I)
 #: Trailing publication-time window behind the consensus median.
 CONSENSUS_WINDOW: str = "31D"
 
-#: A transaction above this share of the shares outstanding on its day is removed, and its direct account is left out of the pooled ratio.
+#: A transaction above this share of the shares outstanding on its day (and the rest of its filing) is removed, and its direct account is left out of the pooled ratio.
 MAX_PCT_SHARES_OUTSTANDING: float = 0.25
 
 #: Free-text `officer_title` -> role, first match wins (a "Chairman, President & CEO" is a CEO).
@@ -651,19 +651,22 @@ def _clean_trade_prices(
 
 
 def _split_oversized(df_trades: pd.DataFrame, df_shares_outstanding: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Trades above `MAX_PCT_SHARES_OUTSTANDING` of the shares outstanding on their reference day, split off from the rest.
+    """Trades above `MAX_PCT_SHARES_OUTSTANDING` of the shares outstanding on their reference day, and every other
+    trade of the same filing, split off from the rest.
 
-    The split-off frame carries `pct_shares_outstanding`; with no share count nothing is removed.
+    A filing that carries an impossible quantity is not trusted for its other rows either. The split-off frame
+    carries `pct_shares_outstanding`; with no share count nothing is removed.
     """
     if df_trades.empty or df_shares_outstanding is None or df_shares_outstanding.empty:
         return df_trades, df_trades.iloc[:0].copy()
     outstanding = lookup_asof(df_shares_outstanding.ffill(), df_trades["ticker"], df_trades["reference_day"])
     pct = df_trades["shares_n"] / outstanding.where(outstanding.gt(0))
     oversized = pct.gt(MAX_PCT_SHARES_OUTSTANDING)
+    oversized |= df_trades["accession_number"].isin(df_trades.loc[oversized, "accession_number"])
     df_oversized = df_trades.loc[oversized].assign(pct_shares_outstanding=pct[oversized])
     if not df_oversized.empty:
         _log.warning(
-            "insider: %s trade(s) above %.0f%% of shares outstanding removed with their direct accounts: %s",
+            "insider: %s trade(s) above %.0f%% of shares outstanding, or filed with one, removed with their direct accounts: %s",
             len(df_oversized),
             100 * MAX_PCT_SHARES_OUTSTANDING,
             ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} {r.pct_shares_outstanding:.1%}" for r in df_oversized.itertuples()),

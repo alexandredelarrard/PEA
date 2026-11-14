@@ -59,3 +59,17 @@ def test_a_class_titled_row_is_priced_from_the_ticker_quote(filed: float, repair
     got, diag = _one(price_per_share=filed, security_title="Class B Common Stock")
     assert bool(got["price_repaired"]) is repaired and got["price_clean"] == pytest.approx(price) and diag["no_consensus_rows"] == 0
     print(f"SANITY: class-titled filed {filed} vs ticker close 100 -> {'replaced' if repaired else 'kept'} at {price}; band edges 2.0/0.5 kept.")
+
+
+def test_a_filing_with_an_impossible_quantity_loses_its_other_rows_too() -> None:
+    outstanding = pd.DataFrame(10_000.0, index=CLOSE.index, columns=["AAA"])
+    rows = [
+        _txn(accession_number="bad", owner_cik="1", shares=3_000.0, value_usd=300_000.0),  # 30% of outstanding
+        _txn(accession_number="bad", owner_cik="1", transaction_date="2015-05-28", shares=800.0, value_usd=80_000.0),  # 8%, same filing
+        _txn(accession_number="ok", owner_cik="2", shares=800.0, value_usd=80_000.0),  # 8%, other filing
+    ]
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=CLOSE, df_shares_outstanding=outstanding)
+    removed = diag["oversized_events"]
+    assert sorted(removed["shares_n"]) == [800.0, 3_000.0] and set(removed["accession_number"]) == {"bad"}
+    assert out["accession_number"].tolist() == ["ok"]
+    print("SANITY: the 30% trade and the 8% trade of its filing are removed (owner 1 disputed); the 8% trade of another filing stays.")

@@ -1204,3 +1204,7 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` ownership counts drop accessions the ticker's own entity filed about others (`_subject_side`); `TODO.md` residual filer-side filings.
+
+## 2026-11-14 insider conviction
+
+Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) and the peer leg of `purchase_pct_prior_120d`; dropped `ic_insider_purchase_pct_prior_180d`. Branch feat/institutionals-conviction; baseline not refreshed.

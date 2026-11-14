@@ -16,7 +16,7 @@ from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
+from src.data_aggregate.utils.institutionals.insider_positions import account_conviction, cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
     POP_C_SUITE,
     POP_MANAGEMENT,
@@ -49,9 +49,10 @@ BUY_VALUE_FEATURES: dict[str, tuple[int | None, int]] = {
     **{f"ic_insider_{name}_buy_mcap_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in POPULATIONS.items()},
 }
 PURCHASE_PCT_FEATURES: dict[str, tuple[int | None, int]] = {
-    **{f"ic_insider_purchase_pct_prior_{days}d": (None, days) for days in WINDOWS},
+    **{f"ic_insider_purchase_pct_prior_{days}d": (None, days) for days in (WINDOW_60, WINDOW_120)},
     **{f"ic_insider_{name}_purchase_pct_prior_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in PCT_POPULATIONS.items()},
 }
+CONVICTION_FEATURES: dict[str, int] = {f"ic_insider_conviction_{days}d": days for days in (WINDOW_60, WINDOW_120)}
 NET_BUY_RATIO_FEATURES: dict[str, int] = {f"ic_insider_net_buy_ratio_{days}d": days for days in WINDOWS}
 DISTINCT_BUYERS = f"ic_insider_distinct_buyers_{BREADTH_WINDOW}d"
 DISTINCT_SELLERS = f"ic_insider_distinct_sellers_{BREADTH_WINDOW}d"
@@ -60,10 +61,14 @@ BUYER_BREADTH = f"ic_insider_buyer_breadth_{BREADTH_WINDOW}d"
 #: Insider magnitudes, ratios, counts, and event intensities stay in their economic units.
 #: Same-day cross-sectional ranks would replace those units with universe-composition noise.
 EMISSION: dict[str, str] = dict.fromkeys(
-    [*BUY_VALUE_FEATURES, *PURCHASE_PCT_FEATURES, *NET_BUY_RATIO_FEATURES, DISTINCT_BUYERS, DISTINCT_SELLERS, BUYER_BREADTH], "raw"
+    [*BUY_VALUE_FEATURES, *PURCHASE_PCT_FEATURES, *CONVICTION_FEATURES, *NET_BUY_RATIO_FEATURES, DISTINCT_BUYERS, DISTINCT_SELLERS, BUYER_BREADTH],
+    "raw",
 )
+#: The pooled 120d ratio also ships its peer z-score: the same net purchase reads differently in a sector with a selling wave.
+PEER_RELATIVE = "ic_insider_purchase_pct_prior_120d"
+EMISSION[PEER_RELATIVE] = "raw+peers"
 
-#: No `_vs_peers` leg anywhere in this family, for the same reason as `ic_super_*` (D25): an
+#: No other `_vs_peers` leg in this family, for the same reason as `ic_super_*` (D25): an
 #: insider purchase is an event about ONE company, and expressing it relative to a peer
 #: basket that mostly has no event at all measures the basket's emptiness, not the signal.
 
@@ -135,9 +140,12 @@ def build_insider_feature_panel(
         [diag.get("uncertain_events", pd.DataFrame()), diag.get("unsupported_events", pd.DataFrame()), diag.get("oversized_events", pd.DataFrame())],
         ignore_index=True,
     )
+    disputed_by_window = {days: _disputed_accounts(df_disputed, days) for days in {*WINDOWS, *CONVICTION_FEATURES.values()}}
     for days in WINDOWS:
         names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
-        fields.update(cumulative_positions(df_position_trades, df_other_flows, idx, days, names, _disputed_accounts(df_disputed, days)))
+        fields.update(cumulative_positions(df_position_trades, df_other_flows, idx, days, names, disputed_by_window[days]))
+    for name, days in CONVICTION_FEATURES.items():
+        fields[name] = account_conviction(df_position_trades, df_other_flows, idx, days, disputed_by_window[days])
     fields = _gate_dates(fields, idx, coverage.insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures; disputed trades carry no dollars.
@@ -253,6 +261,8 @@ def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Se
         specifications[name] = (days, buy & _member(activity, code))
     for name, (code, days) in PURCHASE_PCT_FEATURES.items():
         specifications[name] = (days, traded & _member(activity, code))
+    for name, days in CONVICTION_FEATURES.items():
+        specifications[name] = (days, traded)
     for name, days in NET_BUY_RATIO_FEATURES.items():
         specifications[name] = (days, traded)
     specifications[DISTINCT_BUYERS] = (BREADTH_WINDOW, buy)

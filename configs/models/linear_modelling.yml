@@ -282,6 +282,8 @@ linear:
   - f_ic_insider_buyer_breadth_120d
   - f_ic_insider_c_suite_buy_mcap_180d
   - f_ic_insider_c_suite_purchase_pct_prior_180d
+  - f_ic_insider_conviction_120d
+  - f_ic_insider_conviction_60d
   - f_ic_insider_distinct_buyers_120d
   - f_ic_insider_distinct_sellers_120d
   - f_ic_insider_management_buy_mcap_180d
@@ -290,7 +292,7 @@ linear:
   - f_ic_insider_net_buy_ratio_180d
   - f_ic_insider_net_buy_ratio_60d
   - f_ic_insider_purchase_pct_prior_120d
-  - f_ic_insider_purchase_pct_prior_180d
+  - f_ic_insider_purchase_pct_prior_120d_vs_peers
   - f_ic_insider_purchase_pct_prior_60d
   - f_ic_insider_ten_pct_buy_mcap_180d
   - f_ic_shortvol_acceleration_120d

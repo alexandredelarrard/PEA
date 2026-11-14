@@ -804,18 +804,33 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
             shares_owned_after=50_000.0,
         )
     )
+    for owner in sorted({r["owner_cik"] for r in rows}):
+        rows.append(
+            _txn(
+                accession_number=f"hist-{owner}",
+                owner_cik=owner,
+                transaction_code="F",
+                filing_date="2013-06-03",
+                transaction_date="2013-05-31",
+                shares=10.0,
+                shares_owned_after=5_000.0,
+            )
+        )
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cols = {c for c in panel.columns if c not in ("date", "ticker")}
-    expected = {f"f_{n}" for n in EMISSION} | {f"f_{n}_xs" for n, m in EMISSION.items() if m == "raw+xs"}
+    expected = (
+        {f"f_{n}" for n in EMISSION}
+        | {f"f_{n}_xs" for n, m in EMISSION.items() if m == "raw+xs"}
+        | {f"f_{n}_vs_peers" for n, m in EMISSION.items() if m == "raw+peers"}
+    )
     assert cols == expected, f"missing {sorted(expected - cols)}, extra {sorted(cols - expected)}"
-    assert not any(c.endswith("_vs_peers") for c in cols)
+    assert {c for c in cols if c.endswith("_vs_peers")} == {"f_ic_insider_purchase_pct_prior_120d_vs_peers"}
     print(
         f"SANITY: {len(EMISSION)} declared features -> {len(cols)} columns "
-        f"({sum(m == 'raw+xs' for m in EMISSION.values())} carry an _xs leg), and 0 "
-        f"_vs_peers legs, which is D25 for this family: an insider purchase is a fact "
-        f"about one company, not about its basket."
+        f"({sum(m == 'raw+xs' for m in EMISSION.values())} carry an _xs leg), and exactly one "
+        f"_vs_peers leg (the pooled 120d purchase ratio); every other insider fact stays about one company."
     )
 
 
@@ -863,7 +878,7 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
         )
     )
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
-    got = {c.removeprefix("f_").removesuffix("_xs") for c in panel.columns if c not in ("date", "ticker")}
+    got = {c.removeprefix("f_").removesuffix("_xs").removesuffix("_vs_peers") for c in panel.columns if c not in ("date", "ticker")}
     # The fixture has only a C-suite account: the two other populations' all-NULL ratios are not emitted.
     absent_populations = {"ic_insider_management_purchase_pct_prior_180d"}
     scale_free = {name for name in EMISSION if "mcap" not in name} - absent_populations
@@ -955,6 +970,18 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
         ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
+    for owner in sorted({r["owner_cik"] for r in rows}):
+        rows.append(
+            _txn(
+                accession_number=f"hist-{owner}",
+                owner_cik=owner,
+                transaction_code="F",
+                filing_date="2013-06-03",
+                transaction_date="2013-05-31",
+                shares=10.0,
+                shares_owned_after=5_000.0,
+            )
+        )
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
 

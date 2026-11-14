@@ -37,7 +37,6 @@ _add_group(
 for _name in (
     "ic_insider_purchase_pct_prior_60d",
     "ic_insider_purchase_pct_prior_120d",
-    "ic_insider_purchase_pct_prior_180d",
     "ic_insider_c_suite_purchase_pct_prior_180d",
     "ic_insider_management_purchase_pct_prior_180d",
 ):
@@ -49,6 +48,15 @@ for _name in (
         "original disclosure expiry and public corrections apply prospectively.",
         "Positive means net accumulation and negative means net reduction (never below -1). Pooling requires compatible share "
         "classes and units; every trading account must be supported, so unsupported balances abstain.",
+    )
+for _name in ("ic_insider_conviction_60d", "ic_insider_conviction_120d"):
+    INSTITUTIONALS[_name] = (
+        "insider",
+        "Largest account increase: the maximum, over the direct common-stock accounts (owner x class) that traded in the trailing "
+        "window, of net open-market P minus S shares over that account's own balance when the window opened.",
+        "Captures one conviction buyer instead of averaging them with sellers; accounts without a positive prior balance are left out.",
+        "Positive means some account raised its own stake and negative means every qualifying account reduced; the ratio is bounded "
+        "at the declared guard.",
     )
 _add_group(
     "beneficial_ownership",

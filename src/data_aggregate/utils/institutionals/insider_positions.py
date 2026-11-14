@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 
 import numpy as np
@@ -10,7 +11,14 @@ import pandas as pd
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.institutionals.insider_quality import FLOW_SIGN, common_stock_mask, security_class
 
+_log = logging.getLogger(__name__)
+
 MICRO = 1_000_000
+
+#: Accounts whose own balance `days` earlier is at or below this many shares are left out of the conviction maximum.
+CONVICTION_MIN_PRIOR = 0.0
+#: Symmetric bound on one account's net-trade / prior-balance ratio.
+CONVICTION_CLIP = float("inf")
 
 # Holdings are unknown until a ticker has this many days of balance rows: before that, accounts that have not yet reported are missing.
 HOLDINGS_WARMUP_DAYS = 365
@@ -58,20 +66,7 @@ def cumulative_positions(
     """
     if trades.empty or idx.empty:
         return {}
-    multiplicity = pd.to_numeric(trades.get("n_reporting_owners", pd.Series(np.nan, index=trades.index)), errors="coerce")
-    account_known = (
-        trades["direct_indirect"].eq("D")
-        & trades["owner_cik"].ne("")
-        & trades["transaction_day"].notna()
-        & multiplicity.eq(1)
-        & trades["security_title"].fillna("").str.strip().ne("")
-        & ~trades.get("scope_unknown", pd.Series(False, index=trades.index)).fillna(False)
-    )
-    disputed = pd.MultiIndex.from_frame(excluded[["ticker", "owner_cik"]].drop_duplicates()) if not excluded.empty else None
-    uncertain = trades.get("quality_uncertain", pd.Series(False, index=trades.index)).fillna(False).astype(bool)
-    lots = trades[account_known & ~uncertain].copy()
-    if disputed is not None:
-        lots = lots[~pd.MultiIndex.from_frame(lots[["ticker", "owner_cik"]]).isin(disputed)]
+    lots, account_known, disputed = _direct_lots(trades, excluded)
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
     balances = _balance_events(trades.loc[account_known], other_flows, disputed)
     shape = (len(idx) + 1, len(columns))
@@ -94,6 +89,82 @@ def cumulative_positions(
         known = (lagged > 0) & (active > 0) & warm
         out[name] = pd.DataFrame(np.divide(numerator, lagged, out=np.full_like(numerator, np.nan), where=known), index=idx, columns=columns)
     return out
+
+
+def account_conviction(trades: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.DatetimeIndex, days: int, excluded: pd.DataFrame) -> pd.DataFrame:
+    """Largest account increase: per ticker, the maximum over active direct accounts of net shares / own prior balance.
+
+    An account is owner x security class. Its net is shares bought minus sold in the `days` window; its prior is its own
+    latest public balance on or before `days` calendar days earlier (any filing row sets it). Accounts without a prior
+    above `CONVICTION_MIN_PRIOR` are left out and logged. NaN where no account qualifies; the caller owns observed zeros.
+    """
+    if trades.empty or idx.empty:
+        return pd.DataFrame()
+    lots, account_known, disputed = _direct_lots(trades, excluded)
+    lots = lots[lots["code"].isin(["P", "S"])]
+    balances = _balance_events(trades.loc[account_known], other_flows, disputed)
+    columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
+    out = np.full((len(idx), len(columns)), np.nan)
+    asof = idx.searchsorted((idx - pd.Timedelta(days=days)).to_numpy(), side="right") - 1
+    stop_day = lots["anchor"] + pd.Timedelta(days=days)
+    stop_day = stop_day.where(lots["visible_until"].isna() | stop_day.le(lots["visible_until"]), lots["visible_until"])
+    lots = lots.assign(
+        account=lots["owner_cik"].astype(str) + "|" + security_class(lots["security_title"]),
+        start=idx.searchsorted(lots["visible_from"].to_numpy(), side="left"),
+        stop=idx.searchsorted(stop_day.to_numpy(), side="left"),
+        net=lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]),
+    )
+    balances = balances.assign(account=balances["owner_cik"].astype(str) + "|" + balances["klass"])
+    by_balance = dict(tuple(balances.groupby("ticker")))
+    left_out = active_total = 0
+    for ticker, group in lots.groupby("ticker"):
+        codes, accounts = pd.factorize(group["account"])
+        shape = (len(idx) + 1, len(accounts))
+        net = _accumulate_intervals(group["net"].to_numpy(dtype=float), group["start"].to_numpy(), group["stop"].to_numpy(), codes, shape)
+        active = _accumulate_intervals(np.ones(len(group)), group["start"].to_numpy(), group["stop"].to_numpy(), codes, shape) > 0
+        prior = _prior_balances(by_balance.get(ticker), accounts, idx)[np.maximum(asof, 0)]
+        prior[asof < 0] = np.nan
+        usable = active & (prior > CONVICTION_MIN_PRIOR)
+        left_out += int((active & ~usable).sum())
+        active_total += int(active.sum())
+        ratio = np.clip(np.divide(net, prior, out=np.full_like(net, np.nan), where=usable), -CONVICTION_CLIP, CONVICTION_CLIP)
+        best = np.where(usable, ratio, -np.inf).max(axis=1)
+        out[:, columns.get_loc(ticker)] = np.where(usable.any(axis=1), best, np.nan)
+    _log.info("insider conviction %sd: %s of %s active account-days left out (no positive prior balance)", days, left_out, active_total)
+    return pd.DataFrame(out, index=idx, columns=columns)
+
+
+def _prior_balances(balances: pd.DataFrame | None, accounts: pd.Index, idx: pd.DatetimeIndex) -> np.ndarray:
+    """Grid day x account latest public balance (NaN before the account's first one), the same latest-ordering rule as `_holdings`."""
+    out = np.full((len(idx), len(accounts)), np.nan)
+    if balances is None or balances.empty:
+        return out
+    key = balances["order_day"].astype("int64")
+    wins = balances[key.ge(key.groupby([balances["ticker"], balances["owner_cik"], balances["klass"]]).cummax())]
+    code = accounts.get_indexer(wins["account"])
+    start = idx.searchsorted(wins["visible_from"].to_numpy(), side="left")
+    keep = (code >= 0) & (start < len(idx))
+    out[start[keep], code[keep]] = wins["after"].to_numpy(dtype=float)[keep]
+    return pd.DataFrame(out).ffill().to_numpy()
+
+
+def _direct_lots(trades: pd.DataFrame, excluded: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, pd.MultiIndex | None]:
+    """Supported trades of identified direct accounts, the mask of trades with a known account, and the disputed accounts left out."""
+    multiplicity = pd.to_numeric(trades.get("n_reporting_owners", pd.Series(np.nan, index=trades.index)), errors="coerce")
+    account_known = (
+        trades["direct_indirect"].eq("D")
+        & trades["owner_cik"].ne("")
+        & trades["transaction_day"].notna()
+        & multiplicity.eq(1)
+        & trades["security_title"].fillna("").str.strip().ne("")
+        & ~trades.get("scope_unknown", pd.Series(False, index=trades.index)).fillna(False)
+    )
+    disputed = pd.MultiIndex.from_frame(excluded[["ticker", "owner_cik"]].drop_duplicates()) if not excluded.empty else None
+    uncertain = trades.get("quality_uncertain", pd.Series(False, index=trades.index)).fillna(False).astype(bool)
+    lots = trades[account_known & ~uncertain].copy()
+    if disputed is not None:
+        lots = lots[~pd.MultiIndex.from_frame(lots[["ticker", "owner_cik"]]).isin(disputed)]
+    return lots, account_known, disputed
 
 
 def _balance_events(trades: pd.DataFrame, other_flows: pd.DataFrame, disputed: pd.MultiIndex | None) -> pd.DataFrame:

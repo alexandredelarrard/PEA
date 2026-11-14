@@ -130,8 +130,9 @@ class StepCubeInstitutionals(Step):
         merger.add(self._ownership_panel(frames, df_lines, df_lineage), "beneficial-ownership")
 
         # Keep declared inputs even when a source has no qualifying observations.
-        fields = [*INSIDER_EMISSION, *short_flow.EMISSION, *OWNERSHIP_EMISSION]
-        return merger.to_long().reindex(columns=["date", "ticker", *(f"f_{name}" for name in fields)])
+        emission = {**INSIDER_EMISSION, **short_flow.EMISSION, **OWNERSHIP_EMISSION}
+        columns = [column for name, mode in emission.items() for column in (f"f_{name}", *([f"f_{name}_vs_peers"] if mode == "raw+peers" else []))]
+        return merger.to_long().reindex(columns=["date", "ticker", *columns])
 
     def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
 

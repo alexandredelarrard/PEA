@@ -147,7 +147,7 @@ def test_complete_quiet_windows_do_not_require_a_prior_purchase() -> None:
     panel = _observed_panel(rows)
     ratios = [f"f_{name}" for name in EMISSION if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
     counts = [f"f_{name}" for name in EMISSION if f"f_{name}" not in ratios]
-    assert len(ratios) == 9 and len(counts) == 8
+    assert len(ratios) == 8 and len(counts) == 10
     assert panel.reindex(columns=counts).loc[("2024-07-01", "AAA")].eq(0).all()
     assert panel.loc[("2024-07-01", "BBB")].isna().all()
     assert panel.reindex(columns=counts).loc[("2024-09-01", "BBB")].eq(0).all()

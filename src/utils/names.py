@@ -40,6 +40,7 @@ import re
 from typing import Any
 
 from src.utils.string import clean_text
+from src.utils.title_vocabulary import CEO, CFO, CHAIRMAN, CHIEF, COO, EXECUTIVE_VICE, GENERAL_COUNSEL, PRESIDENT, SENIOR_VICE, VICE
 
 # Trailing footnote markers on a person cell: "(3)", "*", "†", or bare digits glued to the surname
 # ("Daniel Pinto7", "Emma N. Walmsley11"). Bare digits are only stripped after a letter, so a name
@@ -52,8 +53,8 @@ _FOOTNOTE_SUFFIX_RE = re.compile(r"(?:\(\d+\)|[*†‡§]|(?<=[a-z])\d{1,2})+\s*
 # "Bob De Lange Group"), so the modifier is consumed into the TITLE where it belongs.
 _GLUED_TITLE_RE = re.compile(
     r"\s*(?:Former\s+|Group\s+|Interim\s+|Acting\s+|Co-)?(?:"
-    r"Chairman\b|Chief\s|President\b|Senior\s+Vice\b|Executive\s+Vice\b|Vice\s+Chair\b|"
-    r"General\s+Counsel\b|Co-CEO\b|\bCEO\b|\bCFO\b|\bCOO\b"
+    rf"{CHAIRMAN}\b|{CHIEF}\s|{PRESIDENT}\b|{SENIOR_VICE}\b|{EXECUTIVE_VICE}\b|{VICE}\s+Chair\b|"
+    rf"{GENERAL_COUNSEL}\b|Co-{CEO}\b|\b{CEO}\b|\b{CFO}\b|\b{COO}\b"
     r").*$"
 )
 

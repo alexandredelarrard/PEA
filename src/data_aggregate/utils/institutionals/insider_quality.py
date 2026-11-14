@@ -18,6 +18,8 @@ from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.utils.names import clean_person_name
 from src.utils.string import pad_cik
+from src.utils.title_vocabulary import CHAIR, COUNSEL, GENERAL, SENIOR, VICE
+from src.utils.title_vocabulary import CHIEF as CHIEF_WORD
 
 _log = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ CONSENSUS_WINDOW: str = "31D"
 MAX_PCT_SHARES_OUTSTANDING: float = 0.25
 
 #: Free-text `officer_title` -> role, first match wins (a "Chairman, President & CEO" is a CEO).
-CHIEF = r"(?:CHIEF|CHF)"
+CHIEF = rf"(?:{CHIEF_WORD}|CHF)"
 OFFICER = r"OFF(?:ICER|CR|R)"
 OPERATIONS = r"OP(?:ER(?:ATION(?:S)?|ATING)?)?"
 ROLE_CEO, ROLE_CFO, ROLE_COO = "CEO", "CFO", "COO"
@@ -85,13 +87,13 @@ POP_C_SUITE, POP_MANAGEMENT, POP_TEN_PCT, POP_OTHER = 1, 2, 3, 4
 TITLE_POPULATIONS: tuple[tuple[int, str], ...] = (
     (
         POP_C_SUITE,
-        r"\bCHIEF\b|\bCHF\b|\bC\s*[A-Z]\s*O\b|\bPRINCIPAL\s+(?:EXEC|FIN|ACC|OPER)|\bFOUNDER\b"
-        r"|\b(?:E|EX|SE)\s*V\s*P\b|\bEXEC(?:UTIVE)?\b|\bCHAIR|\bCHARIMAN\b|\bCOB\b"
+        rf"\b{CHIEF_WORD}\b|\bCHF\b|\bC\s*[A-Z]\s*O\b|\bPRINCIPAL\s+(?:EXEC|FIN|ACC|OPER)|\bFOUNDER\b"
+        rf"|\b(?:E|EX|SE)\s*V\s*P\b|\bEXEC(?:UTIVE)?\b|\b{CHAIR}|\bCHARIMAN\b|\bCOB\b"
         r"|(?<!VICE )(?<!VICE-)(?<!V )(?<!SR )(?<!SENIOR )(?<!ASSISTANT )(?<!ASST )\bPRES(?:IDENT)?\b",
     ),
     (
         POP_MANAGEMENT,
-        r"\b[A-Z]{0,3}\s*V\s*P\b|\bVICE\b|\bSENIOR\b|\bSR\b|\bPRES(?:IDENT)?\b|\bGENERAL\s+(?:COUNSEL|MANAGER)\b|\bGEN\s+COUNSEL\b|\bCOUNSEL\b"
+        rf"\b[A-Z]{{0,3}}\s*V\s*P\b|\b{VICE}\b|\b{SENIOR}\b|\bSR\b|\bPRES(?:IDENT)?\b|\b{GENERAL}\s+(?:{COUNSEL}|MANAGER)\b|\bGEN\s+{COUNSEL}\b|\b{COUNSEL}\b"
         r"|\bGC\b|\bTREASURER\b|\b(?:CONTROLLER|COMPTROLLER)\b|\bSECRETARY\b|\bSTRATEG|\bVENTURES\b|\bMANAGING\b|\bDIRECTOR\b|\bOFFICER\b|\bHEAD\b|\bPARTNER\b",
     ),
 )

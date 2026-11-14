@@ -401,9 +401,9 @@ def _shortvol_window_fields(
         ratios[window] = df_ratio.shift(SHORTVOL_PUB_LAG)
         if window == BASE_WINDOW and df_shares is not None:
             df_turnover = (
-                (df_short.rolling(window, min_periods=min_periods).sum() / df_shares.where(df_shares > 0))
+                (df_short.where(df_observed).rolling(window, min_periods=min_periods).sum() / df_shares.where(df_shares > 0))
                 .replace([np.inf, -np.inf], np.nan)
-                .where(df_short.notna())
+                .where(df_observed)
                 .shift(SHORTVOL_PUB_LAG)
             )
     return ratios, df_turnover

@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.institutionals.ownership_features import (
+    CONCENTRATED_MIN_FILINGS,
     COUNT_CLIP,
     COUNT_WINDOW,
     EMISSION,
-    CONCENTRATED_MIN_FILINGS,
     SubjectIdentity,
     _filings,
     build_ownership_feature_panel,
@@ -182,7 +182,7 @@ def test_filings_the_ticker_filed_about_others_are_dropped_and_its_subject_filin
         ]
     )
     kept = _filings(df, _identity())
-    assert sorted(zip(kept["ticker"], kept["accession_number"])) == [
+    assert sorted(zip(kept["ticker"], kept["accession_number"], strict=True)) == [
         ("AAA", "0000009999-25-000001"),
         ("AAA", "0000009999-25-000003"),
         ("AAA", "0000009999-25-000006"),
@@ -197,6 +197,25 @@ def test_a_concentrated_institution_submitter_loses_its_markers_but_not_its_pars
     hub = [_row("AAA", f"0000007777-25-{i:06d}", rp_seq=-1) for i in range(CONCENTRATED_MIN_FILINGS)]
     other = [_row("BBB", "0000007777-25-999999", rp_seq=-1), _row("AAA", "0000007777-25-777777", cusip="AAAA00001")]
     kept = _filings(pd.DataFrame(hub + other), _identity())
-    assert sorted(zip(kept["ticker"], kept["accession_number"])) == [("AAA", "0000007777-25-777777"), ("BBB", "0000007777-25-999999")]
+    assert sorted(zip(kept["ticker"], kept["accession_number"], strict=True)) == [("AAA", "0000007777-25-777777"), ("BBB", "0000007777-25-999999")]
     print("\n=== SANITY CHECK: concentrated submitter ===")
-    print(f"  {CONCENTRATED_MIN_FILINGS} markers of one prefix under one ticker drop; its subject-CUSIP filing and a minority marker stay. Validated.")
+    print(
+        f"  {CONCENTRATED_MIN_FILINGS} markers of one prefix under one ticker drop; its subject-CUSIP filing and a minority marker stay. Validated."
+    )
+
+
+def test_a_marker_heavy_filer_keeps_only_its_parsed_subject_filings_while_an_ordinary_ticker_keeps_its_markers():
+    n = CONCENTRATED_MIN_FILINGS
+    # AAA: 4n markers spread over four agent prefixes (no prefix reaches the concentrated test) + 5 parsed subject filings
+    filer = [_row("AAA", f"000000{agent}-25-{i:06d}", rp_seq=-1) for agent in (1111, 2222, 3333, 4444) for i in range(n)]
+    filer += [_row("AAA", f"0000009999-25-{i:06d}", cusip="AAAA00001") for i in range(5)]
+    # BBB: 20 markers + 80 parsed subject filings, far below the thresholds
+    ordinary = [_row("BBB", f"0000001111-24-{i:06d}", rp_seq=-1) for i in range(20)]
+    ordinary += [_row("BBB", f"0000009998-24-{i:06d}", cusip="BBBB00001") for i in range(80)]
+    kept = _filings(pd.DataFrame(filer + ordinary), _identity())
+    counts = kept.groupby("ticker").size().to_dict()
+    assert counts == {"AAA": 5, "BBB": 100}
+    print("\n=== SANITY CHECK: marker-heavy filer ===")
+    print(
+        f"  AAA ({4 * n} markers of 4 agents, 5 parsed) keeps its 5 parsed subject filings; BBB (20 markers of 100) keeps all 100: {counts}. Validated."
+    )

@@ -135,7 +135,7 @@ Follow-ups from the verified point-in-time roster run (`harness/sec13f-superinve
 
 ## Schedule 13D/13G filer-side filings (2026-11-14)
 
-- **P2 — Residual filer-side 13D/13G filings in `ic_*_count_126d_z`.** The subject rule keeps filings whose parsed CUSIP is the ticker's and drops own-CIK-prefixed, own-reporting-person, other-ticker-subject and concentrated-submitter marker accessions. Left in: markers submitted by agents shared with ordinary tickers and parsed legacy rows without CUSIP (AMP 1,249, C 684, PNC 584, WFC 564, BAC 510 accessions remain). A durable fix needs a subject/filer column on `sec_13d`/`sec_13g` (extract-side, user approval for DDL) or the EDGAR index role. The same rule runs on `sec_13d`; only `sec_13g` was measured.
+- **P2 — Residual filer-side 13D/13G filings in `ic_*_count_126d_z`.** The subject rule keeps filings whose parsed CUSIP is the ticker's and drops own-CIK-prefixed, own-reporting-person, other-ticker-subject and concentrated-submitter marker accessions. A ticker with at least 100 marker-only accessions at 80% or more of its accessions now counts only parsed subject accessions (AMP, C, PNC, WFC, BAC, JPM, USB, BRK-B on 13G; BAC, C, WFC, GE, GS, TMO on 13D). Left in: marker accessions of filers below that bar (BLK 13D, mean z 2.35, rank 5) and of ordinary tickers. A durable fix needs a subject/filer column on `sec_13d`/`sec_13g` (extract-side, user approval for DDL) or the EDGAR index role. The same rule runs on `sec_13d`; only `sec_13g` was measured.
 
 ## Schedule 13D/13G ownership numerics
 
@@ -486,3 +486,4 @@ Deferred at the close of the EDGAR text-table split (local, gitignored run dir `
 - **P3 — `scripts/report_fundamentals_sweep.py` names a deleted producer.** Its docstring credits `scripts/sweep_fundamentals_resolution.py` with the `data/fundamentals_sweep` ledgers it reads; no script writes them now. Retire the report with the ledgers, or keep the name as provenance (user decision).
 
 - Confirm `purchase_pct_prior_120d_vs_peers` on the full universe (sample peers covered 22%); study measured a date x sector z (~17 names), the cube leg uses the 7-name `frames.peers` basket.
+- **P2 — APTV and CRH short-flow and FTD legs are 100% NaN (2026-11-14).** Cause is the price layer, not the tenure mask: Sharadar categorises both as `ADR Common Stock`, `unsupported_units` in [adjustments.py](../src/utils/price/adjustments.py) marks their quote units unknown, `security_basis` is NULL for every date, so `terminal_basis_factor` is NaN and `terminal_rows` nulls every RegSHO and FTD quantity. Needs a verified quote-unit convention for both (a `configs/` bugfix entry or an explicit domestic-primary override; user approval).

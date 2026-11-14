@@ -1208,3 +1208,7 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 ## 2026-11-14 insider conviction
 
 Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) and the peer leg of `purchase_pct_prior_120d`; dropped `ic_insider_purchase_pct_prior_180d`. Branch feat/institutionals-conviction; baseline not refreshed.
+## 2026-11-14: refresh (institutionals residual defects)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` marker-heavy filer rule for 13D/G counts; turnover unknown on supported-absence days and canonical-volume fallback for class bars (code, tests); `TODO.md` APTV/CRH unit-basis cause.

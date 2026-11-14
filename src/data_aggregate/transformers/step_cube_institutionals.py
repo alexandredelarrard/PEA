@@ -190,7 +190,7 @@ class StepCubeInstitutionals(Step):
         df_tape = frames.volume
         df_supported = ~df_tape.lt(0) if df_tape is not None else None
         if df_classes is not None:
-            df_class_volume, df_missing = secondary_class_volume(df_classes, df_bars, idx)
+            df_class_volume, df_missing = secondary_class_volume(df_classes, df_bars, idx, df_tape)
             df_tape = with_class_volume(df_tape, df_class_volume)
             df_class_supported = (~df_missing).reindex(index=idx, columns=columns, fill_value=True)
             df_supported = df_class_supported if df_supported is None else df_supported & df_class_supported

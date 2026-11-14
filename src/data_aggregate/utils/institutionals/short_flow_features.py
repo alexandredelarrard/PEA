@@ -202,13 +202,17 @@ def _normalised_lines(lines: pd.DataFrame) -> pd.DataFrame:
     ).sort_values("start", kind="stable")
 
 
-def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+def secondary_class_volume(
+    lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex, canonical: pd.DataFrame | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Wide secondary-class volume in canonical shares, and company-days lacking supported active-class input.
 
     A class counts only on its `universe_cusip` dates. Yahoo volume is restated to today's split basis, so a class
     enters at its latest conversion ratio: a dated ratio step is a split of one class (BRK-B's 50:1, BRK-A 30 -> 1,500)
     that Yahoo already restated. A class without a ratio enters at 1; other ratios must be finite and positive; bars and converted quantities finite and nonnegative.
-    Unsupported active legs add nothing and flag the complete company denominator as unknown.
+    An active class with no price bar at all (a class outside the price universe) enters at the canonical class's own
+    volume of that day, ratio 1, an approximation that keeps the company denominator known; any other unsupported
+    active leg (invalid ratio or bar, or no canonical bar to borrow) adds nothing and flags the complete company denominator as unknown.
     """
     idx = pd.DatetimeIndex(idx).normalize()
     if lines.empty:
@@ -234,13 +238,18 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
             supported = np.isfinite(ratio) & (ratio > 0) & np.isfinite(raw) & (raw >= 0) & np.isfinite(converted)
             volume[company] += np.where(active & supported, converted, 0.0)
         gap = active & ~supported
-        missing[company] |= gap
+        borrowed = np.zeros(len(idx), dtype=bool)
+        if canonical is not None and company in canonical.columns:
+            own = canonical[company].reindex(idx).to_numpy(dtype="float64")
+            borrowed = gap & np.isnan(raw) & np.isfinite(ratio) & (ratio > 0) & np.isfinite(own) & (own >= 0)
+            volume[company] += np.where(borrowed, own, 0.0)
+        missing[company] |= gap & ~borrowed
         if gap.any():
             days = idx[gap]
-            gaps.append(f"{company} {symbol} {int(gap.sum())} day(s) {days[0].date()}..{days[-1].date()}")
+            gaps.append(f"{company} {symbol} {int(gap.sum())} day(s) {days[0].date()}..{days[-1].date()}, {int(borrowed.sum())} at canonical volume")
     if gaps:
         logger.warning(
-            "secondary-class volume: %s company-day(s) have an active class without supported input, which adds no volume: %s",
+            "secondary-class volume: %s company-day(s) have an active class without supported input (canonical volume borrowed where the bar is absent): %s",
             f"{int(missing.to_numpy().sum()):,}",
             "; ".join(gaps),
         )
@@ -401,9 +410,9 @@ def _shortvol_window_fields(
         ratios[window] = df_ratio.shift(SHORTVOL_PUB_LAG)
         if window == BASE_WINDOW and df_shares is not None:
             df_turnover = (
-                (df_short.rolling(window, min_periods=min_periods).sum() / df_shares.where(df_shares > 0))
+                (df_short.where(df_observed).rolling(window, min_periods=min_periods).sum() / df_shares.where(df_shares > 0))
                 .replace([np.inf, -np.inf], np.nan)
-                .where(df_short.notna())
+                .where(df_observed)
                 .shift(SHORTVOL_PUB_LAG)
             )
     return ratios, df_turnover

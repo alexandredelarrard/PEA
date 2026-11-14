@@ -1013,3 +1013,18 @@ def test_removed_short_flow_features_are_absent_everywhere() -> None:
     print(
         f"SANITY: market_coverage, ratio_5d and the unsuffixed acceleration are in no EMISSION, model list or validate bound; {len(EMISSION)} short-flow features remain."
     )
+
+
+def test_turnover_is_unknown_on_a_supported_absence_day() -> None:
+    idx = pd.bdate_range("2024-01-02", periods=25)
+    short = pd.Series(5.0, index=idx)
+    total = pd.Series(10.0, index=idx)
+    short.iloc[22], total.iloc[22] = 0.0, np.nan
+    df_history = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": short.to_numpy(), "total_volume": total.to_numpy()})
+    df_shares = pd.DataFrame({"TEST": 1000.0}, index=idx)
+    fields = _shortvol_fields(df_history, idx, df_shares, None)
+    turnover, ratio = fields["ic_shortvol_turnover_20d"]["TEST"], fields["ic_shortvol_ratio_20d"]["TEST"]
+    assert np.isnan(ratio.iloc[23]) and np.isnan(turnover.iloc[23])
+    assert turnover.iloc[22] == pytest.approx(5.0 * 20 / 1000)
+    assert turnover.iloc[24] == pytest.approx(5.0 * 19 / 1000)
+    print("SANITY: a supported-absence day (0 short, total unknown) leaves turnover NaN like the ratio; the sums of observed days are unchanged.")

@@ -61,14 +61,15 @@ _add_group(
 _add_group(
     "short_flow",
     (
-        "ic_shortvol_ratio_5d",
         "ic_shortvol_ratio_20d",
         "ic_shortvol_ratio_60d",
-        "ic_shortvol_acceleration",
+        "ic_shortvol_ratio_120d",
+        "ic_shortvol_ratio_180d",
+        "ic_shortvol_acceleration_60d",
+        "ic_shortvol_acceleration_120d",
         "ic_shortvol_turnover_20d",
         "ic_shortvol_high_x_weak_price",
         "ic_shortvol_high_x_strong_price",
-        "ic_shortvol_market_coverage",
         "ic_ftd_to_adv20",
         "ic_ftd_persistence_30d",
     ),

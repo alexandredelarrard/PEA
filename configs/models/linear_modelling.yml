@@ -293,12 +293,13 @@ linear:
   - f_ic_insider_purchase_pct_prior_180d
   - f_ic_insider_purchase_pct_prior_60d
   - f_ic_insider_ten_pct_buy_mcap_180d
-  - f_ic_shortvol_acceleration
+  - f_ic_shortvol_acceleration_120d
+  - f_ic_shortvol_acceleration_60d
   - f_ic_shortvol_high_x_strong_price
   - f_ic_shortvol_high_x_weak_price
-  - f_ic_shortvol_market_coverage
+  - f_ic_shortvol_ratio_120d
+  - f_ic_shortvol_ratio_180d
   - f_ic_shortvol_ratio_20d
-  - f_ic_shortvol_ratio_5d
   - f_ic_shortvol_ratio_60d
   - f_ic_shortvol_turnover_20d
 

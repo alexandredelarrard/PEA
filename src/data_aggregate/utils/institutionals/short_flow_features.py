@@ -3,9 +3,9 @@ short_flow_features.py  (src/data_aggregate/utils/institutionals/short_flow_feat
 ----------------------------------------------------------------------------------------
 Short-flow features: FINRA RegSHO daily short-sale VOLUME (`ic_shortvol_*`, not short interest)
 and SEC fails-to-deliver (`ic_ftd_*`). Ratios are volume-weighted (SUM short / SUM total over N
-days); `ic_shortvol_market_coverage` is RegSHO's measured share of tape volume. Both tape-volume
-denominators (ADV20 and coverage) sum the issuer's secondary share classes, as the class-summed
-numerators do (`secondary_class_volume`). Point-in-time:
+days); acceleration is the spot 5-day ratio minus the 60- or 120-day ratio. The tape-volume
+denominator of `ic_ftd_to_adv20` sums the issuer's secondary share classes, as the class-summed
+numerator does (`secondary_class_volume`). Point-in-time:
 every `ic_shortvol_*` leg is shifted `SHORTVOL_PUB_LAG` trading day; an FTD ZIP becomes knowable as
 a whole at half-month end plus the configured calendar-day lag (estimated_policy_21d),
 moved to the next actual session and held until the next ZIP. This is an estimated policy,
@@ -44,8 +44,11 @@ Z_MIN_PERIODS = 126
 PERSISTENCE_WINDOW = 30
 Z_HIGH = 1.0
 
-#: Volume-weighted ratio windows; `BASE_WINDOW` backs the z-score, acceleration and price interactions.
-RATIO_WINDOWS: tuple[int, ...] = (5, 20, 60)
+#: Emitted volume-weighted ratio windows; `SPOT_WINDOW` is the internal recent ratio acceleration subtracts
+#: the `ACCELERATION_WINDOWS` ratios from; `BASE_WINDOW` backs turnover and the price interactions.
+RATIO_WINDOWS: tuple[int, ...] = (20, 60, 120, 180)
+SPOT_WINDOW = 5
+ACCELERATION_WINDOWS: tuple[int, ...] = (60, 120)
 BASE_WINDOW = 20
 
 #: Total-return window the two price-interaction features condition on.
@@ -53,14 +56,15 @@ RET_WINDOW = 20
 
 #: Every leg is emitted in raw economic units.
 EMISSION: dict[str, str] = {
-    "ic_shortvol_ratio_5d": "raw",
     "ic_shortvol_ratio_20d": "raw",
     "ic_shortvol_ratio_60d": "raw",
-    "ic_shortvol_acceleration": "raw",
+    "ic_shortvol_ratio_120d": "raw",
+    "ic_shortvol_ratio_180d": "raw",
+    "ic_shortvol_acceleration_60d": "raw",
+    "ic_shortvol_acceleration_120d": "raw",
     "ic_shortvol_turnover_20d": "raw",
     "ic_shortvol_high_x_weak_price": "raw",
     "ic_shortvol_high_x_strong_price": "raw",
-    "ic_shortvol_market_coverage": "raw",
     "ic_ftd_to_adv20": "raw",
     "ic_ftd_persistence_30d": "raw",
 }
@@ -256,26 +260,6 @@ def with_class_volume(volume: pd.DataFrame | None, class_volume: pd.DataFrame | 
     return out
 
 
-def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
-    """NULL `ic_shortvol_market_coverage` above 1.0: off-exchange volume cannot exceed the tape, so
-    such cells (typically reused-ticker windows) describe another security. Only this leg has a
-    physical ceiling to detect that by.
-    """
-    over = cov.gt(1.0)
-    n = int(over.to_numpy().sum())
-    if n:
-        bad = [c for c in cov.columns if bool(over[c].any())]
-        logger.info(
-            "coverage guard: %s of %s non-null `ic_shortvol_market_coverage` cells "
-            "above 1.0 -> nulled (off-exchange volume cannot exceed the tape; these "
-            "are reused-ticker windows). Tickers: %s",
-            f"{n:,}",
-            f"{int(cov.notna().to_numpy().sum()):,}",
-            ", ".join(sorted(bad)),
-        )
-    return cov.mask(over)
-
-
 def _market_identity_conflicts(work: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[object, np.ndarray]:
     """A security has one dated owner and no simultaneous rejected canonical verdict, across every symbol key."""
     conflicts = {}
@@ -365,10 +349,9 @@ def _shortvol_fields(
     idx: pd.DatetimeIndex,
     shares_out: pd.DataFrame | None,
     close_total: pd.DataFrame | None,
-    volume: pd.DataFrame | None,
     tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """RegSHO ratio, acceleration, turnover, price-interaction and coverage legs, each shifted by the publication lag."""
+    """RegSHO ratio, acceleration, turnover and price-interaction legs, each shifted by the publication lag."""
     # Prepare issuer-valid daily quantities and reuse their aligned tenure mask.
     df_short = _pivot(hist, "short_volume", idx)
     df_total = _pivot(hist, "total_volume", idx)
@@ -380,8 +363,9 @@ def _shortvol_fields(
 
     # Compute weighted window ratios and reuse the base-window sum for turnover.
     ratios, df_turnover = _shortvol_window_fields(df_short, df_total, df_observed, idx, shares_out)
-    fields = {f"ic_shortvol_ratio_{window}d": df_ratio for window, df_ratio in ratios.items()}
-    fields["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
+    fields = {f"ic_shortvol_ratio_{window}d": ratios[window] for window in RATIO_WINDOWS}
+    for window in ACCELERATION_WINDOWS:
+        fields[f"ic_shortvol_acceleration_{window}d"] = ratios[SPOT_WINDOW] - ratios[window]
     if df_turnover is not None:
         fields["ic_shortvol_turnover_20d"] = df_turnover
 
@@ -392,9 +376,6 @@ def _shortvol_fields(
         df_high = df_z.clip(lower=0.0)
         fields["ic_shortvol_high_x_weak_price"] = df_high * (-df_returns).clip(lower=0.0)
         fields["ic_shortvol_high_x_strong_price"] = df_high * df_returns.clip(lower=0.0)
-    if volume is not None and not volume.empty:
-        df_tape = volume.reindex(index=idx).reindex(columns=df_short.columns)
-        fields["ic_shortvol_market_coverage"] = _shortvol_market_coverage(df_total, df_tape)
 
     # Publication does not extend a ticker beyond its proven current-issuer tenure.
     if df_tenure is not None:
@@ -411,7 +392,7 @@ def _shortvol_window_fields(
     df_shares = shares_out.reindex(index=idx).reindex(columns=df_short.columns) if shares_out is not None and not shares_out.empty else None
 
     # Calculate each numerator once; the base sum also supplies share turnover.
-    for window in RATIO_WINDOWS:
+    for window in (SPOT_WINDOW, *RATIO_WINDOWS):
         min_periods = _min_periods(window)
         df_numerator = df_short.where(df_observed).rolling(window, min_periods=min_periods).sum()
         df_denominator = df_total.where(df_observed).rolling(window, min_periods=min_periods).sum()
@@ -425,32 +406,6 @@ def _shortvol_window_fields(
                 .shift(SHORTVOL_PUB_LAG)
             )
     return ratios, df_turnover
-
-
-def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame) -> pd.DataFrame:
-    """Compute split-consistent off-exchange tape coverage and report its supported range."""
-    min_periods = _min_periods(BASE_WINDOW)
-
-    # Both prepared quantity legs already have the same ordinary-share basis.
-    paired = df_total.notna() & df_tape.notna()
-    df_numerator = df_total.where(paired).rolling(BASE_WINDOW, min_periods=min_periods).sum()
-    df_denominator = df_tape.where(paired).rolling(BASE_WINDOW, min_periods=min_periods).sum()
-    df_coverage = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(paired)
-    df_coverage = _guard_coverage(df_coverage)
-
-    # Keep the existing coverage diagnostic on settlement-day quantities.
-    live = df_coverage.to_numpy(dtype="float64", na_value=np.nan).ravel()
-    live = live[np.isfinite(live)]
-    if len(live):
-        p05, p50, p95 = np.percentile(live, [5, 50, 95])
-        logger.info(
-            "RegSHO market coverage (off-exchange share of tape volume): p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
-            100 * p50,
-            100 * p05,
-            100 * p95,
-            len(live),
-        )
-    return df_coverage.shift(SHORTVOL_PUB_LAG)
 
 
 def _fails_fields(
@@ -558,11 +513,7 @@ def build_short_flow_feature_panel(
         capital = ShortFlowCapital(capital.shares_out, capital.tape, df_supported)
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
-        fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, capital.tape, tenure_mask))
-        if "ic_shortvol_market_coverage" in fields:
-            df_coverage = fields["ic_shortvol_market_coverage"]
-            df_supported = _rolling_tape_support(capital.tape_supported, idx, df_coverage.columns)
-            fields["ic_shortvol_market_coverage"] = df_coverage.where(df_supported.shift(SHORTVOL_PUB_LAG, fill_value=False))
+        fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, tenure_mask))
     if settlement is not None and publication is not None:
         fields.update(_fails_fields(settlement, capital, publication, tenure_mask))
 

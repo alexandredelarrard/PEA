@@ -45,14 +45,15 @@ INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_distinct_buyers_120d",
     "f_ic_insider_distinct_sellers_120d",
     "f_ic_insider_buyer_breadth_120d",
-    "f_ic_shortvol_ratio_5d",
     "f_ic_shortvol_ratio_20d",
     "f_ic_shortvol_ratio_60d",
-    "f_ic_shortvol_acceleration",
+    "f_ic_shortvol_ratio_120d",
+    "f_ic_shortvol_ratio_180d",
+    "f_ic_shortvol_acceleration_60d",
+    "f_ic_shortvol_acceleration_120d",
     "f_ic_shortvol_turnover_20d",
     "f_ic_shortvol_high_x_weak_price",
     "f_ic_shortvol_high_x_strong_price",
-    "f_ic_shortvol_market_coverage",
     "f_ic_ftd_to_adv20",
     "f_ic_ftd_persistence_30d",
     "f_ic_act_13d_count_126d_z",
@@ -242,11 +243,11 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
         return pd.DataFrame({"date": days, "ticker": "AAA", "f_" + name: 0.0})
 
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: panel("ic_insider_buy_value_mcap_60d"))
-    monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_ratio_5d"))
+    monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_ratio_20d"))
     monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_13d_count_126d_z"))
     result = step.build_panel()
     assert step._store is sqlite_store
-    assert calls == ["ic_insider_buy_value_mcap_60d", "ic_shortvol_ratio_5d", "ic_act_13d_count_126d_z"]
+    assert calls == ["ic_insider_buy_value_mcap_60d", "ic_shortvol_ratio_20d", "ic_act_13d_count_126d_z"]
     assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
     present = ["f_" + name for name in calls]
     assert result[present].eq(0.0).all().all()
@@ -318,7 +319,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     monkeypatch.setattr(institutional_step, "clean_transactions", clean)
     monkeypatch.setattr(institutional_step, "position_units", rebase)
-    fields = ["f_ic_insider_distinct_buyers_120d", "f_ic_shortvol_ratio_5d", "f_ic_act_13d_count_126d_z"]
+    fields = ["f_ic_insider_distinct_buyers_120d", "f_ic_shortvol_ratio_20d", "f_ic_act_13d_count_126d_z"]
     monkeypatch.setattr(institutional_step, "build_insider_feature_panel", lambda frames, *args: panel(frames, fields[0], 2.0))
     monkeypatch.setattr(institutional_step, "build_short_flow_feature_panel", lambda frames, *args: panel(frames, fields[1], 0.5))
     monkeypatch.setattr(institutional_step, "build_ownership_feature_panel", lambda frames, *args, **kwargs: panel(frames, fields[2], 0.0))
@@ -760,13 +761,11 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     panel = step.build_panel().set_index(["date", "ticker"]).xs("AAA", level="ticker")
     turnover = panel["f_ic_shortvol_turnover_20d"].loc[days[21] :]  # full 20-session windows, straddling the split from days[31]
-    coverage = panel["f_ic_shortvol_market_coverage"].dropna()
     ftd = panel.loc[pd.Timestamp("2024-02-21"), "f_ic_ftd_to_adv20"]
     assert len(turnover) > 30 and turnover.to_numpy() == pytest.approx(2.0, rel=1e-6)
-    assert len(coverage) > 30 and coverage.to_numpy() == pytest.approx(1.0, rel=1e-6)
     assert ftd == pytest.approx(0.1, rel=1e-6)
     print(
         f"SANITY: across a 4:1 split saved only in security_basis, as-traded FINRA and FTD rows convert by F_T/F_d: "
-        f"turnover stays {turnover.min():.3f}..{turnover.max():.3f} over {len(turnover)} days, coverage {coverage.min():.3f}..{coverage.max():.3f}, "
+        f"turnover stays {turnover.min():.3f}..{turnover.max():.3f} over {len(turnover)} days, "
         f"pre-split fails 100 -> ftd_to_adv20 {ftd:.3f} (400 terminal shares over a 4,000 ADV)."
     )

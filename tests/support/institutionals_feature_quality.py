@@ -151,9 +151,6 @@ _COUNT = {
     "ic_insider_distinct_buyers_120d",
     "ic_insider_distinct_sellers_120d",
 }
-_SUPPORT = {
-    "ic_shortvol_market_coverage",
-}
 _BOUNDED = {
     "ic_inst_new_buyer_ratio",
     "ic_inst_exit_ratio",
@@ -188,10 +185,12 @@ _NORMALIZED = {
     "ic_inst_breadth_chg",
     "ic_inst_shares_chg",
     "ic_inst_value_to_mcap",
-    "ic_shortvol_acceleration",
+    "ic_shortvol_acceleration_60d",
+    "ic_shortvol_acceleration_120d",
     "ic_shortvol_ratio_20d",
-    "ic_shortvol_ratio_5d",
     "ic_shortvol_ratio_60d",
+    "ic_shortvol_ratio_120d",
+    "ic_shortvol_ratio_180d",
     "ic_shortvol_turnover_20d",
     "ic_super_breadth_chg",
     "ic_super_holders_yoy",
@@ -207,11 +206,10 @@ for _kind_names in (_COUNT, _BOUNDED, _NORMALIZED):
 CHARACTERISTIC_KIND = {
     **{name: "event" for name in _EVENT},
     **{name: "count" for name in _COUNT},
-    **{name: "support" for name in _SUPPORT},
     **{name: "bounded" for name in _BOUNDED},
     **{name: "normalized" for name in _NORMALIZED},
 }
-if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _SUPPORT, _BOUNDED, _NORMALIZED))) != len(INSTITUTIONALS):
+if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _BOUNDED, _NORMALIZED))) != len(INSTITUTIONALS):
     raise RuntimeError("institutionals taxonomy must explicitly classify every catalogued characteristic")
 
 FAMILY_WARMUP_SESSIONS = {

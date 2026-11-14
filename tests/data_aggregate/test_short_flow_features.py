@@ -133,35 +133,33 @@ def _synth(t=700, n=8, seed=0):
 
 
 def test_the_ratio_is_volume_weighted_not_an_average_of_daily_ratios():
-    """THE test for this phase (part-2b Phase 2.5 verification). Five days: four quiet days
-    that were 90% short on 100k shares, and one heavy day that was 10% short on 10m. The
-    window's short share of TRADED VOLUME is 3.7%, not the 74% an average of daily ratios
-    reports -- a factor of 20, and the average is the statistic the module used to emit."""
-    dates = pd.DatetimeIndex(pd.bdate_range("2023-01-02", periods=5))
-    rows = [{"date": d, "ticker": "A", "total_volume": 100_000.0, "short_volume": 90_000.0} for d in dates[:4]]
-    rows.append({"date": dates[4], "ticker": "A", "total_volume": 10_000_000.0, "short_volume": 1_000_000.0})
+    """Nineteen quiet days that were 90% short on 100k shares, and one heavy day that was 10% short
+    on 10m. The window's short share of TRADED VOLUME is 8.0%, not the 86% an average of daily
+    ratios reports."""
+    dates = pd.DatetimeIndex(pd.bdate_range("2023-01-02", periods=20))
+    rows = [{"date": d, "ticker": "A", "total_volume": 100_000.0, "short_volume": 90_000.0} for d in dates[:19]]
+    rows.append({"date": dates[19], "ticker": "A", "total_volume": 10_000_000.0, "short_volume": 1_000_000.0})
     hist = pd.DataFrame(rows)
-    df = _shortvol_fields(hist, dates, None, None, None)
-    # the lag means day 5's window is only readable on the NEXT grid day, so extend the index
-    idx = pd.DatetimeIndex(pd.bdate_range("2023-01-02", periods=6))
-    df = _shortvol_fields(hist, idx, None, None, None)
-    got = float(cast(Any, df["ic_shortvol_ratio_5d"].loc[idx[5], "A"]))
-    weighted = (4 * 90_000 + 1_000_000) / (4 * 100_000 + 10_000_000)
-    naive = (4 * 0.9 + 0.1) / 5
+    # the lag means day 20's window is only readable on the NEXT grid day, so extend the index
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-01-02", periods=21))
+    df = _shortvol_fields(hist, idx, None, None)
+    got = float(cast(Any, df["ic_shortvol_ratio_20d"].loc[idx[20], "A"]))
+    weighted = (19 * 90_000 + 1_000_000) / (19 * 100_000 + 10_000_000)
+    naive = (19 * 0.9 + 0.1) / 20
     assert abs(got - weighted) < 1e-12
     assert abs(got - naive) > 0.5, "the volume weighting made no difference -- check the sum"
     print("\n=== SANITY CHECK: volume-weighted short ratio ===")
     print(
-        f"  four 90%-short days on 100k + one 10%-short day on 10m: "
-        f"ic_shortvol_ratio_5d = {got:.4f} (= sum short / sum total), against {naive:.2f} "
+        f"  nineteen 90%-short days on 100k + one 10%-short day on 10m: "
+        f"ic_shortvol_ratio_20d = {got:.4f} (= sum short / sum total), against {naive:.2f} "
         f"for an average of daily ratios -- {naive / got:.0f}x. Validated."
     )
 
 
 def test_publication_lag_is_one_trading_day():
     dates, tickers, hist = _synth()
-    df = _shortvol_fields(hist, dates, None, None, None)
-    assert {"ic_shortvol_ratio_5d", "ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_acceleration"}.issubset(df)
+    df = _shortvol_fields(hist, dates, None, None)
+    assert {"ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_acceleration_60d"}.issubset(df)
     assert "ic_shortvol_ratio_z252" not in df
     # heavily-shorted S0 has the highest ratio cross-sectionally
     assert str(df["ic_shortvol_ratio_20d"].loc[dates[300]].idxmax()) == "S0"
@@ -187,16 +185,13 @@ def test_source_adapters_normalize_both_rolling_legs_and_pit_counts() -> None:
     df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0], "sharesOutstanding": [1000.0]})
     df_normalized = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
     df_shares = pd.DataFrame({"TEST": [100.0] * 19 + [1000.0] * 2}, index=idx) * df_factor
-    df_tape = pd.DataFrame({"TEST": 200.0}, index=idx)
-    result = _shortvol_fields(df_normalized, idx, df_shares, None, df_tape)
+    result = _shortvol_fields(df_normalized, idx, df_shares, None)
     assert result["ic_shortvol_ratio_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 2000)
     assert result["ic_shortvol_turnover_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 1000)
-    assert result["ic_shortvol_market_coverage"].at[idx[20], "TEST"] == pytest.approx(0.5)
     assert df_shares["TEST"].eq(1000.0).all()
-    assert df_tape["TEST"].eq(200.0).all()
     assert df_raw["short_volume"].iloc[0] == 9
     assert df_filing["sharesOutstandingPit"].iloc[0] == 100
-    print("SANITY: compatible rolling sums1720/2000 yield0.86 ratio and1.72 turnover over1000 PIT shares; terminal-restated tape stays unchanged.")
+    print("SANITY: compatible rolling sums1720/2000 yield0.86 ratio and1.72 turnover over1000 PIT shares.")
 
 
 def test_future_event_cannot_advance_the_vendor_tape_basis() -> None:
@@ -222,47 +217,38 @@ def test_paired_vendor_restatement_preserves_earlier_dimensionless_outputs() -> 
     df_factor = split_factor(empty, idx, ["TEST"])
     df_shares = pd.DataFrame({"TEST": 100.0}, index=idx) * df_factor
     df_history = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
-    original = _shortvol_fields(df_history, idx, df_shares, None, pd.DataFrame({"TEST": 20.0}, index=idx))
+    original = _shortvol_fields(df_history, idx, df_shares, None)
     extended = pd.DatetimeIndex(idx.append(pd.DatetimeIndex([idx[-1] + pd.Timedelta(days=10)])))
     events = pd.DataFrame({"ticker": ["TEST"], "date": [extended[-1]], "ratio": [10.0]})
     later_factor = split_factor(events, extended, ["TEST"])
     df_later = terminal_rows(df_raw, ("short_volume", "total_volume"), later_factor)
     df_later_shares = pd.DataFrame({"TEST": [100.0] * len(idx) + [1000.0]}, index=extended) * later_factor
-    restated = _shortvol_fields(df_later, extended, df_later_shares, None, pd.DataFrame({"TEST": 200.0}, index=extended))
+    restated = _shortvol_fields(df_later, extended, df_later_shares, None)
     for name, df_before in original.items():
         pd.testing.assert_frame_equal(df_before, restated[name].reindex(idx))
-    print(
-        "SANITY: extending the actual vendor basis through a future10:1 event and restating its paired tape leaves every earlier ratio/turnover/coverage value and null unchanged."
-    )
+    print("SANITY: extending the actual vendor basis through a future10:1 event and leaves every earlier ratio/turnover value and null unchanged.")
 
 
 def test_missing_active_class_keeps_rolling_denominators_unknown() -> None:
     idx = pd.bdate_range("2024-01-02", periods=45)
-    df_history = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": 5.0, "total_volume": 10.0})
     df_tape = pd.DataFrame({"TEST": 20.0}, index=idx)
     df_supported = pd.DataFrame({"TEST": True}, index=idx)
     df_supported.loc[idx[20], "TEST"] = False
-    frames = make_frames(idx, {"TEST": {}}, volume=df_tape)
     capital = ShortFlowCapital(None, df_tape, df_supported)
-    panel = compute_short_panel(frames, df_history, None, capital, None).set_index("date")
-    coverage = panel["f_ic_shortvol_market_coverage"]
-    assert coverage.at[idx[20]] == pytest.approx(0.5)
-    assert coverage.loc[idx[21] : idx[40]].isna().all()
-    assert coverage.at[idx[41]] == pytest.approx(0.5)
     settlement = short_flow.FtdSettlement(pd.DataFrame({"TEST": 10.0}, index=idx), pd.Series(True, index=idx))
     df_coverage = pd.DataFrame({"date": idx, "period": "202401a"})
     publication = FtdPublication(df_coverage, {"202401a": idx[-1]})
     df_adv = compute_fails_fields(settlement, capital, publication, None)["ic_ftd_to_adv20"]
     assert df_adv.at[idx[-1], "TEST"] == pytest.approx(0.5)
     print(
-        "SANITY: a missing active-class input leaves20 lagged coverage windows unknown and recovers only after its rolling denominator is supported; it never becomes claimed zero volume."
+        "SANITY: a missing active-class input leaves the published fails/ADV state unknown until its rolling denominator is supported; it never becomes claimed zero volume."
     )
 
 
 def test_unknown_short_quantity_never_aggregates_into_observed_zero() -> None:
     idx = pd.bdate_range("2024-01-02", periods=21)
     df_history = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": np.nan, "total_volume": 10.0})
-    fields = _shortvol_fields(df_history, idx, None, None, None)
+    fields = _shortvol_fields(df_history, idx, None, None)
     assert all(df_field.isna().all().all() for df_field in fields.values())
     print("SANITY: unknown quantity observations stay unknown after daily aggregation and never appear as measured zero short sales.")
 
@@ -273,7 +259,7 @@ def test_price_interactions_are_one_sided_and_complementary():
     dates, tickers, hist = _synth(t=400)
     rng = np.random.default_rng(3)
     close = pd.DataFrame({t: 100 * np.cumprod(1 + rng.normal(0.0004, 0.02, len(dates))) for t in tickers}, index=dates)
-    df = _shortvol_fields(hist, dates, None, close, None)
+    df = _shortvol_fields(hist, dates, None, close)
     weak = df["ic_shortvol_high_x_weak_price"]
     strong = df["ic_shortvol_high_x_strong_price"]
     assert (weak.fillna(0) >= 0).all().all() and (strong.fillna(0) >= 0).all().all()
@@ -521,8 +507,7 @@ def test_latest_rolling_outputs_require_their_source_date():
     hist = hist[hist["date"] != missing_regsho_date]
     shares = pd.DataFrame(500_000_000.0, index=dates, columns=tickers)
     close = pd.DataFrame({ticker: np.linspace(100.0, 120.0, len(dates)) for ticker in tickers}, index=dates)
-    volume = pd.DataFrame(5_000_000.0, index=dates, columns=tickers)
-    short_fields = _shortvol_fields(hist, dates, shares, close, volume)
+    short_fields = _shortvol_fields(hist, dates, shares, close)
     assert all(frame.loc[dates[-1]].isna().all() for frame in short_fields.values())
 
     print("\n=== SANITY CHECK: rolling source-date completeness ===")
@@ -897,87 +882,134 @@ def test_panel_columns_match_the_emission_map():
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
     assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
-    for leg in ("f_ic_shortvol_ratio_20d", "f_ic_shortvol_turnover_20d", "f_ic_ftd_to_adv20", "f_ic_shortvol_market_coverage"):
+    for leg in (
+        "f_ic_shortvol_ratio_20d",
+        "f_ic_shortvol_ratio_180d",
+        "f_ic_shortvol_acceleration_120d",
+        "f_ic_shortvol_turnover_20d",
+        "f_ic_ftd_to_adv20",
+    ):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
     assert not any(column.endswith("_xs") for column in emitted)
     assert not any(column.endswith("_vs_peers") for column in emitted)
     assert not any(column in panel for column in ("f_ic_shortvol_ratio_z252", "f_ic_ftd_z252"))
-    # the three bounded ratios stay in [0, 1]
-    for w in (5, 20, 60):
+    # the four bounded ratios stay in [0, 1]
+    for w in (20, 60, 120, 180):
         s = panel[f"f_ic_shortvol_ratio_{w}d"].dropna()
         assert s.between(0, 1).all(), f"{w}d ratio out of [0, 1]"
-    # the coverage measurement is a share of the tape, so it cannot exceed 1 when the tape is
-    # the larger number -- here RegSHO's 1-5m against a 3m tape, so it straddles 1 by design
-    assert panel["f_ic_shortvol_market_coverage"].dropna().gt(0).all()
     # days_to_cover is GONE: it needs short-INTEREST positions this repo does not fetch
     assert not any("days_to_cover" in c for c in panel.columns)
     print("\n=== SANITY CHECK: short-flow panel columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted from {len(EMISSION)} declared features, exact match; "
-        f"the three ratios are in [0, 1], no peer leg survives without target/OOS evidence, and history z outputs are absent; "
+        f"the four ratios are in [0, 1], no peer leg survives without target/OOS evidence, and history z outputs are absent; "
         f"ic_shortvol_days_to_cover is absent (needs FINRA "
         f"settlement positions, out of scope). Validated."
     )
 
 
-def test_market_coverage_is_split_basis_free():
-    """The defect the 2026-09-12 full build found: `ic_shortvol_market_coverage` breached its
-    (0, 1) bound on 2,213 cells, max **3.71**, and all six offending tickers were
-    corporate-action names — GE's window ending exactly at its 1-for-8 reverse split.
+def _ramp_history(days: int, tickers: tuple[str, ...] = ("A",)) -> tuple[pd.DatetimeIndex, pd.DataFrame]:
+    """Days 1..100 heavy and 10% short (total 1,000), days 101..195 light and 90% short (total 100), days 196..200 light and 100% short."""
+    idx = pd.DatetimeIndex(pd.bdate_range("2022-01-03", periods=days + 1))
+    day = np.arange(1, days + 1)
+    total = np.where(day <= 100, 1_000.0, 100.0)
+    short = np.where(day <= 100, 100.0, np.where(day <= 195, 90.0, 100.0))
+    rows = [{"date": idx[i], "ticker": t, "short_volume": short[i], "total_volume": total[i]} for t in tickers for i in range(days)]
+    return idx, pd.DataFrame(rows)
 
-    Cause: RegSHO `total_volume` is AS-TRADED and never restated, while yfinance `Volume` IS
-    retroactively scaled by the split ratio (measured over 746 splits: median post/pre volume
-    ratio 0.869 against median R = 2.0). So the plain ratio carries a factor of `1 / F(d)`, and
-    a REVERSE split (R < 1) inflates it — a 1-for-8 turns a true 28% coverage into 2.24.
 
-    Here: a true coverage of 0.10 either side of a 1-for-8 reverse split. Unrestated the
-    pre-split window reads 0.80 — eight times too high, but deliberately still UNDER 1.0 so
-    `_guard_coverage`'s physical ceiling does not mask the effect this test is about. The two
-    guards are independent and each has its own test.
-    """
-    idx = pd.DatetimeIndex(pd.bdate_range("2021-01-04", periods=120))
-    split_date = idx[60]
-    regsho = pd.DataFrame([{"date": d, "ticker": "GEX", "total_volume": 100_000.0, "short_volume": 40_000.0} for d in idx])
-    # yfinance volume: as-traded 1,000,000 a day, then back-scaled by R = 0.125 BEFORE the split
-    tape = pd.DataFrame({"GEX": [1_000_000.0 * (0.125 if d < split_date else 1.0) for d in idx]}, index=idx)
-    splits = pd.DataFrame([{"date": split_date, "ticker": "GEX", "ratio": 0.125}])
-
-    before = _shortvol_fields(regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
-    df_regsho = terminal_rows(regsho, ("short_volume", "total_volume"), split_factor(splits, idx, ["GEX"]))
-    after = _shortvol_fields(df_regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
-    pre, post = idx[50], idx[110]
-    assert before.loc[pre, "GEX"] == pytest.approx(0.80, rel=1e-6), "the defect must reproduce"
-    assert after.loc[pre, "GEX"] == pytest.approx(0.10, rel=1e-6)
-    assert after.loc[post, "GEX"] == pytest.approx(0.10, rel=1e-6)
-    assert before.loc[post, "GEX"] == pytest.approx(0.10, rel=1e-6), "post-split is unaffected"
-    print("\n=== SANITY CHECK: market coverage is split-basis free ===")
+def test_ratios_20_60_120_180_are_volume_weighted_sums_published_next_session() -> None:
+    idx, hist = _ramp_history(200)
+    df = _shortvol_fields(hist, idx, None, None)
+    last = idx[200]
+    # hand sums over the window ending on day 200 (published on the next grid row)
+    expected = {20: 1850 / 2000, 60: 5450 / 6000, 120: 11050 / 30000, 180: 17050 / 90000}
+    for window, truth in expected.items():
+        got = float(cast(Any, df[f"ic_shortvol_ratio_{window}d"].at[last, "A"]))
+        assert got == pytest.approx(truth, rel=1e-12), window
+    # the mean of daily ratios is another statistic (120d: 20 days at 0.1 and 100 at about 0.905)
+    assert abs(float(cast(Any, df["ic_shortvol_ratio_120d"].at[last, "A"])) - 0.7) > 0.3
+    # one session earlier the window ends on day 199: 16 days at 0.9 and 4 at 1.0
+    assert float(cast(Any, df["ic_shortvol_ratio_20d"].at[idx[199], "A"])) == pytest.approx(1840 / 2000)
+    assert "ic_shortvol_ratio_5d" not in df
     print(
-        f"  across a 1-for-8 reverse split, true coverage 10%: unrestated reads "
-        f"{before.loc[pre, 'GEX']:.2f} before the split (8x too high) and "
-        f"{before.loc[post, 'GEX']:.2f} after; restated reads "
-        f"{after.loc[pre, 'GEX']:.2f} / {after.loc[post, 'GEX']:.2f}. Validated."
+        f"SANITY: ratio 20/60/120/180d = {', '.join(f'{expected[w]:.4f}' for w in expected)} equal the hand sums of short over total, "
+        "one session after the window ends; the 5d ratio is not emitted."
     )
 
 
-def test_coverage_above_one_is_nulled_as_a_physical_impossibility():
-    """Off-exchange volume is a SUBSET of the consolidated tape, so coverage > 1.0 means the
-    numerator and denominator are not the same security.
-
-    After the split-basis fix, the 2026-09-12 build's 179 surviving breaches were all REUSED
-    TICKERS — `WTW` carrying Weight Watchers' RegSHO volume over Willis Towers Watson's price
-    grid (135 cells, max 3.71), plus AXON's rename chain and pre-Gen-Digital `GEN`. Nulled, not
-    clipped: a clip at 1.0 would assert that RegSHO saw the entire tape.
-    """
-    idx = pd.DatetimeIndex(pd.bdate_range("2021-01-04", periods=60))
-    regsho = pd.DataFrame(
-        [{"date": d, "ticker": t, "total_volume": v, "short_volume": v * 0.4} for d in idx for t, v in (("GOOD", 250_000.0), ("REUSED", 3_000_000.0))]
+def test_acceleration_is_the_five_day_ratio_minus_the_window_ratio() -> None:
+    idx, hist = _ramp_history(200)
+    df = _shortvol_fields(hist, idx, None, None)
+    last = idx[200]
+    spot = 500 / 500  # days 196..200: short 100 of total 100 each
+    acc60 = float(cast(Any, df["ic_shortvol_acceleration_60d"].at[last, "A"]))
+    acc120 = float(cast(Any, df["ic_shortvol_acceleration_120d"].at[last, "A"]))
+    assert acc60 == pytest.approx(spot - 5450 / 6000, rel=1e-12)
+    assert acc120 == pytest.approx(spot - 11050 / 30000, rel=1e-12)
+    assert "ic_shortvol_acceleration" not in df
+    print(
+        f"SANITY: acceleration_60d = 1.0 - 5450/6000 = {acc60:.4f} and acceleration_120d = 1.0 - 11050/30000 = {acc120:.4f}, differences of ratios in ratio points."
     )
-    tape = pd.DataFrame({"GOOD": [1_000_000.0] * len(idx), "REUSED": [1_000_000.0] * len(idx)}, index=idx)
 
-    cov = _shortvol_fields(regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
-    last = idx[-1]
-    assert cov.loc[last, "GOOD"] == pytest.approx(0.25, rel=1e-6), "a real reading is kept"
-    assert np.isnan(float(cast(Any, cov.loc[last, "REUSED"]))), "3.0x the tape is impossible and must be NaN"
-    assert not (cov == 1.0).any().any(), "nulled, never clipped to 1.0"
-    print("\n=== SANITY CHECK: coverage ceiling ===")
-    print(f"  GOOD reads {cov.loc[last, 'GOOD']:.2f}; a ticker whose RegSHO volume is 3x the tape reads NaN rather than 3.0. Validated.")
+
+def test_ratio_windows_start_once_half_the_window_is_observed() -> None:
+    idx, hist = _ramp_history(200)
+    df = _shortvol_fields(hist, idx, None, None)
+
+    def first(name: str) -> int:
+        return int(np.argmax(df[name]["A"].notna().to_numpy()))
+
+    # row r publishes days 1..r, so a window needs r >= max(3, window // 2) observed days
+    assert [first(f"ic_shortvol_ratio_{w}d") for w in (20, 60, 120, 180)] == [10, 30, 60, 90]
+    assert first("ic_shortvol_acceleration_60d") == 30 and first("ic_shortvol_acceleration_120d") == 60
+    assert df["ic_shortvol_ratio_180d"]["A"].iloc[:90].isna().all()
+    print(
+        "SANITY: first finite row is 10/30/60/90 for ratio 20/60/120/180d and 30/60 for acceleration 60/120d; every earlier row is NaN, never a partial-window value."
+    )
+
+
+def test_tenure_mask_cuts_every_new_leg_and_zero_and_missing_days_are_handled() -> None:
+    idx, hist = _ramp_history(200, ("A", "B"))
+    mask = pd.DataFrame(True, index=idx, columns=["A", "B"])
+    mask.loc[idx[150:], "A"] = False
+    df = _shortvol_fields(hist, idx, None, None, tenure_mask=mask)
+    free = _shortvol_fields(hist, idx, None, None)
+    for name in df:
+        assert df[name]["A"].iloc[150:].isna().all(), name
+        pd.testing.assert_series_equal(df[name]["B"], free[name]["B"])
+    assert float(cast(Any, df["ic_shortvol_ratio_60d"].at[idx[149], "A"])) == pytest.approx(
+        float(cast(Any, df["ic_shortvol_ratio_60d"].at[idx[149], "B"]))
+    )
+
+    short_idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=22))
+    zero = pd.DataFrame({"date": short_idx[:21], "ticker": "Z", "short_volume": 0.0, "total_volume": 100.0})
+    zero_ratio = _shortvol_fields(zero, short_idx, None, None)["ic_shortvol_ratio_20d"]["Z"]
+    assert zero_ratio.iloc[21] == 0.0, "an observed zero short volume is a zero ratio, not missing"
+
+    gap = pd.DataFrame({"date": short_idx[:21], "ticker": "G", "short_volume": np.arange(1.0, 22.0), "total_volume": 100.0})
+    gap.loc[5, "total_volume"] = np.nan
+    gap_ratio = _shortvol_fields(gap, short_idx, None, None)["ic_shortvol_ratio_20d"]["G"]
+    window = [day for day in range(2, 22) if day != 6]  # the 20 rows ending on day 21, minus the unobserved day 6
+    assert pd.isna(gap_ratio.iloc[6]), "the day with a missing total is unknown the next session"
+    assert gap_ratio.iloc[21] == pytest.approx(sum(window) / (100.0 * len(window)))
+    print(
+        "SANITY: the tenure mask NaNs every leg after tenure ends and leaves a covered ticker bit-identical; "
+        "a zero short day is ratio 0.0; a missing-total day is excluded from both sums and unknown itself."
+    )
+
+
+def test_removed_short_flow_features_are_absent_everywhere() -> None:
+    removed = ("ic_shortvol_market_coverage", "ic_shortvol_ratio_5d", "ic_shortvol_acceleration")
+    root = Path(__file__).resolve().parents[2]
+    paths = ("configs/models/lgbm_modelling.yml", "configs/models/linear_modelling.yml", "configs/validate.yml")
+    texts = {path: (root / path).read_text(encoding="utf-8").replace("\r\n", "\n") for path in paths}
+    for name in removed:
+        assert name not in EMISSION
+        for path, text in texts.items():
+            assert f"f_{name}\n" not in text and f"f_{name}:" not in text, (path, name)
+    assert not hasattr(short_flow, "_shortvol_market_coverage") and not hasattr(short_flow, "_guard_coverage")
+    assert len(EMISSION) == 11 and sum(name.startswith("ic_shortvol_") for name in EMISSION) == 9
+    print(
+        f"SANITY: market_coverage, ratio_5d and the unsuffixed acceleration are in no EMISSION, model list or validate bound; {len(EMISSION)} short-flow features remain."
+    )

@@ -80,7 +80,6 @@ validate:
         fields:
         - f_ic_shortvol_ratio_20d
         - f_ic_shortvol_turnover_20d
-        - f_ic_shortvol_market_coverage
         start: '2018-09-10'
         end: '2020-01-28'
         reason: 20-session RegSHO gap spans the Nasdaq suspension and post-relisting warm-up
@@ -108,20 +107,23 @@ validate:
         f_ic_insider_buyer_breadth_120d:
         - 0.0
         - 1.0
-        f_ic_shortvol_ratio_5d:
-        - 0.0
-        - 1.0
         f_ic_shortvol_ratio_20d:
         - 0.0
         - 1.0
         f_ic_shortvol_ratio_60d:
         - 0.0
         - 1.0
-        f_ic_shortvol_acceleration:
+        f_ic_shortvol_ratio_120d:
+        - 0.0
+        - 1.0
+        f_ic_shortvol_ratio_180d:
+        - 0.0
+        - 1.0
+        f_ic_shortvol_acceleration_60d:
         - -1.0
         - 1.0
-        f_ic_shortvol_market_coverage:
-        - 0.0
+        f_ic_shortvol_acceleration_120d:
+        - -1.0
         - 1.0
         f_ic_ftd_persistence_30d:
         - 0.0

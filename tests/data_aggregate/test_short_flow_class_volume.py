@@ -1,7 +1,6 @@
 """Multi-class volume denominators (Q2e', plan addendum §13.1).
 
-`ic_ftd_to_adv20` and `ic_shortvol_market_coverage` divide a class-summed numerator (fails and RegSHO
-volume in reference shares, from extraction) by tape volume. The tape side now sums the issuer's
+`ic_ftd_to_adv20` divides a class-summed numerator (fails in reference shares, from extraction) by tape volume. The tape side now sums the issuer's
 secondary classes too, each on the master's `secondary_class` dates and at its conversion ratio.
 Known-truth fixtures: two classes at ratio 1, a BRK-style ratio step at a one-class split, a missing
 class bar, a class bar outside its master interval, and a single-class issuer that must not move.
@@ -22,16 +21,15 @@ from omegaconf import OmegaConf
 from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.quotes import terminal_rows
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS
-from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
+from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, secondary_class_volume, with_class_volume
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from tests.conftest import make_frames
 from tests.data_aggregate.test_institutional_step_contract import ftd_lines, lineage_rows, short_lines
-from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel, split_factor
+from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel
 
 
 def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
@@ -121,17 +119,13 @@ def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str
     control = build_short_flow_feature_panel(frames, regsho, fails_history=fails, capital=ShortFlowCapital(shares, volume))
     control = control.set_index(["date", "ticker"]).sort_index()
 
-    assert pd.isna(panel.loc[(idx[bad_position + 1], "LEN"), "f_ic_shortvol_market_coverage"])
     assert pd.isna(panel.loc[(pd.Timestamp("2024-02-05"), "LEN"), "f_ic_ftd_to_adv20"])
     assert panel.loc[(pd.Timestamp("2024-02-05"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
-    if invalid != "ratio":
-        expected = 300 / (1_000 + (1_000 if invalid == "product" else 500))
-        assert panel.loc[(idx[bad_position + 21], "LEN"), "f_ic_shortvol_market_coverage"] == pytest.approx(expected)
-    unchanged = [column for column in panel if column not in {"f_ic_shortvol_market_coverage", "f_ic_ftd_to_adv20"}]
+    unchanged = [column for column in panel if column != "f_ic_ftd_to_adv20"]
     pd.testing.assert_frame_equal(panel[unchanged], control[unchanged])
     pd.testing.assert_frame_equal(cast(pd.DataFrame, panel.xs("MRK", level="ticker")), cast(pd.DataFrame, control.xs("MRK", level="ticker")))
     print("\n=== SANITY CHECK: complete tape support ===")
-    print(f"  {invalid}: coverage and published FTD/ADV stay unknown across unsupported tape; participation, turnover and MRK stay exact. Validated.")
+    print(f"  {invalid}: published FTD/ADV stays unknown across unsupported tape; every short-volume leg and MRK stay exact. Validated.")
 
 
 def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_class(
@@ -206,13 +200,12 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
     panel = step.build_panel().set_index(["date", "ticker"])
 
     assert -1.0 + 500.0 == 499.0
-    assert pd.isna(panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_market_coverage"])
     assert pd.isna(panel.loc[(pd.Timestamp("2024-02-05"), "LEN"), "f_ic_ftd_to_adv20"])
     assert panel.loc[(pd.Timestamp("2024-02-05"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
-    assert panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_ratio_5d"] == pytest.approx(1 / 3)
+    assert panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_ratio_20d"] == pytest.approx(1 / 3)
     print("\n=== SANITY CHECK: public step canonical support ===")
     print(
-        "  canonical-1 plus class500 cannot hide unsupported tape behind a positive499 sum; returned coverage/FTD stay unknown and participation stays1/3. Validated."
+        "  canonical-1 plus class500 cannot hide unsupported tape behind a positive499 sum; returned FTD stays unknown and participation stays1/3. Validated."
     )
 
 
@@ -237,17 +230,14 @@ def test_two_classes_at_ratio_one_sum_into_both_denominators() -> None:
     day = (pd.Timestamp("2024-02-05"), "LEN")
     assert old.loc[day, "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
     assert new.loc[day, "f_ic_ftd_to_adv20"] == pytest.approx(0.2)
-    assert new.loc[day, "f_ic_shortvol_market_coverage"] == pytest.approx(0.2)
-    assert old.loc[day, "f_ic_shortvol_market_coverage"] == pytest.approx(0.3)
     assert not missing.to_numpy().any()
     pd.testing.assert_frame_equal(new.xs("MRK", level="ticker"), old.xs("MRK", level="ticker"))
     moved = [c for c in new.columns if not new[c].equals(old[c])]
-    assert sorted(moved) == ["f_ic_ftd_to_adv20", "f_ic_shortvol_market_coverage"]
+    assert moved == ["f_ic_ftd_to_adv20"]
     print("\n=== SANITY CHECK: two classes at ratio 1 ===")
     print(
-        f"  LEN fails/ADV {old.loc[day, 'f_ic_ftd_to_adv20']:.2f} -> {new.loc[day, 'f_ic_ftd_to_adv20']:.2f} and coverage "
-        f"{old.loc[day, 'f_ic_shortvol_market_coverage']:.2f} -> {new.loc[day, 'f_ic_shortvol_market_coverage']:.2f} "
-        f"(LEN-B's 500 a day joins LEN's 1,000); only those two columns moved; MRK identical. Validated."
+        f"  LEN fails/ADV {old.loc[day, 'f_ic_ftd_to_adv20']:.2f} -> {new.loc[day, 'f_ic_ftd_to_adv20']:.2f} "
+        f"(LEN-B's 500 a day joins LEN's 1,000); only that column moved; MRK identical. Validated."
     )
 
 
@@ -279,20 +269,14 @@ def test_brk_style_ratio_step_matches_the_as_traded_identity_across_a_one_class_
         ]
     )
     ratio = _fails_fields(fails, idx, None, tape, splits)["ic_ftd_to_adv20"]
-    regsho = pd.DataFrame(
-        [{"date": d, "ticker": "BRK-B", "short_volume": 1.0, "total_volume": 1_000 + 30 * 5 if d < split else 50_000 + 1_500 * 5} for d in idx]
-    )
-    df_regsho = terminal_rows(regsho, ("short_volume", "total_volume"), split_factor(splits, idx, ["BRK-B"]))
-    cov = _shortvol_fields(df_regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
 
     assert _cell(ratio, "2010-01-05", "BRK-B") == pytest.approx(160 / 2_300)
     assert _cell(ratio, "2010-03-08", "BRK-B") == pytest.approx(2_500 / 115_000)
-    assert cov["BRK-B"].dropna().round(12).eq(0.5).all() and cov["BRK-B"].notna().sum() > 50
     assert not missing.to_numpy().any()
     print("\n=== SANITY CHECK: BRK ratio step on the restated tape ===")
     print(
         f"  fails/ADV {_cell(ratio, '2010-01-05', 'BRK-B'):.4f} before (as-traded 160/2,300) and {_cell(ratio, '2010-03-08', 'BRK-B'):.4f} after "
-        f"(2,500/115,000); coverage 0.50 on every day across the 50:1 one-class split. Validated."
+        f"(2,500/115,000) across the 50:1 one-class split. Validated."
     )
 
 

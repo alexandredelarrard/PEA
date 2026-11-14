@@ -47,15 +47,30 @@ def _cast() -> list[dict]:
         transaction_date="2022-09-30",
     )
     buyer = row(accession_number="b", owner_cik="1", shares=1000, shares_owned_after=11000)
-    return [holder, seller, buyer]
+    return [holder, seller, buyer, _buyer_prior()]
+
+
+def _buyer_prior(filing_date: str = "2022-09-28") -> dict:
+    """The buyer's direct holdings snapshot of 100 shares, public long before the purchase."""
+    return row(
+        accession_number="bp",
+        owner_cik="1",
+        security_type="nonderiv_holding",
+        transaction_code=None,
+        shares=None,
+        price_per_share=None,
+        shares_owned_after=100,
+        filing_date=filing_date,
+        transaction_date=None,
+    )
 
 
 def test_buyer_seller_and_non_trader_holder_share_the_lagged_denominator() -> None:
     values = _ratio(_cast())
-    # Holdings 60 days before 2024-02-15 (2023-12-17); more than a year of rows exists: non-trader 5,000 + seller 900; the buyer's own 11,000 is not yet public.
-    assert values.loc["2024-02-15"] == np.float64(1000 / 5900) or abs(values.loc["2024-02-15"] - 1000 / 5900) < 1e-12
+    # Holdings 60 days before 2024-02-15 (2023-12-17); more than a year of rows exists: non-trader 5,000 + seller 900 + buyer's prior 100; the buyer's own 11,000 is not yet public.
+    assert values.loc["2024-02-15"] == np.float64(1000 / 6000) or abs(values.loc["2024-02-15"] - 1000 / 6000) < 1e-12
     print(
-        f"SANITY: window net +1000 over holdings 5000+900 sixty days earlier = {values.loc['2024-02-15']:.6f} (hand 1000/5900 = {1000 / 5900:.6f})."
+        f"SANITY: window net +1000 over holdings 5000+900+100 sixty days earlier = {values.loc['2024-02-15']:.6f} (hand 1000/6000 = {1000 / 6000:.6f})."
     )
 
 
@@ -81,8 +96,8 @@ def test_latest_row_may_be_a_withholding_row() -> None:
         )
     )
     values = _ratio(rows)
-    assert abs(values.loc["2024-02-15"] - 1000 / 4900) < 1e-12
-    print(f"SANITY: the holder's later F row resets its balance to 4000: {values.loc['2024-02-15']:.6f} = 1000/(4000+900).")
+    assert abs(values.loc["2024-02-15"] - 1000 / 5000) < 1e-12
+    print(f"SANITY: the holder's later F row resets its balance to 4000: {values.loc['2024-02-15']:.6f} = 1000/(4000+900+100).")
 
 
 def test_holdings_snapshot_row_updates_the_balance() -> None:
@@ -101,14 +116,14 @@ def test_holdings_snapshot_row_updates_the_balance() -> None:
         )
     )
     values = _ratio(rows)
-    assert abs(values.loc["2024-02-15"] - 1000 / 7900) < 1e-12
-    print(f"SANITY: a direct holdings snapshot sets the balance to 7000: {values.loc['2024-02-15']:.6f} = 1000/(7000+900).")
+    assert abs(values.loc["2024-02-15"] - 1000 / 8000) < 1e-12
+    print(f"SANITY: a direct holdings snapshot sets the balance to 7000: {values.loc['2024-02-15']:.6f} = 1000/(7000+900+100).")
 
 
 def test_split_inside_the_window_keeps_one_unit_basis() -> None:
     values = _ratio(_cast(), split="2024-01-20")
     # All rows pre-date the split and are put in terminal (post-split) units x10: the ratio is unchanged.
-    assert abs(values.loc["2024-02-15"] - 1000 / 5900) < 1e-12
+    assert abs(values.loc["2024-02-15"] - 1000 / 6000) < 1e-12
     print(f"SANITY: a 10:1 split after every row rescales numerator and holdings alike: {values.loc['2024-02-15']:.6f}.")
 
 
@@ -117,8 +132,8 @@ def test_disputed_account_is_left_out_of_numerator_and_holdings() -> None:
         {"ticker": ["AAA"], "owner_cik": ["0000000002"], "start": [pd.Timestamp("2022-10-01")], "stop": [pd.Timestamp("2024-06-01")]}
     )
     values = _ratio(_cast(), disputes=dispute)
-    assert abs(values.loc["2024-02-15"] - 1000 / 5000) < 1e-12
-    print(f"SANITY: the disputed seller leaves the holdings (5000 only): {values.loc['2024-02-15']:.6f} = 1000/5000.")
+    assert abs(values.loc["2024-02-15"] - 1000 / 5100) < 1e-12
+    print(f"SANITY: the disputed seller leaves the holdings (5000+100): {values.loc['2024-02-15']:.6f} = 1000/5000.")
 
 
 def test_no_known_holdings_sixty_days_earlier_is_nan() -> None:
@@ -130,7 +145,24 @@ def test_no_known_holdings_sixty_days_earlier_is_nan() -> None:
 
 def test_holdings_are_unknown_before_a_year_of_balance_rows() -> None:
     holder = row(accession_number="h", owner_cik="3", transaction_code="F", shares=10, shares_owned_after=5000, filing_date="2023-10-01", transaction_date="2023-09-29")
-    values = _ratio([holder, _cast()[2]])
+    values = _ratio([holder, _cast()[2], _buyer_prior("2023-10-01")])
     # 60 days before 2024-02-15 is 2023-12-17, under 365 days after the ticker's first balance row (2023-10-02): unknown.
     assert pd.isna(values.loc["2024-02-15"])
     print("SANITY: holdings need 365 days of balance rows on the ticker; with 77 days the ratio is NaN, not 1000/5000.")
+
+
+def test_account_first_seen_in_the_window_is_left_out_of_the_numerator() -> None:
+    newcomer_sale = row(
+        accession_number="n", owner_cik="4", transaction_code="S", shares=3000, shares_owned_after=500, filing_date="2024-02-10", transaction_date="2024-02-08"
+    )
+    base = _ratio(_cast())
+    values = _ratio([*_cast(), newcomer_sale])
+    # Owner 4 has no balance 60 days earlier: its 3000-share sale is neither in the numerator nor (its 500) in the holdings.
+    assert abs(values.loc["2024-02-15"] - 1000 / 6000) < 1e-12
+    assert values.loc["2024-02-11":"2024-03-01"].dropna().ge(-1.0).all()
+    sale_only = _ratio([_cast()[0], _cast()[1], _buyer_prior(), newcomer_sale])
+    assert sale_only.loc["2024-02-11":"2024-02-20"].isna().all()
+    print(
+        f"SANITY: a newcomer's 3000-share sale changes nothing ({values.loc['2024-02-15']:.6f} = base {base.loc['2024-02-15']:.6f}); "
+        f"min over the window {values.min():.4f} >= -1; with only that sale the ratio is NaN."
+    )

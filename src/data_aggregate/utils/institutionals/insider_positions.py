@@ -59,33 +59,57 @@ def cumulative_positions(
 
     Holdings are, per ticker, the sum over direct accounts (owner x class) of the latest post-transaction balance public
     on the day, carried forward; `populations` maps each output name to its population code (`None` = all insiders).
-    Accounts listed in `excluded` (disputed quantities) are left out of numerator and holdings. A cell is NaN
-    without an active supported trade or without positive holdings `days` earlier.
+    The numerator uses the accounts of the denominator: only accounts with a positive latest public balance on or before
+    `days` days earlier (as in `account_conviction`) contribute their trades, so an account first seen inside the window
+    adds neither its sales nor its purchases and a ratio cannot fall below -1. Accounts in `excluded` (disputed quantities)
+    are left out of numerator and holdings. A cell is NaN without an active trade of such an account or without positive holdings `days` earlier.
     """
     if trades.empty or idx.empty:
         return {}
     lots, account_known, disputed = _direct_lots(trades, excluded)
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
     balances = _balance_events(trades.loc[account_known], other_flows, disputed)
-    shape = (len(idx) + 1, len(columns))
-    start = idx.searchsorted(lots["visible_from"].to_numpy(), side="left")
+    asof = idx.searchsorted((idx - pd.Timedelta(days=days)).to_numpy(), side="right") - 1
     stop_day = lots["anchor"] + pd.Timedelta(days=days)
     stop_day = stop_day.where(lots["visible_until"].isna() | stop_day.le(lots["visible_until"]), lots["visible_until"])
-    stop = idx.searchsorted(stop_day.to_numpy(), side="left")
-    lot_col = columns.get_indexer(pd.Index(lots["ticker"]))
-    net = lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]).to_numpy(dtype=float)
-    asof = idx.searchsorted((idx - pd.Timedelta(days=days)).to_numpy(), side="right") - 1
+    lots = lots.assign(
+        account=lots["owner_cik"].astype(str) + "|" + security_class(lots["security_title"]),
+        start=idx.searchsorted(lots["visible_from"].to_numpy(), side="left"),
+        stop=idx.searchsorted(stop_day.to_numpy(), side="left"),
+        net=lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]),
+    )
+    balances = balances.assign(account=balances["owner_cik"].astype(str) + "|" + balances["klass"])
+    by_balance = dict(tuple(balances.groupby("ticker")))
     first = balances.groupby("ticker")["visible_from"].min().reindex(columns)
     warm = ((idx - pd.Timedelta(days=days)).to_numpy()[:, None] >= (first + pd.Timedelta(days=HOLDINGS_WARMUP_DAYS)).to_numpy()[None, :]).astype(bool)
+    numerator = {name: np.zeros((len(idx), len(columns))) for name in populations}
+    active = {name: np.zeros((len(idx), len(columns))) for name in populations}
+    left_out = active_total = 0
+    for ticker, group in lots.groupby("ticker"):
+        col = columns.get_loc(ticker)
+        codes, accounts = pd.factorize(group["account"])
+        shape = (len(idx) + 1, len(accounts))
+        start, stop = group["start"].to_numpy(), group["stop"].to_numpy()
+        prior = _prior_balances(by_balance.get(ticker), accounts, idx)[np.maximum(asof, 0)]
+        prior[asof < 0] = np.nan
+        usable = prior > 0
+        live = _accumulate_intervals(np.ones(len(group)), start, stop, codes, shape) > 0
+        left_out += int((live & ~usable).sum())
+        active_total += int(live.sum())
+        for name, code in populations.items():
+            in_pop = np.ones(len(group), dtype=bool) if code is None else group["population"].eq(code).to_numpy()
+            net = _accumulate_intervals(group["net"].to_numpy(dtype=float)[in_pop], start[in_pop], stop[in_pop], codes[in_pop], shape)
+            count = _accumulate_intervals(np.ones(int(in_pop.sum())), start[in_pop], stop[in_pop], codes[in_pop], shape)
+            micro = np.rint(net * MICRO).astype(np.int64)
+            numerator[name][:, col] = np.where(usable, micro, 0).sum(axis=1) / MICRO
+            active[name][:, col] = ((count > 0) & usable).sum(axis=1)
+    _log.info("insider holdings ratio %sd: %s of %s active account-days left out (no positive prior balance)", days, left_out, active_total)
     out: dict[str, pd.DataFrame] = {}
     for name, code in populations.items():
-        in_pop = np.ones(len(lots), dtype=bool) if code is None else lots["population"].eq(code).to_numpy()
-        numerator = _accumulate_intervals(net[in_pop], start[in_pop], stop[in_pop], lot_col[in_pop], shape)
-        active = _accumulate_intervals(np.ones(int(in_pop.sum())), start[in_pop], stop[in_pop], lot_col[in_pop], shape)
         holdings = _holdings(balances, code, idx, columns)
         lagged = np.where((asof >= 0)[:, None], holdings[np.maximum(asof, 0)], np.nan)
-        known = (lagged > 0) & (active > 0) & warm
-        out[name] = pd.DataFrame(np.divide(numerator, lagged, out=np.full_like(numerator, np.nan), where=known), index=idx, columns=columns)
+        known = (lagged > 0) & (active[name] > 0) & warm
+        out[name] = pd.DataFrame(np.divide(numerator[name], lagged, out=np.full_like(lagged, np.nan), where=known), index=idx, columns=columns)
     return out
 
 

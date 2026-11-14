@@ -351,7 +351,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     assert all({"issuer_cik", "lineage_role"}.issubset(kwargs["columns"]) for kwargs in insider_reads)
     for table in (Tables.sec_13d, Tables.sec_13g):
         projected = [kwargs for source, kwargs in reads if source is table]
-        assert len(projected) == 5 and all(kwargs == {"project": True, "where": {"ticker": list(names)}} for kwargs in projected)
+        assert len(projected) == 5 and all(kwargs["where"] == {"ticker": list(names)} and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
     print("SANITY: 491 calculation names/982 owner-history rows reach five public builds; 15 deliveries match exactly across batches/order, NULLs and counts.")
 # fmt: on
 
@@ -460,7 +460,7 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(
         return original(table, *args, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "load", capture)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], pd.Timestamp(start)), terminal_basis_factor(frames.security_basis))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], pd.Timestamp(start)), None, terminal_basis_factor(frames.security_basis))
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
@@ -627,7 +627,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
         return {"202401a": pd.Timestamp("2024-02-05")}
 
     monkeypatch.setattr("src.data_aggregate.utils.institutionals.short_flow_features._ftd_available_dates", fixed_clock)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), terminal_basis_factor(frames.security_basis))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), None, terminal_basis_factor(frames.security_basis))
     assert result is not None and len(calls) == 1
     values = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
     assert pd.isna(values.loc[(pd.Timestamp("2024-02-02"), "AAA")])

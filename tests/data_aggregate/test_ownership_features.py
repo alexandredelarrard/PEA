@@ -9,6 +9,8 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
     COUNT_CLIP,
     COUNT_WINDOW,
     EMISSION,
+    CONCENTRATED_MIN_FILINGS,
+    SubjectIdentity,
     _filings,
     build_ownership_feature_panel,
 )
@@ -146,3 +148,55 @@ def test_marker_filings_are_counted_once_next_to_parsed_ones(sqlite_store) -> No
     assert len(_filings(parsed_only)) == 2 and len(_filings(with_markers)) == 3
     print("\n=== SANITY CHECK: marker filings ===")
     print("  Marker-only filing counted once, parsed+marker filing once, co-filers once: 3 of 3 (parsed-only read sees 2). Validated.")
+
+
+def _identity():
+    lineage = pd.DataFrame({"canonical_ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"], "role": ["cik_window", "cik_window"]})
+    lines = pd.DataFrame(
+        {"canonical_company": ["AAA", "BBB"], "cusip": ["AAAA00001", "BBBB00001"], "lineage_role": ["canonical_current", "canonical_current"]}
+    )
+    return SubjectIdentity.from_tables(lineage, lines)
+
+
+def _row(ticker, accession, rp_seq=0, cusip="", rp_cik=""):
+    return {
+        "ticker": ticker,
+        "accession_number": accession,
+        "filing_date": pd.Timestamp("2025-02-10"),
+        "rp_seq": rp_seq,
+        "cusip": cusip,
+        "reporting_person_cik": rp_cik,
+    }
+
+
+def test_filings_the_ticker_filed_about_others_are_dropped_and_its_subject_filings_kept():
+    df = pd.DataFrame(
+        [
+            _row("AAA", "0000009999-25-000001", cusip="AAAA00001"),  # subject: its own CUSIP
+            _row("AAA", "0000000001-25-000002", rp_seq=-1),  # marker submitted under AAA's own CIK: AAA filed it
+            _row("AAA", "0000009999-25-000003", rp_seq=-1),  # marker by an unrelated submitter: kept
+            _row("AAA", "0000009999-25-000004", cusip="BBBB00001"),  # about BBB ...
+            _row("BBB", "0000009999-25-000004", cusip="BBBB00001"),  # ... listed under both: BBB is the subject
+            _row("AAA", "0000009999-25-000005", rp_cik="0000000001"),  # legacy parsed row, AAA is the reporting person
+            _row("AAA", "0000009999-25-000006", rp_cik="0000000555"),  # legacy parsed row, another reporting person: kept
+        ]
+    )
+    kept = _filings(df, _identity())
+    assert sorted(zip(kept["ticker"], kept["accession_number"])) == [
+        ("AAA", "0000009999-25-000001"),
+        ("AAA", "0000009999-25-000003"),
+        ("AAA", "0000009999-25-000006"),
+        ("BBB", "0000009999-25-000004"),
+    ]
+    assert len(_filings(df)) == 7, "without an identity every (ticker, accession) pair counts"
+    print("\n=== SANITY CHECK: filer-side filings dropped ===")
+    print("  own-CIK prefix, other-ticker CUSIP subject and own reporting person drop; own CUSIP, unrelated marker and other person stay. Validated.")
+
+
+def test_a_concentrated_institution_submitter_loses_its_markers_but_not_its_parsed_filings():
+    hub = [_row("AAA", f"0000007777-25-{i:06d}", rp_seq=-1) for i in range(CONCENTRATED_MIN_FILINGS)]
+    other = [_row("BBB", "0000007777-25-999999", rp_seq=-1), _row("AAA", "0000007777-25-777777", cusip="AAAA00001")]
+    kept = _filings(pd.DataFrame(hub + other), _identity())
+    assert sorted(zip(kept["ticker"], kept["accession_number"])) == [("AAA", "0000007777-25-777777"), ("BBB", "0000007777-25-999999")]
+    print("\n=== SANITY CHECK: concentrated submitter ===")
+    print(f"  {CONCENTRATED_MIN_FILINGS} markers of one prefix under one ticker drop; its subject-CUSIP filing and a minority marker stay. Validated.")

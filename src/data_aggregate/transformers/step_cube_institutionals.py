@@ -32,6 +32,8 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
     EMISSION as OWNERSHIP_EMISSION,
 )
 from src.data_aggregate.utils.institutionals.ownership_features import (
+    SUBJECT_COLUMNS,
+    SubjectIdentity,
     build_ownership_feature_panel,
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import (
@@ -118,13 +120,14 @@ class StepCubeInstitutionals(Step):
         # Load shared price and class inputs once.
         frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
         df_lines = institutional_inputs.load_ftd_lines(self._store)
+        df_lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
         merger.add(self._insider_panel(frames, df_lines, df_factor), "insider-trading")
-        merger.add(self._short_flow_panel(frames, df_lines, df_factor), "short-flow")
-        merger.add(self._ownership_panel(frames), "beneficial-ownership")
+        merger.add(self._short_flow_panel(frames, df_lines, df_lineage, df_factor), "short-flow")
+        merger.add(self._ownership_panel(frames, df_lines, df_lineage), "beneficial-ownership")
 
         # Keep declared inputs even when a source has no qualifying observations.
         fields = [*INSIDER_EMISSION, *short_flow.EMISSION, *OWNERSHIP_EMISSION]
@@ -161,9 +164,10 @@ class StepCubeInstitutionals(Step):
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)
 
-    def _short_flow_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
+    def _short_flow_panel(
+        self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None, df_factor: pd.DataFrame
+    ) -> pd.DataFrame | None:
         # Build the short-volume series and its lineage-fallback evidence and the FTD series from the as-filed lines; clean the raw class tape once.
-        lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_classes = (
             lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)] if lines is not None else None
         )
@@ -198,12 +202,13 @@ class StepCubeInstitutionals(Step):
             publication = FtdPublication(df_coverage, available)
         return build_short_flow_feature_panel(frames, df_short, settlement, capital, publication, df_tenure)
 
-    def _ownership_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
+    def _ownership_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
 
         # Load the two schedules and independent global completeness frontiers.
-        df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe, markers=True)
-        df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe, markers=True)
+        df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        identity = SubjectIdentity.from_tables(lineage, lines) if lineage is not None and lines is not None else None
         complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
         complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
 
@@ -213,6 +218,7 @@ class StepCubeInstitutionals(Step):
             df_13d,
             df_13g,
             availability=self._availability,
+            identity=identity,
             complete_through_13d=complete_through_13d,
             complete_through_13g=complete_through_13g,
         )

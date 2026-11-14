@@ -1,9 +1,10 @@
 """Schedule 13D (active) and Schedule 13G (passive) filing counts on the target ticker.
 
-Each feature counts the filings (one per `(ticker, accession_number)`, initial filings and amendments alike) stamped
-on the ticker over the trailing `COUNT_WINDOW` trading days. Only fields present in every era are used, so the count
-means the same thing across the whole history: no `date_of_event` (structured filings only) and no filer identity
-(CIKs change with registrations). A filing counts from the first session on or after its filing date.
+Each feature counts the filings (one per `(ticker, accession_number)`, initial filings and amendments alike) about
+the ticker over the trailing `COUNT_WINDOW` trading days. Only fields present in every era are used, so the count
+means the same thing across the whole history: no `date_of_event` (structured filings only). The tables key a filing
+by the ticker's CIK whether the ticker is its subject or its filer, so `_subject_side` drops the filings the ticker's
+own entity filed about others (an approximation for markers: their only evidence is the accession prefix). A filing counts from the first session on or after its filing date.
 
 The filing volume itself is not stationary (13G holders multiply through 2016, the 2024 SEC rule change cuts routine
 amendments), so each count is standardised across the universe on every date and clipped at `COUNT_CLIP`: the feature
@@ -12,6 +13,8 @@ window is a count of 0 before standardising; an uncovered cell is NaN and sits o
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -29,17 +32,81 @@ COUNT_WINDOW = 126
 #: Clip of the cross-sectional z-score of a count.
 COUNT_CLIP = 5.0
 
+#: A filer prefix counts as one institution's own submitter from this many accessions under one ticker ...
+CONCENTRATED_MIN_FILINGS = 100
+
+#: ... holding at least this share of all the prefix's accessions in the universe.
+CONCENTRATED_SHARE = 0.5
+
+#: The columns the subject test reads beyond the counting columns.
+SUBJECT_COLUMNS = ("ticker", "accession_number", "filing_date", "rp_seq", "cusip", "reporting_person_cik")
+
 EMISSION: dict[str, str] = {
     "ic_act_13d_count_126d_z": "raw",
     "ic_bo_13g_count_126d_z": "raw",
 }
 
 
-def _filings(df_schedule: pd.DataFrame) -> pd.DataFrame:
-    """One row per `(ticker, accession_number)` with its filing date."""
+@dataclass(frozen=True)
+class SubjectIdentity:
+    """Which `(ticker, CIK)` and `(ticker, CUSIP8)` pairs belong to the ticker's own lineage."""
+
+    ciks: pd.MultiIndex
+    cusips: pd.MultiIndex
+
+    @classmethod
+    def from_tables(cls, lineage: pd.DataFrame, lines: pd.DataFrame) -> SubjectIdentity:
+        """Lineage CIKs from `universe_cik_symbol` and the non-excluded CUSIPs of `universe_cusip`."""
+        windows = lineage.loc[lineage["role"].isin(("cik_window", "cik_event")), ["canonical_ticker", "cik"]].drop_duplicates()
+        kept = lines.loc[lines["cusip"].notna() & lines["lineage_role"].ne("excluded"), ["canonical_company", "cusip"]]
+        return cls(
+            ciks=pd.MultiIndex.from_frame(windows),
+            cusips=pd.MultiIndex.from_arrays([kept["canonical_company"], kept["cusip"].str[:8]]).drop_duplicates(),
+        )
+
+
+def _filings(df_schedule: pd.DataFrame, identity: SubjectIdentity | None = None) -> pd.DataFrame:
+    """One row per `(ticker, accession_number)` about the ticker, with its filing date."""
     df_filings = df_schedule.assign(filing_date=pd.to_datetime(df_schedule["filing_date"], errors="coerce").dt.normalize())
     df_filings = df_filings.dropna(subset=["ticker", "accession_number", "filing_date"])
+    if identity is not None and {"rp_seq", "cusip", "reporting_person_cik"} <= set(df_filings.columns):
+        df_filings = df_filings.loc[_subject_side(df_filings, identity)]
     return df_filings.groupby(["ticker", "accession_number"], as_index=False)["filing_date"].min()
+
+
+def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Series:
+    """Rows of accessions about the ticker: the table keys filings by the ticker's CIK whether it is the subject or the filer.
+
+    A parsed CUSIP of the ticker proves the subject. Otherwise an accession is the ticker's own filing about others when its number is prefixed
+    by, or a reporting person is, one of the ticker's CIKs, when a CUSIP of another universe ticker is its subject, or (marker only) when its
+    filer prefix is a concentrated institution-side submitter: at least `CONCENTRATED_MIN_FILINGS` accessions and `CONCENTRATED_SHARE` of the
+    prefix's filings sit under this one ticker.
+    """
+    ticker, accession = df_filings["ticker"], df_filings["accession_number"]
+    prefix = accession.str[:10]
+    cusip8 = df_filings["cusip"].fillna("").str[:8]
+    keys = pd.MultiIndex.from_arrays
+    parsed = df_filings["rp_seq"].ne(-1)
+    row = pd.DataFrame(
+        {
+            "ticker": ticker,
+            "accession": accession,
+            "prefix": prefix,
+            "parsed": parsed,
+            "subject": cusip8.ne("") & keys([ticker, cusip8]).isin(identity.cusips),
+            "rp_own": parsed & keys([ticker, df_filings["reporting_person_cik"]]).isin(identity.ciks),
+            "prefix_own": keys([ticker, prefix]).isin(identity.ciks),
+        }
+    )
+    flags = row.groupby(["ticker", "accession"], as_index=False).agg(
+        prefix=("prefix", "first"), parsed=("parsed", "any"), subject=("subject", "any"), rp_own=("rp_own", "any"), prefix_own=("prefix_own", "any")
+    )
+    other_subject = flags.groupby("accession")["subject"].transform("sum").sub(flags["subject"].astype(int)).gt(0)
+    under_ticker = flags.groupby(["ticker", "prefix"])["accession"].transform("size")
+    concentrated = (under_ticker >= CONCENTRATED_MIN_FILINGS) & (under_ticker / flags.groupby("prefix")["accession"].transform("size") >= CONCENTRATED_SHARE)
+    flags["keep"] = flags["subject"] | ~(flags["prefix_own"] | flags["rp_own"] | other_subject | (concentrated & ~flags["parsed"]))
+    kept = flags.set_index(["ticker", "accession"])["keep"]
+    return pd.Series(kept.reindex(keys([ticker, accession])).to_numpy(), index=df_filings.index)
 
 
 def _filing_counts(df_filings: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
@@ -76,6 +143,7 @@ def build_ownership_feature_panel(
     sec_13g: pd.DataFrame | None,
     *,
     availability: InstitutionalAvailability | None = None,
+    identity: SubjectIdentity | None = None,
     complete_through_13d: pd.Timestamp | None = None,
     complete_through_13g: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
@@ -92,7 +160,7 @@ def build_ownership_feature_panel(
     for name, df_schedule, table, complete_through in schedules:
         if _absent(df_schedule, {"ticker", "accession_number", "filing_date"}) or df_schedule is None:
             continue
-        df_filings = _filings(df_schedule)
+        df_filings = _filings(df_schedule, identity)
         if df_filings.empty:
             continue
         df_counts = _filing_counts(df_filings, idx, columns)

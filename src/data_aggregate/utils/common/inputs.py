@@ -13,10 +13,12 @@ from src.data_store.store import DataStore
 logger = logging.getLogger(__name__)
 
 
-def load_source(store: DataStore, table: Table, universe: Sequence[str] | None = None, markers: bool = False) -> pd.DataFrame | None:
-    """Stream one projected source payload in its economic scope; `markers` keeps the empty-filing marker rows."""
+def load_source(
+    store: DataStore, table: Table, universe: Sequence[str] | None = None, markers: bool = False, columns: Sequence[str] | None = None
+) -> pd.DataFrame | None:
+    """Stream one projected source payload in its economic scope; `markers` keeps the empty-filing marker rows, `columns` replaces the projection."""
     filters = {table.ticker_col: sorted(set(universe))} if universe is not None and table.ticker_col else None
-    chunks = list(store.iter_load(table, project=True, where=filters, markers=markers))
+    chunks = list(store.iter_load(table, project=columns is None, columns=columns, where=filters, markers=markers))
     df = pd.concat(chunks, ignore_index=True) if chunks else None
     if df is None or df.empty:
         logger.warning("%s is absent or empty -> its features are skipped.", table.name)

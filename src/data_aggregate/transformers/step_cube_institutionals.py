@@ -7,7 +7,7 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import SECONDARY_CLASS
+from src.constants.constants import SECONDARY_CLASS, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
@@ -59,6 +59,7 @@ class StepCubeInstitutionals(Step):
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_institutionals)
         self._bugfix = load_bugfix(context.config_dir)
+        self._insider_lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name]
         cfg = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
@@ -135,6 +136,9 @@ class StepCubeInstitutionals(Step):
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe, identity_intervals)
         if source is None or source.transactions.empty:
             return None
+        source = institutional_inputs.lag_insider_source(
+            source, self._insider_lag, pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+        )
 
         # load and clean roles per person
         df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)

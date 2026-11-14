@@ -299,7 +299,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         actual = df_insider[columns].sort_values(columns[:3]).reset_index(drop=True)
         expected = history[columns].sort_values(columns[:3]).reset_index(drop=True)
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
-        expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]")
+        expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]") + pd.Timedelta(days=1)
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
         cleaned = df_insider.assign(day=pd.to_datetime(df_insider["filing_date"]), shares_n=df_insider["shares"])
         return cleaned, {"source_first": pd.Series(dtype="datetime64[ns]")}
@@ -531,7 +531,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
         shares=None,
         price_per_share=None,
         transaction_date=None,
-        filing_date=str(days[-1].date()),
+        filing_date=str(days[-2].date()),
         lineage_role=None,
     )
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([marker]))
@@ -579,20 +579,20 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
         Tables.sharadar_fundamentals_history,
         pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2023-01-01")], "sharesOutstanding": [1000.0], "sharesOutstandingPit": [1000.0]}),
     )
-    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[20])]))
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[19])]))
     ctx = context(sqlite_store, tmp_path)
     monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     gross = "f_ic_insider_distinct_buyers_120d"
 
-    # Outage: D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
-    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-4])]))
+    # Outage (filings are visible one session after their date): D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-5])]))
     panel = StepCubeInstitutionals(ctx, ctx.config).build_panel().set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
     assert panel.loc[: days[19]].isna().all() and panel.loc[days[20] : days[-4]].eq(0).all()
     assert panel.loc[days[-3] :].isna().all() and len(panel.loc[days[-3] :]) == 3
 
     # A 12-session lag is stored, then D advances (another ticker's marker): the next build rewrites every quiet NaN.
     sqlite_store.delete(Tables.insider_transactions, {"accession_number": ["zzz-empty"]})
-    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-13])]))
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-14])]))
     StepCubeInstitutionals(ctx, ctx.config).run(full=True)
     before = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-late", days[-1])]))

@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
+from src.data_aggregate.utils.institutionals.inputs import InsiderSource, lag_insider_source
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
     build_insider_feature_panel,
@@ -46,15 +47,20 @@ def build_prepared_insider_panel(
     df_valuation_close: pd.DataFrame | None = None,
     share_basis: ShareBasis | None = _NO_SPLIT_FIXTURE,
     coverage: InsiderCoverage | None = None,
+    lag_days: int = 0,
 ) -> pd.DataFrame:
-    """Producer/visibility control through actual stages; default known-truth fixtures have no genuine splits."""
+    """Producer/visibility control through actual stages; default known-truth fixtures have no genuine splits and no publication lag."""
     # Legacy numerical fixtures declare unitary shares; construct their saved-input contract.
     df_cap = frames.mcap_pit
     if df_cap is None and shares_out_history is not None and frames.close_split is not None:
         df_cap = daily_market_cap(shares_out_history, frames.close_split, level_factor=frames.level_factor)
     frames = replace(frames, close_pit=frames.close_pit if frames.close_pit is not None else frames.close_split, mcap_pit=df_cap)
+    df_source = source_frame(insider) if insider is not None else pd.DataFrame()
+    if lag_days and not df_source.empty:
+        first = df_source["filing_date"].groupby(df_source["ticker"]).min()
+        df_source = lag_insider_source(InsiderSource(df_source, None, first), lag_days, pd.DatetimeIndex(frames.trading_index)).transactions
     df_trades, diagnostics = clean_transactions(
-        source_frame(insider) if insider is not None else pd.DataFrame(),
+        df_source,
         df_valuation_close=df_valuation_close,
         df_shares_outstanding=frames.shares_outstanding_pit,
     )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import pandas as pd
@@ -17,6 +17,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     normalize_insider_dates,
     officer_role,
     owner_name_key,
+    publication_day,
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -105,6 +106,16 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None, 
 
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
     return InsiderSource(df_rows.loc[selected], complete_through, first)
+
+
+def lag_insider_source(source: InsiderSource, lag_days: int, sessions: pd.DatetimeIndex) -> InsiderSource:
+    """The source with every filing day (and the original-submission day an amendment points at) moved to its publication
+    session, so versions, windows, positions and the frontier all read the same lagged day."""
+    df_rows = source.transactions.copy()
+    for column in ("filing_date", "original_submission_date"):
+        df_rows[column] = publication_day(df_rows[column], lag_days, sessions)
+    frontier = None if source.complete_through is None else publication_day(pd.Series([source.complete_through]), lag_days, sessions).iloc[0]
+    return replace(source, transactions=df_rows, complete_through=frontier, first_filed=publication_day(source.first_filed, lag_days, sessions))
 
 
 def canonical_class_units(df_rows: pd.DataFrame, lines: pd.DataFrame | None) -> pd.DataFrame:

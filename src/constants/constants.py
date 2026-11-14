@@ -496,6 +496,8 @@ FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
 SOURCE_AVAILABILITY_BUFFER_DAYS: dict[str, int] = {
     Tables.sharadar_fundamentals_history.name: 1,
     Tables.sec_fundamentals_history.name: 1,
+    # A Form 4 accepted on its filing day, often after the close, is usable from the next session.
+    Tables.insider_transactions.name: 1,
     # The provider gives the call date without a first-available timestamp: an estimate.
     Tables.earnings_call_sections.name: 2,
 }

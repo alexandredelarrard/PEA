@@ -1188,3 +1188,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Coverage: one "Feature legs" section in [Cube aggregation](./modules/data-aggregate.md) states each preset once (peer z with the 0.5 universe-std floor, no trim, clip 5; own-history z clip 5, no winsorization; `_xs` rank; universe z and the characteristic clip 5, label clip 3; calendar-window dividend growth; CEO pay 250-550 day gate; source availability buffers) plus the declared exceptions table; the governance peer-leg and pay-misalignment sentences are corrected.
 - Pages: [Cube aggregation](./modules/data-aggregate.md).
+
+## 2026-11-14: refresh (insider cleaning, publication lag, exclusion policy)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` insider contract (two-sided price band against `close_pit`, 25% share-count cap, Form 4 publication clock, exclusion policy of the dense legs); `concepts/source-availability.md` insider lag; TODO follow-ups (13D/G lag, class-titled guard, class identity gaps, acceptance-time rule, rebuild).

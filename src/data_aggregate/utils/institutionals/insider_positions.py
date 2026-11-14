@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.quotes import lookup_asof
-from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
+from src.data_aggregate.utils.institutionals.insider_quality import FLOW_SIGN, common_stock_mask, security_class
 
 MICRO = 1_000_000
+
+# Holdings are unknown until a ticker has this many days of balance rows: before that, accounts that have not yet reported are missing.
+HOLDINGS_WARMUP_DAYS = 365
 
 
 def position_units(trades: pd.DataFrame, df_factor: pd.DataFrame | None) -> pd.DataFrame:
@@ -41,21 +43,18 @@ def position_units(trades: pd.DataFrame, df_factor: pd.DataFrame | None) -> pd.D
 
 def cumulative_positions(
     trades: pd.DataFrame,
-    positions: pd.DataFrame,
     other_flows: pd.DataFrame,
     idx: pd.DatetimeIndex,
     days: int,
     populations: Mapping[str, int | None],
     excluded: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
-    """Net shares bought minus sold over holdings before the first window trade, one panel per output name.
+    """Net shares bought minus sold in the window over the ticker's insider holdings `days` calendar days earlier.
 
-    `populations` maps each output name to its population code (`None` = all insiders); `excluded` lists
-    `ticker, owner_cik, start, stop` intervals in which an account's quantities are disputed. A cell sums, per ticker
-    and over every share class, the direct accounts that traded in the window and have a supported balance chain;
-    an unsupported account is left out of numerator, denominator and counts, so one bad account never blanks a
-    ticker. Each lot keeps its own original disclosure expiry. The denominator is the latest included economic-day
-    terminal minus active net shares, after balance-chain checks.
+    Holdings are, per ticker, the sum over direct accounts (owner x class) of the latest post-transaction balance public
+    on the day, carried forward; `populations` maps each output name to its population code (`None` = all insiders).
+    Accounts listed in `excluded` (disputed quantities) are left out of numerator and holdings. A cell is NaN
+    without an active supported trade or without positive holdings `days` earlier.
     """
     if trades.empty or idx.empty:
         return {}
@@ -68,150 +67,106 @@ def cumulative_positions(
         & trades["security_title"].fillna("").str.strip().ne("")
         & ~trades.get("scope_unknown", pd.Series(False, index=trades.index)).fillna(False)
     )
-    rows = trades[account_known].copy()
-    rows["stop"] = rows["anchor"] + pd.Timedelta(days=days)
-    rows["stop"] = rows["stop"].where(rows["visible_until"].isna() | rows["stop"].le(rows["visible_until"]), rows["visible_until"])
-    rows["delta"] = rows["shares_n"].where(rows["code"].eq("P"), -rows["shares_n"])
-    keys = ["ticker", "owner_cik", "klass"]
-    day_groups = {} if positions.empty else dict(tuple(positions.groupby(keys, sort=False)))
-    df_flows = pd.concat([other_flows, trades.loc[trades["transaction_day"].isna()]], ignore_index=True)
-    flows = {} if df_flows.empty else dict(tuple(df_flows.dropna(subset=["day"]).groupby("ticker", sort=False)))
-    disputed = dict(tuple(excluded.groupby(["ticker", "owner_cik"], sort=False))) if not excluded.empty else {}
-    intervals: list[dict[str, object]] = []
-    for key, group in rows.groupby(keys, sort=False):
-        account_days = day_groups.get(key, positions.iloc[:0])
-        df_flows = flows.get(key[0], pd.DataFrame(columns=["ticker", "owner_cik", "transaction_day", "day"]))
-        blocked = account_other_flows(df_flows, key[0], key[1])
-        intervals.extend(
-            _account_intervals(cast(tuple[str, str, str], key), group, account_days, blocked, idx, disputed.get(key[:2], excluded.iloc[:0]))
-        )
+    disputed = pd.MultiIndex.from_frame(excluded[["ticker", "owner_cik"]].drop_duplicates()) if not excluded.empty else None
+    uncertain = trades.get("quality_uncertain", pd.Series(False, index=trades.index)).fillna(False).astype(bool)
+    lots = trades[account_known & ~uncertain].copy()
+    if disputed is not None:
+        lots = lots[~pd.MultiIndex.from_frame(lots[["ticker", "owner_cik"]]).isin(disputed)]
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
-    out = {name: pd.DataFrame(np.nan, index=idx, columns=columns) for name in populations} if not rows.empty else {}
-    if intervals:
-        events = pd.DataFrame(intervals)
-        for name, code in populations.items():
-            events_in = events if code is None else events[events["population"].eq(code)]
-            out[name] = _pool(events_in, idx).reindex(columns=columns)
+    balances = _balance_events(trades.loc[account_known], other_flows, disputed)
+    shape = (len(idx) + 1, len(columns))
+    start = idx.searchsorted(lots["visible_from"].to_numpy(), side="left")
+    stop_day = lots["anchor"] + pd.Timedelta(days=days)
+    stop_day = stop_day.where(lots["visible_until"].isna() | stop_day.le(lots["visible_until"]), lots["visible_until"])
+    stop = idx.searchsorted(stop_day.to_numpy(), side="left")
+    lot_col = columns.get_indexer(pd.Index(lots["ticker"]))
+    net = lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]).to_numpy(dtype=float)
+    asof = idx.searchsorted((idx - pd.Timedelta(days=days)).to_numpy(), side="right") - 1
+    first = balances.groupby("ticker")["visible_from"].min().reindex(columns)
+    warm = ((idx - pd.Timedelta(days=days)).to_numpy()[:, None] >= (first + pd.Timedelta(days=HOLDINGS_WARMUP_DAYS)).to_numpy()[None, :]).astype(bool)
+    out: dict[str, pd.DataFrame] = {}
+    for name, code in populations.items():
+        in_pop = np.ones(len(lots), dtype=bool) if code is None else lots["population"].eq(code).to_numpy()
+        numerator = _accumulate_intervals(net[in_pop], start[in_pop], stop[in_pop], lot_col[in_pop], shape)
+        active = _accumulate_intervals(np.ones(int(in_pop.sum())), start[in_pop], stop[in_pop], lot_col[in_pop], shape)
+        holdings = _holdings(balances, code, idx, columns)
+        lagged = np.where((asof >= 0)[:, None], holdings[np.maximum(asof, 0)], np.nan)
+        known = (lagged > 0) & (active > 0) & warm
+        out[name] = pd.DataFrame(np.divide(numerator, lagged, out=np.full_like(numerator, np.nan), where=known), index=idx, columns=columns)
     return out
 
 
-def _account_intervals(
-    key: tuple[str, str, str], lots: pd.DataFrame, positions: pd.DataFrame, flows: pd.DataFrame, idx: pd.DatetimeIndex, excluded: pd.DataFrame
-) -> list[dict[str, object]]:
-    """Sweep public version/expiry boundaries instead of allocating account-by-day frames."""
-    time_cols = ["visible_from", "stop", "visible_until", "transaction_day"]
-    lot = {column: lots[column].to_numpy(dtype="datetime64[ns]") for column in time_cols}
-    positions = positions.reindex(columns=["visible_from", "visible_until", "transaction_day", "starting", "net_shares"])
-    pos = {column: positions[column].to_numpy(dtype="datetime64[ns]") for column in ("visible_from", "visible_until", "transaction_day")}
-    flow_day = flows["transaction_day"].to_numpy(dtype="datetime64[ns]")
-    flow_filed = flows["day"].to_numpy(dtype="datetime64[ns]")
-    flow_public = flows["visible_from"].to_numpy(dtype="datetime64[ns]")
-    flow_stop = flows["visible_until"].to_numpy(dtype="datetime64[ns]")
-    dispute_start = excluded["start"].to_numpy(dtype="datetime64[ns]")
-    dispute_stop = excluded["stop"].to_numpy(dtype="datetime64[ns]")
-    points = np.unique(
-        np.concatenate(
-            [
-                lot["visible_from"],
-                lot["stop"],
-                pos["visible_from"],
-                pos["visible_until"],
-                flow_public,
-                flow_stop,
-                dispute_start,
-                dispute_stop,
-                np.array([idx.min(), idx.max() + pd.Timedelta(days=1)], dtype="datetime64[ns]"),
-            ]
-        )
-    )
-    points = points[~np.isnat(points)]
-    points = points[(points >= idx.min().to_datetime64()) & (points <= (idx.max() + pd.Timedelta(days=1)).to_datetime64())]
-    delta = lots["delta"].to_numpy(dtype=float)
-    population = lots["population"].to_numpy(dtype=int)
-    units = lots["units_known"].to_numpy(dtype=bool)
-    uncertain = lots["quality_uncertain"].fillna(False).to_numpy(dtype=bool)
-    starting = positions["starting"].to_numpy(dtype=float)
-    terminal = starting + positions["net_shares"].to_numpy(dtype=float)
-    output = []
-    for point, stop in zip(points[:-1], points[1:], strict=True):
-        active = (lot["visible_from"] <= point) & (lot["stop"] > point)
-        if not active.any():
-            continue
-        first, last = lot["transaction_day"][active].min(), lot["transaction_day"][active].max()
-        event = {
-            "ticker": key[0],
-            "owner_cik": key[1],
-            "klass": key[2],
-            "start": point,
-            "stop": stop,
-            "net": np.nan,
-            "prior": np.nan,
-            "unit_basis": "NORMALIZED" if units[active].all() else np.datetime_as_string(first, unit="D"),
-            "population": int(population[active].min()),
-        }
-        output.append(event)
-        if ((dispute_start <= point) & (point < dispute_stop)).any():
-            continue
-        public = (lot["visible_from"] <= point) & (np.isnat(lot["visible_until"]) | (lot["visible_until"] > point))
-        span = public & (lot["transaction_day"] >= first) & (lot["transaction_day"] <= last)
-        visible = (pos["visible_from"] <= point) & (np.isnat(pos["visible_until"]) | (pos["visible_until"] > point))
-        visible &= (pos["transaction_day"] >= first) & (pos["transaction_day"] <= last)
-        ordered = np.flatnonzero(visible)[np.argsort(pos["transaction_day"][visible])]
-        # Expired trades interleaved between active economic days make a literal start ambiguous.
-        possible_day = ((flow_day >= first) & (flow_day <= last)) | (np.isnat(flow_day) & (flow_filed >= first))
-        blocked = (flow_public <= point) & (np.isnat(flow_stop) | (flow_stop > point)) & possible_day
-        interleaved = span & ~active & (lot["transaction_day"] > first) & (lot["transaction_day"] < last)
-        if blocked.any() or uncertain[span].any() or interleaved.any():
-            continue
-        economic_days = np.unique(lot["transaction_day"][active])
-        if len(ordered) != len(economic_days) or not np.array_equal(pos["transaction_day"][ordered], economic_days):
-            continue
-        if len(economic_days) > 1 and not units[span].all():
-            continue
-        if len(ordered) > 1 and not np.allclose(starting[ordered[1:]], terminal[ordered[:-1]], rtol=0, atol=1e-6):
-            continue
-        net = float(delta[active].sum())
-        prior = float(terminal[ordered[-1]] - net)
-        if not np.isfinite(prior) or prior < 0 or not np.isfinite(delta[active]).all():
-            continue
-        event.update(net=net, prior=prior)
-    return output
+def _balance_events(trades: pd.DataFrame, other_flows: pd.DataFrame, disputed: pd.MultiIndex | None) -> pd.DataFrame:
+    """Each direct account's balance-setting rows, one per account, transaction day and publication day.
 
-
-def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Add supported account totals once per ticker; require compatible units and positive pooled holdings.
-
-    An event without a supported balance chain contributes to nothing: not to the numerator, the holdings, the unit-basis
-    count or the support count.
+    Rows of one account, transaction day and publication day reduce to the row whose balance no sibling row
+    starts from (the end of that day's chain), the highest accession breaking ties.
     """
-    if events.empty:
-        return pd.DataFrame(index=idx)
-    columns = pd.Index(sorted(events["ticker"].unique()), name="ticker")
-    supported = np.isfinite(events["net"]) & np.isfinite(events["prior"]) & events["prior"].ge(0)
-    events = events[supported]
-    if events.empty:
-        return pd.DataFrame(np.nan, index=idx, columns=columns)
-    col = columns.get_indexer(pd.Index(events["ticker"]))
-    start = idx.searchsorted(events["start"].to_numpy(), side="left")
-    stop = idx.searchsorted(events["stop"].to_numpy(), side="left")
-    shape = (len(idx) + 1, len(columns))
+    keep = ["ticker", "owner_cik", "klass", "order_day", "visible_from", "after", "delta", "population", "accession_number"]
+    parts = [_balance_rows(trades, trades["transaction_day"])]
+    if not other_flows.empty:
+        flows = other_flows[
+            other_flows["security_type"].isin(["nonderiv", "nonderiv_holding"])
+            & other_flows["direct_indirect"].eq("D")
+            & other_flows["owner_cik"].ne("")
+            & pd.to_numeric(other_flows["n_reporting_owners"], errors="coerce").eq(1)
+            & other_flows["security_title"].fillna("").str.strip().ne("")
+            & common_stock_mask(other_flows["security_title"])
+        ]
+        parts.append(_balance_rows(flows, flows["transaction_day"].fillna(flows["day"])))
+    df_rows = pd.concat([part[keep] for part in parts], ignore_index=True)
+    df_rows = df_rows[np.isfinite(df_rows["after"]) & df_rows["after"].ge(0) & df_rows["order_day"].notna()]
+    if disputed is not None:
+        df_rows = df_rows[~pd.MultiIndex.from_frame(df_rows[["ticker", "owner_cik"]]).isin(disputed)]
+    group = ["ticker", "owner_cik", "klass", "order_day", "visible_from"]
+    gid = df_rows.groupby(group, sort=False).ngroup().to_numpy()
+    has_delta = df_rows["delta"].notna().to_numpy()
+    before = pd.MultiIndex.from_arrays([gid[has_delta], np.round((df_rows["after"] - df_rows["delta"]).to_numpy()[has_delta], 6)])
+    ends = pd.MultiIndex.from_arrays([gid, np.round(df_rows["after"].to_numpy(), 6)])
+    terminal = ~ends.isin(before)
+    # A cycle (an exercise and a withholding returning to the same balance) has no end row: keep the group's rows, accession breaks the tie.
+    terminal |= ~pd.Series(terminal).groupby(gid).transform("any").to_numpy()
+    df_rows = df_rows[terminal]
+    df_rows = df_rows.sort_values([*group, "accession_number"]).drop_duplicates(group, keep="last")
+    return df_rows.sort_values(["ticker", "owner_cik", "klass", "visible_from", "order_day"]).reset_index(drop=True)
 
-    # Sum account intervals in the same order for numerator, holdings and support count.
-    numerator = _accumulate_intervals(events["net"].to_numpy(dtype=float), start, stop, col, shape)
-    denominator = _accumulate_intervals(events["prior"].to_numpy(dtype=float), start, stop, col, shape)
-    bases = np.zeros(shape)
-    # Union each basis's intervals before counting; never allocate a panel per economic date.
-    for (ticker, _), group in events.assign(_start=start, _stop=stop).groupby(["ticker", "unit_basis"], sort=False):
-        ordered = group.sort_values("_start")
-        begins = ordered["_start"].to_numpy(dtype=np.intp)
-        ends = np.maximum.accumulate(ordered["_stop"].to_numpy(dtype=np.intp))
-        segments = np.r_[0, np.flatnonzero(begins[1:] > ends[:-1]) + 1]
-        last = np.r_[segments[1:] - 1, len(ends) - 1]
-        column = cast(int, columns.get_loc(ticker))
-        np.add.at(bases, (begins[segments], column), 1)
-        np.add.at(bases, (ends[last], column), -1)
-    known = (denominator > 0) & np.isfinite(denominator) & np.isfinite(numerator) & (bases.cumsum(axis=0)[:-1] == 1)
-    return pd.DataFrame(np.divide(numerator, denominator, out=np.full_like(numerator, np.nan), where=known), index=idx, columns=columns)
+
+def _balance_rows(df_rows: pd.DataFrame, order_day: pd.Series) -> pd.DataFrame:
+    """Rows reduced to account, ordering day, publication day, post-transaction balance and signed change (NaN if undeclared)."""
+    sign = df_rows["code"].fillna("").map({"P": 1, "S": -1, **FLOW_SIGN}).astype(float)
+    return pd.DataFrame(
+        {
+            "ticker": df_rows["ticker"],
+            "owner_cik": df_rows["owner_cik"],
+            "klass": security_class(df_rows["security_title"]),
+            "order_day": order_day,
+            "visible_from": df_rows["visible_from"],
+            "after": pd.to_numeric(df_rows["shares_owned_after"], errors="coerce"),
+            "delta": df_rows["shares_n"] * sign,
+            "population": df_rows["population"],
+            "accession_number": df_rows.get("accession_number", pd.Series("", index=df_rows.index)).fillna("").astype(str),
+        }
+    )
+
+
+def _holdings(balances: pd.DataFrame, code: int | None, idx: pd.DatetimeIndex, columns: pd.Index) -> np.ndarray:
+    """Sum of the accounts' latest public balances per grid day and ticker; `code` keeps rows of that population."""
+    shape = (len(idx) + 1, len(columns))
+    if balances.empty:
+        return np.zeros(shape)[:-1]
+    account = [balances["ticker"], balances["owner_cik"], balances["klass"]]
+    key = balances["order_day"].astype("int64")
+    wins = key.ge(key.groupby(account).cummax())
+    df_win = balances[wins]
+    value = df_win["after"] if code is None else df_win["after"].where(df_win["population"].eq(code), 0.0)
+    step = value - value.groupby([df_win["ticker"], df_win["owner_cik"], df_win["klass"]]).shift(1).fillna(0.0)
+    start = idx.searchsorted(df_win["visible_from"].to_numpy(), side="left")
+    col = columns.get_indexer(pd.Index(df_win["ticker"]))
+    inside = (start < len(idx)) & (col >= 0)
+    scaled = np.rint(step.to_numpy(dtype=float)[inside] * MICRO).astype(np.int64)
+    differences = np.zeros(shape, dtype=np.int64)
+    np.add.at(differences, (start[inside], col[inside]), scaled)
+    return differences.cumsum(axis=0)[:-1] / MICRO
 
 
 def _accumulate_intervals(values: np.ndarray, start: np.ndarray, stop: np.ndarray, columns: np.ndarray, shape: tuple[int, int]) -> np.ndarray:

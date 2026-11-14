@@ -302,7 +302,8 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]") + pd.Timedelta(days=1)
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
         cleaned = df_insider.assign(day=pd.to_datetime(df_insider["filing_date"]), shares_n=df_insider["shares"])
-        return cleaned, {"source_first": pd.Series(dtype="datetime64[ns]")}
+        flows = pd.DataFrame({"transaction_day": pd.Series(dtype="datetime64[ns]"), "day": pd.Series(dtype="datetime64[ns]")})
+        return cleaned, {"source_first": pd.Series(dtype="datetime64[ns]"), "other_flows": flows}
 
     def rebase(source: pd.DataFrame, df_basis: pd.DataFrame | None) -> pd.DataFrame:
         stages.append("rebase")
@@ -342,7 +343,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         assert result.loc[result["date"].eq(days[0]), fields].isna().all().all()
         assert result.loc[result["date"].gt(days[0]), fields].eq([2.0, 0.5, 0.0]).all().all()
         assert result[[name for name in INSTITUTIONAL_COLUMNS if name not in fields]].isna().all().all()
-    assert stages == ["clean", "rebase", *fields] * 5
+    assert stages == ["clean", "rebase", "rebase", *fields] * 5
     price_reads = [kwargs for table, kwargs in reads if table is Tables.cube_part_prices]
     insider_reads = [kwargs for table, kwargs in reads if table is Tables.insider_transactions]
     assert len(price_reads) == len(insider_reads) == 5
@@ -681,7 +682,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     monkeypatch.setattr(institutional_step, "position_units", rebase_stage)
     monkeypatch.setattr(institutional_step, "build_insider_feature_panel", compute_stage)
     result = step.build_panel()
-    assert stages == ["clean", "rebase", "compute"]
+    assert stages == ["clean", "rebase", "rebase", "compute"]
     assert reads[Tables.insider_transactions.name] == 1 and max(reads.values()) == 1
     assert reads[Tables.universe_cusip.name] == 1
     assert len(result) == len(days)

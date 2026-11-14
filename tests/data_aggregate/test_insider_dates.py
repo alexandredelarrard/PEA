@@ -8,13 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.inputs import load_insider_transactions
-from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
 from src.data_store.schema import Tables
-from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, row, source_frame
-from tests.data_aggregate.test_insider_features import _action_cap_inputs, _build_action_cap
+from tests.data_aggregate.insider_pit_reference import row, source_frame
 
 
 @pytest.mark.parametrize("column", ["original_submission_date", "transaction_date"])
@@ -277,27 +274,6 @@ def test_later_row_confirmation_cannot_borrow_an_earlier_ambiguous_link() -> Non
     assert df_versions.loc[["future-original"], "visible_until"].eq(pd.Timestamp("2024-03-12")).all()
     assert df_versions.loc[["earlier-ambiguous"], "anchor"].eq(pd.Timestamp("2024-03-11")).all()
     print("SANITY: proof first available March 12 cannot retroactively make an ambiguous March 11 filing retire the unknown original.")
-
-
-def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsupported() -> None:
-    _, df_close, df_history = _action_cap_inputs()
-    source = row(filing_date="2024-03-05", transaction_date="2024-03-20", officer_title="CEO", is_officer=1.0)
-    df_clean, _ = clean_transactions(source_frame([source]))
-    df_positions = position_units(df_clean, terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_clean["ticker"], df_close.index.max())))
-    df_panel = _build_action_cap([source], df_close, df_history)
-    unknown = [
-        "f_ic_insider_buy_value_mcap_60d",
-        "f_ic_insider_purchase_pct_prior_60d",
-    ]
-
-    assert not df_positions["units_known"].any()
-    assert df_panel.reindex(index=[pd.Timestamp("2024-03-07")], columns=unknown).isna().to_numpy().all()
-    assert df_panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
-    df_control = _build_action_cap([source | {"transaction_date": "2024-03-04"}], df_close, df_history)
-    assert df_control.reindex(index=[pd.Timestamp("2024-03-07")], columns=unknown).gt(0).to_numpy().all()
-    print(
-        "SANITY: actual panel retains the disclosed buyer but cannot borrow fallback timing for action capital, quantity rebasing or account ratios."
-    )
 
 
 def test_loader_normalizes_before_first_filing_and_role_metadata(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:

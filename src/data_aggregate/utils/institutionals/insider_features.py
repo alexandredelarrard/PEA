@@ -7,7 +7,6 @@ balances mask only dependent fields. Owner ranks use strictly earlier visible di
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,7 +21,6 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     POP_C_SUITE,
     POP_MANAGEMENT,
     POP_TEN_PCT,
-    account_other_flows,
     security_class,
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import _proven_tenure_mask
@@ -125,7 +123,6 @@ def build_insider_feature_panel(
     df_sells = df_supported[df_supported["code"].eq("S")].copy()
     # Missing dollars do not invalidate disclosed shares or post-trade holdings.
     df_other_flows = diag.get("other_flows", pd.DataFrame())
-    df_positions = _daily_positions(df_position_trades, df_other_flows)
 
     # Calculate raw feature groups before applying source and identity masks.
     seen = _first_filing(df_buys, df_sells, idx)
@@ -140,7 +137,7 @@ def build_insider_feature_panel(
     )
     for days in WINDOWS:
         names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
-        fields.update(cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names, _disputed_accounts(df_disputed, days)))
+        fields.update(cumulative_positions(df_position_trades, df_other_flows, idx, days, names, _disputed_accounts(df_disputed, days)))
     fields = _gate_dates(fields, idx, coverage.insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures; disputed trades carry no dollars.
@@ -634,151 +631,3 @@ def _rolling_distinct(g: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.Series | Non
     # NaN before the ticker's first record: "nobody has ever traded this name" and "the
     # window has emptied" are different facts, and only the second is a zero.
     return s.where(idx >= first)
-
-
-def _starting_balance(records: pd.DataFrame) -> float:
-    """Reconstruct a uniquely supported daily lot path, independent of dataframe order."""
-    after = records["shares_owned_after"].to_numpy(dtype=float)
-    delta = np.where(records["code"].eq("P"), records["shares_n"], -records["shares_n"])
-    if not np.isfinite(after).all() or (after < 0).any():
-        return np.nan
-    if len(np.unique(after)) == 1:
-        return float(after[0] - delta.sum())
-    before = np.round(after - delta, 6)
-    ends = np.round(after, 6)
-    if len(np.unique(before)) != len(before) or len(np.unique(ends)) != len(ends):
-        return np.nan
-    roots = set(before) - set(ends)
-    tails = set(ends) - set(before)
-    if len(roots) != 1 or len(tails) != 1:
-        return np.nan
-    current = next(iter(roots))
-    start = current
-    edges = dict(zip(before, ends, strict=True))
-    visited = set()
-    while current in edges and current not in visited:
-        visited.add(current)
-        current = edges[current]
-    return float(start) if len(visited) == len(records) and current in tails else np.nan
-
-
-def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.DataFrame:
-    """One versioned direct account/class/economic-day position; unsupported flows abstain."""
-    columns = [
-        "ticker",
-        "owner_cik",
-        "klass",
-        "transaction_day",
-        "anchor",
-        "visible_from",
-        "visible_until",
-        "starting",
-        "net_shares",
-        "population",
-    ]
-    if trades.empty or "shares_owned_after" not in trades:
-        return pd.DataFrame(columns=columns)
-    joint = pd.to_numeric(trades.get("n_reporting_owners", pd.Series(1, index=trades.index)), errors="coerce").fillna(1).gt(1)
-    df_rows = trades[trades["direct_indirect"].eq("D") & trades["owner_cik"].ne("") & trades["transaction_day"].notna() & ~joint].copy()
-    if df_rows.empty:
-        return pd.DataFrame(columns=columns)
-    df_rows["klass"] = security_class(df_rows["security_title"])
-    df_rows["delta"] = df_rows["shares_n"].where(df_rows["code"].eq("P"), -df_rows["shares_n"])
-    df_rows["missing_after"] = df_rows["shares_owned_after"].isna()
-    keys = ["ticker", "owner_cik", "klass", "transaction_day"]
-    df_rows["other_day"] = pd.NaT
-    flow_groups = {}
-    if not other_flows.empty:
-        by_ticker = dict(tuple(other_flows.groupby("ticker", sort=False)))
-        for (ticker, owner), df_account in df_rows.groupby(["ticker", "owner_cik"], sort=False):
-            df_blocked = account_other_flows(by_ticker.get(ticker, other_flows.iloc[:0]), ticker, owner)
-            flow_groups[(ticker, owner)] = df_blocked
-            earliest = df_blocked.dropna(subset=["visible_from", "transaction_day"]).groupby("transaction_day")["visible_from"].min()
-            df_rows.loc[df_account.index, "other_day"] = earliest.reindex(df_account["transaction_day"]).to_numpy()
-    grouped = df_rows.groupby(keys, sort=False)
-    df_days = grouped.agg(
-        anchor=("anchor", "min"),
-        visible_from=("visible_from", "min"),
-        n_start=("visible_from", "nunique"),
-        closed=("visible_until", "count"),
-        n_after=("shares_owned_after", "nunique"),
-        missing_after=("missing_after", "max"),
-        terminal=("shares_owned_after", "first"),
-        net_shares=("delta", "sum"),
-        population=("population", "min"),
-        other_day=("other_day", "min"),
-    )
-    fast = (
-        df_days["n_start"].eq(1)
-        & df_days["closed"].eq(0)
-        & df_days["n_after"].eq(1)
-        & ~df_days["missing_after"]
-        & df_days["other_day"].isna()
-        & df_days["terminal"].ge(0)
-    )
-    df_fast = df_days.loc[fast].copy()
-    df_fast["starting"] = df_fast["terminal"] - df_fast["net_shares"]
-    df_fast["visible_until"] = pd.NaT
-    results = [df_fast.reset_index()[columns]]
-    slow_keys = set(df_days.index[~fast])
-    _log.info(
-        "insider positions: %s account days, %s simple, %s sequences, %s initially blocked by other flows",
-        len(df_days),
-        int(fast.sum()),
-        len(slow_keys),
-        int(df_days["other_day"].le(df_days["visible_from"]).sum()),
-    )
-    if slow_keys:
-        df_slow = df_rows[pd.MultiIndex.from_frame(df_rows[keys]).isin(slow_keys)]
-        records_out = []
-        for key, df_group in df_slow.groupby(keys, sort=False):
-            account = dict(zip(keys, key, strict=True))
-            df_flows = flow_groups.get(key[:2], pd.DataFrame(columns=["transaction_day", "visible_from", "visible_until"]))
-            records_out.extend(_account_day_versions(df_group, account, df_flows))
-        if records_out:
-            results.append(pd.DataFrame(records_out)[columns])
-    df_result = pd.concat(results, ignore_index=True)
-    df_result = df_result[df_result["starting"].ge(0)]
-    _log.info(
-        "insider positions: %s supported account-day versions from %s direct rows; %s zero-prior versions",
-        len(df_result),
-        len(df_rows),
-        int(df_result["starting"].eq(0).sum()),
-    )
-    return df_result
-
-
-def _account_day_versions(df_group: pd.DataFrame, account: Mapping[str, object], df_flows: pd.DataFrame) -> list[dict[str, object]]:
-    """Reconstruct one account/economic day's balances at its public version boundaries."""
-    df_blocked = df_flows.loc[df_flows["transaction_day"].eq(account["transaction_day"])]
-    points = sorted(
-        set(df_group["visible_from"])
-        | set(df_group["visible_until"].dropna())
-        | set(df_blocked["visible_from"].dropna())
-        | set(df_blocked["visible_until"].dropna())
-    )
-    anchor = df_group["anchor"].min()
-    records: list[dict[str, object]] = []
-
-    # Sweep disclosure/expiry boundaries, excluding publicly unsupported account flows.
-    for i, point in enumerate(points):
-        df_visible = df_group[df_group["visible_from"].le(point) & (df_group["visible_until"].isna() | df_group["visible_until"].gt(point))]
-        blocked = df_blocked["visible_from"].le(point) & (df_blocked["visible_until"].isna() | df_blocked["visible_until"].gt(point))
-        if df_visible.empty or blocked.any():
-            continue
-        start = _starting_balance(df_visible)
-        if not np.isfinite(start) or start < 0:
-            continue
-
-        # Keep each supported balance visible only until the next public boundary.
-        record = dict(account)
-        record.update(
-            anchor=anchor,
-            visible_from=point,
-            visible_until=points[i + 1] if i + 1 < len(points) else pd.NaT,
-            starting=start,
-            net_shares=float(df_visible["delta"].sum()),
-            population=int(df_visible["population"].min()),
-        )
-        records.append(record)
-    return records

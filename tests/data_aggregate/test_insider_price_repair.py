@@ -6,7 +6,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from tests.data_aggregate.test_insider_features import _frame, _txn
+from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+from tests.data_aggregate.test_insider_features import _frame, _peers, _txn
 
 CLOSE = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-30"), columns=["AAA"])
 
@@ -73,3 +75,20 @@ def test_a_filing_with_an_impossible_quantity_loses_its_other_rows_too() -> None
     assert sorted(removed["shares_n"]) == [800.0, 3_000.0] and set(removed["accession_number"]) == {"bad"}
     assert out["accession_number"].tolist() == ["ok"]
     print("SANITY: the 30% trade and the 8% trade of its filing are removed (owner 1 disputed); the 8% trade of another filing stays.")
+
+
+def test_the_removed_account_leaves_the_ratio_and_the_value_features_exclude_the_trade() -> None:
+    idx = pd.bdate_range("2015-06-01", "2015-08-31")
+    close = pd.DataFrame(100.0, index=pd.bdate_range("2015-01-01", "2015-08-31"), columns=["AAA"])
+    shares = pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2014-01-01")], "sharesOutstanding": [1_000.0]})
+    rows = [
+        _txn(
+            accession_number="big", owner_cik="0001", filing_date="2015-06-02", transaction_date="2015-06-01", shares=300.0, shares_owned_after=400.0
+        ),
+        _txn(accession_number="ok", owner_cik="0002", filing_date="2015-06-03", transaction_date="2015-06-02", shares=10.0, shares_owned_after=110.0),
+    ]
+    frames = make_frames(idx, _peers(), close_split=close, shares_outstanding_pit=pd.DataFrame(1_000.0, index=close.index, columns=["AAA"]))
+    panel = build_insider_feature_panel(frames, _frame(rows), shares_out_history=shares, df_valuation_close=close).set_index("date")
+    mcap = 100.0 * 1_000.0
+    assert panel.loc["2015-07-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(10 * 100.0 / mcap)
+    print("SANITY: the 30% trade is absent from the buy value.")

@@ -1,8 +1,5 @@
-"""The z-score features are winsorized to a per-day cross-sectional [1%, 99%]
-band so a few extreme names can't dominate the standardized value / the model
-(src/data_aggregate/utils/fundamental_features.py::winsorize_xs, applied to the
-peer-z `_vs_peers` and the self-history `_vs_hist` outputs). The rank `_xs`
-features are already outlier-proof and are left untouched.
+"""Peer-relative panel construction: no fragmentation warning, and an outlier input is clipped
+at the +-5 peer-z bound while the rank `_xs` feature is untouched.
 """
 
 from __future__ import annotations
@@ -14,7 +11,6 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
-from src.data_aggregate.utils.common.xs import winsorize_xs
 
 
 def test_peer_panel_no_fragmentation_warning(monkeypatch):
@@ -49,26 +45,7 @@ def test_peer_panel_no_fragmentation_warning(monkeypatch):
     print(f"  built {panel.shape[1] - 2} feature cols from 60 fields with ZERO 'highly fragmented' warnings and no full-width eager copy. Validated.")
 
 
-def test_winsorize_xs_clips_each_row_to_1_99():
-    # one date, 100 tickers with values 0..99; extremes must be pulled to the 1/99 pct
-    row = pd.DataFrame([{f"t{i}": float(i) for i in range(100)}], index=[pd.Timestamp("2024-01-02")])
-    w = winsorize_xs(row)
-    assert w.iloc[0].max() == pytest.approx(row.iloc[0].quantile(0.99))
-    assert w.iloc[0].min() == pytest.approx(row.iloc[0].quantile(0.01))
-    # interior values unchanged; only the 1% tails clipped
-    assert w.iloc[0].sort_values().iloc[1:-1].to_numpy() == pytest.approx(row.iloc[0].sort_values().iloc[1:-1].to_numpy())
-    # all-NaN row -> no crash, stays NaN
-    nanrow = pd.DataFrame([{f"t{i}": np.nan for i in range(5)}])
-    assert winsorize_xs(nanrow).isna().all().all()
-
-    print("\n=== SANITY CHECK: cross-sectional 1/99 winsorize ===")
-    print(
-        f"  values 0..99 -> max clipped {row.iloc[0].max():.0f} -> {w.iloc[0].max():.2f} "
-        f"(99th pct), min 0 -> {w.iloc[0].min():.2f} (1st pct); interior untouched. Validated."
-    )
-
-
-def test_peer_z_outlier_input_is_trimmed_but_rank_untouched():
+def test_peer_z_outlier_input_is_clipped_not_trimmed_and_rank_untouched():
     # 60 tickers, one field; ONE ticker is a wild outlier on the last date.
     dates = pd.bdate_range("2024-01-02", periods=3)
     tickers = [f"T{i}" for i in range(60)]
@@ -78,22 +55,18 @@ def test_peer_z_outlier_input_is_trimmed_but_rank_untouched():
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
     d = dates[-1]
-    untrimmed = peer_relative(field, peers)
-    trimmed = peer_relative(field, peers, winsorize_inputs=True)
+    rel = peer_relative(field, peers)
 
-    # No clip and no output winsorization: the outlier's z is whatever the formula gives, and
-    # trimming the INPUT pulls it down to the day's 99th-percentile value.
-    assert untrimmed.loc[d, "T0"] > 8.0
-    assert trimmed.loc[d, "T0"] < untrimmed.loc[d, "T0"]
+    # The outlier's own score sits at the fixed +-5 clip; no input is trimmed, so a ticker whose basket
+    # contains the outlier sees it in the basket mean (the other tickers are scored against it).
+    assert rel.loc[d, "T0"] == 5.0
+    assert (rel.abs().stack() <= 5.0).all()
 
-    # the built panel uses the trimmed input; the rank `_xs` is untouched (T0 top).
+    # the built panel ships the same score; the rank `_xs` is untouched (T0 top).
     last = build_peer_relative_panel({"metric": field}, peers)
     last = last[last["date"] == d].set_index("ticker")
-    assert last.loc["T0", "f_metric_vs_peers"] == pytest.approx(trimmed.loc[d, "T0"], rel=1e-5)
+    assert last.loc["T0", "f_metric_vs_peers"] == pytest.approx(5.0)
     assert last.loc["T0", "f_metric_xs"] == pytest.approx(1.0, abs=1e-9)
 
-    print("\n=== SANITY CHECK: peer-z outlier input trim + rank intact ===")
-    print(
-        f"  T0 raw=1e6: peer-z {untrimmed.loc[d, 'T0']:.2f} untrimmed -> {trimmed.loc[d, 'T0']:.3f} "
-        f"with the 1%/99% input trim (the panel's setting); f_metric_xs rank still 1.00. Validated."
-    )
+    print("\n=== SANITY CHECK: peer-z outlier clip + rank intact ===")
+    print("  T0 raw=1e6: peer-z clipped to exactly 5.00, f_metric_xs rank still 1.00. Validated.")

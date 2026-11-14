@@ -72,8 +72,9 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common import capital
-from src.data_aggregate.utils.common.frames import safe_div
+from src.data_aggregate.utils.common.frames import clip_tax_rate, safe_div
 from src.data_aggregate.utils.common.pit import (
+    filing_count_prior,
     fiscal_prior_positions,
     fiscal_prior_values,
     fundamentals_to_daily,
@@ -148,19 +149,7 @@ def _yearly_lag(
     if "ticker" not in df.columns or "as_of" not in df.columns:
         return pd.Series(np.nan, index=df.index, dtype="float64")
     if "fiscal_end" not in df.columns or not df["fiscal_end"].notna().any():
-        work = pd.DataFrame(
-            {
-                "ticker": df["ticker"].astype(str),
-                "as_of": pd.to_datetime(df["as_of"], errors="coerce"),
-                "value": values,
-                "position": np.arange(len(df)),
-            }
-        ).sort_values(["ticker", "as_of", "position"])
-        cadence = infer_yoy_periods(df)
-        work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(years_back * cadence))
-        result = np.full(len(df), np.nan, dtype="float64")
-        result[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
-        return pd.Series(result, index=df.index)
+        return filing_count_prior(df, values, years_back * infer_yoy_periods(df))
     return fiscal_prior_values(
         df,
         values,
@@ -269,7 +258,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     # ---- capital efficiency & quality (value-creation core) -------------- #
     # NOPAT = operatingIncome x (1 - effective tax); tax clipped to [0,50%] and
     # defaulted to 21% when unreported so it is defined for the whole universe.
-    tax = df["effective_tax_rate"].clip(lower=0.0, upper=0.5).fillna(0.21)
+    tax = clip_tax_rate(df["effective_tax_rate"])
     nopat = oper_income * (1.0 - tax)
     # earnings quality: operating cash flow backing reported profit (<0.8 = accrual risk)
     df["earnings_quality"] = safe_div(ocf, ni, True)

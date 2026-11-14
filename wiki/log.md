@@ -1183,3 +1183,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` short-flow contract (ratio 20/60/120/180d, acceleration 60/120d, market coverage removed); TODO gained the rebuild, model-pool, moving-average and zero-fill follow-ups.
+
+## 2026-11-13: refresh — feature-leg unification
+
+- Coverage: one "Feature legs" section in [Cube aggregation](./modules/data-aggregate.md) states each preset once (peer z with the 0.5 universe-std floor, no trim, clip 5; own-history z clip 5, no winsorization; `_xs` rank; universe z and the characteristic clip 5, label clip 3; calendar-window dividend growth; CEO pay 250-550 day gate; source availability buffers) plus the declared exceptions table; the governance peer-leg and pay-misalignment sentences are corrected.
+- Pages: [Cube aggregation](./modules/data-aggregate.md).

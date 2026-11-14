@@ -116,8 +116,8 @@ EVENT_FIELDS: frozenset[str] = frozenset(
 
 #: Fields whose value depends on the WHOLE CROSS-SECTION on their date, not only on the
 #: filer's own archive. Both are built as `peer_relative(pay) -
-#: peer_relative(prf)` on 1%/99%-trimmed inputs, so a ticker's value moves when the peer basket changes
-#: OR when the trim bound moves -- neither of which requires the ticker's own filings to
+#: peer_relative(prf)` (each z clipped at +-5, so the difference spans +-10), so a ticker's value
+#: moves when the peer basket changes -- which does not require the ticker's own filings to
 #: change at all.
 #:
 #: Declared because a per-ticker attribution check cannot otherwise tell them apart from a raw
@@ -497,8 +497,8 @@ def _alignment_family(
         # faster than peers' by MORE than performance is growing faster than peers' by".
         # The result is a difference of two z-scores and therefore ships RAW; peer-z-scoring it
         # a second time would relativize the same quantity twice.
-        pz = peer_relative(pay, peer_dict, winsorize_inputs=True)
-        rz = peer_relative(prf, peer_dict, winsorize_inputs=True)
+        pz = peer_relative(pay, peer_dict)
+        rz = peer_relative(prf, peer_dict)
         pz, rz = _aligned(pz, rz)
         if not pz.empty:
             out[f"pay_{label}_peer_misalignment"] = pz - rz

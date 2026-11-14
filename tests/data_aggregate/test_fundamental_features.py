@@ -25,6 +25,7 @@ from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
+from src.data_aggregate.utils.common.xs import Z_CLIP, self_history_z
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
@@ -32,7 +33,6 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _derived_fields,
     _FiscalView,
     _pegy_fields,
-    _self_history_z,
     build_fundamental_feature_panel,
     load_notes_num_scoped,
 )
@@ -267,43 +267,30 @@ def test_fiscal_change_pct_and_diff():
 # 3. peer_relative: correct z + explosion guard                               #
 # --------------------------------------------------------------------------- #
 def test_peer_relative_zscore_correct():
-    """The z-score arithmetic, with the INPUT WINSORIZATION turned off.
-
-    With `winsorize_inputs=True` the day's cross-section is trimmed to its 1%/99% quantiles
-    first, so on a 4-name universe the quantile interpolation pulls A in from 4.0 and the
-    textbook hand calculation no longer applies (it lands at 2.437, not 2.449). The default
-    is no trim, which is what the hand calculation below uses."""
+    """The z-score arithmetic: inputs are used as they are (no trim), the score is inside the clip."""
     idx = pd.bdate_range("2020-01-01", periods=1)
     field = pd.DataFrame({"A": [4.0], "B": [1.0], "C": [2.0], "D": [3.0]}, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
     rel = peer_relative(field, peers)
-    # peer mean=2, population std=sqrt(2/3)=0.8165 -> (4-2)/0.8165 = 2.449
+    # peer mean=2, population std=sqrt(2/3)=0.8165 (above the 0.5 x universe std floor) -> (4-2)/0.8165 = 2.449
     assert abs(rel.loc[idx[0], "A"] - 2.449) < 1e-2
 
-    # with the input trim ON the subject is pulled toward the pack
-    trimmed = peer_relative(field, peers, winsorize_inputs=True)
-    assert trimmed.loc[idx[0], "A"] < rel.loc[idx[0], "A"]
-
     print("\n=== SANITY CHECK: peer-relative z-score ===")
-    print(
-        f"  A=4 vs peers[1,2,3] -> z={rel.loc[idx[0], 'A']:.3f} (expected ~2.449) "
-        f"with inputs untrimmed; {trimmed.loc[idx[0], 'A']:.3f} with the "
-        f"1%/99% input trim, which pulls the subject toward its peers."
-    )
+    print(f"  A=4 vs peers[1,2,3] -> z={rel.loc[idx[0], 'A']:.3f} (expected ~2.449), untrimmed and inside the +-5 clip.")
 
 
 def test_peer_dispersion_floor_bounds_a_homogeneous_basket():
     """The FLOOR: a basket too homogeneous to resolve a difference must not manufacture a
     huge z. Peers at 5.0/5.0/5.001 have a near-zero std; the subject's deviation is divided
-    by 0.10 x the day's UNIVERSE std instead of by ~0.0005."""
+    by 0.5 x the day's UNIVERSE std instead of by ~0.0005."""
     idx = pd.bdate_range("2020-01-01", periods=1)
     # a wide universe (so the universe std, and therefore the floor, is meaningful)
     field = pd.DataFrame({"A": [6.0], "B": [5.0], "C": [5.0], "D": [5.001], "E": [0.0], "F": [10.0], "G": [20.0]}, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
     floored = peer_relative(field, peers)
-    floor = 0.10 * field.std(axis=1).iloc[0]
+    floor = 0.5 * field.std(axis=1).iloc[0]
     peer_values = field[["B", "C", "D"]].iloc[0]
     assert peer_values.std(ddof=0) < floor, "the basket must be tighter than the floor"
     assert abs(floored.loc[idx[0], "A"] - (6.0 - peer_values.mean()) / floor) < 1e-9
@@ -311,7 +298,7 @@ def test_peer_dispersion_floor_bounds_a_homogeneous_basket():
     print("\n=== SANITY CHECK: peer dispersion floor ===")
     print(
         f"  peers 5.0/5.0/5.001 (std ~5e-4), subject 6.0: z="
-        f"{floored.loc[idx[0], 'A']:.2f} -- the denominator is 0.10 x the day's "
+        f"{floored.loc[idx[0], 'A']:.2f} -- the denominator is 0.5 x the day's "
         f"universe std ({floor:.2f}), not the collapsed basket std."
     )
 
@@ -319,7 +306,7 @@ def test_peer_dispersion_floor_bounds_a_homogeneous_basket():
 def test_peer_relative_does_not_explode_on_degenerate_peers():
     idx = pd.bdate_range("2020-01-01", periods=2)
     # day 0: peers identical -> std 0 -> must be NaN, never inf/1e13
-    # day 1: peers nearly identical -> the std is floored at 0.10 x the universe std
+    # day 1: peers nearly identical -> the std is floored at 0.5 x the universe std
     field = pd.DataFrame(
         {
             "A": [10.0, 10.0],
@@ -333,7 +320,7 @@ def test_peer_relative_does_not_explode_on_degenerate_peers():
 
     rel = peer_relative(field, peers)
     assert np.isnan(rel.loc[idx[0], "A"]), "identical peers (std 0) must give NaN"
-    floor = 0.10 * field.loc[idx[1]].std()
+    floor = 0.5 * field.loc[idx[1]].std()
     assert abs(rel.loc[idx[1], "A"] - (10.0 - 5.0) / floor) < 1e-6, "near-degenerate std must be floored"
 
     print("\n=== SANITY CHECK: peer-std explosion guard ===")
@@ -530,7 +517,7 @@ def test_yearly_ttm_features_computed_correctly() -> None:
 # 8. Valuation MEAN-REVERSION (self-history z-score)                           #
 # --------------------------------------------------------------------------- #
 def test_self_history_z_mean_reversion():
-    """`_self_history_z` z-scores each ticker vs its OWN trailing window: NaN
+    """`self_history_z` z-scores each ticker vs its OWN trailing window: NaN
     until min_periods, negative when the yield sits BELOW its own norm
     (expensive), positive when ABOVE (cheap). Strictly trailing -> no leak."""
     idx = pd.bdate_range("2020-01-01", periods=300)
@@ -539,7 +526,7 @@ def test_self_history_z_mean_reversion():
     vals = np.concatenate([np.full(200, 0.05), np.full(50, 0.02), np.full(50, 0.08)])
     yld = pd.DataFrame({"AAA": vals}, index=idx)
 
-    z = _self_history_z(yld, window=120, min_periods=60)
+    z = self_history_z(yld, window=120, min_periods=60)
 
     # insufficient history -> NaN
     assert z["AAA"].iloc[:59].isna().all(), "z must be NaN before min_periods"
@@ -549,8 +536,8 @@ def test_self_history_z_mean_reversion():
     # into the 0.08 regime: current > own trailing mean -> positive z
     z_jump = z["AAA"].iloc[-1]
     assert np.isfinite(z_jump) and z_jump > 0, f"expected positive z in the jump, got {z_jump}"
-    # winsorized
-    assert z["AAA"].abs().max() <= 8.0 + 1e-9
+    # clipped at the shared bound
+    assert z["AAA"].abs().max() <= Z_CLIP + 1e-9
 
     print("\n=== SANITY CHECK: valuation mean-reversion (self-history z) ===")
     print(f"  yield below own norm -> z={z_dip:+.2f} (<0);  above own norm -> z={z_jump:+.2f} (>0)")

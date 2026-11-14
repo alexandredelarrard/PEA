@@ -817,7 +817,6 @@ def compute() -> dict:
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
     from src.data_aggregate.utils.common.xs import (
-        winsorize_xs,
         xs_standardize,
         xs_z,
     )
@@ -1153,7 +1152,6 @@ def compute() -> dict:
                 "features_zscore_clip3": xs_standardize(m, "zscore"),
                 "targets_rank_min5": cross_sectional_rank(m, min_names=5),
                 "targets_zscore_min5": cross_sectional_zscore(m, min_names=5),
-                "winsorize_xs": winsorize_xs(m),
                 "rank_pct_plain": m.rank(axis=1, pct=True),
                 "rank_pct_average": m.rank(axis=1, pct=True, method="average"),
             },

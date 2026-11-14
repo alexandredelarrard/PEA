@@ -63,11 +63,11 @@ validate:
   tables:
 
     # 129 columns, 2,644,212 rows. Standardised views carry both suffixes; the peer clip is
-    # xs.XS_CLIP_PEER.
+    # xs.Z_CLIP (5).
     cube_part_institutionals:
       xs_suffix: _xs
       peer_suffix: _vs_peers
-      clip_peer: 8.0
+      clip_peer: 5.0
       cadence: daily
       known_ineligible:
       - ticker: SMCI
@@ -240,7 +240,7 @@ validate:
     # declaring one would make `clip` measure tie mass over an empty set and call it a pass.
     cube_part_governance:
       peer_suffix: "_vs_peers"
-      clip_peer: 8.0
+      clip_peer: 5.0
       # ⚠ QUARTERLY, AND THE FROZEN CHECK MUST KNOW IT. DEF 14A data is annual/quarterly ffilled
       # onto a daily grid: 66.4 of 103 legs are frozen inside an average quarter and every one
       # of those is correct. No `ffill_horizon_days` is declared because none has been measured
@@ -294,7 +294,7 @@ validate:
     # `clip` abstained on the one part whose clip mass is largest.
     cube_part_fundamentals:
       peer_suffix: "_vs_peers"
-      clip_peer: 8.0
+      clip_peer: 5.0
       bounds:
         f_revenue_cagr_3y: [-1.0, .inf]
         f_cash_runway_months: [0.0, .inf]

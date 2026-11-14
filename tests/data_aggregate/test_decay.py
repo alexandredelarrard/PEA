@@ -240,7 +240,7 @@ def test_the_raw_leg_carries_the_untouched_value():
     """Not winsorized, not clipped: that treatment belongs to the z-score. A conviction weight
     is a quantity in its own units and trimming it destroys what it was emitted for."""
     fields, peers = _fields_and_peers()
-    fields["sig"].iloc[0, 0] = 999.0  # a value winsorize_xs would trim
+    fields["sig"].iloc[0, 0] = 999.0  # an extreme value a trim would clip
     panel = build_peer_relative_panel(fields, peers, emission={"sig": "raw"})
     got = panel.loc[panel["ticker"] == "AAA", "f_sig"].iloc[0]
     assert got == pytest.approx(999.0)

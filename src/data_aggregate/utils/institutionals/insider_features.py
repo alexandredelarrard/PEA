@@ -118,8 +118,11 @@ def build_insider_feature_panel(
     # Keep execution USD intact while preparing a separate action-date contribution.
     df_trades = _action_values(df_trades, df_mcap, frames, coverage.identity_intervals)
     # Reconstruct positions with disclosed shares even when execution dollars are unknown.
-    df_buys = df_trades[df_trades["code"].eq("P")].copy()
-    df_sells = df_trades[df_trades["code"].eq("S")].copy()
+    # Trades flagged as disputed are left out of every sum and count, like the other excluded events.
+    df_flagged = df_trades[df_trades["quality_uncertain"].fillna(False).astype(bool)]
+    df_supported = df_trades.drop(index=df_flagged.index)
+    df_buys = df_supported[df_supported["code"].eq("P")].copy()
+    df_sells = df_supported[df_supported["code"].eq("S")].copy()
     # Missing dollars do not invalidate disclosed shares or post-trade holdings.
     df_other_flows = diag.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_position_trades, df_other_flows)
@@ -129,24 +132,27 @@ def build_insider_feature_panel(
     fields = {
         **_value_fields(df_buys, idx, df_mcap, seen),
         **_net_ratio_fields(df_buys, df_sells, idx, seen),
-        **_breadth_fields(df_buys, df_sells, idx),
+        **_breadth_fields(*_named_traders(df_buys, df_sells, df_unpriced), idx),
     }
-    df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), diag.get("unsupported_events", pd.DataFrame())], ignore_index=True)
-    df_disputed = pd.concat([df_uncertain, diag.get("oversized_events", pd.DataFrame())], ignore_index=True)
+    df_disputed = pd.concat(
+        [diag.get("uncertain_events", pd.DataFrame()), diag.get("unsupported_events", pd.DataFrame()), diag.get("oversized_events", pd.DataFrame())],
+        ignore_index=True,
+    )
     for days in WINDOWS:
         names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
         fields.update(cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, days, names, _disputed_accounts(df_disputed, days)))
     fields = _gate_dates(fields, idx, coverage.insider_floor)
 
-    # Establish observable quiet windows, preserving unsupported active disclosures.
+    # Establish observable quiet windows, preserving unsupported active disclosures; disputed trades carry no dollars.
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
-    df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
+    df_oversized = diag.get("oversized_events", pd.DataFrame())
+    df_dollars = df_trades.assign(value=df_trades["value"].where(~df_trades.index.isin(df_flagged.index)))
+    df_activity = pd.concat([df_dollars, df_unpriced, df_unsupported, df_oversized], ignore_index=True)
     _observe_quiet_windows(fields, df_activity, diag["source_first"], frames, coverage)
 
-    # Propagate uncertainty through the dollar windows; disputed accounts were left out of the position pools above.
-    df_unknown = pd.concat([df_unpriced, df_uncertain], ignore_index=True)
-    unpriced_masks = _unpriced_masks(df_unknown, idx)
-    _mask_unknown_windows(fields, unpriced_masks)
+    # A window is unknown only where excluded events are active and no supported one is.
+    sets = _support_sets(df_supported, df_flagged, df_unpriced, pd.concat([df_unsupported, df_oversized], ignore_index=True))
+    _mask_unknown_windows(fields, _unknown_windows(sets, idx))
 
     # Emit the existing raw float32 fields with own-price availability.
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(df_trades), len(df_buys), len(df_sells))
@@ -239,7 +245,6 @@ def _observe_quiet_windows(
             verified = (bv - sv) / (bv + sv).where((bv + sv).gt(0))
             frame = frame.where(~observed, verified)
         fields[name] = (frame if name in ratios else frame.mask(observed & ~active, 0.0)).where(active | observed)
-    _mask_anonymous_owners(fields, activity, idx, seen)
 
 
 def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Series]]:
@@ -264,17 +269,6 @@ def _member(rows: pd.DataFrame, code: int | None) -> pd.Series:
     if code is None:
         return pd.Series(True, index=rows.index)
     return rows["population"].eq(code)
-
-
-def _mask_anonymous_owners(fields: dict[str, pd.DataFrame], activity: pd.DataFrame, idx: pd.DatetimeIndex, seen: pd.DataFrame) -> None:
-    """Distinct-owner counts are unknown while an active row has no owner identity."""
-    buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
-    anonymous = activity["owner_cik"].eq("")
-    rules = [(DISTINCT_BUYERS, buy & anonymous, BREADTH_WINDOW), (DISTINCT_SELLERS, sell & anonymous, BREADTH_WINDOW)]
-    rules += [(BUYER_BREADTH, (buy | sell) & anonymous, BREADTH_WINDOW)]
-    for name, selector, days in rules:
-        if name in fields:
-            fields[name] = fields[name].mask(_rolling(activity[selector], idx, days, None, seen).gt(0))
 
 
 # --------------------------------------------------------------------------- #
@@ -394,24 +388,63 @@ def _late_window_sum(records: pd.DataFrame, idx: pd.DatetimeIndex, window_days: 
     return pd.DataFrame(out, index=idx, columns=columns)
 
 
-def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
-    """Feature windows made unknown by an excluded, unpriced open-market transaction."""
-    if events.empty:
+def _named_traders(buys: pd.DataFrame, sells: pd.DataFrame, unpriced: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Buys and sells with an owner identity, unpriced ones included: a distinct owner needs no price."""
+    traders = []
+    for df_side, code in ((buys, "P"), (sells, "S")):
+        df_all = pd.concat([df_side, unpriced[unpriced["code"].eq(code)]], ignore_index=True) if not unpriced.empty else df_side
+        traders.append(df_all[df_all["owner_cik"].ne("")])
+    return traders[0], traders[1]
+
+
+def _support_sets(
+    supported: pd.DataFrame, flagged: pd.DataFrame, unpriced: pd.DataFrame, unsupported: pd.DataFrame
+) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+    """Per kind of feature, (events it leaves out, events it can use): dollars over cap, dollar ratios, distinct owners."""
+    no_cap = supported[supported["action_value"].isna()]
+    no_price = pd.concat([flagged, unpriced, unsupported], ignore_index=True)
+    no_owner = pd.concat(
+        [supported[supported["owner_cik"].eq("")], unpriced[unpriced["owner_cik"].eq("")]]
+        if not unpriced.empty
+        else [supported[supported["owner_cik"].eq("")]]
+    )
+    return {
+        "value": (pd.concat([no_price, no_cap], ignore_index=True), supported[supported["action_value"].notna()]),
+        "ratio": (no_price, supported),
+        "owner": (
+            pd.concat([flagged, unsupported, no_owner], ignore_index=True),
+            pd.concat(
+                [supported[supported["owner_cik"].ne("")], unpriced[unpriced["owner_cik"].ne("")]]
+                if not unpriced.empty
+                else [supported[supported["owner_cik"].ne("")]]
+            ),
+        ),
+    }
+
+
+def _unknown_windows(sets: dict[str, tuple[pd.DataFrame, pd.DataFrame]], idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+    """Feature windows that hold an excluded event and no supported one."""
+    tickers = sorted({str(t) for pair in sets.values() for frame in pair if not frame.empty for t in frame["ticker"].unique()})
+    if not tickers:
         return {}
-    columns = pd.Index(sorted(events["ticker"].astype(str).unique()), name="ticker")
-    seen = pd.DataFrame(True, index=idx, columns=columns)
-    masks: dict[str, pd.DataFrame] = {}
-    groups: list[tuple[str, tuple[str, ...], int, int | None]] = [
-        *((name, ("P",), days, code) for name, (code, days) in BUY_VALUE_FEATURES.items()),
-        *((name, ("P", "S"), days, None) for name, days in NET_BUY_RATIO_FEATURES.items()),
-        (DISTINCT_BUYERS, ("P",), BREADTH_WINDOW, None),
-        (DISTINCT_SELLERS, ("S",), BREADTH_WINDOW, None),
-        (BUYER_BREADTH, ("P", "S"), BREADTH_WINDOW, None),
+    seen = pd.DataFrame(True, index=idx, columns=pd.Index(tickers, name="ticker"))
+    groups: list[tuple[str, str, tuple[str, ...], int, int | None]] = [
+        *((name, "value", ("P",), days, code) for name, (code, days) in BUY_VALUE_FEATURES.items()),
+        *((name, "ratio", ("P", "S"), days, None) for name, days in NET_BUY_RATIO_FEATURES.items()),
+        (DISTINCT_BUYERS, "owner", ("P",), BREADTH_WINDOW, None),
+        (DISTINCT_SELLERS, "owner", ("S",), BREADTH_WINDOW, None),
+        (BUYER_BREADTH, "owner", ("P", "S"), BREADTH_WINDOW, None),
     ]
-    for name, codes, days, code in groups:
-        affected_events = events[events["code"].isin(codes) & _member(events, code)]
-        if not affected_events.empty:
-            masks[name] = _rolling(affected_events, idx, days, None, seen).gt(0)
+    masks: dict[str, pd.DataFrame] = {}
+    for name, kind, codes, days, code in groups:
+        left_out, usable = sets[kind]
+        if left_out.empty:
+            continue
+        left_out = left_out[left_out["code"].isin(codes) & _member(left_out, code)]
+        if left_out.empty:
+            continue
+        usable = usable[usable["code"].isin(codes) & _member(usable, code)]
+        masks[name] = _rolling(left_out, idx, days, None, seen).gt(0) & ~_rolling(usable, idx, days, None, seen).gt(0)
     return masks
 
 
@@ -522,10 +555,8 @@ def _action_identity(trades: pd.DataFrame, sessions: pd.Series, master: pd.DataF
 
 
 def _action_sum(trades: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, seen: pd.DataFrame) -> pd.DataFrame:
-    """Sum supported contributions, masking a selected window if any active contribution is unknown."""
-    values = _rolling(trades, idx, window_days, "action_value", seen)
-    unknown = _rolling(trades.loc[trades["action_value"].isna()], idx, window_days, None, seen).gt(0)
-    return values.mask(unknown)
+    """Sum the supported contributions; a trade without one is left out (a window with none is masked by `_unknown_windows`)."""
+    return _rolling(trades, idx, window_days, "action_value", seen)
 
 
 # --------------------------------------------------------------------------- #

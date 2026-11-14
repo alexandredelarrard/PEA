@@ -366,16 +366,16 @@ def test_action_cap_missing_active_trade_and_strict_prior_session(bad_cap: float
     ]
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=shares).set_index("date")
     assert panel.loc["2024-06-05", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.001)
-    assert pd.isna(panel.loc["2024-06-10", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.001)
     assert panel.loc["2024-06-10", "f_ic_insider_distinct_buyers_120d"] == 1
     close.loc["2024-06-07", "AAA"] = np.nan
     weekend = dict(rows[1], transaction_date="2024-06-09")
     missing_bar = build_insider_feature_panel(
         make_frames(idx, _peers(), close_split=close), _frame([rows[0], weekend]), shares_out_history=shares
     ).set_index("date")
-    assert pd.isna(missing_bar.loc["2024-06-10", "f_ic_insider_buy_value_mcap_60d"])
+    assert missing_bar.loc["2024-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.001)
     print(
-        "SANITY: an unsupported active cap masks the sum without erasing independent buyer count; weekend lookup cannot jump over a missing Friday."
+        "SANITY: a trade without a supported cap is left out of the sum (the known trade still counts) and the buyer count is kept; weekend lookup cannot jump over a missing Friday."
     )
 
 

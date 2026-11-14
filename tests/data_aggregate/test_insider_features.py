@@ -21,7 +21,8 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     INSIDER_FLOOR,
     InsiderCoverage,
     _action_values,
-    _unpriced_masks,
+    _support_sets,
+    _unknown_windows,
 )
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
@@ -330,12 +331,18 @@ def test_dated_share_claim_masks_tail_and_retires_prospectively() -> None:
     assert claim["visible_until"].eq(pd.Timestamp("2017-03-22")).all()
     assert claim["quality_uncertain"].all()
     idx = pd.bdate_range("2016-10-19", "2017-06-01")
-    mask = _unpriced_masks(diag["uncertain_events"], idx)["ic_insider_buy_value_mcap_60d"]
-    assert mask.loc["2016-12-16", "AAA"]
-    assert not mask.loc["2016-12-19", "AAA"]
-    assert not mask.loc["2017-01-20", "AAA"]
-    assert not mask.loc["2017-03-22", "AAA"]
-    print("SANITY: disputed dollars contaminate only their real60-day contributor window; public invalidation never revives them.")
+    flagged = cleaned[cleaned["quality_uncertain"]]
+    supported = cleaned.drop(index=flagged.index).assign(action_value=1.0)
+    alone = _unknown_windows(_support_sets(supported.iloc[:0], flagged, pd.DataFrame(), pd.DataFrame()), idx)["ic_insider_buy_value_mcap_60d"]
+    assert alone.loc["2016-12-16", "AAA"]
+    assert not alone.loc["2016-12-19", "AAA"]
+    assert not alone.loc["2017-01-20", "AAA"]
+    assert not alone.loc["2017-03-22", "AAA"]
+    with_support = _unknown_windows(_support_sets(supported, flagged, pd.DataFrame(), pd.DataFrame()), idx)["ic_insider_buy_value_mcap_60d"]
+    assert not with_support.loc["2016-12-16", "AAA"]
+    print(
+        "SANITY: a disputed claim leaves a 60-day window unknown only while it is the sole contributor; a supported trade in the window keeps it known and public invalidation never revives the claim."
+    )
 
 
 def test_daily_lots_reconstruct_prior_without_row_order() -> None:
@@ -1314,12 +1321,14 @@ def test_action_cap_unknown_event_masks_only_its_eligible_scopes() -> None:
     ]
     panel = _build_action_cap(rows, close, history)
 
-    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
     assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_c_suite_buy_mcap_180d"])
     assert panel.loc["2024-03-08", "f_ic_insider_management_buy_mcap_180d"] == pytest.approx(0.005)
     assert panel.loc["2024-03-08", "f_ic_insider_distinct_buyers_120d"] == 2.0
     assert panel.loc["2024-03-08", "f_ic_insider_net_buy_ratio_180d"] == 1.0
-    print("SANITY: missing CEO cap blocks the aggregate and C-suite sums, retaining the supported management/count/raw-dollar behavior.")
+    print(
+        "SANITY: the CEO trade without a cap is left out of the aggregate (the supported director trade still counts); the C-suite sum has no supported trade and stays unknown."
+    )
 
 
 @pytest.mark.parametrize("original_known", [False, True])

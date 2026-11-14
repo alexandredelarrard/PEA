@@ -1173,3 +1173,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` insider feature contract rewritten for the 18-feature, three-population design (branch `fix/institutionals-cube-datacheck`); TODO gained the redesign follow-ups.
+
+## 2026-11-13: refresh (insider features, second pass)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` insider contract updated to seventeen features, untitled officers only in the all-insider features, and the exclusion rule for unsupported accounts; TODO rewritten (multi-class unit basis, coverage ratio, rebuild).

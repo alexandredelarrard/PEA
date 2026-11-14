@@ -38,6 +38,10 @@ CONCENTRATED_MIN_FILINGS = 100
 #: ... holding at least this share of all the prefix's accessions in the universe.
 CONCENTRATED_SHARE = 0.5
 
+#: A ticker whose surviving accessions are at least this share marker-only, with `CONCENTRATED_MIN_FILINGS` of them, is itself an
+#: institution filing through shared agents: its marker-only accessions cannot be told from its own filings and are dropped.
+MARKER_HEAVY_SHARE = 0.8
+
 #: The columns the subject test reads beyond the counting columns.
 SUBJECT_COLUMNS = ("ticker", "accession_number", "filing_date", "rp_seq", "cusip", "reporting_person_cik")
 
@@ -80,7 +84,9 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
     A parsed CUSIP of the ticker proves the subject. Otherwise an accession is the ticker's own filing about others when its number is prefixed
     by, or a reporting person is, one of the ticker's CIKs, when a CUSIP of another universe ticker is its subject, or (marker only) when its
     filer prefix is a concentrated institution-side submitter: at least `CONCENTRATED_MIN_FILINGS` accessions and `CONCENTRATED_SHARE` of the
-    prefix's filings sit under this one ticker.
+    prefix's filings sit under this one ticker. A ticker left with `CONCENTRATED_MIN_FILINGS` or more marker-only accessions making up at least
+    `MARKER_HEAVY_SHARE` of its surviving accessions is itself a filer through shared agents (an ordinary subject has mostly parsed accessions),
+    so its marker-only accessions are dropped and only the parsed subject accessions count.
     """
     ticker, accession = df_filings["ticker"], df_filings["accession_number"]
     prefix = accession.str[:10]
@@ -103,8 +109,16 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
     )
     other_subject = flags.groupby("accession")["subject"].transform("sum").sub(flags["subject"].astype(int)).gt(0)
     under_ticker = flags.groupby(["ticker", "prefix"])["accession"].transform("size")
-    concentrated = (under_ticker >= CONCENTRATED_MIN_FILINGS) & (under_ticker / flags.groupby("prefix")["accession"].transform("size") >= CONCENTRATED_SHARE)
+    concentrated = (under_ticker >= CONCENTRATED_MIN_FILINGS) & (
+        under_ticker / flags.groupby("prefix")["accession"].transform("size") >= CONCENTRATED_SHARE
+    )
     flags["keep"] = flags["subject"] | ~(flags["prefix_own"] | flags["rp_own"] | other_subject | (concentrated & ~flags["parsed"]))
+    survivors = flags.loc[flags["keep"]]
+    marker_only = (~survivors["parsed"]).groupby(survivors["ticker"]).sum()
+    marker_heavy = marker_only.index[
+        (marker_only >= CONCENTRATED_MIN_FILINGS) & (marker_only / survivors.groupby("ticker").size() >= MARKER_HEAVY_SHARE)
+    ]
+    flags["keep"] &= flags["parsed"] | ~flags["ticker"].isin(marker_heavy)
     kept = flags.set_index(["ticker", "accession"])["keep"]
     return pd.Series(kept.reindex(keys([ticker, accession])).to_numpy(), index=df_filings.index)
 

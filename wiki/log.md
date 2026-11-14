@@ -1204,3 +1204,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` ownership counts drop accessions the ticker's own entity filed about others (`_subject_side`); `TODO.md` residual filer-side filings.
+
+## 2026-11-14: refresh (institutionals residual defects)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` marker-heavy filer rule for 13D/G counts; turnover unknown on supported-absence days and canonical-volume fallback for class bars (code, tests); `TODO.md` APTV/CRH unit-basis cause.

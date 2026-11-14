@@ -33,24 +33,12 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-_WINSOR_LO, _WINSOR_HI = 0.01, 0.99
-
 # the two clip bounds, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
 Z_CLIP = 5.0  # every feature or regressor z: own-history, peer, factor characteristic
 
 #: How many PRESENT members a design CELL needs on a day before the group block may split the
 MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5
-
-
-def winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO, hi: float = _WINSOR_HI) -> pd.DataFrame:
-    """Clip each ROW (date) to its cross-sectional [lo, hi] quantiles across tickers.
-    NaN-safe: an all-NaN row yields NaN bounds -> clip is a no-op there."""
-    if df is None or df.empty:
-        return df
-    lo_q = df.quantile(lo, axis=1)
-    hi_q = df.quantile(hi, axis=1)
-    return df.clip(lower=lo_q, upper=hi_q, axis=0)
 
 
 def xs_rank_pct(df: pd.DataFrame) -> pd.DataFrame:

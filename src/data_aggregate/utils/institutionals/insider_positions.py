@@ -118,7 +118,10 @@ def _balance_events(trades: pd.DataFrame, other_flows: pd.DataFrame, disputed: p
     has_delta = df_rows["delta"].notna().to_numpy()
     before = pd.MultiIndex.from_arrays([gid[has_delta], np.round((df_rows["after"] - df_rows["delta"]).to_numpy()[has_delta], 6)])
     ends = pd.MultiIndex.from_arrays([gid, np.round(df_rows["after"].to_numpy(), 6)])
-    df_rows = df_rows[~ends.isin(before)]
+    terminal = ~ends.isin(before)
+    # A cycle (an exercise and a withholding returning to the same balance) has no end row: keep the group's rows, accession breaks the tie.
+    terminal |= ~pd.Series(terminal).groupby(gid).transform("any").to_numpy()
+    df_rows = df_rows[terminal]
     df_rows = df_rows.sort_values([*group, "accession_number"]).drop_duplicates(group, keep="last")
     return df_rows.sort_values(["ticker", "owner_cik", "klass", "visible_from", "order_day"]).reset_index(drop=True)
 

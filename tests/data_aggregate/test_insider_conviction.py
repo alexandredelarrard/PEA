@@ -7,7 +7,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_features import CONVICTION_FEATURES, EMISSION, PEER_RELATIVE, InsiderCoverage
-from src.data_aggregate.utils.institutionals.insider_positions import account_conviction, position_units
+from src.data_aggregate.utils.institutionals.insider_positions import CONVICTION_CLIP, account_conviction, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, build_prepared_insider_panel, row, source_frame
@@ -136,6 +136,25 @@ def test_longer_window_keeps_trades_longer() -> None:
     assert pd.isna(_conviction(_cast(), days=60).loc[day])
     assert abs(_conviction(_cast(), days=120).loc[day] - 0.5) < 1e-12
     print("SANITY: on 2024-03-20 the 60-day window has emptied (NaN) while the 120-day window still reads 0.5.")
+
+
+def test_ratio_is_clipped_at_its_edge() -> None:
+    exact = _conviction([_prior("1", 100), _buy("1", 1000, 1100, "2024-01-10", "2024-01-08")])
+    over = _conviction([_prior("1", 100), _buy("1", 1001, 1101, "2024-01-10", "2024-01-08")])
+    sale = row(
+        accession_number="s",
+        owner_cik="1",
+        transaction_code="S",
+        shares=5000,
+        shares_owned_after=0,
+        filing_date="2024-01-10",
+        transaction_date="2024-01-08",
+    )
+    below = _conviction([_prior("1", 100), sale])
+    assert exact.loc[DAY] == CONVICTION_CLIP == 10.0 and over.loc[DAY] == 10.0 and below.loc[DAY] == -10.0
+    print(
+        f"SANITY: +1000/100 = {exact.loc[DAY]:.1f} sits on the clip, +1001/100 is held at {over.loc[DAY]:.1f}, -5000/100 is held at {below.loc[DAY]:.1f}."
+    )
 
 
 def test_quiet_window_is_zero_and_the_unobserved_tail_is_nan() -> None:

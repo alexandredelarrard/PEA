@@ -15,10 +15,8 @@ _log = logging.getLogger(__name__)
 
 MICRO = 1_000_000
 
-#: Accounts whose own balance `days` earlier is at or below this many shares are left out of the conviction maximum.
-CONVICTION_MIN_PRIOR = 0.0
-#: Symmetric bound on one account's net-trade / prior-balance ratio.
-CONVICTION_CLIP = float("inf")
+#: Symmetric bound on one account's net-trade / prior-balance ratio: a stale or tiny prior balance cannot produce a thousand-fold value.
+CONVICTION_CLIP = 10.0
 
 # Holdings are unknown until a ticker has this many days of balance rows: before that, accounts that have not yet reported are missing.
 HOLDINGS_WARMUP_DAYS = 365
@@ -95,8 +93,8 @@ def account_conviction(trades: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.
     """Largest account increase: per ticker, the maximum over active direct accounts of net shares / own prior balance.
 
     An account is owner x security class. Its net is shares bought minus sold in the `days` window; its prior is its own
-    latest public balance on or before `days` calendar days earlier (any filing row sets it). Accounts without a prior
-    above `CONVICTION_MIN_PRIOR` are left out and logged. NaN where no account qualifies; the caller owns observed zeros.
+    latest public balance on or before `days` calendar days earlier (any filing row sets it). Accounts without a positive prior
+    are left out and logged; each ratio is clipped at +-`CONVICTION_CLIP`. NaN where no account qualifies; the caller owns observed zeros.
     """
     if trades.empty or idx.empty:
         return pd.DataFrame()
@@ -124,7 +122,7 @@ def account_conviction(trades: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.
         active = _accumulate_intervals(np.ones(len(group)), group["start"].to_numpy(), group["stop"].to_numpy(), codes, shape) > 0
         prior = _prior_balances(by_balance.get(ticker), accounts, idx)[np.maximum(asof, 0)]
         prior[asof < 0] = np.nan
-        usable = active & (prior > CONVICTION_MIN_PRIOR)
+        usable = active & (prior > 0)
         left_out += int((active & ~usable).sum())
         active_total += int(active.sum())
         ratio = np.clip(np.divide(net, prior, out=np.full_like(net, np.nan), where=usable), -CONVICTION_CLIP, CONVICTION_CLIP)

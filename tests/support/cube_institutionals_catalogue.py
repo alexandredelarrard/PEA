@@ -55,8 +55,8 @@ for _name in ("ic_insider_conviction_60d", "ic_insider_conviction_120d"):
         "Largest account increase: the maximum, over the direct common-stock accounts (owner x class) that traded in the trailing "
         "window, of net open-market P minus S shares over that account's own balance when the window opened.",
         "Captures one conviction buyer instead of averaging them with sellers; accounts without a positive prior balance are left out.",
-        "Positive means some account raised its own stake and negative means every qualifying account reduced; the ratio is bounded "
-        "at the declared guard.",
+        "Positive means some account raised its own stake and negative means every qualifying account reduced; each account ratio is clipped "
+        "at +-10.",
     )
 _add_group(
     "beneficial_ownership",

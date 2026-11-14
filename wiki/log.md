@@ -1178,3 +1178,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` insider contract updated to seventeen features, untitled officers only in the all-insider features, and the exclusion rule for unsupported accounts; TODO rewritten (multi-class unit basis, coverage ratio, rebuild).
+
+## 2026-11-13: refresh (short-flow features)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` short-flow contract (ratio 20/60/120/180d, acceleration 60/120d, market coverage removed); TODO gained the rebuild, model-pool, moving-average and zero-fill follow-ups.

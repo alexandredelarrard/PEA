@@ -123,3 +123,26 @@ def test_every_ownership_output_stops_at_its_complete_frontier():
 def test_build_ownership_feature_panel_empty_when_no_source():
     assert build_ownership_feature_panel(make_frames(IDX, {}), None, None).empty
     assert build_ownership_feature_panel(make_frames(IDX, {}), pd.DataFrame(), pd.DataFrame()).empty
+
+
+def test_marker_filings_are_counted_once_next_to_parsed_ones(sqlite_store) -> None:
+    from src.data_aggregate.utils.common import inputs as capital_inputs
+    from src.data_store.schema import Tables
+
+    day = pd.Timestamp("2024-01-02")
+    rows = [
+        # a1: parsed row plus a marker of the same accession; a2: marker only; a3: two parsed co-filers
+        ("AAA", "a1", 0, day),
+        ("AAA", "a1", -1, day),
+        ("AAA", "a2", -1, day),
+        ("AAA", "a3", 0, day),
+        ("AAA", "a3", 1, day),
+    ]
+    df = pd.DataFrame(rows, columns=["ticker", "accession_number", "rp_seq", "filing_date"])
+    sqlite_store.save(Tables.sec_13d, df)
+    parsed_only = capital_inputs.load_source(sqlite_store, Tables.sec_13d, ["AAA"])
+    with_markers = capital_inputs.load_source(sqlite_store, Tables.sec_13d, ["AAA"], markers=True)
+    assert parsed_only is not None and with_markers is not None
+    assert len(_filings(parsed_only)) == 2 and len(_filings(with_markers)) == 3
+    print("\n=== SANITY CHECK: marker filings ===")
+    print("  Marker-only filing counted once, parsed+marker filing once, co-filers once: 3 of 3 (parsed-only read sees 2). Validated.")

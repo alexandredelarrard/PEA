@@ -202,8 +202,8 @@ class StepCubeInstitutionals(Step):
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
 
         # Load the two schedules and independent global completeness frontiers.
-        df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe)
-        df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe)
+        df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe, markers=True)
+        df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe, markers=True)
         complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
         complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
 

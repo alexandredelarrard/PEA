@@ -655,7 +655,7 @@ def test_step_forwards_the_registry_projection_to_the_store() -> None:
             return iter([pd.DataFrame({"ticker": ["AAPL"]})])
 
     capital_inputs.load_source(Store(), Tables.sec_13d)
-    assert calls == [(Tables.sec_13d, {"project": True, "where": None})]
+    assert calls == [(Tables.sec_13d, {"project": True, "where": None, "markers": False})]
     print("SANITY: shared source reader forwards the registry projection through one payload stream.")
 
 
@@ -676,7 +676,7 @@ def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) ->
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     result = capital_inputs.load_source(sqlite_store, Tables.sec_13d, ["AAPL"])
     assert result is not None and set(result["ticker"]) == {"AAPL"}
-    assert calls == [{"project": True, "where": {"ticker": ["AAPL"]}}]
+    assert calls == [{"project": True, "where": {"ticker": ["AAPL"]}, "markers": False}]
     print("SANITY: source universe filter reaches the store once; outside names never enter the panel.")
 
 

@@ -286,13 +286,13 @@ def test_clip_finds_the_clip_mass_and_the_plateau(sqlite_store, capsys):
     names = [f"T{i:02d}" for i in range(12)]  # `min_tickers_xs` is lowered to 10 below
     frame = _panel(
         names,
-        f_a_vs_peers=lambda i, t: 8.0 if int(t[1:]) < 4 else float(int(t[1:])) / 10.0,
+        f_a_vs_peers=lambda i, t: 5.0 if int(t[1:]) < 4 else float(int(t[1:])) / 10.0,
         f_a_xs=lambda i, t: 0.5 if int(t[1:]) < 8 else float(int(t[1:])) / 100.0,
         f_b_vs_peers=lambda i, t: float(int(t[1:])) / 10.0,
     )
     sqlite_store.save(PART, frame)
     config = _config(min_tickers_xs=10)
-    config.validate.tables[PART.name] = {"xs_suffix": "_xs", "peer_suffix": "_vs_peers", "clip_peer": 8.0}
+    config.validate.tables[PART.name] = {"xs_suffix": "_xs", "peer_suffix": "_vs_peers", "clip_peer": 5.0}
     context: Any = _Ctx(sqlite_store, config)
 
     result = check_clip(context, PART, config=config)
@@ -310,7 +310,7 @@ def test_clip_finds_the_clip_mass_and_the_plateau(sqlite_store, capsys):
     with capsys.disabled():
         print(
             f"\n  clip: f_a_vs_peers {result.metrics['peer']['f_a_vs_peers']['share']:.1%} on "
-            f"the +/-8 clip, f_b_vs_peers 0.0%; f_a_xs modal share "
+            f"the +/-5 clip, f_b_vs_peers 0.0%; f_a_xs modal share "
             f"{result.metrics['tie']['f_a_xs']['mean_modal_share']:.1%}; "
             f"no declared suffix -> ABSTAIN"
         )

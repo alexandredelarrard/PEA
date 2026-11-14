@@ -8,6 +8,8 @@ Contract pinned here:
   2. The CEO-identity guard removes ratios across a change of CEO: two packages of two different people are not a
      growth rate, whatever their size. An unknown identity keeps the value and is counted.
   3. A prior year filed as $0 has no growth rate (NaN, never an infinity).
+  3b. A cross-filing pair outside the 250-550 day annual window is NaN and ends the earlier measurement; the filing's
+     own SCT pair is kept.
   4. `ceo_pay_vs_revenue_growth` is pay log growth minus revenue log growth, clipped to the same bound.
 """
 
@@ -118,14 +120,15 @@ def test_an_unknown_identity_keeps_the_value_and_is_counted():
 def test_the_flag_cannot_be_borrowed_from_another_filing():
     """Value and flag come out of one subset, so a THIRD filing under the new CEO un-masks the column: the growth
     between the new CEO's first and second year is a real growth rate."""
-    as_of_3 = pd.Timestamp("2012-06-15")
+    as_of_3 = pd.Timestamp("2013-03-15")
+    long_idx = pd.bdate_range("2011-01-03", "2013-12-31")
     extra = pd.DataFrame(
         [{"ticker": "BAD", "as_of": as_of_3, "ceo_total_comp": 322_214_785.0, "ceo_name_proxy": "Sundar Pichai", "board_size": 11.0}]
     )
-    g = _ceo_pay_growth(_proxies(extra=extra), IDX)
-    masked = IDX[(IDX >= AS_OF_2) & (IDX < as_of_3)]
+    g = _ceo_pay_growth(_proxies(extra=extra), long_idx)
+    masked = long_idx[(long_idx >= AS_OF_2) & (long_idx < as_of_3)]
     assert g.loc[masked, "BAD"].isna().all(), "the transition itself must stay masked"
-    live = IDX[IDX >= as_of_3]
+    live = long_idx[long_idx >= as_of_3]
     assert g.loc[live, "BAD"].notna().all(), "the flag was carried past its own filing"
     assert np.allclose(g.loc[live, "BAD"], np.log(322_214_785.0 / 280_621_552.0))
     print("SANITY: the transition stays masked until the next same-CEO filing, then log(322.2M / 280.6M) is live.")
@@ -225,3 +228,56 @@ def test_the_difference_column_is_pay_minus_revenue_log_growth():
     collapsed = _shipped(_proxies(), {"C000": 0.001})["ceo_pay_vs_revenue_growth"]
     assert np.allclose(collapsed.loc[COVERED, "C000"], PAY_LOG_GROWTH_BOUND)
     print("SANITY: gap = pay log growth - revenue log growth; x2 revenue shifts it by -log 2; a 99.9% collapse clips at +bound.")
+
+
+# --------------------------------------------------------------------------- #
+# the annual-pair gate (the same 250-550 day rule as `pay_features.prior_annual_leg`)                 #
+# --------------------------------------------------------------------------- #
+
+LONG_IDX = pd.bdate_range("2011-01-03", "2015-12-31")
+
+
+def _gap_proxies(second: str, sct: float | None = None, third: str | None = None) -> pd.DataFrame:
+    """One filer, same CEO, 1,000,000 then 1,500,000 (then 3,000,000) at the given dates, 2011-03-15 first."""
+    dates = ["2011-03-15", second] + ([third] if third else [])
+    comps = [1_000_000.0, 1_500_000.0, 3_000_000.0][: len(dates)]
+    rows = [{"ticker": "GAP", "as_of": pd.Timestamp(d), "ceo_total_comp": c, "ceo_name_proxy": "Same Person"} for d, c in zip(dates, comps, strict=True)]
+    if sct is not None:
+        rows[1]["ceo_comp_growth_sct"] = sct
+    return pd.DataFrame(rows)
+
+
+def test_a_three_year_gap_is_not_yearly_growth_and_a_one_year_gap_is_unchanged():
+    """2011 -> 2014 skips two proxies: the cross-filing ratio is NaN. 2011 -> 2012 is the ordinary yearly growth."""
+    skipped = _ceo_pay_growth(_gap_proxies("2014-03-15"), LONG_IDX)
+    assert "GAP" not in skipped.columns or skipped["GAP"].isna().all(), "a three-year change was labelled as yearly growth"
+    yearly = _ceo_pay_growth(_gap_proxies("2012-03-12"), LONG_IDX)
+    assert np.allclose(yearly.loc["2012-04-02":"2012-12-31", "GAP"], np.log(1.5))
+    print("SANITY: a 3-year gap gives NaN; a 363-day gap keeps log(1.5) = 0.405.")
+
+
+def test_the_filed_sct_pair_still_wins_over_the_gap_gate():
+    """The SCT FY vs FY-1 pair is a same-filing yearly figure, so it is kept even where the cross-filing gap is 3 years."""
+    g = _ceo_pay_growth(_gap_proxies("2014-03-15", sct=0.25), LONG_IDX)
+    assert np.allclose(g.loc["2014-04-01":"2014-12-31", "GAP"], 0.25)
+    print("SANITY: a filed SCT growth of 0.25 ships over a 3-year cross-filing gap.")
+
+
+def test_a_gated_pair_is_a_carry_barrier_not_a_gap_to_fill():
+    """A filing 120 days after the previous one (an amendment) is outside the annual window: its change is NaN and
+    the earlier growth does not carry past it, instead of being replaced by log(3.0 / 1.5)."""
+    g = _ceo_pay_growth(_gap_proxies("2012-03-12", third="2012-07-10"), LONG_IDX)
+    before = g.loc["2012-04-02":"2012-07-06", "GAP"]
+    after = g.loc["2012-07-12":"2012-12-31", "GAP"]
+    assert np.allclose(before, np.log(1.5)), "the yearly growth is live until the next filing"
+    assert after.isna().all(), "the gated change must end the earlier measurement"
+    print("SANITY: log(1.5) holds until the 120-day follow-up filing, then NaN (no carry, no 2-filing ratio).")
+
+
+def test_the_gate_reaches_the_difference_to_revenue_growth():
+    """`ceo_pay_vs_revenue_growth` is built from the same leg, so a gated pair is NaN there too while a control keeps its value."""
+    hist = pd.concat([_proxies(), _gap_proxies("2014-03-15")], ignore_index=True)
+    shipped = _governance_fields(hist, LONG_IDX, _revenue(sorted(hist["ticker"].unique())), {})["ceo_pay_vs_revenue_growth"]
+    assert np.allclose(shipped.loc["2012-04-02":"2012-12-31", "C000"], ORDINARY_GROWTH)
+    assert "GAP" not in shipped.columns or shipped["GAP"].isna().all()
+    print("SANITY: the 3-year pay pair is NaN in ceo_pay_vs_revenue_growth; the control keeps log(1.15).")

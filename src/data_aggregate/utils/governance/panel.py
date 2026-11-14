@@ -8,15 +8,13 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import mask_to_availability, peer_relative
-from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS
+from src.data_aggregate.utils.common.panel import PanelSettings, build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
     fundamentals_to_daily,
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.common.typing import frame_column
-from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.governance.def14a_impute import bridged_total
 from src.data_aggregate.utils.governance.director_comp import (
     PEER_RELATIVE_FIELDS as DIRECTOR_PAY_PEER_FIELDS,
@@ -39,6 +37,7 @@ from src.data_aggregate.utils.governance.pay_features import (
     UNSHIPPED_FIELDS,
     log_growth,
     pay_fields,
+    prior_annual_leg,
 )
 from src.data_aggregate.utils.governance.provisions_features import (
     PEER_RELATIVE_FIELDS as PROVISION_PEER_FIELDS,
@@ -113,8 +112,16 @@ _PEER_TRANSFORM: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     **dict.fromkeys(VOTE_PEER_FIELDS, lambda frame: np.sqrt(_nonnegative(frame))),
 }
 
+#: Every governance feature ships raw; the blocks are laid out peers, history, raw.
+_PANEL_SETTINGS = PanelSettings(peer_transform=_PEER_TRANSFORM, leg_order=("vs_peers", "vs_hist", "raw"))
+
 #: Fixed bound on the CEO pay log growth (and on its gap to revenue log growth): log(20) is a 20x year, -log(20) a 95% cut.
 PAY_LOG_GROWTH_BOUND: float = 3.0
+
+
+def _bound_pay_growth[Shaped: (pd.Series, pd.DataFrame)](growth: Shaped) -> Shaped:
+    """Clip a pay log growth (or its gap to revenue log growth) to +-`PAY_LOG_GROWTH_BOUND`."""
+    return growth.clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
 
 
 def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame | None:
@@ -179,7 +186,10 @@ def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str
 
 
 def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
-    """Expand filing pay log growth (clipped to +-`PAY_LOG_GROWTH_BOUND`) point-in-time and null CEO-transition comparisons."""
+    """Expand filing pay log growth (clipped to +-`PAY_LOG_GROWTH_BOUND`) point-in-time and null CEO-transition comparisons.
+
+    A cross-filing change counts only between two filings 250-550 days apart (`pay_features` annual gate); the
+    filing's own SCT pair is kept whatever the gap."""
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
     keep = [
@@ -196,8 +206,10 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     d = d.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"])
     if d.empty:
         return pd.DataFrame(index=idx)
-    # Log of the ratio of two positive totals: a prior year filed as $0 has no growth rate.
-    prior = d.groupby("ticker", sort=False)["ceo_total_comp"].shift(1)
+    # Log of the ratio of two positive totals: a prior year filed as $0 has no growth rate. The prior
+    # is the previous filing only when it is about one year earlier, so a skipped proxy gives NaN
+    # (a carry barrier), never a two-year change labelled as yearly growth.
+    prior = prior_annual_leg(d, "ceo_total_comp")
     d["chg"] = np.log(d["ceo_total_comp"].where(d["ceo_total_comp"] > 0) / prior.where(prior > 0))
     # a bridged total's change is the bridge's slope, so neither change touching it is data
     d["chg"] = d["chg"].mask(d["_bridged"] | d.groupby("ticker", sort=False)["_bridged"].shift(1, fill_value=False).astype(bool))
@@ -205,7 +217,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
         # The filing's own FY vs FY-1 pair wins over the cross-filing change.
         sct = cast(pd.Series, pd.to_numeric(d[SCT_GROWTH], errors="coerce"))
         d["chg"] = sct.where(sct.notna(), d["chg"])
-    d["chg"] = d["chg"].clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
+    d["chg"] = _bound_pay_growth(d["chg"])
     names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # Unknown identity does not prove a change, so it does not mask the growth rate.
@@ -310,7 +322,7 @@ def _governance_fields(
                 cols = pay_growth.columns.intersection(rev_growth.columns)
                 if len(cols) > 0:
                     # Pay growth is already expired; subtraction preserves that mask.
-                    f_dict["ceo_pay_vs_revenue_growth"] = (pay_growth[cols] - rev_growth[cols]).clip(-PAY_LOG_GROWTH_BOUND, PAY_LOG_GROWTH_BOUND)
+                    f_dict["ceo_pay_vs_revenue_growth"] = _bound_pay_growth(pay_growth[cols] - rev_growth[cols])
 
     # Voting power minus economic ownership has a meaningful zero and is already bounded.
     wedge = _control_wedge(def14a_hist, idx, tally)
@@ -318,44 +330,6 @@ def _governance_fields(
         f_dict["control_wedge"] = wedge
 
     return f_dict
-
-
-def _stack(
-    fields: dict[str, pd.DataFrame],
-    suffix: str,
-    availability: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Stack a {name: daily wide frame} dict to the long panel as `f_<name><suffix>`."""
-    long_frames = []
-    for name, fdf in fields.items():
-        if fdf is None or fdf.empty:
-            continue
-        fdf = mask_to_availability(fdf.apply(pd.to_numeric, errors="coerce"), availability)
-        if not fdf.notna().any().any():
-            continue
-        s = fdf.stack().astype("float32")
-        s.index.set_names(PANEL_KEYS, inplace=True)
-        long_frames.append(s.rename(f"f_{name}{suffix}"))
-    if not long_frames:
-        return pd.DataFrame(columns=PANEL_KEYS)
-    return pd.concat(long_frames, axis=1).dropna(how="all").copy().reset_index()
-
-
-def _peer_only(
-    fields: dict[str, pd.DataFrame],
-    peer_dict: dict,
-    availability: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Build peer-relative legs (`peer_relative` on the transformed value) without the percentile twin."""
-    rel: dict[str, pd.DataFrame] = {}
-    for name, fdf in fields.items():
-        if fdf is None or fdf.empty:
-            continue
-        fdf = mask_to_availability(fdf.apply(pd.to_numeric, errors="coerce"), availability)
-        if not fdf.notna().any().any():
-            continue
-        rel[name] = peer_relative(_PEER_TRANSFORM.get(name, lambda frame: frame)(fdf), peer_dict)
-    return _stack(rel, "_vs_peers", availability)
 
 
 def build_governance_feature_panel(
@@ -376,35 +350,27 @@ def build_governance_feature_panel(
     """
     # `_gate` writes before any feature family, so the tally is owned here.
     tally: dict[str, int] = {}
-    legacy_peers: dict[str, pd.DataFrame] = {}
-    legacy_hist: dict[str, pd.DataFrame] = {}
     raw: dict[str, pd.DataFrame] = {}
     if def14a_history is not None and not def14a_history.empty and "as_of" in def14a_history.columns:
         computed = _governance_fields(def14a_history, trading_index, fundamentals, tally)
         computed.update(_def14a_raw_fields(def14a_history, trading_index, tally))
         # Raw is canonical; selected encodings are additive.
         raw.update(computed)
-        legacy_peers = {k: v for k, v in computed.items() if k in _PEER_LEGACY}
-        legacy_hist = {k: v for k, v in computed.items() if k in _VS_HIST_LEGACY}
 
     # Executive-pay families own their child-table and return-series inputs.
     pay_frames, pay_tally = pay_fields(def14a_history, exec_comp, fundamentals, close_total, peer_dict, trading_index, availability)
     raw.update({k: v for k, v in pay_frames.items() if k not in UNSHIPPED_FIELDS})
-    pay_peers = {k: v for k, v in pay_frames.items() if k in PAY_PEER_FIELDS}
 
     # Provision changes are differenced in filing space before daily expansion.
     prov_frames, prov_tally = provision_fields(def14a_history, trading_index)
     raw.update(prov_frames)
-    prov_peers = {k: v for k, v in prov_frames.items() if k in PROVISION_PEER_FIELDS}
 
     # Per-person director sources supply quality, turnover, and compensation families.
     quality_frames, quality_tally = board_quality_fields(directors, trading_index)
     raw.update(quality_frames)
-    quality_peers = {k: v for k, v in quality_frames.items() if k in BOARD_QUALITY_PEER_FIELDS}
 
     dpay_frames, dpay_tally = director_pay_fields(director_comp, def14a_history, trading_index)
     raw.update(dpay_frames)
-    dpay_peers = {k: v for k, v in dpay_frames.items() if k in DIRECTOR_PAY_PEER_FIELDS}
 
     vote_fields, vote_tally = vote_dissent_fields(votes, trading_index)
     tally.update(vote_tally)
@@ -415,17 +381,9 @@ def build_governance_feature_panel(
 
     # Vote fields ship raw; selected bounded levels also get a peer leg.
     raw.update(vote_fields)
-    peers_only = {k: v for k, v in vote_fields.items() if k in VOTE_PEER_FIELDS}
 
-    parts = [
-        _peer_only({**legacy_peers, **pay_peers, **prov_peers, **quality_peers, **dpay_peers, **peers_only}, peer_dict, availability),
-        _stack({k: self_history_z(mask_to_availability(v, availability)) for k, v in legacy_hist.items()}, "_vs_hist", availability),
-        _stack(raw, "", availability),
-    ]
-    parts = [p for p in parts if not p.empty and len(p.columns) > 2]
-    if not parts:
-        return pd.DataFrame(columns=PANEL_KEYS), tally
-    out = parts[0]
-    for nxt in parts[1:]:
-        out = out.merge(nxt, on=PANEL_KEYS, how="outer")
-    return out, tally
+    # Raw is canonical: the selected fields add a peer leg, `avg_board_tenure` a self-history leg.
+    peer_fields = _PEER_LEGACY | PAY_PEER_FIELDS | PROVISION_PEER_FIELDS | BOARD_QUALITY_PEER_FIELDS | DIRECTOR_PAY_PEER_FIELDS | VOTE_PEER_FIELDS
+    emission = {name: "raw+peers" if name in peer_fields else "raw+hist" if name in _VS_HIST_LEGACY else "raw" for name in raw}
+    panel = build_peer_relative_panel(raw, peer_dict, emission=emission, settings=_PANEL_SETTINGS, availability=availability)
+    return panel, tally

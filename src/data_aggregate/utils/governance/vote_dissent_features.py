@@ -397,7 +397,7 @@ def _election_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
         return pd.Series([fn(a) if a.size else np.nan for a in arrays], index=rows.index, dtype="float64")
 
     # A single-nominee election makes mean == median == max == p90. That is not a bug, it is
-    # what a one-name ballot says; the peer panel's PEER_DISPERSION_FLOOR absorbs the low
+    # what a one-name ballot says; the peer panel's std floor absorbs the low
     # dispersion that follows.
     #
     # ⚠ `board_dissent_max` IS NOT ALWAYS AN UNPOPULAR INCUMBENT. A dissident shareholder

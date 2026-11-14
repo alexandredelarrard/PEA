@@ -385,6 +385,10 @@ def build_feature_panel(
     split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> pd.DataFrame:
     """Standardize observed raw signals after seam and thin-population masks."""
+    # Documented exception to the shared leg builder (`common/panel.build_peer_relative_panel`):
+    # momentum ships ONE standardized column per signal under its raw name (no `f_` prefix, no
+    # `_vs_peers` / `_xs` / `_vs_hist` legs, float64) and stacks the wide frames itself, so it
+    # calls `xs_standardize` (rank, or z clipped at the label bound) directly.
     raw = compute_raw_features(prices, seasonal_horizons, seams=seams, split_seams=split_seams)
     assert prices.close_total is not None
     availability = (prices.close_split if prices.close_split is not None else prices.close_total).notna()

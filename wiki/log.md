@@ -1168,3 +1168,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - source_commit: e755a864 (the changes land in the commits that follow it on `dev`)
 - Coverage: signed provision columns replace eight added/lost flags, the poison-pill flag and fifteen low-value governance features are removed, `ceo_pay_ratio` is smoothed over three proxies, `board_size` and `avg_board_tenure` come from the director rows, auditor tenure is filled across a run, and `youngest_director_age` and `f_female_board_chg_pct` are added. The model configs and the feature recap `reports/data_check/11-12-2026/governance_feature_recap.md` follow.
 - Pages: [Data aggregate](./modules/data-aggregate.md).
+
+## 2026-11-13: refresh — feature-leg unification
+
+- Coverage: one "Feature legs" section in [Cube aggregation](./modules/data-aggregate.md) states each preset once (peer z with the 0.5 universe-std floor, no trim, clip 5; own-history z clip 5, no winsorization; `_xs` rank; universe z and the characteristic clip 5, label clip 3; calendar-window dividend growth; CEO pay 250-550 day gate; source availability buffers) plus the declared exceptions table; the governance peer-leg and pay-misalignment sentences are corrected.
+- Pages: [Cube aggregation](./modules/data-aggregate.md).

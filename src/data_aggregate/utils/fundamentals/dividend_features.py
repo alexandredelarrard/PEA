@@ -16,28 +16,40 @@ from src.data_aggregate.utils.fundamentals.feature_views import build_fundamenta
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.price.frames import PriceFrames, comparison_share_history
 
-_YOY = 252  # ~1 trading year
-_FIVE_Y = 5 * 252  # ~5 trading years
+_YOY = 252  # ~1 trading year: the level TTM and the buyback comparison
+_CALENDAR_YEAR_DAYS = 365  # the growth horizon, in calendar days
 _QUARTERLY_MAX_AGE_DAYS = 185
 DIVIDEND_TRANSFORM_SEMANTICS = {"dividend_payer": "binary"}
 
 
-def _cagr(now: pd.DataFrame, span: int, years: float) -> pd.DataFrame:
-    """Annualized growth of a TTM series over `span` trading days: (now/then)^(1/years)
+def _calendar_prior(frame: pd.DataFrame, days: int) -> pd.DataFrame:
+    """Each day's value on the last session at or before `days` calendar days earlier.
+
+    NaN while that date precedes the first session (first-year edge: growth needs a full
+    365 days of history)."""
+    index = frame.index
+    pos = index.searchsorted(index - pd.Timedelta(days=days), side="right") - 1
+    prior = frame.iloc[np.maximum(pos, 0)].set_axis(index, axis=0)
+    return prior.where(pd.Series(pos >= 0, index=index), axis=0)
+
+
+def _cagr(now: pd.DataFrame, years: int) -> pd.DataFrame:
+    """Annualized growth of a calendar-TTM series over `years` x 365 calendar days: (now/then)^(1/years)
     - 1, defined only where the base `then` is a positive dividend."""
-    then = now.shift(span)
+    then = _calendar_prior(now, years * _CALENDAR_YEAR_DAYS)
     return (((now / then.where(then > 0)) ** (1.0 / years)) - 1.0).replace([np.inf, -np.inf], np.nan)
 
 
-def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex, universe: list[str]) -> pd.DataFrame:
+def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex, universe: list[str], window: int | str = _YOY) -> pd.DataFrame:
     """Daily trailing-12m cash dividend per share (date x ticker), 0 for names
     that never paid, aligned to the trading calendar. Point-in-time: the rolling
-    sum at t only includes ex-dates <= t."""
+    sum at t only includes ex-dates <= t. `window` is 252 sessions (levels) or "365D"
+    (growth: a payment exactly 365 days old has dropped out)."""
     piv = dividends_hist.pivot_table(index="date", columns="ticker", values="dividends", aggfunc="sum")
     piv.index = pd.to_datetime(piv.index).normalize()
     # full universe so non-payers are a real 0, aligned to trading days
     piv = piv.reindex(index=idx, columns=universe).fillna(0.0)
-    return piv.rolling(_YOY, min_periods=1).sum()
+    return piv.rolling(window, min_periods=1).sum()
 
 
 def _dividend_fields(dividends_hist: pd.DataFrame, prices: PriceFrames, history: FundamentalHistory | None = None) -> dict[str, pd.DataFrame]:
@@ -86,11 +98,13 @@ def _dividend_fields(dividends_hist: pd.DataFrame, prices: PriceFrames, history:
     fallback = sanitize(total / mcap) if not mcap.empty and not total.empty else pd.DataFrame(index=idx)
     F["dividend_yield"] = yield_a.combine_first(fallback).where(payer, 0.0).where(listed)
 
-    g1 = sanitize(ttm_ps / ttm_ps.shift(_YOY).where(lambda x: x > 0)) - 1.0
-    g5 = _cagr(ttm_ps, _FIVE_Y, 5.0)
+    # growth reads calendar windows (365 days); the level features above keep the 252-session TTM
+    ttm_growth = _ttm_dividends(dividends_hist, idx, universe, f"{_CALENDAR_YEAR_DAYS}D")
+    g1 = sanitize(ttm_growth / _calendar_prior(ttm_growth, _CALENDAR_YEAR_DAYS).where(lambda x: x > 0)) - 1.0
+    g5 = _cagr(ttm_growth, 5)
     if not div_paid.empty:
-        g1 = g1.combine_first(sanitize(div_paid / div_paid.shift(_YOY).where(lambda x: x > 0)) - 1.0)
-        g5 = g5.combine_first(_cagr(div_paid, _FIVE_Y, 5.0))
+        g1 = g1.combine_first(sanitize(div_paid / _calendar_prior(div_paid, _CALENDAR_YEAR_DAYS).where(lambda x: x > 0)) - 1.0)
+        g5 = g5.combine_first(_cagr(div_paid, 5))
     F["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan)
     F["dividend_growth_5y"] = g5
 

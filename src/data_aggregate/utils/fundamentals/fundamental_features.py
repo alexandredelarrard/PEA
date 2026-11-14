@@ -14,8 +14,9 @@ import pandas as pd
 from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_aggregate.utils.common import capital
-from src.data_aggregate.utils.common.frames import ratio, sanitize
+from src.data_aggregate.utils.common.frames import clip_tax_rate, ratio, sanitize
 from src.data_aggregate.utils.common.pit import (
+    filing_count_prior,
     fiscal_change_to_daily,
     fiscal_change_values,
     fiscal_prior_positions,
@@ -27,9 +28,6 @@ from src.data_aggregate.utils.common.pit import (
     null_invalid_gross_profit_sentinels,
 )
 from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns, row_gate
-from src.data_aggregate.utils.common.xs import (
-    self_history_z,
-)
 from src.data_aggregate.utils.fundamentals.earnings_features import reported_events
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
@@ -78,18 +76,7 @@ def _previous_fiscal_value(
             years=0,
             tolerance_days=120,
         )
-    work = pd.DataFrame(
-        {
-            "ticker": fund_hist["ticker"].astype(str),
-            "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
-            "value": values.to_numpy(),
-            "position": np.arange(len(fund_hist)),
-        }
-    ).sort_values(["ticker", "as_of", "position"])
-    work["prior"] = work.groupby("ticker", sort=False)["value"].shift(1)
-    result = np.full(len(fund_hist), np.nan, dtype="float64")
-    result[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
-    return pd.Series(result, index=fund_hist.index)
+    return filing_count_prior(fund_hist, values, 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -145,11 +132,6 @@ def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -
     return ev
 
 
-#: The self-history z now lives in `common/xs.py` beside the other standardizers; this alias
-#: keeps every call site in this module (and its test) working unchanged.
-_self_history_z = self_history_z
-
-
 # --------------------------------------------------------------------------- #
 # Business-quality helpers (all from tags ALREADY extracted -- no new SEC pull)
 #   #2 D&A/SBC realism, #5 forensic, #3 M&A digestion, #1 core/adjusted earnings.
@@ -157,7 +139,7 @@ _self_history_z = self_history_z
 # `feature_views` then applies the approved raw/self-history contract downstream.
 # `daily` is the memoized accessor from _derived_fields (field -> date x ticker).
 # --------------------------------------------------------------------------- #
-def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
+def _nopat_tax_rate(daily) -> pd.DataFrame:
     """Point-in-time effective tax rate = tax / pretax, clipped to [0, 0.5] and
     defaulted to the US statutory ~21% where missing/nonsensical. INTERNAL ONLY: used to
     tax-adjust special items (core earnings) and to build NOPAT (ROIC).
@@ -168,7 +150,7 @@ def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
     tax, pre = daily("incomeTaxExpense"), daily("pretaxIncome")
     if tax.empty or pre.empty:
         return pd.DataFrame()
-    return ratio(tax, pre.where(pre > 0)).clip(0.0, 0.5).fillna(default)
+    return clip_tax_rate(ratio(tax, pre.where(pre > 0)))
 
 
 def _da_realism_fields(daily) -> dict:
@@ -1330,20 +1312,10 @@ def _fiscal_accessors(
         if key not in _prior_cache:
             has_fiscal_end = "fiscal_end" in fund_hist.columns and fund_hist["fiscal_end"].notna().any()
             if not has_fiscal_end:
-                work = pd.DataFrame(
-                    {
-                        "ticker": fund_hist["ticker"].astype(str),
-                        "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
-                        "value": pd.to_numeric(fund_hist[field], errors="coerce"),
-                        "position": np.arange(len(fund_hist)),
-                    }
-                ).sort_values(["ticker", "as_of", "position"])
-                work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(years * yoy_periods))
-                values = np.full(len(fund_hist), np.nan, dtype="float64")
-                values[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
+                values = filing_count_prior(fund_hist, pd.to_numeric(fund_hist[field], errors="coerce"), years * yoy_periods)
                 _prior_cache[key] = fiscal_values_to_daily(
                     fund_hist,
-                    pd.Series(values, index=fund_hist.index),
+                    values,
                     idx,
                     max_age_days=_QUARTERLY_MAX_AGE_DAYS,
                 )

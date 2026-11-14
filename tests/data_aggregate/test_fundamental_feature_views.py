@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 
 from src.context import define_global_paths
 from src.data_aggregate.utils.common.frames import ratio
-from src.data_aggregate.utils.common.panel import SelfHistory, build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import PanelSettings, SelfHistory, build_peer_relative_panel
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.fundamentals.feature_views import (
@@ -270,17 +270,19 @@ def test_seeded_incremental_raw_history_matches_full_tail() -> None:
         full_fields,
         {},
         emission=emission,
-        history=SelfHistory(window=20, min_periods=4),
+        settings=PanelSettings(history=SelfHistory(window=20, min_periods=4)),
     )
     incremental = build_peer_relative_panel(
         {name: frame.loc[current_dates] for name, frame in full_fields.items()},
         {},
         emission=emission,
-        history=SelfHistory(
-            window=20,
-            min_periods=4,
-            prefix={name: frame.loc[dates[:-10]] for name, frame in full_fields.items()},
-            output_since=output_since,
+        settings=PanelSettings(
+            history=SelfHistory(
+                window=20,
+                min_periods=4,
+                prefix={name: frame.loc[dates[:-10]] for name, frame in full_fields.items()},
+                output_since=output_since,
+            )
         ),
     )
 

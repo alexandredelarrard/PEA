@@ -46,7 +46,7 @@ import pandas as pd
 
 from src.constants.constants_price import DAILY_MACRO_LEVELS
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
+from src.data_aggregate.utils.common.xs import Z_CLIP, xs_z
 from src.data_aggregate.utils.price.returns import momentum_characteristic, trailing_vol
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ def build_characteristics(
             common = df_num.columns.intersection(df_mcap.columns)
             if len(common):
                 df_yield = (df_num[common] / df_mcap[common]).replace([np.inf, -np.inf], np.nan)
-                val_parts.append(xs_z(df_yield, clip=XS_CLIP_CHARACTERISTIC))
+                val_parts.append(xs_z(df_yield, clip=Z_CLIP))
         if val_parts:
             chars["value"] = cast(pd.DataFrame, sum(val_parts)) / len(val_parts)
     return chars
@@ -106,7 +106,7 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
       f(t)     = sum_i w_i(t-1) * ret_i(t).
     Lagged weights => no look-ahead.
     """
-    z = xs_z(char, clip=XS_CLIP_CHARACTERISTIC)
+    z = xs_z(char, clip=Z_CLIP)
     z = z.sub(z.mean(axis=1), axis=0)  # ensure long-short (mean 0)
     gross = z.abs().sum(axis=1).replace(0, np.nan)
     w = z.div(gross, axis=0)  # unit gross exposure

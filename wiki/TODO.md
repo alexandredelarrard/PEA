@@ -133,6 +133,10 @@ Follow-ups from the verified point-in-time roster run (`harness/sec13f-superinve
 - **P3 — Stale `schema.py` comment.** The `superinvestor_roster` comment in [schema.py](../src/data_store/schema.py) (lines 104–121, "13 captures") predates the quarterly history. Edit when `schema.py` is next touched (guarded zone).
 - **Trigger — Holdings-fingerprint resolver.** Match a Dataroma holdings page against 13F books to resolve a code mechanically. Build it if a refresh leaves more than two codes unresolved.
 
+## Schedule 13D/13G filer-side filings (2026-11-14)
+
+- **P2 — Residual filer-side 13D/13G filings in `ic_*_count_126d_z`.** The subject rule keeps filings whose parsed CUSIP is the ticker's and drops own-CIK-prefixed, own-reporting-person, other-ticker-subject and concentrated-submitter marker accessions. Left in: markers submitted by agents shared with ordinary tickers and parsed legacy rows without CUSIP (AMP 1,249, C 684, PNC 584, WFC 564, BAC 510 accessions remain). A durable fix needs a subject/filer column on `sec_13d`/`sec_13g` (extract-side, user approval for DDL) or the EDGAR index role. The same rule runs on `sec_13d`; only `sec_13g` was measured.
+
 ## Schedule 13D/13G ownership numerics
 
 Reliable structured ownership values begin with the SEC mandate on 2024-12-17. The level and per-filer delta versions of `percent_of_class`, their cross-sectional transforms, and related power/aggregate fields remain excluded from `cube_part_institutionals`.

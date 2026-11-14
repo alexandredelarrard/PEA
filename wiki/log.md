@@ -1199,3 +1199,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` ownership counts read marker filings; class-titled insider rows priced, capped and unit-based with ratio 1 (`class_approximated`); a filing carrying a trade above the 25% cap loses its other rows (BAC YNOFACE 2016-08-15).
+
+## 2026-11-14: refresh (13D/G filer-side filings)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` ownership counts drop accessions the ticker's own entity filed about others (`_subject_side`); `TODO.md` residual filer-side filings.

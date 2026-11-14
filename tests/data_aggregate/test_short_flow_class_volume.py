@@ -98,7 +98,7 @@ def test_class_sum_overflow_is_unsupported_and_observed_zero_is_supported() -> N
     print("  two finite class legs overflowing their sum are unsupported; observed zero and finite sum14 retain exact values. Validated.")
 
 
-@pytest.mark.parametrize("invalid", ["bar", "product", "class-sum", "company-sum", "canonical-negative", "absent-bar"])
+@pytest.mark.parametrize("invalid", ["bar", "product", "class-sum", "company-sum", "canonical-negative"])
 def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str) -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-03-08"), name="date")
     bad_day = pd.Timestamp("2024-01-02")
@@ -110,9 +110,7 @@ def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str
     frames = make_frames(idx, {"LEN": {"MRK": 1.0}, "MRK": {"LEN": 1.0}}, volume=volume)
     lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN))
     bars = _bars("LEN-B", idx, 500.0)
-    if invalid == "absent-bar":
-        bars = bars[bars["date"].ne(bad_day)]
-    elif invalid in {"bar", "product", "class-sum", "company-sum"}:
+    if invalid in {"bar", "product", "class-sum", "company-sum"}:
         bars.loc[bars["date"].eq(bad_day), "volume"] = -1.0 if invalid == "bar" else 1e308
     if invalid == "product":
         lines["conversion_ratio"] = 2.0
@@ -438,3 +436,20 @@ def test_loader_without_a_master_returns_none(sqlite_store: Any) -> None:
     assert _load_classes(sqlite_store, ["LEN"]) is None
     print("\n=== SANITY CHECK: no master ===")
     print("  before `universe_cusip` exists the class read returns None, so the features keep the canonical tape. Validated.")
+
+
+def test_a_class_without_bars_borrows_the_canonical_volume_and_keeps_the_denominator_known() -> None:
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=4), name="date")
+    lines = _lines(("TAP", "TAP-A", 1.0, "1900-01-01", OPEN), ("LEN", "LEN-B", 1.0, "1900-01-01", OPEN))
+    canonical = pd.DataFrame({"TAP": [100.0, 100.0, np.nan, 100.0], "LEN": 50.0}, index=idx)
+    bars = _bars("LEN-B", idx, [7.0, 7.0, 7.0, np.nan])
+    class_volume, missing = secondary_class_volume(lines, bars, idx, canonical)
+
+    assert class_volume["TAP"].tolist() == [100.0, 100.0, 0.0, 100.0]
+    assert missing["TAP"].tolist() == [False, False, True, False]
+    assert class_volume["LEN"].tolist() == [7.0, 7.0, 7.0, 50.0]
+    assert missing["LEN"].tolist() == [False] * 4
+    assert with_class_volume(canonical, class_volume)["TAP"].tolist()[:2] == [200.0, 200.0]
+    print(
+        "SANITY: a secondary class without any bar enters at the canonical volume of the day (TAP 100 + 100); only a day with no canonical bar stays unknown; a present bar is used as is."
+    )

@@ -26,6 +26,10 @@ _log = logging.getLogger(__name__)
 #: Open-market purchase/sale codes; every other code is non-discretionary and never netted.
 OPEN_MARKET_CODES: tuple[str, ...] = ("P", "S")
 
+#: Direction on the account's holdings of a non-open-market row, from its transaction code (+1 acquired, -1 disposed).
+#: Codes that run either way (G gift, J, K, L, V, W, Z, I, U, O, E, H) are absent: such a row has no declared change.
+FLOW_SIGN: dict[str, int] = {"A": 1, "M": 1, "C": 1, "X": 1, "F": -1, "D": -1}
+
 #: Codes whose `price_per_share` is a market price and may back the consensus (`F` is withholding at the close).
 MARKET_PRICED_CODES: tuple[str, ...] = ("P", "S", "F")
 
@@ -543,42 +547,6 @@ def _other_flow_versions(df_trades: pd.DataFrame) -> pd.DataFrame:
     )
     df_flows["visible_until"] = df_stops.set_index("source_index")["visible_until"].reindex(df_flows.index)
     return df_flows
-
-
-def account_other_flows(df_flows: pd.DataFrame, ticker: str, owner: str) -> pd.DataFrame:
-    """Common-account blockers; only a proved independent derivative award is irrelevant."""
-    reporters = df_flows.get("owner_ciks", pd.Series("", index=df_flows.index)).fillna("").astype(str).str.replace(r"\s+", "", regex=True)
-    members = reporters.str.split(",").explode().str.lstrip("0")
-    members = members[members.str.fullmatch(r"\d+").fillna(False)]
-    n_members = members.groupby(level=0).nunique().reindex(df_flows.index, fill_value=0)
-    listed = members.eq(owner.lstrip("0")).groupby(level=0).any().reindex(df_flows.index, fill_value=False)
-    primary = df_flows["owner_cik"].str.lstrip("0").reindex(members.index)
-    primary_listed = members.eq(primary).groupby(level=0).any().reindex(df_flows.index, fill_value=False)
-    multiplicity = pd.to_numeric(df_flows.get("n_reporting_owners", pd.Series(np.nan, index=df_flows.index)), errors="coerce")
-    complete = multiplicity.ge(1) & multiplicity.eq(n_members) & primary_listed
-    df_rows = df_flows.loc[df_flows["ticker"].eq(ticker) & (df_flows["owner_cik"].eq(owner) | ~complete | listed)].copy()
-    df_rows["visible_from"] = df_rows.get("visible_from", df_rows["day"])
-    df_rows["visible_until"] = df_rows.get("visible_until", pd.Series(pd.NaT, index=df_rows.index))
-    if df_rows.empty:
-        return df_rows
-    unknown = pd.Series("", index=df_rows.index)
-    title = df_rows.get("security_title", unknown).fillna("").astype(str).str.strip()
-    security = df_rows.get("security_type", unknown).fillna("").astype(str).str.lower().str.strip()
-    account = df_rows.get("direct_indirect", unknown).fillna("").astype(str).str.upper().str.strip()
-    reporters = reporters.reindex(df_rows.index).str.lstrip("0")
-    multiplicity = multiplicity.reindex(df_rows.index)
-    independent = (
-        security.eq("deriv")
-        & df_rows["code"].eq("A")
-        & df_rows["owner_cik"].eq(owner)
-        & reporters.eq(owner.lstrip("0"))
-        & account.isin(["D", "I"])
-        & multiplicity.eq(1)
-        & title.ne("")
-        & ~common_stock_mask(title)
-        & df_rows.get("version_known", pd.Series(False, index=df_rows.index)).fillna(False)
-    )
-    return df_rows.loc[~independent].copy()
 
 
 def _reference_quotes(df_trades: pd.DataFrame, quotes: pd.DataFrame | None, max_age_days: int) -> pd.Series:

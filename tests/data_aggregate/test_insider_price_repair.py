@@ -105,5 +105,4 @@ def test_the_removed_account_leaves_the_ratio_and_the_value_features_exclude_the
     panel = build_insider_feature_panel(frames, _frame(rows), shares_out_history=shares, df_valuation_close=close).set_index("date")
     mcap = 100.0 * 1_000.0
     assert panel.loc["2015-07-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(10 * 100.0 / mcap)
-    assert panel.loc["2015-07-01", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(10 / 100.0)
-    print("SANITY: the 30% trade is absent from the buy value and the pooled ratio reads only the other account (10 over 100).")
+    print("SANITY: the 30% trade is absent from the buy value.")

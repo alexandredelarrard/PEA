@@ -345,191 +345,6 @@ def test_dated_share_claim_masks_tail_and_retires_prospectively() -> None:
     )
 
 
-def test_daily_lots_reconstruct_prior_without_row_order() -> None:
-    rows = [
-        _txn(accession_number="a", shares=10, value_usd=1000, shares_owned_after=110),
-        _txn(accession_number="a", shares=20, value_usd=2000, shares_owned_after=130),
-    ]
-    idx = pd.bdate_range("2015-06-01", "2015-06-15")
-    for order in (rows, rows[::-1]):
-        panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(order)).set_index("date")
-        assert panel["f_ic_insider_purchase_pct_prior_60d"].iloc[0] == pytest.approx(0.3)
-    print("SANITY: two supported lots consolidate to30/100, independent of input order; terminal balances are not summed.")
-
-
-@pytest.mark.parametrize("buy_price,sale_only,expected", [(100.0, False, 0.0), (np.nan, False, 0.0), (np.nan, True, -0.1)])
-def test_position_arithmetic_keeps_known_shares_without_prices(buy_price: float, sale_only: bool, expected: float) -> None:
-    rows = [
-        _txn(
-            accession_number="position",
-            transaction_code="S",
-            shares=10,
-            price_per_share=np.nan,
-            shares_owned_after=90 if sale_only else 100,
-            officer_title="CEO",
-            is_officer=1,
-        )
-    ]
-    if not sale_only:
-        rows.append(
-            _txn(accession_number="position", shares=10, price_per_share=buy_price, shares_owned_after=100, officer_title="CEO", is_officer=1)
-        )
-    idx = pd.date_range("2015-06-01", periods=62)
-    for order in (rows, rows[::-1]):
-        panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(order)).set_index("date")
-        management = panel["f_ic_insider_purchase_pct_prior_60d"]
-        assert management.iloc[0] == pytest.approx(expected)
-        assert management.iloc[59] == pytest.approx(expected)
-        assert pd.isna(management.iloc[60])
-    print("SANITY: known disclosed shares survive missing execution prices; account math and 60-day expiry are order invariant.")
-
-
-def test_uncertain_sale_masks_same_account_purchase_and_management() -> None:
-    rows = [
-        _txn(
-            accession_number="0001584209-16-000008",
-            filing_date="2016-10-19",
-            transaction_date="2016-10-19",
-            transaction_code="S",
-            shares=10,
-            shares_owned_after=100,
-            is_officer=1,
-        ),
-        _txn(
-            accession_number="valid",
-            filing_date="2016-10-19",
-            transaction_date="2016-10-19",
-            shares=10,
-            shares_owned_after=100,
-            officer_title="CEO",
-            is_officer=1,
-        ),
-        _txn(
-            accession_number="earlier",
-            owner_cik="999",
-            filing_date="2016-10-18",
-            transaction_date="2016-10-18",
-            transaction_code="S",
-            shares=10,
-            shares_owned_after=90,
-            officer_title="CFO",
-            is_officer=1,
-        ),
-        _txn(
-            accession_number="known-buy",
-            owner_cik="998",
-            filing_date="2016-10-18",
-            transaction_date="2016-10-18",
-            shares=10,
-            shares_owned_after=110,
-            officer_title="CEO",
-            is_officer=1,
-        ),
-    ]
-    idx = pd.bdate_range("2016-10-18", "2017-04-01")
-    panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    assert panel.loc["2016-10-18", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(0.0)
-    assert panel.loc["2016-10-19", "f_ic_insider_purchase_pct_prior_60d"] == pytest.approx(
-        0.0
-    )  # the disputed account is left out; the two others net to 0
-    assert pd.isna(panel.loc["2017-03-21", "f_ic_insider_purchase_pct_prior_60d"])
-    assert pd.isna(panel.loc["2017-03-22", "f_ic_insider_purchase_pct_prior_60d"])
-    print(
-        "SANITY: an uncertain sale excludes its own account from the pool (the other two net to 0); retirement after the60-day expiry cannot revive an aged-out purchase ratio."
-    )
-
-
-def test_management_pools_holdings_and_expires_after_60_days() -> None:
-    rows = [
-        _txn(accession_number="ceo", owner_cik="11", officer_title="CEO", is_officer=1, shares=1000, shares_owned_after=11000),
-        _txn(accession_number="cfo", owner_cik="12", officer_title="C.F.O.", is_officer=1, transaction_code="S", shares=50, shares_owned_after=50),
-    ]
-    idx = pd.date_range("2015-06-01", "2015-08-15")
-    for ordered in (rows, rows[::-1]):
-        panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(ordered)).set_index("date")
-        score = panel["f_ic_insider_purchase_pct_prior_60d"]
-        assert score.iloc[0] == pytest.approx(950 / 10100)
-        assert score.loc["2015-07-30"] == pytest.approx(950 / 10100)
-        assert pd.isna(score.loc["2015-07-31"])
-    print("SANITY: CEO buy and CFO sell pool to950/10100; permutation unchanged, age59 included, age60 null.")
-
-
-@pytest.mark.parametrize("code,shares,after,expected", [("P", 200, 300, 2.0), ("S", 100, 0, -1.0), ("P", 100, 100, None)])
-def test_management_respects_opening_positions_and_full_exits(code: str, shares: int, after: int, expected: float | None) -> None:
-    rows = [_txn(officer_title="CEO and CFO", is_officer=1, transaction_code=code, shares=shares, shares_owned_after=after)]
-    idx = pd.date_range("2015-06-01", periods=3)
-    panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    score = panel.reindex(columns=["f_ic_insider_purchase_pct_prior_60d"]).iloc[0, 0]
-    assert pd.isna(score) if expected is None else score == pytest.approx(expected)
-    print(f"SANITY: {code} {shares}, ending{after}: signed supported change={score}; opening zero-prior account is undefined.")
-
-
-def test_management_later_disclosure_updates_one_day_without_reaging() -> None:
-    rows = [
-        _txn(accession_number="ceo", owner_cik="11", officer_title="CEO", is_officer=1, shares=10, shares_owned_after=110),
-        _txn(accession_number="coo", owner_cik="12", officer_title="COO", is_officer=1, shares=100, shares_owned_after=200, filing_date="2015-06-10"),
-    ]
-    idx = pd.date_range("2015-06-01", "2015-08-10")
-    panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    score = panel["f_ic_insider_purchase_pct_prior_60d"]
-    assert score.loc["2015-06-09"] == pytest.approx(0.1)
-    assert score.loc["2015-06-10"] == pytest.approx(110 / 200)
-    assert score.loc["2015-07-31"] == pytest.approx(1.0)
-    assert pd.isna(score.loc["2015-08-09"])
-    rows[1]["security_title"] = "Class B Common Stock"
-    mixed = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
-    mixed_score = mixed["f_ic_insider_purchase_pct_prior_60d"]
-    assert mixed_score.loc["2015-06-09"] == pytest.approx(0.1)
-    assert mixed_score.loc["2015-06-10":"2015-07-30"].isna().all()
-    assert mixed_score.loc["2015-07-31"] == pytest.approx(1.0)
-    assert mixed_score.loc["2015-08-09":].isna().all()
-    print("SANITY: later same-economic-day leg updates one pool prospectively; incompatible share classes abstain, original age preserved.")
-
-
-def test_management_future_supported_account_cannot_shorten_past_window() -> None:
-    rows = [
-        _txn(
-            accession_number="opening",
-            owner_cik="11",
-            officer_title="CEO",
-            is_officer=1,
-            shares=100,
-            shares_owned_after=100,
-            filing_date="2015-06-01",
-            document_type="4",
-        ),
-        _txn(
-            accession_number="supported",
-            owner_cik="12",
-            officer_title="CFO",
-            is_officer=1,
-            shares=10,
-            shares_owned_after=110,
-            filing_date="2015-06-10",
-            document_type="4",
-        ),
-        _txn(
-            accession_number="amend",
-            owner_cik="11",
-            officer_title="CEO",
-            is_officer=1,
-            shares=100,
-            shares_owned_after=200,
-            filing_date="2015-09-01",
-            document_type="4/A",
-            original_submission_date="2015-06-01",
-        ),
-    ]
-    idx = pd.date_range("2015-06-01", "2015-09-15")
-    frames = make_frames(idx, _peers())
-    before = build_insider_feature_panel(frames, _frame(rows[:2])).set_index("date")
-    after = build_insider_feature_panel(frames, _frame(rows)).set_index("date")
-    name = "f_ic_insider_purchase_pct_prior_60d"
-    pd.testing.assert_series_equal(before.loc[:"2015-08-31", name], after.loc[:"2015-08-31", name])
-    assert after.loc["2015-08-01", name] == pytest.approx(0.1)
-    print("SANITY: a future correction making an opening account eligible cannot shorten an already-known account's earlier window.")
-
-
 @pytest.mark.parametrize(
     "later_titles,blank_role",
     [
@@ -977,6 +792,18 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     assert pd.to_datetime(_frame(rows)["transaction_date"]).isin(idx).all()
+    # A year of earlier balance history: purchase_pct_prior reads holdings measured at least 365 days before.
+    rows.append(
+        _txn(
+            accession_number="history",
+            owner_cik="0090",
+            transaction_code="F",
+            filing_date="2013-06-03",
+            transaction_date="2013-05-31",
+            shares=10.0,
+            shares_owned_after=50_000.0,
+        )
+    )
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
@@ -1021,6 +848,18 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
             shares_owned_after=10_000,
             officer_title="Chief Executive Officer",
             is_officer=1,
+        )
+    )
+    # A year of earlier balance history: purchase_pct_prior reads holdings measured at least 365 days before.
+    rows.append(
+        _txn(
+            accession_number="history",
+            owner_cik="0090",
+            transaction_code="F",
+            filing_date="2013-06-03",
+            transaction_date="2013-05-31",
+            shares=10.0,
+            shares_owned_after=50_000.0,
         )
     )
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))

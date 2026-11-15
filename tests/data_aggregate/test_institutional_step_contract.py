@@ -552,7 +552,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     panel = step.build_panel().set_index(["date", "ticker"])
     insider = [name for name in INSTITUTIONAL_COLUMNS if name.startswith("f_ic_insider_")]
     ratios = [name for name in insider if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
-    gross = [name for name in insider if name not in ratios]
+    gross = [name for name in insider if name not in ratios and not name.endswith("_vs_sector")]
     quiet_gross = panel.loc[(days[-1], "AAA"), gross]
     assert isinstance(quiet_gross, pd.Series)
     assert quiet_gross.eq(0).to_numpy().all()

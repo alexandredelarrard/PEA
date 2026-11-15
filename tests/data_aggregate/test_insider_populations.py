@@ -264,24 +264,24 @@ def test_sector_relative_hand_computed_three_sectors() -> None:
     )
     sectors = {"X1": "X", "X2": "X", "X3": "X", "X4": "X", "Y1": "Y", "Y2": "Y", "Z1": "Z", "Z2": "Z", "Z3": "Z"}
     z = sector_relative(field, sectors)
-    # Day 1, X = [0, 0, 0, 0.04]: mean 0.01, sample std sqrt((3 * 0.01**2 + 0.03**2) / 3) = 0.02 (above the 0.5 x universe-std floor of ~0.007).
+    # Day 1, X = [0, 0, 0, 0.04]: mean 0.01, sample std sqrt((3 * 0.01**2 + 0.03**2) / 3) = 0.02.
     assert z.loc[idx[0], "X4"] == pytest.approx(1.5) and z.loc[idx[0], "X1"] == pytest.approx(-0.5)
     # Day 2, X = [0, 0, 0.04]: mean 0.04 / 3, sample std 0.04 / sqrt(3); the NaN X3 is missing, not a zero.
     assert z.loc[idx[1], "X4"] == pytest.approx(2 / np.sqrt(3)) and z.loc[idx[1], "X1"] == pytest.approx(-1 / np.sqrt(3))
     assert np.isnan(z.loc[idx[1], "X3"])
     # Fewer than 3 observed members (Y), no dispersion (Z) and no sector (N1) read NaN.
     assert z[["Y1", "Y2", "Z1", "Z2", "Z3", "N1"]].isna().all().all()
-    # Floor: a tight sector inside a dispersed universe divides by 0.5 x the universe std, not its own std.
+    # No floor: a tight sector inside a dispersed universe is scored by its own std, 0.0005 here.
     wide = pd.DataFrame({"S1": [0.0], "S2": [0.0], "S3": [0.0], "S4": [0.001], "W1": [0.0], "W2": [10.0], "W3": [20.0]}, index=idx[:1])
-    floored = sector_relative(wide, {"S1": "S", "S2": "S", "S3": "S", "S4": "S"})
-    assert floored.loc[idx[0], "S4"] == pytest.approx((0.001 - 0.00025) / (0.5 * wide.loc[idx[0]].std()))
+    tight = sector_relative(wide, {"S1": "S", "S2": "S", "S3": "S", "S4": "S"})
+    assert tight.loc[idx[0], "S4"] == pytest.approx((0.001 - 0.00025) / 0.0005)
     # Clip: one value among 29 zeros scores 29 / sqrt(30) = 5.3 and is clipped to 5.
     many = pd.DataFrame({f"M{i}": [0.0] for i in range(29)} | {"M29": [1.0]}, index=idx[:1])
     clipped = sector_relative(many, dict.fromkeys(many, "M"))
     assert clipped.loc[idx[0], "M29"] == 5.0 and clipped.loc[idx[0], "M0"] == pytest.approx(-1 / np.sqrt(30))
     print(
         "SANITY: zeros score against their sector (day 1 z = +1.5 / -0.5), an unobserved NaN drops out of the sector moments, "
-        "a sector with <3 members, no dispersion or no sector is NaN, the std floor binds in a dispersed universe, and an outlier clips at +5."
+        "a sector with <3 members, no dispersion or no sector is NaN, a tight sector is scored by its own std (no floor), and an outlier clips at +5."
     )
 
 

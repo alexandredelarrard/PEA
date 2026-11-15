@@ -64,6 +64,7 @@ build_cube:
 
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
     ftd_availability_calendar_days: 21  # estimated_policy_21d; snap forward to an actual market session
+    unknown_unit_factor: 1.0  # terminal-unit factor for a ticker whose price part has no basis at all (ADR/ADS without a verified quote-unit entry): a value that may be off by the ADR ratio beats NaN, since features are changes over time
     value_basis:
       min_securities: 15      # distinct priced common securities for a unit-changing override
       min_agreement: 0.8

@@ -114,6 +114,21 @@ class StepCubeInstitutionals(Step):
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
+    def _fill_unknown_units(self, df_factor: pd.DataFrame) -> pd.DataFrame:
+        """A ticker with no basis on any date (units unverified) converts at `unknown_unit_factor`, with a warning."""
+        unknown = df_factor.columns[df_factor.isna().all()]
+        if len(unknown):
+            factor = float(self._cfg.institutionals.unknown_unit_factor)
+            self._log.warning(
+                "units unknown for %d ticker(s) %s: terminal-unit factor %s used, values may be off by the quote-unit ratio",
+                len(unknown),
+                list(unknown),
+                factor,
+            )
+            df_factor = df_factor.copy()
+            df_factor[unknown] = factor
+        return df_factor
+
     def build_panel(self) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
 
@@ -122,6 +137,7 @@ class StepCubeInstitutionals(Step):
         df_lines = institutional_inputs.load_ftd_lines(self._store)
         df_lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
+        df_factor = self._fill_unknown_units(df_factor)
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())

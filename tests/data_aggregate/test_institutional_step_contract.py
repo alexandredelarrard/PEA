@@ -64,7 +64,7 @@ INSTITUTIONAL_COLUMNS = (
 
 
 def context(store: Any, path: Path) -> Context:
-    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}}})
+    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21, "unknown_unit_factor": 1.0}}})
     return cast(
         Context,
         SimpleNamespace(store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}),
@@ -772,3 +772,20 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
         f"turnover stays {turnover.min():.3f}..{turnover.max():.3f} over {len(turnover)} days, "
         f"pre-split fails 100 -> ftd_to_adv20 {ftd:.3f} (400 terminal shares over a 4,000 ADV)."
     )
+
+
+def test_a_ticker_without_any_basis_converts_at_the_configured_factor_and_warns(
+    sqlite_store: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    idx = pd.bdate_range("2024-01-02", periods=5)
+    df_factor = pd.DataFrame({"AAA": [1.0, 1.0, 2.0, 2.0, 2.0], "ADR": float("nan"), "NEW": [float("nan"), float("nan"), 1.0, 1.0, 1.0]}, index=idx)
+    with caplog.at_level(logging.WARNING):
+        filled = step._fill_unknown_units(df_factor)
+    assert filled["ADR"].eq(1.0).all()
+    assert filled["AAA"].equals(df_factor["AAA"])
+    assert filled["NEW"].isna().sum() == 2
+    assert df_factor["ADR"].isna().all()
+    assert any("ADR" in record.getMessage() for record in caplog.records)
+    print("SANITY: a ticker with no basis on any date gets factor 1.0 with a warning; a ticker with some basis keeps its own NaNs.")

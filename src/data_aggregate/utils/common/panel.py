@@ -98,6 +98,25 @@ def peer_relative(field_df: pd.DataFrame, peer_dict: dict, std_floor_ratio: floa
     return df_z.replace([np.inf, -np.inf], np.nan).clip(-Z_CLIP, Z_CLIP)
 
 
+def sector_relative(field_df: pd.DataFrame, sector_map: dict[str, str], std_floor_ratio: float = 0.5) -> pd.DataFrame:
+    """Score every ticker within its GICS sector, per date: (X - sector mean) / max(sector std, `std_floor_ratio` x universe std), clipped at +-`Z_CLIP`.
+
+    `field_df` is a (date x ticker) frame and `sector_map` maps a ticker to its sector. Mean and sample std run over
+    the sector's members that have a value on the day, the ticker included; a NaN is missing and a zero is a value.
+    The score is NaN when fewer than 3 members have a value or when they all share one value; a ticker without a
+    sector is NaN. The std floor is the same as in `peer_relative`.
+    """
+    floor = field_df.std(axis=1) * std_floor_ratio
+    df_z = pd.DataFrame(np.nan, index=field_df.index, columns=field_df.columns)
+    sectors = pd.Series({ticker: sector_map[ticker] for ticker in field_df.columns if ticker in sector_map})
+    for members in sectors.groupby(sectors).groups.values():
+        block = field_df[list(members)]
+        std = block.std(axis=1)
+        std = std.clip(lower=floor).where((std > 0) & (block.notna().sum(axis=1) >= _MIN_PEERS))
+        df_z[list(members)] = zscore(block, block.mean(axis=1), std)
+    return df_z.replace([np.inf, -np.inf], np.nan).clip(-Z_CLIP, Z_CLIP)
+
+
 #: The emission modes a field may declare. The DEFAULT -- a field absent from the emission map
 #: -- stays `_vs_peers` + `_xs` with no raw leg, which is what all thirteen existing builders
 #: rely on. The three explicit modes exist for SPARSE / DECAYED signals, where a rank alone is

@@ -48,6 +48,7 @@ def build_prepared_insider_panel(
     share_basis: ShareBasis | None = _NO_SPLIT_FIXTURE,
     coverage: InsiderCoverage | None = None,
     lag_days: int = 0,
+    sector_map: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Producer/visibility control through actual stages; default known-truth fixtures have no genuine splits and no publication lag."""
     # Legacy numerical fixtures declare unitary shares; construct their saved-input contract.
@@ -66,14 +67,14 @@ def build_prepared_insider_panel(
     )
     observation = coverage if coverage is not None else InsiderCoverage()
     if "source_first" not in diagnostics or not len(frames.trading_index):
-        return build_insider_feature_panel(frames, df_trades, pd.DataFrame(), diagnostics, None, observation)
+        return build_insider_feature_panel(frames, df_trades, pd.DataFrame(), diagnostics, None, observation, sector_map or {})
     df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
     df_events = pd.concat([df_trades, df_unpriced], ignore_index=True)
     if frames.security_basis is None and share_basis is not None:
         end = pd.DatetimeIndex(frames.trading_index).max()
         frames = replace(frames, security_basis=basis_frame(share_basis, [*frames.universe, *df_events["ticker"]], end))
     df_positions = position_units(df_events, None if frames.security_basis is None else terminal_basis_factor(frames.security_basis))
-    return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, observation)
+    return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, observation, sector_map or {})
 
 
 #: Run-dir parquet snapshot of the stored zip rows, 2024q1-2026q2 (read-only).

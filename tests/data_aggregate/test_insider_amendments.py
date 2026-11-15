@@ -332,16 +332,24 @@ def test_every_insider_field_matches_the_brute_force_as_of_reference_on_every_da
 
 
 def test_a_restatement_that_leaves_a_leg_keeps_the_leg_observed():
-    """`has event` comes from the positive leg: a CEO purchase restated as a director's reads 0 on the C-suite leg, not NaN."""
+    """`has event` comes from the positive leg: a CEO purchase restated as a 10% owner's reads 0 on the C-suite + management leg, not NaN."""
     rows = [
         row(
             accession_number=_acc(1), filing_date="2024-03-01", transaction_date="2024-02-28", officer_title="Chief Executive Officer", is_officer=1.0
         ),
-        row(accession_number=_acc(2), filing_date="2024-03-07", transaction_date="2024-02-28", officer_title="Director", is_officer=0.0)
+        row(
+            accession_number=_acc(2),
+            filing_date="2024-03-07",
+            transaction_date="2024-02-28",
+            officer_title="",
+            is_officer=0.0,
+            is_director=0.0,
+            is_ten_pct_owner=1.0,
+        )
         | {"document_type": "4/A", "original_submission_date": "2024-03-01", "shares_owned_after": 11_001.0},
     ]
-    ceo = _series(_build(frame(rows)), "f_ic_insider_c_suite_buy_mcap_180d")
+    ceo = _series(_build(frame(rows)), "f_ic_insider_cm_buy_mcap_180d")
     assert ceo.loc["2024-03-06"] > 0 and ceo.loc["2024-03-07":].eq(0.0).all() and ceo.loc[:"2024-02-29"].isna().all()
     print(
-        f"SANITY: the C-suite leg reads {ceo.loc['2024-03-06']:.6f} until the 4/A, then exactly 0 (observed, emptied), and NaN before the first filing."
+        f"SANITY: the C-suite + management leg reads {ceo.loc['2024-03-06']:.6f} until the 4/A, then exactly 0 (observed, emptied), and NaN before the first filing."
     )

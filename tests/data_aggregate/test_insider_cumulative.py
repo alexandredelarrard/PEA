@@ -146,8 +146,8 @@ def test_complete_quiet_windows_do_not_require_a_prior_purchase() -> None:
     rows = [_source_row(), _source_row(ticker="BBB", accession_number="future", filing_date="2024-08-01")]
     panel = _observed_panel(rows)
     ratios = [f"f_{name}" for name in EMISSION if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
-    counts = [f"f_{name}" for name in EMISSION if f"f_{name}" not in ratios]
-    assert len(ratios) == 8 and len(counts) == 10
+    counts = [f"f_{name}" for name in EMISSION if f"f_{name}" not in ratios and not name.endswith("_vs_sector")]
+    assert len(ratios) == 6 and len(counts) == 8
     assert panel.reindex(columns=counts).loc[("2024-07-01", "AAA")].eq(0).all()
     assert panel.loc[("2024-07-01", "BBB")].isna().all()
     assert panel.reindex(columns=counts).loc[("2024-09-01", "BBB")].eq(0).all()
@@ -182,8 +182,8 @@ def test_dollar_totals_use_action_cap_and_real_expiry() -> None:
     assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.001)
     assert panel.loc["2015-07-30", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.001)
     assert panel.loc["2015-07-31", "f_ic_insider_buy_value_mcap_60d"] == 0
-    assert panel.loc["2015-11-27", "f_ic_insider_c_suite_buy_mcap_180d"] == pytest.approx(0.001)
-    assert panel.loc["2015-11-28", "f_ic_insider_c_suite_buy_mcap_180d"] == 0
+    assert panel.loc["2015-11-27", "f_ic_insider_cm_buy_mcap_180d"] == pytest.approx(0.001)
+    assert panel.loc["2015-11-28", "f_ic_insider_cm_buy_mcap_180d"] == 0
     later = _txn(
         accession_number="later",
         filing_date="2015-06-12",
@@ -292,7 +292,7 @@ def test_action_cap_survives_missing_current_cap_and_quiet_needs_none() -> None:
     for window in (60, 180):
         assert panel.loc["2024-06-11", f"f_ic_insider_buy_value_mcap_{window}d"] == pytest.approx(0.001)
     quiet = _action_panel([_source_row()], close, None, complete=True)
-    columns = [name for name in quiet if "mcap" in name]
+    columns = [name for name in quiet if "mcap" in name and not name.endswith("_vs_sector")]
     assert set(columns) == {f"f_{name}" for name in BUY_VALUE_FEATURES} and quiet.loc["2024-06-11", columns].eq(0).all()
     print(
         f"SANITY: supported historical ratios survive missing current cap; all {len(columns)} source-complete quiet intensities are zero without an action denominator."
@@ -336,15 +336,13 @@ def test_action_cap_all_selectors_preserve_raw_dollar_consumers() -> None:
         "buy_value_mcap_60d": 0.0025,
         "buy_value_mcap_120d": 0.0025,
         "buy_value_mcap_180d": 0.0025,
-        "c_suite_buy_mcap_180d": 0.0015,
-        "management_buy_mcap_180d": 0.001,
-        "ten_pct_buy_mcap_180d": 0.0,
+        "cm_buy_mcap_180d": 0.0025,
     }
     for field, value in expected.items():
         assert panel.loc["2024-06-10", "f_ic_insider_" + field] == pytest.approx(value)
     assert panel.loc["2024-06-10", "f_ic_insider_net_buy_ratio_180d"] == pytest.approx(0.0)
     print(
-        "SANITY: the three population selectors sum individual action ratios (C-suite 0.0015 + management 0.001 = total 0.0025); "
+        "SANITY: the merged C-suite + management selector sums individual action ratios (0.0015 + 0.001 = total 0.0025); "
         "gross buys and the raw-USD net ratio retain their definitions."
     )
 

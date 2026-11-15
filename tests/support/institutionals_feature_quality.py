@@ -103,6 +103,11 @@ REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
         "10b5-1 flag only populated from 2023-04; selling is carried by net_buy_ratio and distinct_sellers",
     ),
     "ic_insider_director_buy_mcap_180d": ("insider", "directors are now the MANAGEMENT population"),
+    "ic_insider_c_suite_buy_mcap_180d": ("insider", "merged with management into the sector-relative ic_insider_cm_buy_mcap_180d"),
+    "ic_insider_management_buy_mcap_180d": ("insider", "merged with C-suite into the sector-relative ic_insider_cm_buy_mcap_180d"),
+    "ic_insider_ten_pct_buy_mcap_180d": ("insider", "no information coefficient in the 2026-11 insider population study"),
+    "ic_insider_c_suite_purchase_pct_prior_180d": ("insider", "no information coefficient in the 2026-11 insider population study"),
+    "ic_insider_management_purchase_pct_prior_180d": ("insider", "no information coefficient in the 2026-11 insider population study"),
     **{
         f"ic_insider_{role}_buy_mcap_{days}d": ("insider", "single-title buy bucket superseded by the three disjoint populations")
         for role in ("ceo", "cfo", "coo", "president", "chair", "csuite_other", "vp", "other")
@@ -165,6 +170,7 @@ _BOUNDED = {
     "ic_insider_net_buy_ratio_120d",
     "ic_insider_net_buy_ratio_180d",
     "ic_insider_buyer_breadth_120d",
+    "ic_insider_cm_buy_mcap_180d_vs_sector",
     "ic_ftd_persistence_30d",
 }
 _NORMALIZED = {
@@ -174,15 +180,11 @@ _NORMALIZED = {
     "ic_insider_buy_value_mcap_60d",
     "ic_insider_buy_value_mcap_120d",
     "ic_insider_buy_value_mcap_180d",
-    "ic_insider_c_suite_buy_mcap_180d",
-    "ic_insider_management_buy_mcap_180d",
-    "ic_insider_ten_pct_buy_mcap_180d",
+    "ic_insider_cm_buy_mcap_180d",
     "ic_insider_purchase_pct_prior_60d",
     "ic_insider_purchase_pct_prior_120d",
     "ic_insider_conviction_60d",
     "ic_insider_conviction_120d",
-    "ic_insider_c_suite_purchase_pct_prior_180d",
-    "ic_insider_management_purchase_pct_prior_180d",
     "ic_inst_breadth_chg",
     "ic_inst_shares_chg",
     "ic_inst_value_to_mcap",

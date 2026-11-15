@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -52,20 +51,19 @@ def cumulative_positions(
     other_flows: pd.DataFrame,
     idx: pd.DatetimeIndex,
     days: int,
-    populations: Mapping[str, int | None],
     excluded: pd.DataFrame,
-) -> dict[str, pd.DataFrame]:
+) -> pd.DataFrame:
     """Net shares bought minus sold in the window over the ticker's insider holdings `days` calendar days earlier.
 
     Holdings are, per ticker, the sum over direct accounts (owner x class) of the latest post-transaction balance public
-    on the day, carried forward; `populations` maps each output name to its population code (`None` = all insiders).
+    on the day, carried forward, all insiders pooled.
     The numerator uses the accounts of the denominator: only accounts with a positive latest public balance on or before
     `days` days earlier (as in `account_conviction`) contribute their trades, so an account first seen inside the window
     adds neither its sales nor its purchases and a ratio cannot fall below -1. Accounts in `excluded` (disputed quantities)
     are left out of numerator and holdings. A cell is NaN without an active trade of such an account or without positive holdings `days` earlier.
     """
     if trades.empty or idx.empty:
-        return {}
+        return pd.DataFrame()
     lots, account_known, disputed = _direct_lots(trades, excluded)
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
     balances = _balance_events(trades.loc[account_known], other_flows, disputed)
@@ -82,8 +80,8 @@ def cumulative_positions(
     by_balance = dict(tuple(balances.groupby("ticker")))
     first = balances.groupby("ticker")["visible_from"].min().reindex(columns)
     warm = ((idx - pd.Timedelta(days=days)).to_numpy()[:, None] >= (first + pd.Timedelta(days=HOLDINGS_WARMUP_DAYS)).to_numpy()[None, :]).astype(bool)
-    numerator = {name: np.zeros((len(idx), len(columns))) for name in populations}
-    active = {name: np.zeros((len(idx), len(columns))) for name in populations}
+    numerator = np.zeros((len(idx), len(columns)))
+    active = np.zeros((len(idx), len(columns)))
     left_out = active_total = 0
     for ticker, group in lots.groupby("ticker"):
         col = columns.get_loc(ticker)
@@ -96,21 +94,15 @@ def cumulative_positions(
         live = _accumulate_intervals(np.ones(len(group)), start, stop, codes, shape) > 0
         left_out += int((live & ~usable).sum())
         active_total += int(live.sum())
-        for name, code in populations.items():
-            in_pop = np.ones(len(group), dtype=bool) if code is None else group["population"].eq(code).to_numpy()
-            net = _accumulate_intervals(group["net"].to_numpy(dtype=float)[in_pop], start[in_pop], stop[in_pop], codes[in_pop], shape)
-            count = _accumulate_intervals(np.ones(int(in_pop.sum())), start[in_pop], stop[in_pop], codes[in_pop], shape)
-            micro = np.rint(net * MICRO).astype(np.int64)
-            numerator[name][:, col] = np.where(usable, micro, 0).sum(axis=1) / MICRO
-            active[name][:, col] = ((count > 0) & usable).sum(axis=1)
+        net = _accumulate_intervals(group["net"].to_numpy(dtype=float), start, stop, codes, shape)
+        micro = np.rint(net * MICRO).astype(np.int64)
+        numerator[:, col] = np.where(usable, micro, 0).sum(axis=1) / MICRO
+        active[:, col] = (live & usable).sum(axis=1)
     _log.info("insider holdings ratio %sd: %s of %s active account-days left out (no positive prior balance)", days, left_out, active_total)
-    out: dict[str, pd.DataFrame] = {}
-    for name, code in populations.items():
-        holdings = _holdings(balances, code, idx, columns)
-        lagged = np.where((asof >= 0)[:, None], holdings[np.maximum(asof, 0)], np.nan)
-        known = (lagged > 0) & (active[name] > 0) & warm
-        out[name] = pd.DataFrame(np.divide(numerator[name], lagged, out=np.full_like(lagged, np.nan), where=known), index=idx, columns=columns)
-    return out
+    holdings = _holdings(balances, idx, columns)
+    lagged = np.where((asof >= 0)[:, None], holdings[np.maximum(asof, 0)], np.nan)
+    known = (lagged > 0) & (active > 0) & warm
+    return pd.DataFrame(np.divide(numerator, lagged, out=np.full_like(lagged, np.nan), where=known), index=idx, columns=columns)
 
 
 def account_conviction(trades: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.DatetimeIndex, days: int, excluded: pd.DataFrame) -> pd.DataFrame:
@@ -195,7 +187,7 @@ def _balance_events(trades: pd.DataFrame, other_flows: pd.DataFrame, disputed: p
     Rows of one account, transaction day and publication day reduce to the row whose balance no sibling row
     starts from (the end of that day's chain), the highest accession breaking ties.
     """
-    keep = ["ticker", "owner_cik", "klass", "order_day", "visible_from", "after", "delta", "population", "accession_number"]
+    keep = ["ticker", "owner_cik", "klass", "order_day", "visible_from", "after", "delta", "accession_number"]
     parts = [_balance_rows(trades, trades["transaction_day"])]
     if not other_flows.empty:
         flows = other_flows[
@@ -236,14 +228,13 @@ def _balance_rows(df_rows: pd.DataFrame, order_day: pd.Series) -> pd.DataFrame:
             "visible_from": df_rows["visible_from"],
             "after": pd.to_numeric(df_rows["shares_owned_after"], errors="coerce"),
             "delta": df_rows["shares_n"] * sign,
-            "population": df_rows["population"],
             "accession_number": df_rows.get("accession_number", pd.Series("", index=df_rows.index)).fillna("").astype(str),
         }
     )
 
 
-def _holdings(balances: pd.DataFrame, code: int | None, idx: pd.DatetimeIndex, columns: pd.Index) -> np.ndarray:
-    """Sum of the accounts' latest public balances per grid day and ticker; `code` keeps rows of that population."""
+def _holdings(balances: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index) -> np.ndarray:
+    """Sum of the accounts' latest public balances per grid day and ticker."""
     shape = (len(idx) + 1, len(columns))
     if balances.empty:
         return np.zeros(shape)[:-1]
@@ -251,7 +242,7 @@ def _holdings(balances: pd.DataFrame, code: int | None, idx: pd.DatetimeIndex, c
     key = balances["order_day"].astype("int64")
     wins = key.ge(key.groupby(account).cummax())
     df_win = balances[wins]
-    value = df_win["after"] if code is None else df_win["after"].where(df_win["population"].eq(code), 0.0)
+    value = df_win["after"]
     step = value - value.groupby([df_win["ticker"], df_win["owner_cik"], df_win["klass"]]).shift(1).fillna(0.0)
     start = idx.searchsorted(df_win["visible_from"].to_numpy(), side="left")
     col = columns.get_indexer(pd.Index(df_win["ticker"]))

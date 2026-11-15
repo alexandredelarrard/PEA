@@ -1168,3 +1168,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - source_commit: e755a864 (the changes land in the commits that follow it on `dev`)
 - Coverage: signed provision columns replace eight added/lost flags, the poison-pill flag and fifteen low-value governance features are removed, `ceo_pay_ratio` is smoothed over three proxies, `board_size` and `avg_board_tenure` come from the director rows, auditor tenure is filled across a run, and `youngest_director_age` and `f_female_board_chg_pct` are added. The model configs and the feature recap `reports/data_check/11-12-2026/governance_feature_recap.md` follow.
 - Pages: [Data aggregate](./modules/data-aggregate.md).
+
+## 2026-11-15: refresh — 13F book cleaning redesign
+
+- Coverage: unit per filing (modal power of ten, at least five priced securities, 80% inside the 0.35-3.5 band), one-time line repair, consensus price for securities the price table does not cover, 80% line and cover acceptance, one ceiling rule that excludes lines instead of stopping the build, periods outside 1999-today and bond lines removed, 100-day carry, book_known replacing comparison_eligible. A full rebuild of `cube_part_sec_thirteen` ran without a stop: 0.22% of broad books rejected.
+- Pages: [Data aggregate](./modules/data-aggregate.md), [Data access](./guides/data-access.md).

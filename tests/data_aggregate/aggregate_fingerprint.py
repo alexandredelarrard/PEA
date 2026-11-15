@@ -1057,7 +1057,9 @@ def compute() -> dict:
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
     basis_grid = idx.union(pd.DatetimeIndex(df_books["period"].unique()))
-    market = BehaviorMarket(idx, valuation_close, security_basis_frame(ShareBasis(actual, actual, actual, {}), basis_grid, valuation_close.columns))
+    market = BehaviorMarket(
+        idx, valuation_close, security_basis_frame(ShareBasis(actual, actual, actual, {}), basis_grid, valuation_close.columns), 0.8
+    )
     cohort = frozenset(pad_cik(cik) for cik in roster)
     super_history = compute_superinvestor_feature_history(book_history, {"": cohort, "topk": cohort}, tuple(tickers), market)
     superinvestor = project_superinvestor_features(

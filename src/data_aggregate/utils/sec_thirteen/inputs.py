@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pandas as pd
 
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filing_dates
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.institutional_vintages import single_version_books
@@ -31,6 +31,8 @@ _MANIFEST_COLUMNS = (
     "parsed_row_count",
     "parse_status",
 )
+#: Read when the table carries them: the filer's own cover total, the check that a cleaned book kept its value.
+_OPTIONAL_MANIFEST_COLUMNS = ("declared_value_total",)
 _NUMERIC = ("shares", "value_usd", "call_shares", "call_value", "put_shares", "put_value", "debt_prn", "debt_value", "other_value")
 _POSITION_COLUMNS = (
     "cik",
@@ -64,14 +66,15 @@ def _filing_layout(
             {"parse_status": "position", "cusip": sorted(set(cusips)), **scope},
         ]
         where = [markers, *positions]
-    columns = list(dict.fromkeys((*_MANIFEST_COLUMNS, *_POSITION_COLUMNS)))
+    stored = set(store.columns(Tables.sec13f_hr))
+    columns = list(dict.fromkeys((*_MANIFEST_COLUMNS, *(c for c in _OPTIONAL_MANIFEST_COLUMNS if c in stored), *_POSITION_COLUMNS)))
     return {"columns": columns, "where": where, "until": until, "date_col": "filing_date", "markers": True}
 
 
 def _partition_packet(df_payload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Separate verified completion markers from economic position rows."""
     complete = df_payload["parse_status"].eq("complete") & df_payload["cusip"].eq(cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1])
-    df_filings = df_payload.loc[complete, list(_MANIFEST_COLUMNS)].reset_index(drop=True)
+    df_filings = df_payload.loc[complete, [*_MANIFEST_COLUMNS, *(c for c in _OPTIONAL_MANIFEST_COLUMNS if c in df_payload)]].reset_index(drop=True)
     df_holdings = df_payload.loc[df_payload["parse_status"].eq("position"), list(_POSITION_COLUMNS)].reset_index(drop=True)
     return df_filings, df_holdings
 
@@ -99,7 +102,7 @@ def _iter_filing_packets(store: DataStore, query: dict[str, Any], *, scoped: boo
     with closing(store.iter_load(Tables.sec13f_hr, chunksize=_CHUNKSIZE, order_by=("cik", "period", "accession_number"), **query)) as stream:
         for df_packet in _iter_whole_quarters(stream):
             df_packet = _complete_amended_books(store, query, df_packet) if scoped else df_packet
-            yield clean_filing_dates(*_partition_packet(df_packet))
+            yield clean_filings(*_partition_packet(df_packet))
             del df_packet
 
 

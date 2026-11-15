@@ -124,14 +124,14 @@ def test_integer_ratio_does_not_invent_a_split() -> None:
     assert repaired["value_basis_repaired"].eq(ABSTAINED).all()
     assert repaired["value_usd"].eq(h["shares"] * CLOSE).all()
     assert repaired["shares"].equals(h["shares"])
-    assert register["factor"].isna().all()
-    print("SANITY: ratio 50 against an as-traded quote is unsupported; no imaginary split rescues it.")
+    assert register["factor"].eq(1.0).all()
+    print("SANITY: ratio 50 against an as-traded quote is no power of ten; no imaginary split rescues it, the lines are rebuilt from the quote.")
 
 
-def test_a_filing_at_a_non_integer_out_of_band_ratio_abstains():
-    """2.5 is neither a power of 1000 nor a whole integer, so there is nothing to infer -- the
-    unit factor stays unresolved; common dollars are separately market-estimated."""
-    h = _filing("0000861177", CLOSE * 2.5)
+def test_a_filing_at_an_out_of_band_ratio_that_is_no_power_of_ten_abstains():
+    """5 is outside the row band and no power of ten, so there is nothing to infer -- the unit factor stays 1
+    under the abstained status; common dollars are rebuilt from the quote line by line."""
+    h = _filing("0000861177", CLOSE * 5.0)
     repaired, register = repair_value_basis(h, _close_split())
 
     assert (repaired["value_basis_repaired"] == ABSTAINED).all()
@@ -139,12 +139,12 @@ def test_a_filing_at_a_non_integer_out_of_band_ratio_abstains():
     assert repaired["call_value"].isna().all()
     assert not (repaired["value_usd"].fillna(-1) == 0).any()
     assert repaired["shares"].equals(h["shares"])
-    assert register["factor"].isna().all()
+    assert register["factor"].eq(1.0).all() and register["status"].eq("abstained").all()
 
     print("\n=== SANITY CHECK: non-integer out-of-band filing abstains ===")
     print(
-        f"  ratio {float(register['median_ratio'].iloc[0]):.2f} is in no band and not a whole "
-        f"integer -> factor NA, flag ABSTAINED, common dollars market-estimated, shares intact at "
+        f"  ratio {float(register['median_ratio'].iloc[0]):.2f} is outside the band and no power of "
+        f"ten -> factor 1, flag ABSTAINED, common dollars rebuilt from the quote, shares intact at "
         f"{repaired['shares'].iloc[0]:,.0f}. Validated."
     )
 
@@ -191,13 +191,14 @@ def test_one_wild_row_cannot_flip_a_filing_because_the_statistic_is_the_median()
 
 
 @pytest.mark.parametrize("factor", [0.001, 1.0, 1000.0])
-def test_position_price_outliers_reuse_missing_value_fallback_after_book_scaling(factor: float, caplog: pytest.LogCaptureFixture) -> None:
+def test_position_price_outliers_are_rebuilt_from_the_quote_after_book_scaling(factor: float, caplog: pytest.LogCaptureFixture) -> None:
     h = _filing("0000861177", 100.0 / factor, shares=100.0)
-    h.loc[:5, "value_usd"] *= pd.Series([1.11, 0.89, 1.1, 0.9, 1.09, 0.91])
+    h.loc[:5, "value_usd"] *= pd.Series([4.0, 0.3, 3.4, 0.36, 1.09, 0.91])
     original = h.copy(deep=True)
     close = _close_split(100.0)
     got, register = repair_value_basis(h, close)
     assert register["factor"].iloc[0] == factor
+    # outside [0.35, 3.5] the line is rebuilt from the quote; inside it the filed line is kept (the edge lines 3.4 and 0.36 stay)
     assert got.loc[:1, "value_usd"].eq(10_000.0).all()
     pd.testing.assert_series_equal(got.loc[2:, "value_usd"], h.loc[2:, "value_usd"] * factor)
     assert got["value_basis_price_mismatch"].tolist() == [True, True] + [False] * 13
@@ -209,14 +210,13 @@ def test_position_price_outliers_reuse_missing_value_fallback_after_book_scaling
     assert register["estimated_price_mismatch_rows"].iloc[0] == 2
     with caplog.at_level(logging.INFO):
         log_register(register, float(h["value_usd"].sum()))
-    assert "position price fallback" in caplog.text
-    assert "reported shares preserved" in caplog.text
+    assert "outside the price band" in caplog.text
     pd.testing.assert_frame_equal(h, original)
     pd.testing.assert_frame_equal(got, repair_value_basis(got, close)[0])
     close.loc[close.index > PERIOD] *= 1000
     pd.testing.assert_frame_equal(got, repair_value_basis(h, close)[0])
     print(
-        f"SANITY: factor {factor:g} is frozen before both high/low position fallbacks; inclusive 10% boundaries, shares, option dollars, source and past observations survive."
+        f"SANITY: factor {factor:g} is frozen before the row band; lines outside [0.35, 3.5] are rebuilt from the quote with shares preserved, edge lines, option dollars and past observations survive."
     )
 
 
@@ -346,24 +346,25 @@ def test_unknown_dollar_observation_invalidates_an_older_value() -> None:
     print("SANITY: a new unknown dollar state does not forward-fill the previous quarter's known value.")
 
 
-def test_default_unit_override_requires_fifteen_distinct_securities() -> None:
-    h = _filing("0000861177", CLOSE * 1000, rows=14)
+def test_default_unit_override_requires_five_distinct_securities() -> None:
+    h = _filing("0000861177", CLOSE * 1000, rows=4)
     got, register = repair_value_basis(h, _close_split())
     assert got["value_usd"].eq(h["shares"] * CLOSE).all()
-    assert register["priced_securities"].iloc[0] == 14
-    full, register = repair_value_basis(_filing("0000861177", CLOSE * 1000, rows=15), _close_split())
+    assert register["priced_securities"].iloc[0] == 4 and register["factor"].iloc[0] == 1.0
+    assert got["value_basis_repaired"].eq(ABSTAINED).all()
+    full, register = repair_value_basis(_filing("0000861177", CLOSE * 1000, rows=5), _close_split())
     assert full["value_basis_repaired"].eq(DIVIDED).all()
-    print("SANITY: production gate abstains with 14 securities and permits a coherent 15-security unit override.")
+    print("SANITY: production gate keeps the unit with 4 securities (lines rebuilt) and permits a coherent 5-security unit override.")
 
 
 def test_unknown_units_use_marked_market_values_without_inventing_a_factor() -> None:
-    h = _filing("0000861177", CLOSE * 2.5)
+    h = _filing("0000861177", CLOSE * 5.0)
     h.loc[0, "call_value"] = 0.0
     original = h.copy(deep=True)
     got, register = repair_value_basis(h, _close_split())
     assert got["value_usd"].eq(h["shares"] * CLOSE).all()
     assert got["value_basis_repaired"].eq(ABSTAINED).all()
-    assert register["factor"].isna().all()
+    assert register["factor"].eq(1.0).all()
     assert got["value_basis_reconstructed"].all()
     assert got["value_basis_value_source"].eq("market_estimated").all()
     assert got["call_value"].iloc[0] == 0.0
@@ -397,10 +398,10 @@ def test_missing_values_estimate_only_with_valid_common_quantity_and_period_quot
 
 
 def test_market_fallback_is_not_unit_evidence_and_uses_no_future_price() -> None:
-    h = _filing("0000861177", CLOSE * 1000, rows=14)
+    h = _filing("0000861177", CLOSE * 1000, rows=4)
     got, register = repair_value_basis(h, _close_split())
-    assert register["priced_securities"].iloc[0] == 14
-    assert register["factor"].isna().all()
+    assert register["priced_securities"].iloc[0] == 4
+    assert register["factor"].eq(1.0).all()
     assert got["value_usd"].eq(h["shares"] * CLOSE).all()
     close = _close_split()
     close.loc[close.index > PERIOD] *= 100
@@ -411,7 +412,7 @@ def test_market_fallback_is_not_unit_evidence_and_uses_no_future_price() -> None
 
 
 def test_unresolved_option_values_use_their_own_underlying_quantities() -> None:
-    h = _filing("0000861177", CLOSE * 2.5).assign(
+    h = _filing("0000861177", CLOSE * 5.0).assign(
         call_shares=3.0,
         put_shares=7.0,
         debt_prn=1000.0,
@@ -425,7 +426,7 @@ def test_unresolved_option_values_use_their_own_underlying_quantities() -> None:
     assert got["value_basis_call_reconstructed"].all()
     assert got["value_basis_put_reconstructed"].all()
     assert got["value_basis_call_value_source"].eq("market_estimated").all()
-    assert register["factor"].isna().all()
+    assert register["factor"].eq(1.0).all()
     assert register["estimated_call_rows"].iloc[0] == len(h)
     assert register["estimated_put_value"].iloc[0] == 7 * CLOSE * len(h)
     pd.testing.assert_frame_equal(h, original)
@@ -530,7 +531,7 @@ def test_inverse_common_fallback_uses_normalized_dollars_without_voting(filed_sc
 
 
 def test_inverse_unverified_units_exclusions_and_missing_value_logs(caplog: pytest.LogCaptureFixture) -> None:
-    book = _filing("0000000001", CLOSE * 2.5)
+    book = _filing("0000000001", CLOSE * 5.0)
     extra = pd.DataFrame(
         {
             "cik": "0000000001",
@@ -547,7 +548,7 @@ def test_inverse_unverified_units_exclusions_and_missing_value_logs(caplog: pyte
     assert got.loc[15, "shares"] == 10
     assert got.loc[15, "value_usd"] == 10 * CLOSE
     assert got.loc[15, "value_basis_inverse_unit_unverified"]
-    assert register["factor"].isna().all()
+    assert register["factor"].eq(1.0).all()
     assert got.loc[16, "value_basis_excluded"]
     assert pd.isna(got.loc[16, "shares"]) and pd.isna(got.loc[16, "value_usd"])
     assert got.loc[17, "value_usd"] == 10 * CLOSE
@@ -556,10 +557,10 @@ def test_inverse_unverified_units_exclusions_and_missing_value_logs(caplog: pyte
     assert got.loc[18, "shares"] == 0 and got.loc[18, "value_usd"] == 0
     with caplog.at_level(logging.INFO):
         log_register(register, float(h.value_usd.sum()))
-    assert "inverse" in caplog.text
-    assert "unit unverified" in caplog.text
-    assert "excluded" in caplog.text
-    assert "missing filed value" in caplog.text
+    assert "13F cleaning" in caplog.text
+    assert "unit unresolved" in caplog.text
+    assert "of which a missing value" in caplog.text
+    assert "dropped" in caplog.text
     assert register.loc[0, "excluded_rows"] == 1
     assert register.loc[0, "inverse_unit_unverified_rows"] == 1
     assert register.loc[0, "estimated_missing_value_rows"] == 1

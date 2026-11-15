@@ -65,10 +65,13 @@ build_cube:
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
     ftd_availability_calendar_days: 21  # estimated_policy_21d; snap forward to an actual market session
     value_basis:
-      min_securities: 15      # distinct priced common securities for a unit-changing override
-      min_agreement: 0.8
-      price_tolerance: 0.1
+      min_securities: 5       # distinct securities (priced by close_pit or by consensus) for a unit-changing factor
+      min_agreement: 0.8      # share of a filing's securities that must vote for the same power of ten
+      row_band_low: 0.35      # a priced line is kept when value / (shares x price) lies in [low, high]; outside it the failing leg is rebuilt
+      row_band_high: 3.5
       max_price_age_days: 7  # last available close at report-quarter end
+      min_row_coverage: 0.8   # a book is valued when this share of its common lines (and of its cover total) survives the cleaning
+      min_consensus_filers: 3 # distinct filers a (quarter, CUSIP) needs before its median value / shares becomes a price
     decay_halflife:          # trading days for the exponential event-decay transform.
                              # An EVENT is 0 on ~99.9% of ticker-days, and a peer basket of
                              # all-zeros has zero dispersion -> `peer_relative` returns NaN by
@@ -83,7 +86,8 @@ build_cube:
       # One user-owned ordered raw-CIK list: superinvestors/ranked_managers.json.
       # The checked-in ascending default is provisional, with retrospective roster bias.
       # List/K/policy changes require an explicit full rebuild.
-      max_age_calendar_days: 90  # first public usability; amendments never reset age
+      max_age_calendar_days: 100  # first public usability; amendments never reset age. Consecutive public dates are 91-92 days apart (p90),
+                                  # 99.8% within 100, so a book is carried until its successor is public or 100 days pass
       selection:
         k: 20                   # fixed prefix; no runtime ranking or replacement
 

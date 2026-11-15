@@ -926,7 +926,7 @@ def snapshot_feature_history(
         if not names:
             continue
         out = _snapshot_levels(current, current_states, names)
-        paired = current_states.index[current_states.comparison_eligible & prior_states.comparison_eligible.reindex(current_states.index).eq(True)]
+        paired = current_states.index[current_states.book_known & prior_states.book_known.reindex(current_states.index).eq(True)]
         joined = current.add_suffix("_current").join(prior.add_suffix("_prior"), how="outer")
         joined = joined.loc[joined.index.get_level_values("cik").isin(paired)]
         for suffix, values, state in (("current", current, current_states), ("prior", prior, prior_states)):

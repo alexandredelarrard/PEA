@@ -1106,7 +1106,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         security_basis=basis,
     )
     resources = SecThirteenResources(
-        frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
+        frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})), {}
     )
 
     def panel() -> pd.DataFrame | None:

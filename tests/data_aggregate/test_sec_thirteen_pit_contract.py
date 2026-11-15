@@ -114,7 +114,7 @@ def test_broad_basis_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
     basis = ShareBasis(empty, empty, empty, {}, actual_available=False)
     frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]), security_basis=_basis_frame(basis))
-    resources = SecThirteenResources(frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame(columns=["cusip", "ticker"])))
+    resources = SecThirteenResources(frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame(columns=["cusip", "ticker"])), {})
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._cfg, step._settle_days = None, {"institutionals": {}}, F13_SETTLE_TRADING_DAYS
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))
@@ -144,7 +144,7 @@ def test_elite_inverse_units_preserve_reference_money(units_before: float, units
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
     policy = {"TEST": {"quote_units": {"date": "2024-06-01", "before": units_before, "after": units_after}}}
     basis = ShareBasis(empty, empty, empty, policy)
-    market = BehaviorMarket(index, pd.DataFrame(50.0, index=index, columns=["TEST"]), _basis_frame(basis))
+    market = BehaviorMarket(index, pd.DataFrame(50.0, index=index, columns=["TEST"]), _basis_frame(basis), 0.8)
     prior, current = _book("1", "2024-03-31", {}), _book("1", "2024-06-30", {})
     rows = pd.DataFrame({"ticker": ["TEST"], "current": [10.0], "prior": [10.0], "value_current": [np.nan], "value_prior": [np.nan], "known": [True]})
     result = prepare_pair_sample([("1", current, prior)], PairTable({(current, prior): 0}, rows, np.array([0, 1])), market).df_positions

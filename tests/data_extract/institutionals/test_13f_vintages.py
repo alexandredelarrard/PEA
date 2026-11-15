@@ -1434,7 +1434,7 @@ def normal_resources(frames: PriceFrames) -> SecThirteenResources:
     cohort = frozenset({"0000000001"})
     capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": cast(pd.DataFrame, frames.close_pit) * 1e9}
     tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), ORDINARY_CMAP)
-    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort}, tags)
+    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort}, tags, {})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1634,9 +1634,9 @@ def test_normal_elite_expiry_does_not_wait_for_another_filing(
 ) -> None:
     step, frames = ordinary_step(filing_store, monkeypatch, (packet("only", "2024-08-14", {"111111111": 100}),))
     _, elite = normal_panels(step, frames)
-    assert elite.loc[(pd.Timestamp("2024-11-13"), "AAA"), "f_ic_super_holders"] == 1
-    assert pd.isna(elite.loc[(pd.Timestamp("2024-11-14"), "AAA"), "f_ic_super_holders"])
-    print("SANITY: the default90-calendar-day source-book expiry clears the daily level without another filing.")
+    assert elite.loc[(pd.Timestamp("2024-11-22"), "AAA"), "f_ic_super_holders"] == 1
+    assert pd.isna(elite.loc[(pd.Timestamp("2024-11-25"), "AAA"), "f_ic_super_holders"])
+    print("SANITY: the default 100-calendar-day source-book expiry clears the daily level without another filing.")
 
 
 def test_same_day_versions_follow_acceptance_time_before_accession_order() -> None:

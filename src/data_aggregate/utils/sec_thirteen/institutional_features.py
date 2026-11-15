@@ -200,7 +200,7 @@ def _level_items(df_rows: pd.DataFrame, df_books: pd.DataFrame, n_tickers: int) 
 
 def _pair_segments(df_versions: pd.DataFrame, period: pd.Timestamp, prior: pd.Timestamp, n_days: int) -> pd.DataFrame:
     """Per manager, the current and prior versions in force on each [start, stop) segment where both books are
-    comparison-eligible, and whether each side's absence means zero."""
+    known, and whether each side's absence means zero."""
     df_two = df_versions.loc[df_versions["period"].isin([period, prior]), ["cik", "period", "start"]].sort_values("start", kind="stable")
     df_segments = df_two[["cik", "start"]].drop_duplicates()
     for side, quarter in (("current", period), ("prior", prior)):
@@ -209,12 +209,12 @@ def _pair_segments(df_versions: pd.DataFrame, period: pd.Timestamp, prior: pd.Ti
     df_segments = df_segments.dropna(subset=["current", "prior"]).sort_values(["cik", "start"], kind="stable")
     df_segments["stop"] = df_segments.groupby("cik", sort=False)["start"].shift(-1).fillna(n_days).astype("int64")
 
-    # Both books must be comparison-eligible; absence is zero only on a zero-eligible side.
+    # Both books must be known; absence is zero only on a zero-eligible side, and unknown otherwise.
     current = df_versions.loc[df_segments["current"].astype("int64")]
     previous = df_versions.loc[df_segments["prior"].astype("int64")]
     df_segments["zero_current"] = current["zero_eligible"].to_numpy(dtype=bool)
     df_segments["zero_prior"] = previous["zero_eligible"].to_numpy(dtype=bool)
-    eligible = current["comparison_eligible"].to_numpy(dtype=bool) & previous["comparison_eligible"].to_numpy(dtype=bool)
+    eligible = current["book_known"].to_numpy(dtype=bool) & previous["book_known"].to_numpy(dtype=bool)
     return df_segments.loc[eligible].reset_index(drop=True)
 
 

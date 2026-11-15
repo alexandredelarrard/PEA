@@ -50,7 +50,7 @@ def _manager_batch_owner(
         security_basis=basis,
     )
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
-    resources = SecThirteenResources(frames, {"": ciks}, _hr_tags([holdings for _, holdings in packets]))
+    resources = SecThirteenResources(frames, {"": ciks}, _hr_tags([holdings for _, holdings in packets]), {})
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
@@ -79,7 +79,7 @@ def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest
     step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
     prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
     step.run(full=True)
-    assert closed == [True] and save.call_count == 1
+    assert closed == [True, True] and save.call_count == 1
     for old, actual in zip(before, packets, strict=True):
         for expected, df_rows in zip(old, actual, strict=True):
             pd.testing.assert_frame_equal(expected, df_rows)

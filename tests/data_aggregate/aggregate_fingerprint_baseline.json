@@ -1193,11 +1193,11 @@
    "f_ic_bo_13g_count_126d_z",
    "ticker"
   ],
-  "hash": "d82e85217c0a8b3b05ee81f1f36c2c73",
+  "hash": "b24c0e5aefe581c300a404a973286bab",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
-   "f_ic_act_13d_count_126d_z": "5ab77a1f97c7cc5f",
-   "f_ic_bo_13g_count_126d_z": "5377ab2d30a9f974",
+   "f_ic_act_13d_count_126d_z": "b9037728fa971b8d",
+   "f_ic_bo_13g_count_126d_z": "92a564246bae627a",
    "ticker": "20baf79a52b9d113"
   },
   "rows": 43010

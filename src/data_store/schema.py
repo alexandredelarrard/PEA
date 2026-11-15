@@ -972,9 +972,22 @@ class Tables:
         ("ticker", "accession_number", "rp_seq"),
         date_col="filing_date",
         date_type_cols=("filing_date", "date_of_event"),
-        # ownership_features counts filings per (ticker, accession_number) on the filing_date stamp; the
-        # structured-only date_of_event is deliberately not read, so the count is the same in every era.
-        read_columns=("ticker", "accession_number", "filing_date"),
+        # ownership_features: canonical-event construction (max per
+        # accession+cusip, never sum) needs the group-membership and the
+        # ownership-number columns. `is_amendment` and
+        # `item4_purpose_of_transaction` are 13D-ONLY concepts -- a 13G has
+        # neither, which is why the two projections differ by exactly those two.
+        read_columns=(
+            "ticker",
+            "accession_number",
+            "cusip",
+            "filing_date",
+            "is_amendment",
+            "percent_of_class",
+            "reporting_person_cik",
+            "reporting_person_name",
+            "item4_purpose_of_transaction",
+        ),
         freshness="daily",
         resume=Resume(
             RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"), source_start="1993-01-01"
@@ -1070,8 +1083,9 @@ class Tables:
         ("ticker", "accession_number", "rp_seq"),
         date_col="filing_date",
         date_type_cols=("filing_date", "date_of_event"),
-        # ownership_features, same projection as `sec_13d`.
-        read_columns=("ticker", "accession_number", "filing_date"),
+        # ownership_features, same shape as `sec_13d` minus the two 13D-only
+        # columns above.
+        read_columns=("ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik", "reporting_person_name"),
         freshness="daily",
         resume=Resume(
             RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"), source_start="1993-01-01"

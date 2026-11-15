@@ -821,7 +821,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cols = {c for c in panel.columns if c not in ("date", "ticker")}
     expected = (
-        {f"f_{n}" for n in EMISSION}
+        {f"f_{n}" for n in EMISSION if not n.endswith("_vs_sector")}  # the sector score needs a 3-member sector: test_insider_populations
         | {f"f_{n}_xs" for n, m in EMISSION.items() if m == "raw+xs"}
         | {f"f_{n}_vs_peers" for n, m in EMISSION.items() if m == "raw+peers"}
     )
@@ -879,9 +879,7 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
     )
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
     got = {c.removeprefix("f_").removesuffix("_xs").removesuffix("_vs_peers") for c in panel.columns if c not in ("date", "ticker")}
-    # The fixture has only a C-suite account: the two other populations' all-NULL ratios are not emitted.
-    absent_populations = {"ic_insider_management_purchase_pct_prior_180d"}
-    scale_free = {name for name in EMISSION if "mcap" not in name} - absent_populations
+    scale_free = {name for name in EMISSION if "mcap" not in name}
     assert got == scale_free, f"unexpected without mcap: {sorted(got - scale_free)}"
     print(
         f"SANITY: with no shares outstanding and no close, {len(got)} scale-free features "
@@ -985,7 +983,7 @@ def test_the_mcap_features_use_saved_cap_and_missing_cap_is_audible():
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
 
-    mcap_feats = [f for f in EMISSION if "mcap" in f]
+    mcap_feats = [f for f in EMISSION if "mcap" in f and not f.endswith("_vs_sector")]
     assert set(mcap_feats) == set(BUY_VALUE_FEATURES), mcap_feats
 
     saved_cap = pd.DataFrame(100_000_000.0, index=idx, columns=["AAA"])
@@ -1035,8 +1033,8 @@ def _action_cap_inputs() -> tuple[pd.DatetimeIndex, pd.DataFrame, pd.DataFrame]:
         ("buy_value_mcap_60d", "P", "", 0.0),
         ("buy_value_mcap_180d", "P", "", 0.0),
         ("buy_value_mcap_120d", "P", "", 0.0),
-        ("c_suite_buy_mcap_180d", "P", "Chief Executive Officer", 0.0),
-        ("management_buy_mcap_180d", "P", "", 0.0),
+        ("cm_buy_mcap_180d", "P", "Chief Executive Officer", 0.0),
+        ("cm_buy_mcap_180d", "P", "", 0.0),
     ],
 )
 def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str, title: str, plan: float) -> None:
@@ -1188,12 +1186,11 @@ def test_action_cap_unknown_event_masks_only_its_eligible_scopes() -> None:
     panel = _build_action_cap(rows, close, history)
 
     assert panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
-    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_c_suite_buy_mcap_180d"])
-    assert panel.loc["2024-03-08", "f_ic_insider_management_buy_mcap_180d"] == pytest.approx(0.005)
+    assert panel.loc["2024-03-08", "f_ic_insider_cm_buy_mcap_180d"] == pytest.approx(0.005)
     assert panel.loc["2024-03-08", "f_ic_insider_distinct_buyers_120d"] == 2.0
     assert panel.loc["2024-03-08", "f_ic_insider_net_buy_ratio_180d"] == 1.0
     print(
-        "SANITY: the CEO trade without a cap is left out of the aggregate (the supported director trade still counts); the C-suite sum has no supported trade and stays unknown."
+        "SANITY: the CEO trade without a cap is left out of the aggregate (the supported director trade still counts, also in the C-suite + management sum)."
     )
 
 

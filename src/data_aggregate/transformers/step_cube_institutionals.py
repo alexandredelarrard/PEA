@@ -181,7 +181,7 @@ class StepCubeInstitutionals(Step):
         diagnostics["other_flows"] = position_units(df_flows.assign(transaction_day=df_flows["transaction_day"].fillna(df_flows["day"])), df_factor)
 
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
-        return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage)
+        return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage, self._universe.sector_map)
 
     def _short_flow_panel(
         self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None, df_factor: pd.DataFrame

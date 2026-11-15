@@ -22,9 +22,8 @@ _add_group(
         "ic_insider_buy_value_mcap_60d",
         "ic_insider_buy_value_mcap_120d",
         "ic_insider_buy_value_mcap_180d",
-        "ic_insider_c_suite_buy_mcap_180d",
-        "ic_insider_management_buy_mcap_180d",
-        "ic_insider_ten_pct_buy_mcap_180d",
+        "ic_insider_cm_buy_mcap_180d",
+        "ic_insider_cm_buy_mcap_180d_vs_sector",
         "ic_insider_distinct_buyers_120d",
         "ic_insider_distinct_sellers_120d",
         "ic_insider_buyer_breadth_120d",
@@ -37,13 +36,11 @@ _add_group(
 for _name in (
     "ic_insider_purchase_pct_prior_60d",
     "ic_insider_purchase_pct_prior_120d",
-    "ic_insider_c_suite_purchase_pct_prior_180d",
-    "ic_insider_management_purchase_pct_prior_180d",
 ):
     INSTITUTIONALS[_name] = (
         "insider",
         "Trailing-window net open-market P minus S shares of the supported direct common-stock accounts that traded, divided by "
-        "those accounts' pooled holdings just before their first window trade; all insiders or one population.",
+        "those accounts' pooled holdings just before their first window trade; all insiders pooled.",
         "Scales disclosed insider buying and selling by the holdings supporting those trades; each lot keeps its "
         "original disclosure expiry and public corrections apply prospectively.",
         "Positive means net accumulation and negative means net reduction (never below -1). Pooling requires compatible share "

@@ -15,43 +15,35 @@ import pandas as pd
 from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, mask_to_availability, sector_relative
 from src.data_aggregate.utils.institutionals.insider_positions import account_conviction, cumulative_positions
-from src.data_aggregate.utils.institutionals.insider_quality import (
-    POP_C_SUITE,
-    POP_MANAGEMENT,
-    POP_TEN_PCT,
-    security_class,
-)
+from src.data_aggregate.utils.institutionals.insider_quality import POP_C_SUITE, POP_MANAGEMENT, security_class
 from src.data_aggregate.utils.institutionals.short_flow_features import _proven_tenure_mask
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 
 _log = logging.getLogger(__name__)
 
-#: Trailing calendar-day windows of the dense features; the population features use `POPULATION_WINDOW` only.
+#: Trailing calendar-day windows of the dense features.
 WINDOW_60, WINDOW_120, WINDOW_180 = 60, 120, 180
 WINDOWS = (WINDOW_60, WINDOW_120, WINDOW_180)
-POPULATION_WINDOW = WINDOW_180
 
 #: Window of the distinct-insider counts and of the breadth ratio built from them.
 BREADTH_WINDOW = WINDOW_120
 
-#: Disjoint insider populations (see `insider_quality.TITLE_POPULATIONS`): output suffix -> population code. Insiders in
-#: none of them appear only in the all-insider features.
-POPULATIONS: dict[str, int] = {"c_suite": POP_C_SUITE, "management": POP_MANAGEMENT, "ten_pct": POP_TEN_PCT}
-#: Populations with a purchase_pct_prior feature: 10% owners mostly open zero-prior accounts, so their ratio is undefined.
-PCT_POPULATIONS: dict[str, int] = {name: code for name, code in POPULATIONS.items() if name != "ten_pct"}
+#: Disjoint insider populations (see `insider_quality.TITLE_POPULATIONS`) merged into the one population leg: C-suite and
+#: management. 10% owners and unclassed owners are left out.
+CM_POPULATIONS = frozenset({POP_C_SUITE, POP_MANAGEMENT})
+CM_BUY = f"ic_insider_cm_buy_mcap_{WINDOW_180}d"
+CM_BUY_SECTOR = f"{CM_BUY}_vs_sector"
 
-#: feature -> (population code or None for all insiders, trailing window days).
-BUY_VALUE_FEATURES: dict[str, tuple[int | None, int]] = {
+#: feature -> (population codes or None for all insiders, trailing window days).
+BUY_VALUE_FEATURES: dict[str, tuple[frozenset[int] | None, int]] = {
     **{f"ic_insider_buy_value_mcap_{days}d": (None, days) for days in WINDOWS},
-    **{f"ic_insider_{name}_buy_mcap_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in POPULATIONS.items()},
+    CM_BUY: (CM_POPULATIONS, WINDOW_180),
 }
-PURCHASE_PCT_FEATURES: dict[str, tuple[int | None, int]] = {
-    **{f"ic_insider_purchase_pct_prior_{days}d": (None, days) for days in (WINDOW_60, WINDOW_120)},
-    **{f"ic_insider_{name}_purchase_pct_prior_{POPULATION_WINDOW}d": (code, POPULATION_WINDOW) for name, code in PCT_POPULATIONS.items()},
-}
+#: feature -> trailing window days; all insiders pooled.
+PURCHASE_PCT_FEATURES: dict[str, int] = {f"ic_insider_purchase_pct_prior_{days}d": days for days in (WINDOW_60, WINDOW_120)}
 CONVICTION_FEATURES: dict[str, int] = {f"ic_insider_conviction_{days}d": days for days in (WINDOW_60, WINDOW_120)}
 NET_BUY_RATIO_FEATURES: dict[str, int] = {f"ic_insider_net_buy_ratio_{days}d": days for days in WINDOWS}
 DISTINCT_BUYERS = f"ic_insider_distinct_buyers_{BREADTH_WINDOW}d"
@@ -61,7 +53,16 @@ BUYER_BREADTH = f"ic_insider_buyer_breadth_{BREADTH_WINDOW}d"
 #: Insider magnitudes, ratios, counts, and event intensities stay in their economic units.
 #: Same-day cross-sectional ranks would replace those units with universe-composition noise.
 EMISSION: dict[str, str] = dict.fromkeys(
-    [*BUY_VALUE_FEATURES, *PURCHASE_PCT_FEATURES, *CONVICTION_FEATURES, *NET_BUY_RATIO_FEATURES, DISTINCT_BUYERS, DISTINCT_SELLERS, BUYER_BREADTH],
+    [
+        *BUY_VALUE_FEATURES,
+        CM_BUY_SECTOR,
+        *PURCHASE_PCT_FEATURES,
+        *CONVICTION_FEATURES,
+        *NET_BUY_RATIO_FEATURES,
+        DISTINCT_BUYERS,
+        DISTINCT_SELLERS,
+        BUYER_BREADTH,
+    ],
     "raw",
 )
 #: The pooled 120d ratio also ships its peer z-score: the same net purchase reads differently in a sector with a selling wave.
@@ -106,8 +107,11 @@ def build_insider_feature_panel(
     diagnostics: dict,
     df_mcap: pd.DataFrame | None,
     coverage: InsiderCoverage,
+    sector_map: dict[str, str],
 ) -> pd.DataFrame:
-    """Compute features from clean source-USD trades, separately rebased positions and dated coverage."""
+    """Compute features from clean source-USD trades, separately rebased positions and dated coverage.
+
+    `sector_map` (ticker -> GICS sector) scores the C-suite and management buy leg within its sector."""
     if "source_first" not in diagnostics:
         return _empty_panel()
     diag = diagnostics
@@ -141,9 +145,8 @@ def build_insider_feature_panel(
         ignore_index=True,
     )
     disputed_by_window = {days: _disputed_accounts(df_disputed, days) for days in {*WINDOWS, *CONVICTION_FEATURES.values()}}
-    for days in WINDOWS:
-        names = {name: code for name, (code, window) in PURCHASE_PCT_FEATURES.items() if window == days}
-        fields.update(cumulative_positions(df_position_trades, df_other_flows, idx, days, names, disputed_by_window[days]))
+    for name, days in PURCHASE_PCT_FEATURES.items():
+        fields[name] = cumulative_positions(df_position_trades, df_other_flows, idx, days, disputed_by_window[days])
     for name, days in CONVICTION_FEATURES.items():
         fields[name] = account_conviction(df_position_trades, df_other_flows, idx, days, disputed_by_window[days])
     fields = _gate_dates(fields, idx, coverage.insider_floor)
@@ -158,6 +161,8 @@ def build_insider_feature_panel(
     # A window is unknown only where excluded events are active and no supported one is.
     sets = _support_sets(df_supported, df_flagged, df_unpriced, pd.concat([df_unsupported, df_oversized], ignore_index=True))
     _mask_unknown_windows(fields, _unknown_windows(sets, idx))
+    if CM_BUY in fields:
+        fields[CM_BUY_SECTOR] = sector_relative(mask_to_availability(fields[CM_BUY], frames.availability), sector_map)
 
     # Emit the existing raw float32 fields with own-price availability.
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(df_trades), len(df_buys), len(df_sells))
@@ -259,8 +264,8 @@ def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Se
     specifications: dict[str, tuple[int, pd.Series]] = {}
     for name, (code, days) in BUY_VALUE_FEATURES.items():
         specifications[name] = (days, buy & _member(activity, code))
-    for name, (code, days) in PURCHASE_PCT_FEATURES.items():
-        specifications[name] = (days, traded & _member(activity, code))
+    for name, days in PURCHASE_PCT_FEATURES.items():
+        specifications[name] = (days, traded)
     for name, days in CONVICTION_FEATURES.items():
         specifications[name] = (days, traded)
     for name, days in NET_BUY_RATIO_FEATURES.items():
@@ -271,11 +276,11 @@ def _window_specifications(activity: pd.DataFrame) -> dict[str, tuple[int, pd.Se
     return specifications
 
 
-def _member(rows: pd.DataFrame, code: int | None) -> pd.Series:
-    """Rows of a population; every row for `None`."""
-    if code is None:
+def _member(rows: pd.DataFrame, codes: frozenset[int] | None) -> pd.Series:
+    """Rows whose population is in `codes`; every row for `None`."""
+    if codes is None:
         return pd.Series(True, index=rows.index)
-    return rows["population"].eq(code)
+    return rows["population"].isin(codes)
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +295,7 @@ def _value_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame 
         return {}
     out = {}
     for name, (code, days) in BUY_VALUE_FEATURES.items():
-        selected = buys if code is None else buys[buys["population"].eq(code)]
+        selected = buys[_member(buys, code)]
         if selected.empty:
             continue
         first = selected.groupby("ticker")["visible_from"].min()
@@ -435,7 +440,7 @@ def _unknown_windows(sets: dict[str, tuple[pd.DataFrame, pd.DataFrame]], idx: pd
     if not tickers:
         return {}
     seen = pd.DataFrame(True, index=idx, columns=pd.Index(tickers, name="ticker"))
-    groups: list[tuple[str, str, tuple[str, ...], int, int | None]] = [
+    groups: list[tuple[str, str, tuple[str, ...], int, frozenset[int] | None]] = [
         *((name, "value", ("P",), days, code) for name, (code, days) in BUY_VALUE_FEATURES.items()),
         *((name, "ratio", ("P", "S"), days, None) for name, days in NET_BUY_RATIO_FEATURES.items()),
         (DISTINCT_BUYERS, "owner", ("P",), BREADTH_WINDOW, None),

@@ -9,7 +9,6 @@ from src.data_aggregate.utils.institutionals.insider_quality import clean_transa
 from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, basis_frame, row, source_frame
 
 IDX = pd.date_range("2022-09-01", "2024-04-30")
-NAME = "ic_insider_purchase_pct_prior_60d"
 
 
 def _ratio(rows: list[dict], disputes: pd.DataFrame | None = None, split: str | None = None, idx: pd.DatetimeIndex = IDX) -> pd.Series:
@@ -23,8 +22,7 @@ def _ratio(rows: list[dict], disputes: pd.DataFrame | None = None, split: str | 
     df_flows = diagnostics["other_flows"]
     df_flows = position_units(df_flows.assign(transaction_day=df_flows["transaction_day"].fillna(df_flows["day"])), factor)
     none = pd.DataFrame(columns=["ticker", "owner_cik", "start", "stop"]) if disputes is None else disputes
-    result = cumulative_positions(df_trades, df_flows, idx, 60, {NAME: None}, none)
-    return result[NAME]["AAA"]
+    return cumulative_positions(df_trades, df_flows, idx, 60, none)["AAA"]
 
 
 def _cast() -> list[dict]:
@@ -144,7 +142,15 @@ def test_no_known_holdings_sixty_days_earlier_is_nan() -> None:
 
 
 def test_holdings_are_unknown_before_a_year_of_balance_rows() -> None:
-    holder = row(accession_number="h", owner_cik="3", transaction_code="F", shares=10, shares_owned_after=5000, filing_date="2023-10-01", transaction_date="2023-09-29")
+    holder = row(
+        accession_number="h",
+        owner_cik="3",
+        transaction_code="F",
+        shares=10,
+        shares_owned_after=5000,
+        filing_date="2023-10-01",
+        transaction_date="2023-09-29",
+    )
     values = _ratio([holder, _cast()[2], _buyer_prior("2023-10-01")])
     # 60 days before 2024-02-15 is 2023-12-17, under 365 days after the ticker's first balance row (2023-10-02): unknown.
     assert pd.isna(values.loc["2024-02-15"])
@@ -153,7 +159,13 @@ def test_holdings_are_unknown_before_a_year_of_balance_rows() -> None:
 
 def test_account_first_seen_in_the_window_is_left_out_of_the_numerator() -> None:
     newcomer_sale = row(
-        accession_number="n", owner_cik="4", transaction_code="S", shares=3000, shares_owned_after=500, filing_date="2024-02-10", transaction_date="2024-02-08"
+        accession_number="n",
+        owner_cik="4",
+        transaction_code="S",
+        shares=3000,
+        shares_owned_after=500,
+        filing_date="2024-02-10",
+        transaction_date="2024-02-08",
     )
     base = _ratio(_cast())
     values = _ratio([*_cast(), newcomer_sale])

@@ -31,14 +31,11 @@ INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_buy_value_mcap_60d",
     "f_ic_insider_buy_value_mcap_120d",
     "f_ic_insider_buy_value_mcap_180d",
-    "f_ic_insider_c_suite_buy_mcap_180d",
-    "f_ic_insider_management_buy_mcap_180d",
-    "f_ic_insider_ten_pct_buy_mcap_180d",
+    "f_ic_insider_cm_buy_mcap_180d",
+    "f_ic_insider_cm_buy_mcap_180d_vs_sector",
     "f_ic_insider_purchase_pct_prior_60d",
     "f_ic_insider_purchase_pct_prior_120d",
     "f_ic_insider_purchase_pct_prior_120d_vs_peers",
-    "f_ic_insider_c_suite_purchase_pct_prior_180d",
-    "f_ic_insider_management_purchase_pct_prior_180d",
     "f_ic_insider_conviction_60d",
     "f_ic_insider_conviction_120d",
     "f_ic_insider_net_buy_ratio_60d",
@@ -67,7 +64,14 @@ def context(store: Any, path: Path) -> Context:
     config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21, "unknown_unit_factor": 1.0}}})
     return cast(
         Context,
-        SimpleNamespace(store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}),
+        SimpleNamespace(
+            store=store,
+            log=logging.getLogger(__name__),
+            config=config,
+            config_dir=Path(DEFAULT_CONFIG_DIR),
+            paths={"DATA_STORE": path},
+            universe=SimpleNamespace(sector_map={}),
+        ),
     )
 
 
@@ -548,7 +552,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     panel = step.build_panel().set_index(["date", "ticker"])
     insider = [name for name in INSTITUTIONAL_COLUMNS if name.startswith("f_ic_insider_")]
     ratios = [name for name in insider if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
-    gross = [name for name in insider if name not in ratios]
+    gross = [name for name in insider if name not in ratios and not name.endswith("_vs_sector")]
     quiet_gross = panel.loc[(days[-1], "AAA"), gross]
     assert isinstance(quiet_gross, pd.Series)
     assert quiet_gross.eq(0).to_numpy().all()
@@ -675,7 +679,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     def compute_stage(*args: Any, **kwargs: Any) -> Any:
         nonlocal computing
         stages.append("compute")
-        assert len(args) == 6 and args[5].identity_intervals["canonical_company"].tolist() == ["AAA"]
+        assert len(args) == 7 and args[5].identity_intervals["canonical_company"].tolist() == ["AAA"]
         result = compute(*args, **kwargs)
         computing = False
         return result

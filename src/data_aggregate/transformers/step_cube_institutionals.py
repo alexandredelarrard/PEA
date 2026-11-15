@@ -220,7 +220,7 @@ class StepCubeInstitutionals(Step):
             df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
             df_source = terminal_rows(df_source, ("fails_quantity",), df_factor)
             settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure)
-            available = short_flow._ftd_available_dates(df_coverage, self._cfg.institutionals.ftd_availability_calendar_days)
+            available = short_flow._ftd_available_dates(df_coverage, SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name])
             publication = FtdPublication(df_coverage, available)
         return build_short_flow_feature_panel(frames, df_short, settlement, capital, publication, df_tenure)
 

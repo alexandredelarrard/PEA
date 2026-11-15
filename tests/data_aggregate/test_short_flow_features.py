@@ -18,12 +18,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     EMISSION,
-    SHORTVOL_PUB_LAG,
     Z_MIN_PERIODS,
     FtdPublication,
     ShortFlowCapital,
@@ -41,6 +41,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 )
 from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_extract.utils.institutionals.fetch_short_interest import _parse_regsho
+from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis, resolve_share_events
 from tests.conftest import make_frames
 
@@ -168,7 +169,7 @@ def test_publication_lag_is_one_trading_day():
     expected = float(cast(Any, (short.rolling(20, min_periods=10).sum() / total.rolling(20, min_periods=10).sum()).loc[dates[299], "S0"]))
     got = float(cast(Any, df["ic_shortvol_ratio_20d"].loc[dates[300], "S0"]))
     assert np.isclose(got, expected), "lag broken"
-    assert SHORTVOL_PUB_LAG == 1
+    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name] == 1
     print("\n=== SANITY CHECK: RegSHO 1-day publication lag ===")
     print(
         f"  S0 (85% shorted) tops ic_shortvol_ratio_20d at {dates[300].date()}; the value at "
@@ -1028,3 +1029,21 @@ def test_turnover_is_unknown_on_a_supported_absence_day() -> None:
     assert turnover.iloc[22] == pytest.approx(5.0 * 20 / 1000)
     assert turnover.iloc[24] == pytest.approx(5.0 * 19 / 1000)
     print("SANITY: a supported-absence day (0 short, total unknown) leaves turnover NaN like the ratio; the sums of observed days are unchanged.")
+
+
+def test_source_lags_live_in_the_availability_dict_and_roll_to_sessions() -> None:
+    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name] == 1
+    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name] == 21
+    # Wed 2024-07-03, Thu 07-04 is a holiday, Fri 07-05, then the weekend, Mon 07-08.
+    idx = pd.DatetimeIndex(["2024-07-02", "2024-07-03", "2024-07-05", "2024-07-08", "2024-07-09"])
+    df_source = pd.DataFrame({"A": [1.0, 2.0, 3.0, 4.0, 5.0]}, index=idx)
+    published = short_flow.publication_day(pd.Series(idx, index=idx), SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name], idx)
+    got = short_flow._publish_shortvol(df_source, published)["A"]
+    assert np.isnan(got.iloc[0])
+    assert got.loc["2024-07-03"] == 1.0, "Tuesday -> Wednesday"
+    assert got.loc["2024-07-05"] == 2.0, "the day before a holiday is published on the next session"
+    assert got.loc["2024-07-08"] == 3.0, "Friday -> Monday"
+    assert got.loc["2024-07-09"] == 4.0 and 5.0 not in got.to_numpy(), "the last session is not yet visible"
+    assert got.equals(df_source["A"].shift(1))
+    print("\n=== SANITY CHECK: availability dict ===")
+    print("  short volume 1d, FTD 21d; holiday, Friday->Monday and last-session cases equal the old one-row shift.")

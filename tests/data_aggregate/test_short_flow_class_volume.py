@@ -192,7 +192,7 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         Tables.sec_fails_to_deliver_security,
         ftd_lines([(f"{bad_day:%Y-%m-%d}", cusip, ticker, 300.0, "202401a") for ticker, cusip in (("LEN", "526057104"), ("MRK", "589331107"))]),
     )
-    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}}})
+    config = OmegaConf.create({"build_cube": {"institutionals": {}}})
     ctx = cast(
         Context,
         SimpleNamespace(

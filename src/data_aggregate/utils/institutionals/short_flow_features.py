@@ -6,8 +6,9 @@ and SEC fails-to-deliver (`ic_ftd_*`). Ratios are volume-weighted (SUM short / S
 days); acceleration is the spot 5-day ratio minus the 60- or 120-day ratio. The tape-volume
 denominator of `ic_ftd_to_adv20` sums the issuer's secondary share classes, as the class-summed
 numerator does (`secondary_class_volume`). Point-in-time:
-every `ic_shortvol_*` leg is shifted `SHORTVOL_PUB_LAG` trading day; an FTD ZIP becomes knowable as
-a whole at half-month end plus the configured calendar-day lag (estimated_policy_21d),
+every `ic_shortvol_*` leg is published at its source session plus the short-volume table's
+`SOURCE_AVAILABILITY_BUFFER_DAYS`, rolled to the first session on or after it; an FTD ZIP becomes
+knowable as a whole at half-month end plus the FTD table's buffer (estimated_policy_21d),
 moved to the next actual session and held until the next ZIP. This is an estimated policy,
 not an observed historical SEC release timestamp. Verified issuer absence on a covered,
 dated-supported source is 0; unsupported absence remains NaN.
@@ -23,18 +24,17 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import CANONICAL_ROLES
+from src.constants.constants import CANONICAL_ROLES, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import self_history_z
+from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_store.schema import Tables
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
-
-#: RegSHO: day-t short volume is public on t+1.
-SHORTVOL_PUB_LAG = 1
 
 #: Internal self-history z window for the price-regime and FTD-persistence legs (the z itself is not emitted).
 Z_WINDOW = 252
@@ -361,7 +361,7 @@ def _shortvol_fields(
     close_total: pd.DataFrame | None,
     tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """RegSHO ratio, acceleration, turnover and price-interaction legs, each shifted by the publication lag."""
+    """RegSHO ratio, acceleration, turnover and price-interaction legs, each published after the table's availability buffer."""
     # Prepare issuer-valid daily quantities and reuse their aligned tenure mask.
     df_short = _pivot(hist, "short_volume", idx)
     df_total = _pivot(hist, "total_volume", idx)
@@ -393,12 +393,19 @@ def _shortvol_fields(
     return fields
 
 
+def _publish_shortvol(df_source: pd.DataFrame, published: pd.Series) -> pd.DataFrame:
+    """Move each source session's row to its publication session; a row published past the last session is not yet visible."""
+    df_moved = df_source.set_axis(pd.DatetimeIndex(published))
+    return df_moved.loc[~df_moved.index.duplicated(keep="last")].reindex(df_source.index)
+
+
 def _shortvol_window_fields(
     df_short: pd.DataFrame, df_total: pd.DataFrame, df_observed: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None
 ) -> tuple[dict[int, pd.DataFrame], pd.DataFrame | None]:
     """Normalize window short-sale totals by total volume and optional PIT shares."""
     ratios: dict[int, pd.DataFrame] = {}
     df_turnover = None
+    published = publication_day(pd.Series(idx, index=idx), SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name], idx)
     df_shares = shares_out.reindex(index=idx).reindex(columns=df_short.columns) if shares_out is not None and not shares_out.empty else None
 
     # Calculate each numerator once; the base sum also supplies share turnover.
@@ -407,14 +414,14 @@ def _shortvol_window_fields(
         df_numerator = df_short.where(df_observed).rolling(window, min_periods=min_periods).sum()
         df_denominator = df_total.where(df_observed).rolling(window, min_periods=min_periods).sum()
         df_ratio = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed)
-        ratios[window] = df_ratio.shift(SHORTVOL_PUB_LAG)
+        ratios[window] = _publish_shortvol(df_ratio, published)
         if window == BASE_WINDOW and df_shares is not None:
-            df_turnover = (
+            df_unlagged = (
                 (df_short.where(df_observed).rolling(window, min_periods=min_periods).sum() / df_shares.where(df_shares > 0))
                 .replace([np.inf, -np.inf], np.nan)
                 .where(df_observed)
-                .shift(SHORTVOL_PUB_LAG)
             )
+            df_turnover = _publish_shortvol(df_unlagged, published)
     return ratios, df_turnover
 
 

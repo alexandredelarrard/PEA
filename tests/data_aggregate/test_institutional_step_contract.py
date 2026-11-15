@@ -61,7 +61,7 @@ INSTITUTIONAL_COLUMNS = (
 
 
 def context(store: Any, path: Path) -> Context:
-    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21, "unknown_unit_factor": 1.0}}})
+    config = OmegaConf.create({"build_cube": {"institutionals": {"unknown_unit_factor": 1.0}}})
     return cast(
         Context,
         SimpleNamespace(

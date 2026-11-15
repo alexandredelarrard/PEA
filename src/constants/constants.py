@@ -503,6 +503,10 @@ SOURCE_AVAILABILITY_BUFFER_DAYS: dict[str, int] = {
     Tables.sec_13g.name: 1,
     # The provider gives the call date without a first-available timestamp: an estimate.
     Tables.earnings_call_sections.name: 2,
+    # FINRA RegSHO daily short-sale volume of day t is public on t+1.
+    Tables.sec_short_volume_security.name: 1,
+    # A fails-to-deliver ZIP is published as a whole 21 calendar days after its half-month end (estimated policy).
+    Tables.sec_fails_to_deliver_security.name: 21,
 }
 
 

@@ -20,7 +20,9 @@ Source availability describes whether a source could have produced an observatio
 
 Treating unavailable data as zero fabricates negative evidence and changes cross-sectional ranks. The institutional feature system applies explicit availability masks, while validation uses source clocks and a narrow observed-zero declaration to decide whether a feature appeared too early.
 
-Configuration dates are outer bounds; they neither fill cells nor prove ticker eligibility. FTD settlement dates are not publication dates: the persisted source ZIP `period` determines half-period end, then `build_cube.institutionals.ftd_availability_calendar_days` adds21 calendar days and snaps forward to a trading session. This `estimated_policy_21d` policy never reads cache timestamps; historical SEC first-publication dates remain unverified. A `b` ZIP can contain day15 settlements, so settlement day cannot infer the half. See [accepted remaining research](../TODO.md#institutionals-follow-up-validation).
+Configuration dates are outer bounds; they neither fill cells nor prove ticker eligibility. Every publication lag lives in `SOURCE_AVAILABILITY_BUFFER_DAYS` in [constants.py](../../src/constants/constants.py), keyed by table name (calendar days added to the source date, then rolled to the first session on or after it): Sharadar and SEC fundamentals 1, insider transactions 1, Schedule 13D and 13G 1, FINRA short volume (`sec_short_volume_security`) 1, SEC fails-to-deliver (`sec_fails_to_deliver_security`) 21, earnings-call sections 2.
+
+: the persisted source ZIP `period` determines half-period end, then the fails-to-deliver entry of `SOURCE_AVAILABILITY_BUFFER_DAYS` (21 calendar days, `Tables.sec_fails_to_deliver_security`) is added and snaps forward to a trading session. This `estimated_policy_21d` policy never reads cache timestamps; historical SEC first-publication dates remain unverified. A `b` ZIP can contain day15 settlements, so settlement day cannot infer the half. See [accepted remaining research](../TODO.md#institutionals-follow-up-validation).
 
 ## Where it lives
 

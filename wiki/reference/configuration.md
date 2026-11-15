@@ -169,7 +169,7 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 ## Institutional correction settings
 
-`build_cube.institutionals.ftd_availability_calendar_days` in [build_cube.yml](../../configs/build_cube.yml) is21 calendar days from the persisted ZIP half-period end; publication snaps to the first eligible session. It is a deterministic estimate, independent of cache timestamps, and does not certify historical SEC publication dates.
+The fails-to-deliver publication lag is no configuration key: `SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name]` in [constants.py](../../src/constants/constants.py) is 21 calendar days from the persisted ZIP half-period end; publication snaps to the first eligible session. It is a deterministic estimate, independent of cache timestamps, and does not certify historical SEC publication dates.
 
 The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,98 and100. LightGBM excludes the retired `f_y_earnings_growth` input and retains the already selected `f_y_earnings_growth_signed`. Targets, h30/h60/h90 and fitting settings are unchanged. No fit was run.
 

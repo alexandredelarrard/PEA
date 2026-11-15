@@ -1212,3 +1212,8 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` marker-heavy filer rule for 13D/G counts; turnover unknown on supported-absence days and canonical-volume fallback for class bars (code, tests); `TODO.md` APTV/CRH unit-basis cause.
+
+## 2026-11-14: refresh (insider CM leg and sector score)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` insider feature contract (five population legs replaced by `ic_insider_cm_buy_mcap_180d` and `ic_insider_cm_buy_mcap_180d_vs_sector`, new `sector_relative`, 15 names / 16 columns); `TODO.md` full-universe IC check. Branch feat/institutionals-cm-sector; aggregate fingerprint baseline not refreshed.

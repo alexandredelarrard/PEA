@@ -89,6 +89,9 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
     prefix's filings sit under this one ticker. A ticker left with `CONCENTRATED_MIN_FILINGS` or more marker-only accessions making up at least
     `MARKER_HEAVY_SHARE` of its surviving accessions is itself a filer through shared agents (an ordinary subject has mostly parsed accessions),
     so its marker-only accessions are dropped and only the parsed subject accessions count.
+
+    The CONCENTRATED/MARKER_HEAVY classifications use full-history statistics, not date-local ones: an identity filter, so a rebuild with more
+    data can change the classification, and with it old rows.
     """
     ticker, accession = df_filings["ticker"], df_filings["accession_number"]
     prefix = accession.str[:10]

@@ -115,7 +115,10 @@ class StepCubeInstitutionals(Step):
         return int(override) if override is not None else self._part.warmup_trading_days
 
     def _fill_unknown_units(self, df_factor: pd.DataFrame) -> pd.DataFrame:
-        """A ticker with no basis on any date (units unverified) converts at `unknown_unit_factor`, with a warning."""
+        """A ticker with no basis on any date (units unverified) converts at `unknown_unit_factor`, with a warning.
+
+        The factor feeds every path (positions, short volume, FTD, shares): a level ratio against the unconverted tape (turnover,
+        `ic_ftd_to_adv20`) is off by the quote-unit ratio for an ADR."""
         unknown = df_factor.columns[df_factor.isna().all()]
         if len(unknown):
             factor = float(self._cfg.institutionals.unknown_unit_factor)
@@ -228,6 +231,8 @@ class StepCubeInstitutionals(Step):
         df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
         df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
         identity = SubjectIdentity.from_tables(lineage, lines) if lineage is not None and lines is not None else None
+        if identity is None:
+            self._log.warning("lineage or CUSIP lines absent -> 13D/13G filings are counted without the subject-side identity filter")
         complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
         complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
 

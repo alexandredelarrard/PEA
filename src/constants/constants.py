@@ -498,6 +498,9 @@ SOURCE_AVAILABILITY_BUFFER_DAYS: dict[str, int] = {
     Tables.sec_fundamentals_history.name: 1,
     # A Form 4 accepted on its filing day, often after the close, is usable from the next session.
     Tables.insider_transactions.name: 1,
+    # A Schedule 13D/13G is accepted until 22:00 ET and stamped with that day: usable from the next session.
+    Tables.sec_13d.name: 1,
+    Tables.sec_13g.name: 1,
     # The provider gives the call date without a first-available timestamp: an estimate.
     Tables.earnings_call_sections.name: 2,
 }

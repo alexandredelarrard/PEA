@@ -61,8 +61,8 @@ def test_a_filing_stays_in_the_count_for_exactly_the_trailing_window():
     panel = _panel(pd.DataFrame(_filings_on("T00", [10])))
     s, other = _series(panel, "T00", D13), _series(panel, "T01", D13)
     last = COUNT_WINDOW - 1
-    assert s.loc[IDX[10]] > 0 and s.loc[IDX[10 + last]] > 0 and (other.loc[IDX[10] : IDX[10 + last]] < 0).all()
-    assert s.loc[IDX[10 + COUNT_WINDOW]] != s.loc[IDX[10 + COUNT_WINDOW]], "after expiry the whole cross-section is 0: no dispersion, so unknown"
+    assert s.loc[IDX[11]] > 0 and s.loc[IDX[11 + last]] > 0 and (other.loc[IDX[11] : IDX[11 + last]] < 0).all()
+    assert s.loc[IDX[11 + COUNT_WINDOW]] != s.loc[IDX[11 + COUNT_WINDOW]], "after expiry the whole cross-section is 0: no dispersion, so unknown"
     print("\n=== SANITY CHECK: trailing window ===")
     print(f"  a filing lifts the ticker above the universe for exactly {COUNT_WINDOW} sessions. Validated.")
 
@@ -116,10 +116,10 @@ def test_every_ownership_output_stops_at_its_complete_frontier():
     )
     dense = panel.set_index(["date", "ticker"]).reindex(pd.MultiIndex.from_product([idx, TICKERS], names=["date", "ticker"]))
     cols = [c for c in dense if c.startswith("f_")]
-    assert cols and dense.loc[(slice(idx[56], None), slice(None)), cols].isna().all().all()
-    assert dense.loc[(idx[55], slice(None)), cols].notna().all().all(), "inside the frontier every ticker has a value"
+    assert cols and dense.loc[(slice(idx[57], None), slice(None)), cols].isna().all().all()
+    assert dense.loc[(idx[56], slice(None)), cols].notna().all().all(), "inside the frontier every ticker has a value"
     print("\n=== SANITY CHECK: complete-through masking ===")
-    print("  every leg is NaN after the inclusive source frontier and defined for every ticker inside it. Validated.")
+    print("  every leg is NaN after the inclusive source frontier (its publication session) and defined for every ticker inside it. Validated.")
 
 
 def test_build_ownership_feature_panel_empty_when_no_source():

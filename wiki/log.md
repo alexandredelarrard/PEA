@@ -1217,3 +1217,8 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` insider feature contract (five population legs replaced by `ic_insider_cm_buy_mcap_180d` and `ic_insider_cm_buy_mcap_180d_vs_sector`, new `sector_relative`, 15 names / 16 columns); `TODO.md` full-universe IC check. Branch feat/institutionals-cm-sector; aggregate fingerprint baseline not refreshed.
+
+## 2026-11-15: refresh (13D/G publication lag)
+
+- Profile: internal/standard
+- Coverage: `modules/data-aggregate.md` publication clock now covers Schedule 13D/13G (1-day buffer, filing date, source start and frontier moved to the publication session); `TODO.md` item closed. Branch fix/institutionals-13dg-lag; aggregate fingerprint baseline not refreshed.

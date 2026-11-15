@@ -4,7 +4,7 @@ Each feature counts the filings (one per `(ticker, accession_number)`, initial f
 the ticker over the trailing `COUNT_WINDOW` trading days. Only fields present in every era are used, so the count
 means the same thing across the whole history: no `date_of_event` (structured filings only). The tables key a filing
 by the ticker's CIK whether the ticker is its subject or its filer, so `_subject_side` drops the filings the ticker's
-own entity filed about others (an approximation for markers: their only evidence is the accession prefix). A filing counts from the first session on or after its filing date.
+own entity filed about others (an approximation for markers: their only evidence is the accession prefix). A filing counts from its publication session: its filing date plus `SOURCE_AVAILABILITY_BUFFER_DAYS`, rolled to the first session on or after it.
 
 The filing volume itself is not stationary (13G holders multiply through 2016, the 2024 SEC rule change cuts routine
 amendments), so each count is standardised across the universe on every date and clipped at `COUNT_CLIP`: the feature
@@ -19,10 +19,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import xs_z
+from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Table, Tables
 
@@ -123,6 +125,11 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
     return pd.Series(kept.reindex(keys([ticker, accession])).to_numpy(), index=df_filings.index)
 
 
+def _visible_day(day: pd.Timestamp, table: Table, idx: pd.DatetimeIndex) -> pd.Timestamp:
+    """The session from which a filing-day-stamped `day` of `table` is usable."""
+    return publication_day(pd.Series([pd.Timestamp(day).normalize()]), SOURCE_AVAILABILITY_BUFFER_DAYS[table.name], idx).iloc[0]
+
+
 def _filing_counts(df_filings: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
     """Filings per ticker in the trailing `COUNT_WINDOW` sessions; each lands on the first session on or after its filing date."""
     arrivals = np.zeros((len(idx), len(columns)))
@@ -177,12 +184,15 @@ def build_ownership_feature_panel(
         df_filings = _filings(df_schedule, identity)
         if df_filings.empty:
             continue
+
+        # Everything downstream reads the publication session of a filing, not its filing date.
+        df_filings["filing_date"] = publication_day(df_filings["filing_date"], SOURCE_AVAILABILITY_BUFFER_DAYS[table.name], idx)
         df_counts = _filing_counts(df_filings, idx, columns)
 
         # Outside the proven source coverage an absent filing is unknown, not zero.
         if complete_through is not None and pd.notna(complete_through):
-            source_start = availability.source_date(table) if availability is not None else df_filings["filing_date"].min()
-            df_counts = df_counts.where(_coverage_mask(frames, idx, columns, pd.Timestamp(source_start), pd.Timestamp(complete_through)))
+            source_start = _visible_day(availability.source_date(table), table, idx) if availability is not None else df_filings["filing_date"].min()
+            df_counts = df_counts.where(_coverage_mask(frames, idx, columns, pd.Timestamp(source_start), _visible_day(complete_through, table, idx)))
 
         # Standardise across the universe each date so regime changes in filing volume cancel.
         fields[name] = xs_z(df_counts, clip=COUNT_CLIP, zero_sd_to_nan=True)

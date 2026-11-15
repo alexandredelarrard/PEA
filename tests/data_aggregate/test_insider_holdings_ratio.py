@@ -21,7 +21,7 @@ def _ratio(rows: list[dict], disputes: pd.DataFrame | None = None, split: str | 
     df_trades = position_units(df_clean, factor)
     df_flows = diagnostics["other_flows"]
     df_flows = position_units(df_flows.assign(transaction_day=df_flows["transaction_day"].fillna(df_flows["day"])), factor)
-    none = pd.DataFrame(columns=["ticker", "owner_cik", "start", "stop"]) if disputes is None else disputes
+    none = pd.DataFrame(columns=["ticker", "owner_cik"]) if disputes is None else disputes
     return cumulative_positions(df_trades, df_flows, idx, 60, none)["AAA"]
 
 
@@ -66,7 +66,7 @@ def _buyer_prior(filing_date: str = "2022-09-28") -> dict:
 def test_buyer_seller_and_non_trader_holder_share_the_lagged_denominator() -> None:
     values = _ratio(_cast())
     # Holdings 60 days before 2024-02-15 (2023-12-17); more than a year of rows exists: non-trader 5,000 + seller 900 + buyer's prior 100; the buyer's own 11,000 is not yet public.
-    assert values.loc["2024-02-15"] == np.float64(1000 / 6000) or abs(values.loc["2024-02-15"] - 1000 / 6000) < 1e-12
+    assert abs(values.loc["2024-02-15"] - 1000 / 6000) < 1e-12
     print(
         f"SANITY: window net +1000 over holdings 5000+900+100 sixty days earlier = {values.loc['2024-02-15']:.6f} (hand 1000/6000 = {1000 / 6000:.6f})."
     )
@@ -125,13 +125,11 @@ def test_split_inside_the_window_keeps_one_unit_basis() -> None:
     print(f"SANITY: a 10:1 split after every row rescales numerator and holdings alike: {values.loc['2024-02-15']:.6f}.")
 
 
-def test_disputed_account_is_left_out_of_numerator_and_holdings() -> None:
-    dispute = pd.DataFrame(
-        {"ticker": ["AAA"], "owner_cik": ["0000000002"], "start": [pd.Timestamp("2022-10-01")], "stop": [pd.Timestamp("2024-06-01")]}
-    )
+def test_disputed_account_is_left_out_of_every_date_numerator_and_holdings() -> None:
+    dispute = pd.DataFrame({"ticker": ["AAA"], "owner_cik": ["0000000002"]})
     values = _ratio(_cast(), disputes=dispute)
     assert abs(values.loc["2024-02-15"] - 1000 / 5100) < 1e-12
-    print(f"SANITY: the disputed seller leaves the holdings (5000+100): {values.loc['2024-02-15']:.6f} = 1000/5000.")
+    print(f"SANITY: the disputed seller leaves the holdings (5000+100): {values.loc['2024-02-15']:.6f} = 1000/5100.")
 
 
 def test_no_known_holdings_sixty_days_earlier_is_nan() -> None:
@@ -178,3 +176,17 @@ def test_account_first_seen_in_the_window_is_left_out_of_the_numerator() -> None
         f"SANITY: a newcomer's 3000-share sale changes nothing ({values.loc['2024-02-15']:.6f} = base {base.loc['2024-02-15']:.6f}); "
         f"min over the window {values.min():.4f} >= -1; with only that sale the ratio is NaN."
     )
+
+
+def test_a_share_quantity_above_the_bound_is_excluded_not_wrapped() -> None:
+    df_clean, diagnostics = clean_transactions(source_frame(_cast()))
+    factor = terminal_basis_factor(basis_frame(_NO_SPLIT_FIXTURE, df_clean["ticker"], IDX.max()))
+    df_trades = position_units(df_clean, factor)
+    df_flows = diagnostics["other_flows"]
+    df_flows = position_units(df_flows.assign(transaction_day=df_flows["transaction_day"].fillna(df_flows["day"])), factor)
+    none = pd.DataFrame(columns=["ticker", "owner_cik"])
+    seller = df_trades["owner_cik"].eq("0000000002")
+    df_trades.loc[seller, "shares_owned_after"] = 2e13  # a filer's typo: int64 micro-shares wrap above ~9.2e12
+    value = cumulative_positions(df_trades, df_flows, IDX, 60, none)["AAA"].loc["2024-02-15"]
+    assert abs(value - 1000 / 5100) < 1e-12
+    print(f"SANITY: a 2e13-share balance typo is excluded, not wrapped: the seller leaves the holdings and the ratio reads {value:.6f} = 1000/5100.")

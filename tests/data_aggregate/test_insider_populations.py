@@ -106,6 +106,8 @@ def test_populations_are_disjoint_with_precedence() -> None:
         ("See Remarks", dict(is_officer=1.0), POP_OTHER),
         ("", dict(is_officer=1.0), POP_OTHER),
         ("", dict(is_officer=1.0, is_director=1.0), POP_OTHER),
+        ("", dict(is_officer=1.0, is_ten_pct_owner=1.0), POP_OTHER),
+        ("See Remarks", dict(is_officer=1.0, is_director=1.0, is_ten_pct_owner=1.0), POP_OTHER),
     ]
     rows = [
         _buy(

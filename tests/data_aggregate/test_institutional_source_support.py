@@ -39,7 +39,7 @@ def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
         "direct_indirect",
     ]
     activity = pd.DataFrame(columns=columns).astype({"in_exercise_package": bool, "population": int, "role_unknown": bool})
-    names = list(insider.EMISSION)
+    names = [name for name in insider.EMISSION if name != insider.CM_BUY_SECTOR]  # built after the quiet windows, from CM_BUY
     ratios = [name for name in names if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
     counts = [name for name in names if name not in ratios]
     fields = {name: pd.DataFrame(np.nan, index=idx, columns=["AAA"]) for name in names}

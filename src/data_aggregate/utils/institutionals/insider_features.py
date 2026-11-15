@@ -144,11 +144,11 @@ def build_insider_feature_panel(
         [diag.get("uncertain_events", pd.DataFrame()), diag.get("unsupported_events", pd.DataFrame()), diag.get("oversized_events", pd.DataFrame())],
         ignore_index=True,
     )
-    disputed_by_window = {days: _disputed_accounts(df_disputed, days) for days in {*WINDOWS, *CONVICTION_FEATURES.values()}}
+    disputed_accounts = _disputed_accounts(df_disputed)
     for name, days in PURCHASE_PCT_FEATURES.items():
-        fields[name] = cumulative_positions(df_position_trades, df_other_flows, idx, days, disputed_by_window[days])
+        fields[name] = cumulative_positions(df_position_trades, df_other_flows, idx, days, disputed_accounts)
     for name, days in CONVICTION_FEATURES.items():
-        fields[name] = account_conviction(df_position_trades, df_other_flows, idx, days, disputed_by_window[days])
+        fields[name] = account_conviction(df_position_trades, df_other_flows, idx, days, disputed_accounts)
     fields = _gate_dates(fields, idx, coverage.insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures; disputed trades carry no dollars.
@@ -170,20 +170,16 @@ def build_insider_feature_panel(
     return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 
 
-def _disputed_accounts(df_uncertain: pd.DataFrame, window_days: int) -> pd.DataFrame:
-    """Direct accounts with a disputed or unsupported quantity and the interval of a `window_days` window it affects."""
-    columns = ["ticker", "owner_cik", "start", "stop"]
+def _disputed_accounts(df_uncertain: pd.DataFrame) -> pd.DataFrame:
+    """Direct accounts (ticker, owner_cik) with a disputed or unsupported quantity, once each.
+
+    The exclusion is whole-history by design: a disputed account leaves every position ratio on every date, not only
+    the window its disputed trade touches, because one wrong quantity makes the account's balance chain unreliable."""
+    columns = ["ticker", "owner_cik"]
     if df_uncertain.empty or "direct_indirect" not in df_uncertain:
         return pd.DataFrame(columns=columns)
     df_direct = df_uncertain[df_uncertain["direct_indirect"].eq("D") & df_uncertain["owner_cik"].ne("")]
-    return pd.DataFrame(
-        {
-            "ticker": df_direct["ticker"],
-            "owner_cik": df_direct["owner_cik"],
-            "start": df_direct["visible_from"],
-            "stop": _window_stop(df_direct, window_days),
-        }
-    )
+    return df_direct[columns].drop_duplicates().reset_index(drop=True)
 
 
 def _gate_dates(fields: dict[str, pd.DataFrame], idx: pd.DatetimeIndex, insider_floor: pd.Timestamp) -> dict[str, pd.DataFrame]:
@@ -205,7 +201,7 @@ def _net_buy_mask(
     listed: pd.DataFrame,
     insider_floor: pd.Timestamp,
     coverage: InsiderCoverage,
-    window_days: int = WINDOW_180,
+    window_days: int,
 ) -> pd.DataFrame:
     """Cells where an empty window is observable: listed, a full calendar window after the
     source floor, and on or before the table-wide frontier."""
@@ -300,7 +296,8 @@ def _value_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame 
             continue
         first = selected.groupby("ticker")["visible_from"].min()
         eligible = seen.loc[:, first.index] & pd.DataFrame({ticker: idx >= day for ticker, day in first.items()}, index=idx)
-        out[name] = _action_sum(selected, idx, days, eligible)
+        # a trade without a supported contribution is left out; a window with none is masked by `_unknown_windows`
+        out[name] = _rolling(selected, idx, days, "action_value", eligible)
     return out
 
 
@@ -567,11 +564,6 @@ def _action_identity(trades: pd.DataFrame, sessions: pd.Series, master: pd.DataF
     accepted = df_matches.loc[matches].groupby("row")["security_id"].nunique().eq(1)
     supported.iloc[accepted.index[accepted]] = True
     return supported
-
-
-def _action_sum(trades: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, seen: pd.DataFrame) -> pd.DataFrame:
-    """Sum the supported contributions; a trade without one is left out (a window with none is masked by `_unknown_windows`)."""
-    return _rolling(trades, idx, window_days, "action_value", seen)
 
 
 # --------------------------------------------------------------------------- #

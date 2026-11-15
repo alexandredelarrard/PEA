@@ -14,6 +14,10 @@ _log = logging.getLogger(__name__)
 
 MICRO = 1_000_000
 
+#: A share quantity above this is a filer's typo (a 1e13 value would wrap the int64 micro-share accumulators above ~9.2e12):
+#: the trade or balance is left out before scaling.
+MAX_SHARES = 1e12
+
 #: Symmetric bound on one account's net-trade / prior-balance ratio: a stale or tiny prior balance cannot produce a thousand-fold value.
 CONVICTION_CLIP = 10.0
 
@@ -59,8 +63,8 @@ def cumulative_positions(
     on the day, carried forward, all insiders pooled.
     The numerator uses the accounts of the denominator: only accounts with a positive latest public balance on or before
     `days` days earlier (as in `account_conviction`) contribute their trades, so an account first seen inside the window
-    adds neither its sales nor its purchases and a ratio cannot fall below -1. Accounts in `excluded` (disputed quantities)
-    are left out of numerator and holdings. A cell is NaN without an active trade of such an account or without positive holdings `days` earlier.
+    adds neither its sales nor its purchases; the ratio is not bounded below by -1 (a seller who gained shares inside the window by grants, conversion or vesting can sell more than the earlier balance), downstream 1/99 winsorisation bounds it. Accounts in `excluded` (disputed quantities)
+    are left out of numerator and holdings for their whole history, by design. A cell is NaN without an active trade of such an account or without positive holdings `days` earlier.
     """
     if trades.empty or idx.empty:
         return pd.DataFrame()
@@ -68,16 +72,7 @@ def cumulative_positions(
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
     balances = _balance_events(trades.loc[account_known], other_flows, disputed)
     asof = idx.searchsorted((idx - pd.Timedelta(days=days)).to_numpy(), side="right") - 1
-    stop_day = lots["anchor"] + pd.Timedelta(days=days)
-    stop_day = stop_day.where(lots["visible_until"].isna() | stop_day.le(lots["visible_until"]), lots["visible_until"])
-    lots = lots.assign(
-        account=lots["owner_cik"].astype(str) + "|" + security_class(lots["security_title"]),
-        start=idx.searchsorted(lots["visible_from"].to_numpy(), side="left"),
-        stop=idx.searchsorted(stop_day.to_numpy(), side="left"),
-        net=lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]),
-    )
-    balances = balances.assign(account=balances["owner_cik"].astype(str) + "|" + balances["klass"])
-    by_balance = dict(tuple(balances.groupby("ticker")))
+    lots, by_balance = _lot_windows(lots, balances, idx, days)
     first = balances.groupby("ticker")["visible_from"].min().reindex(columns)
     warm = ((idx - pd.Timedelta(days=days)).to_numpy()[:, None] >= (first + pd.Timedelta(days=HOLDINGS_WARMUP_DAYS)).to_numpy()[None, :]).astype(bool)
     numerator = np.zeros((len(idx), len(columns)))
@@ -120,16 +115,7 @@ def account_conviction(trades: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.
     columns = pd.Index(sorted(trades["ticker"].unique()), name="ticker")
     out = np.full((len(idx), len(columns)), np.nan)
     asof = idx.searchsorted((idx - pd.Timedelta(days=days)).to_numpy(), side="right") - 1
-    stop_day = lots["anchor"] + pd.Timedelta(days=days)
-    stop_day = stop_day.where(lots["visible_until"].isna() | stop_day.le(lots["visible_until"]), lots["visible_until"])
-    lots = lots.assign(
-        account=lots["owner_cik"].astype(str) + "|" + security_class(lots["security_title"]),
-        start=idx.searchsorted(lots["visible_from"].to_numpy(), side="left"),
-        stop=idx.searchsorted(stop_day.to_numpy(), side="left"),
-        net=lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]),
-    )
-    balances = balances.assign(account=balances["owner_cik"].astype(str) + "|" + balances["klass"])
-    by_balance = dict(tuple(balances.groupby("ticker")))
+    lots, by_balance = _lot_windows(lots, balances, idx, days)
     left_out = active_total = 0
     for ticker, group in lots.groupby("ticker"):
         codes, accounts = pd.factorize(group["account"])
@@ -148,6 +134,21 @@ def account_conviction(trades: pd.DataFrame, other_flows: pd.DataFrame, idx: pd.
     return pd.DataFrame(out, index=idx, columns=columns)
 
 
+def _lot_windows(lots: pd.DataFrame, balances: pd.DataFrame, idx: pd.DatetimeIndex, days: int) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """`lots` with their account, active grid interval `[start, stop)` over a `days` window and signed net shares, and the
+    `balances` (given an account key) split by ticker."""
+    stop_day = lots["anchor"] + pd.Timedelta(days=days)
+    stop_day = stop_day.where(lots["visible_until"].isna() | stop_day.le(lots["visible_until"]), lots["visible_until"])
+    lots = lots.assign(
+        account=lots["owner_cik"].astype(str) + "|" + security_class(lots["security_title"]),
+        start=idx.searchsorted(lots["visible_from"].to_numpy(), side="left"),
+        stop=idx.searchsorted(stop_day.to_numpy(), side="left"),
+        net=lots["shares_n"].where(lots["code"].eq("P"), -lots["shares_n"]),
+    )
+    balances = balances.assign(account=balances["owner_cik"].astype(str) + "|" + balances["klass"])
+    return lots, dict(tuple(balances.groupby("ticker")))
+
+
 def _prior_balances(balances: pd.DataFrame | None, accounts: pd.Index, idx: pd.DatetimeIndex) -> np.ndarray:
     """Grid day x account latest public balance (NaN before the account's first one), the same latest-ordering rule as `_holdings`."""
     out = np.full((len(idx), len(accounts)), np.nan)
@@ -163,7 +164,7 @@ def _prior_balances(balances: pd.DataFrame | None, accounts: pd.Index, idx: pd.D
 
 
 def _direct_lots(trades: pd.DataFrame, excluded: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, pd.MultiIndex | None]:
-    """Supported trades of identified direct accounts, the mask of trades with a known account, and the disputed accounts left out."""
+    """Supported trades of identified direct accounts (a quantity above `MAX_SHARES` is left out), the mask of trades with a known account, and the disputed accounts left out."""
     multiplicity = pd.to_numeric(trades.get("n_reporting_owners", pd.Series(np.nan, index=trades.index)), errors="coerce")
     account_known = (
         trades["direct_indirect"].eq("D")
@@ -175,7 +176,7 @@ def _direct_lots(trades: pd.DataFrame, excluded: pd.DataFrame) -> tuple[pd.DataF
     )
     disputed = pd.MultiIndex.from_frame(excluded[["ticker", "owner_cik"]].drop_duplicates()) if not excluded.empty else None
     uncertain = trades.get("quality_uncertain", pd.Series(False, index=trades.index)).fillna(False).astype(bool)
-    lots = trades[account_known & ~uncertain].copy()
+    lots = trades[account_known & ~uncertain & ~trades["shares_n"].abs().gt(MAX_SHARES)].copy()
     if disputed is not None:
         lots = lots[~pd.MultiIndex.from_frame(lots[["ticker", "owner_cik"]]).isin(disputed)]
     return lots, account_known, disputed
@@ -226,8 +227,8 @@ def _balance_rows(df_rows: pd.DataFrame, order_day: pd.Series) -> pd.DataFrame:
             "klass": security_class(df_rows["security_title"]),
             "order_day": order_day,
             "visible_from": df_rows["visible_from"],
-            "after": pd.to_numeric(df_rows["shares_owned_after"], errors="coerce"),
-            "delta": df_rows["shares_n"] * sign,
+            "after": pd.to_numeric(df_rows["shares_owned_after"], errors="coerce").where(lambda after: ~after.abs().gt(MAX_SHARES)),
+            "delta": (df_rows["shares_n"] * sign).where(lambda delta: ~delta.abs().gt(MAX_SHARES)),
             "accession_number": df_rows.get("accession_number", pd.Series("", index=df_rows.index)).fillna("").astype(str),
         }
     )

@@ -25,7 +25,7 @@ def _conviction(rows: list[dict], days: int = 60, disputes: pd.DataFrame | None 
     df_trades = position_units(df_clean, factor)
     df_flows = diagnostics["other_flows"]
     df_flows = position_units(df_flows.assign(transaction_day=df_flows["transaction_day"].fillna(df_flows["day"])), factor)
-    none = pd.DataFrame(columns=["ticker", "owner_cik", "start", "stop"]) if disputes is None else disputes
+    none = pd.DataFrame(columns=["ticker", "owner_cik"]) if disputes is None else disputes
     return account_conviction(df_trades, df_flows, IDX, days, none)["AAA"]
 
 
@@ -116,10 +116,8 @@ def test_prior_is_the_balance_public_before_the_window_not_after() -> None:
     print(f"SANITY: owner 1's later 50,000 balance (public after the window opened) leaves the prior at 10,000: {values.loc[DAY]:.4f}.")
 
 
-def test_disputed_account_is_left_out() -> None:
-    dispute = pd.DataFrame(
-        {"ticker": ["AAA"], "owner_cik": ["0000000002"], "start": [pd.Timestamp("2022-10-01")], "stop": [pd.Timestamp("2024-06-01")]}
-    )
+def test_disputed_account_is_left_out_of_every_date() -> None:
+    dispute = pd.DataFrame({"ticker": ["AAA"], "owner_cik": ["0000000002"]})
     values = _conviction(_cast(), disputes=dispute)
     assert abs(values.loc[DAY] - 0.1) < 1e-12
     print(f"SANITY: with owner 2 disputed the maximum falls to owner 1's {values.loc[DAY]:.4f} (hand 1000/10000).")

@@ -94,11 +94,14 @@ def test_finra_metrics_use_their_own_defined_paired_operands() -> None:
     quiet = numerator * 0.0
     missing_total = denominator * np.nan
     ratio, turnover = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares)
-    assert ratio[20].isna().all().all() and turnover is not None and turnover.iloc[-1, 0] == 0.0
+    assert ratio[20].isna().all().all() and turnover is not None and turnover.isna().all().all()
+    observed_total = denominator * 0.0 + 5.0
+    _, turnover = short._shortvol_window_fields(quiet, observed_total, quiet.notna() & observed_total.notna(), idx, shares)
+    assert turnover is not None and turnover.iloc[-1, 0] == 0.0
     _, undefined = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares * 0.0)
     assert undefined is not None and undefined.isna().all().all()
     print(
-        "SANITY: legacy paired short/total observations remain usable; an unpaired numerator cannot enter the ratio, and checked short0/positive shares gives turnover0 while denominator0 stays NULL."
+        "SANITY: legacy paired short/total observations remain usable; an unpaired numerator cannot enter the ratio, a day without a total is unknown for turnover, and an observed short0 over positive shares gives turnover0 while denominator0 stays NULL."
     )
 
 

@@ -77,7 +77,7 @@ The Dataroma superinvestor roster keeps its two registers under `configs/superin
 
 Elite feature cohorts use a separate [ranked_managers.json](../../configs/superinvestors/ranked_managers.json): a plain nonempty ordered array of unique ten-digit ASCII CIK strings. The first `build_cube.institutionals.superinvestor.selection.k` entries define the fixed top-K (default 20); `max_age_calendar_days` is90. The list may be a subset of the full stored roster raw-CIK union and must not redefine that full cohort. The checked-in 106-entry ascending order is a provisional retrospective default, not an evaluated manager-performance or continuity ranking. Replace its ordering through config alone and rebuild the whole part; there is no runtime replacement/ranking. The full cohort expands existing configured chains only to load each raw filer separately; the feature engine never merges them into an economic-manager book. Historical `roster_map_as_of` callers retain their separate chain-mapping policy.
 
-Only superinvestor decay is removed. Ownership still reads `build_cube.institutionals.decay_halflife.act` and `.bo`; the old `inst`/`insider` entries have no active consumer in these paths and are a documented future config cleanup. Current roster membership, vendor revision history and whole-manager reporting continuity are not certified by the fixed list. See [science support limits](../guides/testing.md#sec-13f-feature-science-2026-10-25).
+Only superinvestor decay is removed. No institutional step reads `build_cube.institutionals.decay_halflife` any more (the ownership features are plain filing counts and the event-decay helper is deleted); the whole block is dead config awaiting a documented config cleanup. Current roster membership, vendor revision history and whole-manager reporting continuity are not certified by the fixed list. See [science support limits](../guides/testing.md#sec-13f-feature-science-2026-10-25).
 
 ## Extraction settings
 
@@ -160,7 +160,7 @@ Important blocks:
 | `features` | Cross-sectional transform policy. |
 | `intrinsic` | Two-stage DCF parameters; terminal growth must remain below discount rate. |
 | `hist` | Five-year-style self-history comparison window and minimum observations. |
-| `institutionals` | Fixed superinvestor top-K/90-day age, active ownership decay, coverage-break policy and retained source-family settings. Both split steps keep this namespace and read only their owned settings; elite runtime ranking and decay are removed. |
+| `institutionals` | Fixed superinvestor top-K/90-day age, coverage-break policy and retained source-family settings. Both split steps keep this namespace and read only their owned settings; elite runtime ranking and decay are removed. |
 | `fundamentals_features` | Fixed eight earnings-lag slots, eight-quarter persistence and three-session report response; prior SUE scale uses eight quarters. Changing fixed schema windows requires a feature-contract update. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 | `output` | Persistence switches for cube, diagnostics and artifacts; historical modelling prediction/signal/CV writes are removed. |

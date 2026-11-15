@@ -25,7 +25,7 @@ NOT put every event on the grid, because the grid starts at `window.since`. A fe
 "how many trading days since the last insider buy", "what has the price done since the last
 13D", "is this holder new" or any expanding-window statistic is therefore computed from the
 first event INSIDE the window, and no value of `warmup_trading_days` can fix it -- those
-look-backs have no finite length. Worse, `decay.snap_to_grid` moves an event onto the first
+look-backs have no finite length. Worse, snapping an event to the grid moves an event onto the first
 trading day >= its date, so on a trimmed grid an event PREDATING the window lands on the
 window's first day: a 2010 13D became a 2025 13D. Measured on `cube_part_institutionals`,
 2026-09-12, over a 567-day incremental window: **76 of 127 columns drifted**, and the drift

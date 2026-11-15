@@ -835,7 +835,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
 
 
 def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
-    """`decay_events` counts a NaN magnitude as 1.0 -- correct policy there, and a trap here:
+    """A NaN magnitude read as 1.0 would count an event -- a trap here:
     with no market cap every magnitude is NaN and the four value-scaled intensities would
     silently become event counts under names that promise dollars over market cap."""
     rows = [

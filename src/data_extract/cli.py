@@ -64,6 +64,7 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_universe import StepExtractUniverse
@@ -250,6 +251,20 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         filing_window=window,
         as_of=run_date(as_of),
     )
+
+
+@cli.command(
+    name="thirteen-f-managers",
+    help="Manager details per (cik, period) -> sec_13f_manager_details: name, state, file numbers, report type, first filing date, "
+    "from the cached 13F data sets, the cached EDGAR index and the stored markers (no EDGAR read); the profile columns stay as the "
+    "profile step wrote them. Only rows that differ are saved. -F re-reads every cached data set and marker. SEC-bulk.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def thirteen_f_managers(config_path: str, full: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    StepExtractInstitutionals(context=context, config=config).run_managers(full=full, as_of=run_date(as_of))
 
 
 @cli.command(

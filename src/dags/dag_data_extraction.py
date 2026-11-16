@@ -9,7 +9,7 @@ capped by Airflow POOLS (created in airflow-init):
   * sec_bulk (2 slots)  — the SEC bulk zips: sec_submissions (submissions.zip), zips_download (Form 3/4/5, Notes, FTD and 13F
                           zips), zips_ingest_insider (the Form 3/4/5 zip
                           parse), zips_ingest_datasets (notes, FTD; disk + SEC bandwidth bound) and zips_ingest_13f
-                          (the cached 13F data-set accessions missing from sec13f_hr)
+                          (the cached 13F data-set accessions missing from sec13f_hr) and thirteen_f_managers (cached reads only)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time (edgar_index and insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises, identity,
@@ -30,7 +30,8 @@ follow it) and the earnings calls included (price_history waits for identity: it
 secondary classes, and earnings_surprises its trading symbols); a failed identity run leaves those consumers unrun. identity, price_history and earnings_surprises run on
 ALL_DONE: a failed download leaves the build on its cached evidence, and a failed build leaves prices on the
 stored master. zips_ingest_13f stores, through the walk's writer, the 13F data-set accessions the walk left missing:
-it runs after [identity, thirteen_f] on ALL_DONE, so a failed walk never skips the repair. edgar_index refreshes the EDGAR filing index once after identity; the eight EDGAR document walks
+it runs after [identity, thirteen_f] on ALL_DONE, so a failed walk never skips the repair. thirteen_f_managers (sec_bulk, ALL_DONE) builds
+sec_13f_manager_details from the cached 13F covers, the cached index and the stored markers after [zips_ingest_13f, edgar_index]. edgar_index refreshes the EDGAR filing index once after identity; the eight EDGAR document walks
 (the SEC fundamentals facts walk included) wait for it and skip a refresh already done today (the insider walk still
 rebuilds its own inventory), and insider_edgar also waits for the insider zip ingest. Each LLM pass waits for the walk
 storing its text: sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec_8k_items] -> sec_def14a_llm ->
@@ -135,6 +136,9 @@ zips_ingest_13f = fetch("zips-ingest --only 13f", pool="sec_bulk", task_id="zips
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 edgar_index = fetch("edgar-index", pool="sec_api")  # one index refresh per night, before the EDGAR walks
+# manager name, state and first filing date per (cik, period): reads the cached 13F data sets, the cached index and the stored
+# markers (no EDGAR read); it follows the ZIP ingest and the index, and runs on ALL_DONE because the index is ALL_SUCCESS
+thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_bulk", trigger_rule=TriggerRule.ALL_DONE)
 sec_fundamentals_facts = fetch("sec-fundamentals-facts", pool="sec_api")  # SEC XBRL facts walk
 sec_fundamentals_history = fetch("sec-fundamentals-history")  # offline: facts -> SEC publication-event history
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
@@ -191,6 +195,7 @@ all_fetchers = [
     zips_ingest_datasets,
     thirteen_f,
     zips_ingest_13f,
+    thirteen_f_managers,
     edgar_index,
     insider_edgar,
     sec_fundamentals_facts,
@@ -236,6 +241,7 @@ zips_download >> identity >> identity_consumers
 identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and skip their own refresh
 zips_ingest_insider >> insider_edgar  # zips fill first; EDGAR resumes after their last quarter and replaces each filing it re-reads
 [identity, thirteen_f] >> zips_ingest_13f  # stores what the walk left missing, through the walk's writer
+[zips_ingest_13f, edgar_index] >> thirteen_f_managers  # the covers are cached and the index refreshed before the rows are built
 sec_fundamentals_facts >> sec_fundamentals_history
 [sec_fundamentals_history, fundamentals_sharadar] >> fundamentals_check  # no edge between the producers
 sec_employees_text >> sec_employees_llm  # the LLM decides what the walk stored tonight

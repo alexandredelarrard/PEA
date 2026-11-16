@@ -4,6 +4,7 @@ unproven absence. Each case is a constructed filing whose right answer is arithm
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,8 +13,11 @@ import pytest
 from src.data_aggregate.utils.sec_thirteen import superinvestor_metrics as metrics
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings
 from src.data_aggregate.utils.sec_thirteen.value_basis import BOOK_CEILING_USD, consensus_prices, repair_value_basis, unrealistic_lines
+from src.utils.config import read_config
 from tests.data_aggregate.test_superinvestor_features import _book, _compute, _snapshot, _value
 from tests.data_aggregate.test_value_basis import CLOSE, PERIOD, _close_split, _filing
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _with_cover(h: pd.DataFrame, cover_raw: float) -> pd.DataFrame:
@@ -162,21 +166,23 @@ def test_filings_with_an_impossible_period_and_all_bond_lines_leave_the_book() -
             "accession_number": ["ok", "typo", "early"],
             "period": ["2024-06-30", "3006-09-30", "1987-03-31"],
             "filing_date": ["2024-08-01"] * 3,
-            "parsed_row_count": [3, 1, 1],
+            "parsed_row_count": [4, 1, 1],
         }
     )
     holdings = pd.DataFrame(
         {
-            "accession_number": ["ok", "ok", "ok", "typo", "early"],
-            "period": ["2024-06-30"] * 3 + ["3006-09-30", "1987-03-31"],
-            "filing_date": ["2024-08-01"] * 5,
-            "cusip": list("abcde"),
-            "position_type": ["common", "debt", "common", "common", "common"],
-            "debt_prn": [0.0, 5e6, 7.0, 0.0, 0.0],
-            "debt_value": [0.0, 5e6, 7.0, 0.0, 0.0],
+            "accession_number": ["ok", "ok", "ok", "ok", "typo", "early"],
+            "period": ["2024-06-30"] * 4 + ["3006-09-30", "1987-03-31"],
+            "filing_date": ["2024-08-01"] * 6,
+            "cusip": ["a", "b", "c", "021369AC7", "e", "f"],
+            "position_type": ["common", "debt", "common", "common", "common", "common"],
+            "debt_prn": [0.0, 5e6, 7.0, 0.0, 0.0, 0.0],
+            "debt_value": [0.0, 5e6, 7.0, 0.0, 0.0, 0.0],
         }
     )
-    got_filings, got_holdings = clean_filings(filings, holdings)
+    got_filings, got_holdings = clean_filings(filings, holdings, read_config(str(ROOT / "configs")).build_cube.bond_lines)
     assert got_filings["accession_number"].tolist() == ["ok"] and got_filings["parsed_row_count"].tolist() == [2]
     assert got_holdings["cusip"].tolist() == ["a", "c"] and got_holdings["debt_prn"].eq(0.0).all() and len(got_holdings) == 2
-    print("SANITY: periods 3006 and 1987 drop their filings, the bond line leaves, the surviving manifest counts 2 stored rows and bond legs read 0.")
+    print(
+        "SANITY: periods 3006 and 1987 drop their filings, the debt row and the convertible-note share line leave, the surviving manifest counts 2 stored rows and bond legs read 0."
+    )

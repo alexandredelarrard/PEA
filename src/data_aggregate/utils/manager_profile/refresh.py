@@ -23,9 +23,10 @@ class Refresh:
 
 
 def stored_details(details: pd.DataFrame) -> pd.DataFrame:
-    """The stored rows with normalised period dates and every profile column present (a column not added yet reads null)."""
-    missing = [name for name in PROFILE_COLUMNS if name not in details.columns]
-    return details.assign(period=pd.to_datetime(details["period"]).dt.normalize()).reindex(columns=[*details.columns, *missing])
+    """The stored rows with normalised period dates, `source_period` (null reads as `period`) and every profile column present (a column not added yet reads null)."""
+    missing = [name for name in (*PROFILE_COLUMNS, "source_period") if name not in details.columns]
+    out = details.reindex(columns=[*details.columns, *missing]).assign(period=pd.to_datetime(details["period"]).dt.normalize())
+    return out.assign(source_period=pd.to_datetime(out["source_period"]).dt.normalize().fillna(out["period"]))
 
 
 def _shift(period: pd.Timestamp, quarters: int) -> pd.Timestamp:
@@ -36,14 +37,12 @@ def _shift(period: pd.Timestamp, quarters: int) -> pd.Timestamp:
 def plan_refresh(details: pd.DataFrame, category: pd.Series, full: bool, window: int) -> Refresh | None:
     """The quarters to recompute, or None when every row is profiled.
 
-    A row is stale without a stored category or with a category that differs from its current name's; a row whose period
-    is not a quarter end is out of scope and never stale. A stale quarter rewrites the next `window` quarters; the pass
-    starts `window` quarters earlier.
+    A row is stale without a stored category or with a category that differs from its current name's. A stale quarter
+    rewrites the next `window` quarters; the pass starts `window` quarters earlier.
     """
-    # Stale quarter-end rows: all of them on a full rebuild.
+    # Stale rows: all of them on a full rebuild.
     present = set(details["period"].unique())
     stale = pd.Series(True, index=details.index) if full else details["category"].isna() | details["category"].ne(category)
-    stale &= details["period"].dt.is_quarter_end
     quarters = sorted(details.loc[stale, "period"].unique())
     if not quarters:
         return None

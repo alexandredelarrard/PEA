@@ -16,10 +16,9 @@ import pytest
 from omegaconf import DictConfig
 
 from src.data_aggregate.transformers.step_manager_profile import StepManagerProfile
-from src.data_aggregate.utils.manager_profile.categories import classify_names
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
-from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS, plan_refresh, stored_details
+from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS
 from src.data_extract.utils.institutionals.manager_rows import EXTRACT_COLUMNS
 from src.data_store import ddl
 from src.data_store.schema import Tables
@@ -83,6 +82,7 @@ def _extract_rows(index: int, period: pd.Timestamp) -> pd.DataFrame:
             "accession_number": f"{cik}-{period:%y%m%d}",
             "first_filed_date": period + pd.Timedelta(days=40),
             "source": "edgar_index",
+            "source_period": period,
         }
         for cik, name in MANAGERS.items()
     ]
@@ -131,7 +131,8 @@ class Reads:
             name = getattr(table, "name", table)
             self.tables.append(name)
             if name == Tables.sec13f_hr.name:
-                self.periods.append(str((kwargs.get("where") or {})["period"]))
+                period = (kwargs.get("where") or {})["period"]
+                self.periods.extend([period] if isinstance(period, str) else period)
             return load(table, *args, **kwargs)
 
         monkeypatch.setattr(store, "load", _spy)
@@ -205,30 +206,33 @@ def test_second_run_changes_nothing_reads_no_lines_and_leaves_the_extract_column
     )
 
 
-def test_mid_quarter_rows_are_out_of_scope_and_never_keep_the_work_list_stale(store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Marker-typo periods (not a quarter end) keep null profile columns and do not make a second night recompute anything."""
+def test_a_snapped_row_is_profiled_from_the_lines_stored_under_its_source_period(
+    store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A filing the extract placed in a quarter end is read under its own (mistyped) period and profiled as that quarter's row."""
     for index in range(len(PERIODS)):
         _add_quarter(store, index)
-    typos = _extract_rows(0, pd.Timestamp("2003-06-03")).iloc[:1]  # alone in its quarter: the 2003-06-03 case
-    among = _extract_rows(0, pd.Timestamp("2022-05-03")).iloc[:1]  # beside four quarter-end rows of its quarter
-    store.save(Tables.sec_13f_manager_details, pd.concat([typos, among], ignore_index=True))
+    _step(store, cfg).run(full=False)
+    reference = _table(store)
 
-    first = _step(store, cfg).run(full=False)
+    quarter, cik, typo = PERIODS[3], "0000000002", pd.Timestamp("2022-11-15")
+    store.update(Tables.sec13f_hr, {"period": typo}, {"cik": cik, "period": _stamp(quarter)})  # the filer typed a mid-quarter period
+    store.update(Tables.sec_13f_manager_details, {"source_period": typo}, {"cik": cik, "period": _stamp(quarter)})
+    reads = Reads(store, monkeypatch)
+    changed = _step(store, cfg).run(full=True)
+    full_reads = list(reads.periods)
     table = _table(store)
     reads = Reads(store, monkeypatch)
     second = _step(store, cfg).run(full=False)
 
-    mid = ~table["period"].dt.is_quarter_end
-    details = stored_details(table)
-    plan = plan_refresh(
-        details, classify_names(details["manager_name"], cfg.manager_categories), False, int(cfg.build_cube.manager_profile.window_quarters)
-    )
-    assert mid.sum() == 2 and table.loc[mid, list(PROFILE_COLUMNS)].isna().all().all(), "mid-quarter rows keep null profile columns"
-    assert first == (~mid).sum() and table.loc[~mid, "category"].notna().all(), "every quarter-end row is profiled"
-    assert second == 0 and plan is None and reads.periods == [], "the second night is a no-op with no line read"
-    print("\n=== SANITY CHECK: mid-quarter rows ===")
+    assert changed == 0, "the snapped row profiles exactly as when its lines were stored under the quarter end"
+    pd.testing.assert_frame_equal(table.drop(columns="source_period"), reference.drop(columns="source_period"))
+    assert _stamp(typo) in full_reads and table["period"].dt.is_quarter_end.all()
+    assert second == 0 and reads.periods == [], "the next night reads no line with a snapped row present"
+    row = table[(table["cik"] == cik) & (table["period"] == quarter)].iloc[0]
+    print("\n=== SANITY CHECK: snapped row ===")
     print(
-        f"{int(mid.sum())} mid-quarter rows left null; first run wrote {first}; second run wrote {second}, read {len(reads.periods)} quarter(s), plan {plan}."
+        f"row {cik} {_stamp(quarter)} (lines under {_stamp(typo)}): category {row['category']}, hhi {row['hhi']:.4f}; full rebuild changed {changed}, next night read {len(reads.periods)}."
     )
 
 
@@ -302,8 +306,9 @@ def test_real_sample_books_match_the_pure_pipeline(store: Any, cfg: DictConfig) 
     periods = ["2024-03-31", "2024-06-30", "2024-09-30"]
     ciks = sample_ciks(live, periods[-1], 50)
     raw = load_raw(live, ciks, periods)
-    details = live.load(Tables.sec_13f_manager_details, columns=list(EXTRACT_COLUMNS), where={"cik": ciks, "period": periods})
+    details = live.load(Tables.sec_13f_manager_details, where={"cik": ciks, "period": periods})
     assert details is not None
+    details = details[[column for column in EXTRACT_COLUMNS if column in details.columns]]
     store.save(Tables.sec13f_hr, pd.concat(raw.values(), ignore_index=True)[list(LINE_COLUMNS)].assign(parse_status="complete"))
     store.save(Tables.sec_13f_manager_details, details)
     store.save(Tables.cusip_ticker_map, live.load(Tables.cusip_ticker_map))

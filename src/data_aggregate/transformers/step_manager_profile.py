@@ -79,12 +79,12 @@ class StepManagerProfile(Step):
         reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(df_map)
 
         # compute: quarter by quarter, carrying the previous quarter forward
-        ciks = {period: group["cik"].tolist() for period, group in details.groupby("period")}
+        rows = {period: group[["cik", "source_period"]] for period, group in details.groupby("period")}
         stats: list[pd.DataFrame] = []
         carry: Carry | None = None
         for period in quarters:
             started = time.monotonic()
-            raw = self._read_quarter(period, ciks[period])
+            raw = self._read_quarter(period, rows[period])
             if raw.empty:
                 self._log.warning("manager profile: no 13F lines stored for %s", period.date())
                 continue
@@ -93,17 +93,31 @@ class StepManagerProfile(Step):
             stats.append(quarter_stats(lines, previous.book if previous else None, previous.aggregate if previous else None, self._cfg))
             carry = Carry(period, compact_book(lines), quarter_aggregate(lines, self._cfg.cap_breakpoints))
             self._log.info(
-                "manager profile: %s %d managers, %d lines (%.1f s)", period.date(), len(ciks[period]), len(lines), time.monotonic() - started
+                "manager profile: %s %d managers, %d lines (%.1f s)", period.date(), len(rows[period]), len(lines), time.monotonic() - started
             )
         return pd.concat(stats, ignore_index=True) if stats else pd.DataFrame(columns=["cik", "period"])
 
-    def _read_quarter(self, period: pd.Timestamp, ciks: list[str]) -> pd.DataFrame:
-        """Markers and lines of the quarter for its managers, read on the primary key in CIK chunks (the table has no period index)."""
-        # `iter_load` streams one scope; this read is one bounded load per CIK chunk of one period, which it cannot express.
+    def _read_quarter(self, period: pd.Timestamp, rows: pd.DataFrame) -> pd.DataFrame:
+        """Markers and lines of the quarter for its managers (`cik`, `source_period`); a snapped row is read under its own period and labelled `period`."""
+        snapped = rows["source_period"].ne(period)
+        raw = self._read_lines(rows.loc[~snapped, "cik"].tolist(), [period])
+        if not snapped.any():
+            return raw
+
+        # The snapped rows: one bounded read over their CIKs and periods, then only their exact (cik, period) pairs.
+        pairs = rows.loc[snapped, ["cik", "source_period"]].rename(columns={"source_period": "period"})
+        extra = self._read_lines(pairs["cik"].tolist(), sorted(pairs["period"].unique()))
+        extra = extra.assign(period=pd.to_datetime(extra["period"])).merge(pairs, on=["cik", "period"]).assign(period=period)
+        return pd.concat([raw, extra], ignore_index=True)
+
+    def _read_lines(self, ciks: list[str], periods: list[pd.Timestamp]) -> pd.DataFrame:
+        """Markers and lines of `ciks` over `periods`, read on the primary key in CIK chunks (the table has no period index)."""
+        # `iter_load` streams one scope; this read is one bounded load per CIK chunk, which it cannot express.
         chunk = 1_000
+        stamps = [period.strftime("%Y-%m-%d") for period in periods]
         frames = []
         for start in range(0, len(ciks), chunk):
-            where = {"cik": ciks[start : start + chunk], "period": period.strftime("%Y-%m-%d")}
+            where = {"cik": ciks[start : start + chunk], "period": stamps[0] if len(stamps) == 1 else stamps}
             frame = self._store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
             if frame is not None:
                 frames.append(frame)

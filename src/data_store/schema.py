@@ -823,7 +823,7 @@ class Tables:
         empty_marker=("cusip", EMPTY_MARKER),
     )
     # One row per 13F filer (CIK) and report quarter, from 1999-06-30: who the filer is and how it invests.
-    # Two writers own different columns and neither touches the other's (precedent: `universe_tickers`).
+    # Two writers own different columns and neither touches the other's (precedent: `universe_tickers`). The extract creates the table whole, all 40 columns (`create_declared` from the `sql/schema.sql` block), so the profile columns exist empty and no step ALTERs it.
     # A row is available at `first_filed_date`; comparisons across quarters are by `period`.
     #
     # Extract columns, written by `data_extract` (`thirteen-f-managers`) exactly as the SEC gives them, no deduction:

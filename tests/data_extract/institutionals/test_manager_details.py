@@ -18,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from sqlalchemy import event
 
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
@@ -31,6 +32,7 @@ from src.data_extract.utils.institutionals.manager_rows import (
     rows_to_save,
     zip_manager_filings,
 )
+from src.data_store import ddl
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, seed_index
@@ -563,3 +565,25 @@ def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
     print("\n=== SANITY CHECK: bounded window ===")
     print(f"{n_old} old index rows; opened {opened_first}; first run {first} row(s), second {second}")
     print("The window starts at the second-newest data set, no key IN-list is used, a re-run writes nothing. Validated.")
+
+
+def test_first_extract_write_creates_the_table_whole_without_any_alter(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On an empty database the extract creates all 40 declared columns (the 30 profile ones empty) and never alters the table."""
+    create_canonical(sqlite_store.engine, [Tables.sec13f_hr])
+    monkeypatch.setattr(sec_io, "download", lambda *a, **k: pytest.fail("SEC request"))
+    ctx = fake_context(tmp_path, sqlite_store, [])
+    (tmp_path / str(ctx.config.local.paths.sec_13f_datasets)).mkdir(parents=True, exist_ok=True)
+    _write_data_set(_cache(ctx), _Q4, [_PIONEER])
+    alters: list[str] = []
+    monkeypatch.setattr(sqlite_store, "ensure_columns", lambda *a, **k: alters.append("ensure_columns"))
+    event.listen(sqlite_store.engine, "before_cursor_execute", lambda conn, cur, stmt, *a: alters.append(stmt) if "ALTER" in stmt.upper() else None)
+
+    changed = fetch_manager_details(ctx, full=False, as_of=pd.Timestamp("2023-12-31"))
+
+    declared = [line.split('"')[1] for line in ddl.declared_statements("sec_13f_manager_details")[0].splitlines() if line.startswith('    "')]
+    assert changed == 1 and alters == []
+    assert sqlite_store.columns(Tables.sec_13f_manager_details) == declared and len(declared) == 40
+    df = _rows(sqlite_store)
+    assert df[[c for c in declared if c not in EXTRACT_COLUMNS]].isna().all().all(), "the profile columns exist and stay empty"
+    print("\n=== SANITY CHECK: table declared whole at creation ===")
+    print(f"  first extract write: {len(declared)} columns created, 30 profile columns empty, no ensure_columns / ALTER issued. Validated.")

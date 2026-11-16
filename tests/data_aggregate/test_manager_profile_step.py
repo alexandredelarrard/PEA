@@ -20,7 +20,6 @@ from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS
 from src.data_extract.utils.institutionals.manager_rows import EXTRACT_COLUMNS
-from src.data_store import ddl
 from src.data_store.schema import Tables
 from src.utils.config import read_config
 from tests.canonical_schema import create_canonical
@@ -90,7 +89,8 @@ def _extract_rows(index: int, period: pd.Timestamp) -> pd.DataFrame:
 
 
 def _add_quarter(store: Any, index: int) -> None:
-    """Lines, then the extract row, of report quarter `index` (the nightly order: fetch, extract, profile)."""
+    """Lines, then the extract row, of report quarter `index` (the nightly order: fetch, extract, profile); the extract creates the table whole."""
+    store.create_declared(Tables.sec_13f_manager_details)
     store.save(Tables.sec13f_hr, pd.DataFrame(_quarter_lines(index, PERIODS[index])))
     store.save(Tables.sec_13f_manager_details, _extract_rows(index, PERIODS[index]))
 
@@ -102,7 +102,7 @@ def cfg() -> DictConfig:
 
 @pytest.fixture
 def store(sqlite_store: Any) -> Any:
-    """Reference tables and `sec13f_hr` from the canonical DDL; the manager table is created by the first extract write."""
+    """Reference tables and `sec13f_hr` from the canonical DDL; the manager table is created whole by the extract writer (`create_declared`)."""
     create_canonical(sqlite_store.engine, [Tables.sec13f_hr, Tables.cusip_ticker_map, Tables.sharadar_tickers])
     sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": list(CUSIPS.values()), "ticker": list(CUSIPS)}))
     tickers = pd.DataFrame(
@@ -159,31 +159,34 @@ def _stamp(period: pd.Timestamp) -> str:
     return f"{period:%Y-%m-%d}"
 
 
-def test_empty_database_gets_the_extract_columns_first_then_the_profile_columns(store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_table_is_declared_whole_so_the_profile_step_adds_no_column(store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch) -> None:
     _add_quarter(store, 0)  # a single quarter: no turnover, cap or active-share evidence, so those float columns are all null
-    assert set(store.columns(Tables.sec_13f_manager_details)) == set(EXTRACT_COLUMNS), "the first write is the extract's: no profile column yet"
+    declared = list(EXTRACT_COLUMNS) + list(PROFILE_COLUMNS)
+    assert store.columns(Tables.sec_13f_manager_details) == declared, "the extract's table already holds all 40 columns, profile ones empty"
     calls: list[tuple[str, pd.DataFrame]] = []
-    ensure, save = store.ensure_columns, store.save
-    monkeypatch.setattr(store, "ensure_columns", lambda table, df: calls.append(("ensure_columns", df)) or ensure(table, df))
+    save = store.save
+    monkeypatch.setattr(store, "ensure_columns", lambda *a, **k: pytest.fail("the profile step alters no table"))
     monkeypatch.setattr(store, "save", lambda table, df, *a, **k: calls.append(("save", df)) or save(table, df, *a, **k))
 
     changed = _step(store, cfg).run(full=False)
 
-    assert [name for name, _ in calls] == ["ensure_columns", "save"], "ensure_columns once, before the first upsert"
-    frame = calls[0][1]
-    assert set(frame.columns) == {"cik", "period", *PROFILE_COLUMNS}, "only the profile columns (and the key) are sent"
-    floats = [name for name in PROFILE_COLUMNS if name not in {"category", "n_quarters_used"}]
-    assert {ddl.sql_type(name, frame[name].dtype) for name in floats} == {"DOUBLE PRECISION"}, "an all-null float column is still a float"
-    assert ddl.sql_type("n_quarters_used", frame["n_quarters_used"].dtype) == "BIGINT" and ddl.sql_type("category", frame["category"].dtype) == "TEXT"
-    assert set(PROFILE_COLUMNS) <= set(store.columns(Tables.sec_13f_manager_details))
+    assert [name for name, _ in calls] == ["save"], "one upsert, no ALTER first"
+    assert set(calls[0][1].columns) == {"cik", "period", *PROFILE_COLUMNS}, "only the profile columns (and the key) are sent"
+    assert store.columns(Tables.sec_13f_manager_details) == declared
     df = _table(store)
     assert changed == len(MANAGERS) and df["turnover"].isna().all() and df["active_share"].isna().all()
     assert df["category"].notna().all() and df["n_quarters_used"].eq(1).all()
-    print("\n=== SANITY CHECK: empty database ===")
-    print(
-        f"{len(df)} rows; extract columns first, then {len(PROFILE_COLUMNS)} profile columns added once; all-null float columns typed DOUBLE PRECISION."
-    )
-    print(df[["cik", "category", "n_positions", "hhi", "n_quarters_used"]].round(3).to_string(index=False))
+    print("\n=== SANITY CHECK: table declared whole ===")
+    print(f"{len(df)} rows; 40 columns from the extract's creation, profile upserted with no ALTER. Validated.")
+
+
+def test_profile_step_first_on_an_empty_database_writes_nothing_and_the_extract_then_creates_the_table(store: Any, cfg: DictConfig) -> None:
+    assert _step(store, cfg).run(full=False) == 0 and not store.exists(Tables.sec_13f_manager_details), "no table, no rows, no error"
+    _add_quarter(store, 0)
+    assert store.columns(Tables.sec_13f_manager_details) == list(EXTRACT_COLUMNS) + list(PROFILE_COLUMNS)
+    assert _step(store, cfg).run(full=False) == len(MANAGERS)
+    print("\n=== SANITY CHECK: profile step first ===")
+    print("an empty database ends the profile run quietly; after the extract's write the next profile run fills 4 rows. Validated.")
 
 
 def test_second_run_changes_nothing_reads_no_lines_and_leaves_the_extract_columns(

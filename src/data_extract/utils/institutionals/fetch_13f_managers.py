@@ -40,23 +40,26 @@ def _window_start(context: Context, data_sets: list[DataSet], full: bool) -> pd.
     """First filing date to read: the table's source start under `full` or an empty table, else the earlier of the newest
     stored `first_filed_date` minus the overlap and the oldest index-evidence row filed since the second-newest data set,
     never before that data set's start."""
-    # load: the stored filing dates and sources once (nothing under `full`)
+    # load: the frontier, then only the index-evidence rows filed since the anchor data set (nothing under `full`)
     table = Tables.sec_13f_manager_details
-    df_stored = None if full else context.store.load(table, columns=["first_filed_date", "source"], optional=True)
     resume = cast(Resume, table.resume)
     floor = pd.Timestamp(cast(str, resume.source_start))
-    if df_stored is None or df_stored.empty:
+    anchor = data_sets[-2 if len(data_sets) > 1 else 0].start if data_sets else None
+    frontier = None if full else context.store.max_date(table, "first_filed_date")
+    df_lacking = None
+    if frontier is not None and anchor is not None:
+        df_lacking = context.store.load(
+            table, columns=["first_filed_date"], where={"source": INDEX_SOURCE}, since=anchor, date_col="first_filed_date", optional=True
+        )
+    if frontier is None:
         return floor
 
     # compute: the newest filing minus the overlap, then the oldest index-evidence row since the anchor data set
-    filed = pd.to_datetime(df_stored["first_filed_date"])
-    starts = [filed.max() - pd.Timedelta(days=resume.overlap_days)]
-    if not data_sets:
+    starts = [frontier - pd.Timedelta(days=resume.overlap_days)]
+    if anchor is None:
         return max(floor, starts[0])
-    anchor = data_sets[-2 if len(data_sets) > 1 else 0].start
-    lacking = filed[df_stored["source"].eq(INDEX_SOURCE) & filed.ge(anchor)]
-    if not lacking.empty:
-        starts.append(lacking.min())
+    if df_lacking is not None and not df_lacking.empty:
+        starts.append(pd.to_datetime(df_lacking["first_filed_date"]).min())
     return max(floor, anchor if len(data_sets) > 1 else floor, min(starts))
 
 

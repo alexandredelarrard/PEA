@@ -12,8 +12,6 @@ import logging
 
 import pandas as pd
 
-from src.utils.string import strip_blank
-
 logger = logging.getLogger(__name__)
 
 #: The columns this extract owns, in table order; the profile columns belong to `data_aggregate`.
@@ -51,6 +49,9 @@ def zip_manager_filings(df_submissions: pd.DataFrame, df_cover: pd.DataFrame, so
     name, state, file number and report type; `source` is the ZIP name."""
     covers = df_cover.assign(accession=df_cover["ACCESSION_NUMBER"].astype("string").str.strip()).drop_duplicates("accession").set_index("accession")
     df = df_submissions.join(covers, on="accession", how="left")
+    text = df[["FILINGMANAGER_NAME", "FILINGMANAGER_STATEORCOUNTRY", "SECFILENUMBER"]].astype("string").apply(lambda column: column.str.strip())
+    text = text.mask(text.isna() | (text == "")).astype(object)
+    text = text.where(text.notna(), None)
     return pd.DataFrame(
         {
             "cik": df["cik"],
@@ -58,9 +59,9 @@ def zip_manager_filings(df_submissions: pd.DataFrame, df_cover: pd.DataFrame, so
             "accession_number": df["accession"].astype(object),
             "filing_date": df["filing_date"],
             "original": ~df["is_amendment"].astype(bool),
-            "manager_name": strip_blank(df["FILINGMANAGER_NAME"]),
-            "state_or_country": strip_blank(df["FILINGMANAGER_STATEORCOUNTRY"]),
-            "sec_file_number": strip_blank(df["SECFILENUMBER"]),
+            "manager_name": text["FILINGMANAGER_NAME"],
+            "state_or_country": text["FILINGMANAGER_STATEORCOUNTRY"],
+            "sec_file_number": text["SECFILENUMBER"],
             "report_type": df["REPORTTYPE"].astype("string").str.strip().str.upper().map(_REPORT_TYPES).astype(object),
             "source": source,
         }
@@ -72,6 +73,9 @@ def marker_manager_filings(df_markers: pd.DataFrame, df_index: pd.DataFrame) -> 
     (`cik, company, form, filed, accession`) of the same (cik, accession); the index carries no cover field."""
     names = df_index.rename(columns={"accession": "accession_number"})[["cik", "accession_number", "company", "filed"]]
     df = df_markers.merge(names.drop_duplicates(["cik", "accession_number"]), on=["cik", "accession_number"], how="left")
+    name = df["company"].astype("string").str.strip()
+    name = name.mask(name.isna() | (name == "")).astype(object)
+    name = name.where(name.notna(), None)
     return pd.DataFrame(
         {
             "cik": df["cik"],
@@ -79,7 +83,7 @@ def marker_manager_filings(df_markers: pd.DataFrame, df_index: pd.DataFrame) -> 
             "accession_number": df["accession_number"],
             "filing_date": df["filing_date"].fillna(df["filed"]),
             "original": df["form"].astype("string").str.strip().str.upper() == "13F-HR",
-            "manager_name": strip_blank(df["company"]),
+            "manager_name": name,
             "state_or_country": None,
             "sec_file_number": None,
             "report_type": None,

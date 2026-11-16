@@ -490,8 +490,12 @@ def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
     calls: list[Any] = []
     real_load = store.load
 
+    unbounded: list[Any] = []
+
     def _recording_load(table: Any, *args: Any, **kwargs: Any) -> Any:
         calls.append(kwargs.get("where"))
+        if getattr(table, "name", table) == Tables.sec_13f_manager_details.name and not (kwargs.get("where") or kwargs.get("since")):
+            unbounded.append(kwargs)
         return real_load(table, *args, **kwargs)
 
     monkeypatch.setattr(store, "load", _recording_load)
@@ -505,6 +509,7 @@ def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
     assert opened_first == [_Q3, _Q4], "the newest two data sets only, never back to the first one"
     assert any("filings from 2023-07-01" in message for message in caplog.messages)
     assert all(not isinstance(where, pd.DataFrame) and not (isinstance(where, dict) and "cik" in where) for where in calls), "no key list is issued"
+    assert not unbounded, f"manager-table loads without a where or since bound: {unbounded}"
     assert first == 4 and second == 0, "the second run is idempotent"
     print("\n=== SANITY CHECK: bounded window ===")
     print(f"{n_old} old index rows; opened {opened_first}; first run {first} row(s), second {second}")

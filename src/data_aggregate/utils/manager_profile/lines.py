@@ -67,14 +67,15 @@ def _apply_units(book: pd.DataFrame, repaired: pd.DataFrame, register: pd.DataFr
     return out
 
 
-def _clean_lines(book: pd.DataFrame) -> pd.DataFrame:
-    """Keep positive values, treat the `_empty` ticker as none, sum duplicates per (cik, kind, ticker or cusip) and weight by book total."""
+def _clean_lines(book: pd.DataFrame, prefixes: pd.Series) -> pd.DataFrame:
+    """Keep positive values, take a missing ticker from the 8-character CUSIP prefix map, sum duplicates per (cik, kind, ticker or cusip) and weight by book total."""
     # One value per line, from the column of its kind.
     kind = book["position_type"]
     value = pd.Series(np.nan, index=book.index)
     for name, column in _VALUE_COLUMN.items():
         value = value.where(kind != name, book[column])
     ticker = book["ticker"].mask(book["ticker"].isin(["", MARKER]))
+    ticker = ticker.fillna(book["cusip"].str[:8].map(prefixes))
     lines = book.assign(kind=kind, value=value, ticker=ticker, key=ticker.fillna(book["cusip"]))
     lines = lines[lines["kind"].isin(_VALUE_COLUMN) & lines["value"].gt(0)]
 
@@ -87,9 +88,10 @@ def _clean_lines(book: pd.DataFrame) -> pd.DataFrame:
     return out[[*keys, "ticker", "cusip", "issuer_name", "shares", "value", "weight"]]
 
 
-def clean_book(raw: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
+def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.DataFrame:
     """Cleaned lines (kind, key, ticker, cusip, shares, value, weight) of every manager's original accession in `raw`.
 
+    `prefixes` (`reference.prefix_tickers`) names the ticker of a CUSIP the line carries without one.
     Equity values go through the cube's book-unit repair on same-quarter consensus prices, run twice as the cube does.
     """
     # Original accession lines only.
@@ -110,4 +112,4 @@ def clean_book(raw: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
     )
 
     # Positive values, one row per position, weights over the book total.
-    return _clean_lines(_apply_units(book, repaired, register))
+    return _clean_lines(_apply_units(book, repaired, register), prefixes)

@@ -13,7 +13,7 @@ from omegaconf import DictConfig
 
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.utils.config import read_config
-from tests.data_aggregate.test_manager_profile import live_reference, live_store, load_raw, run_quarters, sample_ciks
+from tests.data_aggregate.test_manager_profile import live_prefixes, live_reference, live_store, load_raw, run_quarters, sample_ciks
 
 ROOT = Path(__file__).resolve().parents[2]
 PERIODS = ["2008-12-31", "2024-06-30"]
@@ -26,11 +26,11 @@ def test_rows_up_to_a_period_are_identical_without_later_periods(cut: str) -> No
     end = pd.Timestamp(cut)
     quarters = [(end + pd.offsets.QuarterEnd(k)).strftime("%Y-%m-%d") for k in range(-4, 3)]
     raw = load_raw(store, sample_ciks(store, cut, 80), quarters)
-    reference = live_reference(store)
+    reference, prefixes = live_reference(store), live_prefixes(store)
 
-    full = profile_rows(run_quarters(raw, reference, cfg), cfg)
+    full = profile_rows(run_quarters(raw, reference, prefixes, cfg), cfg)
     cut_raw = {period: frame for period, frame in raw.items() if pd.Timestamp(period) <= end}
-    replay = profile_rows(run_quarters(cut_raw, reference, cfg), cfg)
+    replay = profile_rows(run_quarters(cut_raw, reference, prefixes, cfg), cfg)
 
     expected = full[full["period"] <= end].sort_values(["cik", "period"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(replay.sort_values(["cik", "period"]).reset_index(drop=True), expected, check_exact=True)

@@ -17,7 +17,7 @@ from omegaconf import DictConfig
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.quarter_stats import STAT_COLUMNS, compact_book, quarter_stats
-from src.data_aggregate.utils.manager_profile.reference import classify_securities, quarter_aggregate, sharadar_reference
+from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
@@ -43,6 +43,7 @@ SECTORS = [
 ]
 # Real managers present in every sample quarter: Berkshire Hathaway, Vanguard Group, FMR (Fidelity), State Street.
 KNOWN_CIKS = ["0001067983", "0000102909", "0000315066", "0000093751"]
+NO_PREFIX = pd.Series(dtype=object)
 REAL_QUARTERS = ["2000-12-31", "2008-12-31", "2024-12-31"]
 
 
@@ -149,7 +150,7 @@ def test_clean_book_keeps_the_original_accession_and_sums_duplicates(cfg: DictCo
     amendment_only = _raw("0000000002", "2024-03-31", "B1", [("T1", "C1", "ONE INC", "common", 10.0, 100.0, {})], form="13F-HR/A")
     before_period = _raw("0000000003", "2024-03-31", "C1", [("T1", "C1", "ONE INC", "common", 10.0, 100.0, {})], filed="2024-03-01")
 
-    df = clean_book(pd.concat([original, amendment, amendment_only, before_period]), cfg)
+    df = clean_book(pd.concat([original, amendment, amendment_only, before_period]), cfg, NO_PREFIX)
 
     one = df[df["cik"] == "0000000001"].set_index(["kind", "key"])
     assert set(df["cik"]) == {"0000000001", "0000000002"}
@@ -174,7 +175,7 @@ def test_clean_book_repairs_a_book_reported_in_the_wrong_unit(cfg: DictConfig) -
         lines = [(f"S{i}", f"CS{i}", f"S{i} INC", "common", 100.0 * (n + 1), prices[f"S{i}"] * 100.0 * (n + 1) * scale, {}) for i in range(1, 7)]
         frames.append(_raw(cik, "2024-03-31", f"U{n}", lines))
 
-    df = clean_book(pd.concat(frames), cfg)
+    df = clean_book(pd.concat(frames), cfg, NO_PREFIX)
 
     totals = df.groupby("cik")["value"].sum()
     truth = {cik: sum(prices.values()) * 100.0 * (n + 1) for n, cik in enumerate(totals.index)}
@@ -332,17 +333,21 @@ def load_raw(store: DataStore, ciks: list[str], periods: list[str]) -> dict[str,
     return {pd.Timestamp(str(period)).strftime("%Y-%m-%d"): frame for period, frame in df.groupby("period")}
 
 
-def run_quarters(raw: dict[str, pd.DataFrame], reference: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
+def run_quarters(raw: dict[str, pd.DataFrame], reference: pd.DataFrame, prefixes: pd.Series, cfg: DictConfig) -> pd.DataFrame:
     """Single-quarter statistics over consecutive periods; the previous quarter's book and aggregate feed only the next quarter end."""
     out, state = [], None
     for period in sorted(raw):
-        lines = classify_securities(clean_book(raw[period], cfg), reference)
+        lines = classify_securities(clean_book(raw[period], cfg, prefixes), reference)
         stamp = pd.Timestamp(period)
         adjacent = state is not None and state[0] == stamp - pd.offsets.QuarterEnd(1)
         previous = state if state is not None and adjacent else None
         out.append(quarter_stats(lines, previous[1] if previous else None, previous[2] if previous else None, cfg))
         state = (stamp, compact_book(lines), quarter_aggregate(lines, cfg.cap_breakpoints))
     return pd.concat(out, ignore_index=True)
+
+
+def live_prefixes(store: DataStore) -> pd.Series:
+    return prefix_tickers(_frame(store.load(Tables.cusip_ticker_map)))
 
 
 def live_reference(store: DataStore) -> pd.DataFrame:
@@ -355,7 +360,7 @@ def test_real_sample_quarter_is_within_definitions(period: str, cfg: DictConfig)
     previous = (pd.Timestamp(period) - pd.offsets.QuarterEnd(1)).strftime("%Y-%m-%d")
     raw = load_raw(store, sample_ciks(store, period), [previous, period])
 
-    stats = run_quarters(raw, live_reference(store), cfg)
+    stats = run_quarters(raw, live_reference(store), live_prefixes(store), cfg)
     now = stats[stats["period"] == pd.Timestamp(period)].set_index("cik")
 
     assert len(now) >= 50 and now["book_value_usd"].gt(0).all()
@@ -377,3 +382,20 @@ def test_real_sample_quarter_is_within_definitions(period: str, cfg: DictConfig)
         assert now["hhi"].to_dict()["0001067983"] > 5 * now["hhi"].to_dict()["0000102909"], "Berkshire is far more concentrated than Vanguard"
         assert now["active_share"].to_dict()["0000102909"] < 0.5, "Vanguard's 13F book sits close to the aggregate book"
         print("Berkshire reads a concentrated book, Vanguard an index-like one.")
+
+
+def test_eight_character_cusips_map_through_the_issuer_prefix(cfg: DictConfig) -> None:
+    store = live_store()
+    raw = load_raw(store, ["0000093751"], ["2008-12-31"])["2008-12-31"]
+    reference = live_reference(store)
+
+    before = classify_securities(clean_book(raw, cfg, NO_PREFIX), reference)
+    after = classify_securities(clean_book(raw, cfg, live_prefixes(store)), reference)
+    mix = quarter_stats(after, None, None, cfg).iloc[0]
+
+    equity = after[after["kind"].eq("common")]
+    assert before["ticker"].notna().sum() == 0, "State Street's 2008 CUSIPs have 8 characters and never match the 9-character map"
+    assert equity["ticker"].notna().mean() > 0.2 and mix["pct_equity_us"] > 0.2
+    assert after["key"].is_unique
+    print("\n=== SANITY CHECK: CUSIP prefix-8 mapping, State Street 2008Q4 ===")
+    print(f"Tickers mapped for {equity['ticker'].notna().mean():.0%} of equity lines, pct_equity_us 0 -> {mix['pct_equity_us']:.2f}.")

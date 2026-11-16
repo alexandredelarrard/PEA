@@ -45,6 +45,12 @@ def sharadar_reference(df_tickers: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"sector_col": column.where(df["sector"].isin(SECTORS), UNMAPPED), "security_class": security_class}, index=df.index)
 
 
+def prefix_tickers(df_map: pd.DataFrame) -> pd.Series:
+    """Ticker by 8-character CUSIP prefix (issuer plus issue; early filings omit the check digit); an ambiguous prefix is left out."""
+    grouped = df_map.dropna(subset=["cusip", "ticker"]).groupby(df_map["cusip"].str[:8])["ticker"].agg(["nunique", "first"])
+    return grouped.loc[grouped["nunique"] == 1, "first"]
+
+
 def classify_securities(lines: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
     """Add each line's `asset` (one of ASSETS) and `sector_col`; a ticker Sharadar lacks is an ETF by issuer name, else other."""
     # Sharadar class and sector by ticker.

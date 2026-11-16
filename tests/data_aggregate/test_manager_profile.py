@@ -399,3 +399,27 @@ def test_eight_character_cusips_map_through_the_issuer_prefix(cfg: DictConfig) -
     assert after["key"].is_unique
     print("\n=== SANITY CHECK: CUSIP prefix-8 mapping, State Street 2008Q4 ===")
     print(f"Tickers mapped for {equity['ticker'].notna().mean():.0%} of equity lines, pct_equity_us 0 -> {mix['pct_equity_us']:.2f}.")
+
+
+@pytest.mark.parametrize(
+    ("cik", "period", "name"),
+    [("0000728100", "2012-09-30", "Lord Abbett"), ("0000102909", "2008-03-31", "Vanguard")],
+)
+def test_a_garbage_share_count_cannot_make_a_line_larger_than_its_book(cik: str, period: str, name: str, cfg: DictConfig) -> None:
+    store = live_store()
+    ciks = _frame(store.load(Tables.sec_13f_manager_details, columns=["cik"], where={"period": period}))["cik"].tolist()
+    raw = pd.concat([load_raw(store, ciks[i : i + 1000], [period])[period] for i in range(0, len(ciks), 1000)], ignore_index=True)
+
+    quarter = clean_book(raw, cfg, NO_PREFIX)
+    alone = clean_book(raw[raw["cik"] == cik], cfg, NO_PREFIX)
+
+    mine = quarter[quarter["cik"].eq(cik) & quarter["kind"].eq("common")]
+    equity_weight = mine["value"] / mine["value"].sum()
+    hhi = float((equity_weight**2).sum())
+    assert len(mine) >= 500
+    assert equity_weight.max() < 0.2 and hhi < 0.05, "no single line is a fifth of a 500-name book"
+    assert quarter.loc[quarter["cik"].eq(cik), "value"].sum() <= 2 * alone["value"].sum(), "the cleaned book stays near its filed total"
+    print(f"\n=== SANITY CHECK: oversized re-valuation, {name} {period} ===")
+    print(
+        f"{len(mine)} positions, max weight {equity_weight.max():.3f}, hhi {hhi:.4f}, cleaned {quarter.loc[quarter['cik'].eq(cik), 'value'].sum():.3e} vs filed {alone['value'].sum():.3e}."
+    )

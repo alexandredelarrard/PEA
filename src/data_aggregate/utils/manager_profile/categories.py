@@ -9,12 +9,10 @@ from pathlib import Path
 import pandas as pd
 from omegaconf import DictConfig
 
+from src.utils.string import alternation
+from src.utils.superinvestor_roster import superinvestors_config_dir
+
 OVERRIDES_FILENAME = "manager_categories.json"
-
-
-def alternation(patterns: list[str]) -> str:
-    """One regex matching any pattern on word boundaries."""
-    return r"(?<![A-Z0-9])(?:" + "|".join(patterns) + r")(?![A-Z0-9])"
 
 
 def clean_names(names: pd.Series, clean: DictConfig) -> pd.Series:
@@ -58,7 +56,7 @@ def classify_names(names: pd.Series, rules: DictConfig) -> pd.Series:
 
 def load_category_overrides(config_dir: Path | str, rules: DictConfig) -> dict[str, str]:
     """CIK -> category from `<config_dir>/superinvestors/manager_categories.json`; every CIK is ten digits and every category is a legal one."""
-    path = Path(config_dir) / "superinvestors" / OVERRIDES_FILENAME
+    path = superinvestors_config_dir(config_dir) / OVERRIDES_FILENAME
     entries = json.loads(path.read_text(encoding="utf-8"))["overrides"]
     bad_cik = sorted(cik for cik in entries if not re.fullmatch(r"[0-9]{10}", cik))
     bad_category = sorted(cik for cik, entry in entries.items() if entry["category"] not in set(rules.categories))

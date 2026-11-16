@@ -125,11 +125,14 @@ class Reads:
     def __init__(self, store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tables: list[str] = []
         self.periods: list[str] = []
+        self.manager_columns: list[Any] = []
         load = store.load
 
         def _spy(table: Any, *args: Any, **kwargs: Any) -> Any:
             name = getattr(table, "name", table)
             self.tables.append(name)
+            if name == Tables.sec_13f_manager_details.name:
+                self.manager_columns.append(kwargs.get("columns"))
             if name == Tables.sec13f_hr.name:
                 period = (kwargs.get("where") or {})["period"]
                 self.periods.extend([period] if isinstance(period, str) else period)
@@ -197,6 +200,8 @@ def test_second_run_changes_nothing_reads_no_lines_and_leaves_the_extract_column
 
     assert first == len(table) == len(PERIODS) * len(MANAGERS) and second == 0
     assert reads.periods == [] and Tables.sec13f_hr.name not in reads.tables, "a night without new or changed rows reads no line"
+    assert len(reads.manager_columns) == 1 and "state_or_country" not in reads.manager_columns[0], "the manager table is read once, projected"
+    assert {"cik", "period", "source_period", "manager_name", *PROFILE_COLUMNS} == set(reads.manager_columns[0])
     pd.testing.assert_frame_equal(_table(store), table)
     pd.testing.assert_frame_equal(table[list(EXTRACT_COLUMNS)], before, check_dtype=False)
     assert table["n_quarters_used"].max() == 4 and table["turnover"].notna().sum() > 0

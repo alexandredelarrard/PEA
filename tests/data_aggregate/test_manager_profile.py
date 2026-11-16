@@ -317,7 +317,9 @@ def test_a_window_quarter_filed_after_the_row_is_left_out_of_its_mean(cfg: DictC
 
     assert profile.loc[periods[1], "n_quarters_used"] == 1 and pd.isna(profile.loc[periods[1], "n_positions"]), "below min_quarters after the drop"
     last = profile.loc[periods[2]]
-    assert last["n_quarters_used"] == 2 and np.isclose(last["n_positions"], 30.0), "mean of 2024-06-30 and 2024-09-30 only"
+    assert profile["n_quarters_used"].loc[periods[2]] == 2 and np.isclose(profile["n_positions"].loc[periods[2]], 30.0), (
+        "mean of 2024-06-30 and 2024-09-30 only"
+    )
     assert np.isclose(last["book_value_usd"], 2.5), "median of the two kept quarters"
     print("\n=== SANITY CHECK: late window quarter ===")
     print(

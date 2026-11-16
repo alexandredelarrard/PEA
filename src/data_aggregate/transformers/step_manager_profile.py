@@ -15,7 +15,7 @@ from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_b
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book, quarter_stats
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
-from src.data_aggregate.utils.manager_profile.refresh import changed_rows, plan_refresh, profile_frame, stored_details
+from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS, changed_rows, plan_refresh, profile_frame, stored_details
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
@@ -41,8 +41,12 @@ class StepManagerProfile(Step):
         """Profile the stale quarters of `sec_13f_manager_details` (all of them when `full`); returns the rows written."""
         started = time.monotonic()
 
-        # load: the manager rows once; nothing else is read while every row is profiled
-        df_stored = self._store.load(Tables.sec_13f_manager_details, optional=True)
+        # load: the key, name and profile columns of the manager rows once; nothing else is read while every row is profiled
+        wanted = ["cik", "period", "source_period", "manager_name", *PROFILE_COLUMNS]
+        stored = set(self._store.columns(Tables.sec_13f_manager_details))
+        df_stored = (
+            self._store.load(Tables.sec_13f_manager_details, columns=[name for name in wanted if name in stored], optional=True) if stored else None
+        )
         if df_stored is None:
             self._log.info("manager profile: no manager rows stored yet")
             return 0

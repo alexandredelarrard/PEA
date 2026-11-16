@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig, ListConfig
 
-from src.data_aggregate.utils.manager_profile.categories import alternation
+from src.utils.string import alternation
 
 SECTORS = (
     "Basic Materials",

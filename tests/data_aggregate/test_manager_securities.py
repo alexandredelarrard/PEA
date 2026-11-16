@@ -110,6 +110,7 @@ def test_etf_rule_runs_before_the_real_estate_rule(reference: pd.DataFrame, cfg:
 
     assert out["asset"].tolist() == ["etf", "equity_us"]
     assert out["sector_col"].tolist() == ["pct_sector_unmapped", "pct_sector_real_estate"]
+    print("SANITY: the ETF rule wins over the real-estate rule; an operating REIT keeps its sector.")
 
 
 def test_a_sharadar_listed_line_keeps_its_class_whatever_the_name(reference: pd.DataFrame, cfg: DictConfig) -> None:
@@ -118,6 +119,7 @@ def test_a_sharadar_listed_line_keeps_its_class_whatever_the_name(reference: pd.
 
     assert out["asset"].tolist() == ["equity_us", "equity_foreign"]
     assert out["sector_col"].tolist() == ["pct_sector_technology", "pct_sector_energy"]
+    print("SANITY: listed tickers keep their Sharadar class and sector whatever their issuer name says.")
 
 
 def test_debt_and_option_rows_are_never_name_classified(reference: pd.DataFrame, cfg: DictConfig) -> None:

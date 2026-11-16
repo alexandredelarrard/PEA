@@ -95,12 +95,6 @@ def marker_manager_filings(df_markers: pd.DataFrame, df_index: pd.DataFrame) -> 
     )[_FILING_COLUMNS]
 
 
-def _snap_to_quarter_end(period: pd.Series, filed: pd.Series) -> pd.Series:
-    """`period`, or the latest quarter end on or before `filed` where `period` is not a quarter end."""
-    latest = filed + pd.Timedelta(days=1) + pd.offsets.QuarterEnd(-1)
-    return period.where(period.dt.is_quarter_end, latest)
-
-
 def candidate_rows(df_filings: pd.DataFrame, floor: pd.Timestamp, until: pd.Timestamp) -> pd.DataFrame:
     """One row per (cik, period) from `df_filings`, plus the `original` flag of its accession.
 
@@ -110,7 +104,8 @@ def candidate_rows(df_filings: pd.DataFrame, floor: pd.Timestamp, until: pd.Time
     # clean: the filings that can describe a stored row, each in a quarter end
     source_period = pd.to_datetime(df_filings["period"]).dt.normalize()
     filed = pd.to_datetime(df_filings["filing_date"]).dt.normalize()
-    period = _snap_to_quarter_end(source_period, filed)
+    latest_quarter_end = filed + pd.Timedelta(days=1) + pd.offsets.QuarterEnd(-1)
+    period = source_period.where(source_period.dt.is_quarter_end, latest_quarter_end)
     valid = (period >= floor) & (filed >= period) & (filed <= until) & df_filings["manager_name"].notna() & (df_filings["cik"] != "")
     if not valid.all():
         logger.warning(

@@ -36,12 +36,14 @@ def _shift(period: pd.Timestamp, quarters: int) -> pd.Timestamp:
 def plan_refresh(details: pd.DataFrame, category: pd.Series, full: bool, window: int) -> Refresh | None:
     """The quarters to recompute, or None when every row is profiled.
 
-    A row is stale without a stored category or with a category that differs from its current name's.
-    A stale quarter rewrites the next `window` quarters; the pass starts `window` quarters earlier.
+    A row is stale without a stored category or with a category that differs from its current name's; a row whose period
+    is not a quarter end is out of scope and never stale. A stale quarter rewrites the next `window` quarters; the pass
+    starts `window` quarters earlier.
     """
-    # Stale quarters: all of them on a full rebuild.
+    # Stale quarter-end rows: all of them on a full rebuild.
     present = set(details["period"].unique())
     stale = pd.Series(True, index=details.index) if full else details["category"].isna() | details["category"].ne(category)
+    stale &= details["period"].dt.is_quarter_end
     quarters = sorted(details.loc[stale, "period"].unique())
     if not quarters:
         return None

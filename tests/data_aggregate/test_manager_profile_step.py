@@ -16,9 +16,10 @@ import pytest
 from omegaconf import DictConfig
 
 from src.data_aggregate.transformers.step_manager_profile import StepManagerProfile
+from src.data_aggregate.utils.manager_profile.categories import classify_names
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
-from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS
+from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS, plan_refresh, stored_details
 from src.data_extract.utils.institutionals.manager_rows import EXTRACT_COLUMNS
 from src.data_store import ddl
 from src.data_store.schema import Tables
@@ -201,6 +202,33 @@ def test_second_run_changes_nothing_reads_no_lines_and_leaves_the_extract_column
     print("\n=== SANITY CHECK: idempotent no-op ===")
     print(
         f"first run wrote {first} rows, second wrote {second}; reads of sec13f_hr on the second night: {len(reads.periods)}; extract columns identical."
+    )
+
+
+def test_mid_quarter_rows_are_out_of_scope_and_never_keep_the_work_list_stale(store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Marker-typo periods (not a quarter end) keep null profile columns and do not make a second night recompute anything."""
+    for index in range(len(PERIODS)):
+        _add_quarter(store, index)
+    typos = _extract_rows(0, pd.Timestamp("2003-06-03")).iloc[:1]  # alone in its quarter: the 2003-06-03 case
+    among = _extract_rows(0, pd.Timestamp("2022-05-03")).iloc[:1]  # beside four quarter-end rows of its quarter
+    store.save(Tables.sec_13f_manager_details, pd.concat([typos, among], ignore_index=True))
+
+    first = _step(store, cfg).run(full=False)
+    table = _table(store)
+    reads = Reads(store, monkeypatch)
+    second = _step(store, cfg).run(full=False)
+
+    mid = ~table["period"].dt.is_quarter_end
+    details = stored_details(table)
+    plan = plan_refresh(
+        details, classify_names(details["manager_name"], cfg.manager_categories), False, int(cfg.build_cube.manager_profile.window_quarters)
+    )
+    assert mid.sum() == 2 and table.loc[mid, list(PROFILE_COLUMNS)].isna().all().all(), "mid-quarter rows keep null profile columns"
+    assert first == (~mid).sum() and table.loc[~mid, "category"].notna().all(), "every quarter-end row is profiled"
+    assert second == 0 and plan is None and reads.periods == [], "the second night is a no-op with no line read"
+    print("\n=== SANITY CHECK: mid-quarter rows ===")
+    print(
+        f"{int(mid.sum())} mid-quarter rows left null; first run wrote {first}; second run wrote {second}, read {len(reads.periods)} quarter(s), plan {plan}."
     )
 
 

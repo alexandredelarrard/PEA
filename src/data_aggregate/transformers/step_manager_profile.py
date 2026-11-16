@@ -19,10 +19,6 @@ from src.data_aggregate.utils.manager_profile.refresh import changed_rows, plan_
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
-_CIK_CHUNK = 1_000
-_SAVE_CHUNK = 50_000
-_TICKER_COLUMNS = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
-
 
 @dataclass(frozen=True)
 class Carry:
@@ -52,7 +48,7 @@ class StepManagerProfile(Step):
         details = stored_details(df_stored)
 
         # plan: the quarters whose rows lack a profile or whose name changed
-        category = classify_names(details["manager_name"], self._rules)["category"]
+        category = classify_names(details["manager_name"], self._rules)
         refresh = plan_refresh(details, category, full, int(self._cfg.window_quarters))
         if refresh is None:
             self._log.info("manager profile: %d rows, all profiled; 0 quarters read (%.1f s)", len(details), time.monotonic() - started)
@@ -77,7 +73,8 @@ class StepManagerProfile(Step):
     def _quarter_pass(self, details: pd.DataFrame, quarters: list[pd.Timestamp]) -> pd.DataFrame:
         """Single-quarter statistics of every manager over `quarters` in order; a quarter's book and aggregate feed only the next quarter end."""
         # load: the reference tables once
-        df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=_TICKER_COLUMNS))
+        ticker_columns = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
+        df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=ticker_columns))
         df_map = cast(pd.DataFrame, self._store.load(Tables.cusip_ticker_map))
         reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(df_map)
 
@@ -102,9 +99,11 @@ class StepManagerProfile(Step):
 
     def _read_quarter(self, period: pd.Timestamp, ciks: list[str]) -> pd.DataFrame:
         """Markers and lines of the quarter for its managers, read on the primary key in CIK chunks (the table has no period index)."""
+        # `iter_load` streams one scope; this read is one bounded load per CIK chunk of one period, which it cannot express.
+        chunk = 1_000
         frames = []
-        for start in range(0, len(ciks), _CIK_CHUNK):
-            where = {"cik": ciks[start : start + _CIK_CHUNK], "period": period.strftime("%Y-%m-%d")}
+        for start in range(0, len(ciks), chunk):
+            where = {"cik": ciks[start : start + chunk], "period": period.strftime("%Y-%m-%d")}
             frame = self._store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
             if frame is not None:
                 frames.append(frame)
@@ -115,7 +114,7 @@ class StepManagerProfile(Step):
         if df_changed.empty:
             return 0
         self._store.ensure_columns(Tables.sec_13f_manager_details, df_changed)
+        chunk = 50_000
         return sum(
-            self._store.save(Tables.sec_13f_manager_details, df_changed.iloc[start : start + _SAVE_CHUNK])
-            for start in range(0, len(df_changed), _SAVE_CHUNK)
+            self._store.save(Tables.sec_13f_manager_details, df_changed.iloc[start : start + chunk]) for start in range(0, len(df_changed), chunk)
         )

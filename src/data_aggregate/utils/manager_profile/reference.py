@@ -24,8 +24,6 @@ UNMAPPED = "pct_sector_unmapped"
 SECTOR_COLUMNS = (*("pct_sector_" + name.lower().replace(" ", "_") for name in SECTORS), UNMAPPED)
 #: Asset types of a line; each is a `pct_<asset>` mix column.
 ASSETS = ("equity_us", "equity_foreign", "etf", "bond", "options", "other")
-#: Issuer-name words of an exchange-traded product, used only for a security Sharadar does not list.
-_ETF_NAME = r"\b(?:ETF|ETN|ISHARES|SPDR|VANGUARD|POWERSHARES|PROSHARES|INVESCO|INDEX FUND|TRUST SER)\b"
 
 
 def sharadar_reference(df_tickers: pd.DataFrame) -> pd.DataFrame:
@@ -59,7 +57,8 @@ def classify_securities(lines: pd.DataFrame, reference: pd.DataFrame) -> pd.Data
     common = kind.eq("common")
 
     # Asset type: debt and option rows by kind, equity by Sharadar class, unlisted equity by the ETF name rule.
-    etf_name = df["issuer_name"].fillna("").str.upper().str.contains(_ETF_NAME, regex=True)
+    exchange_traded = r"\b(?:ETF|ETN|ISHARES|SPDR|VANGUARD|POWERSHARES|PROSHARES|INVESCO|INDEX FUND|TRUST SER)\b"
+    etf_name = df["issuer_name"].fillna("").str.upper().str.contains(exchange_traded, regex=True)
     conditions = [kind.eq("debt"), kind.isin(["call", "put"]), common & df["security_class"].eq("us"), common & df["security_class"].eq("foreign")]
     conditions.append(common & ~listed & etf_name)
     df["asset"] = np.select(conditions, ["bond", "options", "equity_us", "equity_foreign", "etf"], "other")

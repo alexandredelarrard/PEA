@@ -11,10 +11,11 @@ import pandas as pd
 import pytest
 from omegaconf import DictConfig
 
-from src.data_aggregate.utils.manager_profile.categories import CATEGORIES, classify_names, clean_names
+from src.data_aggregate.utils.manager_profile.categories import classify_names, clean_names
 from src.utils.config import read_config
 
 ROOT = Path(__file__).resolve().parents[2]
+CATEGORIES = ("pension", "insurance", "bank", "broker_dealer", "sovereign", "fund", "other", "unknown")
 
 KNOWN_TRUTH = [
     # pension
@@ -94,23 +95,21 @@ def test_clean_names_strips_legal_forms_and_trailing_and_co(rules: DictConfig) -
 
 
 def test_known_truth_names_get_their_category(rules: DictConfig) -> None:
-    """Every known-truth name lands in the expected category, and the rule that fired is named."""
+    """Every known-truth name lands in the expected category, ."""
     names = pd.Series([name for name, _ in KNOWN_TRUTH])
     out = classify_names(names, rules)
-    got = dict(zip(names, out["category"], strict=True))
+    got = dict(zip(names, out, strict=True))
     wrong = {name: (want, got[name]) for name, want in KNOWN_TRUTH if got[name] != want}
     print(f"known-truth names: {len(KNOWN_TRUTH) - len(wrong)}/{len(KNOWN_TRUTH)} correct; wrong={wrong}")
     assert not wrong
-    assert set(out["category"]) <= set(CATEGORIES)
-    assert out.loc[out["category"] == "unknown", "rule"].eq("").all()
-    assert out.loc[out["category"] != "unknown", "rule"].ne("").all()
+    assert set(out) <= {*CATEGORIES}
 
 
 def test_first_matching_rule_wins_in_config_order(rules: DictConfig) -> None:
     """An insurance name that also reads as a pension plan stays insurance because insurance is listed first."""
     out = classify_names(pd.Series(["Teachers Insurance Annuity Retirement Plan"]), rules)
-    print(out.to_dict("records"))
-    assert out["category"].iloc[0] == "insurance"
+    print(out.tolist())
+    assert out.iloc[0] == "insurance"
 
 
 def test_rule_config_is_complete(rules: DictConfig) -> None:

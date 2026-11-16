@@ -5,8 +5,6 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
-CATEGORIES = ("pension", "insurance", "bank", "broker_dealer", "sovereign", "fund", "other", "unknown")
-
 
 def _alternation(patterns: list[str]) -> str:
     """One regex matching any pattern on word boundaries."""
@@ -29,25 +27,22 @@ def clean_names(names: pd.Series, clean: DictConfig) -> pd.Series:
     return text.str.replace(rf"(?:\s(?:{trailing}))+$", "", regex=True).str.strip()
 
 
-def classify_names(names: pd.Series, rules: DictConfig) -> pd.DataFrame:
-    """Per name: `category` (first matching rule in config order, else `unknown`) and the `rule` that fired ('' for unknown)."""
+def classify_names(names: pd.Series, rules: DictConfig) -> pd.Series:
+    """Per name its category: the first matching rule in config order, else `unknown`."""
     # Classify each distinct name once.
     unique = pd.Series(names.fillna("").astype(str).unique())
     cleaned = clean_names(unique, rules.clean)
 
     # Walk the rules in order; a name keeps the first rule it matches.
     category = pd.Series("unknown", index=unique.index)
-    fired = pd.Series("", index=unique.index)
     for rule in rules.rules:
         hit = cleaned.str.contains(_alternation(list(rule.patterns)), regex=True)
         if rule.get("unless"):
             hit &= ~cleaned.str.contains(_alternation(list(rule.unless)), regex=True)
         hit &= category.eq("unknown")
         category[hit] = rule.category
-        fired[hit] = rule.name
 
     # Map the distinct results back to every input name.
-    lookup = pd.DataFrame({"category": category.to_numpy(), "rule": fired.to_numpy()}, index=pd.Index(unique.to_numpy()))
-    out = lookup.reindex(names.fillna("").astype(str).to_numpy())
+    out = pd.Series(category.to_numpy(), index=pd.Index(unique.to_numpy()), name="category").reindex(names.fillna("").astype(str).to_numpy())
     out.index = names.index
     return out

@@ -787,13 +787,10 @@ class Tables:
     # securities. Consumers filter the universe after source completeness and amendment resolution.
     # Original and amended books coexist. Historical latest-only rows retain _legacy accession.
     #
-    # ⚠ NOT USABLE BEFORE 2013-06-30, even though min(period) is 1987-03-31. Distinct managers
-    # per ticker per quarter: 14 (2012-09-30), 22 (2012-12-31), 41 (2013-03-31), then 556
-    # (2013-06-30). The 15-year all-filer backfill only reached real coverage from mid-2013, so
-    # every earlier quarter carries a handful of managers per name and every breadth /
-    # concentration / QoQ-delta statistic computed on them describes THE FETCH, not the market.
-    # The numbers themselves look perfectly valid, which is what makes the cutoff a consumer's
-    # responsibility rather than something a null check would catch.
+    # The all-filer backfill holds every 13F-HR from 1999-07-01: about 1,200 filers in 1999 rising
+    # to about 2,700 in 2012 (3,300 at 2013-06-30, when the XML format starts). Pre-2013 text
+    # filings parse less completely, so the filer count steps up at 2013-06-30; consumers read
+    # comparable books (the same filer in both quarters) so the step is not a market signal.
     sec13f_hr = Table(
         "sec13f_hr",
         ("cik", "period", "accession_number", "ticker", "cusip"),
@@ -819,7 +816,7 @@ class Tables:
         optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
         # Market-wide nightly walk; `zips-ingest --only 13f` then stores every 13F-HR(/A) accession of
         # the cached SEC 13F data sets that is not stored yet, through the walk's writer.
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="2013-06-30"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="1999-06-30"),
         # One marker per accession, cusip and ticker '_empty': parse_status 'complete' for a stored
         # book, 'invalid' (reason in value_unit_evidence) for a data-set packet that failed
         # validation; the ZIP ingest skips both, the walk reads 'complete' only.

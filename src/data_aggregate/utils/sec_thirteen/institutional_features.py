@@ -18,7 +18,7 @@ from src.utils.price.levels import convert_quantities
 
 logger = logging.getLogger(__name__)
 
-#: The first period whose all-filer coverage describes the market rather than the fetch.
+#: The first 13F period in the source.
 INST_LEVEL_FLOOR_PERIOD = pd.Timestamp(cast(str, cast(Resume, Tables.sec13f_hr.resume).coverage_start))
 
 #: The first period whose PREDECESSOR is also post-break, so a QoQ delta is meaningful.

@@ -10,7 +10,6 @@ from omegaconf import DictConfig
 from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED,
     plan_window,
     write_part,
 )
@@ -45,6 +44,7 @@ from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.basis import load_price_identity, load_quantity_basis
 from src.utils.step import Step
+from src.utils.window import Offset, Window, WindowPolicy
 
 _INCREMENTAL_SOURCE_YEARS = 6
 # Employee rows reach back this far before the history window, so its first growth has a prior year.
@@ -69,22 +69,26 @@ class StepCubeFundamentals(Step):
         window = plan_window(
             self._store,
             Tables.cube_part_fundamentals,
+            WindowPolicy(
+                Window(trading_calendar[0], trading_calendar[-1]),
+                Offset(FUNDAMENTALS_REFRESH_TRADING_DAYS, "trading_sessions"),
+                Offset(self._warmup(), "trading_sessions"),
+            ),
+            trading_calendar,
             full=full,
-            warmup=self._warmup(),
-            trading_index=trading_calendar,
-            refresh=FUNDAMENTALS_REFRESH_TRADING_DAYS,
+            scope=self._universe.tickers,
         )
-        dividend_frames = self._load_frames(window.since)
+        dividend_frames = self._load_frames(window.read.start)
         frames = dividend_frames
         source_since: pd.Timestamp | None = None
         history_fields: dict[str, pd.DataFrame] | None = None
         output_since: pd.Timestamp | None = None
         if not window.is_full:
-            if window.refresh_from is None:
+            if window.write.start is None:
                 raise RuntimeError("incremental fundamentals window requires an inclusive refresh boundary")
-            output_since = window.refresh_from
+            output_since = window.write.start
             source_since = pd.Timestamp(dividend_frames.trading_index.max()).normalize() - pd.DateOffset(years=_INCREMENTAL_SOURCE_YEARS)
-            history_fields = self._load_history_fields(dividend_frames.universe, since=window.since, until=output_since)
+            history_fields = self._load_history_fields(dividend_frames.universe, since=window.read.start, until=output_since)
             frames = dividend_frames.on(dividend_frames.trading_index[dividend_frames.trading_index >= output_since])
 
         # Load each source once and preserve raw financial cash units.
@@ -137,9 +141,7 @@ class StepCubeFundamentals(Step):
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         panel = self._restrict_to_skeleton(panel, frames.skeleton()).reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
         del frames, dividend_frames, histories, df_fundamentals, df_share_history, df_earnings, df_employees, df_dividends, basis
-        n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
+        write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
 
     def _feature_settings(self) -> FundamentalFeatureSettings:
         """Read the existing financial history and intrinsic-model controls."""

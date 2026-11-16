@@ -13,7 +13,7 @@ import pytest
 import src.data_aggregate.utils.text.earnings_call_features as ec
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import write_part
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     attach_issuer_identity,
@@ -24,7 +24,9 @@ from src.data_aggregate.utils.text.earnings_call_features import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window
 from tests.support.universe import seed_universe
+from tests.support.windows import window_plan
 
 EARNINGS_CALL_SENTIMENT_CACHE_MODEL = "fixture/tone:speaker-clean-v2"
 
@@ -321,7 +323,7 @@ def test_panel_columns_lifetime_and_missingness():
     )
 
 
-def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
+def test_full_calendar_late_refresh_and_rerun_are_bit_exact(sqlite_store: DataStore) -> None:
     """Exercise the real tail writer against a late correction and unchanged rerun."""
     calendar = pd.bdate_range("2021-01-04", "2023-09-29")
     assert len(calendar) >= 500
@@ -336,37 +338,28 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
         sentiment_kpis(ec.valid_sentiment_rows(revised_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), calendar, availability_lag_days=2
     )
 
-    class _Store:
-        def __init__(self, rows: pd.DataFrame):
-            self.rows = rows.copy()
-
-        def columns(self, _table):
-            return list(self.rows.columns)
-
-        def replace(self, _table, rows):
-            self.rows = rows.copy()
-            return len(rows)
-
-        def append_tail(self, _table, tail, cutoff, *, inclusive):
-            keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
-            self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
-            return len(tail)
-
     feature_columns = [column for column in old if str(column).startswith("f_")]
-    store = _Store(old.dropna(subset=feature_columns, how="all"))
+    sqlite_store.replace(Tables.cube_part_text, old.dropna(subset=feature_columns, how="all"))
     last = pd.Timestamp(old["date"].max())
     default_refresh = calendar[-130]
     late_refresh = pd.Timestamp("2023-02-02")
-    window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
-    assert window.refresh_from is not None
-    effective_refresh = min(late_refresh, window.refresh_from)
-    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
+    window = window_plan(
+        Window(calendar[0], calendar[-1]),
+        scope=tuple(sorted(revised.ticker.unique())),
+        write_start=min(late_refresh, default_refresh),
+        frontier=last,
+        mode="recovery",
+    )
+    write_part(sqlite_store, Tables.cube_part_text, revised, window, drop_empty=True)
     expected = revised.dropna(subset=feature_columns, how="all").sort_values(["date", "ticker"]).reset_index(drop=True)
-    actual = store.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
+    actual = sqlite_store.load(Tables.cube_part_text).sort_values(["date", "ticker"]).reset_index(drop=True)
+    expected = expected.astype(actual.dtypes.to_dict())
     pd.testing.assert_frame_equal(expected, actual, check_dtype=True, check_exact=True)
     first = actual.copy()
-    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
-    pd.testing.assert_frame_equal(first, store.rows.sort_values(["date", "ticker"]).reset_index(drop=True), check_exact=True)
+    write_part(sqlite_store, Tables.cube_part_text, revised, window, drop_empty=True)
+    pd.testing.assert_frame_equal(
+        first, sqlite_store.load(Tables.cube_part_text).sort_values(["date", "ticker"]).reset_index(drop=True), check_exact=True
+    )
     print("\n=== SANITY CHECK: earnings-call full/tail equivalence ===")
     print(
         f"  a correction behind the default tail refreshed from {late_refresh.date()} and matched "

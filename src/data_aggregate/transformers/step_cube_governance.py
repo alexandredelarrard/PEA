@@ -7,8 +7,6 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED,
-    PartWindow,
     plan_window,
     write_part,
 )
@@ -25,6 +23,7 @@ from src.data_aggregate.utils.price.frames import (
 from src.data_store.schema import Tables
 from src.utils.filer_tables import def14a_evidence_mask
 from src.utils.step import Step
+from src.utils.window import Offset, Window, WindowPlan, WindowPolicy
 
 _PRICE_FIELDS = ("close_split", "close_total", "shares_outstanding_pit")
 _OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
@@ -52,9 +51,16 @@ class StepCubeGovernance(Step):
     def run(self, full: bool = False) -> None:
         calendar = load_trading_calendar(self._store)
         window = plan_window(
-            self._store, Tables.cube_part_governance, full=full, warmup=self._warmup(), trading_index=calendar, refresh=REFRESH_TRADING_DAYS
+            self._store,
+            Tables.cube_part_governance,
+            WindowPolicy(
+                Window(calendar[0], calendar[-1]), Offset(REFRESH_TRADING_DAYS, "trading_sessions"), Offset(self._warmup(), "trading_sessions")
+            ),
+            calendar,
+            full=full,
+            scope=self._universe.tickers,
         )
-        frames = self._load_frames(window.since)
+        frames = self._load_frames(window.read.start)
 
         merger = PanelMerger(anchor=frames.skeleton())
         merger.add(
@@ -65,10 +71,8 @@ class StepCubeGovernance(Step):
 
         panel = merger.to_long()
         del frames
-        n = write_part(self._store, Tables.cube_part_governance, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
-        self._assert_current(calendar, window.last)
+        write_part(self._store, Tables.cube_part_governance, panel, window, drop_empty=True)
+        self._assert_current(calendar, window.frontier)
 
     def _assert_current(
         self,
@@ -164,13 +168,13 @@ class StepCubeGovernance(Step):
         return df
 
     # ---- panels ---- #
-    def _governance_panel(self, frames: PriceFrames, window: PartWindow) -> pd.DataFrame | None:
+    def _governance_panel(self, frames: PriceFrames, window: WindowPlan) -> pd.DataFrame | None:
         """Load the raw governance frames, clean them once, then build the features."""
         df = self._load_def14a()
         if df is None:
             return None
         if not window.is_full:
-            self._log.warning(_INCREMENTAL_WARNING, pd.Timestamp(window.refresh_from or window.last).date())
+            self._log.warning(_INCREMENTAL_WARNING, pd.Timestamp(window.write.start or window.frontier).date())
 
         raw = GovernanceInputs(
             def14a=df,

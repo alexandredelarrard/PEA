@@ -29,7 +29,6 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.target.betas import (
     _betas_to_long,
     estimate_all_betas,
@@ -37,6 +36,8 @@ from src.data_aggregate.utils.target.betas import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window
+from tests.support.windows import window_plan
 
 
 # --------------------------------------------------------------------------- #
@@ -442,8 +443,9 @@ def test_target_persistence_filters_betas_to_price_keys(sqlite_store: DataStore)
     step = object.__new__(StepCubeTarget)
     step._store = sqlite_store
 
-    for window in (PartWindow(None, None), PartWindow(dates[-1], dates[0], dates[0])):
-        assert step._persist(labels, {"AAA": beta, "GHOST": beta}, window, dates, 30, valid_keys) == len(valid_keys)
+    for mode in ("full", "incremental"):
+        window = window_plan(Window(dates[0], dates[-1]), scope=("AAA",), mode=mode, frontier=dates[-1])
+        step._persist(labels, {"AAA": beta, "GHOST": beta}, (window, window), valid_keys)
         persisted = sqlite_store.load(Tables.cube_part_betas, columns=["date", "ticker", "beta_market"]).sort_values("date")
         assert pd.to_datetime(persisted["date"]).tolist() == [dates[1], dates[3], dates[4]]
         assert persisted["ticker"].tolist() == ["AAA"] * 3

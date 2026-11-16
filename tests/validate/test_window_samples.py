@@ -15,9 +15,10 @@ import pytest
 from click.testing import CliRunner
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import write_part
 from src.data_store.schema import ALL, Table, Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window, WindowPlan, WindowRun
 from src.validate.checks.window_sample import SampleSelection, check_window_sample
 from src.validate.cli import cli
 from tests.support.window_samples import WindowSamples
@@ -128,7 +129,10 @@ def test_finite_part_rewrite_preserves_suffix_and_other_ticker(sqlite_store: Dat
     df_rows = pd.DataFrame({"date": dates.repeat(2), "ticker": ["AAPL", "MSFT"] * len(dates), "feature": range(8)})
     sqlite_store.replace(Tables.cube_part_text, df_rows)
     df_write = df_rows.loc[df_rows.ticker.eq("AAPL") & df_rows.date.between("2026-11-09", "2026-11-13")].assign(feature=10)
-    window = PartWindow(pd.Timestamp("2026-11-13"), pd.Timestamp("2026-11-06"), pd.Timestamp("2026-11-09"))
+    requested = Window(dates[0], dates[2])
+    window = WindowPlan(
+        requested, requested, Window(dates[1], dates[2]), WindowRun("incremental", "finite AAPL correction"), dates[2], (("ticker", ("AAPL",)),)
+    )
 
     # Run the actual current public writer; P0 records its expected safety failure.
     write_part(sqlite_store, Tables.cube_part_text, df_write, window)

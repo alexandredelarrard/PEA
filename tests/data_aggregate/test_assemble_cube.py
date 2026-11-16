@@ -18,8 +18,10 @@ from src.data_aggregate.utils.common.panel_merge import DuplicateKeyError, Featu
 from src.data_aggregate.utils.common.parts import CUBE_PARTS
 from src.data_store.errors import UnknownTableError
 from src.data_store.schema import Tables, name_of
+from src.data_store.store import WriteCounts
 from src.modelling.utils.panel import load_frame
 from src.utils.config import read_config
+from src.utils.window import Window
 from tests.support.universe import universe_of
 
 
@@ -78,7 +80,7 @@ class _SpyStore:
             return None
         out = frame.copy()
         for key, values in (kwargs.get("where") or {}).items():
-            out = out[out[key].isin(values if isinstance(values, list) else [values])]
+            out = out[out[key].isin(values if isinstance(values, (list, tuple)) else [values])]
         for key, operator in (("since", "ge"), ("until", "le")):
             if kwargs.get(key) is not None:
                 out = out[getattr(pd.to_datetime(out["date"]), operator)(pd.Timestamp(kwargs[key]))]
@@ -93,13 +95,23 @@ class _SpyStore:
             for i in range(0, len(frame), size):
                 yield frame.iloc[i : i + size].copy()
 
-    def max_date(self, table: Any) -> pd.Timestamp | None:
+    def max_date(self, table: Any, *, where: Any = None) -> pd.Timestamp | None:
         frame = self.tables.get(name_of(table))
         return (
             pd.to_datetime(frame["date"], errors="coerce", format="mixed").max()
             if frame is not None and not frame.empty and "date" in frame
             else None
         )
+
+    def distinct(self, table: Any, column: str) -> list[Any]:
+        return self.tables[name_of(table)][column].drop_duplicates().tolist() if self.exists(table) else []
+
+    def replace_window(self, table: Any, frame: pd.DataFrame, window: Window, where: Any, *, schema_rebuild: bool = False) -> WriteCounts:
+        previous = self.tables.get(name_of(table), frame.iloc[:0])
+        mask = window.mask(previous["date"]) & previous["ticker"].isin(where["ticker"])
+        self.writes.append("replace_window")
+        self.tables[name_of(table)] = pd.concat([previous.loc[~mask], frame], ignore_index=True)
+        return WriteCounts(int(mask.sum()), len(frame))
 
     def max_date_by(self, table: Any, key_col: str) -> dict[str, pd.Timestamp]:
         return cast(dict[str, pd.Timestamp], self.tables[name_of(table)].groupby(key_col)["date"].max().to_dict()) if self.exists(table) else {}
@@ -128,7 +140,7 @@ def test_price_grid_values_precision_and_chunks(monkeypatch: pytest.MonkeyPatch)
     store = _SpyStore(tables)
     _step(store, monkeypatch).run()
     cube = store.tables[Tables.cube.name]
-    assert store.writes == ["replace"]
+    assert store.writes == ["replace_window"]
     assert cube[["date", "ticker"]].equals(tables[Tables.cube_part_prices.name][["date", "ticker"]])
     assert pd.isna(cube.iloc[-1]["target_zscore_h60"]) and pd.isna(cube.iloc[-1]["v_3"])
     np.testing.assert_array_equal(cube["close_split"], tables[Tables.cube_part_prices.name]["close_split"])
@@ -282,7 +294,11 @@ def test_physical_schema_narrows(sqlite_store: Any, monkeypatch: pytest.MonkeyPa
     _step(sqlite_store, monkeypatch).run()
     assert {"extra", "v_5"}.issubset(sqlite_store.columns(Tables.cube))
     sqlite_store.drop(Tables.cube_part_text)
-    _step(sqlite_store, monkeypatch, _config(columns={Tables.cube_part_fundamentals.name: ["v_3"]})).run()
+    before = sqlite_store.load(Tables.cube)
+    with pytest.raises(ValueError, match="explicit retained-schema rebuild"):
+        _step(sqlite_store, monkeypatch, _config(columns={Tables.cube_part_fundamentals.name: ["v_3"]})).run()
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube), before)
+    _step(sqlite_store, monkeypatch, _config(columns={Tables.cube_part_fundamentals.name: ["v_3"]})).run(full=True)
     assert not {"extra", "v_5"} & set(sqlite_store.columns(Tables.cube))
     assert sqlite_store.row_count(Tables.cube) == 2
     print("SANITY: actual SQLite output schema removes deselected and skipped optional columns; price rows remain.")
@@ -325,11 +341,11 @@ def test_assembled_cube_feeds_the_modelling_reader(sqlite_store: Any, monkeypatc
 
 def test_existing_cube_rewrites_only_the_overlap_window(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     for name, frame in _parts().items():
-        sqlite_store.replace(name, frame)
+        sqlite_store.replace(name, frame.assign(date=pd.to_datetime(frame.date).replace({pd.Timestamp("2023-01-03"): pd.Timestamp("2026-11-13")})))
     _step(sqlite_store, monkeypatch).run()
 
     # a new session, a restated value inside the window (last stored date) and one before it
-    grid = pd.DataFrame({"date": pd.to_datetime(["2023-01-02", "2023-01-03", "2023-01-04"]), "ticker": "AAA"})
+    grid = pd.DataFrame({"date": pd.to_datetime(["2023-01-02", "2026-11-13", "2026-11-16"]), "ticker": "AAA"})
     for name in (p.name for p in _ASSEMBLED):
         old = sqlite_store.load(name)
         assert old is not None

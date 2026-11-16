@@ -21,7 +21,7 @@ floored at ~6 months.
 
 ⚠ THAT LAST SENTENCE IS TRUE FOR A *BOUNDED* LOOK-BACK AND FALSE FOR AN UNBOUNDED ONE, and one
 part had to stop relying on it. Reading the source in full puts every event in memory; it does
-NOT put every event on the grid, because the grid starts at `window.since`. A feature that asks
+NOT put every event on the grid, because the grid starts at `window.read.start`. A feature that asks
 "how many trading days since the last insider buy", "what has the price done since the last
 13D", "is this holder new" or any expanding-window statistic is therefore computed from the
 first event INSIDE the window, and no value of `warmup_trading_days` can fix it -- those

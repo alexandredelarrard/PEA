@@ -14,7 +14,7 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, plan_window, write_part
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
@@ -35,6 +35,7 @@ from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags, universe_cusips
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
+from src.utils.window import Offset, Window, WindowPolicy
 
 
 @dataclass(frozen=True)
@@ -75,12 +76,14 @@ class StepCubeSecThirteen(Step):
         window = plan_window(
             self._store,
             Tables.cube_part_sec_thirteen,
+            WindowPolicy(
+                Window(calendar[0], calendar[-1]), Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"), Offset(self._warmup(), "trading_sessions")
+            ),
+            calendar,
             full=full,
-            warmup=self._warmup(),
-            trading_index=calendar,
-            refresh=PART_REFRESH_TRADING_DAYS,
+            scope=self._universe.tickers,
         )
-        self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
+        self._require_saved_calendar(saved_dates, calendar, window.write.start)
 
         # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
         resources = self._load_resources()
@@ -89,7 +92,7 @@ class StepCubeSecThirteen(Step):
 
         # Project the output window; a full window is the whole history.
         dates = resources.frames.trading_index
-        output_dates = dates if window.since is None else dates[dates >= window.since]
+        output_dates = dates if window.read.start is None else dates[dates >= window.read.start]
         panels = self._project_panels(resources, prepared, output_dates)
         supported = self._feature_columns(panels)
 
@@ -109,7 +112,7 @@ class StepCubeSecThirteen(Step):
         if window.is_full:
             df_panel = self._merge_panels(resources.frames, panels)
         elif supported != set(existing_columns) - {"date", "ticker"}:
-            df_panel = self._merge_panels(resources.frames, self._project_panels(resources, prepared, dates))
+            raise ValueError("SEC13F feature columns changed; request an explicit full rebuild")
         else:
             output_frames = resources.frames.on(output_dates, *self._OUTPUT_FIELDS)
             df_panel = self._merge_panels(output_frames, panels)
@@ -117,11 +120,7 @@ class StepCubeSecThirteen(Step):
             df_panel = df_panel.assign(**{column: pd.Series(index=df_panel.index, dtype="float32") for column in supported - set(df_panel.columns)})
             df_panel = df_panel.reindex(columns=existing_columns)
 
-        # Schema fallback reuses the prepared full-history panel and performs one save.
-        result = write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
-        if result == COLUMNS_CHANGED:
-            self._require_saved_calendar(saved_dates, calendar, None)
-            write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, PartWindow(None, None), drop_empty=True)
+        write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
 
     @staticmethod
     def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
@@ -187,6 +186,7 @@ class StepCubeSecThirteen(Step):
             books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
         if books is None:
             return None
+        assert resources.frames.close_pit is not None and resources.frames.security_basis is not None
         market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 

@@ -19,6 +19,7 @@ incremental run able to replace that row.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -35,7 +36,6 @@ from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import (
     PART_REFRESH_TRADING_DAYS,
-    PartWindow,
     plan_window,
     window_start,
     write_part,
@@ -52,9 +52,11 @@ from src.data_store.schema import (
     projection_report,
     resolve,
 )
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, WriteCounts
+from src.utils.window import Offset, Window, WindowPolicy
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+from tests.support.windows import window_plan
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -169,7 +171,7 @@ def test_incremental_horizon_arithmetic():
     """The target refresh window must reach back >= max_horizon so matured (NaN->value) labels
     are recomputed. That is much wider than the backward-looking parts' own trailing rewrite
     (`PART_REFRESH_TRADING_DAYS`), which is why `write_part` gives an explicit `refresh_from`
-    precedence over `window.refresh_from`."""
+    precedence over `window.write.start`."""
     # emulate _window_start on a business-day calendar
     idx = pd.bdate_range("2019-01-01", periods=800)
     last = idx[750]
@@ -238,7 +240,7 @@ def test_per_part_warmup_covers_binding_lookback():
     # from an anchor fifteen years back. `parts.py`'s premise -- source tables are read in full,
     # so filing-space builders need no grid warm-up -- holds for a rolling window and fails for
     # these, because the events are all read but are projected onto a grid that starts at
-    # `window.since`. No value of `warmup_trading_days` fixes that. `cube_part_institutionals`
+    # `window.read.start`. No value of `warmup_trading_days` fixes that. `cube_part_institutionals`
     # answers it structurally instead (`_load_frames` takes no `since`; it computes over the
     # full calendar and lets `write_part` slice the tail), so for THAT part the warm-up is now
     # belt-and-braces. For every other part this test passing is still not evidence that an
@@ -294,7 +296,7 @@ class _RefreshStore:
         self.appended: tuple | None = None
         self.replaced: pd.DataFrame | None = None
 
-    def max_date(self, part):
+    def max_date(self, part, *, where=None):
         return self._last
 
     def columns(self, part):
@@ -304,9 +306,9 @@ class _RefreshStore:
         self.replaced = rows
         return len(rows)
 
-    def append_tail(self, part, tail, cutoff, *, inclusive):
-        self.appended = (tail, pd.Timestamp(cutoff), inclusive)
-        return len(tail)
+    def replace_window(self, part, tail, window, where, *, schema_rebuild=False):
+        self.appended = (tail, window.start, True)
+        return WriteCounts(0, len(tail))
 
 
 def _rows(dates=CAL[LAST_POS - 10 : LAST_POS + 6]):
@@ -320,16 +322,23 @@ def test_plan_window_refresh_arithmetic():
     REWRITTEN date, not from `last`, or that date is computed with less look-back than a full
     rebuild would give it."""
     warmup, refresh = 1320, PART_REFRESH_TRADING_DAYS
-    w = plan_window(_RefreshStore(), "p", warmup=warmup, full=False, trading_index=CAL, refresh=refresh)
+    w = plan_window(
+        _RefreshStore(),
+        Tables.cube_part_fundamentals,
+        WindowPolicy(Window(CAL[0], CAL[-1]), Offset(refresh, "trading_sessions"), Offset(warmup, "trading_sessions")),
+        CAL,
+        full=False,
+        scope=("T0",),
+    )
 
-    assert w.last == LAST
-    assert w.refresh_from == CAL[LAST_POS - refresh]
-    assert w.since == CAL[LAST_POS - refresh - warmup]
-    assert w.refresh_from is not None and w.since is not None and w.last is not None
+    assert w.frontier == LAST
+    assert w.write.start == CAL[LAST_POS - refresh]
+    assert w.read.start == CAL[LAST_POS - refresh - warmup]
+    assert w.write.start is not None and w.read.start is not None and w.frontier is not None
     # the oldest rewritten date still gets the FULL warm-up behind it
-    assert CAL.searchsorted(w.refresh_from) - CAL.searchsorted(w.since) == warmup
+    assert CAL.searchsorted(w.write.start) - CAL.searchsorted(w.read.start) == warmup
     print(f"\n=== SANITY CHECK: plan_window(refresh={refresh}) ===")
-    print(f"  last={w.last.date()}  refresh_from={w.refresh_from.date()}  since={w.since.date()}")
+    print(f"  last={w.frontier.date()}  refresh_from={w.write.start.date()}  since={w.read.start.date()}")
     print(
         f"  warm-up behind the OLDEST rewritten date = {warmup} trading days (not "
         f"{warmup - refresh}), so it is computed exactly as a full rebuild would. Validated."
@@ -338,30 +347,56 @@ def test_plan_window_refresh_arithmetic():
 
 def test_plan_window_without_refresh_is_unchanged():
     """The parts that opt out (fundamentals / text / extras) keep their exact old window."""
-    w = plan_window(cast(DataStore, _RefreshStore()), Tables.cube_part_fundamentals, warmup=130, full=False, trading_index=CAL)
-    assert w.refresh_from is None
-    assert w.since == CAL[LAST_POS - 130]
-    assert plan_window(cast(DataStore, _RefreshStore()), Tables.cube_part_fundamentals, warmup=130, full=True).refresh_from is None
+    w = plan_window(
+        cast(DataStore, _RefreshStore()),
+        Tables.cube_part_fundamentals,
+        WindowPolicy(Window(CAL[0], CAL[-1]), Offset(0, "trading_sessions"), Offset(130, "trading_sessions")),
+        CAL,
+        full=False,
+        scope=("T0",),
+    )
+    assert w.write.start == LAST
+    assert w.read.start == CAL[LAST_POS - 130]
+    assert (
+        plan_window(
+            cast(DataStore, _RefreshStore()),
+            Tables.cube_part_fundamentals,
+            WindowPolicy(Window(CAL[0], CAL[-1]), Offset(0, "trading_sessions"), Offset(130, "trading_sessions")),
+            CAL,
+            full=True,
+            scope=("T0",),
+        ).write.start
+        == CAL[0]
+    )
 
 
 def test_plan_window_refresh_stacks_with_extra_back():
     """Targets take both: `extra_back` for the maturing-label compute window and `refresh`."""
-    w = plan_window(_RefreshStore(), "p", warmup=390, full=False, trading_index=CAL, extra_back=90, refresh=PART_REFRESH_TRADING_DAYS)
-    assert w.since == CAL[LAST_POS - 390 - 90 - PART_REFRESH_TRADING_DAYS]
+    w = plan_window(
+        _RefreshStore(),
+        Tables.cube_part_fundamentals,
+        WindowPolicy(Window(CAL[0], CAL[-1]), Offset(90, "trading_sessions"), Offset(390, "trading_sessions")),
+        CAL,
+        full=False,
+        scope=("T0",),
+    )
+    assert w.read.start == CAL[LAST_POS - 390 - 90]
 
 
 def test_write_part_rewrites_inclusively_from_refresh_from():
     """The defect this closes: `cube_part_momentum` stopped ON a bad date, and a strictly-after
     append could never replace that row -- only a `--full` rebuild would."""
     store = _RefreshStore(columns=["date", "ticker", "f"])
-    window = PartWindow(LAST, CAL[LAST_POS - 1320], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
+    window = window_plan(
+        Window(CAL[0], CAL[-1]), scope=("T0",), frontier=LAST, read_start=CAL[LAST_POS - 1320], write_start=CAL[LAST_POS - PART_REFRESH_TRADING_DAYS]
+    )
     n = write_part(cast(DataStore, store), Tables.cube_part_fundamentals, _rows(), window)
 
     assert store.appended is not None
     tail, cutoff, inclusive = store.appended
     assert inclusive is True
-    assert cutoff == window.refresh_from
-    assert tail["date"].min() == window.refresh_from
+    assert cutoff == window.write.start
+    assert tail["date"].min() == window.write.start
     assert LAST in set(tail["date"]), "the previously-final row IS rewritten"
     print("\n=== SANITY CHECK: write_part rewrites its own tail ===")
     print(
@@ -373,11 +408,16 @@ def test_write_part_rewrites_inclusively_from_refresh_from():
 def test_write_part_strict_append_when_no_refresh():
     """No opt-in -> bit-identical to the pre-refresh behaviour."""
     store = _RefreshStore(columns=["date", "ticker", "f"])
-    write_part(cast(DataStore, store), Tables.cube_part_fundamentals, _rows(), PartWindow(LAST, CAL[LAST_POS - 130]))
+    write_part(
+        cast(DataStore, store),
+        Tables.cube_part_fundamentals,
+        _rows(),
+        window_plan(Window(CAL[0], CAL[-1]), scope=("T0",), frontier=LAST, read_start=CAL[LAST_POS - 130], write_start=LAST),
+    )
     assert store.appended is not None
     tail, cutoff, inclusive = store.appended
-    assert inclusive is False and cutoff == LAST
-    assert tail["date"].min() > LAST
+    assert inclusive is True and cutoff == LAST
+    assert tail["date"].min() == LAST
 
 
 INSIDER_CAL = pd.bdate_range("2015-01-01", "2015-12-31")
@@ -469,11 +509,11 @@ def test_explicit_refresh_from_wins_over_the_part_default():
     shared 5 and must not be narrowed by it."""
     store = _RefreshStore(columns=["date", "ticker", "f"])
     wide = window_start(CAL, LAST, 90)
-    window = PartWindow(LAST, CAL[LAST_POS - 500], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
-    write_part(store, "p", _rows(CAL[LAST_POS - 150 : LAST_POS + 6]), window, refresh_from=wide)
+    window = window_plan(Window(CAL[0], CAL[-1]), scope=("T0",), frontier=LAST, read_start=CAL[LAST_POS - 500], write_start=wide)
+    write_part(store, Tables.cube_part_fundamentals, _rows(CAL[LAST_POS - 150 : LAST_POS + 6]), window)
     _, cutoff, inclusive = store.appended
     assert inclusive is True and cutoff == wide
-    assert cutoff < window.refresh_from
+    assert cutoff == window.write.start
 
 
 def test_refresh_never_narrows_the_written_span():
@@ -496,7 +536,7 @@ class _StatefulGovernanceStore:
     def __init__(self, rows: pd.DataFrame):
         self.rows = rows.copy()
 
-    def max_date(self, _part):
+    def max_date(self, _part, *, where=None):
         return self.rows["date"].max() if not self.rows.empty else None
 
     def columns(self, _part):
@@ -515,10 +555,11 @@ class _StatefulGovernanceStore:
         self.rows = rows.copy()
         return len(rows)
 
-    def append_tail(self, _part, tail, cutoff, *, inclusive):
-        keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
-        self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
-        return len(tail)
+    def replace_window(self, part, tail, window, where, *, schema_rebuild=False):
+        selected = window.mask(self.rows["date"]) & self.rows["ticker"].isin(where["ticker"])
+        deleted = int(selected.sum())
+        self.rows = pd.concat([self.rows.loc[~selected], tail], ignore_index=True)
+        return WriteCounts(deleted, len(tail))
 
 
 def test_governance_increment_covers_price_frontier_and_is_idempotent():
@@ -532,18 +573,18 @@ def test_governance_increment_covers_price_frontier_and_is_idempotent():
     window = plan_window(
         store,
         Tables.cube_part_governance,
-        warmup=5,
+        WindowPolicy(Window(calendar[0], calendar[-1]), Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"), Offset(5, "trading_sessions")),
+        calendar,
         full=False,
-        trading_index=calendar,
-        refresh=PART_REFRESH_TRADING_DAYS,
+        scope=("T0",),
     )
-    rebuilt = pd.DataFrame({"date": calendar[calendar >= window.refresh_from], "ticker": "T0", "f": 1.0})
+    rebuilt = pd.DataFrame({"date": calendar[calendar >= window.write.start], "ticker": "T0", "f": 1.0})
     write_part(store, Tables.cube_part_governance, rebuilt, window)
 
     step = object.__new__(StepCubeGovernance)
     step._store = store
     step._log = logging.getLogger("test")
-    step._assert_current(calendar, window.last)
+    step._assert_current(calendar, window.frontier)
 
     dates = pd.DatetimeIndex(store.rows["date"].unique())
     assert store.rows.loc[store.rows["date"] == old_end, "f"].item() == 1.0
@@ -554,10 +595,10 @@ def test_governance_increment_covers_price_frontier_and_is_idempotent():
     repeat = plan_window(
         store,
         Tables.cube_part_governance,
-        warmup=5,
+        WindowPolicy(Window(calendar[0], calendar[-1]), Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"), Offset(5, "trading_sessions")),
+        calendar,
         full=False,
-        trading_index=calendar,
-        refresh=PART_REFRESH_TRADING_DAYS,
+        scope=("T0",),
     )
     write_part(store, Tables.cube_part_governance, rebuilt, repeat)
     pd.testing.assert_frame_equal(first, store.rows.sort_values(["date", "ticker"]).reset_index(drop=True))
@@ -571,14 +612,21 @@ def test_governance_refresh_covers_three_years_of_restated_pay():
     """A governance run rewrites three years, the reach of a new proxy's pay table, not a week."""
     calendar = pd.bdate_range("2020-01-01", "2026-09-30")
     store = _StatefulGovernanceStore(pd.DataFrame({"date": calendar[:-10], "ticker": "T0", "f": 0.0}))
-    window = plan_window(store, Tables.cube_part_governance, warmup=5, full=False, trading_index=calendar, refresh=GOVERNANCE_REFRESH)
-    years = (window.last - window.refresh_from).days / 365.25
+    window = plan_window(
+        store,
+        Tables.cube_part_governance,
+        WindowPolicy(Window(calendar[0], calendar[-1]), Offset(GOVERNANCE_REFRESH, "trading_sessions"), Offset(5, "trading_sessions")),
+        calendar,
+        full=False,
+        scope=("T0",),
+    )
+    years = (window.frontier - window.write.start).days / 365.25
     assert GOVERNANCE_REFRESH > PART_REFRESH_TRADING_DAYS
     assert years >= 2.85, f"governance rewrites only {years:.2f} years"  # bdate calendar: ~261 sessions/yr, real ~252
 
     print("\n=== SANITY: governance refresh window ===")
     print(
-        f"  rewrites {GOVERNANCE_REFRESH} sessions = {years:.2f} years back from {window.last.date()} (other parts: {PART_REFRESH_TRADING_DAYS}). Validated."
+        f"  rewrites {GOVERNANCE_REFRESH} sessions = {years:.2f} years back from {window.frontier.date()} (other parts: {PART_REFRESH_TRADING_DAYS}). Validated."
     )
 
 
@@ -817,7 +865,7 @@ def _publish(
     """Run the price step's publication on `rows`; return the (ticker, before-window) pairs it wrote."""
     written: set[tuple[str, bool]] = set()
     refresh_from = PRICE_CAL[-1 - PART_REFRESH_TRADING_DAYS]
-    for name in ("insert", "append_tail", "replace"):
+    for name in ("replace_window",):
         method = getattr(DataStore, name)
 
         def spy(self: DataStore, table: Any, df: pd.DataFrame, *args: Any, _method: Any = method, **kwargs: Any) -> int:
@@ -828,7 +876,8 @@ def _publish(
         monkeypatch.setattr(DataStore, name, spy)
     step = cast(Any, object.__new__(StepCubePrices))
     step._store, step._log, step._part = store, logging.getLogger("test"), PART_BY_NAME["cube_part_prices"]
-    step._write_candidate(rows, step._plan_window(full and not tickers), list(tickers))
+    step._context = SimpleNamespace(universe=SimpleNamespace(tickers=sorted(rows.ticker.unique())))
+    step._write_candidate(rows, step._plan_window(full and not tickers, pd.DatetimeIndex(rows.date.unique()).sort_values()), list(tickers))
     monkeypatch.undo()
     return written
 

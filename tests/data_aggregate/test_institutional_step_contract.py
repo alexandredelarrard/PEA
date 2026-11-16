@@ -70,7 +70,7 @@ def context(store: Any, path: Path) -> Context:
             config=config,
             config_dir=Path(DEFAULT_CONFIG_DIR),
             paths={"DATA_STORE": path},
-            universe=SimpleNamespace(sector_map={}),
+            universe=SimpleNamespace(sector_map={}, tickers=["AAA"]),
         ),
     )
 

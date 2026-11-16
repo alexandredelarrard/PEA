@@ -36,6 +36,7 @@ from src.data_store.schema import Resume, Table, Tables
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME
 from src.utils.string import pad_cik_series, run_date
 from src.utils.tickers_universe.universe import Bounds
+from src.utils.window import Offset, Window, shift_date
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +87,13 @@ def _grace_end(calendar: pd.DatetimeIndex, end: pd.Timestamp) -> pd.Timestamp:
     return calendar[position] if position < len(calendar) else end + pd.offsets.BDay(END_GRACE_SESSIONS)
 
 
-def bounded_span(bounds: Bounds, key: str, since: pd.Timestamp, until: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+def bounded_span(bounds: Bounds, key: str, since: pd.Timestamp, until: pd.Timestamp) -> Window | None:
     """`(since, until)` clamped to the key's `[first_price_date, ended_on]`; None when nothing is left. A key
     without bounds (a secondary class, a key outside the universe) keeps its span."""
     first, ended = bounds.get(key, (None, None))
     start = max(since, first) if first is not None else since
     end = min(until, ended) if ended is not None else until
-    return (start, end) if start <= end else None
+    return Window(start, end) if start <= end else None
 
 
 def ended_keys(bounds: Bounds, stored: Collection[str], as_of: pd.Timestamp, overlap_days: int) -> list[str]:
@@ -134,18 +135,18 @@ def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope
 class SeriesWork:
     """A series work list: per key, disjoint `(since, until)` windows; plus each key's class and stored last date."""
 
-    windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]
+    windows: dict[str, list[Window]]
     key_class: dict[str, str]
     last: dict[str, pd.Timestamp] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict)
 
-    def groups(self) -> list[tuple[pd.Timestamp, pd.Timestamp, list[str]]]:
+    def groups(self) -> list[tuple[Window, list[str]]]:
         """Keys sharing an identical window, one group per window, oldest `since` first."""
-        by_window: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
+        by_window: dict[Window, list[str]] = {}
         for key, spans in self.windows.items():
             for span in spans:
                 by_window.setdefault(span, []).append(key)
-        return [(since, until, sorted(keys)) for (since, until), keys in sorted(by_window.items())]
+        return [(span, sorted(keys)) for span, keys in sorted(by_window.items())]
 
     def merge(self, other: SeriesWork) -> SeriesWork:
         """The union of two work lists (each key's windows unioned); key classes and `last` stay this work's."""
@@ -154,14 +155,14 @@ class SeriesWork:
         return SeriesWork(windows=windows, key_class=other.key_class | self.key_class, last=self.last, timings=self.timings | other.timings)
 
 
-def _union_spans(spans: list[tuple[pd.Timestamp, pd.Timestamp]]) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+def _union_spans(spans: list[Window]) -> list[Window]:
     """Overlapping or touching `(since, until)` spans merged, sorted."""
-    merged: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    merged: list[Window] = []
     for since, until in sorted(spans):
-        if merged and since <= merged[-1][1] + pd.Timedelta(days=1):
-            merged[-1] = (merged[-1][0], max(merged[-1][1], until))
+        if merged and since <= merged[-1].end + pd.Timedelta(days=1):
+            merged[-1] = Window(merged[-1].start, max(merged[-1].end, until))
         else:
-            merged.append((since, until))
+            merged.append(Window(since, until))
     return merged
 
 
@@ -171,7 +172,7 @@ def trading_calendar(context: Context) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.prices, "date"))).normalize().unique().sort_values()
 
 
-def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timestamp, edge: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timestamp, edge: pd.Timestamp) -> list[Window]:
     """Runs of calendar sessions in `[first, edge)` with no stored row, as `(first missing, last missing)` spans."""
     span = calendar[(calendar >= first) & (calendar < edge)]
     missing = ~span.isin(pd.DatetimeIndex(pd.to_datetime(stored)).normalize())
@@ -179,7 +180,7 @@ def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timesta
         return []
     positions = pd.Series(range(len(span)))[missing]
     runs = (positions.diff() != 1).cumsum()
-    return [(span[int(run.iloc[0])], span[int(run.iloc[-1])]) for _, run in positions.groupby(runs)]
+    return [Window(span[int(run.iloc[0])], span[int(run.iloc[-1])]) for _, run in positions.groupby(runs)]
 
 
 def _has_holes(calendar: pd.DatetimeIndex | None, first: pd.Timestamp, last: pd.Timestamp, n: int) -> bool:
@@ -239,21 +240,21 @@ def series_windows(
     table_max = context.store.max_date(table, date_col) if stored is None else stored[1]
     reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
 
-    windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
+    windows: dict[str, list[Window]] = {}
     key_class: dict[str, str] = {}
     holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     for key in keys:
         if full or table_max is None or (key in new and not _reaches_floor(stats.get(key), reach.get(key, floor), overlap)):
             key_class[key], since = KEY_NEW, floor
         elif key not in stats:
-            key_class[key], since = KEY_ROWLESS, max(table_max - overlap, floor)
+            key_class[key], since = KEY_ROWLESS, max(shift_date(table_max, Offset(table.resume.overlap_days, "calendar_days")), floor)
         else:
-            key_class[key], since = KEY_ESTABLISHED, max(stats[key][1] - overlap, floor)
+            key_class[key], since = KEY_ESTABLISHED, max(shift_date(stats[key][1], Offset(table.resume.overlap_days, "calendar_days")), floor)
         if key_class[key] == KEY_ESTABLISHED and _has_holes(calendar, *stats[key]):
             holed[key] = (max(stats[key][0], floor), since)
 
         # start date to redo is latest day - overlap days
-        windows[key] = [(since, until)] if since <= until else []
+        windows[key] = [Window(since, until)] if since <= until else []
 
     read_stats = time.perf_counter()
     if holed:

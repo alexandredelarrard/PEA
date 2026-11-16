@@ -12,7 +12,6 @@ import pytest
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
@@ -63,7 +62,7 @@ def _manager_batch_owner(
     monkeypatch.setattr(step, "_institutional_features", lambda resources: None)
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", source)
     monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: grid)
-    monkeypatch.setattr(step_module, "plan_window", lambda *args, **kwargs: PartWindow(None, None))
+    store.max_date.return_value = None
     save = Mock()
     monkeypatch.setattr(step_module, "write_part", save)
     return step, grid, closed, save

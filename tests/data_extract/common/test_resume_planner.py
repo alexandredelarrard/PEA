@@ -296,7 +296,7 @@ def test_m1_a_three_session_hole_becomes_a_three_session_window(tmp_path, sqlite
 
     assert _spans(work, "BBB") == [("2026-08-17", "2026-08-19"), ("2026-09-23", "2026-09-30")]
     assert _spans(work, "AAA") == [("2026-09-23", "2026-09-30")]
-    groups = [(str(a.date()), str(b.date()), keys) for a, b, keys in work.groups()]
+    groups = [(str(span.start.date()), str(span.end.date()), keys) for span, keys in work.groups()]
     assert groups == [("2026-08-17", "2026-08-19", ["BBB"]), ("2026-09-23", "2026-09-30", ["AAA", "BBB"])]
     print("\n=== SANITY CHECK: M1 hole ===")
     print(f"  BBB misses 3 sessions {list(hole.strftime('%m-%d'))} -> one extra 3-session window; groups {groups}.")

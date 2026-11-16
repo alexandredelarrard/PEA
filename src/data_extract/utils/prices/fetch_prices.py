@@ -32,6 +32,7 @@ from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Table, Tables
 from src.utils.string import run_date, yahoo_symbol
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -276,10 +277,11 @@ class YahooSession:
         back = {symbol: key for key, symbol in zip(keys, requested, strict=True)}
         return df_new.assign(ticker=df_new["ticker"].map(back).fillna(df_new["ticker"]))
 
-    def pull(self, groups: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]], label: str) -> pd.DataFrame:
+    def pull(self, groups: list[tuple[Window, list[str]]], label: str) -> pd.DataFrame:
         """`actions=True` rows over each `(since, until, keys)` group; duplicate `(ticker, date)` rows keep the last."""
         frames = []
-        for since, until, keys in groups:
+        for window, keys in groups:
+            since, until = window
             todo = [key for key in keys if (key, since, until) not in self._responses]
             if todo:
                 logger.info("Downloading prices and actions for %d ticker(s) over %s .. %s (%s)", len(todo), since.date(), until.date(), label)
@@ -384,7 +386,7 @@ def _plan(
 
 def _full_keys(work: SeriesWork, floor: pd.Timestamp, bounds: Bounds) -> set[str]:
     """Keys whose first window already reaches the floor, or their `first_price_date` when later: their whole history is in the pull."""
-    return {key for key, spans in work.windows.items() if spans and spans[0][0] <= max(floor, bounds.get(key, (None, None))[0] or floor)}
+    return {key for key, spans in work.windows.items() if spans and spans[0].start <= max(floor, bounds.get(key, (None, None))[0] or floor)}
 
 
 def _initial_pull(session: YahooSession, work: SeriesWork, full_keys: set[str]) -> tuple[pd.DataFrame, list[str]]:
@@ -454,7 +456,7 @@ def fetch_prices(
     work, floor, until = _plan(context, Tables.prices, [*tickers, *owners], years_history, full, as_of)
     for symbol in owners:
         if symbol not in work.last:
-            work.windows[symbol] = [(floor, until)]
+            work.windows[symbol] = [Window(floor, until)]
 
     # Download: resume windows, then the keys restated by an event or a moved anchor
     full_keys = _full_keys(work, floor, context.universe.bounds)

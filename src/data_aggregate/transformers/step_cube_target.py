@@ -24,10 +24,8 @@ from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS
 from src.context import Context
 from src.data_aggregate.utils.assemble.cube import labels_to_wide
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED,
     PART_REFRESH_TRADING_DAYS,
     plan_window,
-    window_start,
     write_part,
 )
 from src.data_aggregate.utils.common.parts import part_for
@@ -51,6 +49,7 @@ from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
+from src.utils.window import Offset, Window, WindowPlan, WindowPolicy
 
 
 class StepCubeTarget(Step):
@@ -82,11 +81,25 @@ class StepCubeTarget(Step):
         max_h = max(horizons)
         calendar = load_trading_calendar(self._store)
         window = plan_window(
-            self._store, Tables.cube_part_targets, full=full, warmup=self._part.warmup_trading_days, trading_index=calendar, extra_back=max_h
+            self._store,
+            Tables.cube_part_targets,
+            WindowPolicy(
+                Window(calendar[0], calendar[-1]), Offset(max_h, "trading_sessions"), Offset(self._part.warmup_trading_days, "trading_sessions")
+            ),
+            calendar,
+            full=full,
+            scope=self._universe.tickers,
         )
 
-        # load inputs
-        price_frames = self._load_frames(window.since)
+        beta_policy = WindowPolicy(
+            Window(calendar[0], calendar[-1]),
+            Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"),
+            Offset(self._part.warmup_trading_days, "trading_sessions"),
+        )
+        beta_window = plan_window(self._store, Tables.cube_part_betas, beta_policy, calendar, full=full, scope=self._universe.tickers)
+
+        # Both outputs receive sufficient context even when only one is initially absent.
+        price_frames = self._load_frames(min(window.read.start, beta_window.read.start))
         fundamentals = self._load_fundamentals()
 
         # ONE measurement, shared by the momentum STYLE FACTOR and the label's own momentum
@@ -102,17 +115,7 @@ class StepCubeTarget(Step):
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
         targets = self._build_targets(price_frames, (betas, panel, macro_cols), horizons, (sector_groups, sector_excess), seams)
-        n = self._persist(
-            targets,
-            betas,
-            window,
-            calendar,
-            max_h,
-            price_frames.skeleton(),
-        )
-
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
+        self._persist(targets, betas, (window, beta_window), price_frames.skeleton())
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
@@ -319,33 +322,8 @@ class StepCubeTarget(Step):
         return labels
 
     # ---- persist ---- #
-    def _persist(self, labels: dict, betas: dict, window, calendar: pd.DatetimeIndex, max_h: int, valid_keys: pd.DataFrame) -> int:
+    def _persist(self, labels: dict, betas: dict, windows: tuple[WindowPlan, WindowPlan], valid_keys: pd.DataFrame) -> None:
         targets_wide = labels_to_wide(labels, valid_keys=valid_keys)
         betas_long = _betas_to_long(betas).merge(valid_keys[["date", "ticker"]], on=["date", "ticker"], how="inner", validate="one_to_one")
-
-        # targets: overwrite the trailing max_horizon window so MATURED labels refresh -- the
-        # widest refresh in the pipeline (~90 trading days vs the backward-looking parts' 5).
-        # `write_part` gives `refresh_from` explicit precedence, so passing it keeps the
-        # maturing-label window rather than narrowing to the shared one. The pivot to wide does
-        # not change that: a wide row matures too, `target_*_h90` flipping from NaN to a value
-        # while `target_*_h30` is already set. What it DOES fix is the key -- `write_part`'s
-        # default `keys=PANEL_KEYS` (["date","ticker"]) is now this part's true grain, where
-        # the long format left a latent 2-vs-3 mismatch against the registry.
-        refresh_from = None if window.is_full else window_start(calendar, window.last, max_h)
-        n = write_part(self._store, Tables.cube_part_targets, targets_wide, window, refresh_from=refresh_from)
-        if n == COLUMNS_CHANGED:
-            return n
-
-        # betas: backward-looking -> rewrite the trailing week INCLUSIVELY, then append.
-        # `warmup=0` because `betas_long` is already computed over the TARGET window (which
-        # reaches `warmup + max_h` back), so every refreshed date has its full look-back here
-        # regardless; `refresh` only decides how far back the WRITE reaches.
-        beta_window = plan_window(
-            self._store, Tables.cube_part_betas, full=window.is_full, warmup=0, trading_index=calendar, refresh=PART_REFRESH_TRADING_DAYS
-        )
-        # `write_part` returns COLUMNS_CHANGED *instead of writing*, so discarding this return
-        # would silently leave the betas part missing both the new column and the run's rows
-        # (adding a macro factor adds a beta column, which is exactly when this fires).
-        if write_part(self._store, Tables.cube_part_betas, betas_long, beta_window) == COLUMNS_CHANGED:
-            return COLUMNS_CHANGED
-        return n
+        write_part(self._store, Tables.cube_part_targets, targets_wide, windows[0])
+        write_part(self._store, Tables.cube_part_betas, betas_long, windows[1])

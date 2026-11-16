@@ -502,8 +502,8 @@ def test_output_overlap_is_calendar_days(sqlite_store: DataStore, frontier: str)
     rows = pd.DataFrame({"date": [frontier], "ticker": ["ADP"], **{f"f_{name}": [0.0] for name in EARNINGS_CALL_FEATURES}})
     store.replace(Tables.cube_part_text, rows)
     plan = StepCubeText(context, config).plan_window(pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
-    assert plan.window.refresh_from == pd.Timestamp(frontier) - pd.Timedelta(days=30)
-    assert plan.window.since == plan.window.refresh_from
+    assert plan.window.write.start == pd.Timestamp(frontier) - pd.Timedelta(days=30)
+    assert plan.window.read.start == plan.window.write.start
     print(f"SANITY: frontier {frontier} rewrites inclusively from exactly 30 calendar days earlier.")
 
 

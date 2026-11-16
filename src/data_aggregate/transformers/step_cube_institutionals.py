@@ -11,7 +11,7 @@ from src.constants.constants import SECONDARY_CLASS, SOURCE_AVAILABILITY_BUFFER_
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -50,6 +50,7 @@ from src.data_store.schema import Tables
 from src.utils.identity_tables import read_identity
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
+from src.utils.window import Offset, Window, WindowPlan, WindowPolicy
 
 
 class StepCubeInstitutionals(Step):
@@ -71,10 +72,14 @@ class StepCubeInstitutionals(Step):
         window = plan_window(
             self._store,
             Tables.cube_part_institutionals,
+            WindowPolicy(
+                Window(trading_index[0], trading_index[-1]),
+                Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"),
+                Offset(self._warmup(), "trading_sessions"),
+            ),
+            trading_index,
             full=full,
-            warmup=self._warmup(),
-            trading_index=trading_index,
-            refresh=PART_REFRESH_TRADING_DAYS,
+            scope=self._universe.tickers,
         )
 
         # Compute once; history-dependent features need the complete calendar.
@@ -99,16 +104,13 @@ class StepCubeInstitutionals(Step):
             raise ValueError("Institutional output has repeated date/ticker keys")
         return index
 
-    def _write_panel(self, rows: pd.DataFrame, window: PartWindow) -> None:
-        """Write the ordinary refresh tail in one transaction; a schema change rebuilds the part."""
+    def _write_panel(self, rows: pd.DataFrame, window: WindowPlan) -> None:
+        """Publish the resolved dates/keys; a schema change requires an explicit rebuild."""
         self._output_keys(rows)
         part = Tables.cube_part_institutionals
         rows = rows.astype(dict.fromkeys([column for column in rows if column not in part.pk], "float64"))
-        with self._store.transaction() as store:
-            count = write_part(store, part, rows, window, drop_empty=True)
-            if count == COLUMNS_CHANGED:
-                count = write_part(store, part, rows, PartWindow(None, None), drop_empty=True)
-        self._log.info("Institutional output: refresh from %s; wrote %s rows", window.refresh_from, count)
+        count = write_part(self._store, part, rows, window, drop_empty=True)
+        self._log.info("Institutional output: refresh from %s; wrote %s rows", window.write.start, count)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")

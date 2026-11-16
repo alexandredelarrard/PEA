@@ -11,13 +11,15 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, PanelMerger
 from src.data_aggregate.utils.common.part_status import cube_part_edge_report
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.step import Step
+from src.utils.window import Offset, Window, WindowPlan, WindowPolicy
 
 _CHUNK_ROWS = 400_000
 _MIN_TARGET_COVERAGE_PCT = 50.0
@@ -34,22 +36,15 @@ class StepAssembleCube(Step):
 
     def run(self, full: bool = False) -> None:
         self._warn_on_part_edges()
-        window = PartWindow(None, None) if full else self._plan_window()
-        cube, labels = self._assemble(window.since)
-        if self._persist(cube, window) == COLUMNS_CHANGED:
-            self._log.warning("%s column set changed -> full reassembly.", Tables.cube)
-            window = PartWindow(None, None)
-            cube, labels = self._assemble(None)
-            self._persist(cube, window)
+        window = self._plan_window(full)
+        cube, labels = self._assemble(window.read.start)
+        self._persist(cube, window)
         self._report(cube, labels)
 
-    def _plan_window(self) -> PartWindow:
-        """Full when no cube is stored; else re-read from the earlier of its last date and today - overlap."""
-        last = self._store.max_date(Tables.cube)
-        if last is None:
-            return PartWindow(None, None)
-        start = min(last, pd.Timestamp.today().normalize() - pd.Timedelta(days=_OVERLAP_DAYS))
-        return PartWindow(last, start, start)
+    def _plan_window(self, full: bool = False) -> WindowPlan:
+        calendar = load_trading_calendar(self._store)
+        policy = WindowPolicy(Window(calendar[0], calendar[-1]), Offset(_OVERLAP_DAYS, "calendar_days"), Offset(0, "calendar_days"))
+        return plan_window(self._store, Tables.cube, policy, calendar, full=full, scope=self._universe.tickers)
 
     def _assemble(self, since: pd.Timestamp | None) -> tuple[pd.DataFrame, list[str]]:
         assembly = self._cfg.assembly
@@ -66,6 +61,8 @@ class StepAssembleCube(Step):
             panel = self._read_part(table, selected.get(name), since, optional=name in optional)
             if panel is None:
                 continue
+            if panel.empty:
+                panel = root[PANEL_KEYS].reindex(columns=panel.columns)
             panel = self._post_processing(panel)
             if table == Tables.cube_part_targets:
                 labels = [col for col in panel.columns if col not in PANEL_KEYS]
@@ -119,18 +116,14 @@ class StepAssembleCube(Step):
 
     def _post_processing(self, panel: pd.DataFrame) -> pd.DataFrame:
         """One part's panel after reading: dates normalized to midnight so merges across parts align."""
-        normalized = normalize_date_col(panel)
+        normalized = downcast_float32(normalize_date_col(panel))
         assert normalized is not None
         return normalized
 
-    def _persist(self, cube: pd.DataFrame, window: PartWindow) -> int:
+    def _persist(self, cube: pd.DataFrame, window: WindowPlan) -> int:
         store = self._store
-        if window.is_full and set(store.columns(Tables.cube)) - set(cube.columns):
-            store.drop(Tables.cube)
         written = write_part(store, Tables.cube, cube, window)
-        if written == COLUMNS_CHANGED:
-            return written
-        if set(store.columns(Tables.cube)) != set(cube.columns) or (window.is_full and store.row_count(Tables.cube) != len(cube)):
+        if set(store.columns(Tables.cube)) != set(cube.columns):
             raise RuntimeError("Stored cube schema/row count differs from the assembled frame; rerun assemble-cube")
         return written
 

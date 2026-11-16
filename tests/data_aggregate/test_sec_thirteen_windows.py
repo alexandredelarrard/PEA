@@ -14,11 +14,12 @@ from omegaconf import OmegaConf
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
+from src.utils.window import Window, WindowPlan
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 from tests.support.sec_thirteen_panel import unsaved_panel
+from tests.support.windows import window_plan
 
 
 def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[StepCubeSecThirteen, pd.DatetimeIndex]:
@@ -37,7 +38,7 @@ def _full(step: StepCubeSecThirteen) -> pd.DataFrame:
     return unsaved_panel(step)
 
 
-def _tail(step: StepCubeSecThirteen, store: Any, saved: pd.DataFrame, window: PartWindow) -> pd.DataFrame:
+def _tail(step: StepCubeSecThirteen, store: Any, saved: pd.DataFrame, window: WindowPlan) -> pd.DataFrame:
     """The panel `run()` builds for `window` once `saved` is the stored part."""
     store.replace(Tables.cube_part_sec_thirteen, _saved(saved))
     return unsaved_panel(step, window)
@@ -134,10 +135,10 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
     for source in prepared:
         source.reset_mock()
     projections = _projections(step, monkeypatch)
-    window = PartWindow(days[-1], days[-8], days[-8])
+    window = window_plan(Window(days[0], days[-1]), scope=("AAA",), read_start=days[-8], write_start=days[-8], frontier=days[-1])
     tail = _tail(step, sqlite_store, full, window)
 
-    pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= window.since]))
+    pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= window.read.start]))
     assert [source.call_count for source in prepared] == [1, 1]
     assert [projection.call_count for projection in projections] == [1, 1]
     _bounded(projections, days, 8)
@@ -171,7 +172,12 @@ def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, mon
     facts = _facts(days, (0,), ic_inst_concentration=[0.25]).assign(period=pd.Timestamp("2013-06-30"))
     _prepare(step, monkeypatch, facts, _elite(days, ()))
     full = _full(step)
-    tail = _tail(step, sqlite_store, full, PartWindow(days[-1], pd.Timestamp("2013-08-15")))
+    tail = _tail(
+        step,
+        sqlite_store,
+        full,
+        window_plan(Window(days[0], days[-1]), scope=("AAA",), read_start=pd.Timestamp("2013-08-15"), write_start=days[-1], frontier=days[-1]),
+    )
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= "2013-08-15"]))
     values = tail.set_index("date").f_ic_inst_concentration
     assert values.loc[["2013-08-15", "2013-08-16"]].isna().all()
@@ -245,9 +251,9 @@ def test_failed_saved_family_refuses_writes(sqlite_store: Any, monkeypatch: pyte
         None if family == "broad" else _facts(days, (5,), ic_inst_concentration=[0.25]),
         None if family == "elite" else _elite(days, ()),
     )
-    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.replace_window)
     monkeypatch.setattr(sqlite_store, "replace", replace)
-    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "replace_window", append)
     with pytest.raises(RuntimeError, match="source preparation failed"):
         step.run(full=full)
     assert replace.call_count == append.call_count == 0
@@ -261,9 +267,9 @@ def test_shortened_price_calendar_refuses_even_a_full_rebuild(sqlite_store: Any,
     initial = pd.DataFrame({"date": [days[-1] + pd.offsets.BDay(1)], "ticker": "AAA", "f_ic_inst_concentration": 0.25})
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     prepared = _prepare(step, monkeypatch, pd.DataFrame(), _elite(days, ()))
-    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.replace_window)
     monkeypatch.setattr(sqlite_store, "replace", replace)
-    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "replace_window", append)
     with pytest.raises(RuntimeError, match="calendar ends before"):
         step.run(full=full)
     assert replace.call_count == append.call_count == 0
@@ -283,10 +289,10 @@ def test_missing_saved_rewrite_date_refuses_without_writes(
     missing = days[-2] if hole == "saved_frontier" else days[-3]
     sqlite_store.delete(Tables.cube_part_prices, where={"date": missing})
     prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, ()))
-    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.replace_window)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
-    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "replace_window", append)
     monkeypatch.setattr(sqlite_store, "distinct", distinct)
 
     with pytest.raises(RuntimeError, match="calendar.*saved"):
@@ -306,13 +312,13 @@ def test_schema_promotion_refuses_missing_saved_prefix_date(sqlite_store: Any, m
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     sqlite_store.delete(Tables.cube_part_prices, where={"date": days[10]})
     prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], ic_inst_holders=[0.5]), _elite(days, ()))
-    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.replace_window)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
-    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "replace_window", append)
     monkeypatch.setattr(sqlite_store, "distinct", distinct)
 
-    with pytest.raises(RuntimeError, match="calendar.*saved"):
+    with pytest.raises(ValueError, match="columns changed"):
         step.run()
 
     assert replace.call_count == append.call_count == 0
@@ -320,7 +326,9 @@ def test_schema_promotion_refuses_missing_saved_prefix_date(sqlite_store: Any, m
     pd.testing.assert_frame_equal(_load(sqlite_store), initial, check_dtype=False)
     saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
     assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
-    print("SANITY: genuine column promotion checks the whole saved calendar and preserves the missing prefix row with zero writes and one date read.")
+    with pytest.raises(RuntimeError, match="calendar.*saved"):
+        step.run(full=True)
+    print("SANITY: explicit column rebuild checks the whole saved calendar and preserves the missing prefix row with zero writes and one date read.")
 
 
 def test_missing_saved_prefix_date_allows_one_incremental_write(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -329,10 +337,10 @@ def test_missing_saved_prefix_date_allows_one_incremental_write(sqlite_store: An
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     sqlite_store.delete(Tables.cube_part_prices, where={"date": days[10]})
     prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), None)
-    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.replace_window)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
-    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "replace_window", append)
     monkeypatch.setattr(sqlite_store, "distinct", distinct)
 
     step.run()
@@ -364,16 +372,26 @@ def test_schema_change_reprojects_full_once_from_prepared_facts(
     broad.reset_mock()
     elite.reset_mock()
     projections = _projections(step, monkeypatch)
-    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.replace_window)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
-    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "replace_window", append)
     monkeypatch.setattr(sqlite_store, "distinct", distinct)
 
-    step.run()
+    before = _load(sqlite_store)
+    with pytest.raises(ValueError, match="columns changed"):
+        step.run()
+    pd.testing.assert_frame_equal(_load(sqlite_store), before)
+    assert append.call_count == replace.call_count == 0
+    broad.reset_mock()
+    elite.reset_mock()
+    for projection in projections:
+        projection.reset_mock()
+    distinct.reset_mock()
+    step.run(full=True)
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert broad.call_count == elite.call_count == 1
-    assert replace.call_count == 1 and append.call_count == 0
+    assert replace.call_count == 0 and append.call_count == 1
     saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
     assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
     assert ("f_ic_inst_holders" in expected) == (change != "removal")
@@ -394,7 +412,9 @@ def test_historical_only_saved_column_uses_bounded_probe_and_float32_padding(
     for source in prepared:
         source.reset_mock()
     projections = _projections(step, monkeypatch)
-    tail = _tail(step, sqlite_store, full, PartWindow(days[-1], days[-8], days[-8]))
+    tail = _tail(
+        step, sqlite_store, full, window_plan(Window(days[0], days[-1]), scope=("AAA",), read_start=days[-8], write_start=days[-8], frontier=days[-1])
+    )
 
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= days[-8]]))
     assert tail.f_ic_inst_holders.isna().all() and tail.f_ic_inst_holders.dtype == np.dtype("float32")
@@ -429,7 +449,15 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
     elite.reset_mock()
     projections = _projections(step, monkeypatch)
 
-    step.run()
+    if denominator == "globally_absent":
+        with pytest.raises(ValueError, match="columns changed"):
+            step.run()
+        pd.testing.assert_frame_equal(_load(sqlite_store), initial, check_dtype=False)
+        broad.reset_mock()
+        elite.reset_mock()
+        for projection in projections:
+            projection.reset_mock()
+    step.run(full=denominator == "globally_absent")
     result = _load(sqlite_store)
     derived = {"f_ic_inst_ownership_pct", "f_ic_inst_value_to_mcap"}
     if denominator == "globally_absent":
@@ -480,7 +508,9 @@ def test_observation_before_first_price_remains_supported_after_listing(sqlite_s
     )
     _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, (5,), ic_super_holders=[0.5]))
     full = _full(step)
-    tail = _tail(step, sqlite_store, full, PartWindow(days[-1], days[-8], days[-8]))
+    tail = _tail(
+        step, sqlite_store, full, window_plan(Window(days[0], days[-1]), scope=("AAA",), read_start=days[-8], write_start=days[-8], frontier=days[-1])
+    )
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= days[-8]]))
     listed = tail.loc[tail.ticker.eq("AAA")]
     assert len(listed) == 8 and listed.f_ic_inst_concentration.eq(0.25).all() and listed.f_ic_super_holders.eq(0.5).all()
@@ -498,7 +528,15 @@ def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store
     broad.reset_mock()
     elite.reset_mock()
     projections = _projections(step, monkeypatch)
-    step.run()
+    before = _load(sqlite_store)
+    with pytest.raises(ValueError, match="columns changed"):
+        step.run()
+    pd.testing.assert_frame_equal(_load(sqlite_store), before)
+    broad.reset_mock()
+    elite.reset_mock()
+    for projection in projections:
+        projection.reset_mock()
+    step.run(full=True)
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert broad.call_count == elite.call_count == 1
     assert sum(len(call.args[1].trading_index) == len(days) for call in projections[0].call_args_list) == 1
@@ -511,8 +549,13 @@ def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store
 def test_valid_empty_preparation_is_not_a_source_failure(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     prepared = _prepare(step, monkeypatch, pd.DataFrame(), _elite(days, ()))
-    saved = pd.DataFrame({"date": days[:1], "ticker": "AAA", "f_ic_inst_holders": 1.0, "f_ic_super_holders": 1.0})
-    panel = _tail(step, sqlite_store, saved, PartWindow(days[-1], days[-8], days[-8]))
+    saved = pd.DataFrame({"date": days[:1], "ticker": "AAA", **{"f_" + name: 1.0 for name in EMISSION}})
+    panel = _tail(
+        step,
+        sqlite_store,
+        saved,
+        window_plan(Window(days[0], days[-1]), scope=("AAA",), read_start=days[-8], write_start=days[-8], frontier=days[-1]),
+    )
     assert set(panel.columns) == {"date", "ticker"} | {"f_" + name for name in EMISSION}
     assert panel.filter(like="f_").isna().all().all()
     assert [source.call_count for source in prepared] == [1, 1]

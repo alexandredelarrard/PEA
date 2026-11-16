@@ -95,15 +95,17 @@ def test_series_planner_stops_at_the_end_and_starts_at_the_first_price(fixture: 
     if pd.Timestamp(wbd_last) >= WBD_END:
         assert work.windows["WBD"] == []
     else:
-        assert work.windows["WBD"][-1][1] == WBD_GRACE_END and open_work.windows["WBD"][-1][1] == until
+        assert work.windows["WBD"][-1].end == WBD_GRACE_END and open_work.windows["WBD"][-1].end == until
     assert work.windows["AAPL"] == open_work.windows["AAPL"]
-    assert full.windows["AAPL"][0][0] == AAPL_FIRST and open_work.windows["AAPL"] != []
+    assert full.windows["AAPL"][0].start == AAPL_FIRST and open_work.windows["AAPL"] != []
 
     print(f"\n=== SANITY CHECK: series planner bounds on {table.name} ===")
     print(
         f"  WBD last stored {pd.Timestamp(wbd_last).date()}, ended 2026-10-05: windows {work.windows['WBD']} (no bounds: {open_work.windows['WBD']})"
     )
-    print(f"  AAPL windows unchanged {work.windows['AAPL']}; a full pull starts at its first price {full.windows['AAPL'][0][0].date()} (floor 1986)")
+    print(
+        f"  AAPL windows unchanged {work.windows['AAPL']}; a full pull starts at its first price {full.windows['AAPL'][0].start.date()} (floor 1986)"
+    )
     print("  Validated: nothing after WBD's end + grace, none once the run is past grace end + overlap, nothing before AAPL's first price.")
 
 

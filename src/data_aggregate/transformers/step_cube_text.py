@@ -11,7 +11,7 @@ from omegaconf import DictConfig
 
 from src.constants.constants import EARNINGS_CALL_FEATURES, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
@@ -37,6 +37,7 @@ from src.gpt_extract import embed_texts, openai_api_key
 from src.utils.step import Step
 from src.utils.text.earnings_call_split import CALL_SECTIONS, split_call
 from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_paragraphs, word_count
+from src.utils.window import Offset, Window, WindowPolicy
 
 
 class StepCubeText(Step):
@@ -89,15 +90,13 @@ class StepCubeText(Step):
         sentiment = self._store.load(Tables.earnings_call_sentiment, columns=SENTIMENT_COLUMNS, optional=True)
         embedding = self._store.load(Tables.earning_calls_embedding, columns=["ticker", "quarter", "seq", "as_of", "model"], optional=True)
 
-        # Resolve the output window, including schema-triggered full rebuilding.
+        # Refuse an implicit schema rebuild before any model work.
         columns = self._store.columns(Tables.cube_part_text)
-        last = None if full or not columns else self._store.max_date(Tables.cube_part_text)
         expected = {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
-        if columns and set(columns) != expected:
-            self._log.info("Text feature columns changed -> full feature rebuild, retaining valid model outputs.")
-            last = None
-        cutoff = None if last is None else pd.Timestamp(last).normalize() - pd.Timedelta(days=self._refresh_days)
-        window = PartWindow(None if last is None else pd.Timestamp(last), cutoff, cutoff)
+        if columns and set(columns) != expected and not full:
+            raise ValueError("Text feature columns changed; request an explicit full feature rebuild")
+        policy = WindowPolicy(Window(calendar[0], calendar[-1]), Offset(self._refresh_days, "calendar_days"), Offset(0, "calendar_days"))
+        window = plan_window(self._store, Tables.cube_part_text, policy, calendar, full=full, scope=self._universe.tickers)
 
         # Validate cached scores and match each saved model to the source call.
         source = source if source is not None else pd.DataFrame(columns=["ticker", "quarter", "as_of"])
@@ -130,12 +129,12 @@ class StepCubeText(Step):
             len(scored),
             len(plan.embedding_work),
             len(embedded),
-            cutoff.date() if cutoff is not None else "FULL",
+            window.write.start.date(),
             calendar[-1].date(),
         )
-        if cutoff is not None:
+        if not window.is_full:
             pending = plan.sentiment_work | plan.embedding_work
-            old = source[pd.MultiIndex.from_frame(source[["ticker", "quarter"]]).isin(pending) & source["as_of"].lt(cutoff)]
+            old = source[pd.MultiIndex.from_frame(source[["ticker", "quarter"]]).isin(pending) & source["as_of"].lt(window.write.start)]
             if not old.empty:
                 self._log.info("%d older NLP calls need work; rebuilding historical cube rows outside the overlap requires build-text -F.", len(old))
         return plan
@@ -313,14 +312,14 @@ class StepCubeText(Step):
         roster, lineage, tenure = load_issuer_identity(self._context)
         source = plan.source[pd.MultiIndex.from_frame(plan.source[["ticker", "quarter"]]).isin(plan.eligible)]
         identified = attach_issuer_identity(source, roster, lineage, tenure)
-        scope = feature_history_scope(identified, calendar, plan.window.since, self._lag)
+        scope = feature_history_scope(identified, calendar, plan.window.read.start, self._lag)
         where = {"ticker": sorted(scope["ticker"].unique()), "quarter": sorted(scope["quarter"].unique())}
         history_from = None if scope.empty else pd.Timestamp(scope["as_of"].min())
         history_until = None if scope.empty else pd.Timestamp(scope["as_of"].max())
 
         # Reuse sentiment, materialize prices once, and open one embedding stream.
         sentiment = plan.sentiment
-        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=plan.window.since) if not scope.empty else None
+        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=plan.window.read.start) if not scope.empty else None
         embeddings = self._store.iter_load(
             Tables.earning_calls_embedding,
             chunksize=5_000,
@@ -346,24 +345,22 @@ class StepCubeText(Step):
 
         # Project the ten call KPIs onto the output trading sessions.
         panel = build_earnings_call_feature_panel(
-            per_call, calendar, availability=None if frames is None else frames.availability, availability_lag_days=self._lag, since=plan.window.since
+            per_call,
+            calendar,
+            availability=None if frames is None else frames.availability,
+            availability_lag_days=self._lag,
+            since=plan.window.read.start,
         )
 
         # Save once, or clear stale output when no eligible features remain.
-        if not panel.empty:
-            write_part(self._store, Tables.cube_part_text, panel, plan.window, drop_empty=True)
-        elif self._store.exists(Tables.cube_part_text):
-            if plan.window.is_full:
-                self._store.delete(Tables.cube_part_text, {"date": self._store.NOT_NULL})
-            else:
-                assert plan.window.refresh_from is not None
-                self._store.append_tail(Tables.cube_part_text, panel, plan.window.refresh_from, inclusive=True)
+        panel = panel.reindex(columns=["date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]])
+        write_part(self._store, Tables.cube_part_text, panel, plan.window, drop_empty=True)
         self._log.info(
             "Text features: history %s..%s, %d calls; output %s..%s, %d rows.",
             history_from,
             history_until,
             len(scope),
-            plan.window.since if plan.window.since is not None else "FULL",
+            plan.window.read.start if plan.window.read.start is not None else "FULL",
             calendar[-1].date(),
             len(panel),
         )

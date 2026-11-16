@@ -168,7 +168,7 @@ def fetch_sharadar_fundamentals(
             )
             continue
 
-        since = work.windows[ticker][0][0].strftime(DATE_FORMAT)
+        since = work.windows[ticker][0].start.strftime(DATE_FORMAT)
         try:
             frames = _sf1_pages(context, symbol, since, pace)
         except NotEntitledError:

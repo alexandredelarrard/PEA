@@ -21,7 +21,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, plan_window, write_part
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.momentum.features import build_feature_panel
@@ -34,6 +34,7 @@ from src.data_aggregate.utils.price.frames import (
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
+from src.utils.window import Offset, Window, WindowPolicy
 
 
 class StepCubeMomentum(Step):
@@ -60,20 +61,15 @@ class StepCubeMomentum(Step):
         # built from the newest, least settled prices -- and a strictly-after append can never
         # revisit it. The live table stopped ON a date whose features were ranked over 45 of
         # 491 tickers, and only a `--full` rebuild would have cleared it.
-        window = plan_window(
-            self._store,
-            Tables.cube_part_momentum,
-            full=full,
-            warmup=self._warmup(),
-            trading_index=load_trading_calendar(self._store),
-            refresh=PART_REFRESH_TRADING_DAYS,
+        calendar = load_trading_calendar(self._store)
+        policy = WindowPolicy(
+            Window(calendar[0], calendar[-1]), Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"), Offset(self._warmup(), "trading_sessions")
         )
-        frames = self._load_frames(window.since)
+        window = plan_window(self._store, Tables.cube_part_momentum, policy, calendar, full=full, scope=self._universe.tickers)
+        frames = self._load_frames(window.read.start)
         panel = self._price_panel(frames)
         del frames
-        n = write_part(self._store, Tables.cube_part_momentum, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
+        write_part(self._store, Tables.cube_part_momentum, panel, window, drop_empty=True)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")

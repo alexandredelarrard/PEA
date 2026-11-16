@@ -99,6 +99,8 @@ def test_a_missing_text_column_reads_empty(bond_cfg: DictConfig) -> None:
     frame = _lines(BONDS[:2]).drop(columns=["issuer_name", "title_of_class"])
 
     assert bond_line_mask(frame, bond_cfg).all(), "the CUSIP shape alone flags a convertible-note line"
+    print("SANITY CHECK: missing text columns")
+    print("With no issuer or title column the text reads empty and the CUSIP shape alone still flags both convertible-note lines.")
 
 
 def _book_with_a_priced_bond(cik: str, scale: float, bond: tuple[float, float]) -> pd.DataFrame:

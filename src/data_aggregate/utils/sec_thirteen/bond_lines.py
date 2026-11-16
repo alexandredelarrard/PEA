@@ -10,11 +10,6 @@ import pandas as pd
 from src.data_store.schema import EMPTY_MARKER
 
 
-def _upper(lines: pd.DataFrame, column: str) -> pd.Series:
-    """The upper-case text of `column` (empty where it is missing or the table lacks the column)."""
-    return lines.get(column, pd.Series("", index=lines.index)).fillna("").astype(str).str.upper()
-
-
 def bond_line_mask(lines: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.Series:
     """Lines whose position is bond principal filed as shares: a letter issue number on a numeric-issuer CUSIP, or a bond title with no ticker.
 
@@ -22,9 +17,10 @@ def bond_line_mask(lines: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.Series:
     `build_cube.bond_lines`. A CUSIP line is a bond unless its issuer or title names a fund, ADR or placeholder; a line with no ticker is
     also a bond when its title has a note, convertible, debenture, coupon or maturity marker and no preferred, warrant, unit or right word.
     """
-    # Text of the line, upper case.
-    cusip, title = _upper(lines, "cusip"), _upper(lines, "title_of_class")
-    name = _upper(lines, "issuer_name") + " " + title
+    # Text of the line, upper case (empty where missing or the table lacks the column).
+    text = lines.reindex(columns=["cusip", "issuer_name", "title_of_class"]).fillna("").astype(str).apply(lambda column: column.str.upper())
+    cusip, issuer, title = text["cusip"], text["issuer_name"], text["title_of_class"]
+    name = issuer + " " + title
     ticker = lines.get("ticker", pd.Series(None, index=lines.index, dtype=object))
     unlisted = ticker.isna() | ticker.isin(["", EMPTY_MARKER])
 
@@ -33,7 +29,7 @@ def bond_line_mask(lines: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.Series:
     by_cusip &= ~name.str.contains("|".join(cfg["name_exclusions"]), regex=True)
 
     # Title rule, only where no ticker identifies the stock.
-    by_title = title.str.contains("|".join(cfg["title_markers"]), regex=True) & ~(title + " " + _upper(lines, "issuer_name")).str.contains(
+    by_title = title.str.contains("|".join(cfg["title_markers"]), regex=True) & ~(title + " " + issuer).str.contains(
         "|".join(cfg["title_exclusions"]), regex=True
     )
     return by_cusip | (unlisted & by_title)

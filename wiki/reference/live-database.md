@@ -71,6 +71,7 @@ A general post-assembly drift monitor remains proposed, not implemented. The cur
 | Table | Observed scale | Observed coverage | Operational implication |
 | --- | --- | --- | --- |
 | `sec13f_hr` | about 95.8M rows / 31 GB, 369,417 complete accessions (2026-11-11) | period rows from 1987, usable broad coverage much later; 2025-2026 hole (see below) | Stream and scope every read; evaluate coverage on manager counts. |
+| `sec_13f_manager_details` | 408,842 rows (2026-11-15) | one row per 13F filer and report quarter, 1999-06-30 to 2026-09-30; extract columns 100% name fill; profile columns not populated yet | See [13F manager details](#13f-manager-details-2026-11-15). |
 | `prices` | about 1.78M rows | 2011-08 to 2026-08, 500 tickers | Price-dependent integration tests can run only when this table is present and current. |
 | `earnings_call_sections` | 2,804,060 paragraph rows, 33,591 calls (2026-10-02 full load) | 2005-10 to the load date, 487 tickers | Text is the payload; project and scope by ticker. |
 | `sec_filing_text` | about 34K rows / 1.2 GB | 2011-07 to 2026-08 | Do not perform unbounded text reads. |
@@ -88,6 +89,12 @@ The earnings-call tables were cut over to the defeatbeta paragraph grain on 2026
 - `cube_part_text` currently holds only the 3 sample tickers (3,780 rows) with exactly the 12 approved `f_ec_*` columns. A full `build-text -F` after scoring restores the universe. The pre-cutover part is kept as `_cache/p5_cube_part_text.dump` in the evidence folder.
 - The pre-cutover tables are renamed `earnings_call_sections_legacy` (110,994 rows, 1,618 MB), `earnings_call_sentiment_legacy` (55,863 rows, 11 MB) and `earning_calls_embedding_legacy` (1,379,014 rows, 8,658 MB), pending the user's confirmation to drop them. Nothing reads them.
 - The `wiki_pageviews` table measured in August 2026 (about 1.70M rows) has no producer or reader left in the code.
+
+## 13F manager details (2026-11-15)
+
+`sec_13f_manager_details` was filled once by `thirteen-f-managers -F` in 166 s: 408,842 rows, no duplicate key, periods 1999-06-30 to 2026-09-30, `first_filed_date` 1999-07-01 to 2026-11-10 (never before its period, never after the run date; median 41 days after the period). Coverage against the `sec13f_hr` markers (403,277 distinct complete or invalid (cik, period) pairs from 1999-06-30): 33 pairs have no row (31 are filings `sec13f_hr` stores under a different CIK than the data-set submission, whose row exists under the ZIP CIK; 2 are marker typos dropped by the filed-before-period rule); every one of the 307,606 ZIP (cik, period) pairs has a row. Name fill is 100% (no null, blank or padded name); ZIP-source rows carry state 100%, filer file number 18.1% and report type 100% (`holdings` 292,216, `combination` 15,145); the 101,481 index-sourced rows have a null report type. Source split: pre-2013 periods are almost all `edgar_index`; 2014-2025 hold 2 to 96 index rows per year; 2026 holds 5,481 index and 17,728 ZIP rows. 8,264 zip-era rows stay `edgar_index` (2,552 filed in 2013-04..05 before the first data set carries content, 5,707 filed after the newest cached data set ends on 2026-08-31, 5 in no data set); the later ones are upgraded when a newer data set is cached. A normal run reads one data set plus the overlap (about 60 s, mostly the full marker read of `sec13f_hr`) and changes 0 rows.
+
+The 30 profile columns are NOT populated in the dev database: no profile row has been written and no full-history profile run was done. The first production backfill (`build-manager-profile --full`) is pending and also runs the first live `ensure_columns` ALTER. Profile validation ran on a scratch copy of 28 quarters (8 sample quarters; fill, range and distribution results are in the validation run folder `reports/validate/2026-11-15-sec-13f-manager-profile/`).
 
 ## Fundamentals snapshot
 

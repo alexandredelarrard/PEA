@@ -198,6 +198,7 @@ rtk "$PY" -m src data_aggregate build-prices
 rtk "$PY" -m src data_aggregate build-target
 rtk "$PY" -m src data_aggregate build-fundamentals
 rtk "$PY" -m src data_aggregate build-momentum
+rtk "$PY" -m src data_aggregate build-manager-profile   # not a cube part; see Manager profile (13F) below
 rtk "$PY" -m src data_aggregate build-text
 rtk "$PY" -m src data_aggregate build-institutionals
 rtk "$PY" -m src data_aggregate build-sec-thirteen
@@ -209,6 +210,15 @@ rtk "$PY" -m src data_aggregate cube-status
 `build-prices -F` rebuilds `cube_part_prices` in full; `build-prices -t X,Y -F` deletes every saved row of X and Y and rebuilds those tickers from scratch, other tickers untouched (`-t` without `-F` is refused). A normal run takes the same path by itself for any ticker whose history older than the refresh window changed; no other part needs a rerun.
 
 The same nine part objects are driven by eight builders in the composite build, individual CLI commands, and the sequential Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
+
+### Manager profile (13F)
+
+`data_aggregate build-manager-profile [-F]` (not a cube part, not in the chain; DAG task `build_manager_profile` beside `build_momentum`) fills the 30 profile columns of `sec_13f_manager_details` after `thirteen-f-managers` has filled the rows. A night with every row profiled reads no `sec13f_hr` lines and ends in about 6 s (the whole manager table is read and its names classified). A night with a new filing quarter reads the new quarter and the four before it (about 8 to 10 minutes at today's quarter size). `-F` recomputes every quarter from 1999-06-30.
+
+First production backfill, once after the work is accepted: run `thirteen-f-managers` (and `-F` only when the table is empty), then `build-manager-profile --full`. Nothing has been backfilled yet and the live Postgres `ensure_columns` ALTER first runs there. Projected cost, not run: a 28-quarter pass over the validation window took 1,697 s with a peak working set of 4.07 GB, a recent quarter about 115 s, and early quarters are 5 to 10 times smaller; the P0 upper bound is 109 quarters x 51 s of read and clean (about 1.5 h), memory projected at about 4.2 GB (plateau between quarters 1.6 to 2.0 GB). Run it with the DAG paused and no cube build active. A run from a git worktree needs the git-ignored `data/` cache (`data/sec_13f_datasets`, `data/sec_edgar_index`) linked from the main checkout for `thirteen-f-managers`; the profile step reads only database tables.
+
+Known limitations: the profile repairs a row only when its category is missing or no longer matches the cleaned manager name, so an extract-row change other than a manager-name change (accession, first filing date, source) and a late arrival of `sec13f_hr` lines for an already categorised row are repaired only by `build-manager-profile -F`. Categories are name-keyword rules: `unknown` is about 17% of rows (26.8% in 1999, 14.6% in 2025; person and brand names), and `fund` is broad (74.9% of rows). Pre-2013 sector coverage is 41 to 46% of equity value (`mapped_share`) because merged and delisted issuers are absent from `cusip_ticker_map`. Residual unit-error books (a book left at 10 to 100 times its filed total) stay under 0.5% of the books of a quarter.
+
 
 ### Assemble selected inputs and check readiness
 

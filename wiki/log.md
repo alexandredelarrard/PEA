@@ -1173,3 +1173,14 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Coverage: unit per filing (modal power of ten, at least five priced securities, 80% inside the 0.35-3.5 band), one-time line repair, consensus price for securities the price table does not cover, 80% line and cover acceptance, one ceiling rule that excludes lines instead of stopping the build, periods outside 1999-today and bond lines removed, 100-day carry, book_known replacing comparison_eligible. A full rebuild of `cube_part_sec_thirteen` ran without a stop: 0.22% of broad books rejected.
 - Pages: [Data aggregate](./modules/data-aggregate.md), [Data access](./guides/data-access.md).
+
+## 2026-11-15: refresh — 13F coverage floor at 1999-06-30
+
+- source_commit: 2e86ce2f
+- Coverage: `sec13f_hr` `coverage_start` and the `data_availability` entry move to 1999-06-30, the first 13F period, so the 13F cube starts there instead of at the 2013 XML era; the stale "not usable before 2013" comment is replaced.
+- Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md).
+
+## 2026-11-16: refresh — 13F manager details and manager profile
+
+- Coverage: new table `sec_13f_manager_details` (key `(cik, period)`, nine extract and thirty profile columns, two writers); extract step `thirteen-f-managers` (DAG task `thirteen_f_managers`, `sec_bulk`, ALL_DONE after `zips_ingest_13f` and `edgar_index`) from cached data-set covers, the cached EDGAR index and stored markers, original 13F-HR accession only, no 13F-NT; profile step `build-manager-profile` (DAG task `build_manager_profile` beside `build_momentum`, `max_active_tasks` 2, not a cube part) with name-keyword categories in `configs/manager_categories.yml` and tunables in `build_cube.manager_profile`; the dev table holds 408,842 extract rows and no profile values yet (first production backfill pending).
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Live database](./reference/live-database.md), [Configuration](./reference/configuration.md), [Data extraction](./modules/data-extract.md), [Data aggregate](./modules/data-aggregate.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Run the pipeline](./guides/run-the-pipeline.md).

@@ -80,6 +80,16 @@ KNOWN_TRUTH = [
     ("Acacia Research Corp", "fund"),
     ("Jay G Goldman", "fund"),
     ("Oppenheimer and Close", "fund"),
+    # family offices and fund trusts read as fund managers; banks and foundations are unchanged
+    ("EA Series Trust", "fund"),
+    ("RBC Phillips, Hager & North Investment Counsel Inc.", "fund"),
+    ("BLI - Banque de Luxembourg Investments", "fund"),
+    ("Pathstone Family Office, LLC", "fund"),
+    ("Duquesne Family Office LLC", "fund"),
+    ("Wells Fargo Bank NA", "bank"),
+    ("Northern Trust Company", "bank"),
+    ("Ford Foundation", "other"),
+    ("Smith Family Foundation", "other"),
 ]
 
 

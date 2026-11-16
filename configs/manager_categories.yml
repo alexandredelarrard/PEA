@@ -117,7 +117,7 @@ manager_categories:
 
     - name: nonprofit_or_family
       category: other
-      description: Foundations, endowments, universities, churches, hospitals and family offices or trusts.
+      description: Foundations, endowments, universities, churches, hospitals and revocable or irrevocable trusts.
       patterns:
         - FOUNDATION
         - ENDOWMENT
@@ -131,8 +131,6 @@ manager_categories:
         - MUSEUM
         - CHARITABLE
         - CHARITIES
-        - FAMILY OFFICE
-        - FAMILY
         - REVOCABLE
         - IRREVOCABLE
       unless:
@@ -249,6 +247,9 @@ manager_categories:
         - INVESTMENT MANAGEMENT
         - FUND MANAGEMENT
         - INVESTMENT TRUST
+        - SERIES TRUST
+        - INVESTMENTS
+        - COUNSEL
         - REAL ESTATE
 
     - name: fund_or_asset_manager

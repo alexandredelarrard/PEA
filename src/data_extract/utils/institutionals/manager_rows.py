@@ -12,6 +12,8 @@ import logging
 
 import pandas as pd
 
+from src.utils.string import strip_blank
+
 logger = logging.getLogger(__name__)
 
 #: The columns this extract owns, in table order; the profile columns belong to `data_aggregate`.
@@ -44,13 +46,6 @@ _FILING_COLUMNS = [
 ]
 
 
-def _text(values: pd.Series) -> pd.Series:
-    """Stripped text with blanks as None."""
-    text = values.astype("string").str.strip()
-    cleaned = text.mask(text.isna() | (text == ""))
-    return cleaned.astype(object).where(cleaned.notna(), None)
-
-
 def zip_manager_filings(df_submissions: pd.DataFrame, df_cover: pd.DataFrame, source: str) -> pd.DataFrame:
     """Filings of one data set: `zip_submissions` rows (13F-HR(/A) only, period from the cover) joined to the cover page's
     name, state, file number and report type; `source` is the ZIP name."""
@@ -63,9 +58,9 @@ def zip_manager_filings(df_submissions: pd.DataFrame, df_cover: pd.DataFrame, so
             "accession_number": df["accession"].astype(object),
             "filing_date": df["filing_date"],
             "original": ~df["is_amendment"].astype(bool),
-            "manager_name": _text(df["FILINGMANAGER_NAME"]),
-            "state_or_country": _text(df["FILINGMANAGER_STATEORCOUNTRY"]),
-            "sec_file_number": _text(df["SECFILENUMBER"]),
+            "manager_name": strip_blank(df["FILINGMANAGER_NAME"]),
+            "state_or_country": strip_blank(df["FILINGMANAGER_STATEORCOUNTRY"]),
+            "sec_file_number": strip_blank(df["SECFILENUMBER"]),
             "report_type": df["REPORTTYPE"].astype("string").str.strip().str.upper().map(_REPORT_TYPES).astype(object),
             "source": source,
         }
@@ -84,7 +79,7 @@ def marker_manager_filings(df_markers: pd.DataFrame, df_index: pd.DataFrame) -> 
             "accession_number": df["accession_number"],
             "filing_date": df["filing_date"].fillna(df["filed"]),
             "original": df["form"].astype("string").str.strip().str.upper() == "13F-HR",
-            "manager_name": _text(df["company"]),
+            "manager_name": strip_blank(df["company"]),
             "state_or_country": None,
             "sec_file_number": None,
             "report_type": None,

@@ -41,7 +41,7 @@ RESUME_MARKET = "market"
 RESUME_SNAPSHOT = "snapshot"
 
 # The sentinel a child-sequence or label column takes on an empty-filing marker row.
-_EMPTY = "_empty"
+EMPTY_MARKER = "_empty"
 #: The 10-K family the employees text walk reads and its LLM pass decides.
 _ANNUAL_REPORT_FORMS = ("10-K", "10-K/A", "10-K405", "10-K405/A")
 #: The proxy forms the DEF 14A text walk reads and its LLM pass extracts.
@@ -531,7 +531,7 @@ class Tables:
         freshness="quarterly",
         managed=False,
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-Q"), source_start="2009-04-15"),
-        empty_marker=("field", _EMPTY),
+        empty_marker=("field", EMPTY_MARKER),
         desc="fundamentals (linkbase)",
         retrieval_columns=(
             "ticker",
@@ -820,7 +820,7 @@ class Tables:
         # One marker per accession, cusip and ticker '_empty': parse_status 'complete' for a stored
         # book, 'invalid' (reason in value_unit_evidence) for a data-set packet that failed
         # validation; the ZIP ingest skips both, the walk reads 'complete' only.
-        empty_marker=("cusip", _EMPTY),
+        empty_marker=("cusip", EMPTY_MARKER),
     )
     # One row per 13F filer (CIK) and report quarter, from 1999-06-30: who the filer is and how it invests.
     # Two writers own different columns and neither touches the other's (precedent: `universe_tickers`).
@@ -834,16 +834,17 @@ class Tables:
     # `first_filed_date` (first public filing of the period, never moved later); `source` (ZIP name or
     # `edgar_index`: where the name came from). 13F-NT notice filers are not stored.
     #
-    # Profile columns, written by `data_aggregate` (`build-manager-profile`) over the trailing 4 quarters including
-    # `period` (minimum 2 usable quarters, else null; null means unknown, never zero), from books filed on or before
-    # `first_filed_date`: `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other | unknown,
-    # from the cleaned `manager_name`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
+    # Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `build_cube.manager_profile`) over the
+    # trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
+    # unknown, never zero), from books filed on or before `first_filed_date`:
+    # `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other | unknown, from the cleaned
+    # `manager_name`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
     # of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
-    # more than 10% in shares; null when the preceding quarter is missing); `new_position_rate` (mean share of current
-    # positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
+    # more than `turnover_threshold` in shares; null when the preceding quarter is missing); `new_position_rate` (mean share
+    # of current positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
     # `pct_equity_us`, `pct_equity_foreign`, `pct_etf`, `pct_bond`, `pct_options`, `pct_other` (the six sum to 1);
     # cap mix, mean share of equity weight by the 13F-derived size of each ticker (aggregate reported value across
-    # filers, large = top 70% of cumulative value, mid = next 20%, small = last 10%): `pct_cap_small`, `pct_cap_mid`,
+    # filers, split into large, mid and small at `cap_breakpoints`): `pct_cap_small`, `pct_cap_mid`,
     # `pct_cap_large`; sector mix, mean share of equity weight: `pct_sector_<sector>` for Sharadar's 11 sectors
     # (`basic_materials`, `communication_services`, `consumer_cyclical`, `consumer_defensive`, `energy`,
     # `financial_services`, `healthcare`, `industrials`, `real_estate`, `technology`, `utilities`) and `pct_sector_unmapped`;
@@ -925,7 +926,7 @@ class Tables:
         resume=Resume(
             RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("3", "4", "5", "3/A", "4/A", "5/A"), period_col="quarter", source_start="2006-01-01"
         ),
-        empty_marker=("security_type", _EMPTY),
+        empty_marker=("security_type", EMPTY_MARKER),
         desc="insider Forms 3/4/5 (EDGAR)",
         retrieval_columns=(
             "accession_number",
@@ -1283,7 +1284,7 @@ class Tables:
         ),
         freshness="yearly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
-        empty_marker=("def14a_json", _EMPTY),
+        empty_marker=("def14a_json", EMPTY_MARKER),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
     # Free by construction: the tokens are already paid, so these rows cost nothing beyond the
@@ -1302,7 +1303,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("name", _EMPTY),
+        empty_marker=("name", EMPTY_MARKER),
         # StepCubeGovernance. 134,490 rows is a real read beside the 21.7M-row 13F table in
         # the same build, and the table is WIDE with columns the governance builders never
         # touch (`cik`, `gender_basis`, `reconciles`, `fiscal_year`).
@@ -1320,7 +1321,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("name", _EMPTY),
+        empty_marker=("name", EMPTY_MARKER),
         marker_key_fill=(("fiscal_year", -1),),
         read_columns=("ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"),
     )
@@ -1331,7 +1332,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("name", _EMPTY),
+        empty_marker=("name", EMPTY_MARKER),
         # StepCubeGovernance, 80,252 rows. ⚠ SIX components, and the first is `fees_earned` --
         # Item 402(k) has no `salary` and no `bonus` line. `impute_director_comp` sums
         # exactly these six into a NULL `total`.
@@ -1356,7 +1357,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("holder_name", _EMPTY),
+        empty_marker=("holder_name", EMPTY_MARKER),
     )
     sec_8k = Table(
         "sec_8k",
@@ -1365,7 +1366,7 @@ class Tables:
         date_type_cols=("filing_date", "period_of_report"),
         freshness="daily",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A"), source_start="1993-01-01"),
-        empty_marker=("item", _EMPTY),
+        empty_marker=("item", EMPTY_MARKER),
         desc="8-K (edgartools)",
         retrieval_columns=(
             "ticker",
@@ -1403,7 +1404,7 @@ class Tables:
         date_type_cols=("filed", "period_of_report"),
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q"), source_start="1993-01-01"),
-        empty_marker=("section", _EMPTY),
+        empty_marker=("section", EMPTY_MARKER),
         desc="10-K/10-Q text (edgartools)",
         retrieval_columns=(
             "ticker",
@@ -1428,7 +1429,7 @@ class Tables:
         date_type_cols=("filing_date", "period_of_report"),
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
-        empty_marker=("source_document", _EMPTY),
+        empty_marker=("source_document", EMPTY_MARKER),
         desc="10-K employees text (EDGAR)",
         retrieval_columns=(
             "ticker",
@@ -1454,7 +1455,7 @@ class Tables:
         date_type_cols=("filing_date",),
         freshness="yearly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
-        empty_marker=("section", _EMPTY),
+        empty_marker=("section", EMPTY_MARKER),
         desc="DEF 14A text (EDGAR)",
         retrieval_columns=(
             "ticker",

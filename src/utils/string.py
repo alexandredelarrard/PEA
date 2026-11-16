@@ -7,8 +7,8 @@ person key in `src/utils/names.py`.
 """
 
 import re
-from typing import Any, cast
 from datetime import datetime
+from typing import Any, cast
 
 import pandas as pd
 
@@ -42,6 +42,13 @@ def pad_cik_series(values: pd.Series) -> pd.Series:
     return digits.str.zfill(10).where(digits != "", "").astype(object)
 
 
+def strip_blank(values: pd.Series) -> pd.Series:
+    """Vectorised stripped text, object dtype, with blanks and nulls as None."""
+    text = values.astype("string").str.strip()
+    cleaned = text.mask(text.isna() | (text == ""))
+    return cleaned.astype(object).where(cleaned.notna(), None)
+
+
 def normalise_ticker(value: object) -> str:
     """Canonical ticker spelling: stripped and upper-case."""
     return str(value).strip().upper()
@@ -57,6 +64,7 @@ def squash(symbol: object) -> str:
     if symbol is None or (not isinstance(symbol, str) and pd.isna(cast(Any, symbol))):
         return ""
     return re.sub(r"[\s\-./]", "", str(symbol)).upper()
+
 
 def run_date(as_of: datetime | None) -> pd.Timestamp:
     """The `--as-of` date at midnight, or today."""

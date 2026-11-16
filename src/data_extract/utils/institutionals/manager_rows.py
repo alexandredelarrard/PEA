@@ -104,11 +104,9 @@ def _snap_to_quarter_end(period: pd.Series, filed: pd.Series) -> pd.Series:
 def candidate_rows(df_filings: pd.DataFrame, floor: pd.Timestamp, until: pd.Timestamp) -> pd.DataFrame:
     """One row per (cik, period) from `df_filings`, plus the `original` flag of its accession.
 
-    A filing whose period is not a quarter end takes the latest quarter end on or before its filing date; `source_period` is
-    the period it was filed under. Such a filing is dropped when a quarter-end filing of the same (cik, period) exists.
-    Dropped: a period before `floor`, a filing dated before its period end or after `until`, a filing without a name.
-    A filing present from a ZIP and from the index keeps the ZIP's evidence. The accession is the earliest original
-    13F-HR, else the earliest accession; `first_filed_date` is the earliest filing date over originals and amendments."""
+    A period that is not a quarter end is snapped (`source_period` keeps it) and gives way to a quarter-end filing of its quarter.
+    Dropped: a period before `floor`, a filing dated before its period end or after `until`, a nameless filing. ZIP evidence beats the
+    index; the accession is the earliest original 13F-HR (else the earliest), `first_filed_date` the earliest filing date of the group."""
     # clean: the filings that can describe a stored row, each in a quarter end
     source_period = pd.to_datetime(df_filings["period"]).dt.normalize()
     filed = pd.to_datetime(df_filings["filing_date"]).dt.normalize()

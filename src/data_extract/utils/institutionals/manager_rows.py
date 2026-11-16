@@ -4,6 +4,8 @@ manager_rows.py (src/data_extract/utils/institutionals/manager_rows.py)
 Pure frame logic of the `sec_13f_manager_details` extract: filings (one per 13F-HR(/A) accession, from a data set's cover
 pages or from marker rows joined to the EDGAR master index) become one row per (cik, period); rows are merged with the
 stored rows so only differences are written. Only what the SEC gives is kept: no category, no parent link, no 13F-NT.
+A filing whose period is not a quarter end (a typo in the filing) is placed in the latest quarter end on or before its
+filing date and keeps the period it was filed under in `source_period`.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ EXTRACT_COLUMNS: tuple[str, ...] = (
     "accession_number",
     "first_filed_date",
     "source",
+    "source_period",
 )
 #: `source` of a row whose name comes from the EDGAR master index; any other value is the data-set ZIP name.
 INDEX_SOURCE = "edgar_index"
@@ -92,15 +95,24 @@ def marker_manager_filings(df_markers: pd.DataFrame, df_index: pd.DataFrame) -> 
     )[_FILING_COLUMNS]
 
 
+def _snap_to_quarter_end(period: pd.Series, filed: pd.Series) -> pd.Series:
+    """`period`, or the latest quarter end on or before `filed` where `period` is not a quarter end."""
+    latest = filed + pd.Timedelta(days=1) + pd.offsets.QuarterEnd(-1)
+    return period.where(period.dt.is_quarter_end, latest)
+
+
 def candidate_rows(df_filings: pd.DataFrame, floor: pd.Timestamp, until: pd.Timestamp) -> pd.DataFrame:
     """One row per (cik, period) from `df_filings`, plus the `original` flag of its accession.
 
+    A filing whose period is not a quarter end takes the latest quarter end on or before its filing date; `source_period` is
+    the period it was filed under. Such a filing is dropped when a quarter-end filing of the same (cik, period) exists.
     Dropped: a period before `floor`, a filing dated before its period end or after `until`, a filing without a name.
     A filing present from a ZIP and from the index keeps the ZIP's evidence. The accession is the earliest original
     13F-HR, else the earliest accession; `first_filed_date` is the earliest filing date over originals and amendments."""
-    # clean: the filings that can describe a stored row
-    period = pd.to_datetime(df_filings["period"]).dt.normalize()
+    # clean: the filings that can describe a stored row, each in a quarter end
+    source_period = pd.to_datetime(df_filings["period"]).dt.normalize()
     filed = pd.to_datetime(df_filings["filing_date"]).dt.normalize()
+    period = _snap_to_quarter_end(source_period, filed)
     valid = (period >= floor) & (filed >= period) & (filed <= until) & df_filings["manager_name"].notna() & (df_filings["cik"] != "")
     if not valid.all():
         logger.warning(
@@ -109,10 +121,14 @@ def candidate_rows(df_filings: pd.DataFrame, floor: pd.Timestamp, until: pd.Time
             floor.date(),
             until.date(),
         )
-    df = df_filings.loc[valid].assign(period=period[valid], filing_date=filed[valid])
+    df = df_filings.loc[valid].assign(period=period[valid], source_period=source_period[valid], filing_date=filed[valid])
 
     # merge: one filing per accession, the ZIP's evidence first
     df = df.assign(indexed=df["source"] == INDEX_SOURCE).sort_values("indexed", kind="stable").drop_duplicates(["cik", "accession_number"])
+
+    # merge: a snapped filing competes only with the snapped filings of its quarter
+    snapped = df["source_period"] != df["period"]
+    df = df[~snapped | snapped.groupby([df["cik"], df["period"]]).transform("all")]
 
     # compute: the accession of each (cik, period) and its first filing date over every filing
     df = df.assign(original=df["original"].astype(bool)).sort_values(
@@ -135,7 +151,9 @@ def rows_to_save(df_rows: pd.DataFrame, df_stored: pd.DataFrame | None) -> pd.Da
 
     # clean: the stored rows with normalised keys and dates
     stored = df_stored[columns].assign(
-        period=pd.to_datetime(df_stored["period"]).dt.normalize(), first_filed_date=pd.to_datetime(df_stored["first_filed_date"]).dt.normalize()
+        period=pd.to_datetime(df_stored["period"]).dt.normalize(),
+        first_filed_date=pd.to_datetime(df_stored["first_filed_date"]).dt.normalize(),
+        source_period=pd.to_datetime(df_stored["source_period"]).dt.normalize(),
     )
     data_cols = [c for c in columns if c not in _KEY]
     stored = stored.rename(columns={c: f"{c}_stored" for c in data_cols})

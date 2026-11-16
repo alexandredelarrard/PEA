@@ -19,6 +19,7 @@ EXTRACT_COLUMNS = {
     "accession_number": "TEXT",
     "first_filed_date": "DATE",
     "source": "TEXT",
+    "source_period": "DATE",
 }
 SECTORS = (
     "basic_materials",
@@ -62,7 +63,7 @@ def test_registry_lists_the_manager_details_table() -> None:
     assert table.name == "sec_13f_manager_details" and table.pk == ("cik", "period")
     assert table.kind == "extract" and table.managed
     assert table.date_col == "period" and table.ticker_col is None
-    assert table.date_type_cols == ("period", "first_filed_date")
+    assert table.date_type_cols == ("period", "first_filed_date", "source_period")
     assert table.freshness == "quarterly" and table.freshness_col == "first_filed_date"
     assert table.resume == Resume("market", "cik", "first_filed_date", 92, source_start="1999-07-01")
     print("\n=== SANITY CHECK: registry entry ===")

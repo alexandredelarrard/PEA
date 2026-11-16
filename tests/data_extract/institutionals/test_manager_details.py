@@ -104,6 +104,16 @@ _HUNTINGTON = [
 ]
 _RBC = [(50916, "RBC Capital Markets CORP", "13F-HR/A", "2008-11-14", "0001047469-08-012330")]
 
+# Real filings whose marker period is not a quarter end: (cik, company, form, filed, accession, marker period, quarter end it belongs to).
+_SNAPPED = [
+    (277990, "MCCULLOUGH ANDREWS & CAPPIELLO INC", "13F-HR", "2003-08-04", "0000277990-03-000004", "2003-06-03", "2003-06-30"),
+    (1282189, "VALUEWORKS LLC", "13F-HR", "2007-02-20", "0001282189-07-000003", "2007-02-15", "2006-12-31"),
+    (1056529, "MOORE CAPITAL ADVISORS LLC", "13F-HR", "2001-08-14", "0000728672-01-500117", "2001-06-29", "2001-06-30"),
+]
+# Moore Capital 2001Q1: a filing under 2001-03-30 (filed first) beside the quarter-end filing of 2001-03-31 (filed later).
+_MOORE_MID = (1056529, "MOORE CAPITAL ADVISORS LLC", "13F-HR", "2001-05-15", "0000728672-01-500053", "2001-03-30")
+_MOORE_END = (1056529, "MOORE CAPITAL ADVISORS LLC", "13F-HR", "2001-05-18", "0000921530-01-500044", "2001-03-31")
+
 
 def _write_data_set(cache: Path, filename: str, filings: Iterable[tuple], *, folder: str | None = None) -> None:
     """A data-set ZIP holding the SUBMISSION and COVERPAGE members (upper-case headers, the SEC's names) of `filings`."""
@@ -266,6 +276,44 @@ def test_pre_2013_rows_join_index_names_to_markers(context: Any, store: Any) -> 
     print("Names come from the index, original accessions win, cover fields stay NULL. Validated.")
 
 
+def test_a_period_that_is_not_a_quarter_end_is_snapped_and_the_source_period_kept(context: Any, store: Any) -> None:
+    """Three real mistyped marker periods land in the latest quarter end on or before their filing date; the typo is `source_period`."""
+    seed_index(context, [row[:5] for row in _SNAPPED])
+    store.save(Tables.sec13f_hr, pd.DataFrame([_marker(f"{cik:010d}", acc, filed, form, typo) for cik, _, form, filed, acc, typo, _ in _SNAPPED]))
+
+    first = fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+    df = _rows(store).set_index("cik")
+    df["source_period"] = pd.to_datetime(df["source_period"])
+    second = fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+
+    assert first == 3 and second == 0 and df["period"].dt.is_quarter_end.all(), "no row keeps a period that is not a quarter end"
+    for cik, _, _, filed, acc, typo, quarter_end in _SNAPPED:
+        row = df[df.index == f"{cik:010d}"].iloc[0]
+        assert row["period"] == pd.Timestamp(quarter_end) and row["source_period"] == pd.Timestamp(typo), cik
+        assert row["accession_number"] == acc and row["first_filed_date"] == pd.Timestamp(filed) and row["period"] <= row["first_filed_date"]
+    print("\n=== SANITY CHECK: snapped periods ===")
+    print(df[["period", "source_period", "first_filed_date"]].to_string())
+    print(
+        "Each typo period is placed in the quarter end it belongs to (2003-06-03 -> 06-30, 2007-02-15 -> 2006-12-31); a re-run writes 0. Validated."
+    )
+
+
+def test_a_snapped_filing_gives_way_to_the_quarter_end_filing_of_its_quarter(context: Any, store: Any) -> None:
+    """Moore Capital 2001Q1: the filing under 2001-03-30 would snap onto 2001-03-31, which a filing already holds; it is dropped."""
+    filings = [_MOORE_MID, _MOORE_END]
+    seed_index(context, [row[:5] for row in filings])
+    store.save(Tables.sec13f_hr, pd.DataFrame([_marker(f"{cik:010d}", acc, filed, form, period) for cik, _, form, filed, acc, period in filings]))
+
+    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+
+    df = _rows(store)
+    assert len(df) == 1 and df.iloc[0]["period"] == pd.Timestamp("2001-03-31") and df.iloc[0]["accession_number"] == _MOORE_END[4]
+    assert df.iloc[0]["first_filed_date"] == pd.Timestamp("2001-05-18") and pd.Timestamp(df.iloc[0]["source_period"]) == pd.Timestamp("2001-03-31")
+    print("\n=== SANITY CHECK: snapped filing beside a quarter-end filing ===")
+    print(df[["period", "source_period", "accession_number", "first_filed_date"]].to_string(index=False))
+    print("One row: the quarter-end filing wins and the earlier mistyped one is dropped. Validated.")
+
+
 def test_zip_cover_takes_precedence_over_the_index_for_the_same_accession(context: Any, store: Any) -> None:
     """A filing present as marker + index row and as a ZIP cover reads the ZIP (name, state, source)."""
     seed_index(context, [(1006435, "PIONEER TRUST BANK NA INDEX SPELLING", "13F-HR", "2023-10-30", _PIONEER[0])])
@@ -413,6 +461,7 @@ def test_rows_to_save_keeps_stored_zip_evidence_against_index_evidence() -> None
                 "accession_number": _PIONEER[0],
                 "first_filed_date": pd.Timestamp("2023-10-31"),
                 "source": _Q4,
+                "source_period": pd.Timestamp("2023-09-30"),
             }
         ]
     )

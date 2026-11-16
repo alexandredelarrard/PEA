@@ -152,7 +152,8 @@ def fetch_manager_details(context: Context, full: bool, as_of: pd.Timestamp | No
     if df_rows.empty:
         return 0
 
-    # compute: only the rows that differ from the stored ones
+    # compute: only the rows that differ from the stored ones (a table created before an extract column existed gains it first)
+    context.store.ensure_columns(Tables.sec_13f_manager_details, df_rows[list(EXTRACT_COLUMNS)])
     df_changed = rows_to_save(df_rows, _load_stored(context, df_rows, full))
 
     # save: extract columns only; the profile columns stay as the profile step wrote them

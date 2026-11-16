@@ -827,12 +827,14 @@ class Tables:
     # A row is available at `first_filed_date`; comparisons across quarters are by `period`.
     #
     # Extract columns, written by `data_extract` (`thirteen-f-managers`) exactly as the SEC gives them, no deduction:
-    # `cik`; `period` (report quarter end); `manager_name` (cover name for ZIP-era periods, EDGAR master-index company
+    # `cik`; `period` (report quarter end; a filing whose own period is not a quarter end is placed in the latest quarter end on or
+    # before its first filing date); `manager_name` (cover name for ZIP-era periods, EDGAR master-index company
     # name before; never null); `state_or_country` and `sec_file_number` (cover; null before the ZIP era);
     # `report_type` (`holdings` | `combination`; null before 2013, the index does not carry it); `accession_number`
     # (the original 13F-HR, the earliest accession of the period when none is stored; amendments are ignored);
     # `first_filed_date` (first public filing of the period, never moved later); `source` (ZIP name or
-    # `edgar_index`: where the name came from). 13F-NT notice filers are not stored.
+    # `edgar_index`: where the name came from); `source_period` (the period the filing is stored under in `sec13f_hr`: equal to
+    # `period`, except for a snapped filing, where it is the filing's own non-quarter-end period). 13F-NT notice filers are not stored.
     #
     # Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `build_cube.manager_profile`) over the
     # trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
@@ -857,7 +859,7 @@ class Tables:
         ("cik", "period"),
         date_col="period",
         ticker_col=None,
-        date_type_cols=("period", "first_filed_date"),
+        date_type_cols=("period", "first_filed_date", "source_period"),
         freshness="quarterly",
         freshness_date_col="first_filed_date",
         resume=Resume(RESUME_MARKET, "cik", "first_filed_date", 92, source_start="1999-07-01"),

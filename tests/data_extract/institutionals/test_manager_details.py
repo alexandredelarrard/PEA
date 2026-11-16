@@ -465,3 +465,47 @@ def test_real_cached_zip_rows_equal_the_covers(filename: str) -> None:
     print(f"\n=== SANITY CHECK: real {filename} ===")
     print(f"{len(rows)} rows from {len(submitted)} 13F-HR(/A) accessions; 20 sampled covers equal the rows.")
     print("Rows follow the cover as filed and carry no notice filer. Validated.")
+
+
+def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
+    context: Any, store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """100k old rows still lacking cover evidence neither pin the window at the first data set nor trigger a key IN-list."""
+    n_old = 100_000
+    old = pd.DataFrame(
+        {
+            "cik": [f"{i + 1_000_000:010d}" for i in range(n_old)],
+            "period": pd.Timestamp("2013-03-31"),
+            "manager_name": "OLD INDEX ROW",
+            "accession_number": [f"0000000000-13-{i:06d}" for i in range(n_old)],
+            "first_filed_date": pd.Timestamp("2013-04-15"),
+            "source": INDEX_SOURCE,
+        }
+    )
+    store.insert(Tables.sec_13f_manager_details, old)
+    _write_data_set(_cache(context), _Q2, [_ABACUS])
+    _write_data_set(_cache(context), _Q3, [_PIONEER_Q3, _NICHOLAS])
+    _write_data_set(_cache(context), _Q4, [_PIONEER, _CAPITAL])
+    as_of = pd.Timestamp("2023-12-31")
+    calls: list[Any] = []
+    real_load = store.load
+
+    def _recording_load(table: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs.get("where"))
+        return real_load(table, *args, **kwargs)
+
+    monkeypatch.setattr(store, "load", _recording_load)
+    opened = _spy_zip_reads(monkeypatch)
+
+    with caplog.at_level(logging.INFO):
+        first = fetch_manager_details(context, full=False, as_of=as_of)
+        opened_first = list(opened)
+        second = fetch_manager_details(context, full=False, as_of=as_of)
+
+    assert opened_first == [_Q3, _Q4], "the newest two data sets only, never back to the first one"
+    assert any("filings from 2023-07-01" in message for message in caplog.messages)
+    assert all(not isinstance(where, pd.DataFrame) and not (isinstance(where, dict) and "cik" in where) for where in calls), "no key list is issued"
+    assert first == 4 and second == 0, "the second run is idempotent"
+    print("\n=== SANITY CHECK: bounded window ===")
+    print(f"{n_old} old index rows; opened {opened_first}; first run {first} row(s), second {second}")
+    print("The window starts at the second-newest data set, no key IN-list is used, a re-run writes nothing. Validated.")

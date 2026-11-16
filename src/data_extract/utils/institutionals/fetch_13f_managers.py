@@ -4,7 +4,8 @@ fetch_13f_managers.py (src/data_extract/utils/institutionals/fetch_13f_managers.
 The `sec_13f_manager_details` extract: one row per (cik, period) of every 13F filer since 1999-06-30, from the cached 13F
 data-set covers (name, state, file number, report type) and, where no cover exists, from `sec13f_hr` marker rows named by
 the cached EDGAR master index. The refresh window starts at the newest stored `first_filed_date` minus the table's overlap
-(or at the oldest row still lacking cover evidence); only the data sets overlapping the window are opened. Rows are
+(or at the oldest row still lacking cover evidence), never before the second-newest cached data set; only the data sets
+overlapping the window are opened, and older index rows are revisited by a forced full run only. Rows are
 diffed against the stored ones and only differences are saved, extract columns only. No SEC request is made.
 """
 
@@ -49,7 +50,8 @@ _MARKER_STATUSES = ["complete", "invalid"]
 
 def _window_start(context: Context, data_sets: list[DataSet], full: bool) -> pd.Timestamp:
     """First filing date to read: the table's source start under `full` or an empty table, else the earlier of the newest
-    stored `first_filed_date` minus the overlap and the oldest filing since the first data set that still has index evidence."""
+    stored `first_filed_date` minus the overlap and the oldest index-evidence row filed since the second-newest data set,
+    never before that data set's start."""
     table = Tables.sec_13f_manager_details
     resume = cast(Resume, table.resume)
     floor = pd.Timestamp(cast(str, resume.source_start))
@@ -57,13 +59,15 @@ def _window_start(context: Context, data_sets: list[DataSet], full: bool) -> pd.
     if frontier is None:
         return floor
     starts = [frontier - pd.Timedelta(days=resume.overlap_days)]
-    if data_sets:
-        df_lacking = context.store.load(
-            table, columns=["first_filed_date"], where={"source": INDEX_SOURCE}, since=data_sets[0].start, date_col="first_filed_date", optional=True
-        )
-        if df_lacking is not None:
-            starts.append(pd.to_datetime(df_lacking["first_filed_date"]).min())
-    return max(floor, min(starts))
+    if not data_sets:
+        return max(floor, starts[0])
+    anchor = data_sets[-2 if len(data_sets) > 1 else 0].start
+    df_lacking = context.store.load(
+        table, columns=["first_filed_date"], where={"source": INDEX_SOURCE}, since=anchor, date_col="first_filed_date", optional=True
+    )
+    if df_lacking is not None:
+        starts.append(pd.to_datetime(df_lacking["first_filed_date"]).min())
+    return max(floor, anchor if len(data_sets) > 1 else floor, min(starts))
 
 
 def _read_zip_filings(cache: Path, data_sets: list[DataSet], since: pd.Timestamp, until: pd.Timestamp) -> tuple[pd.DataFrame, list[str]]:
@@ -105,9 +109,18 @@ def _read_index_filings(context: Context, df_zip: pd.DataFrame, since: pd.Timest
 
 def _save_changed(context: Context, df_rows: pd.DataFrame, full: bool) -> int:
     """Merge the candidate rows with the stored ones, save the extract columns of the rows that differ, return their count."""
-    # load: the stored rows of the candidate keys (every row under `full`)
-    keys = df_rows[["cik", "period"]]
-    df_stored = context.store.load(Tables.sec_13f_manager_details, columns=list(EXTRACT_COLUMNS), where=None if full else keys, optional=True)
+    # load: the stored rows over the candidates' period range, then only those of the candidate keys
+    df_stored = context.store.load(
+        Tables.sec_13f_manager_details,
+        columns=list(EXTRACT_COLUMNS),
+        since=None if full else df_rows["period"].min(),
+        until=None if full else df_rows["period"].max(),
+        optional=True,
+    )
+    if df_stored is not None:
+        df_stored = df_stored.assign(period=pd.to_datetime(df_stored["period"]).dt.normalize()).merge(
+            df_rows[["cik", "period"]], on=["cik", "period"]
+        )
 
     # compute: only the differences
     df_changed = rows_to_save(df_rows, df_stored)

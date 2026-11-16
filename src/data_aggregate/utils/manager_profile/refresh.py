@@ -36,9 +36,8 @@ def _shift(period: pd.Timestamp, quarters: int) -> pd.Timestamp:
 def plan_refresh(details: pd.DataFrame, category: pd.Series, full: bool, window: int) -> Refresh | None:
     """The quarters to recompute, or None when every row is profiled.
 
-    A row is stale without a stored category or when the category of its current name differs (the extract rewrote the name).
-    A stale quarter changes its own and the next quarter's statistics, which feed the windows of the `window` quarters from it
-    on, so those rows are rewritten; the pass starts `window` quarters earlier to rebuild the carried state.
+    A row is stale without a stored category or with a category that differs from its current name's.
+    A stale quarter rewrites the next `window` quarters; the pass starts `window` quarters earlier.
     """
     # Stale quarters: all of them on a full rebuild.
     present = set(details["period"].unique())
@@ -63,6 +62,7 @@ def profile_frame(details: pd.DataFrame, category: pd.Series, profile: pd.DataFr
 
 def changed_rows(profile: pd.DataFrame, details: pd.DataFrame) -> pd.DataFrame:
     """Rows of `profile` that differ from the stored profile columns of `details` (a missing column reads null)."""
+    # Stored profile columns of the compared rows, aligned on the key.
     stored = details.reindex(columns=[*_KEYS, *PROFILE_COLUMNS]).merge(profile[_KEYS], on=_KEYS)
     stored = stored.set_index(_KEYS).sort_index()
     new = profile.set_index(_KEYS).sort_index()

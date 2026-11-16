@@ -561,16 +561,17 @@ CREATE TABLE IF NOT EXISTS "sec13f_hr" (
 -- `first_filed_date` (first public filing of the period, never moved later); `source` (ZIP name or
 -- `edgar_index`: where the name came from). 13F-NT notice filers are not stored.
 --
--- Profile columns, written by `data_aggregate` (`build-manager-profile`) over the trailing 4 quarters including
--- `period` (minimum 2 usable quarters, else null; null means unknown, never zero), from books filed on or before
--- `first_filed_date`: `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other | unknown,
--- from the cleaned `manager_name`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
+-- Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `build_cube.manager_profile`) over the
+-- trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
+-- unknown, never zero), from books filed on or before `first_filed_date`:
+-- `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other | unknown, from the cleaned
+-- `manager_name`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
 -- of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
--- more than 10% in shares; null when the preceding quarter is missing); `new_position_rate` (mean share of current
--- positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
+-- more than `turnover_threshold` in shares; null when the preceding quarter is missing); `new_position_rate` (mean share
+-- of current positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
 -- `pct_equity_us`, `pct_equity_foreign`, `pct_etf`, `pct_bond`, `pct_options`, `pct_other` (the six sum to 1);
 -- cap mix, mean share of equity weight by the 13F-derived size of each ticker (aggregate reported value across
--- filers, large = top 70% of cumulative value, mid = next 20%, small = last 10%): `pct_cap_small`, `pct_cap_mid`,
+-- filers, split into large, mid and small at `cap_breakpoints`): `pct_cap_small`, `pct_cap_mid`,
 -- `pct_cap_large`; sector mix, mean share of equity weight: `pct_sector_<sector>` for Sharadar's 11 sectors
 -- (`basic_materials`, `communication_services`, `consumer_cyclical`, `consumer_defensive`, `energy`,
 -- `financial_services`, `healthcare`, `industrials`, `real_estate`, `technology`, `utilities`) and `pct_sector_unmapped`;

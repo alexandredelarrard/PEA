@@ -1189,3 +1189,8 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Coverage: title and issuer name rules for common lines Sharadar does not list (`build_cube.manager_profile.security_markers`); category rules extended, `unknown` retired (no match is `fund`) and a CIK override file `configs/superinvestors/manager_categories.json`; a window quarter filed after the row's own book is dropped from its mean. Stored profile values are unchanged until `build-manager-profile -F` runs.
 - Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-16: refresh — shared bond-line mapping and amendment-only stub books (P12)
+
+- Coverage: `build_cube.bond_lines` and `bond_line_mask` (`src/data_aggregate/utils/sec_thirteen/bond_lines.py`) find share lines that are bond principal; the 13F cube cleaning (`clean_filings`) drops them like `debt` rows before the price repair, the manager profile routes them to the bond path (filed value, book unit factor, `pct_bond`); `build_cube.manager_profile.amendment_only_min_lines` (4) skips a (cik, period) whose only accession is a 13F-HR/A with fewer lines. Stored profile values change after `build-manager-profile -F`, the cube part after `build-sec-thirteen -F`.
+- Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md).

@@ -62,6 +62,7 @@ from src.utils.db import get_engine  # noqa: E402
 from tests.canonical_schema import create_canonical  # noqa: E402
 
 DATA = ROOT / "data"
+pytest_plugins = ["tests.support.window_samples"]
 
 
 # --------------------------------------------------------------------------- #

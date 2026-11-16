@@ -23,6 +23,7 @@ error surfaces only as a bare "Command not found".
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -42,6 +43,7 @@ from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
 from src.validate.checks.institutionals import check_institutionals
 from src.validate.checks.modelling import check_modelling
+from src.validate.checks.window_sample import SampleSelection, check_window_sample
 from src.validate.io import OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
 from src.validate.result import EXIT, CheckResult
@@ -75,6 +77,30 @@ def _shared(fn: Callable) -> Callable:
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
     """VALIDATE — table-agnostic data checks. 0 pass · 1 finding · 3 ABSTAINED."""
+
+
+@cli.command(name="window-sample", help="Inspect current cells using a pinned selection; equality replay is owned by the sample suite.")
+@click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS))
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--manifest", "manifest_path", required=True, type=click.Path(exists=True, path_type=Path))
+def window_sample(table: str, out: str, config_path: str, manifest_path: Path) -> None:
+    # Load the explicit source selection before opening the ordinary check.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    spec = resolve(table)
+    entry = manifest["tables"].get(table, {})
+    if "selection" not in entry:
+        result = CheckResult.abstained("window_sample", spec.name, entry.get("reason", "Table absent from the pinned manifest"))
+    else:
+        selection = SampleSelection(**entry["selection"])
+        _, context = get_config_context(config_path, use_cache=False, save=False)
+        result = check_window_sample(context, spec, selection=selection)
+
+    # Publish the normal validator exit/result contract.
+    path = write_result(out, result)
+    click.echo(result.summary())
+    click.echo(f"  -> {path}")
+    sys.exit(EXIT[result.status])
 
 
 @cli.command(help="Independently reconcile saved-fold modelling IC/IR, native contributions/PDP, source chronology and report identities.")

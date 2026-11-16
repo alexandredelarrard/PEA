@@ -23,6 +23,7 @@ from src.validate.checks.leakage import check_leakage
 from src.validate.checks.profile import check_profile
 from src.validate.checks.redundancy import check_redundancy
 from src.validate.checks.timeseries import check_timeseries
+from src.validate.checks.window_sample import check_window_sample
 
 __all__ = [
     "check_bounds",
@@ -35,4 +36,5 @@ __all__ = [
     "check_profile",
     "check_redundancy",
     "check_timeseries",
+    "check_window_sample",
 ]

@@ -5,6 +5,10 @@
 # the checks that need one ABSTAIN (exit 3) rather than guess.
 validate:
 
+  window_samples:
+    # One deadline for the complete per-table capture/replay, including evidence writing.
+    budget_seconds: 300
+
   earnings_calls:
     signal_sessions: 66
     redundancy_spearman_abs: 0.90

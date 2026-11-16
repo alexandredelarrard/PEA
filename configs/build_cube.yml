@@ -145,9 +145,8 @@ build_cube:
     min_quarters: 2          # quarters with a statistic needed before a profile is emitted (<= window_quarters)
     turnover_threshold: 0.10 # a position counts as changed when its share count moves by more than this fraction (e.g. 0.05-0.25)
     cap_breakpoints: [0.70, 0.20]  # share of cumulative 13F value ranked by ticker size: large = top 0.70, mid = next 0.20, small = the rest
-    price_check_ratio: 10    # reserved: a line whose implied price is more than this many times off the same-quarter CUSIP median is dropped;
-    price_check_min_filers: 3  # needs this many filers per (quarter, CUSIP). Used only if the P6 residual-outlier check keeps the rule,
-                               # otherwise the cube's repair_value_basis and consensus_prices clean the books (min_consensus_filers above)
+    price_check_min_filers: 3  # distinct filers a (quarter, CUSIP) needs before its median value / shares is the consensus price of the
+                               # cube's repair_value_basis that rescales and nulls mis-reported lines (same meaning as min_consensus_filers above)
 
   hist:                      # self-history (valuation mean-reversion) window for
                              # the f_<yield>_vs_hist features ("cheap vs own past")

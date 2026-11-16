@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
+from src.constants.constants import DEFAULT_CONFIG_DIR, F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
@@ -29,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import availability_date
 from src.utils.price.adjustments import ShareBasis
@@ -1086,7 +1087,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
 
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
-    step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
+    step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}, "bond_lines": read_config(DEFAULT_CONFIG_DIR).build_cube.bond_lines}
     step._settle_days = F13_SETTLE_TRADING_DAYS
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])

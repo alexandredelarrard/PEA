@@ -118,9 +118,8 @@ def _clean_lines(book: pd.DataFrame, prefixes: pd.Series) -> pd.DataFrame:
 def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.DataFrame:
     """Cleaned lines (kind, key, ticker, cusip, shares, value, weight) of every manager's original accession in `raw`.
 
-    `prefixes` (`reference.prefix_tickers`) names the ticker of a CUSIP the line carries without one.
-    Equity values go through the cube's book-unit repair on same-quarter consensus prices, run twice as the cube does;
-    lines it re-values to more than the whole filed book (a garbage `shares` column) are dropped.
+    `prefixes` (`reference.prefix_tickers`) names the ticker of a CUSIP carried without one. Equity values take the cube's two-pass
+    book-unit repair; lines it re-values above their whole filed book (a garbage `shares` column) are dropped.
     """
     # Original accession lines only.
     book = _original_book(raw)

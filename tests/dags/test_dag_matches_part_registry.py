@@ -19,7 +19,7 @@ import ast
 from pathlib import Path
 
 from src.data_aggregate.utils.common.parts import PART_COMMANDS
-from tests.dags.dag_harness import ALL_DONE, load_dag, replay
+from tests.dags.dag_harness import ALL_DONE, StubDag, load_dag, replay
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
 
@@ -53,34 +53,51 @@ def test_dag_chain_matches_the_registry():
     )
 
 
-def test_dag_is_sequential_and_ends_in_the_status_gate():
+def _descendants(dag: StubDag, task_id: str) -> set[str]:
+    """Every task that runs after `task_id`."""
+    found: set[str] = set()
+    frontier = {task_id}
+    while frontier:
+        frontier = {name for name, task in dag.tasks.items() if task.upstream & frontier} - found
+        found |= frontier
+    return found
+
+
+def test_dag_is_sequential_except_the_manager_profile_beside_momentum():
     src = _dag_source()
-    assert "max_active_tasks=1" in src, (
-        "the chain must be sequential -- peak memory should be the largest single step, not the sum of parallel pool slots"
-    )
-    assert "chain(deduce_peers, *step_tasks, assemble_cube, cube_status," in src, (
-        "the DAG must run peers -> the registry steps -> assemble -> status, in order"
-    )
+    dag = load_dag(DAG_FILE)
+    assert dag.kwargs["max_active_tasks"] == 2 and "max_active_tasks=2" in src, "two slots: the profile task and one cube step"
+    assert "chain(deduce_peers, *step_tasks" not in src, "the one long chain is split into task-to-task pairs"
+    tasks = dag.tasks
+    assert tasks["build_manager_profile"].upstream == {"build_fundamentals"}
+    assert tasks["build_momentum"].upstream == {"build_fundamentals"}
+    assert tasks["build_text"].upstream == {"build_momentum", "build_manager_profile"}
+    assert tasks["build_institutionals"].upstream == {"build_text"}, "the profile task is finished before the 13F parts start"
+    assert tasks["build_prices"].upstream == {"deduce_peers"} and tasks["assemble_cube"].upstream == {"build_governance"}
+    others = set(tasks) - {"build_manager_profile"}
+    parallel = {
+        name for name in others if name not in _descendants(dag, "build_manager_profile") and "build_manager_profile" not in _descendants(dag, name)
+    }
+    assert parallel == {"build_momentum"}, "the profile task overlaps build_momentum only"
     # the memory-driven serialization the old DAG needed is gone
     for gone in ("institutional_task", "superinvestor_task", "fundamental_task", "features -g"):
         assert gone not in src, f"'{gone}' should have been removed with the sub-step split"
 
-    print("\n=== SANITY CHECK: DAG shape ===")
-    print(f"  max_active_tasks=1; deduce_peers -> {len(PART_COMMANDS)} steps -> assemble_cube -> cube_status -> trigger_strat_prediction")
+    print("\n=== SANITY CHECK: DAG shape (AC-106) ===")
     print(
-        "  CONCLUSION: strictly sequential; the old `features -g <group>` fan-out and the "
-        "institutional->superinvestor->fundamental memory serialization are gone. Validated."
+        f"  max_active_tasks=2; build_fundamentals -> [build_momentum, build_manager_profile] -> build_text; parallel with the profile: {sorted(parallel)}"
     )
+    print("  CONCLUSION: the profile task overlaps build_momentum only and ends before build_institutionals and build_sec_thirteen. Validated.")
 
 
 def test_every_step_and_the_prediction_trigger_run_all_done():
     dag = load_dag(DAG_FILE)
     steps = [command.replace("-", "_") for command in PART_COMMANDS]
-    gated = [*steps, "assemble_cube", "cube_status", "trigger_strat_prediction"]
+    gated = [*steps, "build_manager_profile", "assemble_cube", "cube_status", "trigger_strat_prediction"]
     assert {task_id: dag.tasks[task_id].trigger_rule for task_id in gated} == dict.fromkeys(gated, ALL_DONE)
     assert dag.tasks["trigger_strat_prediction"].upstream == {"cube_status"}
 
-    for failed in ([steps[0]], ["build_text", "assemble_cube"], ["cube_status"]):
+    for failed in ([steps[0]], ["build_text", "assemble_cube"], ["cube_status"], ["build_manager_profile"]):
         states = replay(dag, failed)
         assert states["trigger_strat_prediction"] == "success", (failed, states)
         assert all(states[task_id] in ("success", "failed") for task_id in gated), "no step is skipped as upstream_failed"

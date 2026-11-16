@@ -1,0 +1,121 @@
+"""Manager profile: enrich `sec_13f_manager_details` with the category and the behavioural profile of each (cik, period) row."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import cast
+
+import pandas as pd
+from omegaconf import DictConfig
+
+from src.context import Context
+from src.data_aggregate.utils.manager_profile.categories import classify_names
+from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book
+from src.data_aggregate.utils.manager_profile.profile import profile_rows
+from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book, quarter_stats
+from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
+from src.data_aggregate.utils.manager_profile.refresh import changed_rows, plan_refresh, profile_frame, stored_details
+from src.data_store.schema import Tables
+from src.utils.step import Step
+
+_CIK_CHUNK = 1_000
+_SAVE_CHUNK = 50_000
+_TICKER_COLUMNS = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
+
+
+@dataclass(frozen=True)
+class Carry:
+    """What a report quarter passes to the next: its compact book and per-ticker aggregate."""
+
+    period: pd.Timestamp
+    book: pd.DataFrame
+    aggregate: pd.DataFrame
+
+
+class StepManagerProfile(Step):
+    def __init__(self, context: Context, config: DictConfig) -> None:
+        super().__init__(context=context, config=config)
+        self._cfg = config.build_cube.manager_profile
+        self._rules = config.manager_categories
+        self._store = context.store
+
+    def run(self, full: bool = False) -> int:
+        """Profile the stale quarters of `sec_13f_manager_details` (all of them when `full`); returns the rows written."""
+        started = time.monotonic()
+
+        # load: the manager rows once; nothing else is read while every row is profiled
+        df_stored = self._store.load(Tables.sec_13f_manager_details, optional=True)
+        if df_stored is None:
+            self._log.info("manager profile: no manager rows stored yet")
+            return 0
+        details = stored_details(df_stored)
+
+        # plan: the quarters whose rows lack a profile or whose name changed
+        category = classify_names(details["manager_name"], self._rules)["category"]
+        refresh = plan_refresh(details, category, full, int(self._cfg.window_quarters))
+        if refresh is None:
+            self._log.info("manager profile: %d rows, all profiled; 0 quarters read (%.1f s)", len(details), time.monotonic() - started)
+            return 0
+
+        # compute: one chronological pass over the quarters, then the 4-quarter profile of the rewritten rows
+        qstats = self._quarter_pass(details, refresh.compute)
+        profile = profile_frame(details, category, profile_rows(qstats, self._cfg), refresh.write)
+
+        # save: only the rows that differ
+        changed = self._save(changed_rows(profile, details))
+        self._log.info(
+            "manager profile: %d quarters read, %d rows rewritten of %d, %d changed (%.1f s)",
+            len(refresh.compute),
+            len(profile),
+            len(details),
+            changed,
+            time.monotonic() - started,
+        )
+        return changed
+
+    def _quarter_pass(self, details: pd.DataFrame, quarters: list[pd.Timestamp]) -> pd.DataFrame:
+        """Single-quarter statistics of every manager over `quarters` in order; a quarter's book and aggregate feed only the next quarter end."""
+        # load: the reference tables once
+        df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=_TICKER_COLUMNS))
+        df_map = cast(pd.DataFrame, self._store.load(Tables.cusip_ticker_map))
+        reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(df_map)
+
+        # compute: quarter by quarter, carrying the previous quarter forward
+        ciks = {period: group["cik"].tolist() for period, group in details.groupby("period")}
+        stats: list[pd.DataFrame] = []
+        carry: Carry | None = None
+        for period in quarters:
+            started = time.monotonic()
+            raw = self._read_quarter(period, ciks[period])
+            if raw.empty:
+                self._log.warning("manager profile: no 13F lines stored for %s", period.date())
+                continue
+            lines = classify_securities(clean_book(raw, self._cfg, prefixes), reference)
+            previous = carry if carry is not None and carry.period == period - pd.offsets.QuarterEnd(1) else None
+            stats.append(quarter_stats(lines, previous.book if previous else None, previous.aggregate if previous else None, self._cfg))
+            carry = Carry(period, compact_book(lines), quarter_aggregate(lines, self._cfg.cap_breakpoints))
+            self._log.info(
+                "manager profile: %s %d managers, %d lines (%.1f s)", period.date(), len(ciks[period]), len(lines), time.monotonic() - started
+            )
+        return pd.concat(stats, ignore_index=True) if stats else pd.DataFrame(columns=["cik", "period"])
+
+    def _read_quarter(self, period: pd.Timestamp, ciks: list[str]) -> pd.DataFrame:
+        """Markers and lines of the quarter for its managers, read on the primary key in CIK chunks (the table has no period index)."""
+        frames = []
+        for start in range(0, len(ciks), _CIK_CHUNK):
+            where = {"cik": ciks[start : start + _CIK_CHUNK], "period": period.strftime("%Y-%m-%d")}
+            frame = self._store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
+            if frame is not None:
+                frames.append(frame)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(LINE_COLUMNS))
+
+    def _save(self, df_changed: pd.DataFrame) -> int:
+        """Add the profile columns once, then upsert only them, in chunks; returns the rows written."""
+        if df_changed.empty:
+            return 0
+        self._store.ensure_columns(Tables.sec_13f_manager_details, df_changed)
+        return sum(
+            self._store.save(Tables.sec_13f_manager_details, df_changed.iloc[start : start + _SAVE_CHUNK])
+            for start in range(0, len(df_changed), _SAVE_CHUNK)
+        )

@@ -2,21 +2,23 @@
 """
 dag_data_aggregation.py  (src/dags/dag_data_aggregation.py)
 -----------------------------------------------------------
-Nightly DATA-AGGREGATION DAG — the cube build as eight sequential, memory-bounded steps.
+Nightly DATA-AGGREGATION DAG — the cube build as eight memory-bounded steps.
 Triggered by the extraction DAG once every source task has finished, failed or not (schedule=None).
 
-    deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─▶ build_momentum
-                         │                                                        │
-                         │  (normalizes `prices` ONCE into cube_part_prices /     ▼
-                         │   every later step reads that part                  build_text
-                         │   back, projected to the fields it needs)              │
-                         │                                                        ▼
-                         │                                               build_institutionals
-                         │                                                        │
-                         │                                                        ▼
-                         │                                                 build_governance
-                         ▼                                                        │
-                    assemble_cube ◀────────────────────────────────────────────────┘
+    deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─┬─▶ build_momentum ────────────┐
+                         │                                              │                              ▼
+                         │  (normalizes `prices` ONCE into cube_part_   └─▶ build_manager_profile ─▶ build_text
+                         │   prices; every later step reads that part      (profile columns of                │
+                         │   back, projected to the fields it needs)        sec_13f_manager_details)           ▼
+                         │                                                                        build_institutionals
+                         │                                                                                     │
+                         │                                                                                     ▼
+                         │                                                                          build_sec_thirteen
+                         │                                                                                     │
+                         │                                                                                     ▼
+                         │                                                                            build_governance
+                         ▼                                                                                     │
+                    assemble_cube ◀────────────────────────────────────────────────────────────────────────────┘
                          │
                          ├─▶ writes the `cube` table
                          ▼
@@ -28,8 +30,9 @@ trigger. A red `cube_status` still fails the run visibly; `modelling predict` it
 score when its inputs are stale or the cube ends before `prices`.
 
 Each step is `/opt/pipeline/bin/python -m src data_aggregate <cmd>` (the pipeline's isolated venv).
-STRICTLY SEQUENTIAL, on purpose: peak memory is the largest single step rather than the sum of two
-parallel pool slots, and each step keeps its heavy frames local so they are freed when it returns.
+Sequential on purpose: peak memory is the largest single step rather than the sum of parallel pool slots, and each step keeps
+its heavy frames local so they are freed when it returns. The one exception is `build_manager_profile` (not a cube part), which
+runs beside the light `build_momentum` (`max_active_tasks=2`) and finishes before the 13F cube parts start.
 `assemble_cube` merges the parts (+ betas + peers + targets) into the cube. Peers are
 computed once up front and cached; `build_prices` folds them into a persisted sector-return column.
 """
@@ -78,11 +81,11 @@ default_args = {
 dag = DAG(
     dag_id="data_aggregation",
     default_args=default_args,
-    description="Build the cube from the DB in eight sequential, memory-bounded steps.",
+    description="Build the cube from the DB in eight memory-bounded steps (the manager profile runs beside build_momentum).",
     schedule=None,  # triggered by the extraction DAG when it finishes
     start_date=datetime(2026, 10, 20),
     catchup=False,
-    max_active_tasks=1,  # sequential: peak memory = the largest single step
+    max_active_tasks=2,  # sequential except build_manager_profile beside build_momentum
     tags=["pea", "aggregation"],
 )
 
@@ -101,13 +104,13 @@ def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None 
 # 1) peers once (cached) — build-prices turns them into the persisted sector-return column
 deduce_peers = run("deduce-peers", base=PEERS, pool="default_pool", task_id="deduce_peers")
 
-# 2) the seven build sub-steps (8 part tables — `build-target` writes two), STRICTLY SEQUENTIAL.
-#    Peak memory is now the largest single step rather than the sum of two parallel pool slots,
-#    so the `aggregate` pool is unnecessary
-#    and the old institutional -> superinvestor -> fundamental serialization (which existed
-#    only to keep those three off each other's memory) is gone: they are `build-institutionals` and
-#    `build-fundamentals`, sequential by construction.
-step_tasks = [run(cmd, pool="default_pool", task_id=cmd.replace("-", "_")) for cmd in CHAIN]
+# 2) the eight build sub-steps (9 part tables — `build-target` writes two), sequential except for the manager profile.
+#    Peak memory is the largest single step (plus the profile task while `build_momentum` runs), so the `aggregate`
+#    pool is unnecessary and the old institutional -> superinvestor -> fundamental serialization is gone.
+steps = {cmd: run(cmd, pool="default_pool", task_id=cmd.replace("-", "_")) for cmd in CHAIN}
+
+# 2b) the 13F manager profile: not a cube part, a parallel branch beside the light `build_momentum`
+manager_profile = run("build-manager-profile", pool="default_pool", task_id="build_manager_profile")
 
 # 3) assemble the cube from the persisted parts
 assemble_cube = run("assemble-cube", pool="default_pool", task_id="assemble_cube")
@@ -153,4 +156,10 @@ trigger_strat_prediction = TriggerDagRunOperator(
     dag=dag,
 )
 
-chain(deduce_peers, *step_tasks, assemble_cube, cube_status, trigger_strat_prediction)
+# Task-to-task pairs (no list inside `chain`): one slot for build_momentum, one for the profile, both before build_text.
+chain(deduce_peers, steps["build-prices"], steps["build-target"], steps["build-fundamentals"])
+steps["build-fundamentals"] >> [steps["build-momentum"], manager_profile]
+steps["build-momentum"] >> steps["build-text"]
+manager_profile >> steps["build-text"]
+chain(steps["build-text"], steps["build-institutionals"], steps["build-sec-thirteen"], steps["build-governance"])
+chain(steps["build-governance"], assemble_cube, cube_status, trigger_strat_prediction)

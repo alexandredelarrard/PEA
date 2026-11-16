@@ -11,6 +11,7 @@ each, for the Airflow `data_aggregation` DAG:
     python -m src data_aggregate build-text            # -> cube_part_text
     python -m src data_aggregate build-institutionals  # -> cube_part_institutionals
     python -m src data_aggregate build-governance      # -> cube_part_governance
+    python -m src data_aggregate build-manager-profile # -> profile columns of sec_13f_manager_details (not a cube part)
     python -m src data_aggregate assemble-cube         # read the parts -> build + save `cube`
     python -m src data_aggregate cube-status           # JSON status of every part
     python -m src data_aggregate build-cube            # all eight in ONE process
@@ -43,6 +44,7 @@ from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
+from src.data_aggregate.transformers.step_manager_profile import StepManagerProfile
 from src.utils.cli_helper import SpecialHelpOrder
 
 
@@ -149,6 +151,17 @@ def assemble_cube(config_path: str, full: bool) -> None:
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_cube(config_path: str, full: bool) -> None:
     _step(StepBuildCube, config_path).run(full=full)
+
+
+@cli.command(
+    help="13F manager category and 4-quarter behavioural profile -> profile columns of sec_13f_manager_details (not a cube part). "
+    "Incremental: profiles the quarters whose rows lack a profile or whose name changed; `--full` rebuilds every quarter.",
+    help_priority=12,
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def build_manager_profile(config_path: str, full: bool) -> None:
+    _step(StepManagerProfile, config_path).run(full=full)
 
 
 @cli.command(

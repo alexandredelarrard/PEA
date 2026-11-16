@@ -45,6 +45,7 @@ SECTORS = [
 KNOWN_CIKS = ["0001067983", "0000102909", "0000315066", "0000093751"]
 NO_PREFIX = pd.Series(dtype=object)
 REAL_QUARTERS = ["2000-12-31", "2008-12-31", "2024-12-31"]
+CFG = read_config(str(ROOT / "configs")).build_cube.manager_profile
 
 
 @pytest.fixture(scope="module")
@@ -90,7 +91,7 @@ def _raw(cik: str, period: str, accession: str, lines: list[tuple], form: str = 
 
 
 def _cleaned(cik: str, period: pd.Timestamp, items: list[tuple], reference: pd.DataFrame) -> pd.DataFrame:
-    """Cleaned and classified lines of one fixture book; items are `(ticker, kind, shares, value, name)`."""
+    """Cleaned and classified lines of one fixture book; items are `(ticker, kind, shares, value, name[, title_of_class])`."""
     rows = [
         {
             "cik": cik,
@@ -100,14 +101,16 @@ def _cleaned(cik: str, period: pd.Timestamp, items: list[tuple], reference: pd.D
             "ticker": ticker if ticker != "_none" else np.nan,
             "cusip": ticker,
             "issuer_name": name,
+            "title_of_class": title[0] if title else "COM",
+            "filing_date": period + pd.Timedelta(days=40),
             "shares": shares,
             "value": value,
         }
-        for ticker, kind, shares, value, name in items
+        for ticker, kind, shares, value, name, *title in items
     ]
     df = pd.DataFrame(rows)
     df["weight"] = df["value"] / df.groupby("cik")["value"].transform("sum")
-    return classify_securities(df, reference)
+    return classify_securities(df, reference, CFG)
 
 
 def test_sector_names_are_the_sharadar_spellings(reference: pd.DataFrame) -> None:
@@ -210,7 +213,7 @@ def test_asset_mix_sums_to_one_with_bonds_and_options(reference: pd.DataFrame, c
         ("T1", "common", 10.0, 2000.0, "ONE INC"),
         ("T3", "common", 10.0, 1000.0, "THREE ADR"),
         ("_none", "common", 10.0, 500.0, "ISHARES CORE S&P 500 ETF"),
-        ("U9", "common", 10.0, 500.0, "ACME CORP"),
+        ("U9", "common", 10.0, 500.0, "ACME CORP", "ORD"),
         ("B1", "debt", 0.0, 1000.0, "A BOND"),
         ("T1", "call", 0.0, 400.0, "ONE INC"),
         ("T1", "put", 0.0, 100.0, "ONE INC"),
@@ -277,6 +280,7 @@ def test_profile_is_the_calendar_window_mean_with_minimum_quarters(cfg: DictConf
     periods = pd.to_datetime(["2023-12-31", "2024-03-31", "2024-06-30", "2024-09-30", "2025-03-31"])
     frame = pd.DataFrame({column: np.nan for column in STAT_COLUMNS}, index=range(5))
     frame["cik"], frame["period"] = "X", periods
+    frame["filed_date"] = periods + pd.Timedelta(days=40)
     frame["n_positions"] = [10.0, 20.0, 30.0, 40.0, 60.0]
     frame["turnover"] = [np.nan, 0.2, 0.4, 0.6, 0.8]
     frame["book_value_usd"] = [1.0, 2.0, 3.0, 4.0, 100.0]
@@ -297,6 +301,28 @@ def test_profile_is_the_calendar_window_mean_with_minimum_quarters(cfg: DictConf
     assert pick("Z", periods[0])["n_quarters_used"] == 1
     print("\n=== SANITY CHECK: profile window ===")
     print("Mean over the 4 calendar quarter ends ending at the period; fewer than 2 usable quarters read null; a missing quarter is not filled.")
+
+
+def test_a_window_quarter_filed_after_the_row_is_left_out_of_its_mean(cfg: DictConfig) -> None:
+    """A late filer's earlier quarter (first filed after the row's own book) does not enter the row's mean; the row's own quarter always does."""
+    periods = pd.to_datetime(["2024-03-31", "2024-06-30", "2024-09-30"])
+    frame = pd.DataFrame({column: np.nan for column in STAT_COLUMNS}, index=range(3))
+    frame["cik"], frame["period"] = "X", periods
+    frame["n_positions"] = [10.0, 20.0, 40.0]
+    frame["book_value_usd"] = [1.0, 2.0, 3.0]
+    # 2024-03-31 is filed in January 2025, after the 2024-06-30 and 2024-09-30 books (filed in August and November 2024).
+    frame["filed_date"] = pd.to_datetime(["2025-01-15", "2024-08-10", "2024-11-10"])
+
+    profile = profile_rows(frame, cfg).set_index("period")
+
+    assert profile.loc[periods[1], "n_quarters_used"] == 1 and pd.isna(profile.loc[periods[1], "n_positions"]), "below min_quarters after the drop"
+    last = profile.loc[periods[2]]
+    assert last["n_quarters_used"] == 2 and np.isclose(last["n_positions"], 30.0), "mean of 2024-06-30 and 2024-09-30 only"
+    assert np.isclose(last["book_value_usd"], 2.5), "median of the two kept quarters"
+    print("\n=== SANITY CHECK: late window quarter ===")
+    print(
+        "The quarter filed after the row's own book is dropped from the 4-quarter mean; the current quarter stays; min_quarters applies after the drop."
+    )
 
 
 # --------------------------------------------------------------------------- real data
@@ -337,7 +363,7 @@ def run_quarters(raw: dict[str, pd.DataFrame], reference: pd.DataFrame, prefixes
     """Single-quarter statistics over consecutive periods; the previous quarter's book and aggregate feed only the next quarter end."""
     out, state = [], None
     for period in sorted(raw):
-        lines = classify_securities(clean_book(raw[period], cfg, prefixes), reference)
+        lines = classify_securities(clean_book(raw[period], cfg, prefixes), reference, cfg)
         stamp = pd.Timestamp(period)
         adjacent = state is not None and state[0] == stamp - pd.offsets.QuarterEnd(1)
         previous = state if state is not None and adjacent else None
@@ -389,8 +415,8 @@ def test_eight_character_cusips_map_through_the_issuer_prefix(cfg: DictConfig) -
     raw = load_raw(store, ["0000093751"], ["2008-12-31"])["2008-12-31"]
     reference = live_reference(store)
 
-    before = classify_securities(clean_book(raw, cfg, NO_PREFIX), reference)
-    after = classify_securities(clean_book(raw, cfg, live_prefixes(store)), reference)
+    before = classify_securities(clean_book(raw, cfg, NO_PREFIX), reference, cfg)
+    after = classify_securities(clean_book(raw, cfg, live_prefixes(store)), reference, cfg)
     mix = quarter_stats(after, None, None, cfg).iloc[0]
 
     equity = after[after["kind"].eq("common")]

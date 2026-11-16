@@ -22,6 +22,7 @@ LINE_COLUMNS = (
     "ticker",
     "cusip",
     "issuer_name",
+    "title_of_class",
     "position_type",
     "shares",
     "value_usd",
@@ -109,14 +110,21 @@ def _clean_lines(book: pd.DataFrame, value: pd.Series, prefixes: pd.Series) -> p
     # Sum duplicate lines; shares stay unknown when no row of the position reports them.
     keys = ["cik", "period", "kind", "key"]
     grouped = lines.groupby(keys, sort=False)
-    out = grouped.agg(ticker=("ticker", "first"), cusip=("cusip", "first"), issuer_name=("issuer_name", "first"), value=("value", "sum"))
+    out = grouped.agg(
+        ticker=("ticker", "first"),
+        cusip=("cusip", "first"),
+        issuer_name=("issuer_name", "first"),
+        title_of_class=("title_of_class", "first"),
+        filing_date=("filing_date", "first"),
+        value=("value", "sum"),
+    )
     out = out.assign(shares=grouped["shares"].sum(min_count=1)).reset_index()
     out["weight"] = out["value"] / out.groupby(["cik", "period"])["value"].transform("sum")
-    return out[[*keys, "ticker", "cusip", "issuer_name", "shares", "value", "weight"]]
+    return out[[*keys, "ticker", "cusip", "issuer_name", "title_of_class", "filing_date", "shares", "value", "weight"]]
 
 
 def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.DataFrame:
-    """Cleaned lines (kind, key, ticker, cusip, shares, value, weight) of every manager's original accession in `raw`.
+    """Cleaned lines (kind, key, ticker, cusip, issuer_name, title_of_class, filing_date, shares, value, weight) of every manager's original accession in `raw`.
 
     `prefixes` (`reference.prefix_tickers`) names the ticker of a CUSIP carried without one. Equity values take the cube's two-pass
     book-unit repair; lines it re-values above their whole filed book (a garbage `shares` column) are dropped.

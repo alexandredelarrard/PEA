@@ -107,7 +107,7 @@ def _active_share(equity: pd.DataFrame) -> pd.Series:
 
 
 def quarter_stats(lines: pd.DataFrame, prev_book: pd.DataFrame | None, prev_agg: pd.DataFrame | None, cfg: DictConfig) -> pd.DataFrame:
-    """One row per manager (`cik`, `period`, STAT_COLUMNS) of the quarter's cleaned `lines`.
+    """One row per manager (`cik`, `period`, `filed_date` of its book, STAT_COLUMNS) of the quarter's cleaned `lines`.
 
     `prev_book` (`compact_book`) and `prev_agg` (`quarter_aggregate`) are the immediately preceding quarter's, None when it is missing;
     the statistics that need them read null.
@@ -131,4 +131,5 @@ def quarter_stats(lines: pd.DataFrame, prev_book: pd.DataFrame | None, prev_agg:
     stats["n_positions"] = stats["n_positions"].fillna(0.0)
     out = stats.reindex(columns=list(STAT_COLUMNS)).astype(float)
     out.insert(0, "period", book["period"].first())
+    out.insert(1, "filed_date", book["filing_date"].first())
     return out.reset_index()

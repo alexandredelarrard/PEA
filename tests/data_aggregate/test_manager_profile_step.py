@@ -266,7 +266,7 @@ def test_a_changed_extract_row_triggers_a_recompute_of_its_quarters(store: Any, 
     _step(store, cfg).run(full=False)
     stored = _table(store)
 
-    renamed = _extract_rows(2, PERIODS[2]).iloc[[3]].assign(manager_name="J SMITH HEDGE FUND LP")  # the extract rewrote a name
+    renamed = _extract_rows(2, PERIODS[2]).iloc[[3]].assign(manager_name="J SMITH PENSION PLAN")  # the extract rewrote a name
     store.save(Tables.sec_13f_manager_details, renamed)
     reads = Reads(store, monkeypatch)
     changed = _step(store, cfg).run(full=False)
@@ -274,7 +274,7 @@ def test_a_changed_extract_row_triggers_a_recompute_of_its_quarters(store: Any, 
     after = _table(store)
     row = after[(after["cik"] == "0000000004") & (after["period"] == PERIODS[2])].iloc[0]
     unchanged = stored[(stored["cik"] == "0000000004") & (stored["period"] == PERIODS[2])].iloc[0]
-    assert changed >= 1 and row["category"] == "fund" and unchanged["category"] == "unknown"
+    assert changed >= 1 and row["category"] == "pension" and unchanged["category"] == "fund"
     read = reads.quarters()
     assert _stamp(PERIODS[2]) in read and _stamp(PERIODS[-1]) not in read, "only the quarter's window is recomputed"
     assert (after["category"][after["cik"] != "0000000004"] == stored["category"][stored["cik"] != "0000000004"]).all()

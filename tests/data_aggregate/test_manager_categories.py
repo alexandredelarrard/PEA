@@ -5,17 +5,18 @@ Known-truth names are real `sec_13f_manager_details.manager_name` values; the ex
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from omegaconf import DictConfig
 
-from src.data_aggregate.utils.manager_profile.categories import classify_names, clean_names
+from src.data_aggregate.utils.manager_profile.categories import apply_overrides, classify_names, clean_names, load_category_overrides
 from src.utils.config import read_config
 
 ROOT = Path(__file__).resolve().parents[2]
-CATEGORIES = ("pension", "insurance", "bank", "broker_dealer", "sovereign", "fund", "other", "unknown")
+CATEGORIES = ("pension", "insurance", "bank", "broker_dealer", "sovereign", "fund", "other")
 
 KNOWN_TRUTH = [
     # pension
@@ -59,9 +60,26 @@ KNOWN_TRUTH = [
     ("Nishkama Capital, LLC", "fund"),
     ("CITADEL ADVISORS LLC", "fund"),
     ("Hennion & Walsh Asset Management", "fund"),
-    # unknown (no keyword)
-    ("KORNREICH JOHN", "unknown"),
-    ("GROUP VI 31 LLC", "unknown"),
+    # no rule matches: the default category
+    ("KORNREICH JOHN", "fund"),
+    ("GROUP VI 31 LLC", "fund"),
+    # keyword additions
+    ("Acme Capital GP, LLC", "fund"),
+    ("TRUST CO OF CONNECTICUT", "bank"),
+    ("Aberdare Gestao de Recursos Ltda", "fund"),
+    ("KLP KAPITALFORVALTNING AS", "fund"),
+    ("Handelsbanken Fonder AB", "bank"),
+    ("Alecta Tjanstepension Omsesidigt", "pension"),
+    ("Swedbank AB", "bank"),
+    ("COWEN AND COMPANY, LLC", "broker_dealer"),
+    # insurance fixes
+    ("Assured Investment Management LLC", "fund"),
+    ("Shelter Ins Profit Sharing Plan", "fund"),
+    ("MetLife Investment Management, LLC", "fund"),
+    # words the additions must not catch
+    ("Acacia Research Corp", "fund"),
+    ("Jay G Goldman", "fund"),
+    ("Oppenheimer and Close", "fund"),
 ]
 
 
@@ -114,11 +132,42 @@ def test_first_matching_rule_wins_in_config_order(rules: DictConfig) -> None:
 
 def test_rule_config_is_complete(rules: DictConfig) -> None:
     """Every rule carries a one-line description, a legal category and at least one pattern; category values are the spec set."""
+    assert rules.default_category in rules.categories and "unknown" not in rules.categories
     names = [rule.name for rule in rules.rules]
     print(f"{len(names)} rules; categories used: {sorted({rule.category for rule in rules.rules})}")
     assert len(set(names)) == len(names)
     for rule in rules.rules:
-        assert rule.category in CATEGORIES and rule.category != "unknown"
+        assert rule.category in CATEGORIES and rule.category in rules.categories
         assert rule.description and "\n" not in rule.description
         assert len(rule.patterns) >= 1
     print("SANITY: rule config is well formed and the rules classify the known-truth names")
+
+
+def test_override_file_lists_legal_categories_and_beats_the_name_rules(rules: DictConfig) -> None:
+    """Every override CIK is ten digits with a legal category; each reads its mapped category whatever its name says."""
+    overrides = load_category_overrides(ROOT / "configs", rules)
+    names = pd.DataFrame({"cik": list(overrides), "manager_name": "ZZ PLAIN NAME"})
+    by_rule = classify_names(names["manager_name"], rules)
+
+    out = apply_overrides(by_rule, names["cik"], overrides)
+
+    assert len(overrides) >= 90 and set(out) <= set(CATEGORIES)
+    assert out.tolist() == list(overrides.values()) and set(by_rule) == {rules.default_category}
+    assert overrides["0001067983"] == "insurance", "Berkshire Hathaway is read by CIK, not by its name"
+    assert apply_overrides(pd.Series(["fund"]), pd.Series(["0000000001"]), overrides).tolist() == ["fund"], "an unlisted CIK keeps its rule category"
+    print(f"{len(overrides)} overrides, by category: {pd.Series(overrides).value_counts().to_dict()}")
+    print("SANITY: overrides win over the rules and leave unlisted CIKs alone")
+
+
+def test_override_loader_rejects_a_bad_cik_or_category(rules: DictConfig, tmp_path: Path) -> None:
+    """A malformed CIK or a category outside the legal set stops the load with both lists in the message."""
+    folder = tmp_path / "superinvestors"
+    folder.mkdir()
+    (folder / "manager_categories.json").write_text(
+        json.dumps({"overrides": {"123": {"category": "fund"}, "0000000002": {"category": "unknown"}, "0000000003": {"category": "bank"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not ten digits.*123.*outside.*0000000002"):
+        load_category_overrides(tmp_path, rules)
+    print("SANITY: a bad override file raises a clear error")

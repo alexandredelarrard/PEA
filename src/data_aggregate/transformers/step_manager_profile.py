@@ -10,7 +10,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.manager_profile.categories import classify_names
+from src.data_aggregate.utils.manager_profile.categories import apply_overrides, classify_names, load_category_overrides
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book, quarter_stats
@@ -34,6 +34,7 @@ class StepManagerProfile(Step):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube.manager_profile
         self._rules = config.manager_categories
+        self._overrides = load_category_overrides(context.config_dir, self._rules)
         self._store = context.store
 
     def run(self, full: bool = False) -> int:
@@ -48,7 +49,7 @@ class StepManagerProfile(Step):
         details = stored_details(df_stored)
 
         # plan: the quarters whose rows lack a profile or whose name changed
-        category = classify_names(details["manager_name"], self._rules)
+        category = apply_overrides(classify_names(details["manager_name"], self._rules), details["cik"], self._overrides)
         refresh = plan_refresh(details, category, full, int(self._cfg.window_quarters))
         if refresh is None:
             self._log.info("manager profile: %d rows, all profiled; 0 quarters read (%.1f s)", len(details), time.monotonic() - started)
@@ -88,7 +89,7 @@ class StepManagerProfile(Step):
             if raw.empty:
                 self._log.warning("manager profile: no 13F lines stored for %s", period.date())
                 continue
-            lines = classify_securities(clean_book(raw, self._cfg, prefixes), reference)
+            lines = classify_securities(clean_book(raw, self._cfg, prefixes), reference, self._cfg)
             previous = carry if carry is not None and carry.period == period - pd.offsets.QuarterEnd(1) else None
             stats.append(quarter_stats(lines, previous.book if previous else None, previous.aggregate if previous else None, self._cfg))
             carry = Carry(period, compact_book(lines), quarter_aggregate(lines, self._cfg.cap_breakpoints))

@@ -13,7 +13,8 @@ def profile_rows(qstats: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
     """Per (cik, period) row of `qstats`: each statistic averaged over the `window_quarters` quarter ends ending at the period.
 
     A statistic is null with fewer than `min_quarters` known values in the window; `book_value_usd` is the median; `n_quarters_used` counts the
-    window's quarters that have a usable book. A quarter the manager did not file is not filled.
+    window's quarters that have a usable book. A quarter the manager did not file is not filled. A window quarter whose book was first
+    filed (`filed_date`) after the row's own book is left out of that row's window; the row's own quarter always stays.
     """
     # Calendar quarter number of each row.
     window, minimum = int(cfg.window_quarters), int(cfg.min_quarters)
@@ -21,8 +22,10 @@ def profile_rows(qstats: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
 
     # Every quarter belongs to the windows of the next `window` quarter ends; join each row to its own window.
     spread = pd.concat([stats.assign(target=stats["quarter"] + step) for step in range(window)]).drop(columns="period")
-    targets = stats[["cik", "period", "quarter"]].rename(columns={"quarter": "target"})
+    spread = spread.rename(columns={"filed_date": "filed_date_member"})
+    targets = stats[["cik", "period", "quarter", "filed_date"]].rename(columns={"quarter": "target"})
     members = targets.merge(spread, on=["cik", "target"])
+    members = members[~members["filed_date_member"].gt(members["filed_date"])]
 
     # Mean (median for the book value) of the known values, null below the minimum.
     columns = [name for name in STAT_COLUMNS if name != "book_value_usd"]

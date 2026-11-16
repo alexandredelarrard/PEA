@@ -1,12 +1,15 @@
 # Manager category rules for sec_13f_manager_details.category (src/data_aggregate/utils/manager_profile/categories.py).
 #
 # A name is cleaned (clean:), then the rules run in the order listed and the FIRST rule with a matching pattern
-# and no matching `unless` pattern gives the category; a name no rule matches is `unknown`.
+# and no matching `unless` pattern gives the category; a name no rule matches gets `default_category`.
+# A hand override (configs/superinvestors/manager_categories.json, CIK -> category) wins over every rule.
 # Patterns are regular expressions on the cleaned, upper-case name, matched on word boundaries (a pattern never
-# matches inside a longer word; `$` anchors the end of the name). Categories: pension, insurance, bank,
-# broker_dealer, sovereign, fund (mutual, hedge, active and passive managers and advisers), other, unknown.
+# matches inside a longer word; `$` anchors the end of the name). Categories (`categories:`): pension, insurance,
+# bank, broker_dealer, sovereign, fund (mutual, hedge, active and passive managers and advisers), other.
 # Reorder or edit a rule here to change a category; the code holds no keywords.
 manager_categories:
+  categories: [pension, insurance, bank, broker_dealer, sovereign, fund, other]  # the legal values of a rule, a default and an override
+  default_category: fund     # a name no rule matches (mostly advisers, partnerships and funds with a legal form)
   clean:
     # Tokens removed wherever they stand (legal forms and articles; upper case, no dots).
     drop_tokens: [LLC, LLLP, LLP, LP, LTD, LTDA, LIMITED, INC, INCORPORATED, CORP, CORPORATION, PLC, NA, FSB, SA, AG, AB, NV, BV, GMBH, PTE, PTY, PUBL, THE]
@@ -48,8 +51,7 @@ manager_categories:
         - REINSURANCE
         - ASSURANCE
         - ASSURANCES
-        - ASSURED
-        - INS
+        - ASSURED GUARANTY
         - CASUALTY
         - INDEMNITY
         - SURETY
@@ -63,6 +65,12 @@ manager_categories:
         - ADVISERS?
         - PLANNING
         - WEALTH
+        - ASSET MANAGEMENT
+        - INVESTMENT MANAGEMENT
+        - FUND ADVISORS
+        - PROFIT SHARING
+        - COLLECTIVE TRUST
+        - MARKETING
         - RETIREMENT SYSTEMS?
         - RETIREMENT (?:FUND|TRUST)
         - PENSION (?:FUND|PLANS?|TRUST)
@@ -86,6 +94,11 @@ manager_categories:
         - INVESTMENT BOARD
         - BOARD OF INVESTMENTS
         - SUPER FUND
+        - PENSIONFUND
+        - PENSIOENFONDS
+        - TJANSTEPENSION
+        - EMERYTALNE
+        - FONDEN
       unless:
         - ADVISORS?
         - ADVISERS?
@@ -168,6 +181,11 @@ manager_categories:
         - BEAR STEARNS
         - LEHMAN BROTHERS
         - PAINEWEBBER
+        - COWEN
+        - BAIRD
+        - SALOMON
+        - LABRANCHE
+        - GRUNTAL
       unless:
         - ADVISORS?
         - ADVISERS?
@@ -195,6 +213,8 @@ manager_categories:
         - CREDIT UNION
         - CREDIT SUISSE
         - TRUST COMPANY
+        - TRUST CO
+        - BANKSHARES
         - TRUST$
         - CITIGROUP
         - JPMORGAN
@@ -206,6 +226,18 @@ manager_categories:
         - BARCLAYS
         - DEUTSCHE
         - UBS
+        - KBC
+        - RBC
+        - TD
+        - MIZUHO
+        - WILMINGTON
+        - VONTOBEL
+        - SWEDBANK
+        - HANDELSBANKEN
+        - ERSTE
+        - INTESA
+        - DESJARDINS
+        - COMMERZBANK
       unless:
         - ADVISORS?
         - ADVISERS?
@@ -272,3 +304,20 @@ manager_categories:
         - MILLENNIUM
         - POINT72
         - D E SHAW
+        - GP
+        - GENPAR
+        - GENERAL PARTNER
+        - INVEST[A-Z]*
+        - INVESTIMENTOS
+        - GESTAO
+        - RECURSOS
+        - PORTFOLIOS
+        - PLANNERS
+        - KAPITAL[A-Z]*
+        - FONDER
+        - FONDS
+        - FUNDUSZY
+        - INWESTYCYJNYCH
+        - TOWARZYSTWO
+        - ADMINISTRADORA
+        - CAYMAN

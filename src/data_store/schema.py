@@ -839,12 +839,13 @@ class Tables:
     # Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `build_cube.manager_profile`) over the
     # trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
     # unknown, never zero), from books filed on or before `first_filed_date`:
-    # `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other | unknown, from the cleaned
-    # `manager_name`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
+    # `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other, from the cleaned `manager_name` by
+    # the keyword rules, no match is fund, then the CIK override file `configs/superinvestors/manager_categories.json`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
     # of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
     # more than `turnover_threshold` in shares; null when the preceding quarter is missing); `new_position_rate` (mean share
     # of current positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
-    # `pct_equity_us`, `pct_equity_foreign`, `pct_etf`, `pct_bond`, `pct_options`, `pct_other` (the six sum to 1);
+    # `pct_equity_us`, `pct_equity_foreign`, `pct_etf` (ETFs, ETNs, mutual and closed-end funds), `pct_bond`, `pct_options`,
+    # `pct_other` (the six sum to 1; a common line Sharadar lacks is read by title and issuer name rules);
     # cap mix, mean share of equity weight by the 13F-derived size of each ticker (aggregate reported value across
     # filers, split into large, mid and small at `cap_breakpoints`): `pct_cap_small`, `pct_cap_mid`,
     # `pct_cap_large`; sector mix, mean share of equity weight: `pct_sector_<sector>` for Sharadar's 11 sectors

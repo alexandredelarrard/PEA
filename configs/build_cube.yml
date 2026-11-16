@@ -147,6 +147,91 @@ build_cube:
     cap_breakpoints: [0.70, 0.20]  # share of cumulative 13F value ranked by ticker size: large = top 0.70, mid = next 0.20, small = the rest
     price_check_min_filers: 3  # distinct filers a (quarter, CUSIP) needs before its median value / shares is the consensus price of the
                                # cube's repair_value_basis that rescales and nulls mis-reported lines (same meaning as min_consensus_filers above)
+    security_markers:        # name rules for common lines Sharadar does not list; regexes on the upper-case `title_of_class | issuer_name`, whole words
+                             # only; applied in this order: etf, then real_estate (sector only), then foreign, then us_titles; a listed line keeps Sharadar's class
+      etf:                   # fund-like lines: ETFs, ETNs, mutual and closed-end funds (the `pct_etf` asset); never bare TRUST, UNIT(S), SH BEN INT, INVESTMENT TRUST, BD
+        markers:
+          - ETFS?                       # exchange-traded fund / ETF names
+          - ETNS?                       # exchange-traded notes
+          - ETP
+          - EFT                         # ETF typo
+          - EETF
+          - EXCHANGE.?TRADED
+          - EXCHANGED TRADED
+          - MUTUAL FUNDS?               # exact phrase; bare MUTUAL names banks (Washington Mutual)
+          - MUTFUND
+          - MUFD
+          - MTLFND
+          - CLOSED.?END
+          - CEF
+          - ISHARES
+          - ISHS
+          - SPDR
+          - (?<!AMERICAN )VANGUARD      # American Vanguard is an operating company
+          - VNG
+          - VIPERS?
+          - POWERSHARES
+          - PSHS
+          - PROSHARES
+          - INVESCO(?! LTD)             # Invesco Ltd is an operating company
+          - INVSCO
+          - FUNDS?                      # open-end, closed-end and index funds
+          - FDS?
+          - FND
+          - INDEX
+          - INDX
+          - IDX
+          - TR UNIT                     # trust units of SPY, QQQ, DIA
+          - UNIT SER
+          - UT ?SER
+          - SELECT SECTOR
+          - MSCI
+          - S&P(?! GLOBAL INC)          # S&P Global Inc is an operating company
+          - S&AMP
+          - RUSSELL
+          - FTSE
+          - BARCL[A-Z]*
+          - BRCLY
+          - IBOND[A-Z]*
+          - IBOXX
+      real_estate:           # sector Real Estate (`pct_sector_real_estate`) for an unlisted line the etf rule did not take; its asset comes from the later steps
+        markers:
+          - REITS?
+          - REAL ESTATE INVESTMENT TRUST
+          - REAL ESTATE
+          - RL EST
+          - PROPERTIES
+          - PPTYS?
+          - REALTY
+          - RLTY
+          - PROPERTY TRUST
+      foreign:               # strong foreign-listing words (`pct_equity_foreign`); never AMERN, bare N Y, ORD, LTD, PLC, N V, S A or a letter-led CUSIP
+        markers:
+          - ADRS?
+          - ADR\(
+          - SPONSADR
+          - SPONADR
+          - SP ?ADR
+          - ADSS?
+          - AMERICAN DEPOSIT[A-Z]*
+          - GDR
+          - DEPOS?I?TO?R?Y RECEIPTS?
+          - SPONSORED
+          - SPONS?
+          - SPONSD
+          - SPNSRD
+          - NAMEN
+          - AKT
+          - N Y REG(?:ISTRY)?
+          - NY ?REG
+          - CHF
+          - SUB VTG
+          - LTD VTG
+          - LMT VTG
+          - AG
+      us_titles:             # a title that only says "common stock of some class" is US equity: every word is a filler or an anchor, one is an anchor
+        anchors: [COM, COMMON, COMM, CMN, CS, 'STOCKS?', STK, CL, CLASS, CLA, CLB, CAP, EQUITY, EQUITIES, EQTY, COMNEW, COMMSTCK, COMMONSTOCK]
+        fillers: [NEW, NE, SER, SERIES, PAR, NPV, NON, VTG, VT, SHARES, A, B, C, 'USD[0-9./]*', 'STOCKUSD[0-9./]*', '\$[0-9./]*', '[0-9./]+']
 
   hist:                      # self-history (valuation mean-reversion) window for
                              # the f_<yield>_vs_hist features ("cheap vs own past")

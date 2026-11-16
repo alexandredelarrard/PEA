@@ -93,7 +93,11 @@ class StepManagerProfile(Step):
             if raw.empty:
                 self._log.warning("manager profile: no 13F lines stored for %s", period.date())
                 continue
-            lines = classify_securities(clean_book(raw, self._cfg, prefixes), reference, self._cfg)
+            cleaned = clean_book(raw, self._cfg, prefixes)
+            if cleaned.empty:
+                self._log.warning("manager profile: no book for %s (every filer has only a short amendment)", period.date())
+                continue
+            lines = classify_securities(cleaned, reference, self._cfg)
             previous = carry if carry is not None and carry.period == period - pd.offsets.QuarterEnd(1) else None
             stats.append(quarter_stats(lines, previous.book if previous else None, previous.aggregate if previous else None, self._cfg))
             carry = Carry(period, compact_book(lines), quarter_aggregate(lines, self._cfg.cap_breakpoints))
@@ -129,10 +133,9 @@ class StepManagerProfile(Step):
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(LINE_COLUMNS))
 
     def _save(self, df_changed: pd.DataFrame) -> int:
-        """Add the profile columns once, then upsert only them, in chunks; returns the rows written."""
+        """Upsert the profile columns only, in chunks; returns the rows written."""
         if df_changed.empty:
             return 0
-        self._store.ensure_columns(Tables.sec_13f_manager_details, df_changed)
         chunk = 50_000
         return sum(
             self._store.save(Tables.sec_13f_manager_details, df_changed.iloc[start : start + chunk]) for start in range(0, len(df_changed), chunk)

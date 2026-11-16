@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
+from src.data_aggregate.utils.sec_thirteen.bond_lines import bond_line_mask
 from src.data_aggregate.utils.sec_thirteen.value_basis import (
     consensus_prices,
     log_register,
@@ -99,9 +100,10 @@ def company_lines(tagged: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
     return out[["ratio", "target"]]
 
 
-def clean_filings(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def clean_filings(df_filings: pd.DataFrame, df_holdings: pd.DataFrame, bond_lines: Mapping[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Normalize source dates, drop filings whose report period is impossible (before 1999 or after today: a typo), and keep equity only:
-    bond lines leave the book and every other row's bond legs are zeroed, with each manifest's stored row count reduced to match."""
+    bond lines leave the book (debt rows and the share lines `bond_line_mask` flags under `bond_lines`) and every other row's bond legs
+    are zeroed, with each manifest's stored row count reduced to match. The text columns the mask reads are dropped."""
     for df in (df_filings, df_holdings):
         for column in _DATES:
             df[column] = pd.to_datetime(df[column])
@@ -110,7 +112,7 @@ def clean_filings(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[
         typos = set(df_filings.loc[impossible, "accession_number"])
         df_filings = df_filings.loc[~impossible].reset_index(drop=True)
         df_holdings = df_holdings.loc[~df_holdings["accession_number"].isin(typos)]
-    bonds = df_holdings["position_type"].astype(str).str.lower().eq("debt")
+    bonds = df_holdings["position_type"].astype(str).str.lower().eq("debt") | bond_line_mask(df_holdings, bond_lines)
     if bonds.any():
         removed = df_holdings.loc[bonds].groupby("accession_number").size()
         df_filings = df_filings.assign(
@@ -119,7 +121,7 @@ def clean_filings(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[
         df_holdings = df_holdings.loc[~bonds]
     for leg in (leg for leg in ("debt_prn", "debt_value", "raw_debt_value") if leg in df_holdings):
         df_holdings = df_holdings.assign(**{leg: 0.0})
-    return df_filings, df_holdings.reset_index(drop=True)
+    return df_filings, df_holdings.drop(columns=["issuer_name", "title_of_class"], errors="ignore").reset_index(drop=True)
 
 
 def _tag_batch(df_filings: pd.DataFrame, df_raw: pd.DataFrame, tags: CusipTags, members: set[str] | None, whole_books: bool) -> pd.DataFrame:

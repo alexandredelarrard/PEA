@@ -140,9 +140,36 @@ build_cube:
                              # as the whole universe initiating at once.
 
 
+  bond_lines:                # share lines that are really bond principal; shared by the 13F cube cleaning (they leave the book like debt rows)
+                             # and the manager profile (they weigh by filed value in the bond path). Regexes on upper-case text, searched anywhere
+    cusip_pattern: '\d{3}[0-9A-Z]{3}[A-Z][0-9A-Z]{2}'  # a CUSIP is a bond when it has 9 characters, a numeric issuer code and a LETTER as issue
+                                                       # number (character 7); equity issue numbers are digits. The numeric issuer code drops
+                                                       # SEDOL-like codes such as 00B63DG21
+    cusip_excluded_prefixes: ['000']                   # placeholder issuer codes
+    name_exclusions:         # a line whose `issuer_name title_of_class` has any of these is a fund, ADR or placeholder, never a bond by CUSIP
+      - ISHARES              # iShares iBond ETFs have letter issue numbers and are equities
+      - '\bETF\b'
+      - '\bFUND\b'
+      - '\bTRUST\b'
+      - '\bADR\b'
+      - '\bLP\b'
+      - '\bLLC\b'
+    title_markers:           # a line with no ticker is a bond when its `title_of_class` has any of these (note, convertible, debenture, coupon, maturity date)
+      - '(?<![A-Z])(?:NOTES?|NTS?|CONV\w*|CNV\w*|CVT|CV|DEBENTURES?|DEBS?|BONDS?|FRNT|DUE)(?![A-Z])'
+      - '%'
+      - '\b\d{1,2}/\d{1,2}/\d{2,4}\b'
+      - '\b\d{1,2}/\d{4}\b'
+    title_exclusions:        # ... unless `title_of_class issuer_name` also has any of these (preferreds, warrants, units and rights are not bonds)
+      - '(?<![A-Z])(?:PFD\w*|PREF\w*|WARRANTS?|WTS?|UNITS?|RIGHTS?)(?![A-Z])'
+      - '\*W'
+      - 'W EXP'
+      - 'PAGE \d+ RUN DATE'
+
   manager_profile:           # 13F manager behavioural profile (sec_13f_manager_details); category rules: configs/manager_categories.yml
     window_quarters: 4       # a profile is the mean of the single-quarter statistics of the last N report quarters (e.g. 2-8)
     min_quarters: 2          # quarters with a statistic needed before a profile is emitted (<= window_quarters)
+    amendment_only_min_lines: 4  # a (cik, period) whose only stored accession is a 13F-HR/A (no original 13F-HR) with fewer lines than this has no book
+    bond_lines: ${build_cube.bond_lines}  # the shared share-line to bond mapping above
     turnover_threshold: 0.10 # a position counts as changed when its share count moves by more than this fraction (e.g. 0.05-0.25)
     cap_breakpoints: [0.70, 0.20]  # share of cumulative 13F value ranked by ticker size: large = top 0.70, mid = next 0.20, small = the rest
     price_check_min_filers: 3  # distinct filers a (quarter, CUSIP) needs before its median value / shares is the consensus price of the

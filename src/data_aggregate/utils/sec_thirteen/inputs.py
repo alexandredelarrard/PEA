@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Generator, Iterator, Sequence
+from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import closing
 from typing import Any, cast
 
@@ -46,6 +46,8 @@ _POSITION_COLUMNS = (
     *("raw_" + column for column in _NUMERIC if "value" in column),
     "ticker",
 )
+#: Read when the table carries them: the text the bond-line mapping reads, dropped once it has run.
+_TEXT_COLUMNS = ("issuer_name", "title_of_class")
 
 
 def _filing_layout(
@@ -67,7 +69,8 @@ def _filing_layout(
         ]
         where = [markers, *positions]
     stored = set(store.columns(Tables.sec13f_hr))
-    columns = list(dict.fromkeys((*_MANIFEST_COLUMNS, *(c for c in _OPTIONAL_MANIFEST_COLUMNS if c in stored), *_POSITION_COLUMNS)))
+    optional = (c for c in (*_OPTIONAL_MANIFEST_COLUMNS, *_TEXT_COLUMNS) if c in stored)
+    columns = list(dict.fromkeys((*_MANIFEST_COLUMNS, *optional, *_POSITION_COLUMNS)))
     return {"columns": columns, "where": where, "until": until, "date_col": "filing_date", "markers": True}
 
 
@@ -75,7 +78,8 @@ def _partition_packet(df_payload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     """Separate verified completion markers from economic position rows."""
     complete = df_payload["parse_status"].eq("complete") & df_payload["cusip"].eq(cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1])
     df_filings = df_payload.loc[complete, [*_MANIFEST_COLUMNS, *(c for c in _OPTIONAL_MANIFEST_COLUMNS if c in df_payload)]].reset_index(drop=True)
-    df_holdings = df_payload.loc[df_payload["parse_status"].eq("position"), list(_POSITION_COLUMNS)].reset_index(drop=True)
+    positions = [*_POSITION_COLUMNS, *(c for c in _TEXT_COLUMNS if c in df_payload)]
+    df_holdings = df_payload.loc[df_payload["parse_status"].eq("position"), positions].reset_index(drop=True)
     return df_filings, df_holdings
 
 
@@ -84,25 +88,28 @@ def iter_filing_vintages(
     until: object,
     ciks: Sequence[str] | None = None,
     *,
+    bond_lines: Mapping[str, Any],
     universe: Sequence[str] | None = None,
     cusips: Collection[str] = frozenset(),
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]] | None:
     """Open one projected source stream of many complete CIK-quarter groups. With `universe`, a single-version book
     carries only its positions under a universe ticker or on one of `cusips` (the extraction writes positions and
     marker atomically, so it is complete) and an amended book carries all its positions, so the resolver's stored-row
-    count check still holds."""
+    count check still holds. Bond lines (`bond_lines`, `build_cube.bond_lines`) leave every packet as the debt rows do."""
     query = _filing_layout(store, until, ciks, universe, cusips)
     if query is None:
         return None
-    return _iter_filing_packets(store, query, scoped=universe is not None)
+    return _iter_filing_packets(store, query, bond_lines, scoped=universe is not None)
 
 
-def _iter_filing_packets(store: DataStore, query: dict[str, Any], *, scoped: bool) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
+def _iter_filing_packets(
+    store: DataStore, query: dict[str, Any], bond_lines: Mapping[str, Any], *, scoped: bool
+) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
     """Partition verified markers and positions while owning the source cursor."""
     with closing(store.iter_load(Tables.sec13f_hr, chunksize=_CHUNKSIZE, order_by=("cik", "period", "accession_number"), **query)) as stream:
         for df_packet in _iter_whole_quarters(stream):
             df_packet = _complete_amended_books(store, query, df_packet) if scoped else df_packet
-            yield clean_filings(*_partition_packet(df_packet))
+            yield clean_filings(*_partition_packet(df_packet), bond_lines)
             del df_packet
 
 

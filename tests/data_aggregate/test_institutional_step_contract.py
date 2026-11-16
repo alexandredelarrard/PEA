@@ -75,7 +75,7 @@ INSTITUTIONAL_COLUMNS = (
 
 
 def context(store: Any, path: Path) -> Context:
-    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}}})
+    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}, "bond_lines": {}}})
     return cast(
         Context,
         SimpleNamespace(store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}),

@@ -116,7 +116,7 @@ def test_broad_basis_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch
     frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]), security_basis=_basis_frame(basis))
     resources = SecThirteenResources(frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame(columns=["cusip", "ticker"])), {})
     step = object.__new__(StepCubeSecThirteen)
-    step._store, step._cfg, step._settle_days = None, {"institutionals": {}}, F13_SETTLE_TRADING_DAYS
+    step._store, step._cfg, step._settle_days = None, {"institutionals": {}, "bond_lines": {}}, F13_SETTLE_TRADING_DAYS
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr(step_module, "prepare_institutional_book_history", lambda *args, **kwargs: (compact, pd.DataFrame()))
     monkeypatch.setattr(step_module, "compute_institutional_feature_history", lambda values, states, **kwargs: values)

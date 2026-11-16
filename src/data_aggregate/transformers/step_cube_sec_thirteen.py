@@ -160,7 +160,9 @@ class StepCubeSecThirteen(Step):
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
         # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
         universe, until = resources.frames.universe, resources.frames.trading_index.max()
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until, universe=universe, cusips=universe_cusips(resources.tags.lines, universe))
+        packets = thirteen_inputs.iter_filing_vintages(
+            self._store, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
+        )
         cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
@@ -188,7 +190,7 @@ class StepCubeSecThirteen(Step):
 
         # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
         until, ciks = resources.frames.trading_index.max(), sorted(resources.cohorts[""])
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until, ciks)
+        packets = thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"])
         if packets is None:
             return None
 
@@ -198,7 +200,7 @@ class StepCubeSecThirteen(Step):
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 100))
         policy = cfg.get("value_basis")
         consensus = build_consensus_quotes(
-            lambda: thirteen_inputs.iter_filing_vintages(self._store, until, ciks),
+            lambda: thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"]),
             resources.tags,
             resources.frames.close_pit,
             policy,

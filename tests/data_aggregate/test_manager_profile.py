@@ -7,12 +7,13 @@ periods on the primary key) for 2000Q4, 2008Q4 and 2024Q4.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 import pytest
 from dotenv import find_dotenv, load_dotenv
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
@@ -150,7 +151,9 @@ def test_clean_book_keeps_the_original_accession_and_sums_duplicates(cfg: DictCo
         form="13F-HR/A",
         filed="2024-06-01",
     )
-    amendment_only = _raw("0000000002", "2024-03-31", "B1", [("T1", "C1", "ONE INC", "common", 10.0, 100.0, {})], form="13F-HR/A")
+    amendment_only = _raw(
+        "0000000002", "2024-03-31", "B1", [(f"T{i}", f"C{i}", f"N{i} INC", "common", 10.0, 100.0, {}) for i in range(1, 5)], form="13F-HR/A"
+    )
     before_period = _raw("0000000003", "2024-03-31", "C1", [("T1", "C1", "ONE INC", "common", 10.0, 100.0, {})], filed="2024-03-01")
 
     df = clean_book(pd.concat([original, amendment, amendment_only, before_period]), cfg, NO_PREFIX)
@@ -163,10 +166,35 @@ def test_clean_book_keeps_the_original_accession_and_sums_duplicates(cfg: DictCo
     assert len(one) == 4, "negative, zero and null values and the amendment are dropped"
     assert one["value"].sum() == 2700.0, "common rows' call_value / put_value are never added"
     assert np.isclose(one["weight"].sum(), 1.0)
-    assert df.loc[df["cik"] == "0000000002", "value"].tolist() == [100.0], "amendment-only filer falls back to its earliest accession"
+    assert df.loc[df["cik"] == "0000000002", "value"].tolist() == [100.0] * 4, "amendment-only filer falls back to its earliest accession"
     print("\n=== SANITY CHECK: clean_book ===")
     print(
         "Original accession chosen, duplicates summed, bad values dropped, `_empty` ticker is no ticker, option columns not added; weights sum to 1."
+    )
+
+
+def test_a_short_fallback_amendment_gives_no_book_but_a_small_original_book_stays(cfg: DictConfig) -> None:
+    """PL-20 reading: skip a (cik, period) whose accession is a 13F-HR/A fallback (no 13F-HR) with fewer than 4 lines; small originals stay."""
+
+    def lines(count: int) -> list[tuple]:
+        return [(f"T{i}", f"C{i}", f"N{i} INC", "common", 10.0, 100.0, {}) for i in range(count)]
+
+    stub = _raw("0000000021", "2024-03-31", "S1", lines(1), form="13F-HR/A")
+    three = _raw("0000000022", "2024-03-31", "S2", lines(3), form="13F-HR/A")
+    four = _raw("0000000023", "2024-03-31", "S3", lines(4), form="13F-HR/A")
+    five = _raw("0000000024", "2024-03-31", "S4", lines(5), form="13F-HR/A")
+    small_original = _raw("0000000025", "2024-03-31", "S5", lines(2))
+    amended_original = pd.concat(
+        [_raw("0000000026", "2024-03-31", "S6", lines(1)), _raw("0000000026", "2024-03-31", "S7", lines(9), form="13F-HR/A", filed="2024-09-01")]
+    )
+
+    df = clean_book(pd.concat([stub, three, four, five, small_original, amended_original]), cfg, NO_PREFIX)
+
+    count = df.groupby("cik").size().to_dict()
+    assert count == {"0000000023": 4, "0000000024": 5, "0000000025": 2, "0000000026": 1}, count
+    print("\n=== SANITY CHECK: PL-20 amendment-only stub books ===")
+    print(
+        f"Lines per kept book {count}: fallback books of 1 and 3 lines are skipped, 4 and 5 kept, an original 13F-HR of 2 lines kept, an original beats its later amendment."
     )
 
 
@@ -365,7 +393,10 @@ def run_quarters(raw: dict[str, pd.DataFrame], reference: pd.DataFrame, prefixes
     """Single-quarter statistics over consecutive periods; the previous quarter's book and aggregate feed only the next quarter end."""
     out, state = [], None
     for period in sorted(raw):
-        lines = classify_securities(clean_book(raw[period], cfg, prefixes), reference, cfg)
+        cleaned = clean_book(raw[period], cfg, prefixes)
+        if cleaned.empty:
+            continue
+        lines = classify_securities(cleaned, reference, cfg)
         stamp = pd.Timestamp(period)
         adjacent = state is not None and state[0] == stamp - pd.offsets.QuarterEnd(1)
         previous = state if state is not None and adjacent else None
@@ -451,3 +482,30 @@ def test_a_garbage_share_count_cannot_make_a_line_larger_than_its_book(cik: str,
     print(
         f"{len(mine)} positions, max weight {equity_weight.max():.3f}, hhi {hhi:.4f}, cleaned {quarter.loc[quarter['cik'].eq(cik), 'value'].sum():.3e} vs filed {alone['value'].sum():.3e}."
     )
+
+
+def test_millennium_2008q3_one_line_amendment_is_no_book_and_no_longer_carries_the_stub(cfg: DictConfig) -> None:
+    """PL-20 on the real case: Millennium (0001273087) has only a 1-line 13F-HR/A for 2008-09-30, which used to enter the window means."""
+    store = live_store()
+    periods = ["2008-09-30", "2008-12-31", "2009-03-31", "2009-06-30"]
+    raw = load_raw(store, ["0001273087"], periods)
+    reference, prefixes = live_reference(store), live_prefixes(store)
+    stub = raw["2008-09-30"]
+    assert stub["form"].dropna().tolist() == ["13F-HR/A"] and stub["cusip"].ne("_empty").sum() == 1, "the case: one amendment marker and one line"
+
+    profiles = {}
+    for name, minimum in (("before", 0), ("after", int(cfg.amendment_only_min_lines))):
+        rules = cast(DictConfig, OmegaConf.merge(cfg, {"amendment_only_min_lines": minimum}))
+        profiles[name] = profile_rows(run_quarters(raw, reference, prefixes, rules), rules).set_index("period")[
+            ["n_quarters_used", "hhi", "n_positions"]
+        ]
+
+    before, after = profiles["before"], profiles["after"]
+    q4, q1, q2 = pd.Timestamp("2008-12-31"), pd.Timestamp("2009-03-31"), pd.Timestamp("2009-06-30")
+    assert pd.Timestamp("2008-09-30") in before.index and pd.Timestamp("2008-09-30") not in after.index, "no book for the stub quarter"
+    assert before.loc[q4, "hhi"] > 0.3, "before: the 1-line quarter makes 2008Q4 look concentrated"
+    assert pd.isna(after.loc[q4, "hhi"]) and after.loc[q4, "n_quarters_used"] == 1, "after: one real quarter is below min_quarters"
+    assert after.loc[[q1, q2], "hhi"].lt(0.02).all() and after.loc[[q1, q2], "n_positions"].gt(1_500).all()
+    print("\n=== SANITY CHECK: PL-20 Millennium ===")
+    print(pd.concat(profiles, axis=1).round(4).to_string())
+    print("The 1-line amendment quarter gives no book: 2008Q4 reads null (one real quarter) and 2009Q1/Q2 hhi are index-like, not 0.25-0.34.")

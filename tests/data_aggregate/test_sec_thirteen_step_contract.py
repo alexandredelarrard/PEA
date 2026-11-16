@@ -19,11 +19,14 @@ from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
 from tests.support.sec_thirteen_panel import unsaved_panel
+
+BOND_LINES = read_config(str(Path(__file__).resolve().parents[2] / "configs")).build_cube.bond_lines
 
 
 def _manager_batch_owner(
@@ -146,7 +149,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
         def load(self, *args: Any, **kwargs: Any) -> Any:
             raise AssertionError("Whole roster books use bounded source iteration")
 
-    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"])
+    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
     assert result is not None
     [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0

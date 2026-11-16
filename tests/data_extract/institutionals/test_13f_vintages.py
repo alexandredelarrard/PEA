@@ -975,8 +975,18 @@ def test_vintage_recovery_cli_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert runner.invoke(module.cli, ["thirteen-f-vintages"]).exit_code == 2
     assert runner.invoke(module.cli, ["thirteen-f-vintages", "--max-filings", "1"]).exit_code == 2
-    assert runner.invoke(module.cli, ["thirteen-f-managers"]).exit_code == 2, "the nightly manager catch-up is removed"
-    print("SANITY: exact scoped recovery CLI passes; missing scope is rejected; thirteen-f-managers no longer exists.")
+    managed: list[dict[str, Any]] = []
+
+    class _Step:
+        def __init__(self, context: Any, config: Any) -> None:
+            pass
+
+        def run_managers(self, **kwargs: Any) -> None:
+            managed.append(kwargs)
+
+    monkeypatch.setattr(module, "StepExtractInstitutionals", _Step)
+    assert runner.invoke(module.cli, ["thirteen-f-managers", "--full"]).exit_code == 0 and managed[-1]["full"] is True
+    print("SANITY: exact scoped recovery CLI passes; missing scope is rejected; thirteen-f-managers routes to run_managers(full).")
 
 
 def test_recovered_real_amendments_and_active_prior_are_causal() -> None:

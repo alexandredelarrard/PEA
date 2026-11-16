@@ -548,6 +548,80 @@ CREATE TABLE IF NOT EXISTS "sec13f_hr" (
     PRIMARY KEY ("cik", "period", "accession_number", "ticker", "cusip")
 );
 
+-- [extract] sec_13f_manager_details  (pk: cik, period)
+-- One row per 13F filer (CIK) and report quarter, from 1999-06-30: who the filer is and how it invests.
+-- Two writers own different columns and neither touches the other's (precedent: `universe_tickers`).
+-- A row is available at `first_filed_date`; comparisons across quarters are by `period`.
+--
+-- Extract columns, written by `data_extract` (`thirteen-f-managers`) exactly as the SEC gives them, no deduction:
+-- `cik`; `period` (report quarter end); `manager_name` (cover name for ZIP-era periods, EDGAR master-index company
+-- name before; never null); `state_or_country` and `sec_file_number` (cover; null before the ZIP era);
+-- `report_type` (`holdings` | `combination`; null before 2013, the index does not carry it); `accession_number`
+-- (the original 13F-HR, the earliest accession of the period when none is stored; amendments are ignored);
+-- `first_filed_date` (first public filing of the period, never moved later); `source` (ZIP name or
+-- `edgar_index`: where the name came from). 13F-NT notice filers are not stored.
+--
+-- Profile columns, written by `data_aggregate` (`build-manager-profile`) over the trailing 4 quarters including
+-- `period` (minimum 2 usable quarters, else null; null means unknown, never zero), from books filed on or before
+-- `first_filed_date`: `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other | unknown,
+-- from the cleaned `manager_name`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
+-- of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
+-- more than 10% in shares; null when the preceding quarter is missing); `new_position_rate` (mean share of current
+-- positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
+-- `pct_equity_us`, `pct_equity_foreign`, `pct_etf`, `pct_bond`, `pct_options`, `pct_other` (the six sum to 1);
+-- cap mix, mean share of equity weight by the 13F-derived size of each ticker (aggregate reported value across
+-- filers, large = top 70% of cumulative value, mid = next 20%, small = last 10%): `pct_cap_small`, `pct_cap_mid`,
+-- `pct_cap_large`; sector mix, mean share of equity weight: `pct_sector_<sector>` for Sharadar's 11 sectors
+-- (`basic_materials`, `communication_services`, `consumer_cyclical`, `consumer_defensive`, `energy`,
+-- `financial_services`, `healthcare`, `industrials`, `real_estate`, `technology`, `utilities`) and `pct_sector_unmapped`;
+-- `active_share` (mean of 0.5 x the sum of absolute differences between the manager's equity weights and the
+-- aggregate 13F weights; near 0 for an index-like book); `book_value_usd` (median total value of the cleaned book);
+-- `mapped_share` (mean share of equity value whose ticker has a sector and a size); `n_quarters_used` (quarters
+-- in the window that had a usable book).
+
+CREATE TABLE IF NOT EXISTS "sec_13f_manager_details" (
+    "cik" TEXT NOT NULL,
+    "period" DATE NOT NULL,
+    "manager_name" TEXT,
+    "state_or_country" TEXT,
+    "report_type" TEXT,
+    "sec_file_number" TEXT,
+    "accession_number" TEXT,
+    "first_filed_date" DATE,
+    "source" TEXT,
+    "category" TEXT,
+    "n_positions" DOUBLE PRECISION,
+    "hhi" DOUBLE PRECISION,
+    "turnover" DOUBLE PRECISION,
+    "new_position_rate" DOUBLE PRECISION,
+    "pct_equity_us" DOUBLE PRECISION,
+    "pct_equity_foreign" DOUBLE PRECISION,
+    "pct_etf" DOUBLE PRECISION,
+    "pct_bond" DOUBLE PRECISION,
+    "pct_options" DOUBLE PRECISION,
+    "pct_other" DOUBLE PRECISION,
+    "pct_cap_small" DOUBLE PRECISION,
+    "pct_cap_mid" DOUBLE PRECISION,
+    "pct_cap_large" DOUBLE PRECISION,
+    "pct_sector_basic_materials" DOUBLE PRECISION,
+    "pct_sector_communication_services" DOUBLE PRECISION,
+    "pct_sector_consumer_cyclical" DOUBLE PRECISION,
+    "pct_sector_consumer_defensive" DOUBLE PRECISION,
+    "pct_sector_energy" DOUBLE PRECISION,
+    "pct_sector_financial_services" DOUBLE PRECISION,
+    "pct_sector_healthcare" DOUBLE PRECISION,
+    "pct_sector_industrials" DOUBLE PRECISION,
+    "pct_sector_real_estate" DOUBLE PRECISION,
+    "pct_sector_technology" DOUBLE PRECISION,
+    "pct_sector_utilities" DOUBLE PRECISION,
+    "pct_sector_unmapped" DOUBLE PRECISION,
+    "active_share" DOUBLE PRECISION,
+    "book_value_usd" DOUBLE PRECISION,
+    "mapped_share" DOUBLE PRECISION,
+    "n_quarters_used" BIGINT,
+    PRIMARY KEY ("cik", "period")
+);
+
 -- [extract] insider_transactions  (pk: accession_number, security_type, row_sequence)
 -- EDGAR daily rows are authoritative (source='edgar'); zip quarters add missing filings (source='zip').
 

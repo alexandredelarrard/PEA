@@ -30,7 +30,6 @@ from src.validate.result import CheckResult, Finding, jsonable
 from tests.support.config import fixture_config
 from tests.support.universe import universe_of
 from tests.support.window_lineage import (
-    _assemble,
     _assemble_fields,
     _finish_group,
     _ftd_metadata_periods,
@@ -103,7 +102,7 @@ def test_selected_state_reaches_actual_assembly_and_bounded_writer(sqlite_store:
     sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"date": sessions, "ticker": "AAA", "close_split": 100.0}))
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise", lambda *_: {"AAA": {"BBB": 1.0}})
     records, findings = _boundaries(context, state, sessions)
-    result = _assemble(context, state, records)
+    result = _assemble_fields(context, [state], {state.field: records})[state.field]
     assert not findings and result["outside_write_rows_preserved"] == 2
     assert len(result["assembled"]) == 3
     replay = {
@@ -134,7 +133,7 @@ def test_selected_state_reaches_actual_assembly_and_bounded_writer(sqlite_store:
     # selected all-null neighbor remains unknown through the real projection.
     sqlite_store.replace(state.part, pd.DataFrame({"date": sessions, "ticker": "AAA", "f_actual_other_state": 7.0}))
     state.daily.loc[:, :] = float("nan")
-    empty = _assemble(context, state, records)
+    empty = _assemble_fields(context, [state], {state.field: records})[state.field]
     assert all(row[empty["column"]] is None for row in empty["assembled"])
     assert empty["contextual_presence"]["columns"] == ["_lineage_context_f_actual_other_state"]
     assert not any("_lineage_context" in key for row in empty["assembled"] for key in row)

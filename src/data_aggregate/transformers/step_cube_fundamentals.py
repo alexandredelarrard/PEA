@@ -64,7 +64,9 @@ class StepCubeFundamentals(Step):
         window = plan_window(self._context, Tables.cube_part_fundamentals, trading_calendar)
         if window is None:
             return {}
-        dividend_frames = self._load_frames(window.read, trading_calendar)
+        dividend_frames = load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=trading_calendar, fields=self._FIELDS, window=window.read
+        )
         frames = dividend_frames
         source_starts = {
             name: None if window.is_full else shift_date(window.write.start, Offset(item.value, item.unit), trading_calendar)
@@ -156,11 +158,6 @@ class StepCubeFundamentals(Step):
         )
 
     # ---- inputs ---- #
-    def _load_frames(self, window: Window, calendar: pd.DatetimeIndex) -> PriceFrames:
-        return load_price_frames(
-            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=self._FIELDS, window=window
-        )
-
     def _load_history_fields(
         self,
         universe: tuple[str, ...],

@@ -244,5 +244,4 @@ INSIDER_EDGAR_FETCH = EdgarFetch(
     runtime_floor=edgar_window_start,
     run_scope=_insider_run_scope,
     save=save_insider_key,
-    source_history=True,
 )

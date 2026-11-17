@@ -82,7 +82,7 @@ def test_resolver_separates_requested_reads_and_bounded_writes(full: bool) -> No
     calendar = pd.bdate_range("2026-01-01", "2026-11-16")
     requested = Window(pd.Timestamp("2026-09-01"), pd.Timestamp("2026-11-13"))
     policy = WindowPolicy(requested, Offset(7, "calendar_days"), Offset(30, "calendar_days"))
-    run = WindowRun("full" if full else "incremental", "independent finite scope")
+    run = WindowRun("full" if full else "incremental", "independent finite scope", calendar[-1])
     plan = resolve_window(policy, run, pd.Timestamp("2026-11-16"), calendar, (("ticker", ("AAPL",)),))
     assert plan.requested == requested and plan.write.end == requested.end
     assert plan.write.start == pd.Timestamp("2026-09-01" if full else "2026-11-06")
@@ -96,7 +96,31 @@ def test_initial_mode_is_explicit_and_cannot_widen_requested_dates() -> None:
     requested = Window(pd.Timestamp("2026-11-09"), pd.Timestamp("2026-11-13"))
     policy = WindowPolicy(requested, Offset(30, "calendar_days"), None)
     with pytest.raises(ValueError, match="explicit initial mode"):
-        resolve_window(policy, WindowRun("incremental", "missing frontier"), None, calendar, (("ticker", ("AAPL",)),))
-    plan = resolve_window(policy, WindowRun("initial", "first selected output"), None, calendar, (("ticker", ("AAPL",)),))
+        resolve_window(policy, WindowRun("incremental", "missing frontier", calendar[-1]), None, calendar, (("ticker", ("AAPL",)),))
+    plan = resolve_window(policy, WindowRun("initial", "first selected output", calendar[-1]), None, calendar, (("ticker", ("AAPL",)),))
     assert plan.write == requested and plan.read == Window(calendar[0], requested.end)
     print("SANITY: missing state requires initial mode; full-history reads never widen finite write bounds.")
+
+
+def test_future_outcome_read_is_separate_from_finite_write_scope() -> None:
+    calendar = pd.to_datetime(["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-16", "2026-11-17"])
+    policy = WindowPolicy(
+        Window(pd.Timestamp("2026-11-11"), pd.Timestamp("2026-11-12")),
+        Offset(1, "calendar_days"),
+        Offset(1, "trading_sessions"),
+        Offset(3, "trading_sessions"),
+    )
+    run = WindowRun("full", "finite targets with later observed prices", pd.Timestamp("2026-11-16"))
+    plan = resolve_window(policy, run, None, calendar, (("ticker", ("AAPL",)),))
+    assert plan.write == policy.requested
+    assert plan.read == Window(pd.Timestamp("2026-11-10"), pd.Timestamp("2026-11-16"))
+    print("SANITY: finite label writes keep their ceiling; future-price reads stop at the one run anchor.")
+
+
+def test_run_anchor_rejects_missing_dates_and_normalizes_zoned_instants() -> None:
+    with pytest.raises(ValueError, match="execution anchor"):
+        WindowRun("full", "invalid market date", pd.NaT)
+    run = WindowRun("full", "explicit zoned instant", pd.Timestamp("2026-11-16", tz="UTC"))
+    assert run.as_of == pd.Timestamp("2026-11-15")
+    assert run.instant == pd.Timestamp("2026-11-16", tz="UTC")
+    print("SANITY: one entry instant retains its timezone/clock while the Window market date is normalized.")

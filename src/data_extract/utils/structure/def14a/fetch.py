@@ -15,7 +15,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.resume import document_floor, planner_bounds
+from src.data_extract.utils.common.resume import planner_bounds
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.structure.def14a.gender import finalise_gender
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
@@ -24,7 +24,7 @@ from src.data_store.schema import Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.string import run_date
+from src.utils.data_policy import window_policy
 from src.utils.tickers_universe.universe import before_end
 
 #: The `sec_def14a_text` columns the worklist reads; `payload` is read per ticker, for its proxies worth a payload.
@@ -57,11 +57,21 @@ def fetch_def14a_llm(
     (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight."""
     # load: the five output tables (created from their committed DDL on a first run), the walked proxies in the window
     # (no payloads), the ticker names and end bounds
+    policy = window_policy(context.config, Tables.def14a_llm, context.run.as_of)
+    if policy is None:
+        return
+    floor = policy.requested.start
+    df_text = context.store.load(
+        Tables.sec_def14a_text,
+        columns=_TEXT_COLUMNS,
+        where={"ticker": tickers},
+        since=floor,
+        until=policy.requested.end,
+        date_col="filing_date",
+        optional=True,
+    )
     for section in SECTIONS:
         context.store.create_declared(section.table)
-    years = int(config.data_extract.years_history)
-    floor = document_floor(Tables.def14a_llm, run_date(None), years)
-    df_text = context.store.load(Tables.sec_def14a_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=floor, optional=True)
     df_names = universe_rows(context, tickers)
     bounds = planner_bounds(context)
     budget = int(config.data_extract.llm_text_budget.def14a)

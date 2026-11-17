@@ -627,8 +627,8 @@ class StepLongShort(Step):
         train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
         predicted_at = pd.Timestamp.now().floor("s")
         store = self._context.store
-        min_share = float(self._config.data_extract.prediction_fresh_share)
-        shares = check_prediction_inputs(store, self._universe.tickers, pd.Timestamp(self._today), min_share)
+        min_share = float(self._config.data.freshness.prediction_min_fresh_share)
+        shares = check_prediction_inputs(self._context, self._universe.tickers, pd.Timestamp(self._today))
         self._log.info("run_predict: per-key fresh share %s (minimum %.2f)", {name: round(share, 3) for name, share in shares.items()}, min_share)
 
         dates = sorted(pd.Timestamp(d).normalize() for d in store.distinct(Tables.cube, "date", order="desc", limit=int(n_dates)))

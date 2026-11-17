@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 import pandas as pd
+from omegaconf import DictConfig
 
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import sum_company_rows
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
@@ -120,7 +121,7 @@ def _append_revisions(revisions: dict[BookKey, list[PublicBook]], df_round: pd.D
 
 
 def _public_book_schedule(
-    revisions: Mapping[BookKey, tuple[PublicBook, ...]], trading_index: pd.DatetimeIndex, max_age_days: int
+    revisions: Mapping[BookKey, tuple[PublicBook, ...]], trading_index: pd.DatetimeIndex, max_age_days: int, config: DictConfig
 ) -> tuple[dict[pd.Timestamp, list[PublicBook]], pd.DatetimeIndex]:
     """Add first-session expiry events independently of later publications."""
     publications: dict[pd.Timestamp, list[PublicBook]] = defaultdict(list)
@@ -150,7 +151,7 @@ def _advance_latest_books(latest: dict[str, PublicBook], published: list[PublicB
 
 
 def prepare_superinvestor_book_history(
-    packets: Iterable[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, max_age_days: int
+    packets: Iterable[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, max_age_days: int, config: DictConfig
 ) -> tuple[PublicBookSnapshot, ...] | None:
     """Prepare causal public/expiry states from already cleaned whole books, batched by complete CIK-quarters.
 
@@ -166,7 +167,7 @@ def prepare_superinvestor_book_history(
     # every amended quarter in the batch, each quarter cut to its own day.
     for df_filings, df_holdings in packets:
         filings_count += len(df_filings)
-        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days=0)
+        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, config)
         df_rows, df_states, single = _single_version_books(df_manifest, df_holdings)
         order, df_events = _publication_rounds(df_manifest, single)
         books: dict[BookKey, list[PublicBook]] = {}

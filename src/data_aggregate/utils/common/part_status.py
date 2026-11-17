@@ -11,8 +11,6 @@ from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 from src.data_store.schema import Tables
 
-_LAG_TOLERANCE_DAYS = 4
-
 
 def _fmt(value: pd.Timestamp | None) -> str | None:
     return value.strftime("%Y-%m-%d") if value is not None and pd.notna(value) else None
@@ -93,7 +91,7 @@ def part_status_report(context: Context) -> dict[str, Any]:
     if reference is None:
         behind.append(Tables.prices.name)
     institutional = parts[Tables.cube_part_institutionals.name]
-    tolerance = int(context.config.get("source_freshness", {}).get("insider_max_lag_days", _LAG_TOLERANCE_DAYS))
+    tolerance = int(context.config.data.freshness.insider_max_lag_days)
     if institutional["skipped"]:
         insider_status = {"status": "skipped", "reason": "optional institutional part absent or empty", "ok": None}
     else:

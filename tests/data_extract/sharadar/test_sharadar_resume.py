@@ -8,9 +8,8 @@ nothing partial is saved.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -18,7 +17,8 @@ import pytest
 from src.data_extract.utils.fundamentals_sharadar import client as client_mod
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar as fetch_mod
 from src.data_extract.utils.fundamentals_sharadar.client import SharadarRequestError
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_context
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -42,6 +42,7 @@ class FakeSharadar:
 def _context(tmp_path, sqlite_store, tickers: list[str]) -> Any:
     ctx = fake_context(tmp_path, sqlite_store, tickers, sharadar_request_pace=0.0)
     ctx.log.debug = lambda msg, *a: None
+    ctx.config.data.tables.sharadar_actions.start_date = "2016-09-30"
     sqlite_store.save(
         Tables.sharadar_tickers,
         pd.DataFrame({"table": "SF1", "permaticker": range(len(tickers)), "ticker": tickers, "currency": "USD", "isdelisted": "N"}),
@@ -75,14 +76,14 @@ def test_sf1_resumes_each_ticker_from_its_last_date_minus_the_overlap(tmp_path, 
     ctx = _context(tmp_path, sqlite_store, ["AAA", "LAG", "OLD"])
     sqlite_store.save(Tables.sharadar_fundamentals_facts, pd.concat([_sf1("AAA", ["2026-08-01"]), _sf1("LAG", ["2025-11-01"])]))
 
-    fetch_mod.fetch_sharadar_fundamentals(ctx, ["AAA", "LAG", "OLD"], years_history=10, as_of=_AS_OF)
+    fetch_mod.fetch_sharadar_fundamentals(ctx, ["AAA", "LAG", "OLD"])
 
     since = {ticker: day for ticker, day in fake.requests}
-    assert since == {"AAA": "2026-04-28", "LAG": "2025-07-29", "OLD": "2026-04-28"}
+    assert since == {"AAA": "2026-04-23", "LAG": "2025-07-24", "OLD": "2026-04-23"}
     assert len(fake.requests) == 9  # three as-reported dimensions per ticker
     print("\n=== SANITY CHECK: SF1 per-ticker window ===")
-    print(f"  AAA last 2026-08-01 -> {since['AAA']}; LAG last 2025-11-01 -> {since['LAG']} (own date - 95 d);")
-    print(f"  OLD has no row and is not new -> the table frontier - 95 d ({since['OLD']}), per D1a.")
+    print(f"  AAA last 2026-08-01 -> {since['AAA']}; LAG last 2025-11-01 -> {since['LAG']} (own date - 100 d);")
+    print(f"  OLD has no row and is not new -> the table frontier - 100 d ({since['OLD']}), per D1a.")
 
 
 def test_a_failed_sf1_page_fails_the_ticker_and_is_named(tmp_path, sqlite_store, fake):
@@ -90,7 +91,7 @@ def test_a_failed_sf1_page_fails_the_ticker_and_is_named(tmp_path, sqlite_store,
     sqlite_store.save(Tables.sharadar_fundamentals_facts, pd.concat([_sf1("AAA", ["2026-08-01"]), _sf1("BAD", ["2026-08-01"])]))
     fake.failing = {"BAD"}
 
-    fetch_mod.fetch_sharadar_fundamentals(ctx, ["AAA", "BAD"], years_history=10, as_of=_AS_OF)
+    fetch_mod.fetch_sharadar_fundamentals(ctx, ["AAA", "BAD"])
 
     assert any("1 ticker(s) failed and are retried next run -> BAD" in w for w in ctx.warnings)
     assert sqlite_store.max_date_by(Tables.sharadar_fundamentals_facts, "ticker")["BAD"] == pd.Timestamp("2026-08-01")
@@ -118,7 +119,7 @@ def test_the_membership_table_resumes_from_its_last_date_minus_seven_days(tmp_pa
     sqlite_store.save(Tables.sharadar_sp500, pd.DataFrame({"date": [pd.Timestamp("2026-09-29")], "ticker": "AAA", "action": "added"}))
     fetch_mod.fetch_sharadar_sp500(ctx)
 
-    assert [day for _, day in fake.requests] == [cast(Resume, Tables.sharadar_sp500.resume).source_start, "2026-09-22"]
+    assert [day for _, day in fake.requests] == [ctx.config.data.tables.sharadar_sp500.start_date, "2026-09-22"]
     print("\n=== SANITY CHECK: membership window ===")
     print("  cold sp500 -> 1990-01-01; last 2026-09-29 -> 2026-09-22.")
 
@@ -170,7 +171,7 @@ def test_actions_are_pulled_whole_and_replace_the_table(tmp_path, sqlite_store, 
 
     monkeypatch.setattr(fetch_mod, "sharadar_get", serve)
 
-    written = fetch_mod.fetch_sharadar_actions(ctx, years_history=10, as_of=_AS_OF)
+    written = fetch_mod.fetch_sharadar_actions(ctx)
     stored = sqlite_store.load(Tables.sharadar_actions)
 
     ordered = sorted(windows)
@@ -183,7 +184,7 @@ def test_actions_are_pulled_whole_and_replace_the_table(tmp_path, sqlite_store, 
     assert stored.loc[stored["ticker"].eq("META"), "contraticker"].tolist() == ["FB"]
 
     monkeypatch.setattr(fetch_mod, "sharadar_get", FakeSharadar(failing={None}))
-    assert fetch_mod.fetch_sharadar_actions(ctx, years_history=10, as_of=_AS_OF) == 0
+    assert fetch_mod.fetch_sharadar_actions(ctx) == 0
     assert len(sqlite_store.load(Tables.sharadar_actions)) == 4, "a failed pull leaves the table unchanged"
     print("\n=== SANITY CHECK: sharadar_actions full replace (PD-5) ===")
     print(
@@ -207,7 +208,7 @@ def test_a_full_page_halves_its_window_and_a_truncated_pull_never_replaces(tmp_p
     monkeypatch.setattr(fetch_mod, "sharadar_get", serve)
     monkeypatch.setattr(fetch_mod, "PAGE_LIMIT", 30)
 
-    written = fetch_mod.fetch_sharadar_actions(ctx, years_history=1, as_of=_AS_OF)
+    written = fetch_mod.fetch_sharadar_actions(ctx)
 
     quarter = [w for w in windows if w[0] >= "2026-07-01"]
     split = sorted(w for w in quarter if len(served[served["date"].between(*w)]) < 30)
@@ -217,7 +218,7 @@ def test_a_full_page_halves_its_window_and_a_truncated_pull_never_replaces(tmp_p
     monkeypatch.setattr(
         fetch_mod, "sharadar_get", lambda context, table, /, **f: served.iloc[:5].loc[served.iloc[:5]["date"].between(f["date.gte"], f["date.lte"])]
     )
-    assert fetch_mod.fetch_sharadar_actions(ctx, years_history=1, as_of=_AS_OF) == 0
+    assert fetch_mod.fetch_sharadar_actions(ctx) == 0
     assert len(sqlite_store.load(Tables.sharadar_actions)) == 92, "5 rows pulled vs 92 stored: the table is kept"
     print("\n=== SANITY CHECK: windowed actions pull ===")
     print(
@@ -228,12 +229,32 @@ def test_a_full_page_halves_its_window_and_a_truncated_pull_never_replaces(tmp_p
 def test_membership_requests_follow_the_registered_source_start(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sqlite_store: Any, fake: FakeSharadar
 ) -> None:
-    resume = replace(cast(Resume, Tables.sharadar_sp500.resume), source_start="2001-04-01")
-    monkeypatch.setattr(Tables, "sharadar_sp500", replace(Tables.sharadar_sp500, resume=resume))
     ctx = _context(tmp_path, sqlite_store, ["AAA"])
+    ctx.config.data.tables.sharadar_sp500.start_date = "2001-04-01"
     fetch_mod.fetch_sharadar_sp500(ctx)
     sqlite_store.save(Tables.sharadar_sp500, pd.DataFrame({"date": [pd.Timestamp("2026-09-29")], "ticker": "AAA", "action": "added"}))
     fetch_mod.fetch_sharadar_sp500(ctx)
-    fetch_mod.fetch_sharadar_sp500(ctx, full=True)
+    ctx.run = WindowRun("full", "configured membership replay", _AS_OF)
+    fetch_mod.fetch_sharadar_sp500(ctx)
     assert [day for _, day in fake.requests] == ["2001-04-01", "2026-09-22", "2001-04-01"]
     print("SANITY: changing the membership contract moves cold/full requests to 2001-04-01 and preserves the seven-day incremental overlap.")
+
+
+def test_action_snapshot_preserves_rows_outside_its_configured_dates(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
+    ctx.config.data.tables.sharadar_actions.start_date = "2026-01-01"
+    ctx.config.data.tables.sharadar_actions.end_date = "2026-06-30"
+    original = fetch_mod._clean_dated_frame(
+        _actions([("2025-12-31", "AAA", "split", "N/A"), ("2026-03-01", "OLD", "split", "N/A"), ("2026-07-01", "AAA", "dividend", "N/A")]),
+        Tables.sharadar_actions,
+    )
+    sqlite_store.save(Tables.sharadar_actions, original)
+    served = _actions([("2026-03-02", "AAA", "split", "N/A")])
+    monkeypatch.setattr(
+        fetch_mod, "sharadar_get", lambda context, table, **filters: served.loc[served["date"].between(filters["date.gte"], filters["date.lte"])]
+    )
+    assert fetch_mod.fetch_sharadar_actions(ctx) == 1
+    rows = sqlite_store.load(Tables.sharadar_actions).sort_values("date")
+    assert pd.to_datetime(rows["date"]).dt.strftime("%Y-%m-%d").tolist() == ["2025-12-31", "2026-03-02", "2026-07-01"]
+    assert rows["ticker"].tolist() == ["AAA", "AAA", "AAA"]
+    print("SANITY: a market-wide snapshot replaces stale in-window rows while retaining both dated boundaries outside it.")

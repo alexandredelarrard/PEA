@@ -11,12 +11,16 @@ from src.data_extract.utils.common.resume import (
     KEY_ESTABLISHED,
     KEY_NEW,
     KEY_ROWLESS,
+    SeriesRequest,
     ZipScope,
     archive_worklist,
+    series_windows,
+    trading_calendar,
 )
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 from tests.support.universe import seed_universe
 
@@ -38,8 +42,10 @@ def _universe(ctx, tickers: dict[str, str], added_on: dict[str, str] | None = No
 
 
 def _plan(ctx, cik_map: pd.DataFrame, as_of: pd.Timestamp = _AS_OF, table=Tables.sec_8k, **kwargs):
-    defaults = {"forms": _FORMS, "identity": None, "years_history": 5}
-    request = WorklistRequest(keys=cik_map, as_of=as_of, **(defaults | kwargs))
+    ctx.run = WindowRun("full" if kwargs.pop("full", False) else "incremental", "document fixture", as_of)
+    ctx.config.data.tables[table.name].start_date = "2021-09-30"
+    defaults = {"forms": _FORMS, "identity": None}
+    request = WorklistRequest(keys=cik_map, **(defaults | kwargs))
     return document_worklist(ctx, table, request)
 
 
@@ -76,7 +82,7 @@ def test_a_new_key_gets_its_full_history_and_other_keys_are_unchanged(tmp_path, 
 
     assert _units(work, "NEW") == ["n-000", "n-001", "n-002"]
     assert _units(work, "AAA") == ["a-001"]
-    assert work.counts == {KEY_NEW: 3, "forward": 1, "gap": 0}
+    assert work.counts == {KEY_ROWLESS: 3, "forward": 1, "gap": 0}
     print("\n=== SANITY CHECK: M2 new key ===")
     print(f"  NEW (added 2026-09-29) lists its whole history {_units(work, 'NEW')}; AAA only its missing 8-K; counts {work.counts}.")
 
@@ -203,9 +209,11 @@ def _bars(ticker: str, dates) -> pd.DataFrame:
 
 
 def _series(ctx, keys: list[str], *, as_of: pd.Timestamp = _AS_OF, full: bool = False, table=Tables.prices):
-    from src.data_extract.utils.common.resume import series_windows, trading_calendar
-
-    return series_windows(ctx, table, keys, as_of, until=_UNTIL, years_history=5, full=full, calendar=trading_calendar(ctx))
+    ctx.run = WindowRun("full" if full else "incremental", "series fixture", as_of)
+    item = ctx.config.data.tables[table.name]
+    item.start_date = "2021-09-30"
+    item.end_date = None
+    return series_windows(ctx, table, SeriesRequest(keys, trading_calendar(ctx), until=_UNTIL))
 
 
 def _spans(work, key: str) -> list[tuple[str, str]]:

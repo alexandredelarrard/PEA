@@ -8,12 +8,8 @@ symbol of a universe company (`equity_symbol_rows`: not noise, not the Notes cov
 that symbol's lineage window or inside the span of the stored FTD lines of that symbol (a reused symbol brings no other
 issuer's days), or, undated, when its FTD spelling (`finra_key`) is a symbol of a stored FTD line or a universe ticker
 that is no lineage symbol (a CUSIP-6 family class or preferred). The institutionals cube maps the lines to companies and sums the classes (`security_series.short_volume_series`). One file
-covers every ticker, so the day files read are the business days from the earlier of the table's latest day and today
-less the table's overlap, to today; `full`, an empty table and the first run of a new half-month (the half-month,
-1st-15th or 16th-end, of the business day before today later than the latest stored day's) start at the table's source
-start, a keyed upsert. FINRA day
-files are not cached, so that half-monthly full refresh is how a symbol newly in scope gets its history. Missing the
-Lit exchange volumes.
+covers every ticker, so source-unit dates use one table frontier and the configured rewrite overlap.
+Explicit full/recovery reads the fixed configured range; normal runs never schedule a historical half-month sweep.
 """
 
 from __future__ import annotations
@@ -23,7 +19,6 @@ import logging
 import time
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -33,10 +28,11 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity_store import load_stored_lineage
+from src.data_extract.utils.common.resume import source_plan
 from src.data_extract.utils.common.security_lines import in_window, symbol_windows
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
 from src.utils.security_series import finra_key
-from src.utils.string import run_date, squash
+from src.utils.string import squash
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 
@@ -142,32 +138,11 @@ def _fetch_day(
     return r.text if r.status_code == 200 else None
 
 
-def _half_month(day: pd.Timestamp) -> tuple[int, int, bool]:
-    """The half-month of `day`: (year, month, whether it is the 16th or later)."""
-    return day.year, day.month, day.day > 15
-
-
-def _plan_days(context: Context, full: bool, as_of: pd.Timestamp | None) -> pd.DatetimeIndex:
-    """The business days to read, up to today: from the earlier of the table's latest day and today less its overlap
-    (one file serves every ticker, so the latest day is table-wide), or from the source start when `full`, when the table
-    is empty, or on the first run of a half-month (the half-month of the business day before today, the newest day a run
-    can store since FINRA publishes a day's file that evening, is later than the latest stored day's), so a symbol newly
-    in scope gets its history."""
-    # load: the table's latest stored day
-    resume = cast(Resume, Tables.sec_short_volume_security.resume)
-    start_date = run_date(as_of)
+def _plan_days(context: Context) -> pd.DatetimeIndex:
+    """Enumerate provider day units inside the shared configured source Window."""
     latest = context.store.max_date(Tables.sec_short_volume_security)
-
-    # plan: a full refresh from the source start, else the incremental days
-    newest = start_date - pd.offsets.BDay(1)
-    refresh = latest is not None and _half_month(newest) > _half_month(pd.Timestamp(latest))
-    if refresh and not full:
-        logger.info(
-            "RegSHO: first run of a new half-month (latest stored day %s): full refresh from %s", pd.Timestamp(latest).date(), resume.source_start
-        )
-    if full or refresh or latest is None:
-        return pd.bdate_range(pd.Timestamp(resume.source_start), start_date)
-    return pd.bdate_range(min(pd.Timestamp(latest), start_date - pd.Timedelta(days=resume.overlap_days)), start_date)
+    plan = source_plan(context, Tables.sec_short_volume_security, latest, (("source", ("finra",)),))
+    return pd.DatetimeIndex([]) if plan is None else pd.bdate_range(plan.write.start, plan.write.end)
 
 
 def _validated_regsho_day(day: pd.Timestamp, session: requests.Session) -> pd.DataFrame | None:
@@ -180,7 +155,7 @@ def _validated_regsho_day(day: pd.Timestamp, session: requests.Session) -> pd.Da
     return lines
 
 
-def _read_regsho_days(days: Sequence[pd.Timestamp], scope: ShortScope, pause: float) -> tuple[pd.DataFrame, list[pd.Timestamp], list[str]]:
+def _read_regsho_days(days: Sequence[pd.Timestamp], scope: ShortScope) -> tuple[pd.DataFrame, list[pd.Timestamp], list[str]]:
     """Stage fully validated source units; failed units never enter the write."""
     frames: list[pd.DataFrame] = []
     successful: list[pd.Timestamp] = []
@@ -189,6 +164,8 @@ def _read_regsho_days(days: Sequence[pd.Timestamp], scope: ShortScope, pause: fl
         for day in tqdm(days, "short_interest OffExchange - fetch RegSHO"):
             try:
                 lines = _validated_regsho_day(day, session)
+            except (AttributeError, TypeError, NameError, KeyError, ImportError):
+                raise
             except Exception as exc:
                 logger.error("RegSHO %s failed: %s", day.date(), exc)
                 errors.append(f"{day.date()} ({exc})")
@@ -197,32 +174,26 @@ def _read_regsho_days(days: Sequence[pd.Timestamp], scope: ShortScope, pause: fl
                 continue
             successful.append(day)
             frames.append(lines.loc[in_short_scope(lines, scope)])
-            time.sleep(pause)
+            time.sleep(0.05)
     raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(RAW_COLUMNS))
     return raw, successful, errors
 
 
-def fetch_short_interest(
-    context: Context,
-    tickers: list[str],
-    pause: float = 0.05,
-    full: bool = False,
-    as_of: pd.Timestamp | None = None,
-) -> None:
+def fetch_short_interest(context: Context, tickers: list[str]) -> None:
     """Fetch the `_plan_days` RegSHO day files and store their in-scope lines as filed (a keyed upsert).
     `full` aborts before any write on a fetch error or when no day is served."""
     # load: the lineage and the stored FTD symbols' trade-date spans the scope is built from; the planned days
     lineage = load_stored_lineage(context)
     spans = {"first": ("min", "trade_date"), "last": ("max", "trade_date")}
     ftd_spans = context.store.summarize(Tables.sec_fails_to_deliver_security, "source_symbol", spans)
-    days = list(_plan_days(context, full, as_of))
+    days = list(_plan_days(context))
     scope = short_scope(lineage, ftd_spans, tickers)
     logger.info(
         f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers ({len(scope.keys)} undated key(s), {len(scope.windows)} dated window(s))"
     )
-    raw, successful, errors = _read_regsho_days(days, scope, pause)
+    raw, successful, errors = _read_regsho_days(days, scope)
 
-    if full and (errors or not successful):
+    if context.run.mode in {"full", "recovery"} and (errors or not successful):
         raise RuntimeError(f"RegSHO full: {len(errors)} fetch error(s) {errors[:5]}, {len(successful)} served; aborting before any write")
 
     written = context.store.save(Tables.sec_short_volume_security, raw[list(RAW_COLUMNS)]) if not raw.empty else 0

@@ -14,6 +14,7 @@ import pandas as pd
 import requests
 
 from src.data_extract.utils.common.rate_limit import call_with_retries, is_rate_limited
+from src.utils.window import Window
 
 
 def test_retry_waits_then_succeeds_and_reraises_other():
@@ -103,7 +104,7 @@ def test_earnings_download_one_retries_rate_limit(monkeypatch):
     monkeypatch.setattr(fe.yf, "Ticker", _Tk)
     # fast backoff for the test
     monkeypatch.setattr(fe, "call_with_retries", lambda fn, **k: call_with_retries(fn, retries=3, base_wait=0.001))
-    out = fe._download_one("AAPL", 8)
+    out = fe._download_one("AAPL", Window(pd.Timestamp("2024-02-01"), pd.Timestamp("2024-02-02")))
     assert out is not None and out["eps_actual"].iloc[0] == 1.1 and state["n"] == 2
     print("\n=== SANITY CHECK: earnings retries the throttled call ===")
     print(f"  get_earnings_dates 429'd once then succeeded (calls={state['n']}); ticker recovered instead of being dropped. Validated.")

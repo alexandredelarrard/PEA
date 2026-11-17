@@ -23,8 +23,21 @@ from src.validate.checks.window_sample import SampleSelection, check_window_samp
 from src.validate.cli import cli
 from tests.support.window_samples import WindowSamples
 
+_DATA_TABLES = tuple(
+    table
+    for table in ALL
+    if table
+    not in {
+        Tables.cube_signal,
+        Tables.predictions,
+        Tables.predictions_latest,
+        Tables.trend_asset_returns,
+        Tables.strategy,
+    }
+)
 
-@pytest.mark.parametrize("table", ALL, ids=lambda table: table.name)
+
+@pytest.mark.parametrize("table", _DATA_TABLES, ids=lambda table: table.name)
 def test_pinned_table_cells(window_samples: WindowSamples, table: Table) -> None:
     result = window_samples.measure(table)
     assert result.status == "pass", result.summary()
@@ -110,7 +123,7 @@ def test_missing_replay_entry_never_discovers_new_source_keys(sqlite_store: Data
 @pytest.mark.parametrize("has_entry", [True, False])
 def test_cli_missing_sample_publishes_abstention(tmp_path: Path, has_entry: bool) -> None:
     # A missing source is evidence, including when no database context can be opened.
-    table = Tables.predictions_latest
+    table = Tables.notes_embedding
     manifest = tmp_path / "manifest.json"
     entries = {table.name: {"reason": "Source table absent"}} if has_entry else {}
     manifest.write_text(json.dumps({"tables": entries}), encoding="utf-8")
@@ -131,7 +144,12 @@ def test_finite_part_rewrite_preserves_suffix_and_other_ticker(sqlite_store: Dat
     df_write = df_rows.loc[df_rows.ticker.eq("AAPL") & df_rows.date.between("2026-11-09", "2026-11-13")].assign(feature=10)
     requested = Window(dates[0], dates[2])
     window = WindowPlan(
-        requested, requested, Window(dates[1], dates[2]), WindowRun("incremental", "finite AAPL correction"), dates[2], (("ticker", ("AAPL",)),)
+        requested,
+        requested,
+        Window(dates[1], dates[2]),
+        WindowRun("incremental", "finite AAPL correction", requested.end),
+        dates[2],
+        (("ticker", ("AAPL",)),),
     )
 
     # Run the actual current public writer; P0 records its expected safety failure.

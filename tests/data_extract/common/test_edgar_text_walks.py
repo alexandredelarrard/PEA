@@ -31,6 +31,7 @@ from src.data_extract.utils.fundamentals.employee_guard import _GAP
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from src.utils.window import WindowRun
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import TenK, fake_context, identity_for, patch_index_filings, roster_run, seed_index, sent_excerpt
 
@@ -172,7 +173,8 @@ def test_multi_window_ticker_keeps_only_its_own_windows(tmp_path: Path, sqlite_s
     )
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: identity)
 
-    run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, EdgarRun.load(ctx, ["AAA"], 15, as_of=AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", AS_OF)
+    run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, EdgarRun.load(ctx, ["AAA"]), max_workers=1)
 
     df = _stored(sqlite_store, markers=True).sort_values("filing_date")
     assert df["accession_number"].tolist() == [filings["old-in"].accession_number, filings["new-in"].accession_number]
@@ -279,7 +281,8 @@ def _two_window_run(ctx: Any, monkeypatch: pytest.MonkeyPatch) -> EdgarRun:
         {"AAA": "0000000001"},
     )
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: identity)
-    return EdgarRun.load(ctx, ["AAA"], 15, as_of=AS_OF)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", AS_OF)
+    return EdgarRun.load(ctx, ["AAA"])
 
 
 def test_rejected_foreign_subject_is_one_marker_never_read_again(tmp_path: Path, sqlite_store: Any, waits: list[float], monkeypatch) -> None:

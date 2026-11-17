@@ -10,12 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.resume import ZipScope
 from src.data_extract.utils.institutionals.fetch_13f_zips import ingest_13f_datasets
 from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
 from src.data_extract.utils.zips.fetch_financial_notes import (
@@ -27,7 +25,6 @@ from src.data_extract.utils.zips.fetch_financial_notes import (
 from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.zips.thirteen_f_datasets import download_13f_datasets
 from src.utils.step import Step
-from src.utils.string import run_date
 
 
 @dataclass(frozen=True)
@@ -36,8 +33,6 @@ class ZipsOptions:
     date and the Notes metadata-only clock repair."""
 
     tickers: list[str] | None = None
-    full: bool = False
-    as_of: pd.Timestamp | None = None
     repair_availability: bool = False
 
 
@@ -47,19 +42,12 @@ class StepExtractZips(Step):
         self._options = options or ZipsOptions()
         paths = config.local.paths
         self._notes_cache = cache_dir(context, paths.financial_notes)
-        self._years_history = int(config.data_extract.years_history)
-        self._run_date = run_date(self._options.as_of)
         self._notes_periods: list[str] | None = None
-
-    @property
-    def _scope(self) -> ZipScope:
-        """The ingest scope: the `-t` subset, else the universe (read on first use)."""
-        return ZipScope(tickers=self._options.tickers or self._universe.tickers, run_date=self._run_date, full=self._options.full)
 
     def _notes_period_list(self) -> list[str]:
         """The Notes periods of the window on the run date, scraped once per step."""
         if self._notes_periods is None:
-            self._notes_periods = notes_periods(self._context, self._years_history + 1, self._run_date)
+            self._notes_periods = notes_periods(self._context)
         return self._notes_periods
 
     def run_download_insider(self) -> int:
@@ -69,7 +57,7 @@ class StepExtractZips(Step):
         return download_notes_periods(self._context, self._notes_cache, self._notes_period_list())
 
     def run_download_fails_to_deliver(self) -> int:
-        return download_fails_to_deliver(self._context, self._years_history, self._run_date)
+        return download_fails_to_deliver(self._context)
 
     def run_download_13f(self) -> int:
         return download_13f_datasets(self._context)
@@ -81,19 +69,18 @@ class StepExtractZips(Step):
         self.run_download_13f()
 
     def run_ingest_insider(self) -> int:
-        scope = self._scope
-        return fetch_insider_transactions(self._context, scope.tickers, self._years_history, reparse=scope.full, as_of=scope.run_date)
+        return fetch_insider_transactions(self._context, self._options.tickers or self._universe.tickers)
 
     def run_ingest_financial_notes(self) -> int:
         if self._options.repair_availability:
-            return repair_notes_availability(self._context, self._notes_cache)
-        return ingest_financial_notes(self._context, self._notes_cache, self._scope, self._notes_period_list())
+            return repair_notes_availability(self._context, self._notes_cache, self._options.tickers or self._universe.tickers)
+        return ingest_financial_notes(self._context, self._notes_cache, self._options.tickers or self._universe.tickers, self._notes_period_list())
 
     def run_ingest_fails_to_deliver(self) -> int:
-        return fetch_fails_to_deliver(self._context, self._scope.full)
+        return fetch_fails_to_deliver(self._context)
 
     def run_ingest_13f(self) -> int:
-        return ingest_13f_datasets(self._context, full=self._options.full)
+        return ingest_13f_datasets(self._context, full=self._context.run.mode in {"full", "recovery"})
 
     def run_ingest(self) -> None:
         self.run_ingest_insider()

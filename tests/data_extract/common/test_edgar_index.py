@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.edgar_extract import edgar_index
+from src.utils.window import Window, WindowRun
 from tests.data_extract.edgar_fixtures import fake_context, master_text
 
 #: 30 index lines: universe and non-universe CIKs, policy forms and forms the cache drops.
@@ -92,9 +93,12 @@ def _quarters(urls: list[str]) -> list[str]:
 def test_closed_quarters_refresh_after_weekly_rebuild_and_current_quarter_every_run(tmp_path: Path, sqlite_store: Any, served: list[str]) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAPL"])
 
-    first = edgar_index.refresh(ctx, pd.Timestamp("2026-10-20"), years_history=1)
-    second = edgar_index.refresh(ctx, pd.Timestamp("2026-10-21"), years_history=1)
-    early = edgar_index.refresh(ctx, pd.Timestamp("2027-01-05"), years_history=1)
+    ctx.run = WindowRun("incremental", "index refresh boundary", pd.Timestamp("2026-10-20"))
+    first = edgar_index.refresh(ctx, Window(pd.Timestamp("2025-10-20"), pd.Timestamp("2026-10-20")))
+    ctx.run = WindowRun("incremental", "index refresh boundary", pd.Timestamp("2026-10-21"))
+    second = edgar_index.refresh(ctx, Window(pd.Timestamp("2025-10-21"), pd.Timestamp("2026-10-21")))
+    ctx.run = WindowRun("incremental", "index refresh boundary", pd.Timestamp("2027-01-05"))
+    early = edgar_index.refresh(ctx, Window(pd.Timestamp("2026-01-05"), pd.Timestamp("2027-01-05")))
 
     assert sorted(first) == ["2025Q4", "2026Q1", "2026Q2", "2026Q3", "2026Q4"]
     assert list(second) == ["2026Q4"]  # closed quarters are cached, the current one is not
@@ -110,16 +114,19 @@ def test_closed_quarters_refresh_after_weekly_rebuild_and_current_quarter_every_
 
 def test_refreshed_today_reads_the_cache_files(tmp_path: Path, sqlite_store: Any, served: list[str]) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAPL"])
-    today = pd.Timestamp.now().normalize()
-    before = edgar_index.refreshed_today(ctx, 1)
+    today = pd.Timestamp("2026-11-16")
+    ctx.run = WindowRun("incremental", "cache schedule", today)
+    window = Window(pd.Timestamp("2025-11-16"), today)
+    wider_window = Window(pd.Timestamp("2023-11-16"), today)
+    before = edgar_index.refreshed_today(ctx, window)
 
-    edgar_index.refresh(ctx, today, years_history=1)
-    covered, wider = edgar_index.refreshed_today(ctx, 1), edgar_index.refreshed_today(ctx, 3)
+    edgar_index.refresh(ctx, window)
+    covered, wider = edgar_index.refreshed_today(ctx, window), edgar_index.refreshed_today(ctx, wider_window)
     original = edgar_index.index_dir(ctx) / f"{edgar_index.Quarter.of(today).name}.master.gz"
-    yesterday = (today - pd.Timedelta(days=1)).timestamp()
+    yesterday = (today - pd.Timedelta(days=1)).tz_localize("America/New_York").timestamp()
     os.utime(original, (yesterday, yesterday))
 
-    assert not before and covered and not wider and not edgar_index.refreshed_today(ctx, 1)
+    assert not before and covered and not wider and not edgar_index.refreshed_today(ctx, window)
     print("\n=== SANITY CHECK: refreshed today ===")
     print("  empty cache -> no; after today's 1-year refresh -> yes for 1y, no for 3y; current original from yesterday -> no.")
 
@@ -128,7 +135,8 @@ def test_a_quarter_sec_does_not_serve_writes_nothing(tmp_path, sqlite_store, mon
     ctx = fake_context(tmp_path, sqlite_store, ["AAPL"])
     monkeypatch.setattr(edgar_index.sec_io, "download", lambda context, url, path, **kw: 404)
 
-    written = edgar_index.refresh(ctx, pd.Timestamp("2026-10-02"), years_history=0)
+    ctx.run = WindowRun("incremental", "index refresh boundary", pd.Timestamp("2026-10-02"))
+    written = edgar_index.refresh(ctx, Window(pd.Timestamp("2026-10-02"), pd.Timestamp("2026-10-02")))
 
     assert written == {} and edgar_index.quarter_counts(ctx) == {}
     assert any("2026Q4 not served (HTTP 404)" in w for w in ctx.warnings)
@@ -137,12 +145,13 @@ def test_a_quarter_sec_does_not_serve_writes_nothing(tmp_path, sqlite_store, mon
 
 def test_entries_filter_ciks_forms_and_date(tmp_path, sqlite_store, served):
     ctx = fake_context(tmp_path, sqlite_store, ["AAPL"])
-    edgar_index.refresh(ctx, pd.Timestamp("2026-08-01"), years_history=0)  # one quarter file: 2026Q3
+    ctx.run = WindowRun("incremental", "index refresh boundary", pd.Timestamp("2026-08-01"))
+    edgar_index.refresh(ctx, Window(pd.Timestamp("2026-08-01"), pd.Timestamp("2026-08-01")))  # one quarter file: 2026Q3
 
-    df = edgar_index.entries(ctx, {"0000320193", "19617"}, ["4", "8-K"], since=pd.Timestamp("2026-07-02"))
+    df = edgar_index.entries(ctx, {"0000320193", "19617"}, ["4", "8-K"], window=Window(pd.Timestamp("2026-07-02"), pd.Timestamp("2026-09-30")))
 
     assert df["accession"].tolist() == ["0000019617-26-000001", "0001127602-26-000101"]
     assert set(df["cik"]) == {"0000320193", "0000019617"} and df["filed"].dtype.kind == "M"
-    assert edgar_index.entries(ctx, set(), ["4"]).empty
+    assert edgar_index.entries(ctx, set(), ["4"], Window(pd.Timestamp("2026-07-02"), pd.Timestamp("2026-09-30"))).empty
     print("\n=== SANITY CHECK: filtered read ===")
     print(f"  CIKs {{AAPL, JPM}} x forms {{4, 8-K}} from 2026-07-02 -> {df['accession'].tolist()}; CIKs padded, dates Timestamps.")

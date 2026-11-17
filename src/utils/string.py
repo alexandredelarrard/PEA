@@ -7,8 +7,8 @@ person key in `src/utils/names.py`.
 """
 
 import re
-from typing import Any, cast
 from datetime import datetime
+from typing import Any, cast
 
 import pandas as pd
 
@@ -58,6 +58,12 @@ def squash(symbol: object) -> str:
         return ""
     return re.sub(r"[\s\-./]", "", str(symbol)).upper()
 
+
 def run_date(as_of: datetime | None) -> pd.Timestamp:
-    """The `--as-of` date at midnight, or today."""
-    return cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()
+    """Normalize an entry-point date in the US market timezone; naive values are market dates."""
+    stamp = pd.Timestamp.now(tz="America/New_York") if as_of is None else pd.Timestamp(as_of)
+    if pd.isna(stamp):
+        raise ValueError("The execution anchor must be a valid market date")
+    if stamp.tz is not None:
+        stamp = stamp.tz_convert("America/New_York").tz_localize(None)
+    return stamp.normalize()

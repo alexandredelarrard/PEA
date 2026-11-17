@@ -49,11 +49,11 @@ class SyncResult:
     moves: pd.DataFrame
 
 
-def recheck_tickers(scopes: Mapping[str, FilingScope], as_of: pd.Timestamp, every: bool) -> list[str]:
+def recheck_tickers(context: Context, scopes: Mapping[str, FilingScope], every: bool) -> list[str]:
     """The tickers whose lineage scope stamp is inside the re-check window on `as_of`; every ticker under `every`."""
     # compute: the scope stamp of each ticker, then the recent ones
     stamps = {ticker: scope.scope_changed_at for ticker, scope in scopes.items()}
-    return sorted(stamps) if every else recently_changed(stamps, as_of)
+    return sorted(stamps) if every else recently_changed(context, stamps)
 
 
 def owned_scopes(identity: Identity) -> OwnedScopes:

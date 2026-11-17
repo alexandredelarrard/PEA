@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from src.data_extract.utils.edgar_extract import edgar_index
+from src.utils.window import Window
 from tests.data_extract.edgar_fixtures import MASTER_HEADER, fake_context
 
 
@@ -55,11 +56,11 @@ def test_missing_original_is_retried_and_failed_rebuild_preserves_good_cache(
 
     monkeypatch.setattr(edgar_index.sec_io, "download", download)
     monkeypatch.setattr(edgar_index, "quarters_between", lambda first, last: [quarter])
-    edgar_index.refresh(context, pd.Timestamp("2026-10-21"), 1)
+    edgar_index.refresh(context, Window(quarter.start, quarter.end))
     original = directory / "2026Q3.master.gz"
     assert len(requested) == 1 and original.read_bytes() == raw
     before = cache.read_bytes()
-    edgar_index.refresh(context, pd.Timestamp("2026-10-22"), 1, rebuild=True)
+    edgar_index.refresh(context, Window(quarter.start, quarter.end), rebuild=True)
     assert len(requested) == 2 and original.read_bytes() == raw and cache.read_bytes() == before
     print("SANITY: a cached-only quarter retries its actual original; a malformed refresh retains the good original and selected cache bytes.")
 
@@ -94,7 +95,9 @@ def test_each_index_writer_owns_its_temporary_source_bytes(tmp_path: Path, sqlit
     monkeypatch.setattr(edgar_index.pq, "write_table", write_then_compete)
     monkeypatch.setattr(edgar_index.os, "replace", interrupted_replace)
     edgar_index._write_atomic(actual, path)
-    assert edgar_index.entries(context, {"1"}, ["4"])["accession"].tolist() == ["0000000001-26-000001"]
+    assert edgar_index.entries(context, {"1"}, ["4"], Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31")))["accession"].tolist() == [
+        "0000000001-26-000001"
+    ]
     assert not list(path.parent.glob("*.part"))
     print("SANITY: an interrupted concurrent index writer cannot replace another writer's staged payload.")
 
@@ -125,20 +128,24 @@ def test_each_index_download_owns_validated_original_bytes(tmp_path: Path, sqlit
             nonlocal future
             writer(frame, path)
             if compete:
-                future = executor.submit(edgar_index.refresh, second, pd.Timestamp("2026-10-01"), 1, rebuild=True)
+                future = executor.submit(edgar_index.refresh, second, Window(quarter.start, quarter.end), rebuild=True)
                 assert wrote_bad.wait(5)
 
         monkeypatch.setattr(edgar_index, "quarters_between", lambda first, last: [quarter])
         monkeypatch.setattr(edgar_index.sec_io, "download", download)
         monkeypatch.setattr(edgar_index, "_write_atomic", publish_then_compete)
         try:
-            assert edgar_index.refresh(first, pd.Timestamp("2026-10-01"), 1, rebuild=True) == {quarter.name: 1}
+            assert edgar_index.refresh(first, Window(quarter.start, quarter.end), rebuild=True) == {quarter.name: 1}
         finally:
             resume_bad.set()
         if future is not None:
             assert future.result(timeout=5) == {}
     assert original.read_bytes() == raw, "A's validated original cannot be replaced by B's unparsed download bytes"
-    assert edgar_index.entries(first, {"1"}, ["4"])["accession"].tolist() == ["0000000001-26-000001"]
-    assert edgar_index.entries(second, {"1"}, ["4"])["accession"].tolist() == ["0000000001-26-000001"], "B's failed download leaves A's file"
+    assert edgar_index.entries(first, {"1"}, ["4"], Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31")))["accession"].tolist() == [
+        "0000000001-26-000001"
+    ]
+    assert edgar_index.entries(second, {"1"}, ["4"], Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31")))["accession"].tolist() == [
+        "0000000001-26-000001"
+    ], "B's failed download leaves A's file"
     assert not list(directory.glob("*.part"))
     print("SANITY: each actual download owns its temporary bytes; a competing failed download preserves the good original and selected cache.")

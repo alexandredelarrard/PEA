@@ -18,15 +18,18 @@ import pytest
 
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import _file
 
 UNIVERSE = ["LEN"]
+_AS_OF = pd.Timestamp("2024-06-28")
 
 
 @pytest.fixture
-def sqlite_store(sqlite_store):
+def sqlite_store(sqlite_store, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(si.time, "sleep", lambda seconds: None)
     create_canonical(sqlite_store.engine, [Tables.universe_cik_symbol, Tables.sec_fails_to_deliver_security, Tables.sec_short_volume_security])
     lineage = pd.DataFrame(
         [
@@ -41,8 +44,14 @@ def sqlite_store(sqlite_store):
     return sqlite_store
 
 
-def _context(store, tmp_path: Path | None = None) -> Any:
-    return SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={}))
+def _context(store, tmp_path: Path | None = None, *, as_of: pd.Timestamp = _AS_OF, full: bool = False) -> Any:
+    return SimpleNamespace(
+        store=store,
+        run=WindowRun("full" if full else "incremental", "FINRA fixture", as_of),
+        paths={"DATA_STORE": tmp_path},
+        log=logging.getLogger("test.regsho"),
+        config=extract_config(),
+    )
 
 
 def _raw(rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
@@ -72,110 +81,44 @@ def _stored(store) -> dict[tuple[str, str], float]:
     }
 
 
-_AS_OF = pd.Timestamp("2024-06-28")  # a Friday
-
-
-def test_an_up_to_date_table_rereads_the_overlap_window(sqlite_store):
+def test_an_up_to_date_table_rereads_the_configured_thirty_day_overlap(sqlite_store) -> None:
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-27", 1.0, 2.0)]))
-
-    plan = si._plan_days(_context(sqlite_store), False, _AS_OF)
-
-    assert plan.equals(pd.bdate_range("2024-06-21", _AS_OF))  # today - 7 d is earlier than the latest day
-    print("\n=== SANITY CHECK: RegSHO day plan, up to date ===")
-    print(f"  latest stored day 06-27 -> {len(plan)} day files from today - 7 d (06-21) to today.")
+    plan = si._plan_days(_context(sqlite_store))
+    assert plan.equals(pd.bdate_range("2024-05-28", _AS_OF))
+    print("SANITY: the FINRA source frontier minus30CD determines the day-file window.")
 
 
-def test_a_stale_table_resumes_from_its_latest_day(sqlite_store):
+def test_a_stale_table_catches_up_from_its_frontier_minus_overlap(sqlite_store) -> None:
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-03", 1.0, 2.0), ("BBB", "2024-06-17", 1.0, 2.0)]))
-
-    plan = si._plan_days(_context(sqlite_store), False, _AS_OF)
-
-    assert plan.equals(pd.bdate_range("2024-06-17", _AS_OF)), "the table-wide latest day, not each symbol's own"
-    print("\n=== SANITY CHECK: RegSHO day plan, stale ===")
-    print(f"  AAA stops 06-03, BBB 06-17 -> {len(plan)} day files from the table's latest day 06-17.")
-
-
-def test_the_first_run_of_a_new_half_month_plans_a_full_refresh(sqlite_store, caplog):
-    """A run on day D stores at most the business day before D (FINRA publishes D in the evening). Latest 06-12, run on
-    Tue 06-16: the newest storable day 06-15 is still in 1st-15th June, so incremental. Latest 06-15, run 06-17: the
-    newest storable day 06-16 is the first of 16th-end June, so a full refresh."""
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2026-06-12", 1.0, 2.0)]))
-    with caplog.at_level(logging.INFO, logger=si.__name__):
-        before = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2026-06-16"))
-    assert not any("half-month" in record.getMessage() for record in caplog.records)
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2026-06-15", 1.0, 2.0)]))
-    with caplog.at_level(logging.INFO, logger=si.__name__):
-        first = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2026-06-17"))
-
-    print("\n=== SANITY CHECK: RegSHO day plan, first run of a half-month ===")
-    print(f"  latest 06-12, run 06-16 -> {len(before)} day files from {before[0].date()} (incremental);")
-    print(f"  latest 06-15, run 06-17 -> {len(first)} day files from {first[0].date()} (full refresh).")
-    assert before.equals(pd.bdate_range("2026-06-09", "2026-06-16")), "06-15 is still 1st-15th June: incremental"
-    assert first.equals(pd.bdate_range("2018-08-01", "2026-06-17")), "a full refresh from the source start"
-    assert any("first run of a new half-month" in record.getMessage() for record in caplog.records), "one log line says why"
+    plan = si._plan_days(_context(sqlite_store))
+    assert plan.equals(pd.bdate_range("2024-05-20", _AS_OF))
+    print("SANITY: FINRA catches up from the market-wide frontier with the same configured overlap.")
 
 
 @pytest.mark.parametrize(
-    ("latest", "run", "refresh"),
+    ("latest", "day", "first"),
     [
-        ("2026-06-30", "2026-07-01", False),  # month end: the newest storable day 06-30 is still June
-        ("2026-06-30", "2026-07-02", True),  # 07-01 is the first day of July
-        ("2026-12-31", "2027-01-01", False),  # year end: the newest storable day 12-31 is still 2026
-        ("2026-12-31", "2027-01-04", True),  # 2027-01-01 is the first business day of 2027
-        ("2026-05-15", "2026-05-16", False),  # the 16th on a Saturday: Sat, Sun and Mon can store at most Fri 15th
-        ("2026-05-15", "2026-05-17", False),
-        ("2026-05-15", "2026-05-18", False),
-        ("2026-05-15", "2026-05-19", True),  # Tue 19th: the newest storable day is Mon 18th
+        ("2026-06-15", "2026-06-17", "2026-05-18"),
+        ("2026-06-30", "2026-07-02", "2026-06-01"),
+        ("2026-12-31", "2027-01-04", "2026-12-01"),
+        ("2026-05-15", "2026-05-19", "2026-04-15"),
     ],
 )
-def test_the_half_month_boundaries_follow_the_newest_storable_day(sqlite_store, latest, run, refresh):
+def test_calendar_boundaries_cannot_trigger_an_implicit_historical_rebuild(sqlite_store, latest: str, day: str, first: str) -> None:
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", latest, 1.0, 2.0)]))
-
-    plan = si._plan_days(_context(sqlite_store), False, pd.Timestamp(run))
-
-    print(f"\n=== SANITY CHECK: RegSHO half-month boundary === latest {latest}, run {run} -> plan from {plan[0].date()}")
-    assert (plan[0] == pd.Timestamp("2018-08-01")) is refresh
+    plan = si._plan_days(_context(sqlite_store, as_of=pd.Timestamp(day)))
+    assert plan.equals(pd.bdate_range(first, day))
+    print(f"SANITY: a run on{day} starts at{first}; half-month/month/year boundaries never override config.")
 
 
-def test_a_year_of_nightly_runs_does_one_full_refresh_per_half_month():
-    """Every calendar day of 2027 runs once and stores the business day before it (holidays ignored): 24 full refreshes."""
-    stored = {"latest": pd.Timestamp("2026-12-31")}
-    context = SimpleNamespace(store=SimpleNamespace(max_date=lambda table: stored["latest"]))
-    refreshes: list[pd.Timestamp] = []
-    for run in pd.date_range("2027-01-01", "2027-12-31"):
-        if si._plan_days(cast(Any, context), False, run)[0] == pd.Timestamp("2018-08-01"):
-            refreshes.append(run)
-        stored["latest"] = run - pd.offsets.BDay(1)
-
-    print(f"\n=== SANITY CHECK: RegSHO refreshes in 2027 === {len(refreshes)} full refreshes (one per half-month expected)")
-    assert len(refreshes) == 24
-    assert len({si._half_month(day - pd.offsets.BDay(1)) for day in refreshes}) == 24, "never two in the same half-month"
-
-
-def test_the_second_run_of_a_half_month_plans_incremental(sqlite_store, caplog):
-    """After the half-month's full refresh stored 06-17, the run on 06-18 is incremental (overlap window)."""
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-17", 1.0, 2.0)]))
-
-    with caplog.at_level(logging.INFO, logger=si.__name__):
-        plan = si._plan_days(_context(sqlite_store), False, pd.Timestamp("2024-06-18"))
-
-    assert plan.equals(pd.bdate_range("2024-06-11", "2024-06-18")), "today - 7 d, earlier than the latest day"
-    assert not any("half-month" in record.getMessage() for record in caplog.records)
-    print("\n=== SANITY CHECK: RegSHO day plan, second run of a half-month ===")
-    print(f"  latest 06-17, run 06-18 -> {len(plan)} day files from 06-11 (incremental).")
-
-
-def test_an_empty_table_and_full_start_at_the_source_start(sqlite_store):
-    resume = Tables.sec_short_volume_security.resume
-    assert resume is not None and resume.source_start == "2018-08-01"
-    cold = si._plan_days(_context(sqlite_store), False, _AS_OF)
+def test_cold_and_explicit_full_keep_fixed_source_bounds(sqlite_store) -> None:
+    context = _context(sqlite_store)
+    cold = si._plan_days(context)
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("AAA", "2024-06-27", 1.0, 2.0)]))
-    full = si._plan_days(_context(sqlite_store), True, _AS_OF)
-
-    expected = pd.bdate_range("2018-08-01", _AS_OF)
-    assert cold.equals(expected) and full.equals(expected)
-    print("\n=== SANITY CHECK: RegSHO day plan, cold and full ===")
-    print(f"  no table or --full -> all {len(full)} business days from the 2018-08-01 source start to today.")
+    context.run = WindowRun("full", "explicit FINRA replay", context.run.instant)
+    full = si._plan_days(context)
+    assert cold.equals(pd.bdate_range("2018-08-01", _AS_OF)) and full.equals(cold)
+    print("SANITY: cold/full runs use the configured2018-08-01 source floor, independently of relative years.")
 
 
 def test_incremental_run_upserts_the_fetched_days_as_filed(sqlite_store, tmp_path, monkeypatch):
@@ -183,7 +126,7 @@ def test_incremental_run_upserts_the_fetched_days_as_filed(sqlite_store, tmp_pat
     monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2020-01-03", "2020-01-06"))
     asked = _serve(monkeypatch, {"20200103": [("LEN", 30.0, 40.0), ("LEN/B", 5.0, 6.0), ("ZZZZ", 1.0, 1.0)], "20200106": [("LEN", 50.0, 60.0)]})
 
-    si.fetch_short_interest(_context(sqlite_store, tmp_path), UNIVERSE, pause=0.0)
+    si.fetch_short_interest(_context(sqlite_store, tmp_path), UNIVERSE)
 
     assert [d.date().isoformat() for d in asked] == ["2020-01-03", "2020-01-06"]
     assert _stored(sqlite_store) == {
@@ -199,10 +142,9 @@ def test_incremental_run_upserts_the_fetched_days_as_filed(sqlite_store, tmp_pat
 
 def test_full_refetches_every_served_day_from_the_source_start(sqlite_store, monkeypatch):
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2018-08-02", 99.0, 99.0)]))
-    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-03")))
     asked = _serve(monkeypatch, {"20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)], "20180803": [("LEN", 7.0, 8.0)]})
 
-    si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True)
+    si.fetch_short_interest(_context(sqlite_store, as_of=pd.Timestamp("2018-08-03"), full=True), UNIVERSE)
 
     assert {d.date().isoformat() for d in asked} == {"2018-08-01", "2018-08-02", "2018-08-03"}
     assert _stored(sqlite_store) == {("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("LEN", "2018-08-03"): 7.0}
@@ -212,11 +154,10 @@ def test_full_refetches_every_served_day_from_the_source_start(sqlite_store, mon
 
 def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite_store, monkeypatch):
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2018-08-01", 1.0, 2.0), ("LEN", "2018-08-02", 3.0, 4.0)]))
-    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-02")))
     _serve(monkeypatch, {})
 
     with pytest.raises(RuntimeError, match="aborting"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True)
+        si.fetch_short_interest(_context(sqlite_store, as_of=pd.Timestamp("2018-08-02"), full=True), UNIVERSE)
     assert _stored(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
 
     def _boom(day: pd.Timestamp, session: object = None) -> str | None:
@@ -224,7 +165,7 @@ def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite
 
     monkeypatch.setattr(si, "_fetch_day", _boom)
     with pytest.raises(RuntimeError, match="aborting"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True)
+        si.fetch_short_interest(_context(sqlite_store, as_of=pd.Timestamp("2018-08-02"), full=True), UNIVERSE)
     assert _stored(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
     print("\n=== SANITY CHECK: RegSHO full abort gate ===")
     print("  nothing served, or a network error, aborts full before the write; the stored lines are kept")
@@ -233,10 +174,9 @@ def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite
 def test_a_run_upserts_its_lines_and_leaves_every_other_symbol(sqlite_store, monkeypatch):
     """A `-t` run re-reads the planned days for its scope only: another symbol's stored line survives."""
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2018-08-01", 9.0, 9.0), ("OTHR", "2018-08-01", 7.0, 7.0)]))
-    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-02")))
     _serve(monkeypatch, {"20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)]})
 
-    si.fetch_short_interest(_context(sqlite_store), ["LEN"], pause=0.0, full=True)
+    si.fetch_short_interest(_context(sqlite_store, as_of=pd.Timestamp("2018-08-02"), full=True), ["LEN"])
 
     assert _stored(sqlite_store) == {("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("OTHR", "2018-08-01"): 7.0}
     print("\n=== SANITY CHECK: RegSHO scoped run ===")
@@ -248,7 +188,7 @@ def test_empty_download_leaves_the_table_untouched(sqlite_store, monkeypatch):
     monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
     monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2024-06-24", "2024-06-28"))
 
-    assert si.fetch_short_interest(_context(sqlite_store), tickers=["LEN"], pause=0.0) is None
+    assert si.fetch_short_interest(_context(sqlite_store), tickers=["LEN"]) is None
     assert not sqlite_store.exists(Tables.sec_short_volume_security)
     print("\n=== SANITY CHECK: RegSHO empty window ===")
     print("  every day-file missing -> no crash, no table created; the frontier is unchanged, so they are planned again. Validated.")
@@ -286,7 +226,7 @@ def test_a_lineage_symbol_brings_a_finra_line_only_inside_its_window(sqlite_stor
     monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.DatetimeIndex(["2021-06-01", "2025-06-02"]))
     _serve(monkeypatch, {"20210601": [("FB", 10.0, 20.0), ("META", 1.0, 2.0)], "20250602": [("FB", 3.0, 4.0), ("META", 30.0, 40.0)]})
 
-    si.fetch_short_interest(_context(sqlite_store), ["LEN", "META"], pause=0.0)
+    si.fetch_short_interest(_context(sqlite_store), ["LEN", "META"])
 
     stored = _stored(sqlite_store)
     print(f"\n=== SANITY CHECK: dated RegSHO scope === stored {sorted(stored)}; FB 2025 and META 2021 expected out")
@@ -316,7 +256,7 @@ def test_a_lineage_symbol_is_also_in_scope_inside_its_stored_ftd_span(sqlite_sto
     monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.DatetimeIndex(["2012-06-01", "2019-01-02"]))
     _serve(monkeypatch, {"20120601": [("NWSA", 1.0, 2.0)], "20190102": [("NWSA", 5.0, 6.0)]})
 
-    si.fetch_short_interest(_context(sqlite_store), ["NWSA"], pause=0.0)
+    si.fetch_short_interest(_context(sqlite_store), ["NWSA"])
 
     stored = _stored(sqlite_store)
     print(f"\n=== SANITY CHECK: FTD-span RegSHO scope === stored {sorted(stored)}; 2019-01-02 in (FTD span), 2012-06-01 out")

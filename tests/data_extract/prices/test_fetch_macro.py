@@ -26,6 +26,7 @@ import pytest
 
 from src.constants.constants_price import MACRO_ALL_SERIES, MACRO_BOND_TR_SERIES, MACRO_CORE_LEVEL_SERIES, MACRO_MARKET_SERIES
 from src.data_extract.utils.prices import fetch_macro as fm
+from src.utils.window import Window
 
 
 # --------------------------------------------------------------------------- #
@@ -60,7 +61,7 @@ def test_build_bond_total_return_carry_and_duration():
 # --------------------------------------------------------------------------- #
 # 2. the window is passed in, never read from config                           #
 # --------------------------------------------------------------------------- #
-def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
+def test_macro_computation_receives_its_resolved_window(monkeypatch):
     """`fetch_macro` must take its window as a parameter. A context with NO `config`
     attribute at all is the strongest form of that assertion: if the fetcher reached into
     `context.config.data_extract.*` (as both predecessors did) this raises AttributeError."""
@@ -71,23 +72,24 @@ def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
         idx = pd.bdate_range(since, until, freq="B")[:5]
         return pd.DataFrame({MACRO_MARKET_SERIES: range(1, len(idx) + 1)}, index=idx)
 
-    def _fake_fred_leg(since):
-        idx = pd.bdate_range(since, since + pd.Timedelta(days=10), freq="B")[:5]
+    def _fake_fred_leg(window):
+        idx = pd.bdate_range(window.start, window.start + pd.Timedelta(days=10), freq="B")[:5]
         return pd.DataFrame({c: 4.0 for c in MACRO_CORE_LEVEL_SERIES if c != MACRO_MARKET_SERIES}, index=idx)
 
     monkeypatch.setattr(fm, "_fetch_price_leg", _fake_price_leg)
     monkeypatch.setattr(fm, "_fetch_fred_leg", _fake_fred_leg)
 
     ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
-    long = fm.build_macro_frame(cast(Any, ctx), years_history=31)
+    window = Window(pd.Timestamp("1995-11-13"), pd.Timestamp("2026-11-10"))
+    long = fm.build_macro_frame(cast(Any, ctx), window)
 
     assert seen["span_years"] == 31, "the argument must drive the download window"
     assert list(long.columns) == ["date", "ticker", "close"]
     assert not hasattr(ctx, "config"), "test is only meaningful without a config object"
 
     print("\n=== SANITY CHECK: macro window is an argument ===")
-    print(f"  build_macro_frame(years_history=31) spanned {seen['span_years']}y and ran on a context with NO config attribute.")
-    print("  Both windows therefore live in StepExtractPrices.run, not inside the fetcher. Validated.")
+    print(f"  build_macro_frame(resolved Window) spanned {seen['span_years']}y and ran on a context with NO config attribute.")
+    print("  The source owner passes one resolved read Window to both provider legs. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -97,7 +99,7 @@ def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
 @pytest.mark.skipif(not os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY (and network) for the live pull")
 def test_real_pull_ranges_and_fx_convention():
     ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
-    long = fm.build_macro_frame(cast(Any, ctx), years_history=3)
+    long = fm.build_macro_frame(cast(Any, ctx), Window(pd.Timestamp("2023-11-13"), pd.Timestamp("2026-11-10")))
 
     assert not long.empty and list(long.columns) == ["date", "ticker", "close"]
     assert not long["close"].isna().any(), "the melt must drop NaN, not store it"

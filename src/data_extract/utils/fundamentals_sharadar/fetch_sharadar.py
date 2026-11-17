@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1_COLUMNS
 from src.context import Context
-from src.data_extract.utils.common.resume import document_floor, series_windows
+from src.data_extract.utils.common.resume import SeriesRequest, series_windows, source_plan
 from src.data_extract.utils.fundamentals_sharadar.client import (
     PAGE_LIMIT,
     NotEntitledError,
@@ -29,24 +29,13 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     coerce_date_columns,
     sharadar_get,
 )
-from src.data_store.schema import Resume, Table, Tables
+from src.data_store.schema import Table, Tables
 from src.utils.polite_http import sleep_pace
 from src.utils.predecessor_series import load_predecessor_series
-from src.utils.string import run_date
+from src.utils.window import Window
 
 # As-reported dimensions only: point-in-time and immutable (MR* rows restate in place).
 SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
-
-
-def _table_since(context: Context, table: Table, floor: pd.Timestamp, full: bool) -> str:
-    """The `date.gte` bound of a market-wide table: its last stored date minus the contract overlap, or `floor` when cold or `full`.
-
-    Always explicit: the API's default lower bound is one year ago."""
-    stored_max = None if full else context.store.max_date(table)
-    if stored_max is None:
-        return floor.strftime(DATE_FORMAT)
-    overlap = pd.Timedelta(days=table.resume.overlap_days if table.resume is not None else 0)
-    return max(stored_max - overlap, floor).strftime(DATE_FORMAT)
 
 
 def _usd_roster(context: Context) -> dict[str, str]:
@@ -97,7 +86,7 @@ def fetch_sharadar_tickers(context: Context) -> None:
 # --------------------------------------------------------------------------- #
 # 2. fundamentals (SF1)                                                        #
 # --------------------------------------------------------------------------- #
-def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[pd.DataFrame]:
+def _sf1_pages(context: Context, symbol: str, window: Window, pace: float) -> list[pd.DataFrame]:
     """The non-empty SF1 pages of `symbol` since `since`, one request per dimension; raises `NotEntitledError`."""
     frames: list[pd.DataFrame] = []
     for dimension in SHARADAR_DIMENSIONS:
@@ -108,7 +97,7 @@ def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[p
             ticker=symbol,
             dimension=dimension,
             sort="date.asc",
-            **cast(dict[str, Any], {"date.gte": since}),
+            **cast(dict[str, Any], {"date.gte": window.start.strftime(DATE_FORMAT), "date.lte": window.end.strftime(DATE_FORMAT)}),
         )
         if not df_page.empty:
             frames.append(df_page)
@@ -116,9 +105,7 @@ def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[p
     return frames
 
 
-def fetch_sharadar_fundamentals(
-    context: Context, tickers: list[str], *, years_history: int, full: bool = False, as_of: pd.Timestamp | None = None
-) -> None:
+def fetch_sharadar_fundamentals(context: Context, tickers: list[str]) -> None:
     """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `sharadar_fundamentals_facts`, each ticker from its own window.
 
     Each ticker is requested under its trading symbol (`Universe.trading_symbols`) and stored under the ticker; a
@@ -127,19 +114,8 @@ def fetch_sharadar_fundamentals(
     fetched again next run from the same window.
     """
     currencies = _usd_roster(context)
-    start_date = run_date(as_of)
-    work = series_windows(
-        context, Tables.sharadar_fundamentals_facts, tickers, start_date, until=start_date, years_history=years_history, full=full, calendar=None
-    )
+    work = series_windows(context, Tables.sharadar_fundamentals_facts, SeriesRequest(tickers, None))
     pace = float(context.config.data_extract.sharadar_request_pace)
-    context.log.info(
-        "Sharadar SF1: %d ticker(s) x %d dimension(s); key classes %s (full=%s, window=%dy)",
-        len(tickers),
-        len(SHARADAR_DIMENSIONS),
-        {cls: sum(1 for c in work.key_class.values() if c == cls) for cls in sorted(set(work.key_class.values()))},
-        full,
-        years_history,
-    )
 
     entitled: list[str] = []
     denied: list[str] = []
@@ -168,9 +144,10 @@ def fetch_sharadar_fundamentals(
             )
             continue
 
-        since = work.windows[ticker][0].start.strftime(DATE_FORMAT)
+        window = work.windows[ticker][0]
+        since = window.start.strftime(DATE_FORMAT)
         try:
-            frames = _sf1_pages(context, symbol, since, pace)
+            frames = _sf1_pages(context, symbol, window, pace)
         except NotEntitledError:
             denied.append(ticker)
             continue
@@ -190,6 +167,7 @@ def fetch_sharadar_fundamentals(
         # cast before the first write: `ensure_table` would type an all-None object column as TEXT
         df_sf1 = cast_value_columns(df_sf1)
         df_sf1 = coerce_date_columns(df_sf1, Tables.sharadar_fundamentals_facts.date_type_cols)
+        df_sf1 = df_sf1.loc[window.mask(df_sf1["date"])]
         total_rows += context.store.save(Tables.sharadar_fundamentals_facts, df_sf1)
 
     context.log.info(
@@ -250,18 +228,22 @@ def _pull_actions(context: Context, since: pd.Timestamp, until: pd.Timestamp) ->
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def fetch_sharadar_actions(context: Context, *, years_history: int, as_of: pd.Timestamp | None = None) -> int:
+def fetch_sharadar_actions(context: Context) -> int:
     """Corporate actions -> `sharadar_actions`, market-wide: the whole window is pulled and replaces the table.
 
     `ticker` is in the PK, so a re-pull is a replace, not an upsert. A failed, empty or truncated pull (fewer rows than
     90 % of the stored table) leaves the table unchanged. Returns the rows written.
     """
-    # load: the stored size the pull is checked against
-    stored = context.store.row_count(Tables.sharadar_actions) if context.store.exists(Tables.sharadar_actions) else 0
+    plan = source_plan(context, Tables.sharadar_actions, None, (("source", ("sharadar",)),))
+    if plan is None:
+        return 0
 
-    # pull the whole window, window by window
-    start_date = run_date(as_of)
-    since = document_floor(Tables.sharadar_actions, start_date, years_history)
+    # Load the existing market-wide scope before fetching its replacement.
+    counts = context.store.summarize(Tables.sharadar_actions, ["ticker"], {"rows": ("count", None)}, window=plan.write)
+    stored = int(counts["rows"].sum())
+    keys = set(counts["ticker"].astype(str))
+    since, start_date = plan.write
+
     try:
         frame = _pull_actions(context, since, start_date)
     except SharadarRequestError as error:
@@ -283,7 +265,9 @@ def fetch_sharadar_actions(context: Context, *, years_history: int, as_of: pd.Ti
         return 0
 
     # replace
-    written = context.store.replace(Tables.sharadar_actions, frame)
+    frame = frame.loc[plan.write.mask(frame["date"])]
+    keys.update(frame["ticker"].astype(str))
+    written = context.store.replace_window(Tables.sharadar_actions, frame, plan.write, {"ticker": sorted(keys)}).inserted
     context.log.info(
         "Sharadar actions: %d row(s) %s..%s replace %d stored (%d duplicate key row(s) dropped; actions: %s)",
         written,
@@ -296,19 +280,30 @@ def fetch_sharadar_actions(context: Context, *, years_history: int, as_of: pd.Ti
     return written
 
 
-def fetch_sharadar_sp500(context: Context, *, full: bool = False) -> None:
+def fetch_sharadar_sp500(context: Context) -> None:
     """S&P 500 membership events; cold or `full` pulls from the table's source start."""
-    floor = pd.Timestamp(cast(str, cast(Resume, Tables.sharadar_sp500.resume).source_start))
-    since = _table_since(context, Tables.sharadar_sp500, floor, full)
+    frontier = context.store.max_date(Tables.sharadar_sp500)
+    plan = source_plan(context, Tables.sharadar_sp500, frontier, (("source", ("sharadar",)),))
+    if plan is None:
+        return
+    since = plan.write.start.strftime(DATE_FORMAT)
     try:
-        frame = sharadar_get(context, "sp500", keep_default_na=False, sort="date.asc", **cast(dict[str, Any], {"date.gte": since}))
+        frame = sharadar_get(
+            context,
+            "sp500",
+            keep_default_na=False,
+            sort="date.asc",
+            **cast(dict[str, Any], {"date.gte": since, "date.lte": plan.write.end.strftime(DATE_FORMAT)}),
+        )
     except SharadarRequestError as error:
         context.log.warning("Sharadar sp500: %s; %s left unchanged", error, Tables.sharadar_sp500)
         return
     if frame.empty:
         context.log.info("Sharadar sp500: no rows since %s; %s already current", since, Tables.sharadar_sp500)
         return
-    written = context.store.save(Tables.sharadar_sp500, _clean_dated_frame(frame, Tables.sharadar_sp500))
+    frame = _clean_dated_frame(frame, Tables.sharadar_sp500)
+    frame = frame.loc[plan.write.mask(frame["date"])]
+    written = context.store.save(Tables.sharadar_sp500, frame)
     context.log.info(
         "Sharadar sp500: %d row(s) since %s -> %s (actions: %s)", written, since, Tables.sharadar_sp500, frame["action"].value_counts().to_dict()
     )

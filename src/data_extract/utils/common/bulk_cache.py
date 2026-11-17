@@ -12,17 +12,19 @@ import logging
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+from omegaconf import DictConfig
 
 from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common.sec_io import TransientReadError, download
 from src.data_store.schema import Table, name_of
-from src.utils.string import run_date
+from src.utils.publication import archive_release_date, period_end
+from src.utils.window import Window
 
 __all__ = [
     "ZipRead",
@@ -201,16 +203,10 @@ def cached_periods(cache: Path, *, prefix: str = "", suffix: str = ".zip") -> se
     return {path.name[len(prefix) : -len(suffix)] for path in cache.glob(f"{prefix}*{suffix}") if is_cached(path)}
 
 
-def archive_available_at(end: date, path: Path, *, observed_from: date, downloaded: bool) -> date | None:
-    """When an archive covering a period ending `end` became available.
-
-    Before `observed_from` it is estimated as the 12th of the following month (a weekend rolls to
-    Monday); afterwards it is the New York date of this run's download, else of the cached file's
-    modification time (None when the file cannot be read).
-    """
-    if end < observed_from:
-        release = (end.replace(day=1) + timedelta(days=32)).replace(day=_RELEASE_DAY)
-        return release + timedelta(days=7 - release.weekday() if release.weekday() >= 5 else 0)
+def archive_available_at(period: str, path: Path, *, policy: DictConfig, downloaded: bool) -> date | None:
+    """Configured release estimate for older archives; otherwise preserve observed download/file dates."""
+    if period_end(period) < date.fromisoformat(str(policy.observed_from)):
+        return archive_release_date(policy, period).date()
     if downloaded:
         return datetime.now(MARKET_TIMEZONE).date()
     try:
@@ -232,7 +228,7 @@ def stored_period_clock(context: Context, tables: Sequence[Table], period: str) 
     return next(iter(values), None)
 
 
-def quarter_periods(years_history: int, first_year: int, today: pd.Timestamp | None = None) -> list[str]:
-    """`YYYYqN` tags covering the last `years_history` years, never before `first_year`."""
-    now = run_date(today)
-    return [f"{year}q{q}" for year in range(now.year - years_history, now.year + 1) if year >= first_year for q in range(1, 5)]
+def quarter_periods(window: Window) -> list[str]:
+    """Closed quarter units whose source-period end is within explicit configured dates."""
+    quarters = pd.period_range(window.start, window.end, freq="Q")
+    return [f"{quarter.year}q{quarter.quarter}" for quarter in quarters if window.start <= quarter.end_time.normalize() <= window.end]

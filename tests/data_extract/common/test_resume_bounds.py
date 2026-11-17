@@ -27,6 +27,7 @@ from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_extract.utils.structure.def14a import fetch as def14a_fetch
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
 from tests.data_extract.behavioral.test_earnings_call_transcripts import _AAA, _CCC, _CFG, UNIVERSE, _ctx, _source, _write
 from tests.support.universe import seed_universe
 
@@ -116,12 +117,13 @@ def test_edgar_document_planner_drops_filings_after_the_end(fixture: tuple[DataS
     index = index.drop_duplicates("accession_number").rename(columns={"accession_number": "accession", "filing_date": "filed"})
     index = index.assign(company="", form="8-K", filed=pd.to_datetime(index["filed"]))
     monkeypatch.setattr(
-        document_resume.edgar_index, "entries", lambda context, ciks, forms, since=None: index[index["filed"] >= since].reset_index(drop=True)
+        document_resume.edgar_index, "entries", lambda context, ciks, forms, window: index.loc[window.mask(index["filed"])].reset_index(drop=True)
     )
     chtr = pd.read_parquet(_run_cache() / "parity" / "published_5_runA_universe_tickers.parquet").query("ticker == @PREDECESSOR")
     bounded.universe.bounds[PREDECESSOR] = (pd.Timestamp(chtr["first_price_date"].iloc[0]), None)
     keys = pd.concat([rows[["ticker", "cik"]], chtr[["ticker", "cik"]]], ignore_index=True)
-    request = WorklistRequest(keys=keys, as_of=AS_OF, forms=["8-K"], identity=None, years_history=40, full=True)
+    bounded.run = control.run = WindowRun("full", "bounded cached filing sample", AS_OF)
+    request = WorklistRequest(keys=keys, forms=["8-K"], identity=None)
 
     work = document_worklist(bounded, Tables.sec_8k, request)
     open_work = document_worklist(control, Tables.sec_8k, request)

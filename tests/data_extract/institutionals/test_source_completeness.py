@@ -26,6 +26,7 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.price.adjustments import ShareBasis
 from src.utils.security_series import fails_series, prepare_master, short_volume_series
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
@@ -88,6 +89,7 @@ def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, m
         Any,
         SimpleNamespace(
             store=sqlite_store,
+            run=WindowRun("incremental", "source completeness fixture", day),
             paths={"DATA_STORE": tmp_path},
             config=extract_config(),
             log=logging.getLogger(__name__),
@@ -97,7 +99,7 @@ def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, m
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: payload)
 
-    finra.fetch_short_interest(context, ["LEN"], pause=0.0)
+    finra.fetch_short_interest(context, ["LEN"])
 
     stored_frame = sqlite_store.load(Tables.sec_short_volume_security, optional=True)
     assert stored_frame is not None
@@ -159,6 +161,7 @@ def test_an_empty_finra_file_stores_no_fabricated_line(sqlite_store: DataStore, 
         Any,
         SimpleNamespace(
             store=sqlite_store,
+            run=WindowRun("incremental", "source completeness fixture", day),
             paths={"DATA_STORE": tmp_path},
             config=extract_config(),
             log=logging.getLogger(__name__),
@@ -167,7 +170,7 @@ def test_an_empty_finra_file_stores_no_fabricated_line(sqlite_store: DataStore, 
     )
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: _file().splitlines()[0] + "\n0\n")
-    finra.fetch_short_interest(context, ["LEN"], pause=0.0)
+    finra.fetch_short_interest(context, ["LEN"])
     assert sqlite_store.row_count(Tables.sec_short_volume_security) == 0
     print("SANITY: a fully parsed empty FINRA file stores no raw line; a checked absence is the cube's (short 0, total NULL).")
 

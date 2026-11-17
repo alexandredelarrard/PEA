@@ -24,7 +24,7 @@ def window_plan(
         requested,
         Window(requested.start if read_start is None else read_start, requested.end),
         Window(requested.start if write_start is None else write_start, requested.end),
-        WindowRun(mode, "known-truth test scope"),
+        WindowRun(mode, "known-truth test scope", requested.end),
         frontier,
         (("ticker", tuple(scope)),),
     )

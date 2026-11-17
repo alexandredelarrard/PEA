@@ -1,11 +1,13 @@
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 from io import StringIO
 from logging.config import dictConfig
 from pathlib import Path
 from typing import Any, cast
 
+import pandas as pd
 import requests
 from dotenv import find_dotenv, load_dotenv
 from huggingface_hub import configure_http_backend
@@ -13,10 +15,12 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.data_store.store import DataStore
 from src.utils.config import read_config
+from src.utils.data_policy import validate_data_policy
 from src.utils.db import get_engine
 from src.utils.seed import set_seed
 from src.utils.ssl_setup import configure_corporate_ca, corporate_session
-from src.utils.tickers_universe.universe import Universe
+from src.utils.tickers_universe.universe import Bounds, Universe
+from src.utils.window import Offset, WindowRun
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +76,10 @@ def define_global_paths(config: DictConfig) -> dict[str, Path]:
 
 
 class Context:
-    def __init__(self, config: DictConfig, use_cache: bool, save: bool, config_dir: Path):
+    def __init__(self, config: DictConfig, use_cache: bool, save: bool, config_dir: Path, run: WindowRun) -> None:
 
+        validate_data_policy(config)
+        self._run = run
         self._config = config
         self._config_dir = config_dir
 
@@ -99,6 +105,7 @@ class Context:
         self._edgar_identity_set = False
         self._sec_session: requests.Session | None = None
         self._universe: Universe | None = None
+        self._planner_bounds: tuple[Universe, Offset, WindowRun, Bounds] | None = None
 
     def _setup_logging(self):
         """Setup logging configuration"""
@@ -121,6 +128,11 @@ class Context:
             self.log.info(f"Loaded environment file: {dot_env_file}")
         else:
             self.log.warning("No .env file found")
+
+    @property
+    def run(self) -> WindowRun:
+        """The one market-date anchor and requested mode established at the entry point."""
+        return self._run
 
     @property
     def config(self) -> DictConfig:
@@ -203,7 +215,9 @@ class Context:
         return self._sec_session
 
 
-def get_config_context(config_path: str, use_cache: bool, save: bool) -> tuple[DictConfig, Context]:
+def get_config_context(
+    config_path: str, use_cache: bool, save: bool, *, as_of: datetime | None = None, full: bool = False
+) -> tuple[DictConfig, Context]:
 
     config_dir = Path(config_path).resolve()
     try:
@@ -214,6 +228,11 @@ def get_config_context(config_path: str, use_cache: bool, save: bool) -> tuple[D
         logger.error(f"configuration file {config_path} not found ")
         sys.exit(1)
 
-    context = Context(config=config, use_cache=use_cache, save=save, config_dir=config_dir)
+    run = WindowRun(
+        "full" if full else "incremental",
+        "explicit configured-scope rebuild" if full else "scheduled configured-scope run",
+        pd.Timestamp(datetime.now(UTC) if as_of is None else as_of),
+    )
+    context = Context(config=config, use_cache=use_cache, save=save, config_dir=config_dir, run=run)
 
     return config, context

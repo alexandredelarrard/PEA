@@ -3,7 +3,7 @@
 One Parquet file per quarter, `{y}Q{q}.parquet`, under `<DATA_STORE>/<paths.sec_edgar_index>`, with
 every CIK's filings of `INDEX_FORMS`: `cik` (int64), `company`, `form`, `filed` (date), `accession`.
 `refresh` downloads a missing closed quarter, a closed quarter again once a week (Saturday), the
-current quarter on every call, and the previous quarter during the first `_PREVIOUS_QUARTER_DAYS` days of a quarter; `refreshed_today`
+current quarter on every call, and the previous quarter during its configured recheck period. `refreshed_today`
 tells, from the cache files, whether today's refresh already covered a window. Downloads go
 through `sec_io`; a quarter file is replaced atomically. `entries` reads the cache with filters.
 """
@@ -27,19 +27,19 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_store.schema import Resume, resume_tables
-from src.utils.string import pad_cik_series, run_date
+from src.utils.string import pad_cik_series
+from src.utils.window import Offset, Window, shift_date
 
 logger = logging.getLogger(__name__)
 
 INDEX_URL = "https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/master.gz"
 #: The forms kept from the index: exactly the union of the registered extraction contracts.
 INDEX_FORMS: frozenset[str] = frozenset(form for table in resume_tables() for form in cast(Resume, table.resume).forms)
-#: Days into a quarter during which the previous quarter is downloaded again (late index lines).
-_PREVIOUS_QUARTER_DAYS = 10
 _ENCODING = "latin-1"
 _SCHEMA = pa.schema([("cik", pa.int64()), ("company", pa.string()), ("form", pa.string()), ("filed", pa.date32()), ("accession", pa.string())])
 _ROW_GROUP = 65_536
@@ -77,11 +77,8 @@ class Quarter:
 
 
 def quarters_between(first: pd.Timestamp, last: pd.Timestamp) -> list[Quarter]:
-    """Every quarter in the window, floored at the earliest registered EDGAR source start."""
-    source_start = min(
-        resume.source_start for table in resume_tables() if (resume := cast(Resume, table.resume)).forms and resume.source_start is not None
-    )
-    quarter = max(Quarter.of(first), Quarter.of(pd.Timestamp(source_start)))
+    """Every quarter intersecting the caller's already bounded filing window."""
+    quarter = Quarter.of(first)
     out: list[Quarter] = []
     while quarter <= Quarter.of(last):
         out.append(quarter)
@@ -157,27 +154,39 @@ def _download_quarter(context: Context, quarter: Quarter, directory: Path) -> in
         temporary.unlink(missing_ok=True)
 
 
-def _is_due(quarter: Quarter, current: Quarter, as_of: pd.Timestamp, path: Path, rebuild: bool) -> bool:
-    """Refresh originals weekly for post-acceptance revisions, plus the current/early prior quarter."""
-    if rebuild or not path.exists() or quarter == current:
-        return True
-    if quarter == current.previous() and (as_of - current.start).days < _PREVIOUS_QUARTER_DAYS:
-        return True
-    saturday = as_of - pd.Timedelta(days=(as_of.weekday() - 5) % 7)
-    return pd.Timestamp.fromtimestamp(path.stat().st_mtime).normalize() < saturday.normalize()
-
-
-def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuild: bool = False) -> dict[str, int]:
-    """Bring the cache up to `as_of` over `years_history`; rows written per downloaded quarter.
-
-    A transient SEC failure on one quarter is logged and leaves that quarter's previous file in place."""
-    as_of = run_date(as_of)
-    directory = index_dir(context)
+def _refresh_boundary(quarter: Quarter, context: Context) -> pd.Timestamp:
+    """The last scheduled cache refresh, on the shared market-date anchor."""
+    as_of = context.run.as_of
     current = Quarter.of(as_of)
+    section = context.config.data_extract.edgar_index.previous_quarter_recheck
+    grace = Offset(section.value, section.unit)
+    if grace.unit != "calendar_days":
+        raise ValueError("EDGAR index recheck must use calendar days")
+    if quarter == current or (quarter == current.previous() and as_of < shift_date(current.start, grace, direction=1)):
+        return as_of
+    return as_of - pd.Timedelta(days=(as_of.weekday() - 5) % 7)
+
+
+def _is_due(quarter: Quarter, context: Context, path: Path, rebuild: bool) -> bool:
+    """Current and early prior quarters refresh on each requested run; closed originals refresh weekly."""
+    if rebuild or not path.exists():
+        return True
+    if _refresh_boundary(quarter, context) == context.run.as_of:
+        return True
+    modified = pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC").tz_convert(MARKET_TIMEZONE).tz_localize(None).normalize()
+    return modified < _refresh_boundary(quarter, context)
+
+
+def refresh(context: Context, window: Window, *, rebuild: bool = False) -> dict[str, int]:
+    """Refresh source quarters intersecting explicit filing bounds, retaining old bytes after failures."""
+    if window.end > context.run.as_of:
+        raise ValueError("EDGAR index Window exceeds the shared run date")
+    directory = index_dir(context)
     written: dict[str, int] = {}
-    for quarter in quarters_between(as_of - pd.DateOffset(years=years_history), as_of):
+    for quarter in quarters_between(window.start, window.end):
         original = directory / f"{quarter.name}.master.gz"
-        if not _is_due(quarter, current, as_of, original, rebuild):
+        parsed = directory / f"{quarter.name}.parquet"
+        if parsed.exists() and not _is_due(quarter, context, original, rebuild):
             continue
         try:
             n_rows = _download_quarter(context, quarter, directory)
@@ -186,19 +195,21 @@ def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuil
             continue
         if n_rows is not None:
             written[quarter.name] = n_rows
-    context.log.info("edgar index: %d quarter(s) downloaded through %s", len(written), as_of.date())
+    context.log.info("edgar index: %d quarter(s) downloaded in %s", len(written), window)
     return written
 
 
-def refreshed_today(context: Context, years_history: int) -> bool:
-    """True when a refresh already ran today over `years_history`: the current quarter's original was downloaded
-    today and every quarter of the window is cached."""
-    today = run_date(None)
+def refreshed_today(context: Context, window: Window) -> bool:
+    """Check every requested parsed/original pair against its scheduled refresh boundary."""
     directory = index_dir(context)
-    original = directory / f"{Quarter.of(today).name}.master.gz"
-    if not original.exists() or pd.Timestamp.fromtimestamp(original.stat().st_mtime).normalize() < today:
-        return False
-    return all((directory / f"{quarter.name}.parquet").exists() for quarter in quarters_between(today - pd.DateOffset(years=years_history), today))
+    for quarter in quarters_between(window.start, window.end):
+        original = directory / f"{quarter.name}.master.gz"
+        if not original.exists() or not (directory / f"{quarter.name}.parquet").exists():
+            return False
+        modified = pd.Timestamp(original.stat().st_mtime, unit="s", tz="UTC").tz_convert(MARKET_TIMEZONE).tz_localize(None).normalize()
+        if modified < _refresh_boundary(quarter, context):
+            return False
+    return True
 
 
 def quarter_counts(context: Context) -> dict[str, int]:
@@ -206,19 +217,20 @@ def quarter_counts(context: Context) -> dict[str, int]:
     return {path.stem: pq.ParquetFile(path).metadata.num_rows for path in sorted(index_dir(context).glob("*.parquet"))}
 
 
-def entries(context: Context, ciks: Collection[str], forms: Collection[str], since: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Cached index rows for `ciks` (padded or not) and `forms`, filed on or after `since`.
-
-    Columns: `cik` (10-digit string), `company`, `form`, `filed` (Timestamp), `accession`; sorted by date."""
+def entries(context: Context, ciks: Collection[str] | None, forms: Collection[str], window: Window) -> pd.DataFrame:
+    """Read bounded index rows; None CIKs explicitly selects market-wide source metadata."""
     directory = index_dir(context)
-    first = Quarter.of(since) if since is not None else None
-    files = [path for path in sorted(directory.glob("*.parquet")) if first is None or _file_quarter(path) >= first]
+    first, last = Quarter.of(window.start), Quarter.of(window.end)
+    files = [path for path in sorted(directory.glob("*.parquet")) if first <= _file_quarter(path) <= last]
     columns = ["cik", "company", "form", "filed", "accession"]
-    if not files or not ciks or not forms:
+    if not files or ciks is not None and not ciks or not forms:
         return pd.DataFrame(columns=columns)
-    expression = pc.field("cik").isin([int(c) for c in ciks]) & pc.field("form").isin(list(forms))
-    if since is not None:
-        expression &= pc.field("filed") >= pa.scalar(pd.Timestamp(since).date(), pa.date32())
+    expression = pc.field("form").isin(list(forms))
+    if ciks is not None:
+        expression &= pc.field("cik").isin([int(c) for c in ciks])
+    expression &= (pc.field("filed") >= pa.scalar(window.start.date(), pa.date32())) & (
+        pc.field("filed") <= pa.scalar(window.end.date(), pa.date32())
+    )
     df = ds.dataset([str(path) for path in files], format="parquet", schema=_SCHEMA).to_table(filter=expression).to_pandas()
     df["cik"] = pad_cik_series(df["cik"])
     df["filed"] = pd.to_datetime(df["filed"])

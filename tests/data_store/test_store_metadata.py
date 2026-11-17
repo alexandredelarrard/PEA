@@ -11,6 +11,7 @@ import pytest
 from src.data_store import store as store_module
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window
 
 
 def test_columns_uses_lightweight_inspection(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,3 +75,11 @@ def test_projected_read_reuses_reflected_schema(sqlite_store: DataStore, monkeyp
     reader.load(table, project=True)
     assert counts == {"exists": 1, "reflect": 1}
     print("SANITY: cold projection shares one reflection/existence check; warm reads reuse the verified schema.")
+
+
+def test_summary_uses_the_same_inclusive_window_as_reads(sqlite_store: DataStore) -> None:
+    dates = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"])
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": ["A", "A", "A", "B"], "date": dates, "close_split": [1.0, 2.0, 3.0, 4.0]}))
+    rows = sqlite_store.summarize(Tables.prices, ["ticker"], {"rows": ("count", None)}, window=Window(dates[1], dates[2]))
+    assert rows.to_dict("records") == [{"ticker": "A", "rows": 2}]
+    print("SANITY: the grouped summary includes both Window endpoints and excludes prefix, suffix and unrelated keys.")

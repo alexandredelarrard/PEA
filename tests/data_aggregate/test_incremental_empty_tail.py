@@ -18,7 +18,12 @@ def _window(dates: pd.DatetimeIndex, *, full: bool = False) -> WindowPlan:
     requested = Window(dates[0], dates[-1])
     write = requested if full else Window(dates[1], dates[-1])
     return WindowPlan(
-        requested, requested, write, WindowRun("full" if full else "incremental", "known-truth replacement"), dates[-1], (("ticker", ("AAPL",)),)
+        requested,
+        requested,
+        write,
+        WindowRun("full" if full else "incremental", "known-truth replacement", dates[-1]),
+        dates[-1],
+        (("ticker", ("AAPL",)),),
     )
 
 

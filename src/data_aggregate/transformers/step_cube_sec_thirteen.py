@@ -10,7 +10,6 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
@@ -63,9 +62,7 @@ class StepCubeSecThirteen(Step):
         self._store = context.store
         self._cfg = config.data_aggregate
         self._part = part_for(Tables.cube_part_sec_thirteen)
-        self._settle_days = int(self._cfg.get("sec_thirteen", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
-        cfg = config.get("data_availability")
-        self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
+        self._availability = InstitutionalAvailability.from_config(config)
 
     def run(self, full: bool = False) -> None:
         """Plan the effective window, prepare both families once, project them on the window and save it."""
@@ -157,7 +154,7 @@ class StepCubeSecThirteen(Step):
         # Each filed row tagged and in canonical-class shares before the value repair; amended books arrive whole and the
         # compact rows sum each company per manager-quarter after the resolver.
         with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit)) as batches:
-            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
+            history = prepare_institutional_book_history(batches, resources.frames.trading_index, config=self._config)
         if history is None:
             return None
         compact, states = history
@@ -182,7 +179,7 @@ class StepCubeSecThirteen(Step):
         cfg = self._cfg.get("sec_thirteen", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
         with closing(clean_public_batches(packets, resources.tags, None, resources.frames.close_pit)) as batches:
-            books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
+            books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days, self._config)
         if books is None:
             return None
         assert resources.frames.close_pit is not None and resources.frames.security_basis is not None
@@ -204,9 +201,7 @@ class StepCubeSecThirteen(Step):
         frames = resources.frames.on(dates, *self._OUTPUT_FIELDS)
         broad = None if prepared.institutional is None else pd.DataFrame(columns=["date", "ticker"])
         if prepared.institutional is not None and not prepared.institutional.empty:
-            fields = project_institutional_features(
-                prepared.institutional, frames, self._settle_days, trading_calendar=resources.frames.trading_index
-            )
+            fields = project_institutional_features(prepared.institutional, frames, self._config)
             emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
             broad = build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 

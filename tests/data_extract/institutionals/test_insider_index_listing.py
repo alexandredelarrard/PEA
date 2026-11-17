@@ -18,6 +18,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, plan_fetch, run_edgar_fetch
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
 
@@ -73,14 +74,18 @@ def test_every_indexed_form_4_is_listed_until_stored(ctx, sqlite_store):
     scope = edgar_driver.load_identity(ctx)
     fetch = module.INSIDER_EDGAR_FETCH
 
-    night1 = plan_fetch(ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF, 15))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    night1 = plan_fetch(
+        ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config))
+    )
     stored = [r[4] for r in rows[:5_100]]
     sqlite_store.save(Tables.insider_transactions, _stored(stored, "edgar"))
     sqlite_store.save(Tables.insider_transactions, _stored([r[4] for r in rows[5_100:]], "zip"))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF + pd.Timedelta(days=1))
     night2 = plan_fetch(
         ctx,
         fetch,
-        EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF + pd.Timedelta(days=1), 15),
+        EdgarRun(list(cik_map["ticker"]), cik_map, scope, ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
     )
 
     assert night1.size == 5_200
@@ -111,7 +116,12 @@ def test_a_stored_zip_row_counts_as_read_only_before_the_edgar_window(ctx, sqlit
     seed_index(ctx, rows)
     sqlite_store.save(Tables.insider_transactions, _zip_book(rows, "JPM", "2026q2"))
     cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
-    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), _AS_OF, 15))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    work = plan_fetch(
+        ctx,
+        module.INSIDER_EDGAR_FETCH,
+        EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
+    )
 
     listed = work.units["JPM"]["filed"]
     expected = sum(pd.Timestamp(r[3]) >= pd.Timestamp("2026-07-01") for r in rows)
@@ -140,15 +150,17 @@ def test_zip_rows_count_as_read_before_the_earlier_of_the_zip_floor_and_seven_da
     roster = pd.DataFrame({"ticker": ["JPM", "OXY"], "cik": ["0000019617", "0000797468"]})
     scope = edgar_driver.load_identity(ctx)
 
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp(as_of))
     universe = plan_fetch(
         ctx,
         module.INSIDER_EDGAR_FETCH,
-        EdgarRun(list(roster["ticker"]), roster, scope, pd.Timestamp(as_of), 15),
+        EdgarRun(list(roster["ticker"]), roster, scope, ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
     )
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp(as_of))
     subset = plan_fetch(
         ctx,
         module.INSIDER_EDGAR_FETCH,
-        EdgarRun(list(roster.iloc[:1]["ticker"]), roster.iloc[:1], scope, pd.Timestamp(as_of), 15),
+        EdgarRun(list(roster.iloc[:1]["ticker"]), roster.iloc[:1], scope, ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
     )
 
     first = {key: df["filed"].min() for key, df in universe.units.items()}
@@ -165,7 +177,8 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     # the tables exist with their full column set, as their DDL makes them on Postgres
     create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
 
-    first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER)), max_workers=1)
 
     shown = sqlite_store.load(Tables.insider_transactions, markers=True, where={"ticker": list(_ROSTER)}).sort_values("ticker")
     assert shown[["ticker", "security_type", "row_sequence", "source"]].to_dict("records") == [
@@ -177,10 +190,11 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     assert first.outcomes["BRK-B"].markers == 1 and first.outcomes["OXY"].markers == 0
 
     sqlite_store.delete(Tables.insider_transactions, {"ticker": "OXY"})
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF + pd.Timedelta(days=1))
     again = run_edgar_fetch(
         ctx,
         module.INSIDER_EDGAR_FETCH,
-        EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF + pd.Timedelta(days=1)),
+        EdgarRun.load(ctx, list(_ROSTER)),
         max_workers=1,
     )
     assert list(again.work.units) == ["OXY"]
@@ -196,11 +210,17 @@ def test_an_unread_filing_is_stored_nowhere_and_listed_again(ctx, sqlite_store, 
     filing.xml = lambda: (_ for _ in ()).throw(module.TransientReadError("HTTP 503"))
     patch_index_filings(monkeypatch, {accession: filing})
 
-    summary = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["OXY"], 15, as_of=_AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    summary = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["OXY"]), max_workers=1)
 
     assert summary.missing == {"OXY": [accession]}
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     cik_map = pd.DataFrame({"ticker": ["OXY"], "cik": ["0000797468"]})
-    again = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), _AS_OF, 15))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    again = plan_fetch(
+        ctx,
+        module.INSIDER_EDGAR_FETCH,
+        EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
+    )
     assert again.units["OXY"]["accession"].tolist() == [accession]
     print("\nSANITY: a Form 4 that 503'd is stored nowhere (no row, no marker) and is listed again on the next night.")

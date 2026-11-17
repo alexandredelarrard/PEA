@@ -1,109 +1,16 @@
-"""Tests for the incremental earnings-surprise extraction
-(src/data_extract/utils/prices/fetch_earnings_surprises.py).
-
-The network download is not exercised here; what matters is the INCREMENTAL
-plan: unseen tickers get a full pull, stale tickers (no reported quarter within
-the refetch window) get a small top-up pull, and up-to-date tickers are skipped.
-"""
+"""Fixed-date source history and provider pagination for earnings surprises."""
 
 from __future__ import annotations
 
-import types
-from dataclasses import replace
-from typing import Any, cast
+from typing import Any
 
-import numpy as np
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
-from src.data_extract.utils.prices.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
-from src.data_store.schema import Resume, Tables
-from tests.support.universe import universe_of
-
-
-def test_plan_fetch_incremental(sqlite_store):
-    today = pd.Timestamp.today().normalize()
-    existing = pd.DataFrame(
-        {
-            "ticker": ["FRESH", "FRESH", "STALE", "NOACTUAL"],
-            "earnings_date": [
-                today - pd.Timedelta(days=10),  # FRESH: reported recently
-                today - pd.Timedelta(days=100),
-                today - pd.Timedelta(days=200),  # STALE: last report old
-                today + pd.Timedelta(days=20),
-            ],  # only a FUTURE estimate
-            "eps_estimate": [1.0, 1.0, 1.0, 2.0],
-            "eps_actual": [1.1, 1.0, 0.9, np.nan],  # NOACTUAL has no reported row
-            "surprise_pct": [10.0, 0.0, -10.0, np.nan],
-        }
-    )
-    tickers = ["FRESH", "STALE", "NOACTUAL", "NEW"]
-    sqlite_store.save(Tables.earnings_surprises, existing.assign(earnings_date=existing["earnings_date"].dt.strftime("%Y-%m-%d")))
-    context: Any = types.SimpleNamespace(store=sqlite_store)
-    last_reported, next_expected = _resume_dates(context)
-    plan = dict(_plan_fetch(tickers, last_reported, next_expected, full_limit=44, refetch_window_days=80, full_keys=set()))
-
-    assert "FRESH" not in plan, "recently-reported ticker must be skipped"
-    assert plan["STALE"] == _RECENT_LIMIT, "stale ticker -> small top-up pull"
-    assert plan["NEW"] == 44, "unseen ticker -> full pull"
-    # NOACTUAL has only a forward estimate (no reported quarter) -> treated as unseen
-    assert plan["NOACTUAL"] == 44
-
-    print("\n=== SANITY CHECK: incremental fetch plan ===")
-    print(f"  FRESH skipped; STALE={plan.get('STALE')} (top-up); NEW={plan.get('NEW')} (full); NOACTUAL={plan.get('NOACTUAL')} (full).")
-    print("  Only what remains to extract is fetched -> no redundant re-downloads.")
-
-
-def test_plan_fetch_no_existing_pulls_all():
-    plan = dict(_plan_fetch(["A", "B", "C"], {}, {}, full_limit=20, refetch_window_days=80, full_keys=set()))
-    assert plan == {"A": 20, "B": 20, "C": 20}
-    print("\n=== SANITY CHECK: cold start ===")
-    print("  no stored row -> every ticker gets a full pull.")
-
-
-def test_a_new_trading_symbol_is_pulled_in_full():
-    """PSKY's lineage: PSKY open since 2025-08-07, SKYD open since 2026-10-06 (the trading symbol). Yahoo files the
-    company's whole history under SKYD, so within the overlap the stored ticker is re-pulled in full; META is not."""
-    lineage = pd.DataFrame(
-        {
-            "canonical_ticker": ["PSKY", "PSKY", "META"],
-            "role": "symbol",
-            "symbol": ["PSKY", "SKYD", "META"],
-            "valid_from": pd.to_datetime(["2025-08-07", "2026-10-06", "2021-10-28"]),
-            "valid_to": pd.NaT,
-            "sources": "dei,sharadar",
-            "status": "corroborated",
-        }
-    )
-    inside = surprises._renamed_keys(lineage, pd.Timestamp("2026-10-20"), 35)
-    after = surprises._renamed_keys(lineage, pd.Timestamp("2026-11-20"), 35)
-    seen = {"PSKY": pd.Timestamp("2026-08-04"), "META": pd.Timestamp("2026-10-21")}
-    plan = dict(_plan_fetch(["PSKY", "META"], seen, seen, full_limit=128, refetch_window_days=35, full_keys=inside))
-
-    assert inside == {"PSKY"} and after == set() and surprises._renamed_keys(None, pd.Timestamp("2026-10-20"), 35) == set()
-    assert plan["PSKY"] == 128 and plan.get("META") != 128
-    print("\n=== SANITY CHECK: trading-symbol change ===")
-    print(f"  SKYD opened 2026-10-06: renamed on 2026-10-20 {sorted(inside)}, on 2026-11-20 {sorted(after)}; plan {plan}")
-    print("  OK: a ticker whose trading symbol started within the overlap gets a full pull; the others stay incremental.")
-
-
-def test_a_run_that_fetches_nothing_returns_without_saving(sqlite_store, monkeypatch):
-    """No stored row and no Yahoo calendar: the plan reads the empty table through `key_stats`,
-    nothing is saved and the run returns (no manifest is written)."""
-    infos: list[str] = []
-    context: Any = types.SimpleNamespace(
-        store=sqlite_store,
-        universe=universe_of(["AAPL", "MSFT"]),
-        log=types.SimpleNamespace(info=lambda msg, *a: infos.append(msg % a if a else msg), warning=lambda *a, **k: None),
-    )
-    monkeypatch.setattr(surprises, "_download_one", lambda tkr, limit: None)
-
-    surprises.fetch_earnings_surprises(context, ["AAPL", "MSFT"], years_history=15, pause=0.0)
-
-    assert not sqlite_store.exists(Tables.earnings_surprises)
-    assert infos[0] == "Earnings surprises: 2/2 tickers to fetch (0 already current)" and infos[-1] == "Earnings surprises: nothing new fetched."
-    print("\n=== SANITY CHECK: earnings-surprises empty run ===")
-    print(f"  cold table + no Yahoo calendar -> planned 2 full pulls, saved nothing, returned: {infos[-1]!r}")
+from src.data_store.schema import Tables
+from src.utils.window import Window, WindowRun
+from tests.data_extract.edgar_fixtures import fake_context
 
 
 class _CappedYahooTicker:
@@ -132,52 +39,63 @@ class _CappedYahooTicker:
         return page
 
 
-def test_a_new_ticker_full_pull_stays_within_the_yahoo_cap(sqlite_store, monkeypatch):
-    """A never-seen ticker under the live `years_history` (31 -> 128 quarters) is asked for at most
-    Yahoo's 100 rows, so its history is saved instead of the call failing every night."""
-    warnings: list[str] = []
-    context: Any = types.SimpleNamespace(
-        store=sqlite_store,
-        universe=universe_of(["HOG"]),
-        log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda msg, *a: warnings.append(msg % a if a else msg)),
-    )
+def test_cold_key_reads_configured_history_under_the_provider_cap(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = fake_context(tmp_path, sqlite_store, ["HOG"])
+    context.run = WindowRun("incremental", "cold earnings history", pd.Timestamp("2026-09-30"))
     _CappedYahooTicker.calls = []
     monkeypatch.setattr(surprises.yf, "Ticker", _CappedYahooTicker)
-
-    surprises.fetch_earnings_surprises(context, ["HOG"], years_history=31, pause=0.0)
-
-    # the first 100-row page already reaches the 2002-10-01 cutoff, so no second page is asked for
-    assert _CappedYahooTicker.calls == [(100, 0)], f"full pull must ask for Yahoo's maximum page, asked {_CappedYahooTicker.calls}"
-    assert not any("failed" in w for w in warnings), warnings
+    monkeypatch.setattr(surprises.time, "sleep", lambda seconds: None)
+    surprises.fetch_earnings_surprises(context, ["HOG"])
     saved = sqlite_store.load(Tables.earnings_surprises)
-    assert set(saved["ticker"]) == {"HOG"} and len(saved) > 0
-    source_start = cast(str, cast(Resume, Tables.earnings_surprises.resume).source_start)
-    assert pd.to_datetime(saved["earnings_date"]).min() >= pd.Timestamp(source_start)
-    print("\n=== SANITY CHECK: new-ticker full pull under the Yahoo cap ===")
-    print(f"  years_history=31 (128 quarters wanted) -> calls (limit, offset)={_CappedYahooTicker.calls}, no failure,")
-    print(f"  saved {len(saved)} HOG rows from {pd.to_datetime(saved['earnings_date']).min().date()} (cutoff {source_start}).")
+    assert _CappedYahooTicker.calls == [(100, 0)]
+    assert pd.to_datetime(saved["earnings_date"]).min() >= pd.Timestamp("2002-10-01")
+    assert pd.to_datetime(saved["earnings_date"]).max() <= context.run.as_of
+    print("SANITY: a cold key requests provider-sized pages and saves only the configured source history.")
 
 
-def test_a_full_pull_longer_than_one_yahoo_page_is_read_page_by_page(sqlite_store, monkeypatch):
-    """When the wanted history (31 years -> 128 quarters) after the cutoff is longer than Yahoo's
-    100-row page, the full pull reads the next page from offset 100 on a fresh Ticker, so the
-    oldest quarters are not silently lost. The cutoff is moved to 1990 to make the history long."""
-    context: Any = types.SimpleNamespace(
-        store=sqlite_store, universe=universe_of(["HOG"]), log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
-    )
+def test_full_history_pages_until_the_fixed_start_instead_of_a_quarter_count(monkeypatch: pytest.MonkeyPatch) -> None:
     _CappedYahooTicker.calls = []
     monkeypatch.setattr(surprises.yf, "Ticker", _CappedYahooTicker)
-    resume = replace(cast(Resume, Tables.earnings_surprises.resume), source_start="1990-01-01")
-    monkeypatch.setattr(Tables, "earnings_surprises", replace(Tables.earnings_surprises, resume=resume))
+    window = Window(pd.Timestamp("1990-01-01"), pd.Timestamp("2026-09-30"))
+    saved = surprises._download_one("HOG", window)
+    wanted = _CappedYahooTicker.history.tz_localize(None).normalize()
+    wanted = wanted[(wanted >= window.start) & (wanted <= window.end)]
+    assert saved is not None and len(saved) == len(wanted)
+    assert [offset for limit, offset in _CappedYahooTicker.calls] == [0, 100]
+    assert pd.to_datetime(saved["earnings_date"]).min() == wanted.min()
+    print("SANITY: full history crosses the100-row provider limit and stops at the configured date, without a year-derived count cap.")
 
-    surprises.fetch_earnings_surprises(context, ["HOG"], years_history=31, pause=0.0)
 
-    saved = pd.to_datetime(sqlite_store.load(Tables.earnings_surprises)["earnings_date"]).sort_values()
-    wanted = _CappedYahooTicker.history[-128:].tz_localize(None).normalize()
-    assert len(saved) == 128 and saved.iloc[0] == wanted[0], (
-        f"saved {len(saved)} rows from {saved.iloc[0].date()}, wanted 128 from {wanted[0].date()}"
+def test_repeated_provider_page_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    dates = pd.date_range("2020-01-01", periods=100)
+    page = pd.DataFrame({"ticker": "HOG", "earnings_date": dates, "eps_actual": 1.0})
+    monkeypatch.setattr(surprises, "_download_page", lambda *args: page)
+    with pytest.raises(ValueError, match="pagination did not advance"):
+        surprises._download_one("HOG", Window(pd.Timestamp("1990-01-01"), pd.Timestamp("2026-09-30")))
+    print("SANITY: a provider repeating its newest page cannot loop forever or certify complete history.")
+
+
+def test_unavailable_source_does_not_change_existing_rows(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = fake_context(tmp_path, sqlite_store, ["HOG"])
+    existing = pd.DataFrame(
+        {"ticker": "HOG", "earnings_date": [pd.Timestamp("2026-09-15")], "eps_estimate": 1.0, "eps_actual": 1.1, "surprise_pct": 10.0}
     )
-    assert [offset for _, offset in _CappedYahooTicker.calls] == [0, 100], _CappedYahooTicker.calls
-    print("\n=== SANITY CHECK: full pull across two Yahoo pages ===")
-    print(f"  calls (limit, offset)={_CappedYahooTicker.calls}; saved {len(saved)} quarters from {saved.iloc[0].date()} to {saved.iloc[-1].date()},")
-    print("  the full 128 wanted, none duplicated, instead of the newest 100 only.")
+    sqlite_store.save(Tables.earnings_surprises, existing)
+    before = sqlite_store.load(Tables.earnings_surprises)
+    monkeypatch.setattr(surprises, "_download_one", lambda *args: None)
+    surprises.fetch_earnings_surprises(context, ["HOG"])
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_surprises), before)
+    print("SANITY: an unavailable candidate response preserves all prior source rows.")
+
+
+def test_programming_errors_escape_the_provider_failure_boundary(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = fake_context(tmp_path, sqlite_store, ["HOG"])
+
+    def broken(*args: Any) -> None:
+        raise TypeError("implementation error")
+
+    monkeypatch.setattr(surprises, "_download_one", broken)
+    with pytest.raises(TypeError, match="implementation error"):
+        surprises.fetch_earnings_surprises(context, ["HOG"])
+    assert not sqlite_store.exists(Tables.earnings_surprises)
+    print("SANITY: programming errors fail visibly before source persistence.")

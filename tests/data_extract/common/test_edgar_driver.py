@@ -23,6 +23,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_store import schema
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
+from src.utils.window import WindowRun
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, roster_run, seed_index
 
@@ -365,10 +366,12 @@ def test_a_lineage_expansion_lists_the_new_cik_on_the_next_run_with_no_run_state
     )
     fetch = _fetch(_Source())
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: before)
-    plain = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"], 15, as_of=_AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    plain = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"]), max_workers=1)
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: after)
 
-    expanded = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"], 15, as_of=_AS_OF + pd.Timedelta(days=1)), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF + pd.Timedelta(days=1))
+    expanded = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"]), max_workers=1)
 
     assert plain.work.units["AAA"]["accession"].tolist() == [_accession(1)]
     assert expanded.work.units["AAA"]["accession"].tolist() == ["0009999991-19-000001"]

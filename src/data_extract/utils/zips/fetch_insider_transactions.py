@@ -22,7 +22,6 @@ import logging
 from collections.abc import Sequence
 from math import isfinite
 from pathlib import Path
-from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
@@ -43,7 +42,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.identity_contract import ROLE_EVENT, ROLE_WINDOW
-from src.data_extract.utils.common.resume import ArchiveWork, ZipScope, archive_worklist, rescan_lineage
+from src.data_extract.utils.common.resume import ArchiveWork, archive_worklist, rescan_lineage
 from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
@@ -64,9 +63,10 @@ from src.data_extract.utils.edgar_extract.insider_common import (
     top_counts,
 )
 from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, save_insider_source
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
+from src.utils.data_policy import window_policy
 from src.utils.filer_tables import FilerTable, removal_records
-from src.utils.string import pad_cik_series, run_date
+from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -461,8 +461,10 @@ def download_insider_transactions(context: Context) -> list[str]:
     A cached zip is never re-downloaded, and an unpublished quarter is skipped. No parse, no identity.
     """
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
-    quarters = quarter_periods(pd.Timestamp.today().year - first_year + 1, first_year)
+    policy = window_policy(context.config, Tables.insider_transactions, context.run.as_of)
+    if policy is None:
+        return []
+    quarters = quarter_periods(policy.requested)
     cached = [
         quarter
         for quarter in tqdm(quarters, desc="insider data sets (download)")
@@ -485,13 +487,7 @@ def _keep_keys(
     return df_kept, df_rejected, df_notes
 
 
-def fetch_insider_transactions(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    reparse: bool = False,
-    as_of: pd.Timestamp | None = None,
-) -> int:
+def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     """Download (cached) the insider data sets and ingest each quarter of the work list with
     `store_zip_quarter` (a pending quarter also logs its `report_zip_quarter` lines), save the kept
     footnotes, log one identity-exclusion summary for the run, then, on a full-universe run only, sweep
@@ -502,16 +498,18 @@ def fetch_insider_transactions(
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    start_date = run_date(as_of)
-    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
-    span = (start_date.year - first_year + 1) if reparse else years_history + 1
-    quarters = quarter_periods(span, first_year, start_date)
+    policy = window_policy(context.config, Tables.insider_transactions, context.run.as_of)
+    if policy is None:
+        return 0
+    quarters = quarter_periods(policy.requested)
+    if not quarters:
+        return 0
     work = archive_worklist(
         context,
         (Tables.insider_transactions,),
         quarters,
         cached_periods(cache),
-        ZipScope(tickers, start_date, reparse),
+        tickers,
         rescan_lineage(identity, (ROLE_WINDOW, ROLE_EVENT)),
     )
 

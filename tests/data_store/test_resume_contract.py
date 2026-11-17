@@ -40,7 +40,9 @@ from src.data_store.schema import (
     resume_tables,
 )
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import identity_for
+from tests.data_extract.fake_context import extract_config
 from tests.support.fundamentals_frames import sec_facts_frame, sharadar_facts_frame
 from tests.support.universe import seed_universe
 
@@ -183,7 +185,9 @@ def test_edgar_text_tables_declare_their_layout_markers_and_ddl(monkeypatch: pyt
 
 
 def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"])))
+    context = cast(
+        Context, SimpleNamespace(config_dir="configs", config=extract_config(), store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"]))
+    )
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
     fetched = (
         SEC_8K_FETCH,
@@ -204,10 +208,18 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
     column_types = _column_types(monkeypatch)
     for fetch in fetched:
         keys = cik_map.assign(cik="1")
+        context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-10-13"))
         plan_fetch(
             context,
             fetch,
-            EdgarRun(list(keys["ticker"]), keys, identity_for(dict(zip(keys["ticker"], keys["cik"], strict=True))), pd.Timestamp("2026-10-13"), 10),
+            EdgarRun(
+                list(keys["ticker"]),
+                keys,
+                identity_for(dict(zip(keys["ticker"], keys["cik"], strict=True))),
+                context.run,
+                None,
+                edgar_driver.RetryRounds.from_config(context.config),
+            ),
         )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms

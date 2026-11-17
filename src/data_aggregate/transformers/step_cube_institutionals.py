@@ -63,8 +63,7 @@ class StepCubeInstitutionals(Step):
         self._part = part_for(Tables.cube_part_institutionals)
         self._bugfix = load_bugfix(context.config_dir)
         self._insider_lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name]
-        cfg = config.get("data_availability")
-        self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
+        self._availability = InstitutionalAvailability.from_config(config)
 
     def run(self, full: bool = False) -> None:
         # Plan the saved tail before loading the full feature dependencies.

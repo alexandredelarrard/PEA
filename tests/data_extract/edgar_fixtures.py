@@ -23,6 +23,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarR
 from src.data_extract.utils.fundamentals.employee_guard import EmployeeAnswer, employee_task
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import pad_cik
+from src.utils.window import WindowRun
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
 from tests.support.universe import as_roster, seed_universe
@@ -164,6 +165,7 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
             error=lambda msg, *a: errors.append(msg % a if a else msg),
         ),
         config=extract_config(data_extract={"years_history": 15, **data_extract}),
+        run=WindowRun("incremental", "offline source fixture", pd.Timestamp("2026-09-30")),
         ensure_edgar_identity=lambda: None,
         config_dir=write_roster_config(tmp_path),
         universe=universe,
@@ -242,13 +244,14 @@ def roster_identity(roster: dict[str, str]) -> Identity:
     return cast(Identity, RosterIdentity({ticker: pad_cik(cik) if cik else "" for ticker, cik in roster.items()}))
 
 
-def roster_run(ctx: Any, tickers: list[str], years_history: int = 15, *, as_of: pd.Timestamp, full: bool = False, no_cap: bool = False) -> EdgarRun:
+def roster_run(ctx: Any, tickers: list[str], *, as_of: pd.Timestamp, full: bool = False, no_cap: bool = False) -> EdgarRun:
     """`EdgarRun.load` over a roster-only identity: each key's filing scope is its roster CIK alone."""
+    ctx.run = WindowRun("full" if full else "incremental", "offline filing run", as_of)
     roster = edgar_driver.universe_rows(ctx, tickers)
     identity = roster_identity(dict(zip(roster["ticker"], roster["cik"], strict=True)))
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(edgar_driver, "load_identity", lambda context: identity)
-        return EdgarRun.load(ctx, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
+        return EdgarRun.load(ctx, tickers, no_cap=no_cap)
 
 
 def walk_call(fetch: EdgarFetch, run: EdgarRun) -> dict[str, Any]:
@@ -257,7 +260,6 @@ def walk_call(fetch: EdgarFetch, run: EdgarRun) -> dict[str, Any]:
         "fetch": fetch,
         "tickers": run.tickers,
         "cik_map": run.cik_map,
-        "years_history": run.years_history,
         "as_of": run.run_date,
         "full": run.full,
         "no_cap": run.cap is None,
@@ -271,6 +273,6 @@ def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
 
     monkeypatch.setattr(edgar_driver, "universe_rows", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
-    monkeypatch.setattr(step_extract_edgar, "refresh_index", lambda ctx, run, years_history: None)
-    monkeypatch.setattr(edgar_index, "refreshed_today", lambda ctx, years_history: False)
+    monkeypatch.setattr(step_extract_edgar, "refresh_index", lambda ctx, window: None)
+    monkeypatch.setattr(edgar_index, "refreshed_today", lambda ctx, window: False)
     monkeypatch.setattr(step_extract_edgar, "run_edgar_fetch", lambda ctx, fetch, run: driver(ctx, **walk_call(fetch, run)))

@@ -1,7 +1,9 @@
 data_extract:
-  years_history: 31
-  macro_years_history: 31
-  sharadar_years_history: 31 # SF1's earliest filing date is 1993-12-22
+  # Late lines in the prior quarter's public index; metadata refresh, not document replay.
+  edgar_index:
+    previous_quarter_recheck: {value: 10, unit: calendar_days}
+  sec13f:
+    batch_size: 100 # Commit complete books in bounded batches; no effect on source dates.
   sharadar_request_pace: 0.35
   # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504
   # (and, for requests-based GETs and downloads, connection errors) get `attempts` calls in total,
@@ -33,7 +35,6 @@ data_extract:
   # `modelling predict` refuses to score when the share of universe tickers whose own latest
   # prices / sharadar_fundamentals_facts / sharadar_fundamentals_history date is within the table's cadence
   # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.
-  prediction_fresh_share: 0.95
   # Process-pool width of the offline `sec-fundamentals-history` full replay (CPU-bound; 1 runs
   # in-process), and the thread width of the `fundamentals-employees` ticker loop. It does NOT
   # size or throttle the `sec-fundamentals-facts` EDGAR walk, which uses parallel_fetch's

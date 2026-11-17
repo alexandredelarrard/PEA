@@ -72,3 +72,13 @@ def test_non_mapping_fragment_fails_before_context(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="mapping.*invalid.yml"):
         read_config(tmp_path)
     print("SANITY: malformed configuration fails before providers, database access or output writes.")
+
+
+def test_disjoint_namespaces_preserve_lazy_cross_file_interpolation(tmp_path: Path) -> None:
+    _bootstrap(tmp_path)
+    (tmp_path / "alpha.yml").write_text("alpha:\n  local: 4\n  relative: ${.local}\n  external: ${seed}\n", encoding="utf-8")
+    config = read_config(tmp_path)
+    assert config.alpha.relative == 4 and config.alpha.external == 4325
+    config.seed = 9
+    assert config.alpha.external == 9
+    print("SANITY: disjoint file assembly preserves relative, cross-file and lazily resolved interpolation.")

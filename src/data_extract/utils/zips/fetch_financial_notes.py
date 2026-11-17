@@ -16,7 +16,6 @@ import re
 from datetime import date
 from functools import partial
 from pathlib import Path
-from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
@@ -34,11 +33,13 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.resume import ZipScope, archive_worklist, period_end, rescan_lineage
+from src.data_extract.utils.common.resume import archive_worklist, period_end, rescan_lineage
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
-from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik_series, run_date
+from src.data_store.schema import Table, Tables
+from src.utils.data_policy import publication_policy, window_policy
+from src.utils.string import pad_cik_series
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ NOTES_ARCHIVE = ArchiveSource(
     label="notes",
     file_template="{period}_notes.zip",
     url_template=SEC_FINNOTES_URL_TEMPLATE,
-    observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+    table=Tables.notes_num,
     timeout=600,
 )
 
@@ -131,11 +132,6 @@ NOTES_ARCHIVE = ArchiveSource(
 # --------------------------------------------------------------------------- #
 # Period list (rolling quarterly <-> monthly)                                   #
 # --------------------------------------------------------------------------- #
-def _period_year(tag: str) -> int:
-    """'2024q1' -> 2024 ; '2025_07' -> 2025."""
-    return int(tag[:4])
-
-
 def _scrape_available_periods(context: Context) -> list[str] | None:
     """Available period tags scraped from the SEC landing page; None on any failure (caller falls back to the generator).
 
@@ -149,23 +145,22 @@ def _scrape_available_periods(context: Context) -> list[str] | None:
     return sorted(set(tags)) or None
 
 
-def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    """Candidate tags: quarterly over the window plus the last 14 months as monthly (404s are skipped downstream)."""
-    today = run_date(today)
-    first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
-    quarterly = quarter_periods(years_history, first_year, today)
-    monthly = [f"{month.year}_{month.month:02d}" for month in pd.period_range(end=today, periods=14, freq="M")]
+def _generate_periods(window: Window) -> list[str]:
+    """Candidate quarterly/monthly source units inside fixed dates; absent units remain 404s."""
+    quarterly = quarter_periods(window)
+    monthly = [f"{month.year}_{month.month:02d}" for month in pd.period_range(window.start, window.end, freq="M")]
     return sorted(set(quarterly + monthly))
 
 
-def notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    """Period tags to fetch, newest last, filtered to the year window."""
-    today = run_date(today)
-    first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
-    start_year = max(first_year, today.year - years_history)
-    avail = _scrape_available_periods(context)
-    tags = avail if avail is not None else _generate_periods(years_history, today)
-    return sorted(t for t in tags if _period_year(t) >= start_year)
+def notes_periods(context: Context) -> list[str]:
+    """Published archive unit ends within either notes table's configured source bounds."""
+    windows = [policy.requested for table in _NOTES_TABLES if (policy := window_policy(context.config, table, context.run.as_of)) is not None]
+    if not windows:
+        return []
+    scope = Window(min(window.start for window in windows), max(window.end for window in windows))
+    published = _scrape_available_periods(context)
+    tags = published if published is not None else _generate_periods(scope)
+    return sorted(tag for tag in tags if any(window.start <= pd.Timestamp(period_end(tag)) <= window.end for window in windows))
 
 
 # --------------------------------------------------------------------------- #
@@ -230,26 +225,30 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _periods_missing_available_at(context: Context) -> set[str]:
+def _periods_missing_available_at(context: Context, tickers: list[str]) -> set[str]:
     """Stored archive periods with no availability clock in either destination."""
     missing: set[str] = set()
     for table in _NOTES_TABLES:
         columns = set(context.store.columns(table))
         if "period" not in columns:
             continue
-        where = {"available_at": None} if "available_at" in columns else None
+        where = {"ticker": tickers, **({"available_at": None} if "available_at" in columns else {})}
         missing.update(str(value) for value in context.store.distinct(table, "period", where=where))
     return missing
 
 
-def _repair_period_available_at(context: Context, period: str, available_at: date, *, overwrite: bool = False) -> int:
+def _repair_period_available_at(context: Context, period: str, available_at: date, tickers: list[str], *, overwrite: bool = False) -> int:
     """Patch clocks using only each table's PK plus available_at."""
     repaired = 0
     for table in _NOTES_TABLES:
+        policy = window_policy(context.config, table, context.run.as_of)
+        end = pd.Timestamp(period_end(period))
+        if policy is None or not policy.requested.start <= end <= policy.requested.end:
+            continue
         columns = set(context.store.columns(table))
         if "period" not in columns:
             continue
-        where: dict[str, object] = {"period": period}
+        where: dict[str, object] = {"period": period, "ticker": tickers}
         if "available_at" in columns and not overwrite:
             where["available_at"] = None
         rows = context.store.load(
@@ -325,21 +324,28 @@ def _read_notes(path: Path, identity: Identity, universe: set[str]) -> tuple[pd.
     return _join_notes_num(num, sub_meta), _join_notes_text(tables["txt.tsv"], sub_meta)
 
 
-def _repair_stored_clocks(context: Context, cache: Path, overwrite: bool) -> dict[str, date]:
+def _repair_stored_clocks(context: Context, cache: Path, tickers: list[str], overwrite: bool) -> dict[str, date]:
     """Stamp `available_at` on stored periods lacking it (all stored periods if `overwrite`); returns the clock per period."""
-    periods = _periods_missing_available_at(context)
+    periods = _periods_missing_available_at(context, tickers)
     if overwrite:
         periods |= stored_values(context, _NOTES_TABLES, "period")
     clocks: dict[str, date] = {}
-    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
+    policy = publication_policy(context.config, Tables.notes_num)
+    observed_from = date.fromisoformat(str(policy.observed_from))
+    windows = [item.requested for table in _NOTES_TABLES if (item := window_policy(context.config, table, context.run.as_of)) is not None]
     for period in sorted(periods):
+        if not any(window.start <= pd.Timestamp(period_end(period)) <= window.end for window in windows):
+            continue
         end = period_end(period)
-        inferred = archive_available_at(end, cache / f"{period}_notes.zip", observed_from=observed_from, downloaded=False)
-        available_at = inferred if end < observed_from or overwrite else stored_period_clock(context, _NOTES_TABLES, period) or inferred
+        inferred = archive_available_at(period, cache / f"{period}_notes.zip", policy=policy, downloaded=False)
+        stored = stored_period_clock(context, _NOTES_TABLES, period)
+        available_at = inferred if end < observed_from else stored or inferred
+        if overwrite and end >= observed_from and stored is not None and inferred is not None:
+            available_at = max(stored, inferred)
         if available_at is None:
             logger.warning("notes %s: no archive availability metadata -> leaving rows unavailable", period)
             continue
-        repaired = _repair_period_available_at(context, period, available_at, overwrite=overwrite)
+        repaired = _repair_period_available_at(context, period, available_at, tickers, overwrite=overwrite)
         clocks[period] = available_at
         logger.info("notes %s: repaired available_at=%s on %d stored rows", period, available_at, repaired)
     return clocks
@@ -347,6 +353,10 @@ def _repair_stored_clocks(context: Context, cache: Path, overwrite: bool) -> dic
 
 def _save_period(context: Context, table: Table, frame: pd.DataFrame, columns: list[str], period: str, available_at: date) -> int:
     """Latest-filed row per fact, stamped with its archive period and clock, upserted to `table`."""
+    policy = window_policy(context.config, table, context.run.as_of)
+    end = pd.Timestamp(period_end(period))
+    if policy is None or not policy.requested.start <= end <= policy.requested.end:
+        return 0
     if frame.empty:
         return 0
     frame = frame.sort_values("filed").drop_duplicates(subset=_FACT_PK, keep="last")
@@ -373,27 +383,27 @@ def download_notes_periods(context: Context, cache: Path, periods: list[str]) ->
     )
 
 
-def repair_notes_availability(context: Context, cache: Path) -> int:
+def repair_notes_availability(context: Context, cache: Path, tickers: list[str]) -> int:
     """Re-stamp every stored period's `available_at` clock; metadata only, never a download or parse. Returns 0."""
-    _repair_stored_clocks(context, cache, overwrite=True)
+    _repair_stored_clocks(context, cache, tickers, overwrite=True)
     return 0
 
 
-def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, periods: list[str]) -> int:
+def ingest_financial_notes(context: Context, cache: Path, tickers: list[str], periods: list[str]) -> int:
     """Parse the work list's notes periods into `notes_num` and `notes_text`; returns rows upserted.
 
     Periods missing from either table are parsed for every ticker; on such a run, cached stored periods again for
     each (ticker, window CIK) pair changed since the newest stored period with no row, keeping that CIK's rows only.
     `scope.full` re-reads every stored period too (after a parse change).
     """
-    period_clocks = _repair_stored_clocks(context, cache, overwrite=False)
+    period_clocks = _repair_stored_clocks(context, cache, tickers, overwrite=False)
     identity = load_identity(context)
     work = archive_worklist(
         context,
         _NOTES_TABLES,
         periods,
         cached_periods(cache, suffix="_notes.zip"),
-        scope,
+        tickers,
         rescan_lineage(identity),
     )
     units = dict(work.units())

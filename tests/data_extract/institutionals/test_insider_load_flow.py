@@ -29,6 +29,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
@@ -245,6 +246,7 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("tests.insider_load_flow"),
         config=extract_config(data_extract={}),
+        run=WindowRun("incremental", "insider source fixture", pd.Timestamp("2026-10-13")),
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
         universe=seed_universe(store, universe),
@@ -277,7 +279,8 @@ def _run_zip(context: Any, *, reparse: bool = False) -> int:
 
 
 def _run_edgar(context: Any, *, full: bool = False) -> None:
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, UNIVERSE, 15, full=full))
+    context.run = WindowRun(("full" if full else "incremental"), "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, UNIVERSE))
 
 
 Q0 = Spec("0000000001-26-000010", "2026-02-02", (Trade("2026-01-30", "P", 10, 5, 110),))
@@ -503,7 +506,8 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
     sec.publish(context, [E1, B1])
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
+    context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
     df_before = _table(sqlite_store)
     bbb = df_before["ticker"].eq("BBB")
     assert set(df_before.loc[bbb, "source"]) == {"zip", "edgar"}, "BBB holds a zip and an EDGAR filing"
@@ -511,7 +515,8 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
 
     caplog.clear()
     ins.fetch_insider_transactions(context, tickers=["AAA"], years_history=1, reparse=True)
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15, full=True))
+    context.run = WindowRun("full", "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
     df_after = _table(sqlite_store)
 
     infos = _messages(caplog, logging.INFO)
@@ -533,7 +538,8 @@ def test_cli_csv_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_stor
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
     sec.publish(context, [E1, B1])
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
+    context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
     df_before = _table(sqlite_store)
 
     caplog.clear()
@@ -555,17 +561,20 @@ def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, 
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
     sec.publish(context, [E1, B1])
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
+    context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
 
     a_late = Spec("0000000001-26-000900", "2026-07-01", (Trade("2026-06-30", "P", 5, 10, 50),))
     b_gap = Spec("0000000002-26-000700", "2026-06-01", (Trade("2026-05-29", "P", 5, 10, 50),), issuer_cik=BBB_CIK, symbol="BBB")
     sec.publish(context, [E1, B1, a_late, b_gap])
     sec.read.clear()
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15))
+    context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
     subset_read = list(sec.read)
 
     sec.read.clear()
-    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15))
+    context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
+    edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
     full_read = list(sec.read)
     df = _table(sqlite_store)
 
@@ -656,9 +665,8 @@ def test_partial_save_reconciles_when_a_later_key_fails(
 
     monkeypatch.setattr(edgar, "parse_insider", parse)
     with pytest.raises(TypeError) as raised:
-        edgar_driver.run_edgar_fetch(
-            context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"], 15, as_of=pd.Timestamp("2026-07-08"))
-        )
+        context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
+        edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
     assert raised.value is failure
     df_rows = _table(sqlite_store)
     df_first = _rows_of(df_rows, A.accession)
@@ -689,9 +697,8 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
         return original_bounds(table, column)
 
     monkeypatch.setattr(sqlite_store, "bounds", bounds)
-    result = edgar_driver.run_edgar_fetch(
-        context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15, as_of=pd.Timestamp("2026-07-08"))
-    )
+    context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
+    result = edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
     assert result.work.size == 0 and sec.read == [] and floor_reads == ["quarter"]
     df_rows = _rows_of(_table(sqlite_store), other.accession)
     assert df_rows["row_sequence"].tolist() == [1, 2, 4]
@@ -704,13 +711,8 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     monkeypatch.setattr(sqlite_store, "delete", forbidden)
     descriptor = replace(edgar.INSIDER_EDGAR_FETCH, run_scope=forbidden)
     cik_map = pd.DataFrame({"ticker": ["AAA"], "cik": [AAA_CIK]})
-    run = edgar_driver.EdgarRun(
-        ["AAA"],
-        cik_map,
-        identity_two,
-        pd.Timestamp("2026-07-08"),
-        15,
-    )
+    context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
+    run = edgar_driver.EdgarRun(["AAA"], cik_map, identity_two, context.run, None, edgar_driver.RetryRounds.from_config(context.config))
     plan = edgar_driver.plan_fetch(context, descriptor, run)
     assert plan.size == 0 and floor_reads == ["quarter", "quarter"]
     print(
@@ -770,15 +772,13 @@ def test_singleton_reuse_keeps_tickers_exclusions_and_floor_local_after_failure(
     monkeypatch.setattr(edgar, "replace_zip_accessions", reconciled)
     caplog.clear()
     with pytest.raises(RuntimeError, match="first cleanup failed"):
-        edgar_driver.run_edgar_fetch(
-            context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"], 15, as_of=pd.Timestamp("2026-07-08"))
-        )
+        context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
+        edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
     assert any("excluded 1 filing(s), 2 row(s)" in message for message in _messages(caplog, logging.WARNING))
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([{**dict(zip(PK, [Q0.accession, "nonderiv", 1], strict=True)), "quarter": "2026q2"}]))
     caplog.clear()
-    result = edgar_driver.run_edgar_fetch(
-        context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["BBB"], 15, as_of=pd.Timestamp("2026-07-08"))
-    )
+    context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
+    result = edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["BBB"]))
     assert result.missing == {} and scopes == [("AAA",), ("BBB",)]
     assert floors == [pd.Timestamp("2026-04-01"), pd.Timestamp("2026-07-01")]
     assert "insider EDGAR run: no filing excluded by the identity screen" in _messages(caplog, logging.INFO)

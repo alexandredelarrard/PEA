@@ -12,7 +12,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.resume import DONE_PER_KEY, document_floor
+from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, universe_rows
 from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
@@ -20,7 +20,7 @@ from src.data_extract.utils.fundamentals.employee_guard import COUNT_COLUMNS, Fi
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult
-from src.utils.string import run_date
+from src.utils.data_policy import window_policy
 
 # The `sec_employees_text` columns the worklist reads; `windows` and `pieces` are read per ticker, for its undecided filings.
 _TEXT_COLUMNS = ["ticker", "accession_number", "cik", "form", "filing_date", "period_of_report", "source_document"]
@@ -169,24 +169,29 @@ def _log_run(context: Context, df_keys: pd.DataFrame, results: list[EmployeeTick
             )
 
 
-def fetch_employees_llm(context: Context, tickers: list[str], years_history: int, extractors: Sequence[LLMExtractor], *, full: bool = False) -> None:
+def fetch_employees_llm(context: Context, tickers: list[str], extractors: Sequence[LLMExtractor]) -> None:
     """Decide every stored employees text in the window whose filing date has no row (a NULL row with its status when no
     count is supported); `full` re-decides them all. Dates from a ticker's earliest filing the walk has not stored yet wait.
     Each worker reads its own ticker's `windows`/`pieces`, which bounds memory. `len(extractors)` tickers run at once, one
     extractor each; a failed call or ticker is logged and listed again next run."""
     # load: the window's text rows (no windows or pieces), the stored rows, the text walk's pending filings
-    start_date = run_date(None)
-    since = document_floor(Tables.sec_employees_text, start_date, years_history)
+    policy = window_policy(context.config, Tables.fundamentals_employees, context.run.as_of)
+    if policy is None:
+        return
+    window = policy.requested
+    full = context.run.mode in {"full", "recovery"}
     cik_map = universe_rows(context, tickers)
-    df_text = context.store.load(Tables.sec_employees_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=since, optional=True)
-    stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of", *COUNT_COLUMNS], where={"ticker": tickers}, optional=True)
+    df_text = context.store.load(
+        Tables.sec_employees_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=window.start, until=window.end, optional=True
+    )
+    stored = context.store.load(
+        Tables.fundamentals_employees, columns=["ticker", "as_of", *COUNT_COLUMNS], where={"ticker": tickers}, until=window.end, optional=True
+    )
     forms = cast(Resume, Tables.sec_employees_text.resume).forms
     request = WorklistRequest(
         keys=cik_map[["ticker", "cik"]],
-        as_of=start_date,
         forms=forms,
         identity=load_identity(context),
-        years_history=years_history,
         done_scope=DONE_PER_KEY,
     )
     pending = document_worklist(context, Tables.sec_employees_text, request).units

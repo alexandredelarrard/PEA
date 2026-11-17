@@ -6,6 +6,8 @@ cache folders, filenames and model defaults stay in one place.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from functools import cache
 from pathlib import Path
 from typing import cast
 
@@ -15,9 +17,14 @@ _PATHS_YML = Path(__file__).resolve().parents[2] / "configs" / "config.yml"
 _GPT_YML = Path(__file__).resolve().parents[2] / "configs" / "gpt.yml"
 
 
+@cache
+def _base() -> DictConfig:
+    root = _PATHS_YML.parent
+    return cast(DictConfig, OmegaConf.merge(*(OmegaConf.load(root / name) for name in ("config.yml", "gpt.yml", "data.yml", "data_extract.yml"))))
+
+
 def extract_config(**branches) -> DictConfig:
     """The config a fake data_extract `Context` needs: the real `local` tree (paths and
     filenames) and the real `gpt` tree (model / threads / cache defaults), plus whatever
     per-test branches the caller adds -- `extract_config(data_extract={"years_history": 15})`."""
-    cfg = OmegaConf.merge(OmegaConf.load(_PATHS_YML), OmegaConf.load(_GPT_YML))
-    return cast(DictConfig, OmegaConf.merge(cfg, OmegaConf.create(branches)) if branches else cfg)
+    return cast(DictConfig, OmegaConf.merge(_base(), OmegaConf.create(branches)) if branches else deepcopy(_base()))

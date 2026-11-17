@@ -8,6 +8,7 @@ from collections.abc import Iterator
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+from omegaconf import DictConfig
 
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import COMPANY_CUSIP
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
@@ -107,7 +108,7 @@ def _concat_events(parts: list[tuple[pd.DataFrame, pd.DataFrame]]) -> tuple[pd.D
 
 
 def prepare_institutional_book_history(
-    batches: Iterator[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, *, settle_days: int
+    batches: Iterator[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, *, config: DictConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """Retain only compact public events of the cleaned complete-book batches: single-version books in one pass,
     amended books through the shared resolver."""
@@ -120,7 +121,7 @@ def prepare_institutional_book_history(
         filings_count += len(df_filings)
         raw_rows += len(df_holdings)
         # A lone book not yet public is in neither pass: it carries only its universe rows and never resolves.
-        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days)
+        df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, config)
         single = single_version_books(df_manifest)
         df_single = df_manifest.loc[single & df_manifest["public_at"].notna()]
         lone_rows = df_holdings["accession_number"].isin(set(df_manifest.loc[single, "accession_number"]))

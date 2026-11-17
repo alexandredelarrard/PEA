@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, plan_fetch
 from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     FILING_SECTION_BUSINESS,
@@ -27,6 +28,7 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     save_filing_text,
 )
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_context, identity_for, seed_index
 
 
@@ -405,7 +407,8 @@ def test_the_planner_lists_only_filings_missing_an_expected_section_and_full_lis
     cik_map = pd.DataFrame({"ticker": ["AAPL"], "cik": ["0000320193"]})
 
     def plan(full: bool) -> list[str]:
-        run = EdgarRun(["AAPL"], cik_map, identity_for(_AAPL), pd.Timestamp("2025-03-01"), 5, full=full)
+        ctx.run = WindowRun(("full" if full else "incremental"), "offline explicit filing scope", pd.Timestamp("2025-03-01"))
+        run = EdgarRun(["AAPL"], cik_map, identity_for(_AAPL), ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config))
         work = plan_fetch(ctx, FILING_TEXT_FETCH, run)
         return sorted(work.units["AAPL"]["accession"]) if "AAPL" in work.units else []
 

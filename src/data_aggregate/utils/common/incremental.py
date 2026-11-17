@@ -34,11 +34,11 @@ def plan_window(store: DataStore, part: Table, policy: WindowPolicy, calendar: p
         raise ValueError(f"{part.name}: cube planning requires an explicit ticker scope")
     last = store.max_date(part, where={"ticker": selected})
     run = (
-        WindowRun("full", "explicit full build")
+        WindowRun("full", "explicit full build", policy.requested.end)
         if full
-        else WindowRun("initial", "no selected output")
+        else WindowRun("initial", "no selected output", policy.requested.end)
         if last is None
-        else WindowRun("incremental", "configured overlap")
+        else WindowRun("incremental", "configured overlap", policy.requested.end)
     )
     return resolve_window(policy, run, last, calendar, (("ticker", selected),))
 

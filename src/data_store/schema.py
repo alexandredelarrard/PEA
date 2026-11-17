@@ -814,9 +814,10 @@ class Tables:
             "put_shares",
             "put_value",
             "filing_date",
+            "accepted_at",
         ),
         # Option quantities are optional for older sources; never synthesize them.
-        optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
+        optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date", "accepted_at"}),
         # Market-wide nightly walk; `zips-ingest --only 13f` then stores every 13F-HR(/A) accession of
         # the cached SEC 13F data sets that is not stored yet, through the walk's writer.
         resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="2013-06-30"),

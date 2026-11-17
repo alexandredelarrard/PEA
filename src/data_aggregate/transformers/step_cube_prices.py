@@ -88,7 +88,7 @@ class StepCubePrices(Step):
                 recovery = replace(
                     window,
                     write=window.requested,
-                    run=WindowRun("recovery", "explicit ticker or changed historical price basis"),
+                    run=WindowRun("recovery", "explicit ticker or changed historical price basis", window.run.as_of),
                     scope=(("ticker", tuple(rebuild)),),
                 )
                 write_part(store, part, df_rows, recovery)

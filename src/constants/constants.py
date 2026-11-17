@@ -56,10 +56,8 @@ SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 # become knowable ~45 days later. Both 13F feature builders stamp
 # `as_of = quarter_end + this` to stay leak-free; it was duplicated as a private
 # `_FILING_LAG_DAYS = 45` in each of them.
-SEC_13F_FILING_LAG_DAYS = 45
 
 # The 13F AVAILABILITY DATE, in TRADING days past the snapped deadline.
-F13_SETTLE_TRADING_DAYS = 3
 
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to

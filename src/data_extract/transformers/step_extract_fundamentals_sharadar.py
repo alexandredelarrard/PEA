@@ -14,10 +14,6 @@ that table is empty. `sharadar_tickers` and `sharadar_actions` are refreshed by 
 
 from __future__ import annotations
 
-import pandas as pd
-from omegaconf import DictConfig
-
-from src.context import Context
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_fundamentals,
     fetch_sharadar_sp500,
@@ -28,41 +24,13 @@ from src.utils.step import Step
 
 
 class StepExtractFundamentalsSharadar(Step):
-    def __init__(self, context: Context, config: DictConfig):
-        super().__init__(context=context, config=config)
-
-    def run(self, tickers: list[str], *, full: bool = False, config_dir: str | None = None, as_of: pd.Timestamp | None = None) -> None:
-        """The three stages, in dependency order. `full` re-pulls the whole configured window
-        instead of resuming, and makes the history build DELETE before it rebuilds.
-
-        The CLI's `fundamentals-sharadar` command calls this rather than restating the order.
-        `config_dir` defaults to `self._config_dir` (the CLI's `-c`, resolved once by `Context`),
-        so `main.py`'s pipeline path, which passes no `config_dir`, still honours `-c`.
-        """
-        config_dir = str(config_dir or self._config_dir)
-        years = int(self._config.data_extract.sharadar_years_history)
-
-        # `sharadar_tickers` (the entity dimension the USD check reads) and `sharadar_actions` are refreshed
-        # before the universe sync by the universe step, not here.
-
-        # 1. SF1, every column as delivered, on the three AS-REPORTED dimensions. Its own
-        #    history knob (`sharadar_years_history`), separate from `years_history`, because
-        #    the two sources are limited by different things -- the SEC walk by patience,
-        #    Sharadar by subscription tier. A ticker outside the subscription returns 403,
-        #    costs one request and is counted, never retried.
-        #    The vendor tickers carrying a register predecessor CIK's own series (BHI, STE1, ...) are fetched
-        #    too and stored under their own ticker; the history build reads them inside the predecessor's window.
-        #    They are delisted, so they are read over the whole window: a rowless key resumes from a recent date.
-        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years, full=full, as_of=as_of)
-        predecessors = [t for t in predecessor_vendor_tickers(self._context, tickers) if t not in set(tickers)]
+    def run(self, tickers: list[str]) -> None:
+        """Fetch configured SF1/membership windows, then rebuild affected vendor histories."""
+        predecessors = [ticker for ticker in predecessor_vendor_tickers(self._context, tickers) if ticker not in set(tickers)]
         if predecessors:
             self._log.info("Sharadar SF1: + %d predecessor vendor ticker(s): %s", len(predecessors), ", ".join(predecessors))
-            fetch_sharadar_fundamentals(self._context, tickers=predecessors, years_history=years, full=True, as_of=as_of)
 
-        # 2. S&P 500 membership events. Ingested only -- the universe is `configs/universe.yml`
-        #    (`context.universe`); nothing consumes this table yet.
-        fetch_sharadar_sp500(self._context, full=full)
-
-        # 3. `sharadar_fundamentals_history`, LAST: a snapshot is only as fresh as the rows it reads, so
-        #    running it beside the fetchers would publish a table that silently lags its own inputs.
-        build_sharadar_history(self._context, tickers=tickers, full=full, config_dir=config_dir)
+        # A missing predecessor gets initial history once, then its own normal frontier.
+        fetch_sharadar_fundamentals(self._context, tickers=[*tickers, *predecessors])
+        fetch_sharadar_sp500(self._context)
+        build_sharadar_history(self._context, tickers=tickers, full=self._context.run.mode != "incremental", config_dir=str(self._config_dir))

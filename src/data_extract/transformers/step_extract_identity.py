@@ -6,8 +6,6 @@ publish -> sync. Each `run_*` runs alone from stored inputs (`identity --only <s
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pandas as pd
 from omegaconf import DictConfig
 from tqdm import tqdm
@@ -133,7 +131,6 @@ from src.utils.identity_flags import (
     tape_mix_pairs,
 )
 from src.utils.step import Step
-from src.utils.string import run_date
 
 #: The `sec_cik_profile` columns the CIK history reads, and the rows that carry one of its event forms.
 _PROFILE_COLUMNS = ("cik", "form_25", "form_15", "form_8k12b")
@@ -141,22 +138,14 @@ _SHARADAR_COLUMNS = ("secfilings", *LIFE_COLUMNS)
 _ANCHOR_LINEAGE_COLUMNS = ("canonical_ticker", "company_id", "cik", "role", "valid_from")
 
 
-@dataclass(frozen=True)
-class IdentityOptions:
-    """The `identity` command's options: `full` re-capture and re-check, and the run date."""
-
-    full: bool = False
-    as_of: pd.Timestamp | None = None
-
-
 class StepExtractIdentity(Step):
-    def __init__(self, context: Context, config: DictConfig, options: IdentityOptions | None = None) -> None:
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
-        self._options = options or IdentityOptions()
+        self._full = context.run.mode in {"full", "recovery"}
         paths = config.local.paths
         self._insider_cache = cache_dir(context, paths.insider_transactions)
         self._notes_cache = cache_dir(context, paths.financial_notes)
-        self._run_date = run_date(self._options.as_of)
+        self._run_date = context.run.as_of
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
         self._anchor: CompanyAnchor | None = None
@@ -170,7 +159,7 @@ class StepExtractIdentity(Step):
         """Notes cover-page symbols of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured (the FTD
         lines the CUSIP history reads are stored by the FTD ingest)."""
         # the Notes cover-page symbols of every filer, one cached period at a time (`full`: every period)
-        periods = pending_dei_periods(self._context, self._notes_cache, self._options.full)
+        periods = pending_dei_periods(self._context, self._notes_cache, self._full)
         written = sum(capture_dei_period(self._context, self._notes_cache, period) for period in tqdm(periods, desc="SEC notes cover-page symbols"))
 
         # one Form 3/4/5 scan: the `form345` / `manual` tenure (minus the cited rejections) here, the owner sets in the CIK history
@@ -412,7 +401,7 @@ class StepExtractIdentity(Step):
 
         # compute: the tickers whose scope changed, and what each company owns
         scopes = {ticker: identity.filing_scope(ticker) for ticker in universe.tickers}
-        changed = recheck_tickers(scopes, as_of=self._run_date, every=self._options.full or self._first_build)
+        changed = recheck_tickers(self._context, scopes, every=self._full or self._first_build)
         owned = owned_scopes(identity)
 
         # save: per filer table the moves then the purge, then the insider stamps of the changed and the receiving tickers

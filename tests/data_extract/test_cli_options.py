@@ -61,7 +61,7 @@ def test_cli_universe_runs_the_named_parts_in_order(only: tuple[str, ...], expec
         run_sync=lambda: ran.append("sync"),
     )
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, None))
-    monkeypatch.setattr(cli_mod, "StepExtractUniverse", lambda context, config, as_of: step)
+    monkeypatch.setattr(cli_mod, "StepExtractUniverse", lambda context, config: step)
 
     result = CliRunner().invoke(cli_mod.cli, ["universe", *only])
     assert result.exit_code == 0, result.exception
@@ -80,13 +80,15 @@ def test_cli_short_interest_passes_the_normalized_subset(sqlite_store: Any, monk
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     context = SimpleNamespace(config=config, log=Mock(), universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
     fetch = Mock()
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    constructor = Mock(return_value=(config, context))
+    monkeypatch.setattr(cli_mod, "get_config_context", constructor)
     monkeypatch.setattr(cli_mod, "fetch_short_interest", fetch)
 
     result = CliRunner().invoke(cli_mod.cli, ["short-interest", "-t", " aaa ,AAA", "-F"])
     assert result.exit_code == 0, result.exception
-    assert fetch.call_args.kwargs["tickers"] == ["AAA"] and fetch.call_args.kwargs["full"] is True
-    print("SANITY: short-interest passes the normalized CSV subset and the full flag to the source.")
+    assert fetch.call_args.kwargs == {"tickers": ["AAA"]}
+    assert constructor.call_args.kwargs["full"] is True
+    print("SANITY: short-interest passes the normalized subset and establishes full mode once at Context construction.")
 
 
 def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace) -> None:

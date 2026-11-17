@@ -420,6 +420,7 @@ class DataStore:
         *,
         count_where: dict[str, Where] | None = None,
         where: Where | None = None,
+        window: Window | None = None,
     ) -> pd.DataFrame:
         """Return grouped count/min/max values, with optional filters on named counts."""
         groups = [by] if isinstance(by, str) else list(by)
@@ -438,7 +439,14 @@ class DataStore:
                     raise ValueError("Only counts accept count_where")
                 aggregate = aggregate.filter(_where(tbl, cast(dict[str, Where], count_where)[alias]))
             values.append(aggregate.label(alias))
-        stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(_where(tbl, where))
+        bounds = build_select(
+            tbl,
+            where=where,
+            since=None if window is None else window.start,
+            until=None if window is None else window.end,
+            date_col=self._date_col(table),
+        ).whereclause
+        stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(bounds)
         if groups:
             stmt = stmt.group_by(*(tbl.c[column] for column in groups))
         with _connection(self._database) as conn:

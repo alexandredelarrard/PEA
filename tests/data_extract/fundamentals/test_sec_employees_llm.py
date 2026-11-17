@@ -53,7 +53,7 @@ def seed(ctx: Any, monkeypatch: pytest.MonkeyPatch, filings: list[TenK]) -> None
 
 
 def walk(ctx: Any, *, years_history: int = 15, no_cap: bool = True) -> None:
-    run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, roster_run(ctx, ["AAA"], years_history, as_of=TODAY, no_cap=no_cap), max_workers=1)
+    run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, roster_run(ctx, ["AAA"], as_of=TODAY, no_cap=no_cap), max_workers=1)
 
 
 def decide(ctx: Any, extractor: FakeEmployeesLLM, *, years_history: int = 15, full: bool = False) -> pd.DataFrame:
@@ -249,7 +249,7 @@ def test_tickers_run_concurrently_one_extractor_each(tmp_path: Path, sqlite_stor
     every = [f for part in filings.values() for f in part]
     seed_index(ctx, [(f.cik, f"{ticker} Inc", f.form, f.filing_date, f.accession_number) for ticker, part in filings.items() for f in part])
     patch_index_filings(monkeypatch, {f.accession_number: f for f in every})
-    run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, roster_run(ctx, ["AAA", "BBB"], 15, as_of=TODAY, no_cap=True), max_workers=1)
+    run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, roster_run(ctx, ["AAA", "BBB"], as_of=TODAY, no_cap=True), max_workers=1)
     answers = {f.accession_number: answer(int(f.body.split()[-2].replace(",", "")), f.body) for f in every}
 
     barrier = threading.Barrier(2, timeout=20)

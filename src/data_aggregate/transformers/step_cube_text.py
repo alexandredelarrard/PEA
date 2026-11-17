@@ -9,7 +9,7 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import EARNINGS_CALL_FEATURES, SOURCE_AVAILABILITY_BUFFER_DAYS
+from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
@@ -52,7 +52,7 @@ class StepCubeText(Step):
         embedding = config.gpt.embedding
         self._sentiment_model = settings.sentiment_model
         self._embedding_model = embedding.model
-        self._lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.earnings_call_sections.name]
+        self._lag = int(config.data.tables.earnings_call_sections.pit.lag.value)
         self._refresh_days = settings.refresh_calendar_days
         self._signal_sessions = settings.signal_sessions
         self._embedding_batch = embedding.batch_size

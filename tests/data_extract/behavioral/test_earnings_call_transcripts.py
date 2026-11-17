@@ -24,6 +24,8 @@ from omegaconf import OmegaConf
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
 from src.data_store.schema import Resume, Tables
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import as_roster, seed_universe, universe_in
 
 #: The universe the stored rows of these tests belong to (GOOG is an alias class, never a universe ticker).
@@ -86,7 +88,12 @@ def _ctx(tmp_path: Path, store: Any) -> Any:
     if not store.exists(Tables.universe_tickers):
         seed_universe(store, UNIVERSE)
     return _Context(
-        store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity()
+        store=store,
+        log=logging.getLogger("test_earnings_call_transcripts"),
+        paths={"DATA_STORE": tmp_path},
+        _identity_resolver=_identity(),
+        config=extract_config(data_extract={"earnings_calls": {"read_workers": 2}}),
+        run=WindowRun("incremental", "recorded call source check", pd.Timestamp("2026-11-16")),
     )
 
 
@@ -965,3 +972,20 @@ def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) ->
         f"  as_of {pd.to_datetime(rows['as_of']).min().date()} -> {pd.to_datetime(rows['as_of']).max().date()}; re-run wrote {again.rows_written} rows"
     )
     print("  OK: pinned HF read lands every call with paragraph 1 and a fiscal label; a re-run writes nothing")
+
+
+def test_routine_call_check_limits_source_work_to_configured_180_calendar_days(tmp_path: Path, sqlite_store: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    old = _call("AAA", 2026, 1, "2026-03-01", 1, 2)
+    recent = _call("AAA", 2026, 3, "2026-09-01", 2, 2)
+    source = _source(_write(tmp_path / "initial.parquet", [[old, recent]]), "first")[0]
+    ect.extract_earnings_calls(context, context.config.data_extract.earnings_calls, tickers=["AAA"], source=source)
+    revised_old = _call("AAA", 2026, 1, "2026-03-01", 11, 2, "revised")
+    revised_recent = _call("AAA", 2026, 3, "2026-09-01", 12, 2, "revised")
+    revised_source = _source(_write(tmp_path / "revised.parquet", [[revised_old, revised_recent]]), "revised")[0]
+    summary = ect.extract_earnings_calls(context, context.config.data_extract.earnings_calls, tickers=["AAA"], source=revised_source)
+    rows = _sections(sqlite_store)
+    assert summary.calls_reissued == 1
+    assert rows.loc[rows["quarter"].eq("2026Q1"), "transcript_id"].eq(1).all()
+    assert rows.loc[rows["quarter"].eq("2026Q3"), "transcript_id"].eq(12).all()
+    print("SANITY: a routine180CD candidate check refreshes the recent call and preserves older source payloads for explicit recovery.")

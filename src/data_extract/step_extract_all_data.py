@@ -20,7 +20,7 @@ from src.data_extract.transformers.step_extract_fundamentals import StepExtractF
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
-from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.transformers.step_extract_institutionals import (
     StepExtractInstitutionals,
 )
@@ -29,11 +29,10 @@ from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_universe import StepExtractUniverse
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.utils.step import Step
-from src.utils.string import run_date
 
 
 class StepExtractAllData(Step):
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
 
         super().__init__(context=context, config=config)
 
@@ -44,20 +43,20 @@ class StepExtractAllData(Step):
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
     def run(self) -> None:
-        StepExtractUniverse(self._context, self._config, run_date(None)).run()
+        StepExtractUniverse(context=self._context, config=self._config).run()
         tickers = self._universe.tickers
         self._log.info(f"Equity universe: {len(tickers)} tickers")
 
         zips = StepExtractZips(self._context, self._config, ZipsOptions(tickers=tickers))
         zips.run_download()
-        StepExtractIdentity(self._context, self._config, IdentityOptions()).run()
+        StepExtractIdentity(self._context, self._config).run()
         zips.run_ingest()
 
         # run each extract big block
         self._prices.run(tickers=tickers)
         self._institutionals.run(tickers=tickers)
         zips.run_ingest_13f()
-        self._fundamentals_sharadar.run(tickers=tickers, full=False)
+        self._fundamentals_sharadar.run(tickers=tickers)
         StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()
         self._fundamentals.run(tickers=tickers, full=False)  # reads the facts the EDGAR step just stored
         # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a

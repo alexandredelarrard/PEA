@@ -6,6 +6,8 @@ publish -> sync. Each `run_*` runs alone from stored inputs (`identity --only <s
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 from omegaconf import DictConfig
 from tqdm import tqdm
@@ -112,6 +114,7 @@ from src.data_extract.utils.identity.symbol_tenure import (
 )
 from src.data_extract.utils.zips.fetch_insider_transactions import restamp_insider_lineage
 from src.data_store.schema import Tables
+from src.data_store.store import Where
 from src.utils.data_policy import source_read_window
 from src.utils.filer_tables import PURGE_TABLES
 from src.utils.identity_flags import (
@@ -209,7 +212,7 @@ class StepExtractIdentity(Step):
             self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
         scan = self._scan
         dei_rows = self._context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
-        events = [{column: self._context.store.NOT_NULL} for column in _PROFILE_COLUMNS[1:]]
+        events: Where = [{column: self._context.store.NOT_NULL} for column in _PROFILE_COLUMNS[1:]]
         profile = self._context.store.load(Tables.sec_cik_profile, columns=list(_PROFILE_COLUMNS), where=events, optional=True)
         registrants = load_registrants(str(self._config_dir))
         blob = manual_lineage_blob(str(self._config_dir))
@@ -373,7 +376,16 @@ class StepExtractIdentity(Step):
         rows = flag_rows(symbols.rows)
         mixes = tape_mix_items(tape_mix_pairs(rows, self._universe.alias_symbols), rows, master_lines(stored_lines if lines.empty else lines))
         found = [*cik_items(rows, history.activity, symbols.backlog), *refused_merge_items(symbols.blocked), *mixes, *symbol_status_items(rows)]
-        review = review_flags(sorted_flags([*found, *cusip_items.to_dict("records"), *lifecycle.items.to_dict("records")]), resolutions)
+        review = review_flags(
+            sorted_flags(
+                [
+                    *found,
+                    *cast(list[dict[str, object]], cusip_items.to_dict("records")),
+                    *cast(list[dict[str, object]], lifecycle.items.to_dict("records")),
+                ]
+            ),
+            resolutions,
+        )
 
         # check: a WARNING block of the unreviewed action items only; everything else in one INFO summary, the items at DEBUG
         block, details = identity_flag_block(review.unreviewed), review_details(review)

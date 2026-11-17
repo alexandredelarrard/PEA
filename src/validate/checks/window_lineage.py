@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import calendar as calendar_module
 from dataclasses import asdict, dataclass
-from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
+from pandas._libs.tslibs.nattype import NaTType
 
 from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
@@ -32,7 +32,7 @@ class _State:
     exception: str | None = None
 
 
-def _day(value: Any) -> pd.Timestamp:
+def _day(value: Any) -> pd.Timestamp | NaTType:
     stamp = pd.Timestamp(value)
     if pd.isna(stamp):
         return pd.NaT
@@ -48,7 +48,7 @@ def _period_end(value: str) -> pd.Timestamp:
     return pd.Timestamp(year=year, month=month, day=day)
 
 
-def expected_publication(policy: dict[str, Any], row: pd.Series | dict[str, Any], sessions: pd.DatetimeIndex) -> pd.Timestamp:
+def expected_publication(policy: dict[str, Any], row: pd.Series | dict[str, Any], sessions: pd.DatetimeIndex) -> pd.Timestamp | NaTType:
     """Independent policy oracle; deliberately does not call Window/publication arithmetic."""
     if policy["mode"] == "direct" and int(policy["lag"]["value"]) < 1:
         raise ValueError("Publication evidence must retain at least one calendar day; contradictory zero-lag policy")
@@ -70,13 +70,19 @@ def expected_publication(policy: dict[str, Any], row: pd.Series | dict[str, Any]
     if policy["mode"] in {"direct", "half_month_end"}:
         anchor += pd.Timedelta(days=int(policy["lag"]["value"]))
     # Iteration is intentionally independent of production searchsorted/roll_to_session.
+    if isinstance(anchor, NaTType):
+        return pd.NaT
     eligible = sessions[sessions >= anchor]
     return eligible[0] if len(eligible) else pd.NaT
 
 
 def _source_row(
-    state: _State, row: pd.Series, sessions: pd.DatetimeIndex, policies: dict[Table, dict[str, Any]], dates: dict[tuple[Any, ...], pd.Timestamp]
-) -> tuple[dict[str, Any], pd.Timestamp]:
+    state: _State,
+    row: pd.Series,
+    sessions: pd.DatetimeIndex,
+    policies: dict[Table, dict[str, Any]],
+    dates: dict[tuple[Any, ...], pd.Timestamp | NaTType],
+) -> tuple[dict[str, Any], pd.Timestamp | NaTType]:
     policy = policies[state.table]
     clock = str(policy["clock"])
     names = {*state.table.pk, "adsh", "accession_number", "quarter", "period"}
@@ -112,18 +118,18 @@ def _source_row(
     return identifiers, expected
 
 
-def _boundaries(context: Context, state: _State, sessions: pd.DatetimeIndex) -> tuple[list[dict[str, Any]], list[Finding]]:
+def _boundaries(config: DictConfig, tickers: list[str], state: _State, sessions: pd.DatetimeIndex) -> tuple[list[dict[str, Any]], list[Finding]]:
     records: list[dict[str, Any]] = []
     findings: list[Finding] = []
-    year = int(context.config.validate.window_samples.year)
+    year = int(config.validate.window_samples.year)
     tables = (
         (Tables.sharadar_fundamentals_history, Tables.sec_fundamentals_history)
         if state.table in {Tables.sharadar_fundamentals_history, Tables.sec_fundamentals_history}
         else (state.table,)
     )
-    policies = {table: dict(OmegaConf.to_container(publication_policy(context.config, table), resolve=True)) for table in tables}
-    dates: dict[tuple[Any, ...], pd.Timestamp] = {}
-    for ticker in context.universe.tickers:
+    policies = {table: dict(cast(dict[str, Any], OmegaConf.to_container(publication_policy(config, table), resolve=True))) for table in tables}
+    dates: dict[tuple[Any, ...], pd.Timestamp | NaTType] = {}
+    for ticker in tickers:
         observed, ticker_findings = _ticker_boundaries(state, ticker, sessions, policies, dates, year)
         records.extend(observed)
         findings.extend(ticker_findings)
@@ -135,7 +141,7 @@ def _ticker_boundaries(
     ticker: str,
     sessions: pd.DatetimeIndex,
     policies: dict[Table, dict[str, Any]],
-    dates: dict[tuple[Any, ...], pd.Timestamp],
+    dates: dict[tuple[Any, ...], pd.Timestamp | NaTType],
     year: int,
 ) -> tuple[list[dict[str, Any]], list[Finding]]:
     records: list[dict[str, Any]] = []
@@ -171,12 +177,13 @@ def _ticker_boundaries(
                 expected_date=event_ready,
             )
         )
-    position = sessions.get_loc(pd.Timestamp(event.as_of))
+    # The replay calendar is validated unique, so every retained date has one position.
+    position = cast(int, sessions.get_loc(pd.Timestamp(event.as_of)))
     observed, clock_findings = _observations(state, df_rows, sessions, policies, dates)
     findings.extend(clock_findings)
     for day in sessions[max(0, position - 1) : position + 2]:
         eligible = [item for item in observed if pd.notna(item[0]) and item[0] <= day]
-        actual = state.daily.reindex(index=[day], columns=[ticker]).iloc[0, 0]
+        actual = cast(float | np.integer | np.floating, state.daily.reindex(index=[day], columns=[ticker]).iloc[0, 0])
         expected_value, identity, ready = _expected_state(state, eligible, day, sessions)
         same = bool(pd.isna(actual) and pd.isna(expected_value)) or bool(np.isclose(actual, expected_value, rtol=1e-12, atol=0, equal_nan=True))
         if not same:
@@ -210,8 +217,8 @@ def _ticker_boundaries(
 
 
 def _expected_state(
-    state: _State, eligible: list[tuple[pd.Timestamp, pd.Series, dict[str, Any]]], day: pd.Timestamp, sessions: pd.DatetimeIndex
-) -> tuple[float, Any, pd.Timestamp | None]:
+    state: _State, eligible: list[tuple[pd.Timestamp | NaTType, pd.Series, dict[str, Any]]], day: pd.Timestamp, sessions: pd.DatetimeIndex
+) -> tuple[float, Any, pd.Timestamp | NaTType | None]:
     selected = max(eligible, key=lambda item: item[0]) if eligible else None
     value, identity, ready = np.nan, None, None
     if selected is not None:
@@ -220,18 +227,21 @@ def _expected_state(
         if state.table == Tables.sec13f_hr and state.age_days is not None:
             alive = day <= _day(row["_source_origin"]) + pd.Timedelta(days=state.age_days)
         if state.table == Tables.earnings_surprises:
+            assert state.age_days is not None
             alive = day <= _day(row.earnings_date) + pd.Timedelta(days=state.age_days)
         if state.lifetime_sessions is not None:
-            alive = sessions.get_loc(day) < sessions.get_loc(ready) + state.lifetime_sessions
+            alive = cast(int, sessions.get_loc(day)) < cast(int, sessions.get_loc(ready)) + state.lifetime_sessions
         if alive:
             value = row[state.field]
     contributors = None
     if state.table == Tables.dividends:
         contributors = [
-            item for item in eligible if _day(item[1].date) in sessions and sessions.get_loc(day) < sessions.get_loc(_day(item[1].date)) + 252
+            item
+            for item in eligible
+            if _day(item[1].date) in sessions and cast(int, sessions.get_loc(day)) < cast(int, sessions.get_loc(_day(item[1].date))) + 252
         ]
     if state.table in {Tables.sec_13d, Tables.sec_13g}:
-        contributors = [item for item in eligible if sessions.get_loc(day) < sessions.get_loc(item[0]) + 126]
+        contributors = [item for item in eligible if cast(int, sessions.get_loc(day)) < cast(int, sessions.get_loc(item[0])) + 126]
     if state.table == Tables.insider_transactions:
         contributors = [
             item
@@ -251,8 +261,8 @@ def _observations(
     df_rows: pd.DataFrame,
     sessions: pd.DatetimeIndex,
     policies: dict[Table, dict[str, Any]],
-    dates: dict[tuple[Any, ...], pd.Timestamp],
-) -> tuple[list[tuple[pd.Timestamp, pd.Series, dict[str, Any]]], list[Finding]]:
+    dates: dict[tuple[Any, ...], pd.Timestamp | NaTType],
+) -> tuple[list[tuple[pd.Timestamp | NaTType, pd.Series, dict[str, Any]]], list[Finding]]:
     observed = []
     findings = []
     for _, row in df_rows.iterrows():
@@ -393,8 +403,7 @@ def _check_route(context: Context, entry: dict[str, Any], requested: set[str], s
         entry["lifetime_sessions"],
         entry["exception"],
     )
-    scoped = SimpleNamespace(config=context.config, universe=SimpleNamespace(tickers=sorted(requested)))
-    records, boundary_findings = _boundaries(scoped, state, sessions)
+    records, boundary_findings = _boundaries(context.config, sorted(requested), state, sessions)
     findings.extend(boundary_findings)
     findings.extend(_assembly_findings(entry, records))
     return CheckResult.measured(

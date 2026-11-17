@@ -460,6 +460,7 @@ class DataStore:
             until=None if window is None else window.end,
             date_col=self._date_col(table),
         ).whereclause
+        assert bounds is not None  # build_select always installs _where, including true() for an unfiltered scope.
         stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(bounds)
         if groups:
             stmt = stmt.group_by(*(tbl.c[column] for column in groups))

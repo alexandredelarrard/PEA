@@ -61,7 +61,7 @@ def _known_state() -> tuple[Context, _State, pd.DatetimeIndex]:
 
 def test_real_calendar_boundary_and_raw_ancestry() -> None:
     context, state, sessions = _known_state()
-    records, findings = _boundaries(context, state, sessions)
+    records, findings = _boundaries(context.config, context.universe.tickers, state, sessions)
     assert not findings
     assert state.rows.as_of.iloc[0] == pd.Timestamp("2026-07-06")
     assert records[0]["value"] != records[0]["value"]
@@ -77,7 +77,7 @@ def test_early_production_selection_is_a_finding() -> None:
     context, state, sessions = _known_state()
     state.rows["as_of"] = pd.Timestamp("2026-07-02")
     state.daily = fundamentals_to_daily(state.rows, state.field, sessions)
-    _, findings = _boundaries(context, state, sessions)
+    _, findings = _boundaries(context.config, context.universe.tickers, state, sessions)
     assert findings and any("differs" in finding.observed for finding in findings)
     print("SANITY: an early production selector produces a high-severity finding even when its stored scalar value is unchanged.")
 
@@ -101,7 +101,7 @@ def test_selected_state_reaches_actual_assembly_and_bounded_writer(sqlite_store:
     context.config.validate.window_samples.keys_per_table = 1
     sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"date": sessions, "ticker": "AAA", "close_split": 100.0}))
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise", lambda *_: {"AAA": {"BBB": 1.0}})
-    records, findings = _boundaries(context, state, sessions)
+    records, findings = _boundaries(context.config, context.universe.tickers, state, sessions)
     result = _assemble_fields(context, [state], {state.field: records})[state.field]
     assert not findings and result["outside_write_rows_preserved"] == 2
     assert len(result["assembled"]) == 3
@@ -241,7 +241,7 @@ def test_ftd_null_publication_barrier_is_source_evidence() -> None:
     daily = _publish_ftd_zip_states(settlement, raw, sessions, _ftd_available_dates(raw, lag))
     rows = publication_rows(context.config, Tables.sec_fails_to_deliver_security, raw, sessions, "as_of")
     state = _State(Tables.sec_fails_to_deliver_security, Tables.cube_part_institutionals, rows, "fails_quantity", daily)
-    records, findings = _boundaries(context, state, sessions)
+    records, findings = _boundaries(context.config, context.universe.tickers, state, sessions)
     assert not findings and len(records) == 3 and len(_probe_rows(context, state, sessions)) == 3
     assert records[0]["value"] == 10.0 and pd.isna(records[1]["value"]) and pd.isna(records[2]["value"])
     assert records[1]["source"]["period"] == "202512a"
@@ -316,7 +316,7 @@ def test_actual_wrong_newer_packet_id_fails_even_with_same_known_flag() -> None:
     assert rows.accession_number.tolist() == ["new"], "Capture must observe the actual wrong selection, not reconstruct the eligible old book"
     daily = fundamentals_to_daily(rows, "packet_known_broad", sessions)
     state = _State(Tables.sec13f_hr, Tables.cube_part_sec_thirteen, rows, "packet_known_broad", daily)
-    _, findings = _boundaries(context, state, sessions)
+    _, findings = _boundaries(context.config, context.universe.tickers, state, sessions)
     assert findings and daily.loc["2026-07-06", "AAA"] == 1.0
     print("SANITY: actual newer accession chosen early fails even though both old/new packet-known values equal1.")
 

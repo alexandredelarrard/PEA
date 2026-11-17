@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any, cast
 
 import pandas as pd
 from omegaconf import DictConfig
+from pandas._libs.tslibs.nattype import NaTType
 
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_store.schema import Table
@@ -22,9 +24,10 @@ def period_end(tag: str) -> date:
     return pd.Period(year=int(tag[:4]), month=month, freq="M").end_time.date()
 
 
-def _market_day(value: object) -> pd.Timestamp:
+def _market_day(value: object) -> pd.Timestamp | NaTType:
     try:
-        stamp = pd.Timestamp(value)
+        # Raw source objects retain pandas' coercion and malformed-value handling.
+        stamp = pd.Timestamp(cast(Any, value))
         if pd.isna(stamp):
             return pd.NaT
         if stamp.tz is not None:

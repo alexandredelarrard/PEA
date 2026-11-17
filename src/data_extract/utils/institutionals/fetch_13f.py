@@ -5,11 +5,10 @@ One oldest-first walk over every 13F-HR by filing date (edgartools), saving each
 Originals and amendments have separate accession keys. Tickers come from the
 CUSIP map (OpenFIGI), never from issuer names.
 
-The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date; rows and `invalid`
-markers stored by the 13F ZIP ingest count toward that frontier, but its windows lag the walk by months. Successful
-filings are saved in batches while failed reads alone are queued for retry rounds after the listing.
-Exhausted failures are logged by accession and remain incomplete; holes older than the overlap require
-an explicit filing window. A scoped (`-t`) run never reads past the stored frontier.
+The configured filing window ends no later than the run date. A ticker subset also stops at the stored
+filing frontier, including ZIP rows and invalid markers, unless an explicit filing window is supplied.
+Successful filings are saved in batches while failed reads alone are queued for retry rounds after the listing.
+Exhausted failures are logged by accession and remain incomplete.
 """
 
 from __future__ import annotations
@@ -344,16 +343,20 @@ def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.Da
     return walk.cmap
 
 
-def _resolve_window(context: Context, requested: Window | None) -> Window | None:
-    """The configured filing window, optionally narrowed by an explicit recovery request."""
+def _resolve_window(context: Context, requested: Window | None, scoped: bool) -> Window | None:
+    """Configured bounds, with the stored subset ceiling unless recovery names an explicit Window."""
     policy = window_policy(context.config, Tables.sec13f_hr, context.run.as_of)
     if policy is None:
         return None
-    if requested is None:
+    frontier = context.store.max_date(Tables.sec13f_hr, cast(Resume, Tables.sec13f_hr.resume).frontier_col) if scoped and requested is None else None
+    if requested is not None:
+        if requested.intersection(policy.requested) != requested:
+            raise ValueError("13F recovery Window must stay within configured hard bounds and the run date")
+        return requested
+    if frontier is None:
         return policy.requested
-    if requested.intersection(policy.requested) != requested:
-        raise ValueError("13F recovery Window must stay within configured hard bounds and the run date")
-    return requested
+    end = min(policy.requested.end, pd.Timestamp(frontier).normalize())
+    return Window(policy.requested.start, end) if policy.requested.start <= end else None
 
 
 def _listing(context: Context, window: Window) -> list[Filing]:
@@ -593,9 +596,10 @@ def _log_walk(walk: _WalkState, total: int) -> None:
     logger.info(f"13F: saved {walk.hr_saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
 
 
-def fetch_13f(context: Context, filing_window: Window | None = None) -> int:
-    """Save missing/failed complete manager books inside configured filing bounds, oldest first."""
-    window = _resolve_window(context, filing_window)
+def fetch_13f(context: Context, tickers: list[str] | None = None, filing_window: Window | None = None) -> int:
+    """Save complete books; ticker subsets cap filing dates even in full mode, without filtering CUSIPs."""
+    names = context.universe.tickers if tickers is None else tickers
+    window = _resolve_window(context, filing_window, scoped=not context.universe.is_full(names))
     if window is None:
         return 0
     save_every = int(context.config.data_extract.sec13f.batch_size)

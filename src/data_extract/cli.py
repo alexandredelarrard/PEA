@@ -224,12 +224,14 @@ def macro(config_path: str, full: bool, as_of: datetime | None) -> None:
 
 @cli.command(help="13F complete manager books from the bounded EDGAR index, plus CUSIP mapping.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FILING_WINDOW_ARGS, **FILING_WINDOW_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def thirteen_f(config_path: str, filing_window: str | None, as_of: datetime | None, full: bool) -> None:
-    """A recovery may narrow configured filing bounds; security ticker subsets cannot truncate books."""
+def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None, as_of: datetime | None, full: bool) -> None:
+    """Subsets stop at the stored frontier, including -F; explicit filing bounds bypass that ceiling. Books stay complete."""
     _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    names = _tickers(context, tickers)
     window = None
     if filing_window:
         parts = filing_window.split(":")
@@ -239,7 +241,7 @@ def thirteen_f(config_path: str, filing_window: str | None, as_of: datetime | No
             window = Window(pd.Timestamp(parts[0]), pd.Timestamp(parts[1]))
         except ValueError as exc:
             raise click.BadParameter(str(exc), param_hint="--filing-window") from exc
-    fetch_13f(context, filing_window=window)
+    fetch_13f(context, tickers=names, filing_window=window)
 
 
 @cli.command(

@@ -22,6 +22,8 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_store.schema import Tables
+from src.utils.data_policy import window_policy
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +96,13 @@ def download_13f_datasets(context: Context) -> int:
     """Cache every published 13F data set missing or unreadable on disk (an unreadable ZIP is deleted and downloaded
     again); returns the ZIPs cached and readable. A window still missing afterwards is logged as an error. Writes no
     table."""
+    policy = window_policy(context.config, Tables.sec13f_hr, context.run.as_of)
+    if policy is None:
+        return 0
     published = published_data_sets(context)
     if published is None:
         return 0
+    published = [unit for unit in published if unit.start <= policy.requested.end and unit.end >= policy.requested.start]
     cache = thirteen_f_cache(context)
     missing: list[str] = []
     for data_set in tqdm(published, desc="13F data sets (download)"):

@@ -27,7 +27,9 @@ from src.utils.predecessor_series import load_predecessor_series, load_vendor_se
 from src.utils.price.adjustments import split_events as genuine_splits
 from src.utils.price.basis import load_share_basis
 from src.utils.price.levels import level_factor
+from src.utils.window import WindowRun
 from tests.conftest import FakeStore
+from tests.data_extract.fake_context import extract_config
 from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
 
 LOGGER = "test.predecessor_share_basis"
@@ -150,9 +152,15 @@ def _merged(
         return seen["out"].iloc[:0]
 
     monkeypatch.setattr(sharadar_history, "build_frame", capture)
-    context = SimpleNamespace(store=store, log=logging.getLogger(LOGGER))
+    context = SimpleNamespace(
+        store=store,
+        log=logging.getLogger(LOGGER),
+        config_dir=config_dir,
+        config=extract_config(),
+        run=WindowRun("incremental", "offline vendor history", pd.Timestamp("2026-11-16")),
+    )
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        sharadar_history.build_sharadar_history(context, [ticker], config_dir=config_dir)
+        sharadar_history.build_sharadar_history(context, [ticker])
     arq = (
         seen["arq"].assign(quarter=lambda f: [str(pd.Period(pd.Timestamp(d), freq="Q")) for d in f["reportperiod"]]).set_index("quarter").sort_index()
     )
@@ -404,7 +412,7 @@ def test_configured_guard_uses_the_same_owner_actions_in_both_consumers(tmp_path
     shares = pd.DataFrame({"ticker": ["JCI"], "date": pd.to_datetime(["2008-01-02"]), "sharesbas": [1000.0]})
     default = genuine_splits(selected, yahoo)
     aggregate = load_share_basis(context, ["JCI"], policy, selected, yahoo, shares=shares, base_events=default)
-    extract = sharadar_history.vendor_share_basis(context, shares, ["JCI"], yahoo, default, str(directory))
+    extract = sharadar_history.vendor_share_basis(context, shares, ["JCI"], yahoo, default)
     pd.testing.assert_frame_equal(aggregate.vendor, extract.vendor)
     pd.testing.assert_frame_equal(aggregate.actual, extract.actual)
     print(

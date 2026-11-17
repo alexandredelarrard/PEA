@@ -19,6 +19,7 @@ from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.edgar_extract.insider_store import replace_insider_source
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
@@ -471,9 +472,8 @@ def test_ftd_b_zip_retains_documented_day15_overlap(tmp_path: Path) -> None:
     print("SANITY: the documented day15 b-ZIP overlap retains its actual assigned source tag and publication clock.")
 
 
-def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_atomic_insider_writer_refuses_a_stale_source_snapshot(sqlite_store: DataStore) -> None:
     create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
-    context = cast(Any, SimpleNamespace(store=sqlite_store, log=logging.getLogger(__name__)))
     rows = pd.DataFrame(
         {
             "accession_number": ["a", "a"],
@@ -490,30 +490,24 @@ def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_st
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["old"]})
     sqlite_store.save(Tables.insider_transactions, rows)
     sqlite_store.save(Tables.insider_footnotes, notes)
-    original = insider_edgar.replace_insider_source
-    concurrent = rows.assign(source="edgar", shares=99.0)
-    entered = False
-
-    def pair(store: DataStore, frames: Any, scopes: Any, *args: Any, **kwargs: Any) -> Any:
-        nonlocal entered
-        if not entered:
-            entered = True
-            original(
-                store,
-                {Tables.insider_transactions: concurrent, Tables.insider_footnotes: notes.assign(footnote_text="new")},
-                {Tables.insider_transactions: {"accession_number": ["a"]}, Tables.insider_footnotes: {"accession_number": ["a"]}},
-            )
-        return original(store, frames, scopes, *args, **kwargs)
-
-    monkeypatch.setattr(insider_edgar, "replace_insider_source", pair)
+    scopes = {Tables.insider_transactions: {"accession_number": ["a"]}, Tables.insider_footnotes: {"accession_number": ["a"]}}
+    before = {table: sqlite_store.load(table, where=scope, markers=True) for table, scope in scopes.items()}
+    replace_insider_source(
+        sqlite_store,
+        {
+            Tables.insider_transactions: rows.assign(source="edgar", shares=99.0),
+            Tables.insider_footnotes: notes.assign(footnote_text="new"),
+        },
+        scopes,
+    )
     with pytest.raises(ValueError, match="source cohort changed"):
-        insider_edgar.replace_zip_accessions(context, pd.Timestamp("2026-07-01"))
+        replace_insider_source(sqlite_store, {Tables.insider_transactions: rows, Tables.insider_footnotes: notes}, scopes, expected_source=before)
     actual_rows = sqlite_store.load(Tables.insider_transactions)
     actual_notes = sqlite_store.load(Tables.insider_footnotes)
     assert actual_rows is not None and actual_notes is not None
     assert actual_rows["shares"].tolist() == [99.0, 99.0]
     assert actual_notes["footnote_text"].tolist() == ["new"]
-    print("SANITY: ZIP reconciliation cannot overwrite a concurrent EDGAR payload or note update with a stale outside-transaction copy.")
+    print("SANITY: the exact-accession atomic writer refuses stale payload/footnote snapshots; no broad post-run reconciliation is required.")
 
 
 def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
@@ -606,7 +600,7 @@ def test_actual_xml_parser_run_writes_and_stamps_fetched_at(sqlite_store: DataSt
     units = pd.DataFrame(
         {"cik": ["0000920760"], "company": ["LEN"], "form": ["4"], "filed": pd.to_datetime(["2026-07-01"]), "accession": [accession]}
     )
-    with insider_edgar._insider_run_scope(context, ["LEN"], pd.Timestamp("2026-10-06")) as prepared:
+    with insider_edgar._insider_run_scope(context, ["LEN"]) as prepared:
         outcome = _walk_key(context, prepared, identity, {"LEN": units}, "LEN", "0000920760")
         assert len(outcome.failed) == 0
     rows = sqlite_store.load(Tables.insider_transactions)

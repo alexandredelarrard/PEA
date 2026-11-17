@@ -11,8 +11,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.data_store.schema import ALL, Table, Tables
 from src.utils.config import read_config
-from src.utils.data_policy import publication_policy, validate_data_policy, window_policy
-from src.utils.window import Offset, WindowRun, resolve_window
+from src.utils.data_policy import publication_policy, source_read_window, validate_data_policy, window_policy
+from src.utils.window import Offset, Window, WindowRun, resolve_window
 
 
 @cache
@@ -27,7 +27,7 @@ def test_all_registry_tables_have_an_explicit_policy() -> None:
     assert config.data.tables.universe_tickers.status == "snapshot"
     assert config.data.tables.notes_embedding.status == "inactive"
     assert config.data.tables.predictions_latest.status == "model_owned"
-    print("SANITY: all63 table identities have explicit active, snapshot, inherited or inactive policies.")
+    print("SANITY: all64 table identities have explicit active, snapshot, inherited or inactive policies.")
 
 
 @pytest.mark.parametrize(
@@ -154,3 +154,39 @@ def test_source_before_its_configured_history_has_no_work_window() -> None:
     assert window_policy(config, Tables.earnings_call_sections, pd.Timestamp("2000-01-03")) is None
     assert window_policy(config, Tables.universe_tickers, pd.Timestamp("2026-11-16")) is None
     print("SANITY: unavailable early source history and undated snapshots have no invented execution interval.")
+
+
+def test_source_context_retains_the_configured_prefix_without_widening_writes() -> None:
+    config = deepcopy(_config())
+    item = config.data.tables.sec_fundamentals_facts
+    item.start_date, item.end_date, item.source_start = "2026-04-01", "2026-09-30", "1993-01-01"
+    requested = window_policy(config, Tables.sec_fundamentals_facts, pd.Timestamp("2026-11-16"))
+    retained = source_read_window(config, Tables.sec_fundamentals_facts, pd.Timestamp("2026-11-16"))
+    assert requested is not None and requested.requested == Window(pd.Timestamp("2026-04-01"), pd.Timestamp("2026-09-30"))
+    assert retained == Window(pd.Timestamp("1993-01-01"), pd.Timestamp("2026-09-30"))
+    print("SANITY: required source-prefix reads use the declared source floor and finite end; extraction writes keep their separate requested start.")
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("data.tables.prices.overlap", 3),
+        ("data.tables.prices.reprocess.lookback", {"value": 5, "unit": "calendar_days"}),
+        ("data.tables.prices.pit.lag", {"value": 1, "unit": "calendar_days"}),
+        ("data.tables.prices.pit", {"mode": "direct", "lag": {"value": 1, "unit": "calendar_days"}, "roll": "market_session"}),
+        ("data.tables.prices.freshness.max_age", 7),
+        ("data.tables.prices.lookahead", {"mode": "target_horizons"}),
+        ("data.tables.cube_part_prices.warmup.grid.days", 30),
+        ("data.tables.sec13f_hr.reprocess.archive_fallback", "snapshot"),
+        ("data.tables.sharadar_fundamentals_history.reprocess.source", Tables.sharadar_fundamentals_history.name),
+        ("data.tables.prices.status", "inactive"),
+        ("data.planning.mispelled_grace", {"value": 1, "unit": "calendar_days"}),
+        ("data.freshness.insider_max_lag_days", True),
+    ],
+)
+def test_ignored_or_contradictory_timing_options_are_refused(path: str, value: object) -> None:
+    config = deepcopy(_config())
+    OmegaConf.update(config, path, value, merge=False)
+    with pytest.raises(ValueError):
+        validate_data_policy(config)
+    print(f"SANITY: {path} is refused rather than silently becoming an ineffective timing owner.")

@@ -21,6 +21,7 @@ from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
 from src.utils.window import Window
 from tests.data_extract.edgar_fixtures import fake_context
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import as_roster, seed_universe, universe_config
 
 CUSIP_TICKER_OVERRIDES = dict(load_security_manual().cusip_ticker_overrides)
@@ -35,7 +36,7 @@ class _Context:
         self.store = store
         self.log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
         self.config_dir = CONFIG_DIR
-        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15))
+        self.config = extract_config()
 
     @property
     def universe(self) -> Universe:

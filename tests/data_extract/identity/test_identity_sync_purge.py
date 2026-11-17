@@ -18,6 +18,7 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils import filer_tables
+from src.utils.window import WindowRun
 from tests.data_extract.fake_context import extract_config
 from tests.support.identity_sync import run_sync
 from tests.support.universe import as_roster, seed_universe, universe_of
@@ -88,9 +89,10 @@ def _stored_identity(store: DataStore, stamps: dict[str, pd.Timestamp]) -> Ident
 def _context(store, tmp_path) -> SimpleNamespace:
     return SimpleNamespace(
         store=store,
+        run=WindowRun("incremental", "identity purge fixture", RUN_DATE),
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger(LOGGER),
-        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
+        config=extract_config(),
         config_dir="./configs",
         universe=seed_universe(store, list(ROSTER), rows={t: {"cik": c} for t, c in ROSTER.items()}),
     )
@@ -186,7 +188,7 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_logs_once_per_
     resolver = identity
 
     with caplog.at_level(logging.INFO, logger=LOGGER):
-        result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
+        result = run_sync(context, resolver, monkeypatch)
 
     for table in PURGED_FAMILIES:
         keys = _keys(sqlite_store, table)
@@ -238,7 +240,7 @@ def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, t
     sqlite_store.save(Tables.fundamentals_employees, pd.DataFrame(rows).astype({"employees_total": "Int64"}))
     resolver = _identity({"ALB": AFTER})
 
-    result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
+    result = run_sync(context, resolver, monkeypatch)
 
     stored = sqlite_store.load(Tables.fundamentals_employees, columns=["ticker", "accession_number"])
     keys = set(zip(stored["ticker"], stored["accession_number"], strict=True))
@@ -257,7 +259,7 @@ def test_a_contraction_purges_foreign_rows_of_both_edgar_text_tables(sqlite_stor
         sqlite_store.save(table, _filings(table, "ALB", [("alb-1", ALB, "2024-02-01"), ("ab-1", AB, "2019-03-01"), ("ab-2", AB, "2021-08-01")]))
         sqlite_store.save(table, _filings(table, "MSFT", [("msft-x", MSFT_FOREIGN, "2024-03-01")]))
 
-    result = run_sync(context, _identity({"ALB": AFTER}), monkeypatch, as_of=RUN_DATE)
+    result = run_sync(context, _identity({"ALB": AFTER}), monkeypatch)
 
     for table in text_tables:
         assert _keys(sqlite_store, table) == {("ALB", "alb-1"), ("MSFT", "msft-x")}, table.name
@@ -278,7 +280,7 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings
         )
     resolver = _identity({"TMUS": AFTER})
 
-    run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
+    run_sync(context, resolver, monkeypatch)
 
     expected = {Tables.sec_8k: {TMUS: 2}, Tables.sec_fundamentals_facts: {TMUS: 2}}
     for table, want in expected.items():
@@ -307,7 +309,7 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     context = _context(sqlite_store, tmp_path)
     context.universe = universe_of(["PLD"], rows={"PLD": {"cik": prologis}})
 
-    result = run_sync(context, identity, monkeypatch, as_of=RUN_DATE)
+    result = run_sync(context, identity, monkeypatch)
 
     for table in (Tables.sec_fundamentals_facts, Tables.sec_def14a_text):
         assert _keys(sqlite_store, table) == {("PLD", "new-1")}, table.name
@@ -327,7 +329,7 @@ def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store
         sqlite_store.save(table, _filings(table, "ALB", filings))
     resolver = _identity({"ALB": AFTER})
 
-    result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
+    result = run_sync(context, resolver, monkeypatch)
 
     for table in (Tables.sec_8k, Tables.sec_fundamentals_facts):
         keys = _keys(sqlite_store, table)
@@ -354,11 +356,11 @@ def test_an_unchanged_lineage_purges_nothing_and_full_rechecks_every_ticker(sqli
     resolver = _identity({})
     before = {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES}
 
-    result = run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
+    result = run_sync(context, resolver, monkeypatch)
 
     assert result.removals.empty
     assert {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES} == before
-    every = run_sync(context, resolver, monkeypatch, full=True, as_of=RUN_DATE).removals
+    every = run_sync(context, resolver, monkeypatch, full=True).removals
     assert set(zip(every["ticker"], every["cik"], strict=True)) == {("ALB", AB), ("MSFT", MSFT_FOREIGN)}
     print("\n=== SANITY CHECK: unchanged lineage (AC-032) ===")
     print("  no stamp in the window: nothing purged; `--full` re-checks every ticker and purges both foreign filers")
@@ -389,8 +391,8 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     resolver = _identity({"ALB": AFTER})
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
 
-    run_sync(context, resolver, monkeypatch, as_of=RUN_DATE)
-    build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
+    run_sync(context, resolver, monkeypatch)
+    build_history.build_fundamentals_history(context, ["ALB"])
 
     history = sqlite_store.load(Tables.sec_fundamentals_history, columns=["ticker", "as_of", "totalRevenue"])
     assert [str(pd.Timestamp(d).date()) for d in history["as_of"]] == ["2024-02-01"] and list(history["totalRevenue"]) == [1.0]
@@ -412,17 +414,17 @@ def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_
 
     monkeypatch.setattr(build_history, "build_ticker", count_rows)
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": BEFORE}))
-    build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
+    build_history.build_fundamentals_history(context, ["ALB"])
     sqlite_store.save(Tables.sec_fundamentals_facts, _filings(Tables.sec_fundamentals_facts, "ALB", [("pred-1", ALB, "2010-02-01")]))
 
     with caplog.at_level(logging.INFO, logger=LOGGER):
         with pytest.raises(ValueError, match="append-only"):
-            build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE, verify_history=True)
+            build_history.build_fundamentals_history(context, ["ALB"], verify_history=True)
         untouched = sqlite_store.load(Tables.sec_fundamentals_history, columns=["as_of", "totalRevenue"])
         assert list(untouched["totalRevenue"]) == [2.0], untouched
         caplog.clear()
         monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
-        build_history.build_fundamentals_history(context, ["ALB"], as_of=RUN_DATE)
+        build_history.build_fundamentals_history(context, ["ALB"])
 
     triage = [line for line in caplog.messages if line.startswith("history: triage")]
     assert triage == ["history: triage of 1 ticker(s): 0 full, 0 incremental, 0 late, 1 check, 0 current (skipped, no replay)"], triage

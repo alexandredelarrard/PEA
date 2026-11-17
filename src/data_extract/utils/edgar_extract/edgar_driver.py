@@ -165,10 +165,9 @@ class EdgarFetch:
     stamp, identity)` rejects a filing on which the key is only a filer or owner. `done_table` (default
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
     key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
-    df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
-    floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
+    df_units)` may supply richer `Filing` objects by accession. `run_scope` prepares a run-local descriptor and
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
-    `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
+    `done_accessions(context, keys)` replaces that stored-set read with the fetch's own rule.
     `save` replaces the per-table key save. Each table's configured dates bound index discovery.
     `fill_cold` lists a key with no stored row in
     full, outside the per-run cap. `rewrite_on_full` (a single-table walk keyed on `ticker`) makes a `-F` run
@@ -183,8 +182,7 @@ class EdgarFetch:
     done_scope: str = DONE_TABLE
     filings: FilingsFn | None = None
     done_where: dict[str, object] | None = None
-    runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
-    run_scope: Callable[[Context, Sequence[str], pd.Timestamp], AbstractContextManager[EdgarFetch]] | None = None
+    run_scope: Callable[[Context, Sequence[str]], AbstractContextManager[EdgarFetch]] | None = None
     save: SaveFn | None = None
     done_accessions: DoneFn | None = None
     fill_cold: bool = False
@@ -540,7 +538,6 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
         keys=run.cik_map[["ticker", "cik"]],
         forms=cast(Resume, fetch.done.resume).forms,
         identity=run.identity,
-        runtime_floor=fetch.runtime_floor(context, run.run_date) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
         done_where=fetch.done_where,
         cap=run.cap,
@@ -564,8 +561,7 @@ def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_w
     filing's stored rows for a `rewrite_on_full` fetch. Never raises for a source failure: what could not be read is
     logged and listed again on the next run.
     """
-    start_date = run.run_date
-    with fetch.run_scope(context, run.tickers, start_date) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
+    with fetch.run_scope(context, run.tickers) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
         if prepared.parse is None:
             raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
         if run.full and prepared.rewrite_on_full:

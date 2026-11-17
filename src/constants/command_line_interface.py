@@ -30,18 +30,20 @@ FULL_KWARGS: dict[str, Any] = dict(
     help="Process the complete input window, including stored data; see the command help for source and write behavior.",
 )
 
-YEARS_ARGS = ("-y", "--years")
-YEARS_KWARGS: dict[str, Any] = dict(
-    type=int,
-    default=None,
-    help="Override data_extract.years_history for THIS run. A rebuild-from-scratch needs "
-    "this to reach as far back as the incrementally-grown table it replaces.",
-)
-
-# Hidden run date for reproducible extraction runs.
+# One root execution cutoff; table start/end policy remains in data.yml.
 AS_OF_ARGS = ("--as-of",)
 AS_OF_KWARGS: dict[str, Any] = dict(
-    type=click.DateTime(formats=["%Y-%m-%d"]), default=None, hidden=True, help="Run date YYYY-MM-DD (default: today)."
+    type=click.DateTime(
+        formats=[
+            "%Y-%m-%d",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ]
+    ),
+    default=None,
+    help="Execution cutoff as an ISO date or timestamp; bounded by each table's configured end date.",
 )
 
 NO_CAP_ARGS = ("--no-cap",)

@@ -18,7 +18,9 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_store.errors import TableMissingError
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore, read_table
+from src.utils.window import Window
 
 _FRAME = pd.DataFrame(
     {
@@ -105,3 +107,23 @@ def test_where_value_is_bound_not_interpolated(store):
     print("  Equivalence checked on live data for ZBH/JPM/VLO/SWKS/MET: identical facts")
     print("  frames and byte-identical derive_fundamentals_history output.")
     print("  Validated.")
+
+
+def test_where_combines_per_key_windows_and_exact_collision_keys(sqlite_store: DataStore) -> None:
+    rows = pd.DataFrame(
+        {
+            "ticker": ["AAPL"] * 4 + ["MSFT"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02 16:00", "2026-01-03 23:30", "2026-01-04", "2026-01-01"], format="mixed"),
+            "value": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+    sqlite_store.save(Tables.cube_part_text, rows)
+    selected = sqlite_store.load(
+        Tables.cube_part_text,
+        where=[
+            {"ticker": "AAPL", "date": Window(pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-03"))},
+            {"ticker": "MSFT", "date": pd.Timestamp("2026-01-01")},
+        ],
+    )
+    assert selected is not None and set(selected["value"]) == {2.0, 3.0, 5.0}
+    print("SANITY: a single projected read combines inclusive per-key Windows with exact older collision keys, including the final day's timestamps.")

@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
@@ -26,6 +25,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     EMISSION,
     Z_MIN_PERIODS,
     FtdPublication,
+    FtdSource,
     ShortFlowCapital,
     _ftd_available_dates,
     _ftd_estimated_available_date,
@@ -42,8 +42,11 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_extract.utils.institutionals.fetch_short_interest import _parse_regsho
 from src.data_store.schema import Tables
+from src.utils.data_policy import publication_policy
 from src.utils.price.adjustments import ShareBasis, resolve_share_events
+from src.utils.publication import publication_dates
 from tests.conftest import make_frames
+from tests.data_extract.fake_context import extract_config
 
 
 def terminal_factor(basis: ShareBasis, idx: pd.DatetimeIndex, tickers: Any) -> pd.DataFrame:
@@ -69,7 +72,7 @@ def build_short_flow_feature_panel(
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     denominators = capital if capital is not None else ShortFlowCapital(None, frames.volume)
     if idx.empty:
-        return compute_short_panel(frames, None, None, denominators, None)
+        return compute_short_panel(frames, None, None, denominators, extract_config())
     settlement = None
     if fails_history is not None or publication is not None:
         df_fails = fails_history if fails_history is not None else pd.DataFrame(columns=["date", "ticker", "fails_quantity", "period"])
@@ -78,7 +81,8 @@ def build_short_flow_feature_panel(
         settlement = prepare_fails_quantities(df_fails, df_coverage, idx, columns, tenure_mask)
         if publication is None:
             publication = FtdPublication(df_coverage, _ftd_available_dates(df_coverage, 21))
-    return compute_short_panel(frames, short_history, settlement, denominators, publication, tenure_mask)
+    fails = FtdSource(settlement, publication) if settlement is not None and publication is not None else None
+    return compute_short_panel(frames, short_history, fails, denominators, extract_config(), tenure_mask)
 
 
 def _fails_fields(
@@ -143,7 +147,7 @@ def test_the_ratio_is_volume_weighted_not_an_average_of_daily_ratios():
     hist = pd.DataFrame(rows)
     # the lag means day 20's window is only readable on the NEXT grid day, so extend the index
     idx = pd.DatetimeIndex(pd.bdate_range("2023-01-02", periods=21))
-    df = _shortvol_fields(hist, idx, None, None)
+    df = _shortvol_fields(hist, idx, None, None, extract_config())
     got = float(cast(Any, df["ic_shortvol_ratio_20d"].loc[idx[20], "A"]))
     weighted = (19 * 90_000 + 1_000_000) / (19 * 100_000 + 10_000_000)
     naive = (19 * 0.9 + 0.1) / 20
@@ -159,7 +163,7 @@ def test_the_ratio_is_volume_weighted_not_an_average_of_daily_ratios():
 
 def test_publication_lag_is_one_trading_day():
     dates, tickers, hist = _synth()
-    df = _shortvol_fields(hist, dates, None, None)
+    df = _shortvol_fields(hist, dates, None, None, extract_config())
     assert {"ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_acceleration_60d"}.issubset(df)
     assert "ic_shortvol_ratio_z252" not in df
     # heavily-shorted S0 has the highest ratio cross-sectionally
@@ -169,7 +173,7 @@ def test_publication_lag_is_one_trading_day():
     expected = float(cast(Any, (short.rolling(20, min_periods=10).sum() / total.rolling(20, min_periods=10).sum()).loc[dates[299], "S0"]))
     got = float(cast(Any, df["ic_shortvol_ratio_20d"].loc[dates[300], "S0"]))
     assert np.isclose(got, expected), "lag broken"
-    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name] == 1
+    assert int(publication_policy(extract_config(), Tables.sec_short_volume_security).lag.value) == 1
     print("\n=== SANITY CHECK: RegSHO 1-day publication lag ===")
     print(
         f"  S0 (85% shorted) tops ic_shortvol_ratio_20d at {dates[300].date()}; the value at "
@@ -186,7 +190,7 @@ def test_source_adapters_normalize_both_rolling_legs_and_pit_counts() -> None:
     df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0], "sharesOutstanding": [1000.0]})
     df_normalized = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
     df_shares = pd.DataFrame({"TEST": [100.0] * 19 + [1000.0] * 2}, index=idx) * df_factor
-    result = _shortvol_fields(df_normalized, idx, df_shares, None)
+    result = _shortvol_fields(df_normalized, idx, df_shares, None, extract_config())
     assert result["ic_shortvol_ratio_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 2000)
     assert result["ic_shortvol_turnover_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 1000)
     assert df_shares["TEST"].eq(1000.0).all()
@@ -218,13 +222,13 @@ def test_paired_vendor_restatement_preserves_earlier_dimensionless_outputs() -> 
     df_factor = split_factor(empty, idx, ["TEST"])
     df_shares = pd.DataFrame({"TEST": 100.0}, index=idx) * df_factor
     df_history = terminal_rows(df_raw, ("short_volume", "total_volume"), df_factor)
-    original = _shortvol_fields(df_history, idx, df_shares, None)
+    original = _shortvol_fields(df_history, idx, df_shares, None, extract_config())
     extended = pd.DatetimeIndex(idx.append(pd.DatetimeIndex([idx[-1] + pd.Timedelta(days=10)])))
     events = pd.DataFrame({"ticker": ["TEST"], "date": [extended[-1]], "ratio": [10.0]})
     later_factor = split_factor(events, extended, ["TEST"])
     df_later = terminal_rows(df_raw, ("short_volume", "total_volume"), later_factor)
     df_later_shares = pd.DataFrame({"TEST": [100.0] * len(idx) + [1000.0]}, index=extended) * later_factor
-    restated = _shortvol_fields(df_later, extended, df_later_shares, None)
+    restated = _shortvol_fields(df_later, extended, df_later_shares, None, extract_config())
     for name, df_before in original.items():
         pd.testing.assert_frame_equal(df_before, restated[name].reindex(idx))
     print("SANITY: extending the actual vendor basis through a future10:1 event and leaves every earlier ratio/turnover value and null unchanged.")
@@ -249,7 +253,7 @@ def test_missing_active_class_keeps_rolling_denominators_unknown() -> None:
 def test_unknown_short_quantity_never_aggregates_into_observed_zero() -> None:
     idx = pd.bdate_range("2024-01-02", periods=21)
     df_history = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": np.nan, "total_volume": 10.0})
-    fields = _shortvol_fields(df_history, idx, None, None)
+    fields = _shortvol_fields(df_history, idx, None, None, extract_config())
     assert all(df_field.isna().all().all() for df_field in fields.values())
     print("SANITY: unknown quantity observations stay unknown after daily aggregation and never appear as measured zero short sales.")
 
@@ -260,7 +264,7 @@ def test_price_interactions_are_one_sided_and_complementary():
     dates, tickers, hist = _synth(t=400)
     rng = np.random.default_rng(3)
     close = pd.DataFrame({t: 100 * np.cumprod(1 + rng.normal(0.0004, 0.02, len(dates))) for t in tickers}, index=dates)
-    df = _shortvol_fields(hist, dates, None, close)
+    df = _shortvol_fields(hist, dates, None, close, extract_config())
     weak = df["ic_shortvol_high_x_weak_price"]
     strong = df["ic_shortvol_high_x_strong_price"]
     assert (weak.fillna(0) >= 0).all().all() and (strong.fillna(0) >= 0).all().all()
@@ -508,7 +512,7 @@ def test_latest_rolling_outputs_require_their_source_date():
     hist = hist[hist["date"] != missing_regsho_date]
     shares = pd.DataFrame(500_000_000.0, index=dates, columns=tickers)
     close = pd.DataFrame({ticker: np.linspace(100.0, 120.0, len(dates)) for ticker in tickers}, index=dates)
-    short_fields = _shortvol_fields(hist, dates, shares, close)
+    short_fields = _shortvol_fields(hist, dates, shares, close, extract_config())
     assert all(frame.loc[dates[-1]].isna().all() for frame in short_fields.values())
 
     print("\n=== SANITY CHECK: rolling source-date completeness ===")
@@ -921,7 +925,7 @@ def _ramp_history(days: int, tickers: tuple[str, ...] = ("A",)) -> tuple[pd.Date
 
 def test_ratios_20_60_120_180_are_volume_weighted_sums_published_next_session() -> None:
     idx, hist = _ramp_history(200)
-    df = _shortvol_fields(hist, idx, None, None)
+    df = _shortvol_fields(hist, idx, None, None, extract_config())
     last = idx[200]
     # hand sums over the window ending on day 200 (published on the next grid row)
     expected = {20: 1850 / 2000, 60: 5450 / 6000, 120: 11050 / 30000, 180: 17050 / 90000}
@@ -941,7 +945,7 @@ def test_ratios_20_60_120_180_are_volume_weighted_sums_published_next_session() 
 
 def test_acceleration_is_the_five_day_ratio_minus_the_window_ratio() -> None:
     idx, hist = _ramp_history(200)
-    df = _shortvol_fields(hist, idx, None, None)
+    df = _shortvol_fields(hist, idx, None, None, extract_config())
     last = idx[200]
     spot = 500 / 500  # days 196..200: short 100 of total 100 each
     acc60 = float(cast(Any, df["ic_shortvol_acceleration_60d"].at[last, "A"]))
@@ -956,7 +960,7 @@ def test_acceleration_is_the_five_day_ratio_minus_the_window_ratio() -> None:
 
 def test_ratio_windows_start_once_half_the_window_is_observed() -> None:
     idx, hist = _ramp_history(200)
-    df = _shortvol_fields(hist, idx, None, None)
+    df = _shortvol_fields(hist, idx, None, None, extract_config())
 
     def first(name: str) -> int:
         return int(np.argmax(df[name]["A"].notna().to_numpy()))
@@ -974,8 +978,8 @@ def test_tenure_mask_cuts_every_new_leg_and_zero_and_missing_days_are_handled() 
     idx, hist = _ramp_history(200, ("A", "B"))
     mask = pd.DataFrame(True, index=idx, columns=["A", "B"])
     mask.loc[idx[150:], "A"] = False
-    df = _shortvol_fields(hist, idx, None, None, tenure_mask=mask)
-    free = _shortvol_fields(hist, idx, None, None)
+    df = _shortvol_fields(hist, idx, None, None, extract_config(), tenure_mask=mask)
+    free = _shortvol_fields(hist, idx, None, None, extract_config())
     for name in df:
         assert df[name]["A"].iloc[150:].isna().all(), name
         pd.testing.assert_series_equal(df[name]["B"], free[name]["B"])
@@ -985,12 +989,12 @@ def test_tenure_mask_cuts_every_new_leg_and_zero_and_missing_days_are_handled() 
 
     short_idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=22))
     zero = pd.DataFrame({"date": short_idx[:21], "ticker": "Z", "short_volume": 0.0, "total_volume": 100.0})
-    zero_ratio = _shortvol_fields(zero, short_idx, None, None)["ic_shortvol_ratio_20d"]["Z"]
+    zero_ratio = _shortvol_fields(zero, short_idx, None, None, extract_config())["ic_shortvol_ratio_20d"]["Z"]
     assert zero_ratio.iloc[21] == 0.0, "an observed zero short volume is a zero ratio, not missing"
 
     gap = pd.DataFrame({"date": short_idx[:21], "ticker": "G", "short_volume": np.arange(1.0, 22.0), "total_volume": 100.0})
     gap.loc[5, "total_volume"] = np.nan
-    gap_ratio = _shortvol_fields(gap, short_idx, None, None)["ic_shortvol_ratio_20d"]["G"]
+    gap_ratio = _shortvol_fields(gap, short_idx, None, None, extract_config())["ic_shortvol_ratio_20d"]["G"]
     window = [day for day in range(2, 22) if day != 6]  # the 20 rows ending on day 21, minus the unobserved day 6
     assert pd.isna(gap_ratio.iloc[6]), "the day with a missing total is unknown the next session"
     assert gap_ratio.iloc[21] == pytest.approx(sum(window) / (100.0 * len(window)))
@@ -1023,7 +1027,7 @@ def test_turnover_is_unknown_on_a_supported_absence_day() -> None:
     short.iloc[22], total.iloc[22] = 0.0, np.nan
     df_history = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": short.to_numpy(), "total_volume": total.to_numpy()})
     df_shares = pd.DataFrame({"TEST": 1000.0}, index=idx)
-    fields = _shortvol_fields(df_history, idx, df_shares, None)
+    fields = _shortvol_fields(df_history, idx, df_shares, None, extract_config())
     turnover, ratio = fields["ic_shortvol_turnover_20d"]["TEST"], fields["ic_shortvol_ratio_20d"]["TEST"]
     assert np.isnan(ratio.iloc[23]) and np.isnan(turnover.iloc[23])
     assert turnover.iloc[22] == pytest.approx(5.0 * 20 / 1000)
@@ -1032,12 +1036,12 @@ def test_turnover_is_unknown_on_a_supported_absence_day() -> None:
 
 
 def test_source_lags_live_in_the_availability_dict_and_roll_to_sessions() -> None:
-    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name] == 1
-    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name] == 21
+    assert int(publication_policy(extract_config(), Tables.sec_short_volume_security).lag.value) == 1
+    assert int(publication_policy(extract_config(), Tables.sec_fails_to_deliver_security).lag.value) == 21
     # Wed 2024-07-03, Thu 07-04 is a holiday, Fri 07-05, then the weekend, Mon 07-08.
     idx = pd.DatetimeIndex(["2024-07-02", "2024-07-03", "2024-07-05", "2024-07-08", "2024-07-09"])
     df_source = pd.DataFrame({"A": [1.0, 2.0, 3.0, 4.0, 5.0]}, index=idx)
-    published = short_flow.publication_day(pd.Series(idx, index=idx), SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name], idx)
+    published = publication_dates(extract_config(), Tables.sec_short_volume_security, pd.DataFrame({"date": idx}, index=idx), idx)
     got = short_flow._publish_shortvol(df_source, published)["A"]
     assert np.isnan(got.iloc[0])
     assert got.loc["2024-07-03"] == 1.0, "Tuesday -> Wednesday"

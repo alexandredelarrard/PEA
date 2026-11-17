@@ -14,6 +14,9 @@ that table is empty. `sharadar_tickers` and `sharadar_actions` are refreshed by 
 
 from __future__ import annotations
 
+from omegaconf import DictConfig
+
+from src.context import Context
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_fundamentals,
     fetch_sharadar_sp500,
@@ -24,6 +27,9 @@ from src.utils.step import Step
 
 
 class StepExtractFundamentalsSharadar(Step):
+    def __init__(self, context: Context, config: DictConfig) -> None:
+        super().__init__(context=context, config=config)
+
     def run(self, tickers: list[str]) -> None:
         """Fetch configured SF1/membership windows, then rebuild affected vendor histories."""
         predecessors = [ticker for ticker in predecessor_vendor_tickers(self._context, tickers) if ticker not in set(tickers)]
@@ -33,4 +39,4 @@ class StepExtractFundamentalsSharadar(Step):
         # A missing predecessor gets initial history once, then its own normal frontier.
         fetch_sharadar_fundamentals(self._context, tickers=[*tickers, *predecessors])
         fetch_sharadar_sp500(self._context)
-        build_sharadar_history(self._context, tickers=tickers, full=self._context.run.mode != "incremental", config_dir=str(self._config_dir))
+        build_sharadar_history(self._context, tickers=tickers)

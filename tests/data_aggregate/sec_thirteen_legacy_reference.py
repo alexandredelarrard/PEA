@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.quotes import lookup_asof
@@ -23,18 +22,100 @@ from src.data_aggregate.utils.sec_thirteen.institutional_books import compact_in
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     DELTA_FEATURES,
     EMISSION,
-    INST_DELTA_FLOOR_PERIOD,
-    INST_LEVEL_FLOOR_PERIOD,
     LEVEL_FEATURES,
     MIN_PRIOR_HOLDERS,
     project_institutional_features,
 )
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
-from src.utils.institutional_vintages import availability_date, prepare_book_vintages, resolve_prepared_books
+from src.utils.institutional_vintages import resolve_prepared_books
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.levels import convert_quantities, split_cum_product
 
 logger = logging.getLogger(__name__)
+
+# Frozen legacy oracle only: the application reads publication buffers from data.yml.
+LEGACY_F13_SETTLE_TRADING_DAYS = 3
+LEGACY_SEC_13F_FILING_LAG_DAYS = 45
+INST_LEVEL_FLOOR_PERIOD = pd.Timestamp("1999-06-30")
+INST_DELTA_FLOOR_PERIOD = pd.Timestamp("1999-09-30")
+
+
+def availability_date(
+    periods: pd.Series | pd.DatetimeIndex,
+    trading_index: pd.DatetimeIndex,
+    *,
+    settle_trading_days: int = LEGACY_F13_SETTLE_TRADING_DAYS,
+) -> pd.Series:
+    """The date each 13F `period` becomes public: the filing deadline snapped forward onto the trading calendar, plus
+    the settle, on `periods`' own index (a `DatetimeIndex` is its own index: a period -> date lookup).
+
+    A deadline past the end of the calendar is NaT, never the last session (that would publish early); a deadline
+    before its start is the first session, without the settle (those books were public before the panel begins).
+    """
+    if settle_trading_days < 0:
+        raise ValueError(f"settle_trading_days must be >= 0, got {settle_trading_days!r}")
+    values = pd.to_datetime(
+        periods if isinstance(periods, pd.Series) else pd.Series(pd.DatetimeIndex(periods), index=pd.DatetimeIndex(periods)), errors="coerce"
+    ).dt.normalize()
+
+    grid = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
+    if grid.empty:
+        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
+
+    deadline = values + pd.Timedelta(days=LEGACY_SEC_13F_FILING_LAG_DAYS)
+    snap = grid.searchsorted(deadline.to_numpy(), side="left")
+    # The settle applies only where the deadline is inside the calendar.
+    pos = np.where(deadline.to_numpy() < grid[0].to_datetime64(), snap, snap + settle_trading_days)
+    return pd.Series(
+        np.where(
+            (pos < len(grid)) & deadline.notna().to_numpy(),
+            grid.to_numpy()[np.clip(pos, 0, len(grid) - 1)],
+            np.datetime64("NaT"),
+        ),
+        index=values.index,
+        dtype="datetime64[ns]",
+    )
+
+
+def filing_public_dates(
+    manifests: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    settle_days: int = LEGACY_F13_SETTLE_TRADING_DAYS,
+) -> pd.Series:
+    """Daily features conservatively use the session after filing, never extraction time."""
+    grid = pd.DatetimeIndex(trading_index).normalize().drop_duplicates().sort_values()
+    filed = pd.to_datetime(manifests["filing_date"]).dt.normalize()
+    if "accepted_at" in manifests:
+        accepted = pd.to_datetime(manifests["accepted_at"], utc=True)
+        local_day = accepted.dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
+        filed = pd.concat([filed, local_day], axis=1).max(axis=1)
+    locations = grid.searchsorted(pd.DatetimeIndex(filed), side="right")
+    next_session = pd.Series(pd.NaT, index=manifests.index, dtype="datetime64[ns]")
+    eligible = locations < len(grid)
+    next_session.loc[eligible] = grid[locations[eligible]]
+    deadline = availability_date(pd.DatetimeIndex(pd.to_datetime(manifests["period"])), grid, settle_trading_days=settle_days)
+    first = pd.Series(deadline.to_numpy(), index=manifests.index)
+    # No later amendment is capped by the old 105-day filing band.
+    return pd.concat([first, next_session], axis=1).max(axis=1).where(first.notna() & next_session.notna())
+
+
+def prepare_book_vintages(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    settle_days: int = LEGACY_F13_SETTLE_TRADING_DAYS,
+) -> pd.DataFrame:
+    """Validate vintage identities and prepare immutable publication facts once."""
+    if manifests["accession_number"].duplicated().any():
+        raise ValueError("13F manifest accessions must be unique")
+    if holdings.duplicated(["cik", "accession_number", "cusip"]).any():
+        raise ValueError("13F holding vintages must be unique")
+    df_manifest = manifests.copy()
+    df_manifest["period"] = pd.to_datetime(df_manifest["period"])
+    df_manifest["public_at"] = filing_public_dates(df_manifest, trading_index, settle_days)
+    df_manifest["_accepted_at"] = pd.to_datetime(df_manifest["accepted_at"], utc=True) if "accepted_at" in df_manifest else pd.NaT
+    df_manifest["_amended"] = df_manifest.amendment_type.ne("original")
+    return df_manifest
 
 
 # Retired per-day public-book cache (no production caller): legacy broad snapshots replay through it.
@@ -131,7 +212,7 @@ def iter_public_books(
     holdings: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
     *,
-    settle_days: int = F13_SETTLE_TRADING_DAYS,
+    settle_days: int = LEGACY_F13_SETTLE_TRADING_DAYS,
 ) -> Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]]:
     """Adapt raw vintages to the existing full reconciled-book snapshot interface."""
     df_manifest = prepare_book_vintages(manifests, holdings, trading_index, settle_days)
@@ -151,7 +232,7 @@ def _apply_filing_band(h: pd.DataFrame, band: tuple[int, int]) -> pd.DataFrame:
         logger.info("13F clean: no `filing_date`/`period` -> the [-%s, +%s] filing band CANNOT be applied on this read; every row kept", early, late)
         return h
 
-    lag = (h["filing_date"] - (h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))).dt.days
+    lag = (h["filing_date"] - (h["period"] + pd.Timedelta(days=LEGACY_SEC_13F_FILING_LAG_DAYS))).dt.days
     unknown = lag.isna()
     drop = ~lag.between(-early, late) & ~unknown
     if not drop.any():
@@ -231,7 +312,7 @@ def split_basis_frame(splits: pd.DataFrame | None, trading_index: pd.DatetimeInd
 
 
 def stamp_legacy_publication(
-    holdings: pd.DataFrame, trading_index: pd.DatetimeIndex, *, settle_trading_days: int = F13_SETTLE_TRADING_DAYS
+    holdings: pd.DataFrame, trading_index: pd.DatetimeIndex, *, settle_trading_days: int = LEGACY_F13_SETTLE_TRADING_DAYS
 ) -> pd.DataFrame:
     """Retain legacy late revisions; remove periods not yet public on the calendar."""
     h = holdings.copy()
@@ -367,7 +448,7 @@ def _report_first_publication_shortfall(h: pd.DataFrame) -> None:
         "13F availability (settle %s trading day(s)): %s of %s filer-row(s) (%.2f%%) and "
         "%.2f%% of SHARES arrive after their period's first publication -> emitted as "
         "revisions on their own filing date, never back-dated",
-        F13_SETTLE_TRADING_DAYS,
+        LEGACY_F13_SETTLE_TRADING_DAYS,
         f"{int(late.sum()):,}",
         f"{len(h):,}",
         100.0 * float(late.mean()),
@@ -471,9 +552,9 @@ def _legacy_publication_walk(
             "13F emission: no `as_of` column -> one emission per period on the bare "
             "period+%sd deadline, with no availability cutoff (every filing for the "
             "period is inside it, including the late ones)",
-            SEC_13F_FILING_LAG_DAYS,
+            LEGACY_SEC_13F_FILING_LAG_DAYS,
         )
-        df_walk = df_holdings.assign(as_of=df_holdings["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
+        df_walk = df_holdings.assign(as_of=df_holdings["period"] + pd.Timedelta(days=LEGACY_SEC_13F_FILING_LAG_DAYS))
     df_coverage = _coverage_states(df_walk, break_pct)
     df_holes = df_coverage[df_coverage["hole"]]
     df_breaks = df_coverage[df_coverage["break"]]
@@ -706,7 +787,7 @@ def build_institutional_feature_panel(
     splits: pd.DataFrame | None = None,
     break_pct: float = COVERAGE_BREAK_DEFAULT,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
-    settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
+    settle_trading_days: int = LEGACY_F13_SETTLE_TRADING_DAYS,
     revision_min_move: float = F13_REVISION_MIN_MOVE,
     valuation_close: pd.DataFrame | None = None,
     value_basis: Mapping[str, float] | None = None,
@@ -766,7 +847,7 @@ def build_prepared_institutional_feature_panel(
     splits: pd.DataFrame | None = None,
     break_pct: float = COVERAGE_BREAK_DEFAULT,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
-    settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
+    settle_trading_days: int = LEGACY_F13_SETTLE_TRADING_DAYS,
     revision_min_move: float = F13_REVISION_MIN_MOVE,
     filings: pd.DataFrame | None = None,
     share_basis: ShareBasis | None = None,

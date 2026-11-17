@@ -59,6 +59,7 @@ PROJECT = "/opt/airflow/project"  # the repo, bind-mounted
 CONFIGS = f"{PROJECT}/configs"
 PIPE_PY = "/opt/pipeline/bin/python"  # pipeline's isolated venv interpreter
 PIPE = f"{PIPE_PY} -m src data_extract"
+RUN_AS_OF = "{{ macros.datetime.fromisoformat(dag_run.conf.get('as_of') or dag_run.start_date.isoformat()).isoformat() }}"
 
 default_args = {
     "owner": "pea",
@@ -89,7 +90,7 @@ def fetch(
     """Run one retryable extraction command from the pipeline venv."""
     return BashOperator(
         task_id=task_id or cmd.replace("-", "_"),
-        bash_command=f"{PIPE} {cmd} -c {CONFIGS}",
+        bash_command=f'{PIPE} {cmd} -c {CONFIGS} --as-of "{RUN_AS_OF}"',
         cwd=PROJECT,
         pool=pool,
         pool_slots=2 if pool == "sec_api" else 1,
@@ -177,6 +178,7 @@ extraction_status = fetch("extraction-status", task_id="extraction_status", trig
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",
+    conf={"as_of": RUN_AS_OF},
     wait_for_completion=False,
     reset_dag_run=True,
     trigger_rule=TriggerRule.ALL_SUCCESS,

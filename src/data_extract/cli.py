@@ -253,7 +253,7 @@ def thirteen_f(config_path: str, filing_window: str | None, as_of: datetime | No
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def thirteen_f_managers(config_path: str, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
-    StepExtractInstitutionals(context=context, config=config).run_managers(full=full, as_of=context.run.as_of)
+    StepExtractInstitutionals(context=context, config=config).run_managers()
 
 
 @cli.command(
@@ -304,8 +304,9 @@ def thirteen_f_vintages(
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def superinvestors(config_path: str, full: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def superinvestors(config_path: str, full: bool, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
     if full:
         rebuild_roster(context)
     upsert_roster_snapshot(context)
@@ -342,9 +343,10 @@ def sec_fundamentals_facts(config_path: str, tickers: str | None, full: bool, as
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
-def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), full=full, verify=verify_history)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, verify_history: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), verify=verify_history)
 
 
 @cli.command(
@@ -355,14 +357,15 @@ def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, 
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def fundamentals_check(config_path: str, tickers: str | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def fundamentals_check(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of)
     StepExtractFundamentals(context, config).run_check(_tickers(context, tickers))
 
 
 # --- Fundamentals: Sharadar (SF1) ---
 # Single-table commands are for a manual targeted refresh; `-F/--full` re-pulls the whole window and makes the merge DELETE first.
-# History depth is `data_extract.sharadar_years_history`, not `years_history`.
+# Source history uses the fixed per-table dates in data.yml.
 @cli.command(
     name="fundamentals-sharadar",
     help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> sharadar_fundamentals_history (tickers and actions: `universe`).",
@@ -384,8 +387,9 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sharadar_sp500(config_path: str, full: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False, full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sharadar_sp500(config_path: str, full: bool, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
     fetch_sharadar_sp500(context)
 
 
@@ -523,8 +527,9 @@ def identity(config_path: str, full: bool, as_of: datetime | None, only: str | N
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def sec_def14a_llm(config_path: str, tickers: str | None) -> None:
-    _llm_step(config_path, tickers).run_def14a_llm()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_def14a_llm(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
+    _llm_step(config_path, tickers, full=False, as_of=as_of).run_def14a_llm()
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
@@ -540,8 +545,9 @@ def sec_8k_items(config_path: str, tickers: str | None, full: bool, as_of: datet
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def sec_8k_votes(config_path: str, tickers: str | None) -> None:
-    _llm_step(config_path, tickers).run_8k_votes()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_8k_votes(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
+    _llm_step(config_path, tickers, full=False, as_of=as_of).run_8k_votes()
 
 
 @cli.command(
@@ -554,8 +560,9 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sec_employees_llm(config_path: str, tickers: str | None, full: bool) -> None:
-    _llm_step(config_path, tickers, full).run_employees_llm()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_employees_llm(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    _llm_step(config_path, tickers, full=full, as_of=as_of).run_employees_llm()
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
@@ -623,9 +630,9 @@ def _edgar_step(config_path: str, tickers: str | None, full: bool, as_of: dateti
     return StepExtractEdgar(context, config, EdgarOptions(tickers=_tickers(context, tickers), no_cap=no_cap))
 
 
-def _llm_step(config_path: str, tickers: str | None, full: bool = False) -> StepExtractLlm:
-    """The LLM step over the --tickers subset (or the universe); `full` re-decides every employee filing date."""
-    config, context = get_config_context(config_path, use_cache=False, save=False, full=full)
+def _llm_step(config_path: str, tickers: str | None, *, full: bool, as_of: datetime | None) -> StepExtractLlm:
+    """One LLM source scope and execution cutoff over the requested ticker subset."""
+    config, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
     return StepExtractLlm(context, config, LlmOptions(tickers=_tickers(context, tickers)))
 
 
@@ -705,12 +712,13 @@ def markers(config_path: str, table_name: str | None, count_only: bool, delete: 
 # --- Behavioral (retail attention) ---
 @cli.command(
     help="Earnings-call transcripts (HuggingFace defeatbeta) -> earnings_call_sections, one row per "
-    "paragraph. Every run compares complete scoped metadata for current and historical symbols; payloads are read only for missing or reissued calls. "
+    "paragraph. Routine source checks use the configured candidate window; payloads are read only for missing or reissued calls. "
     "-F also removes source-absent calls for tickers still present in the source."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def extract_earnings_calls(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    _extract_earnings_calls(context, config.earnings_calls, full=full, tickers=_tickers(context, tickers))
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def extract_earnings_calls(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    _extract_earnings_calls(context, tickers=_tickers(context, tickers))

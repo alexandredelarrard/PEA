@@ -17,7 +17,9 @@ import pytest
 from src.data_extract.transformers import step_extract_fundamentals_sharadar as step_module
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, sharadar_history
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.conftest import FakeStore
+from tests.data_extract.fake_context import extract_config
 
 LOGGER = "test.predecessor_autofill"
 REPO_CONFIGS = Path(__file__).resolve().parents[3] / "configs"
@@ -91,7 +93,13 @@ def _empties() -> dict[Any, pd.DataFrame]:
 
 
 def _context(store: FakeStore) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config_dir=str(REPO_CONFIGS))
+    return SimpleNamespace(
+        store=store,
+        log=logging.getLogger(LOGGER),
+        config_dir=str(REPO_CONFIGS),
+        config=extract_config(),
+        run=WindowRun("incremental", "offline vendor history", pd.Timestamp("2026-11-16")),
+    )
 
 
 def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:

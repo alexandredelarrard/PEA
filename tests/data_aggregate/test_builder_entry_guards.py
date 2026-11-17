@@ -23,7 +23,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
+from src.data_aggregate.utils.institutionals.ownership_features import ScheduleSource, build_ownership_feature_panel
+from src.data_store.schema import Tables
+from src.utils.config import read_config
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
@@ -37,7 +39,12 @@ PEERS = {t: {o: 1.0 for o in TICKERS if o != t} for t in TICKERS}
 CASES = [
     ("insider", lambda f, src: build_insider_feature_panel(f, src)),
     ("short_flow", lambda f, src: build_short_flow_feature_panel(f, src)),
-    ("ownership", lambda f, src: build_ownership_feature_panel(f, src, None)),
+    (
+        "ownership",
+        lambda f, src: build_ownership_feature_panel(
+            f, (ScheduleSource(Tables.sec_13d, src, None), ScheduleSource(Tables.sec_13g, None, None)), read_config("./configs")
+        ),
+    ),
 ]
 
 

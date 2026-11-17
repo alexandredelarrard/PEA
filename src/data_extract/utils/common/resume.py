@@ -312,6 +312,18 @@ def _period_column(table: Table) -> str:
     return table.resume.period_col
 
 
+def archive_scopes(context: Context, tables: Sequence[Table], periods: Collection[str]) -> dict[str, tuple[Table, ...]]:
+    """Map each configured source-unit end to the tables that require it, without reading completion state."""
+    windows = {table: policy.requested for table in tables if (policy := window_policy(context.config, table, context.run.as_of)) is not None}
+    scopes = {}
+    for period in sorted(set(periods)):
+        end = pd.Timestamp(period_end(period))
+        required = tuple(table for table, window in windows.items() if window.start <= end <= window.end)
+        if required:
+            scopes[period] = required
+    return scopes
+
+
 def archive_periods(context: Context, tables: Sequence[Table], published: Sequence[str]) -> tuple[list[str], frozenset[str]]:
     """Published unit-end dates inside each table's bounds, and units complete in all required tables."""
     policies = {table: policy.requested for table in tables if (policy := window_policy(context.config, table, context.run.as_of)) is not None}
@@ -321,14 +333,9 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
     required = set(published)
     if tuple(tables) == (Tables.insider_transactions,):
         required.update(values.get(Tables.insider_transactions, ()))
-    ends = {period: pd.Timestamp(period_end(period)) for period in required}
-    listed = sorted(period for period, end in ends.items() if any(window.start <= end <= window.end for window in policies.values()))
-    complete = frozenset(
-        period
-        for period in listed
-        if all(not window.start <= ends[period] <= window.end or period in values[table] for table, window in policies.items())
-    )
-    return listed, complete
+    scopes = archive_scopes(context, tuple(policies), required)
+    complete = frozenset(period for period, needed in scopes.items() if all(period in values[table] for table in needed))
+    return list(scopes), complete
 
 
 def rescan_lineage(identity: Identity, roles: Collection[str] = (ROLE_WINDOW,)) -> pd.DataFrame:

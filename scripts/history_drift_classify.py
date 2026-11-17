@@ -36,7 +36,7 @@ def main() -> None:
     for t in tickers:
         captured.pop("last", None)
         try:
-            bh.build_fundamentals_history(context, tickers=[t], rebuild_history=False)
+            bh.build_fundamentals_history(context, tickers=[t])
             print(f"| {t} | 0 | 0 | 0 | 0 | clean (no drift) |")
             continue
         except ValueError:

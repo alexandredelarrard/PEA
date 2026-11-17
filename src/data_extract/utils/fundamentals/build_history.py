@@ -24,7 +24,7 @@ from pandas.api.types import is_datetime64_any_dtype, is_object_dtype, is_string
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.identity import CikWindow, load_identity
-from src.data_extract.utils.common.resume import recently_changed
+from src.data_extract.utils.common.resume import recently_changed, source_plan
 from src.data_extract.utils.common.security_lines import load_security_manual
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -40,7 +40,9 @@ from src.data_extract.utils.fundamentals.periods import (
     newest_periods,
 )
 from src.data_store.schema import Tables
+from src.utils.data_policy import source_read_window, window_policy
 from src.utils.string import pad_cik_series
+from src.utils.window import Window
 
 #: `{column: predicate meaning the value is IMPOSSIBLE}`, nulled by `_hard_guard` before the row is written.
 #: Impossible only, never merely implausible (those are flag-only validator checks). Share counts refuse `<= 0`;
@@ -700,7 +702,7 @@ class HistoryDriftError(ValueError):
     """A stored `sec_fundamentals_history` row would change; history is append-only."""
 
 
-def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+def _unpublished_events(context: Context, ticker: str, stored: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
     """The rebuilt history rows whose `as_of` is not stored yet.
 
     Raises HistoryDriftError, after logging the diff, if a stored row would change (history is append-only).
@@ -724,15 +726,8 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
     return history[~pd.to_datetime(history["as_of"]).isin(known).values]
 
 
-def _drop_history(context: Context, ticker: str) -> None:
-    """Delete a rebuilt ticker's history when its facts now yield no event."""
-    deleted = context.store.delete(Tables.sec_fundamentals_history, {"ticker": ticker})
-    if deleted:
-        context.log.warning("history: %s REBUILT -- %d row(s) deleted, no event left in its facts", ticker, deleted)
-
-
-def _scope_changed_recently(context: Context, tickers: list[str], as_of: pd.Timestamp | None = None) -> frozenset[str]:
-    """Tickers whose lineage `scope_changed_at` falls inside `resume.recently_changed`'s window on `as_of` (default today)."""
+def _scope_changed_recently(context: Context, tickers: list[str]) -> frozenset[str]:
+    """Tickers whose lineage changed inside the configured recheck Window."""
     identity = load_identity(context)
     stamps = {ticker: identity.filing_scope(ticker).scope_changed_at for ticker in tickers if ticker in identity.roster_cik}
     return frozenset(recently_changed(context, stamps))
@@ -763,8 +758,16 @@ def _stored_events(context: Context, tickers: list[str]) -> dict[str, pd.DataFra
     """Each ticker's stored `as_of` + provenance rows, sorted by `as_of`; tickers with no history are absent."""
     if not tickers:
         return {}
+    policy = window_policy(context.config, Tables.sec_fundamentals_history, context.run.as_of)
+    if policy is None:
+        return {}
     stored = context.store.load(
-        Tables.sec_fundamentals_history, columns=["ticker", "as_of", *HISTORY_PROVENANCE], where={"ticker": list(tickers)}, optional=True
+        Tables.sec_fundamentals_history,
+        columns=["ticker", "as_of", *HISTORY_PROVENANCE],
+        where={"ticker": list(tickers)},
+        since=policy.requested.start,
+        until=policy.requested.end,
+        optional=True,
     )
     if stored is None:
         return {}
@@ -779,8 +782,20 @@ def _event_dates(
     `publication_events`, on a filing-level projection), streamed so no chunk outlives its reduction."""
     if not tickers:
         return {}
+    policy = window_policy(context.config, Tables.sec_fundamentals_history, context.run.as_of)
+    if policy is None:
+        return {}
+    source = source_read_window(context.config, Tables.sec_fundamentals_facts, context.run.as_of)
+    if source is None:
+        return {}
     parts = []
-    for chunk in context.store.iter_load(Tables.sec_fundamentals_facts, columns=list(_TRIAGE_COLUMNS), where={"ticker": list(tickers)}):
+    for chunk in context.store.iter_load(
+        Tables.sec_fundamentals_facts,
+        columns=list(_TRIAGE_COLUMNS),
+        where={"ticker": list(tickers)},
+        since=source.start,
+        until=min(source.end, policy.requested.end),
+    ):
         # `period_end` decides only the reverse-acquisition rule; for any other ticker one row per filing is enough.
         chunk.loc[~chunk["ticker"].isin(list(seams)), "period_end"] = None
         parts.append(_originals(chunk).drop_duplicates())
@@ -791,7 +806,7 @@ def _event_dates(
     for ticker, group in pd.concat(parts, ignore_index=True).groupby("ticker"):
         consumed = _consumed_facts(str(ticker), group, seams, windows)[0]
         events = publication_events(consumed.assign(filing_date=pd.to_datetime(consumed["filing_date"], errors="coerce")))
-        dates[str(ticker)] = pd.to_datetime(events["as_of"]).dt.normalize()
+        dates[str(ticker)] = pd.to_datetime(events.loc[policy.requested.mask(events["as_of"]), "as_of"]).dt.normalize()
     return dates
 
 
@@ -844,10 +859,13 @@ def _event_keys(events: pd.DataFrame) -> list[tuple]:
     return sorted(keys, key=lambda key: key[0])
 
 
-def _incremental_rows(ticker: str, df_facts: pd.DataFrame, work: HistoryWork, catalogue: Catalogue, guards: PeriodGuards) -> pd.DataFrame | None:
+def _incremental_rows(
+    ticker: str, df_facts: pd.DataFrame, work: HistoryWork, catalogue: Catalogue, guards: PeriodGuards, window: Window
+) -> pd.DataFrame | None:
     """Rows of the events after `work.newest` only, or None when the rebuilt event list up to it differs from the stored one."""
     assert work.newest is not None and work.stored_events is not None
     events = publication_events(_normalise_facts(df_facts, catalogue))
+    events = events.loc[window.mask(events["as_of"])]
     dates = pd.to_datetime(events["as_of"])
     if _event_keys(events[dates <= work.newest]) != _event_keys(work.stored_events):
         return None
@@ -887,7 +905,20 @@ def _ticker_facts(
     context: Context, ticker: str, seams: Mapping[str, pd.Timestamp], windows: Mapping[str, tuple[CikWindow, ...]]
 ) -> pd.DataFrame | None:
     """The ticker's facts as the replay consumes them (`_consumed_facts`), or None when it has none stored."""
-    df_facts = context.store.load(Tables.sec_fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
+    policy = window_policy(context.config, Tables.sec_fundamentals_history, context.run.as_of)
+    if policy is None:
+        return None
+    source = source_read_window(context.config, Tables.sec_fundamentals_facts, context.run.as_of)
+    if source is None:
+        return None
+    df_facts = context.store.load(
+        Tables.sec_fundamentals_facts,
+        columns=list(FACT_COLUMNS),
+        where={"ticker": ticker},
+        since=source.start,
+        until=min(source.end, policy.requested.end),
+        optional=True,
+    )
     if df_facts is None:
         return df_facts
     df_facts, set_aside, dropped = _consumed_facts(ticker, df_facts, seams, windows)
@@ -930,9 +961,11 @@ def _build_in_worker(ticker: str, df_facts: pd.DataFrame) -> pd.DataFrame:
 
 
 def _replay_workers(context: Context) -> int:
-    """The full-replay pool size, `data_extract.fundamentals_workers`; 1 when a test double's config lacks it."""
-    section = getattr(getattr(context, "config", None), "data_extract", None)
-    return max(int(getattr(section, "fundamentals_workers", 1)), 1)
+    """The required configured full-replay pool size."""
+    workers = context.config.data_extract.fundamentals_workers
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("data_extract.fundamentals_workers must be a positive integer")
+    return workers
 
 
 @dataclass
@@ -945,76 +978,46 @@ class _Pending:
     no_facts: bool = False
 
 
-def _full_rows(
-    context: Context,
-    ticker: str,
-    df_history: pd.DataFrame,
-    *,
-    rebuild_history: bool,
-    rebuild: frozenset[str],
-    catalogue: Catalogue,
-) -> pd.DataFrame | None:
-    """The rows of a full replay (`df_history`) to save after the drift guard, or None when the facts yield no event."""
-    if df_history.empty:
-        if ticker in rebuild:
-            _drop_history(context, ticker)
-        return None
-    # Explicit projection so the read fails loudly if the table and the column contract diverge.
-    df_stored = context.store.load(Tables.sec_fundamentals_history, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
-    drifted = ticker in rebuild and df_stored is not None and not diff_against_stored(df_stored, df_history).empty
-    if rebuild_history or drifted:
-        deleted = context.store.delete(Tables.sec_fundamentals_history, {"ticker": ticker})
-        context.log.warning(
-            "history: %s REBUILT -- %d row(s) deleted and recomputed. "
-            "Log this in the phase report: a rebuild re-derives numbers "
-            "under whatever model is already trained on them.",
-            ticker,
-            deleted,
-        )
-    elif df_stored is not None:
-        df_history = _unpublished_events(context, ticker, df_stored, df_history)
-    return df_history
-
-
-def _rewrite_late(context: Context, ticker: str, df_history: pd.DataFrame, since: pd.Timestamp, catalogue: Catalogue) -> int:
-    """Replace the ticker's stored rows with `as_of >= since` (a late original's date) by the full replay's, in one
-    transaction; returns the rows saved. A stored row before `since` that would change raises (`_unpublished_events`)."""
-    df_stored = cast(
-        pd.DataFrame, context.store.load(Tables.sec_fundamentals_history, columns=list(catalogue.history_columns), where={"ticker": ticker})
+def _save_history(context: Context, ticker: str, history: pd.DataFrame | None, work: HistoryWork, catalogue: Catalogue) -> int:
+    """Commit only the authorized event Window, with explicit recovery and protected earlier events."""
+    plan = source_plan(context, Tables.sec_fundamentals_history, work.newest, (("ticker", (ticker,)),))
+    if plan is None:
+        return 0
+    stored = context.store.load(
+        Tables.sec_fundamentals_history,
+        columns=list(catalogue.history_columns),
+        where={"ticker": ticker},
+        since=plan.write.start,
+        until=plan.write.end,
+        optional=True,
     )
-    stored_dates = pd.to_datetime(df_stored["as_of"])
+    recovery = context.run.mode in {"full", "recovery"}
+    if history is None and not recovery:
+        return 0
+    rows = pd.DataFrame(columns=catalogue.history_columns) if history is None else history.loc[plan.write.mask(history["as_of"])]
+    if recovery:
+        effects = context.store.replace_window(Tables.sec_fundamentals_history, rows, plan.write, {"ticker": [ticker]})
+        context.log.warning("history: %s REBUILT -- %d row(s) deleted and recomputed inside %s..%s", ticker, effects.deleted, *plan.write)
+        return effects.inserted
+    if work.rewrite_from is not None:
+        changed = Window(max(work.rewrite_from, plan.write.start), plan.write.end)
+        if stored is not None:
+            _unpublished_events(context, ticker, stored.loc[pd.to_datetime(stored["as_of"]).lt(changed.start)], rows)
+        effects = context.store.replace_window(Tables.sec_fundamentals_history, rows.loc[changed.mask(rows["as_of"])], changed, {"ticker": [ticker]})
+        context.log.info("history: %s late filing %s -> %d row(s) replaced", ticker, changed.start.date(), effects.inserted)
+        return effects.inserted
+    if stored is not None:
+        rows = _unpublished_events(context, ticker, stored, rows)
+    written = context.store.save(Tables.sec_fundamentals_history, rows) if not rows.empty else 0
+    context.log.info("history: %s +%d event row(s)", ticker, written)
+    return written
 
-    # Rows before the late date stay under the drift guard; every rebuilt row not stored before it is saved.
-    df_rows = _unpublished_events(context, ticker, df_stored[(stored_dates < since).values], df_history)
-    stale = sorted(stored_dates[stored_dates >= since].dt.date)
-    with context.store.transaction() as store:
-        deleted = store.delete(Tables.sec_fundamentals_history, {"ticker": ticker, "as_of": stale})
-        store.save(Tables.sec_fundamentals_history, df_rows)
-    context.log.info(
-        "history: %s late filing %s -> %d row(s) rewritten from it (%d stored row(s) replaced)", ticker, since.date(), len(df_rows), deleted
-    )
-    return len(df_rows)
 
-
-def build_fundamentals_history(
-    context: Context, tickers: list[str], *, rebuild_history: bool = False, verify_history: bool = False, as_of: pd.Timestamp | None = None
-) -> None:
-    """`sec_fundamentals_facts` -> `sec_fundamentals_history`, per ticker, from stored facts only (no network).
-
-    Triage first (`_history_work`): a current ticker is skipped without reading its facts, a ticker with newer
-    filings snapshots its new events only, and the rest replay in full. A late original (filed on or before the newest
-    stored row) rewrites that ticker's rows from its filing date (`_rewrite_late`). Otherwise append-only: a full replay
-    saves only new `as_of` events, and a stored row that would change is refused after logging the diff: that
-    ticker's rows stay untouched, the others are built, and a HistoryDriftError naming every refused ticker is raised
-    at the end. `verify_history=True` replays every ticker in full under that guard. `rebuild_history=True` (CLI
-    `sec-fundamentals-history --full`) deletes the ticker's rows and rebuilds from stored facts; so does a ticker whose
-    lineage scope changed recently (`resume.recently_changed` on `as_of`) when its recomputed history differs from the
-    stored one. A ticker whose facts come from several CIKs, or whose window has a dated start (a `fresh_start` CIK),
-    goes through the seam rule (`keep_window_owner_filings`) on its identity-layer windows; a declared reverse
-    acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
-    Full builds run in a process pool of `data_extract.fundamentals_workers` (in-process for 1 worker or a single
-    ticker); the parent reads, guards, saves and logs, in ticker order.
-    """
+def build_fundamentals_history(context: Context, tickers: list[str], *, verify_history: bool = False) -> None:
+    """Replay changed source events with causal reads and bounded writes; only explicit recovery accepts historical drift."""
+    policy = window_policy(context.config, Tables.sec_fundamentals_history, context.run.as_of)
+    if policy is None or not tickers or source_read_window(context.config, Tables.sec_fundamentals_facts, context.run.as_of) is None:
+        return
     catalogue = load_catalogue(str(context.config_dir))
     guards = load_guards(str(context.config_dir))
     seams = {entry.ticker: entry.seam_date for entry in load_security_manual(str(context.config_dir)).reverse_acquisitions}
@@ -1022,10 +1025,13 @@ def build_fundamentals_history(
     windows = {ticker: identity.filing_scope(ticker).windows for ticker in tickers if ticker in identity.roster_cik}
     history_rows = 0
     failed: dict[str, str] = {}
-    rebuild = frozenset(tickers) if rebuild_history else _scope_changed_recently(context, tickers, as_of)
+    rebuild_history = context.run.mode in {"full", "recovery"}
+    rebuild = frozenset(tickers) if rebuild_history else _scope_changed_recently(context, tickers)
     if rebuild and not rebuild_history:
         context.log.info(
-            "history: %d ticker lineage scope(s) changed recently -> rebuilt where the history moved: %s", len(rebuild), ", ".join(sorted(rebuild))
+            "history: %d ticker lineage scope(s) changed recently -> replay under the bounded drift guard: %s",
+            len(rebuild),
+            ", ".join(sorted(rebuild)),
         )
     if rebuild_history:
         work = {ticker: HistoryWork(FULL) for ticker in tickers}
@@ -1053,34 +1059,14 @@ def build_fundamentals_history(
         """The parent's in-order tail of one ticker: drift guard, save, log; a refused ticker is recorded in `failed`."""
         nonlocal history_rows
         ticker = entry.ticker
-        if entry.no_facts:
-            context.log.info("history: %s has no stored facts -- skipped", ticker)
-            if ticker in rebuild:
-                _drop_history(context, ticker)
-            return
-        full = entry.full.result() if isinstance(entry.full, Future) else entry.full
-        since = work[ticker].rewrite_from
         try:
-            if since is not None:
-                history_rows += _rewrite_late(context, ticker, cast(pd.DataFrame, full), since, catalogue)
-                return
-            df_history = (
-                entry.rows
-                if full is None
-                else _full_rows(context, ticker, full, rebuild_history=rebuild_history, rebuild=rebuild, catalogue=catalogue)
-            )
+            full = entry.full.result() if isinstance(entry.full, Future) else entry.full
+            frame = None if entry.no_facts else entry.rows if full is None else full
+            history_rows += _save_history(context, ticker, frame, work[ticker], catalogue)
         except HistoryDriftError as exc:
             context.log.error("history: %s left untouched, the other tickers continue: %s", ticker, exc)
             failed[ticker] = str(exc)
             return
-        if df_history is None:
-            return
-        if df_history.empty:
-            context.log.info("history: %s already current (0 new events)", ticker)
-            return
-        context.store.save(Tables.sec_fundamentals_history, df_history)
-        context.log.info("history: %s +%d event row(s)", ticker, len(df_history))
-        history_rows += len(df_history)
 
     try:
         for ticker in active:
@@ -1088,7 +1074,7 @@ def build_fundamentals_history(
             df_facts = _ticker_facts(context, ticker, seams, windows)
             entry = _Pending(ticker, no_facts=df_facts is None)
             if df_facts is not None and item.path in (INCREMENTAL, CHECK):
-                entry.rows = _incremental_rows(ticker, df_facts, item, catalogue, guards)
+                entry.rows = _incremental_rows(ticker, df_facts, item, catalogue, guards, policy.requested)
                 if entry.rows is None:
                     context.log.warning(
                         "history: %s event list differs from the stored one up to %s -> full replay", ticker, pd.Timestamp(item.newest).date()

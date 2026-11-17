@@ -18,6 +18,7 @@ from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel
 from tests.data_aggregate.test_insider_features import _txn
 from tests.data_aggregate.test_institutional_step_contract import ftd_lines, lineage_rows, market_lines, short_lines
+from tests.data_extract.fake_context import extract_config
 
 
 def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
@@ -89,16 +90,16 @@ def test_finra_metrics_use_their_own_defined_paired_operands() -> None:
     numerator.iloc[0] = 1000.0
     denominator.iloc[0] = np.nan
     shares = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    ratio, _ = short._shortvol_window_fields(numerator, denominator, numerator.notna() & denominator.notna(), idx, shares)
+    ratio, _ = short._shortvol_window_fields(numerator, denominator, numerator.notna() & denominator.notna(), idx, shares, extract_config())
     assert ratio[20].iloc[20, 0] == 0.5
     quiet = numerator * 0.0
     missing_total = denominator * np.nan
-    ratio, turnover = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares)
+    ratio, turnover = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares, extract_config())
     assert ratio[20].isna().all().all() and turnover is not None and turnover.isna().all().all()
     observed_total = denominator * 0.0 + 5.0
-    _, turnover = short._shortvol_window_fields(quiet, observed_total, quiet.notna() & observed_total.notna(), idx, shares)
+    _, turnover = short._shortvol_window_fields(quiet, observed_total, quiet.notna() & observed_total.notna(), idx, shares, extract_config())
     assert turnover is not None and turnover.iloc[-1, 0] == 0.0
-    _, undefined = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares * 0.0)
+    _, undefined = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares * 0.0, extract_config())
     assert undefined is not None and undefined.isna().all().all()
     print(
         "SANITY: legacy paired short/total observations remain usable; an unpaired numerator cannot enter the ratio, a day without a total is unknown for turnover, and an observed short0 over positive shares gives turnover0 while denominator0 stays NULL."
@@ -170,7 +171,7 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     )
     short_volume = short_rows.pivot(index="date", columns="ticker", values="short_volume")
     total = short_rows.pivot(index="date", columns="ticker", values="total_volume")
-    ratios, _ = short._shortvol_window_fields(short_volume, total, total.notna(), pd.DatetimeIndex(short_volume.index), None)
+    ratios, _ = short._shortvol_window_fields(short_volume, total, total.notna(), pd.DatetimeIndex(short_volume.index), None, extract_config())
     assert ratios[20].iloc[-1, 0] == 0.0
     fails_rows, coverage = inputs.load_fails(sqlite_store, ["AAA", "BBB"], lines, {})
     assert fails_rows is not None and coverage is not None

@@ -90,14 +90,15 @@ def test_every_extract_table_resumes_or_is_a_side_table() -> None:
     assert not uncovered, f"extract tables with neither a Resume contract nor a side-table entry: {sorted(uncovered)}"
     assert not stale_side, f"side tables that now declare a contract: {sorted(stale_side)}"
     assert all(t.resume is not None and t.resume.mode in _MODES for t in resume_tables())
-    assert all(t.resume is not None and t.resume.overlap_days >= 0 for t in resume_tables())
+    assert all(not hasattr(t.resume, "overlap_days") and not hasattr(t.resume, "source_start") for t in resume_tables())
 
     print("\n=== SANITY CHECK: resume contract coverage ===")
     print(f"  {len(extract)} extract tables = {len(with_contract)} with a contract + {len(extract - with_contract)} side tables. Validated.")
 
 
 def test_every_resumed_extract_table_has_a_cadence() -> None:
-    missing = sorted(t.name for t in resume_tables() if t.kind == KIND_EXTRACT and t.freshness is None)
+    config = extract_config()
+    missing = sorted(t.name for t in resume_tables() if t.kind == KIND_EXTRACT and config.data.tables[t.name].freshness is None)
     assert not missing, f"resumed tables with no freshness cadence: {missing}"
     for table in (
         Tables.dividends,
@@ -109,9 +110,9 @@ def test_every_resumed_extract_table_has_a_cadence() -> None:
         Tables.sec_8k,
         Tables.sec_8k_votes,
     ):
-        assert table.freshness == "daily", table.name
-    assert Tables.filing_risk_text.freshness == "quarterly"
-    assert Tables.sec_def14a_text.freshness == "yearly"
+        assert config.data.tables[table.name].freshness.cadence == "daily", table.name
+    assert config.data.tables[Tables.filing_risk_text.name].freshness.cadence == "quarterly"
+    assert config.data.tables.sec_def14a_text.freshness.cadence == "yearly"
 
     print("\n=== SANITY CHECK: cadences ===")
     print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")

@@ -4,7 +4,7 @@ Each period zip (`.tsv` members: sub, num, txt) is cached locally and parsed for
 curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. A filing belongs to the
 ticker whose lineage window of its filer CIK holds the filing date (consolidating). Rows carry their archive
 `period` and point-in-time `available_at` clock. A period counts as done only when both tables hold it; the work
-list comes from `resume.archive_worklist`. Zips are large, so the window is `years_history + 1` years (`StepExtractZips`).
+list comes from `resume.archive_worklist` within each table's configured source-unit dates.
 `download_notes_periods` caches every listed zip missing on disk; the identity step (`utils/identity/evidence.py`)
 and the notes parse read the cache.
 """
@@ -33,7 +33,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.resume import archive_worklist, period_end, rescan_lineage
+from src.data_extract.utils.common.resume import archive_scopes, archive_worklist, period_end, rescan_lineage
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
 from src.data_store.schema import Table, Tables
@@ -160,7 +160,7 @@ def notes_periods(context: Context) -> list[str]:
     scope = Window(min(window.start for window in windows), max(window.end for window in windows))
     published = _scrape_available_periods(context)
     tags = published if published is not None else _generate_periods(scope)
-    return sorted(tag for tag in tags if any(window.start <= pd.Timestamp(period_end(tag)) <= window.end for window in windows))
+    return list(archive_scopes(context, _NOTES_TABLES, tags))
 
 
 # --------------------------------------------------------------------------- #
@@ -376,10 +376,11 @@ def cached_notes_periods(cache: Path) -> list[str]:
 def download_notes_periods(context: Context, cache: Path, periods: list[str]) -> int:
     """Cache every notes zip of `periods` missing on disk (a cached zip is never downloaded again); returns the zips
     available. Writes no table."""
+    selected = archive_scopes(context, _NOTES_TABLES, periods)
     return sum(
         ensure_zip(context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600)
         is not None
-        for period in tqdm(periods, desc="notes download")
+        for period in tqdm(selected, desc="notes download")
     )
 
 
@@ -396,6 +397,7 @@ def ingest_financial_notes(context: Context, cache: Path, tickers: list[str], pe
     each (ticker, window CIK) pair changed since the newest stored period with no row, keeping that CIK's rows only.
     `scope.full` re-reads every stored period too (after a parse change).
     """
+    periods = list(archive_scopes(context, _NOTES_TABLES, periods))
     period_clocks = _repair_stored_clocks(context, cache, tickers, overwrite=False)
     identity = load_identity(context)
     work = archive_worklist(

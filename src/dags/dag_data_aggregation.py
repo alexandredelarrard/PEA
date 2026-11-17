@@ -55,6 +55,7 @@ CONFIGS = f"{PROJECT}/configs"
 PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
+RUN_AS_OF = "{{ macros.datetime.fromisoformat(dag_run.conf.get('as_of') or dag_run.start_date.isoformat()).isoformat() }}"
 
 # The ordered cube sub-steps, `parts.PART_COMMANDS` written out: the DAG processor parses this
 # folder without the project on sys.path, so importing `src` here breaks the DAG.
@@ -91,9 +92,10 @@ dag = DAG(
 
 
 def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None = None) -> BashOperator:
+    cutoff = f' --as-of "{RUN_AS_OF}"' if base == AGG else ""
     return BashOperator(
         task_id=task_id or cmd.split()[0].replace("-", "_"),
-        bash_command=f"{base} {cmd} -c {CONFIGS}",
+        bash_command=f"{base} {cmd} -c {CONFIGS}{cutoff}",
         cwd=PROJECT,
         pool=pool,
         trigger_rule=TriggerRule.ALL_DONE,
@@ -120,7 +122,14 @@ def _cube_status(**context) -> None:
     """Push the max date + row count of every cube part (+ cube / predictions) to XCom, so drift is
     visible; RED when a part is missing or more than one build behind the cube. XCom is pushed
     BEFORE raising, so the per-part status is available even on a red run."""
-    proc = subprocess.run([PIPE_PY, "-m", "src", "data_aggregate", "cube-status", "-c", CONFIGS], cwd=PROJECT, capture_output=True, text=True)
+    run = context["dag_run"]
+    cutoff = run.conf.get("as_of") or run.start_date.isoformat()
+    proc = subprocess.run(
+        [PIPE_PY, "-m", "src", "data_aggregate", "cube-status", "-c", CONFIGS, "--as-of", cutoff],
+        cwd=PROJECT,
+        capture_output=True,
+        text=True,
+    )
     report = None
     for line in reversed((proc.stdout or "").strip().splitlines()):
         line = line.strip()

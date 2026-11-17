@@ -10,14 +10,17 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from omegaconf import DictConfig
 
 from src.data_extract.transformers import step_extract_identity as module
-from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.data_extract.fake_context import extract_config
 from tests.data_extract.identity.test_ftd_evidence_table import _HEADER, _lineage
 from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe, universe_of
@@ -37,9 +40,8 @@ FLOW = (
 )
 
 
-def _config() -> SimpleNamespace:
-    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="sec_fails_to_deliver")
-    return SimpleNamespace(local=SimpleNamespace(paths=paths), data_extract=SimpleNamespace(years_history=1))
+def _config() -> DictConfig:
+    return extract_config(local={"paths": {"insider_transactions": "insider", "financial_notes": "notes", "fails_deliver": "sec_fails_to_deliver"}})
 
 
 def _context(store: Any = None, tmp_path: Path | None = None) -> SimpleNamespace:
@@ -48,6 +50,8 @@ def _context(store: Any = None, tmp_path: Path | None = None) -> SimpleNamespace
         log=logging.getLogger("test.identity_step"),
         paths={"DATA_STORE": tmp_path},
         config_dir="configs",
+        config=_config(),
+        run=WindowRun("incremental", "offline identity flow", pd.Timestamp("2026-11-16")),
         universe=universe_of(["AAA", "BBB"]),
     )
 
@@ -160,9 +164,11 @@ def test_a_failing_stage_raises_from_its_own_method_only(monkeypatch: pytest.Mon
 def test_options_reach_the_capture_and_the_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, dict[str, Any]] = {}
     _stub_operations(monkeypatch, [])
-    monkeypatch.setattr(module, "pending_dei_periods", lambda context, cache, full: calls.setdefault("dei", {"full": full}) and [])
+    monkeypatch.setattr(module, "pending_dei_periods", lambda context, cache: calls.setdefault("dei", {"full": context.run.mode == "full"}) and [])
     stages = stub_sync(monkeypatch, module)
-    step = StepExtractIdentity(_context(), _config(), IdentityOptions(full=True, as_of=pd.Timestamp("2026-10-30")))  # type: ignore[arg-type]
+    context = _context()
+    context.run = WindowRun("full", "explicit identity rebuild", pd.Timestamp("2026-10-30"))
+    step = StepExtractIdentity(context, context.config)  # type: ignore[arg-type]
 
     step.run_capture_evidence()
     step.run_sync()
@@ -185,7 +191,7 @@ def test_cold_start_run_builds_universe_cusip_from_the_stored_ftd_lines(sqlite_s
     text = _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|999999ZZZ|ZZZ|9|OTHER CO|3.0\n"
     sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd._parse_ftd_lines(text).assign(period="201501b"))
     monkeypatch.setattr(module, "pending_dei_periods", lambda *args: [])
-    monkeypatch.setattr(module, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
+    monkeypatch.setattr(module, "scan_form345_cache", lambda cache, window: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
     anchor = CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik={"ABC": "0000000777"})
     monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: setattr(self, "_anchor", anchor) or anchor)

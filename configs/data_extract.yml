@@ -1,4 +1,6 @@
 data_extract:
+  earnings_calls:
+    read_workers: 4 # Parallel projected reads from the pinned source file.
   # Late lines in the prior quarter's public index; metadata refresh, not document replay.
   edgar_index:
     previous_quarter_recheck: {value: 10, unit: calendar_days}

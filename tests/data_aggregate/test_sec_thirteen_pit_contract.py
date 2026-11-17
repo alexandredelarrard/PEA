@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.price.features import security_basis_frame
@@ -19,6 +18,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import Behavior
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.price.adjustments import ShareBasis
 from tests.conftest import make_frames
+from tests.data_aggregate.sec_thirteen_legacy_reference import LEGACY_F13_SETTLE_TRADING_DAYS as F13_SETTLE_TRADING_DAYS
 from tests.data_aggregate.test_superinvestor_features import _book
 
 

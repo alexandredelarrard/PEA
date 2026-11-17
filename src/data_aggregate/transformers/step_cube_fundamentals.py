@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS, SOURCE_AVAILABILITY_BUFFER_DAYS
+from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
     plan_window,
@@ -41,6 +41,7 @@ from src.data_aggregate.utils.price.frames import (
 from src.data_aggregate.utils.price.inputs import load_fundamental_share_observations
 from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
+from src.utils.data_policy import publication_policy
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.basis import load_price_identity, load_quantity_basis
 from src.utils.step import Step
@@ -237,7 +238,7 @@ class StepCubeFundamentals(Step):
         )
         frame = joined.frame.assign(
             as_of=pd.to_datetime(joined.frame["as_of"])
-            + pd.Timedelta(days=SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sharadar_fundamentals_history.name])
+            + pd.Timedelta(days=int(publication_policy(self._config, Tables.sharadar_fundamentals_history).lag.value))
         )
         return self._universe.attach_gics(add_cube_time_growth(frame))
 

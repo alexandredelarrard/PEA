@@ -522,7 +522,7 @@ def parse_fundamentals(
 
 
 @contextmanager
-def _facts_run_scope(context: Context, _tickers: Sequence[str], _as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
+def _facts_run_scope(context: Context, _tickers: Sequence[str]) -> Iterator[EdgarFetch]:
     """Bind the run's parser: the catalogue from `context.config_dir`, all three GICS levels of every universe ticker."""
     catalogue = load_catalogue(str(context.config_dir))
     df_gics = context.universe.frame.set_index("ticker")[["sector", "industry_group", "sub_industry"]]

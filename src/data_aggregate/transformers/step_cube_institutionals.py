@@ -7,7 +7,7 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import SECONDARY_CLASS, SOURCE_AVAILABILITY_BUFFER_DAYS
+from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
@@ -33,11 +33,13 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
 )
 from src.data_aggregate.utils.institutionals.ownership_features import (
     SUBJECT_COLUMNS,
+    ScheduleSource,
     SubjectIdentity,
     build_ownership_feature_panel,
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     FtdPublication,
+    FtdSource,
     ShortFlowCapital,
     build_short_flow_feature_panel,
     prepare_fails_quantities,
@@ -47,6 +49,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_store.schema import Tables
+from src.utils.data_policy import publication_policy
 from src.utils.identity_tables import read_identity
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
@@ -62,7 +65,7 @@ class StepCubeInstitutionals(Step):
         self._cfg = config.data_aggregate
         self._part = part_for(Tables.cube_part_institutionals)
         self._bugfix = load_bugfix(context.config_dir)
-        self._insider_lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name]
+        self._insider_lag = int(publication_policy(config, Tables.insider_transactions).lag.value)
         self._availability = InstitutionalAvailability.from_config(config)
 
     def run(self, full: bool = False) -> None:
@@ -221,9 +224,12 @@ class StepCubeInstitutionals(Step):
             df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
             df_source = terminal_rows(df_source, ("fails_quantity",), df_factor)
             settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure)
-            available = short_flow._ftd_available_dates(df_coverage, SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name])
+            available = short_flow._ftd_available_dates(
+                df_coverage, int(publication_policy(self._config, Tables.sec_fails_to_deliver_security).lag.value)
+            )
             publication = FtdPublication(df_coverage, available)
-        return build_short_flow_feature_panel(frames, df_short, settlement, capital, publication, df_tenure)
+        fails = FtdSource(settlement, publication) if settlement is not None and publication is not None else None
+        return build_short_flow_feature_panel(frames, df_short, fails, capital, self._config, df_tenure)
 
     def _ownership_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
@@ -234,16 +240,14 @@ class StepCubeInstitutionals(Step):
         identity = SubjectIdentity.from_tables(lineage, lines) if lineage is not None and lines is not None else None
         if identity is None:
             self._log.warning("lineage or CUSIP lines absent -> 13D/13G filings are counted without the subject-side identity filter")
-        complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
-        complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
+        complete_through_13d = institutional_frontiers.schedule_complete_through(self._context, Tables.sec_13d, last_session)
+        complete_through_13g = institutional_frontiers.schedule_complete_through(self._context, Tables.sec_13g, last_session)
 
         # Count filings per schedule and apply each schedule's coverage mask in the builder.
         return build_ownership_feature_panel(
             frames,
-            df_13d,
-            df_13g,
+            (ScheduleSource(Tables.sec_13d, df_13d, complete_through_13d), ScheduleSource(Tables.sec_13g, df_13g, complete_through_13g)),
+            self._config,
             availability=self._availability,
             identity=identity,
-            complete_through_13d=complete_through_13d,
-            complete_through_13g=complete_through_13g,
         )

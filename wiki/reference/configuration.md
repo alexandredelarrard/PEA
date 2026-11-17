@@ -37,7 +37,7 @@ Callers use attribute access such as `self._config.data_aggregate.targets.horizo
 | `model`, `train` | [modelling.yml](../../configs/modelling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), fresh assessment controls and train/test boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. |
 | `linear`, `lgbm`, `random_forest` | [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml) and sibling family files | Family hyperparameters and family-specific feature columns. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Fixed LS/S&P/cash budgets, optional end date (cutoff and start come from train.end_date), allocation cadence, momentum/risk windows, cash remuneration, proportional costs and read batch size. |
-| `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, the insider frontier lag, and the earnings-call extractor knobs. |
+| `data` | [data.yml](../../configs/data.yml) | Per-table fixed start/end dates, source and coverage boundaries, reprocessing modes and explicit units, publication clocks/PIT buffers, freshness and cube read context. |
 | `validate` | [validate.yml](../../configs/validate.yml) | Read-only checks, comparison thresholds and independent scientific expectations. |
 
 `local.paths.peers_dir` in [config.yml](../../configs/config.yml) defaults to `output/peers` beneath `DATA_STORE`; an absolute path remains absolute. [Context](../../src/context.py) keeps `SECTOR_PEERS_PATH` as the complete active `sector_peers.json` filename. The active cache and named `.BEFORE.json.bak` backup relocate unchanged; peer construction and PostgreSQL description/embedding caches are unaffected. Activate path changes only with verified cache bytes at the destination; see [peer artifact paths](../modules/data-peers.md#artifact-paths).
@@ -79,16 +79,18 @@ Unused decay and coverage-break settings are removed. Filing-wide value-unit rep
 
 ## Extraction settings
 
-Equity, macro, and Sharadar history windows are each 31 years. The source series registry itself is not configurable: symbol-to-series mappings are world facts and remain in constants. A table's resume overlap, EDGAR forms and source start are part of its `Resume` contract in [schema.py](../../src/data_store/schema.py), not YAML knobs.
+Fixed `data.tables.<registered table name>.start_date` and optional `end_date` define each dated table's requested range. Policy validation rejects missing, unknown and contradictory timing fields before constructing source clients or the store. `source_start` records the source floor; `coverage_start` records a separate broad-coverage boundary. `reprocess` declares a numeric tail with explicit units, missing documents/units, source changes, a candidate check or a snapshot. The shared [Window resolver](../../src/utils/window.py) separates write overlap from computation context. [Resume](../../src/data_store/schema.py) retains structural mode, key, frontier column, EDGAR forms and archive period metadata; it declares no dates, overlap or freshness values.
+
+Every extraction/cube command accepts `--as-of` as the execution cutoff. [Context](../../src/context.py) captures that instant once and derives its New York market date. The extraction DAG relays the same validated timestamp to every source task and the triggered aggregation DAG; retries reuse it. A cutoff caps configured dates and does not widen them.
 
 Key distinctions:
 
-- `years_history` scopes ordinary equity/filing walks;
-- `macro_years_history` owns the long macro window;
-- `sharadar_years_history` is separate because entitlement and response size differ;
+- prices, macro and splits declare seven calendar days; Sharadar SF1 declares100 calendar days per source key;
+- EDGAR walks compare configured-range index accessions with completed filings; they have no numeric day-tail control;
+- ZIP downloads compare published units with valid cached files; normal ingestion reuses completed units. Explicit bounded recovery may replay them;
 - the universe holds one ticker per issuer; a second share class is an `aliases` entry in [universe.yml](../../configs/universe.yml), never a `tickers` entry, so no class is counted twice;
-- `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread). The dataset repo and file path are module constants of the extractor;
-- In [data_aggregate.yml](../../configs/data_aggregate.yml), data_aggregate.earnings_calls owns sentiment_model (yiyanghkust/finbert-tone) and refresh_calendar_days (30); the availability lag (2 calendar days) lives in `SOURCE_AVAILABILITY_BUFFER_DAYS` in `src/constants/constants.py`. [StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) validates them once; embeddings use the existing gpt.embedding model/batch_size/max_chars settings in gpt.yml. Feature eligibility is the first session on/after call date plus the calendar-day lag; raw/saved dates stay unchanged and all ten features use `data_aggregate.earnings_calls.signal_sessions` (66 sessions). Daily feature writes use the stored frontier minus 30 calendar days with bounded required call history. Older changes need a full text-part rebuild and cube assembly; valid model outputs are reused;
+- `data_extract.earnings_calls.read_workers` in [data_extract.yml](../../configs/data_extract.yml) controls parallel HuggingFace row-group reads; writes stay on one thread. The source table's candidate lookback is180 calendar days in [data.yml](../../configs/data.yml). The dataset repository and file path remain source facts;
+- `data_aggregate.earnings_calls` in [data_aggregate.yml](../../configs/data_aggregate.yml) owns the sentiment service and66-session feature signal. Embedding service/batch/text budgets remain in [gpt.yml](../../configs/gpt.yml). [data.yml](../../configs/data.yml) declares the call publication buffer of three calendar days, market-session roll, and seven-calendar-day text-part rewrite. Older feature corrections require an explicit historical rebuild using valid cached sentiment/embeddings;
 - `sec_retry` (3 attempts, waits of 5 s then 20 s, Retry-After capped at 120 s) is the one retry policy of every SEC request, applied by [sec_io.py](../../src/data_extract/utils/common/sec_io.py);
 - `retry_rounds` (3 rounds, waits of 60, 120 and 240 s, threshold 0.985, `min_failed` 2): a ticker whose EDGAR read rate in a run is below the threshold, with at least `min_failed` failed documents, re-reads only those documents in-task; the rest is listed again on the next run;
 - `max_documents_per_run` (5,000) caps the documents one EDGAR fetch reads per run, newest first; a larger work list logs an ERROR and drains over later runs, and `--no-cap` lifts the cap for a one-time backlog;
@@ -99,7 +101,7 @@ Key distinctions:
 
 ## Data availability and freshness
 
-[configs/data.yml](../../configs/data.yml) declares outer availability boundaries, not filled values. A table-level `__all__` date applies unless a field override exists; derived-feature boundaries capture extra publication lags or minimum history.
+[configs/data.yml](../../configs/data.yml) declares source/coverage boundaries and publication clocks. Each table's `pit` policy defines its source clock, buffer and market-session roll, or explicitly inherits a parent source so a derived table adds no second delay. `derived_feature_starts` retains declared feature coverage boundaries; these do not synthesize values.
 
 Runtime eligibility is the intersection of:
 
@@ -109,7 +111,7 @@ Runtime eligibility is the intersection of:
 4. required price, denominator, or related-source cells; and
 5. family-specific completeness rules.
 
-`source_freshness.insider_max_lag_days` (default 4) is the insider freshness threshold used by `cube-status`: the insider source is late when D, the newest stored `insider_transactions.filing_date` (markers included), is more than that many days behind the reference price date. EDGAR remains authoritative over ZIP duplicates.
+`data.freshness.insider_max_lag_days` (default4) is the insider freshness threshold used by `cube-status`: the insider source is late when D, the newest stored `insider_transactions.filing_date` (markers included), is more than that many days behind the reference price date. EDGAR remains authoritative over ZIP duplicates.
 
 ## Cube assembly selection
 
@@ -166,7 +168,7 @@ Every numerical value in [data_aggregate.yml](../../configs/data_aggregate.yml) 
 
 ## Institutional correction settings
 
-The fails-to-deliver publication lag is no configuration key: `SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name]` in [constants.py](../../src/constants/constants.py) is 21 calendar days from the persisted ZIP half-period end; publication snaps to the first eligible session. It is a deterministic estimate, independent of cache timestamps, and does not certify historical SEC publication dates.
+The fails-to-deliver policy in [data.yml](../../configs/data.yml) declares 21 calendar days from the persisted ZIP half-period end, rolled to the first eligible market session. This is a release estimate, independent of cache timestamps. The policy does not certify historical SEC publication dates.
 
 The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,98 and100. LightGBM excludes the retired `f_y_earnings_growth` input and retains the already selected `f_y_earnings_growth_signed`. Targets, h30/h60/h90 and fitting settings are unchanged. No fit was run.
 

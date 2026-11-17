@@ -18,12 +18,13 @@ import pytest
 
 from src.context import Context
 from src.data_extract.transformers import step_extract_identity as step_module
-from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.utils.identity.identity_sync import sync_filer_rows
 from src.data_extract.utils.identity.lifecycle import Lifecycle
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME, foreign_filer_rows
+from src.utils.window import WindowRun
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.identity.test_publish import _step, published_store  # noqa: F401 (fixture)
 from tests.support.universe import seed_universe, universe_config
@@ -76,9 +77,10 @@ def _publish(store: DataStore) -> None:
 
 def _context(store: DataStore, tmp_path: Path) -> SimpleNamespace:
     universe = seed_universe(store, list(ROSTER), rows={t: {"cik": c} for t, c in ROSTER.items()})
-    config = extract_config(data_extract={"years_history": 15})
+    config = extract_config()
     return SimpleNamespace(
         store=store,
+        run=WindowRun("incremental", "identity sync fixture", RUN_DATE),
         log=logging.getLogger("test.identity.sync"),
         config=config,
         config_dir=str(ROOT / "configs"),
@@ -89,7 +91,7 @@ def _context(store: DataStore, tmp_path: Path) -> SimpleNamespace:
 
 def _sync(context: SimpleNamespace) -> Any:
     """`identity --only sync --as-of RUN_DATE` through the step's production interface."""
-    step = StepExtractIdentity(context, context.config, IdentityOptions(as_of=RUN_DATE))  # type: ignore[arg-type]
+    step = StepExtractIdentity(context, context.config)  # type: ignore[arg-type]
     return step.run_sync()
 
 
@@ -186,7 +188,9 @@ def test_a_role_change_restamps_the_insider_lineage_role(sqlite_store: DataStore
 def _published_step(store: DataStore) -> Any:
     """The publish step of `test_publish` over `store` (AAA only in the universe), with the sync's run date."""
     step: Any = _step(store)
-    step._options, step._run_date = IdentityOptions(), PUBLISH_RUN
+    step._full, step._run_date = False, PUBLISH_RUN
+    step._context.run = WindowRun("incremental", "publish and sync fixture", PUBLISH_RUN)
+    step._context.config = extract_config()
     return step
 
 

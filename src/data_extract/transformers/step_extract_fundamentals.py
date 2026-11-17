@@ -16,12 +16,12 @@ from src.utils.step import Step
 
 
 class StepExtractFundamentals(Step):
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
 
-    def run_history(self, tickers: list[str], full: bool = False, verify: bool = False) -> None:
-        """`sec_fundamentals_facts` -> `sec_fundamentals_history`; `full` deletes and rebuilds, `verify` replays under the drift guard."""
-        build_fundamentals_history(self._context, tickers, rebuild_history=full, verify_history=verify)
+    def run_history(self, tickers: list[str], verify: bool = False) -> None:
+        """Replay stored SEC facts under the Context Window and optional drift verification."""
+        build_fundamentals_history(self._context, tickers, verify_history=verify)
 
     def run_check(self, tickers: list[str]) -> None:
         """Log the SEC vs Sharadar check on `tickers` (thresholds: `validate.fundamentals_comparison`); reads only, writes nothing."""
@@ -30,6 +30,6 @@ class StepExtractFundamentals(Step):
             self._context, tickers, gap_pct=float(limits.gap_pct), field_share=float(limits.field_share), top_tickers=int(limits.top_tickers)
         )
 
-    def run(self, tickers: list[str], full: bool = False) -> None:
-        self.run_history(tickers, full=full)
+    def run(self, tickers: list[str]) -> None:
+        self.run_history(tickers)
         self.run_check(tickers)

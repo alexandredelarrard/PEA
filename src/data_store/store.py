@@ -188,8 +188,11 @@ def _bind_date(column, value):
     return ts.strftime("%Y-%m-%d")
 
 
-def _predicate(column, value):
-    """Equality, deterministic IN, NULL and NOT_NULL predicates; an empty collection matches nothing."""
+def _predicate(column: ColumnElement[Any], value: object) -> ColumnElement[bool]:
+    """Equality, inclusive date Windows, deterministic IN and explicit null predicates."""
+    if isinstance(value, Window):
+        after_end = value.end + pd.Timedelta(days=1)
+        return and_(column >= _bind_date(column, value.start), column < _bind_date(column, after_end))
     if isinstance(value, _NotNull):
         return column.isnot(None)
     if value is None:

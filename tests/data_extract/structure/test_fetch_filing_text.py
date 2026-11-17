@@ -333,7 +333,7 @@ def test_a_filing_is_done_once_every_expected_section_has_a_row(sqlite_store):
     sqlite_store.save(table, _stored("q-legacy", "10-Q", {"_empty": None}))
     context = SimpleNamespace(store=sqlite_store)
 
-    done = filing_text_done(context, ["AAPL", "MSFT"], None)  # type: ignore[arg-type]
+    done = filing_text_done(context, ["AAPL", "MSFT"])  # type: ignore[arg-type]
 
     assert done == {"AAPL": {"k-full", "k-amend", "q-full"}, "MSFT": set()}, done
     print("\n=== SANITY CHECK: filing-text done rule ===")
@@ -354,7 +354,7 @@ def test_a_re_read_adds_the_missing_section_and_never_blanks_stored_text(sqlite_
     assert not failed and counts == {table: 1}, counts
     assert rows.loc["mda", "text"].startswith("stored mda") and rows.loc["risk_factors", "text"].startswith("stored risk")
     assert rows.loc["business", "text"].startswith("new business")
-    assert filing_text_done(context, ["AAPL"], None) == {"AAPL": {"k-old"}}  # type: ignore[arg-type]
+    assert filing_text_done(context, ["AAPL"]) == {"AAPL": {"k-old"}}  # type: ignore[arg-type]
     print("\n=== SANITY CHECK: re-read save ===")
     print("  1 row saved (business); the empty re-read mda/risk rows dropped, stored text kept; k-old now done. Validated.")
 
@@ -369,7 +369,7 @@ def test_a_null_or_mixed_form_still_counts_the_accession_done(sqlite_store):
     sqlite_store.save(table, _stored("k-short", "10-K", {"business": None, "mda": _pad("m")}).assign(form=["10-K", None]))
     sqlite_store.save(table, _stored("q-null", "10-Q", {"mda": _pad("m")}).assign(form=None))
 
-    done = filing_text_done(SimpleNamespace(store=sqlite_store), ["AAPL"], None)  # type: ignore[arg-type]
+    done = filing_text_done(SimpleNamespace(store=sqlite_store), ["AAPL"])  # type: ignore[arg-type]
 
     assert done == {"AAPL": {"k-mixed", "q-null"}}, done
     print("\n=== SANITY CHECK: NULL / mixed form ===")

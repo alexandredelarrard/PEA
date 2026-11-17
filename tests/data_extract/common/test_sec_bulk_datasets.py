@@ -27,7 +27,9 @@ from src.data_extract.utils.edgar_extract.insider_common import BULK_DATE_FORMAT
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.data_extract.fake_context import extract_config
 from tests.data_extract.test_cli_options import stub_zips_step
 from tests.support.universe import as_roster, seed_universe
 
@@ -168,7 +170,7 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
     """Quarter-skip comes from the DB: a stored quarter is skipped; NVDA, added after the newest stored quarter ended
     and holding no zip-covered row of its window CIK, gets every cached stored quarter re-parsed for that CIK alone, but
     only on a run whose new quarter is cached; once it holds one nothing is re-parsed."""
-    from src.data_extract.utils.common.resume import ZipScope, archive_worklist
+    from src.data_extract.utils.common.resume import archive_worklist
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     create_canonical(ds.engine, [Tables.insider_transactions])
@@ -186,22 +188,23 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
         "valid_from": pd.Timestamp("1900-01-01"),
     }
     lineage_rows = pd.DataFrame([lineage | {"scope_changed_at": pd.Timestamp("2020-01-01")}])
-    context: Any = SimpleNamespace(store=ds, universe=universe)
-    quarters, as_of, keys = ["2024q1", "2024q2"], pd.Timestamp("2024-07-01"), ["AAPL", "MSFT", "NVDA"]
+    context: Any = SimpleNamespace(
+        store=ds, universe=universe, config=extract_config(), run=WindowRun("incremental", "archive completion fixture", pd.Timestamp("2024-07-01"))
+    )
+    quarters, keys = ["2024q1", "2024q2"], ["AAPL", "MSFT", "NVDA"]
 
-    scope = ZipScope(keys, as_of, False)
-    uncached = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, scope, lineage_rows)
-    work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, scope, lineage_rows)
+    uncached = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, keys, lineage_rows)
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, keys, lineage_rows)
     assert dict(uncached.units()) == {"2024q2": keys}, "the new quarter is not cached: no run stores it, no rescan"
     assert dict(work.units()) == {"2024q1": ["NVDA"], "2024q2": keys} and work.rescan_ciks == {"NVDA": frozenset({"0000000003"})}
 
     edgar = {"accession_number": "e1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "NVDA", "issuer_cik": "3", "source": "edgar"}
     ds.save("insider_transactions", pd.DataFrame([edgar | {"quarter": None}]))
-    edgar_only = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, scope, lineage_rows)
+    edgar_only = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, keys, lineage_rows)
     assert dict(edgar_only.units()) == {"2024q1": ["NVDA"], "2024q2": keys}, "an EDGAR row carries no quarter"
 
     ds.save("insider_transactions", pd.DataFrame([edgar | {"accession_number": "a2", "source": "zip", "quarter": "2024q1"}]))
-    again = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, scope, lineage_rows)
+    again = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, keys, lineage_rows)
     assert dict(again.units()) == {"2024q2": keys}
 
     print("\n=== SANITY: insider work list from the DB ===")

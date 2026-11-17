@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -14,6 +15,8 @@ from src.data_extract.utils.common.bulk_cache import quarter_periods
 from src.data_extract.utils.common.resume import SeriesRequest, planner_bounds, series_windows
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
+from src.data_extract.utils.fundamentals_sharadar import sharadar_history as vendor_history
+from src.data_extract.utils.identity import evidence
 from src.data_extract.utils.institutionals import fetch_short_interest as short
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_extract.utils.prices import fetch_prices as prices
@@ -347,3 +350,94 @@ def test_archive_completion_considers_only_the_tables_requiring_each_unit(
     print(
         "SANITY: a unit is complete in every table whose config requires it; disjoint sibling bounds do not cause repeated work or unauthorized scope."
     )
+
+
+def test_vendor_history_recovery_protects_outside_dates_and_keys(tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _context(tmp_path, sqlite_store)
+    dates = pd.to_datetime(["2026-02-01", "2026-05-01", "2026-08-01", "2026-11-01"])
+    stored = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 4 + ["BBB"],
+            "as_of": [*dates, dates[1]],
+            "fiscal_end": [*dates, dates[1]],
+            "totalAssets": [10.0, 20.0, 30.0, 40.0, 50.0],
+        }
+    )
+    sqlite_store.save(Tables.sharadar_fundamentals_history, stored)
+    stored_snapshot = sqlite_store.load(Tables.sharadar_fundamentals_history).sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    vendor = pd.DataFrame(
+        {"ticker": ["AAA"] * 4, "date": dates, "reportperiod": dates, "dimension": ["ARQ"] * 4, "assets": [100.0, 200.0, 300.0, 400.0]}
+    )
+    sqlite_store.save(Tables.sharadar_fundamentals_facts, vendor)
+    policy = context.config.data.tables.sharadar_fundamentals_history
+    policy.start_date, policy.end_date = "2026-05-01", "2026-08-01"
+    context.run = WindowRun("full", "finite vendor history recovery", context.run.instant)
+    monkeypatch.setattr(vendor_history, "load_field_map", lambda directory: None)
+    monkeypatch.setattr(vendor_history, "with_predecessor_series", lambda context, vendor, names, splits, **kwargs: (vendor, splits))
+    monkeypatch.setattr(vendor_history, "vendor_share_basis", lambda *args: SimpleNamespace(vendor=pd.DataFrame()))
+
+    def transformed(vendor: pd.DataFrame, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        result = vendor.rename(columns={"date": "as_of", "reportperiod": "fiscal_end", "assets": "totalAssets"})
+        return result.assign(as_of=pd.to_datetime(result.as_of), fiscal_end=pd.to_datetime(result.fiscal_end))[
+            ["ticker", "as_of", "fiscal_end", "totalAssets"]
+        ]
+
+    monkeypatch.setattr(vendor_history, "build_frame", transformed)
+    vendor_history.build_sharadar_history(context, ["AAA"])
+    after = sqlite_store.load(Tables.sharadar_fundamentals_history).sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    before = stored_snapshot
+    protected = before.ticker.eq("BBB") | ~pd.to_datetime(before.as_of).between("2026-05-01", "2026-08-01")
+    pd.testing.assert_frame_equal(after.loc[protected].reset_index(drop=True), before.loc[protected].reset_index(drop=True))
+    assert after.loc[~protected, "totalAssets"].tolist() == [200.0, 300.0]
+    print("SANITY: vendor-history recovery rewrites only its configured dates/key and protects the prefix, suffix and other issuer.")
+
+
+def test_notes_identity_capture_uses_the_same_configured_archive_units(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _context(tmp_path, sqlite_store)
+    numeric, text = context.config.data.tables.notes_num, context.config.data.tables.notes_text
+    numeric.start_date, numeric.end_date = "2026-04-01", "2026-06-30"
+    text.start_date, text.end_date = "2026-09-01", "2026-09-30"
+    cached = ["2025q4", "2026q1", "2026_04", "2026q2", "2026q3", "2026q4"]
+    monkeypatch.setattr(evidence, "cached_notes_periods", lambda cache: cached)
+    monkeypatch.setattr(evidence, "captured_dei_periods", lambda context: {"2026_04"})
+    assert evidence.pending_dei_periods(context, tmp_path) == ["2026q2", "2026q3"]
+    context.run = WindowRun("full", "explicit bounded evidence recovery", context.run.instant)
+    assert evidence.pending_dei_periods(context, tmp_path) == ["2026_04", "2026q2", "2026q3"]
+    print("SANITY: identity capture and notes ingestion share the same source-unit bounds; only explicit recovery replays completed units.")
+
+
+def test_direct_identity_capture_refuses_an_outside_unit_before_opening_it(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _context(tmp_path, sqlite_store)
+    for table in (Tables.notes_num, Tables.notes_text):
+        context.config.data.tables[table.name].start_date = "2026-01-01"
+    monkeypatch.setattr(evidence, "read_zip_tables", lambda *args, **kwargs: pytest.fail("out-of-window archive opened"))
+    with pytest.raises(ValueError, match="outside"):
+        evidence.capture_dei_period(context, tmp_path, "2025q4")
+    print("SANITY: standalone identity evidence capture enforces the source Window before opening an excluded archive.")
+
+
+@pytest.mark.parametrize("operation", ["download", "ingest"])
+def test_direct_notes_subruns_filter_provided_units_before_io(
+    operation: str, tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _context(tmp_path, sqlite_store)
+    for table in (Tables.notes_num, Tables.notes_text):
+        item = context.config.data.tables[table.name]
+        item.start_date, item.end_date = "2026-01-01", "2026-06-30"
+    periods = ["2025q4", "2026q1", "2026q2", "2026q3"]
+    visited: list[str] = []
+    if operation == "download":
+        monkeypatch.setattr(notes, "ensure_zip", lambda context, path, url, **kwargs: visited.append(path.stem.removesuffix("_notes")) or path)
+        assert notes.download_notes_periods(context, tmp_path, periods) == 2
+    else:
+        monkeypatch.setattr(notes, "_repair_stored_clocks", lambda *args, **kwargs: {})
+        monkeypatch.setattr(notes, "load_identity", lambda context: SimpleNamespace(source_cohort={}))
+        monkeypatch.setattr(notes, "stored_period_clock", lambda context, tables, period: visited.append(period))
+        monkeypatch.setattr(notes, "ensure_archive", lambda *args, **kwargs: None)
+        assert notes.ingest_financial_notes(context, tmp_path, ["AAA", "BBB"], periods) == 0
+    assert visited == ["2026q1", "2026q2"]
+    print(f"SANITY: direct notes {operation} enforces configured unit bounds before cache/provider/clock I/O.")

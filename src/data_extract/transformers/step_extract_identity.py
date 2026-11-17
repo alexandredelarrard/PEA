@@ -112,6 +112,7 @@ from src.data_extract.utils.identity.symbol_tenure import (
 )
 from src.data_extract.utils.zips.fetch_insider_transactions import restamp_insider_lineage
 from src.data_store.schema import Tables
+from src.utils.data_policy import source_read_window
 from src.utils.filer_tables import PURGE_TABLES
 from src.utils.identity_flags import (
     FLAG_COLUMNS,
@@ -146,6 +147,7 @@ class StepExtractIdentity(Step):
         self._insider_cache = cache_dir(context, paths.insider_transactions)
         self._notes_cache = cache_dir(context, paths.financial_notes)
         self._run_date = context.run.as_of
+        self._insider_window = source_read_window(config, Tables.insider_transactions, context.run.as_of)
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
         self._anchor: CompanyAnchor | None = None
@@ -155,15 +157,23 @@ class StepExtractIdentity(Step):
         self._lifecycle: Lifecycle | None = None
         self._first_build = False
 
+    def _insider_scan(self) -> Form345Scan:
+        """Reuse the bounded identity evidence scan across the public sub-runs."""
+        if self._insider_window is None:
+            raise ValueError("Identity snapshot has no configured insider source context")
+        if self._scan is None:
+            self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
+        return self._scan
+
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured (the FTD
         lines the CUSIP history reads are stored by the FTD ingest)."""
         # the Notes cover-page symbols of every filer, one cached period at a time (`full`: every period)
-        periods = pending_dei_periods(self._context, self._notes_cache, self._full)
+        periods = pending_dei_periods(self._context, self._notes_cache)
         written = sum(capture_dei_period(self._context, self._notes_cache, period) for period in tqdm(periods, desc="SEC notes cover-page symbols"))
 
         # one Form 3/4/5 scan: the `form345` / `manual` tenure (minus the cited rejections) here, the owner sets in the CIK history
-        self._scan = scan_form345_cache(self._insider_cache)
+        self._scan = self._insider_scan()
         manual, rejected = load_manual_symbol_tenure(str(self._config_dir)), load_rejected_symbol_tenure(str(self._config_dir))
         self._tenure = build_symbol_tenure(self._context, self._scan, manual, rejected)
         return written
@@ -198,7 +208,7 @@ class StepExtractIdentity(Step):
         # load the anchor, the tenure and Form 3/4/5 scan of this run (else the stored ones), the dei evidence, the SEC profile, the curation
         anchor = self._anchor if self._anchor is not None else self.run_company_anchor()
         tenure = self._tenure if self._tenure is not None else load_built_tenure(self._context)
-        scan = self._scan if self._scan is not None else scan_form345_cache(self._insider_cache)
+        scan = self._insider_scan()
         dei_rows = self._context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
         events = [{column: self._context.store.NOT_NULL} for column in _PROFILE_COLUMNS[1:]]
         profile = self._context.store.load(Tables.sec_cik_profile, columns=list(_PROFILE_COLUMNS), where=events, optional=True)

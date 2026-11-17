@@ -55,7 +55,11 @@ import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.source_join import join_sec_columns
+from src.data_aggregate.utils.institutionals.ownership_features import ScheduleSource
+from src.data_aggregate.utils.institutionals.short_flow_features import FtdSource
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_store.schema import Tables
+from src.utils.config import read_config
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -1007,9 +1011,9 @@ def compute() -> dict:
     df_short_flow = build_short_flow_feature_panel(
         make_frames(idx, peers, volume=px["volume"], close_total=close),
         terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal),
-        ftd_settlement,
+        FtdSource(ftd_settlement, ftd_publication),
         short_capital,
-        ftd_publication,
+        read_config("./configs"),
     )
     assert df_short_flow["f_ic_ftd_persistence_30d"].nunique() > 1, "Do not freeze unavailable FTD persistence"
     out["panel.short_flow"] = frame_digest(df_short_flow)
@@ -1070,7 +1074,13 @@ def compute() -> dict:
     for column in ("f_ic_insider_purchase_pct_prior_60d", "f_ic_insider_purchase_pct_prior_120d", "f_ic_insider_conviction_60d"):
         assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
     out["panel.insider"] = frame_digest(df_insider)
-    out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
+    out["panel.ownership"] = frame_digest(
+        build_ownership_feature_panel(
+            make_frames(idx, peers),
+            (ScheduleSource(Tables.sec_13d, sec_13d, None), ScheduleSource(Tables.sec_13g, sec_13g, None)),
+            read_config("./configs"),
+        )
+    )
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(
         {

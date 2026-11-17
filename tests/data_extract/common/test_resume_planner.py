@@ -12,7 +12,6 @@ from src.data_extract.utils.common.resume import (
     KEY_NEW,
     KEY_ROWLESS,
     SeriesRequest,
-    ZipScope,
     archive_worklist,
     series_windows,
     trading_calendar,
@@ -381,7 +380,8 @@ def _save_notes(store, table, ticker: str, periods: list[str]) -> None:
 
 
 def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, full: bool = False, lineage=None):
-    return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, ZipScope(keys, _AS_OF, full), lineage)
+    ctx.run = WindowRun("full" if full else "incremental", "archive fixture", _AS_OF)
+    return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, keys, lineage)
 
 
 def test_notes_period_counts_only_when_in_both_tables(tmp_path, sqlite_store):

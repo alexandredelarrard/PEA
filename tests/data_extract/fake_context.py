@@ -26,5 +26,5 @@ def _base() -> DictConfig:
 def extract_config(**branches) -> DictConfig:
     """The config a fake data_extract `Context` needs: the real `local` tree (paths and
     filenames) and the real `gpt` tree (model / threads / cache defaults), plus whatever
-    per-test branches the caller adds -- `extract_config(data_extract={"years_history": 15})`."""
+    per-test branches the caller adds."""
     return cast(DictConfig, OmegaConf.merge(_base(), OmegaConf.create(branches)) if branches else deepcopy(_base()))

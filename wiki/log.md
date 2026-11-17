@@ -1255,3 +1255,9 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 - source_commit: c82132b6 (was39b261e8; P2 working-tree changes documented alongside implementation)
 - Coverage: deterministic config loading, stage filenames, preserved path/model/JSON ownership, fixed repair thresholds and financial schemas, operative earnings-call lifetime with independent validation expectation. Operational date/PIT policy migration remains in subsequent phases.
 - Pages: [Configuration](./reference/configuration.md), [Constants and configuration](./modules/constants-and-configuration.md), and affected stage/guide links.
+
+## 2026-11-17 — Central table timing policies and extraction windows
+
+The configuration refactor moves source dates, reprocessing amounts, publication buffers and freshness rules into [data.yml](../configs/data.yml). The [structural table registry](../src/data_store/schema.py) retains table identity, columns and Resume contracts. Extraction uses one Context run anchor and shared [Window policies](../src/utils/data_policy.py), including finite ends for source/index/archive work and causal prefixes for histories and identity evidence. Unknown or contradictory timing fields fail configuration validation before source effects.
+
+Focused policy checks pass44 cases; the specified planner suite passes50 with9 live-data skips. Added direct notes sub-run checks prove excluded source units never reach download or clock I/O; bounded employee validation also passes. These checks cover extraction timing plumbing. Archive completion/paid-cache behavior, all cube PIT/write integration and independent final acceptance/refactor remain in the active harness plan; this entry is not a completed pipeline certificate. The approved latest merged pipeline includes64 registered table policies and18 manual JSON files. Models and artifacts are outside this refactor's validation scope.

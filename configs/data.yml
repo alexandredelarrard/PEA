@@ -1,6 +1,4 @@
 # Per-table dates, source work, PIT eligibility and freshness. Dates frozen at the approved 2026-11-16 migration.
-earnings_calls:
-  read_workers: 4
 data:
   planning:
     ended_grace:
@@ -435,6 +433,8 @@ data:
         overlap:
           value: 92
           unit: calendar_days
+        cover_recovery:
+          cached_units: 2 # Pending SEC cover metadata in these latest cached filing units; bounded by start/end.
       pit:
         mode: direct
         clock: first_filed_date

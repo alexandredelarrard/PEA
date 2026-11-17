@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 
 import pandas as pd
@@ -10,12 +11,12 @@ import pytest
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
+from src.data_aggregate.utils.institutionals.ownership_features import ScheduleSource, build_ownership_feature_panel
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Table, Tables
 from src.utils.config import read_config
-from src.utils.institutional_vintages import availability_date
 from tests.conftest import make_frames
+from tests.data_aggregate.sec_thirteen_legacy_reference import availability_date
 
 
 def _rules() -> InstitutionalAvailability:
@@ -98,16 +99,18 @@ def test_schedule_frontier_reaches_the_last_session_within_the_overlap(sqlite_st
     A table whose latest filing lies within its 7-day overlap of the last price session is
     complete through that session; a staler table is complete only through its latest filing."""
     last = pd.Timestamp("2026-09-11")
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g, last) is None
+    assert schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), Tables.sec_13g, last) is None
 
     sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, [("AAA", "g1", pd.Timestamp("2026-09-01"), "1")]))
-    stale = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
+    stale = schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), Tables.sec_13g, last)
     assert stale == pd.Timestamp("2026-09-01"), "10 days behind the last session: only through the filing"
 
     sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", pd.Timestamp("2026-09-04")))
-    fresh = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
+    fresh = schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), Tables.sec_13g, last)
     assert fresh == last, "a marker 7 days back keeps the table fresh through the last session"
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g, None) == pd.Timestamp("2026-09-04")
+    assert schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), Tables.sec_13g, None) == pd.Timestamp(
+        "2026-09-04"
+    )
     assert len(cast(pd.DataFrame, sqlite_store.load(Tables.sec_13g))) == 1, "consumers still never see the marker"
     assert stale is not None and fresh is not None
 
@@ -126,14 +129,18 @@ def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
     rows_13g = [("AAA", "g1", idx[10], "1"), ("CCC", "g2", idx[70], "4"), ("AAA", "g3", idx[-2], "5")]
     sqlite_store.save(Tables.sec_13d, _schedule_rows(Tables.sec_13d, rows_13d))
     sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, rows_13g))
-    frontier_13d = schedule_complete_through(sqlite_store, Tables.sec_13d, idx[-1])
-    frontier_13g = schedule_complete_through(sqlite_store, Tables.sec_13g, idx[-1])
+    frontier_13d = schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), Tables.sec_13d, idx[-1])
+    frontier_13g = schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), Tables.sec_13g, idx[-1])
     assert frontier_13d is not None and frontier_13g is not None
     frames = make_frames(idx, {t: {p: 1.0 for p in tickers if p != t} for t in tickers}, close_split=pd.DataFrame(100.0, index=idx, columns=tickers))
     sec_13d, sec_13g = sqlite_store.load(Tables.sec_13d, project=True), sqlite_store.load(Tables.sec_13g, project=True)
 
     def build(complete_13d: pd.Timestamp | None, complete_13g: pd.Timestamp | None) -> pd.DataFrame:
-        panel = build_ownership_feature_panel(frames, sec_13d, sec_13g, complete_through_13d=complete_13d, complete_through_13g=complete_13g)
+        panel = build_ownership_feature_panel(
+            frames,
+            (ScheduleSource(Tables.sec_13d, sec_13d, complete_13d), ScheduleSource(Tables.sec_13g, sec_13g, complete_13g)),
+            read_config("./configs"),
+        )
         grid = pd.MultiIndex.from_product([idx[-PART_REFRESH_TRADING_DAYS:], tickers], names=["date", "ticker"])
         return panel.set_index(["date", "ticker"]).reindex(grid)
 

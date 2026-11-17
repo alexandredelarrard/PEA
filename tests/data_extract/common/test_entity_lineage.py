@@ -45,6 +45,7 @@ from src.data_extract.utils.identity.symbol_history import ManualTenureEntityErr
 from src.data_extract.utils.identity.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, cik_activity, identity_flags
+from src.utils.window import Window
 from tests.canonical_schema import create_canonical
 from tests.support.lineage_build import cik_history_of, derive_lineage
 from tests.support.universe import as_roster, seed_universe, universe_of
@@ -665,7 +666,9 @@ def live_build() -> Any:
         pytest.skip(f"database or universe unavailable ({type(exc).__name__})")
     if tenure is None or tenure.empty:
         pytest.skip("symbol_tenure empty -- run `identity` first")
-    return derive_lineage(tenure, roster_cik, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
+    return derive_lineage(
+        tenure, roster_cik, scan_form345_cache(CACHE, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31"))).owner_pairs, CONFIG_DIR
+    )
 
 
 @pytest.fixture(scope="module")

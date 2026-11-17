@@ -4,8 +4,6 @@ The EDGAR walks (insiders, 13D/13G, 8-K) are `StepExtractEdgar`; the zip quarter
 synced upstream (`StepExtractAllData`, the DAG's identity stage); never rebuilds it.
 """
 
-import pandas as pd
-
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_manager_details
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
@@ -20,6 +18,6 @@ class StepExtractInstitutionals(Step):
         # The short side: FINRA RegSHO short volume, stored as filed.
         fetch_short_interest(self._context, tickers=tickers)
 
-    def run_managers(self, full: bool, as_of: pd.Timestamp | None) -> int:
+    def run_managers(self) -> int:
         """Refresh `sec_13f_manager_details` (name, state, first filing date per manager and quarter); returns the rows changed."""
-        return fetch_manager_details(self._context, full=full, as_of=as_of)
+        return fetch_manager_details(self._context)

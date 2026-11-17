@@ -27,7 +27,9 @@ from src.data_extract.utils.fundamentals_sharadar.sharadar_history import (
     history_columns,
 )
 from src.data_store.schema import Tables, name_of
+from src.utils.window import WindowRun
 from tests.conftest import FakeStore
+from tests.data_extract.fake_context import extract_config
 
 CONFIG_DIR = Path("./configs")
 REPO_CONFIGS = Path(__file__).resolve().parents[3] / "configs"
@@ -115,8 +117,14 @@ def test_the_build_reads_no_sec_table() -> None:
             Tables.prices_splits: pd.DataFrame(columns=["ticker", "date", "ratio"]),
         }
     )
-    context = SimpleNamespace(store=store, log=logging.getLogger("test.sharadar_history"), config_dir=str(REPO_CONFIGS))
-    build_sharadar_history(context, ["AAA"], config_dir=str(REPO_CONFIGS))
+    context = SimpleNamespace(
+        store=store,
+        log=logging.getLogger("test.sharadar_history"),
+        config_dir=str(REPO_CONFIGS),
+        config=extract_config(),
+        run=WindowRun("incremental", "offline vendor history", pd.Timestamp("2026-11-16")),
+    )
+    build_sharadar_history(context, ["AAA"])
     saved = store.saved_frames(Tables.sharadar_fundamentals_history)
     print("\n=== SANITY CHECK: the Sharadar history build without any SEC table ===")
     print(f"  tables read: {sorted(set(store.read))}")

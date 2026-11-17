@@ -30,12 +30,12 @@ from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
 from src.utils.data_policy import window_policy
 from src.utils.tickers_universe.universe import before_end
-from src.utils.window import Window, resolve_window
+from src.utils.window import resolve_window
 
 logger = logging.getLogger(__name__)
 
-#: `(context, keys, runtime_floor) -> {key: done accessions}`: a fetch's own stored-set rule.
-DoneFn = Callable[[Context, Sequence[str], pd.Timestamp | None], dict[str, set[str]]]
+#: `(context, keys) -> {key: completed accessions}`: source-specific completeness.
+DoneFn = Callable[[Context, Sequence[str]], dict[str, set[str]]]
 
 
 @dataclass
@@ -84,7 +84,6 @@ class WorklistRequest:
     keys: pd.DataFrame
     forms: Sequence[str]
     identity: Identity | None
-    runtime_floor: pd.Timestamp | None = None
     done_scope: str = DONE_TABLE
     done_where: dict[str, object] | None = None
     cap: int | None = None
@@ -106,14 +105,8 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         return DocumentWork(units={})
     scope = (("ticker", tuple(request.keys["ticker"].astype(str))),)
     plan = resolve_window(policy, context.run, None, pd.DatetimeIndex([]), scope)
-    floor = plan.write.start
-    if request.runtime_floor is not None:
-        floor = max(floor, request.runtime_floor)
-    if floor > plan.write.end:
-        return DocumentWork(units={})
-    window = Window(floor, plan.write.end)
+    window = plan.write
     keys, forms, identity = request.keys, request.forms, request.identity
-    runtime_floor = request.runtime_floor
     full = context.run.mode in {"full", "recovery"}
     bounds = planner_bounds(context)
     started = time.perf_counter()
@@ -128,7 +121,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     if full:
         done: dict[str, set[str]] = {key: set() for key in roster}
     elif request.done_accessions is not None:
-        done = request.done_accessions(context, list(roster), runtime_floor)
+        done = request.done_accessions(context, list(roster))
     else:
         done = stored_accessions(context, table, list(roster), request.done_scope, request.done_where)
     cold = _cold_keys(context, table, list(roster)) if request.fill_cold else frozenset()

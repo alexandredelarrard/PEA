@@ -29,8 +29,7 @@ from src.utils.step import Step
 
 @dataclass(frozen=True)
 class ZipsOptions:
-    """The zip commands' options: the ingested ticker subset (None: the universe), `full` re-download/re-parse, the run
-    date and the Notes metadata-only clock repair."""
+    """Ticker scope and explicit Notes metadata repair; Context owns the run mode and date."""
 
     tickers: list[str] | None = None
     repair_availability: bool = False
@@ -80,7 +79,7 @@ class StepExtractZips(Step):
         return fetch_fails_to_deliver(self._context)
 
     def run_ingest_13f(self) -> int:
-        return ingest_13f_datasets(self._context, full=self._context.run.mode in {"full", "recovery"})
+        return ingest_13f_datasets(self._context)
 
     def run_ingest(self) -> None:
         self.run_ingest_insider()

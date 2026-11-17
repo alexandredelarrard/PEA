@@ -1,6 +1,6 @@
 """The single-table insider load flow on a real SQLite `DataStore`: the zip ingest stamps `quarter`
-on EDGAR-stored filings and inserts only the filings EDGAR lacks, EDGAR reads only after the last
-zip quarter and replaces a zip-sourced filing there whole, both reruns are no-ops, and the
+on EDGAR-stored filings and inserts only the filings EDGAR lacks, EDGAR lists missing accessions across the configured
+filing dates and replaces a zip-sourced filing whole during explicit recovery, both reruns are no-ops, and the
 REQ-007 / REQ-008 log lines are emitted.
 
 The SEC is faked at the fetchers' IO seams (zip members per quarter, the local EDGAR index and the
@@ -29,6 +29,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
+from src.utils.config import read_config
 from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
@@ -275,7 +276,8 @@ def _mixed_accessions(df: pd.DataFrame) -> int:
 
 
 def _run_zip(context: Any, *, reparse: bool = False) -> int:
-    return ins.fetch_insider_transactions(context, tickers=UNIVERSE, years_history=1, reparse=reparse)
+    context.run = WindowRun("full" if reparse else "incremental", "explicit insider archive fixture", context.run.instant)
+    return ins.fetch_insider_transactions(context, tickers=UNIVERSE)
 
 
 def _run_edgar(context: Any, *, full: bool = False) -> None:
@@ -358,12 +360,16 @@ def zip_after_edgar_keeps_the_frontier(context: Any, sec: _FakeSec, run_zip: Cal
     run_zip(context)
     sec.publish(context, [E1, E2])
     _run_edgar(context)
-    frontier_before = schedule_complete_through(context.store, Tables.insider_transactions, LAST_SESSION)
+    frontier_before = schedule_complete_through(
+        SimpleNamespace(store=context.store, config=read_config("./configs")), Tables.insider_transactions, LAST_SESSION
+    )
     assert frontier_before == LAST_SESSION, "EDGAR's latest filing (2026-05-05) is inside the 7-day overlap"
 
     sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z0, Z1])
     run_zip(context)
-    frontier_after = schedule_complete_through(context.store, Tables.insider_transactions, LAST_SESSION)
+    frontier_after = schedule_complete_through(
+        SimpleNamespace(store=context.store, config=read_config("./configs")), Tables.insider_transactions, LAST_SESSION
+    )
     assert frontier_after == frontier_before, f"frontier moved: {frontier_before} -> {frontier_after}"
     return frontier_after
 
@@ -418,7 +424,8 @@ def test_edgar_replaces_a_zip_filing_wholesale_and_keeps_its_quarter(tmp_path, s
 
     caplog.clear()
     sec.publish(context, [A_EDGAR, B_EDGAR, C, N], owner_listed=((X, AAA_CIK),))
-    _run_edgar(context)
+    context.config.data.tables.insider_transactions.start_date = "2026-07-01"
+    _run_edgar(context, full=True)
     df_after = _table(sqlite_store)
 
     assert sorted(sec.read) == sorted([A.accession, B.accession, N.accession, X.accession]), "C (May) is behind the 2026q2 floor"
@@ -504,7 +511,7 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     sweep = "insider: stored-row sweep -- "
 
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
-    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"])
     sec.publish(context, [E1, B1])
     context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
     edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
@@ -514,7 +521,8 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     assert any(message.startswith(sweep) for message in _messages(caplog, logging.INFO)), "the full-universe run sweeps"
 
     caplog.clear()
-    ins.fetch_insider_transactions(context, tickers=["AAA"], years_history=1, reparse=True)
+    context.run = WindowRun("full", "explicit subset archive recovery", context.run.instant)
+    ins.fetch_insider_transactions(context, tickers=["AAA"])
     context.run = WindowRun("full", "offline explicit filing scope", context.run.instant)
     edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
     df_after = _table(sqlite_store)
@@ -536,7 +544,7 @@ def test_cli_csv_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_stor
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
-    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"])
     sec.publish(context, [E1, B1])
     context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
     edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
@@ -544,7 +552,7 @@ def test_cli_csv_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_stor
 
     caplog.clear()
     names = cli_mod._tickers(context, " bbb ,aaa")
-    ins.fetch_insider_transactions(context, tickers=names, years_history=1)
+    ins.fetch_insider_transactions(context, tickers=names)
     df_after = _table(sqlite_store)
 
     sweep = next(message for message in _messages(caplog, logging.INFO) if message.startswith("insider: stored-row sweep -- "))
@@ -559,7 +567,7 @@ def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, 
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
-    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"])
     sec.publish(context, [E1, B1])
     context.run = WindowRun("incremental", "offline explicit filing scope", context.run.instant)
     edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
@@ -616,34 +624,30 @@ def test_an_edgar_first_run_then_a_zip_ingest_stamps_and_reconciles(tmp_path, sq
     _run_edgar(context)
     df_final = _table(sqlite_store)
     rows_z1 = _rows_of(df_final, Z1.accession)
-    assert sec.read == [], "Z1 is behind the 2026q2 zip floor, so EDGAR never re-reads it"
+    assert sec.read == [], "a completed ZIP filing is reused during a normal EDGAR run"
     assert list(rows_z1["source"]) == ["zip"] and list(rows_z1["quarter"]) == ["2026q2"]
     assert _mixed_accessions(df_final) == 0
     print(
         f"\nSANITY: EDGAR-first run saved {len(df_edgar_only)} rows with no reconcile (no zip quarter); the zip then stamped "
-        f"quarter 2026q2 on E1 and inserted Z1, which EDGAR never re-reads (filed before the floor); no accession holds two sources."
+        f"quarter 2026q2 on E1 and inserted Z1, which EDGAR never re-reads (already complete from the cached ZIP); no accession holds two sources."
     )
 
 
-def test_a_reconcile_failure_never_masks_the_run_error(tmp_path, sqlite_store, monkeypatch, identity, caplog):
-    """R-03: when the EDGAR run fails, an error in the follow-up reconcile is logged and the run's own error propagates."""
+def test_driver_failure_preserves_stored_rows_and_original_error(tmp_path, sqlite_store, monkeypatch, identity, caplog):
     sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
     sec.zips["2026q1"] = _zip_tables([Q0])
-    _run_zip(context)  # a stored zip quarter, so the run reconciles after it
+    _run_zip(context)
+    before = _table(sqlite_store)
 
     def run_fails(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("EDGAR listing failed")
 
-    def reconcile_fails(context: Any, since: pd.Timestamp) -> int:
-        raise KeyError("quarter")
-
     monkeypatch.setattr(edgar_driver, "_run_pass", run_fails)
-    monkeypatch.setattr(edgar, "replace_zip_accessions", reconcile_fails)
     with pytest.raises(RuntimeError, match="EDGAR listing failed"):
         _run_edgar(context)
-    logged = next(record for record in caplog.records if record.levelno == logging.ERROR)
-    print(f"\nSANITY: the run's RuntimeError propagated; the reconcile's KeyError was logged instead: '{logged.getMessage()}'.")
+    pd.testing.assert_frame_equal(_table(sqlite_store), before)
+    print("SANITY: the original driver failure propagates without a post-run sweep changing stored filings.")
 
 
 def test_partial_save_reconciles_when_a_later_key_fails(
@@ -652,7 +656,7 @@ def test_partial_save_reconciles_when_a_later_key_fails(
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
     sec.zips["2026q2"] = _zip_tables([A])
-    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"])
     second = replace(B1, filed="2026-07-02")
     sec.publish(context, [A_EDGAR, second])
     original_parse = edgar.parse_insider
@@ -665,7 +669,7 @@ def test_partial_save_reconciles_when_a_later_key_fails(
 
     monkeypatch.setattr(edgar, "parse_insider", parse)
     with pytest.raises(TypeError) as raised:
-        context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
+        context.run = WindowRun("full", "explicit bounded ZIP-to-EDGAR recovery", pd.Timestamp("2026-07-08"))
         edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA", "BBB"]))
     assert raised.value is failure
     df_rows = _table(sqlite_store)
@@ -677,7 +681,7 @@ def test_partial_save_reconciles_when_a_later_key_fails(
     print("SANITY: a real first-key save is reconciled after the second key fails; obsolete ZIP rows disappear and the original error survives.")
 
 
-def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
+def test_empty_work_preserves_other_keys_and_planning_is_read_only(
     tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, identity_two: Identity
 ) -> None:
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
@@ -689,6 +693,7 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     df_extra = df_edgar.iloc[:1].assign(row_sequence=4)
     sqlite_store.save(Tables.insider_transactions, pd.concat([df_edgar, df_extra], ignore_index=True))
     sec.publish(context, [])
+    before = _table(sqlite_store)
     original_bounds = sqlite_store.bounds
     floor_reads: list[str] = []
 
@@ -699,10 +704,10 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     monkeypatch.setattr(sqlite_store, "bounds", bounds)
     context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
     result = edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
-    assert result.work.size == 0 and sec.read == [] and floor_reads == ["quarter"]
+    assert result.work.size == 0 and sec.read == [] and floor_reads == []
     df_rows = _rows_of(_table(sqlite_store), other.accession)
-    assert df_rows["row_sequence"].tolist() == [1, 2, 4]
-    assert set(df_rows["source"]) == {"edgar"} and df_rows["quarter"].tolist() == ["2026q2"] * 3
+    pd.testing.assert_frame_equal(_table(sqlite_store), before)
+    assert set(df_rows["row_sequence"]) == {1, 2, 3, 4}
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("read-only planning must not prepare, save or reconcile a fetch")
@@ -714,13 +719,13 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
     run = edgar_driver.EdgarRun(["AAA"], cik_map, identity_two, context.run, None, edgar_driver.RetryRounds.from_config(context.config))
     plan = edgar_driver.plan_fetch(context, descriptor, run)
-    assert plan.size == 0 and floor_reads == ["quarter", "quarter"]
+    assert plan.size == 0 and floor_reads == []
     print(
-        "SANITY: zero-work AAA execution repairs an old mixed BBB accession with one floor read; static planning enters no context and writes nothing."
+        "SANITY: zero-work AAA execution preserves every mixed BBB row; static planning enters no context and both paths perform no quarter-floor read."
     )
 
 
-def test_successful_run_does_not_hide_a_reconcile_failure(
+def test_successful_empty_run_is_read_only_and_logs_once(
     tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, identity: Identity, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
@@ -728,33 +733,28 @@ def test_successful_run_does_not_hide_a_reconcile_failure(
     context = _context(tmp_path, sqlite_store)
     sec.zips["2026q1"] = _zip_tables([Q0])
     _run_zip(context)
+    before = _table(sqlite_store)
     sec.publish(context, [])
     caplog.clear()
-
-    def fail(context: Any, since: pd.Timestamp) -> int:
-        raise RuntimeError("cleanup failed after success")
-
-    monkeypatch.setattr(edgar, "replace_zip_accessions", fail)
-    with pytest.raises(RuntimeError, match="cleanup failed after success"):
-        _run_edgar(context)
+    _run_edgar(context)
+    pd.testing.assert_frame_equal(_table(sqlite_store), before)
     assert _messages(caplog, logging.INFO).count("insider EDGAR run: no filing excluded by the identity screen") == 1
-    print("SANITY: cleanup failure after an otherwise successful empty run is raised, with exactly one exclusion summary.")
+    print("SANITY: a successful empty run changes no stored row and emits one exclusion summary.")
 
 
-def test_singleton_reuse_keeps_tickers_exclusions_and_floor_local_after_failure(
+def test_singleton_reuse_keeps_tickers_and_exclusions_local_after_failure(
     tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, identity_two: Identity, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
     sec.zips["2026q1"] = _zip_tables([Q0])
-    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"])
     second = replace(B1, filed="2026-07-02")
     sec.publish(context, [E1, second])
     screen = edgar.screen_insider_rows
-    reconcile = edgar.replace_zip_accessions
+    original_parse = edgar.parse_insider
     scopes: list[tuple[str, ...]] = []
-    floors: list[pd.Timestamp] = []
 
     def screened(df_rows: pd.DataFrame, universe: Any, identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame]:
         scopes.append(tuple(universe))
@@ -762,16 +762,16 @@ def test_singleton_reuse_keeps_tickers_exclusions_and_floor_local_after_failure(
             return df_rows.iloc[:0], df_rows.assign(claimed_ticker="AAA", reject_reason="entity_mismatch")
         return screen(df_rows, universe, identity)
 
-    def reconciled(context: Any, since: pd.Timestamp) -> int:
-        floors.append(since)
-        if len(floors) == 1:
-            raise RuntimeError("first cleanup failed")
-        return reconcile(context, since)
+    def parse(ticker: str, cik: str, stamp: Any, scope: Any, **kwargs: Any) -> dict:
+        result = original_parse(ticker, cik, stamp, scope, **kwargs)
+        if ticker == "AAA":
+            raise TypeError("first parse failed")
+        return result
 
     monkeypatch.setattr(edgar, "screen_insider_rows", screened)
-    monkeypatch.setattr(edgar, "replace_zip_accessions", reconciled)
+    monkeypatch.setattr(edgar, "parse_insider", parse)
     caplog.clear()
-    with pytest.raises(RuntimeError, match="first cleanup failed"):
+    with pytest.raises(TypeError, match="first parse failed"):
         context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
         edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["AAA"]))
     assert any("excluded 1 filing(s), 2 row(s)" in message for message in _messages(caplog, logging.WARNING))
@@ -780,10 +780,9 @@ def test_singleton_reuse_keeps_tickers_exclusions_and_floor_local_after_failure(
     context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-07-08"))
     result = edgar_driver.run_edgar_fetch(context, edgar.INSIDER_EDGAR_FETCH, edgar_driver.EdgarRun.load(context, ["BBB"]))
     assert result.missing == {} and scopes == [("AAA",), ("BBB",)]
-    assert floors == [pd.Timestamp("2026-04-01"), pd.Timestamp("2026-07-01")]
     assert "insider EDGAR run: no filing excluded by the identity screen" in _messages(caplog, logging.INFO)
     warnings = _messages(caplog, logging.WARNING)
     assert all("insider inventory: incomplete or changed original index" in message for message in warnings), warnings
     assert edgar.INSIDER_EDGAR_FETCH.parse is None
     assert _rows_of(_table(sqlite_store), second.accession)["source"].tolist() == ["edgar"]
-    print("SANITY: reusing the singleton after failure binds BBB only, drops AAA's exclusions and recomputes the new quarter floor.")
+    print("SANITY: reusing the singleton after failure binds BBB only, drops AAA's exclusions and keeps its parser bound only to this run.")

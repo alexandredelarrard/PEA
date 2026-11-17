@@ -8,7 +8,7 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
-from src.data_store.schema import ALL, BY_NAME, KIND_AGGREGATE, KIND_PART, Table
+from src.data_store.schema import ALL, BY_NAME, KIND_AGGREGATE, KIND_PART, Table, Tables
 from src.utils.window import Offset, TimeUnit, Window, WindowPolicy
 
 
@@ -25,9 +25,16 @@ def _date(value: object, label: str) -> pd.Timestamp:
 
 
 def _offset(value: DictConfig) -> Offset:
-    if set(value) != {"value", "unit"}:
-        raise ValueError("An offset requires exactly value and unit")
+    _keys(value, {"value", "unit"})
     return Offset(value.value, cast(TimeUnit, value.unit))
+
+
+def _keys(value: DictConfig, required: set[str], optional: set[str] | None = None) -> None:
+    """Refuse missing and ignored options instead of leaving a second apparent timing owner."""
+    actual = set(value) if isinstance(value, DictConfig) else set()
+    unknown, missing = actual - required - (optional or set()), required - actual
+    if unknown or missing:
+        raise ValueError(f"Invalid policy fields: missing={sorted(missing)}; unknown={sorted(unknown)}")
 
 
 def _columns(table: Table) -> set[str]:
@@ -59,16 +66,32 @@ def publication_policy(config: DictConfig, table: Table) -> DictConfig:
 
 
 def _validate_publication(config: DictConfig, table: Table, policy: DictConfig) -> None:
+    fields = {
+        "direct": {"mode", "clock", "lag", "roll"},
+        "inherit": {"mode", "source", "clock"},
+        "completed_session": {"mode", "clock", "roll"},
+        "dated_snapshot": {"mode", "clock", "roll"},
+        "half_month_end": {"mode", "clock", "lag", "roll"},
+        "notes_release": {"mode", "clock", "filing_lag", "monthly_release_day", "quarterly_lag", "observed_from", "roll"},
+        "derived": {"mode", "reason"},
+        "not_applicable": {"mode", "reason"},
+    }
+    if not isinstance(policy, DictConfig) or policy.get("mode") not in fields:
+        raise ValueError(f"{table.name}: unsupported publication mode")
+    required = fields[policy.mode]
+    if policy.mode == "inherit":
+        required = required - {"clock"}
+    _keys(policy, required, {"clock"} if policy.mode == "inherit" else {"later_clocks"} if policy.mode in {"direct", "notes_release"} else set())
     mode = policy.mode
-    if mode not in {"direct", "inherit", "completed_session", "dated_snapshot", "half_month_end", "notes_release", "derived", "not_applicable"}:
-        raise ValueError(f"{table.name}: unsupported publication mode {mode}")
     clock = policy.get("clock")
+    if mode not in {"inherit", "derived", "not_applicable"} and clock is None:
+        raise ValueError(f"{table.name}: a source publication clock is required")
     if clock is not None and clock not in _columns(table):
         raise ValueError(f"{table.name}: unknown publication clock {clock}")
     effective = publication_policy(config, table)
     if effective.mode in {"direct", "half_month_end"}:
         lag = _offset(effective.lag)
-        if lag.unit != "calendar_days" or (effective.mode == "direct" and lag.value < 1):
+        if lag.unit != "calendar_days" or lag.value < 1:
             raise ValueError(f"{table.name}: source buffers require positive calendar days")
     if any(column not in _columns(table) for column in effective.get("later_clocks", [])):
         raise ValueError(f"{table.name}: unknown later publication clock")
@@ -92,44 +115,93 @@ def _validate_publication(config: DictConfig, table: Table, policy: DictConfig) 
 def _validate_reprocess(table: Table, item: DictConfig) -> None:
     work = item.reprocess
     modes = {
-        "tail",
-        "missing_documents",
-        "missing_units",
-        "source_changes",
-        "snapshot",
-        "candidate_window",
-        "inherited_max",
-        "stage_owned",
-        "not_applicable",
+        "tail": {"overlap"},
+        "missing_documents": set(),
+        "missing_units": set(),
+        "source_changes": {"source"},
+        "snapshot": set(),
+        "candidate_window": {"lookback"},
+        "inherited_max": set(),
+        "stage_owned": set(),
+        "not_applicable": set(),
     }
-    if work.mode not in modes:
-        raise ValueError(f"{table.name}: unsupported reprocessing mode {work.mode}")
+    if not isinstance(work, DictConfig) or work.get("mode") not in modes:
+        raise ValueError(f"{table.name}: unsupported reprocessing mode")
+    optional = {"cover_recovery"} if table == Tables.sec_13f_manager_details else {"archive_fallback"} if table == Tables.sec13f_hr else set()
+    _keys(work, {"mode"} | modes[work.mode], optional)
+    if "archive_fallback" in work and work.archive_fallback != "missing_units":
+        raise ValueError(f"{table.name}: archive fallback must ingest missing units")
     if work.mode == "tail":
         _offset(work.overlap)
     elif "overlap" in work:
         raise ValueError(f"{table.name}: {work.mode} has no numeric overlap")
+    if "cover_recovery" in work:
+        _keys(work.cover_recovery, {"cached_units"})
+        count = work.cover_recovery.cached_units
+        if work.mode != "tail" or isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError(f"{table.name}: cover recovery requires a positive cached-unit count and tail policy")
     if work.mode == "candidate_window":
         _offset(work.lookback)
-    if work.mode == "source_changes" and work.source not in BY_NAME:
+    if work.mode == "source_changes" and (work.source not in BY_NAME or work.source == table.name):
         raise ValueError(f"{table.name}: unknown changed-source owner")
     if work.mode == "inherited_max" and table.kind != KIND_AGGREGATE:
         raise ValueError(f"{table.name}: inherited maximum is an assembly policy")
     if "warmup" in item:
         if table.kind != KIND_PART:
             raise ValueError(f"{table.name}: warm-up is only applicable to cube parts")
+        _keys(item.warmup, {"grid"}, {"sources"})
         grid = item.warmup.grid
+        _keys(grid, {"mode", "value", "unit"} if grid.get("mode") == "offset" else {"mode"})
         if grid.mode == "offset":
             _offset(OmegaConf.create({"value": grid.value, "unit": grid.unit}))
         elif grid.mode != "full_history":
             raise ValueError(f"{table.name}: unsupported grid warm-up {grid.mode}")
         for source in item.warmup.get("sources", {}).values():
             _offset(source)
+        if "sources" in item.warmup:
+            if table != Tables.cube_part_fundamentals:
+                raise ValueError(f"{table.name}: no per-source computation context is defined")
+            _keys(item.warmup.sources, {"financial_history", "earnings_surprises", "notes_num", "fundamentals_employees"})
+    if "lookahead" in item:
+        _keys(item.lookahead, {"mode"})
+        if table != Tables.cube_part_targets or item.lookahead.mode != "target_horizons":
+            raise ValueError(f"{table.name}: future outcomes are only applicable to target horizons")
+
+
+def _validate_table_dates(config: DictConfig, table: Table, item: DictConfig) -> None:
+    required = {"status", "reprocess", "pit"}
+    if item.status != "active":
+        _keys(item, required)
+        mode = "snapshot" if item.status == "snapshot" else "not_applicable" if item.status == "inactive" else "stage_owned"
+        if item.reprocess.mode != mode:
+            raise ValueError(f"{table.name}: work mode contradicts table status")
+        return
+    _keys(item, required | {"start_date", "end_date", "source_start", "coverage_start", "freshness"}, {"warmup", "lookahead"})
+    start = _date(item.start_date, f"{table.name}.start_date")
+    end = None if item.end_date is None else _date(item.end_date, f"{table.name}.end_date")
+    if end is not None and start > end:
+        raise ValueError(f"{table.name}: end_date precedes start_date")
+    for field in ("source_start", "coverage_start"):
+        if item[field] is not None:
+            _date(item[field], f"{table.name}.{field}")
+    if item.freshness is not None:
+        fresh = item.freshness
+        _keys(fresh, {"clock", "cadence"})
+        if fresh.clock not in _columns(table) or fresh.cadence not in config.data.freshness.max_age_days:
+            raise ValueError(f"{table.name}: invalid freshness clock or cadence")
+    if table.kind == KIND_PART and "warmup" not in item:
+        raise ValueError(f"{table.name}: cube parts require explicit computation context")
+    if item.reprocess.mode in {"not_applicable", "stage_owned"}:
+        raise ValueError(f"{table.name}: active table requires an executable work policy")
 
 
 def validate_data_policy(config: DictConfig) -> None:
     """Validate all registered table policies before constructing a store or source client."""
     if "data" not in config or "tables" not in config.data:
         raise ValueError("data.yml must define all table policies")
+    _keys(config.data, {"planning", "freshness", "derived_feature_starts", "tables"})
+    _keys(config.data.planning, {"ended_grace", "lineage_recheck"})
+    _keys(config.data.freshness, {"max_age_days", "prediction_min_fresh_share", "insider_max_lag_days"})
     policies = config.data.tables
     if set(policies) != set(BY_NAME):
         raise ValueError(
@@ -137,28 +209,42 @@ def validate_data_policy(config: DictConfig) -> None:
         )
     for table in ALL:
         item = policies[table.name]
-        if item.status not in {"active", "snapshot", "inactive", "model_owned", "portfolio_owned"}:
-            raise ValueError(f"{table.name}: unsupported policy status {item.status}")
-        if item.status == "active":
-            start = _date(item.start_date, f"{table.name}.start_date")
-            end = None if item.end_date is None else _date(item.end_date, f"{table.name}.end_date")
-            if end is not None and start > end:
-                raise ValueError(f"{table.name}: end_date precedes start_date")
-            for field in ("source_start", "coverage_start"):
-                if item[field] is not None:
-                    _date(item[field], f"{table.name}.{field}")
-            if item.freshness is not None:
-                fresh = item.freshness
-                if fresh.clock not in _columns(table) or fresh.cadence not in config.data.freshness.max_age_days:
-                    raise ValueError(f"{table.name}: invalid freshness clock or cadence")
+        if not isinstance(item, DictConfig) or item.get("status") not in {"active", "snapshot", "inactive", "model_owned", "portfolio_owned"}:
+            raise ValueError(f"{table.name}: unsupported policy status")
+        _validate_table_dates(config, table, item)
         _validate_reprocess(table, item)
         _validate_publication(config, table, item.pit)
+        source, seen = item, {table.name}
+        while source.reprocess.mode == "source_changes":
+            name = str(source.reprocess.source)
+            if name in seen:
+                raise ValueError(f"{table.name}: cyclic changed-source ownership")
+            seen.add(name)
+            source = policies[name]
     for offset in config.data.planning.values():
         _offset(offset)
-    if not 0 < config.data.freshness.prediction_min_fresh_share <= 1:
+    share = config.data.freshness.prediction_min_fresh_share
+    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share <= 1:
         raise ValueError("Prediction minimum fresh share must be in(0,1]")
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in config.data.freshness.max_age_days.values()):
         raise ValueError("Freshness tolerances must be nonnegative integer calendar days")
+    lag = config.data.freshness.insider_max_lag_days
+    if isinstance(lag, bool) or not isinstance(lag, int) or lag < 0:
+        raise ValueError("Insider freshness lag must be nonnegative integer calendar days")
+    for feature, value in config.data.derived_feature_starts.items():
+        _date(value, f"data.derived_feature_starts.{feature}")
+
+
+def source_read_window(config: DictConfig, table: Table, as_of: pd.Timestamp) -> Window | None:
+    """Retain the configured source-floor prefix needed by derived histories and identity snapshots."""
+    item = config.data.tables[table.name]
+    if item.status != "active":
+        return None
+    start = _date(item.source_start if item.source_start is not None else item.start_date, f"{table.name}.source_start")
+    end = pd.Timestamp(as_of).normalize()
+    if item.end_date is not None:
+        end = min(end, _date(item.end_date, f"{table.name}.end_date"))
+    return Window(start, end) if start <= end else None
 
 
 def window_policy(config: DictConfig, table: Table, as_of: pd.Timestamp) -> WindowPolicy | None:

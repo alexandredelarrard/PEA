@@ -43,10 +43,7 @@ class StepManagerProfile(Step):
 
         # load: the key, name and profile columns of the manager rows once; nothing else is read while every row is profiled
         wanted = ["cik", "period", "source_period", "manager_name", *PROFILE_COLUMNS]
-        stored = set(self._store.columns(Tables.sec_13f_manager_details))
-        df_stored = (
-            self._store.load(Tables.sec_13f_manager_details, columns=[name for name in wanted if name in stored], optional=True) if stored else None
-        )
+        df_stored = self._store.load(Tables.sec_13f_manager_details, columns=wanted, optional=True)
         if df_stored is None:
             self._log.info("manager profile: no manager rows stored yet")
             return 0
@@ -126,17 +123,14 @@ class StepManagerProfile(Step):
         stamps = [period.strftime("%Y-%m-%d") for period in periods]
         frames = []
         for start in range(0, len(ciks), chunk):
-            where = {"cik": ciks[start : start + chunk], "period": stamps[0] if len(stamps) == 1 else stamps}
+            where = {"cik": ciks[start : start + chunk], "period": stamps}
             frame = self._store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
             if frame is not None:
                 frames.append(frame)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(LINE_COLUMNS))
 
     def _save(self, df_changed: pd.DataFrame) -> int:
-        """Upsert the profile columns only, in chunks; returns the rows written."""
+        """Upsert the profile columns only, returns the rows written."""
         if df_changed.empty:
             return 0
-        chunk = 50_000
-        return sum(
-            self._store.save(Tables.sec_13f_manager_details, df_changed.iloc[start : start + chunk]) for start in range(0, len(df_changed), chunk)
-        )
+        return self._store.save(Tables.sec_13f_manager_details, df_changed)

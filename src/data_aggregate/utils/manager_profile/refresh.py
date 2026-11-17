@@ -23,10 +23,10 @@ class Refresh:
 
 
 def stored_details(details: pd.DataFrame) -> pd.DataFrame:
-    """The stored rows with normalised period dates, `source_period` (null reads as `period`) and every profile column present (a column not added yet reads null)."""
-    missing = [name for name in (*PROFILE_COLUMNS, "source_period") if name not in details.columns]
-    out = details.reindex(columns=[*details.columns, *missing]).assign(period=pd.to_datetime(details["period"]).dt.normalize())
-    return out.assign(source_period=pd.to_datetime(out["source_period"]).dt.normalize().fillna(out["period"]))
+    """The stored rows with `period` and `source_period` normalised to dates."""
+    return details.assign(
+        period=pd.to_datetime(details["period"]).dt.normalize(), source_period=pd.to_datetime(details["source_period"]).dt.normalize()
+    )
 
 
 def _shift(period: pd.Timestamp, quarters: int) -> pd.Timestamp:
@@ -62,9 +62,9 @@ def profile_frame(details: pd.DataFrame, category: pd.Series, profile: pd.DataFr
 
 
 def changed_rows(profile: pd.DataFrame, details: pd.DataFrame) -> pd.DataFrame:
-    """Rows of `profile` that differ from the stored profile columns of `details` (a missing column reads null)."""
+    """Rows of `profile` that differ from the stored profile columns of `details`."""
     # Stored profile columns of the compared rows, aligned on the key.
-    stored = details.reindex(columns=[*_KEYS, *PROFILE_COLUMNS]).merge(profile[_KEYS], on=_KEYS)
+    stored = details[[*_KEYS, *PROFILE_COLUMNS]].merge(profile[_KEYS], on=_KEYS)
     stored = stored.set_index(_KEYS).sort_index()
     new = profile.set_index(_KEYS).sort_index()
 

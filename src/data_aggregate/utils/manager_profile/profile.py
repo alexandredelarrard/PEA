@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -34,7 +33,4 @@ def profile_rows(qstats: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
     median = grouped["book_value_usd"].median().where(grouped["book_value_usd"].count() >= minimum)
     used = grouped.size().rename("n_quarters_used")
     out = pd.concat([mean, median, used], axis=1).reindex(columns=[*STAT_COLUMNS, "n_quarters_used"])
-
-    # Below the minimum number of usable quarters nothing is reported.
-    out.loc[out["n_quarters_used"] < minimum, list(STAT_COLUMNS)] = np.nan
     return out.reset_index()

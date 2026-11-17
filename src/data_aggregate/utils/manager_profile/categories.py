@@ -59,7 +59,8 @@ def load_category_overrides(config_dir: Path | str, rules: DictConfig) -> dict[s
     path = superinvestors_config_dir(config_dir) / OVERRIDES_FILENAME
     entries = json.loads(path.read_text(encoding="utf-8"))["overrides"]
     bad_cik = sorted(cik for cik in entries if not re.fullmatch(r"[0-9]{10}", cik))
-    bad_category = sorted(cik for cik, entry in entries.items() if entry["category"] not in set(rules.categories))
+    legal = set(rules.categories)
+    bad_category = sorted(cik for cik, entry in entries.items() if entry["category"] not in legal)
     if bad_cik or bad_category:
         raise ValueError(f"{path}: CIKs not ten digits {bad_cik}; categories outside {list(rules.categories)} for {bad_category}")
     return {cik: entry["category"] for cik, entry in entries.items()}

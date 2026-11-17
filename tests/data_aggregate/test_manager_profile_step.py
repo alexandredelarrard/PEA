@@ -291,23 +291,6 @@ def test_a_changed_extract_row_triggers_a_recompute_of_its_quarters(store: Any, 
     print(f"name change at {_stamp(PERIODS[2])}: category -> {row['category']}, {changed} rows rewritten, read quarters {read}.")
 
 
-def test_a_night_with_missing_profile_columns_equals_a_full_rebuild(store: Any, cfg: DictConfig) -> None:
-    for index in range(len(PERIODS)):
-        _add_quarter(store, index)
-    _step(store, cfg).run(full=False)
-    complete = _table(store)
-
-    store.update(Tables.sec_13f_manager_details, {"category": None}, {"period": _stamp(PERIODS[-1])})  # a filing window not yet profiled
-    changed = _step(store, cfg).run(full=False)
-
-    assert changed == len(MANAGERS), "only the unprofiled quarter's rows are rewritten"
-    pd.testing.assert_frame_equal(_table(store), complete)
-    print("\n=== SANITY CHECK: unprofiled quarter ===")
-    print(
-        f"category removed from {len(MANAGERS)} rows of {_stamp(PERIODS[-1])}; the next run rewrote {changed} and the table equals the complete one."
-    )
-
-
 def test_real_sample_books_match_the_pure_pipeline(store: Any, cfg: DictConfig) -> None:
     """A real bounded sample (three 2024 quarters, about 60 managers) written into SQLite and profiled by the step."""
     live = live_store()

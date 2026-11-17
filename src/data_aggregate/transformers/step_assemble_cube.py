@@ -54,14 +54,14 @@ class StepAssembleCube(Step):
                 continue
             if table.name in assembly.optional_parts and not part_has_rows(self._store, table, {"ticker": self._universe.tickers}):
                 continue
+            if written is not None and table not in written:
+                raise ValueError(f"{table.name}: successful upstream write receipt required before assembly")
             if written is not None:
-                if table not in written:
-                    raise ValueError(f"{table.name}: successful upstream write receipt required before assembly")
                 starts.append(written[table].start)
-            else:
-                component = plan_window(self._context, table, calendar)
-                if component is not None:
-                    starts.append(component.write.start)
+                continue
+            component = plan_window(self._context, table, calendar)
+            if component is not None:
+                starts.append(component.write.start)
         if not starts:
             return None
         return plan_window(self._context, Tables.cube, calendar, inherited_start=min(starts))

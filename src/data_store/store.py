@@ -629,14 +629,12 @@ class DataStore:
             .select_from(relation)
             .where(where)
         )
-        selected: dict[object, dict[str, Any]] = {}
-        with _connection(self._database) as conn:
-            with conn.execution_options(stream_results=True, max_row_buffer=_CHUNK).execute(stmt) as rows:
-                for row in rows.mappings():
-                    selected.setdefault(row["__sample_group"], dict(row))
-                    if len(selected) == sample.count:
-                        break
-        return pd.DataFrame(selected.values(), columns=columns).sort_values("__sample_group").reset_index(drop=True)
+        with (
+            _connection(self._database) as conn,
+            conn.execution_options(stream_results=True, max_row_buffer=_CHUNK).execute(stmt) as rows,
+        ):
+            selected = rows.unique(lambda row: row._mapping["__sample_group"]).mappings().fetchmany(sample.count)
+        return pd.DataFrame(selected, columns=columns).sort_values("__sample_group").reset_index(drop=True)
 
     def distinct(
         self, table, column: str, *, where: dict | None = None, order: str | None = None, limit: int | None = None, dropna: bool = True

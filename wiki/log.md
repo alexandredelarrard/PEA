@@ -1274,3 +1274,10 @@ The user explicitly retains governance fills from later filings and the existing
 - source_commit: pending integrated F-003/F-002 candidate (base bd4014f4; subset compatibility follows approved 10135865 behavior).
 - Coverage: fixed configured source bounds, missing/failed indexed 13F accessions with nightly ZIP fallback, 30-calendar-day short-volume correction overlap, and current extraction CLI flags. Documentation checks only; no production fetch or backfill ran.
 - Pages: [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — FTD and employee reuse guidance (F-002 follow-up)
+
+- Profile: internal/standard
+- source_commit: 133b75c6 (FTD and employee source unchanged from bd4014f4).
+- Coverage: FTD catch-up within selected missing/incomplete archive units, explicit bounded replay of completed units, and employee filing-date decision reuse in every mode with failed-call retry. Documentation checks only; no recovery or LLM call ran.
+- Pages: [Run the pipeline](./guides/run-the-pipeline.md).

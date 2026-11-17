@@ -6,6 +6,7 @@ periods on the primary key) for 2000Q4, 2008Q4 and 2024Q4.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import cast
 
@@ -246,6 +247,22 @@ def test_turnover_new_rate_concentration_mix_sector_cap_active_share(reference: 
     assert stats["book_value_usd"] == 4000.0
     print("\n=== SANITY CHECK: quarter statistics ===")
     print("hhi .375, turnover .8, new rate 1/3, active share .55, caps and sectors equal the hand computation.")
+
+
+def test_a_quarter_read_as_decimals_still_compares_with_the_next_quarter(reference: pd.DataFrame, cfg: DictConfig) -> None:
+    lines = [
+        ("T1", "C1", "ONE INC", "common", Decimal("100"), Decimal("1000"), {}),
+        ("T2", "C2", "TWO INC", "common", Decimal("50"), Decimal("1000"), {}),
+    ]
+    cleaned = clean_book(_raw("A", "2024-03-31", "A1", lines, filed="2024-05-01"), cfg, NO_PREFIX)
+    q0 = classify_securities(cleaned, reference, CFG)
+    q1 = _cleaned("A", Q1, [("T1", "common", 100.0, 1000.0, ""), ("T2", "common", 25.0, 500.0, "")], reference)
+
+    stats = quarter_stats(q1, compact_book(q0), quarter_aggregate(q0, cfg.cap_breakpoints), cfg).iloc[0]
+
+    assert cleaned["value"].dtype == float and np.isclose(stats["turnover"], 0.5), "T2 halved: half of the previous weight moved"
+    print("\n=== SANITY CHECK: decimal quarter ===")
+    print("a Decimal-typed quarter reads as float and its successor's turnover is 0.5, no isfinite error.")
 
 
 def test_asset_mix_sums_to_one_with_bonds_and_options(reference: pd.DataFrame, cfg: DictConfig) -> None:

@@ -33,6 +33,8 @@ LINE_COLUMNS = (
     "form",
 )
 #: Line kind -> the column holding its value (common lines never add `call_value` / `put_value`).
+#: Raw numeric line columns, read as floats whatever dtype the database driver returns.
+_NUMERIC_COLUMNS = ["shares", "value_usd", "call_value", "put_value", "debt_value"]
 _VALUE_COLUMN = {"common": "value_usd", "debt": "debt_value", "call": "call_value", "put": "put_value"}
 _BOOK_KEYS = ["cik", "period", "filing_date", "accession_number"]
 #: Columns of the cleaned lines `clean_book` returns.
@@ -47,6 +49,7 @@ def _original_book(raw: pd.DataFrame, min_lines: int) -> pd.DataFrame:
     """
     # Normalise the dates, drop filings dated before their period end (typos) and split markers from lines.
     df = raw.assign(period=pd.to_datetime(raw["period"]), filing_date=pd.to_datetime(raw["filing_date"]))
+    df[_NUMERIC_COLUMNS] = df[_NUMERIC_COLUMNS].astype(float)  # a quarter read as Decimal (object) would break the next quarter's comparison
     df = df[df["filing_date"] >= df["period"]]
     is_marker = df["cusip"].eq(EMPTY_MARKER)
     markers, lines = df[is_marker], df[~is_marker]

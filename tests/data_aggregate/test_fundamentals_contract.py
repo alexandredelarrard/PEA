@@ -11,6 +11,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import pytest
+from omegaconf.errors import ConfigAttributeError
 
 from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
@@ -66,6 +67,38 @@ def _history_step(store: DataStore, sec: pd.DataFrame | None) -> StepCubeFundame
         store.save(Tables.sec_fundamentals_history, sec)
     context = _context(store)
     return StepCubeFundamentals(context, context.config)
+
+
+def test_fundamental_settings_preserve_the_configured_controls(sqlite_store: DataStore) -> None:
+    context = _context(sqlite_store)
+    configured = context.config.data_aggregate
+
+    settings = StepCubeFundamentals(context, context.config)._feature_settings()
+
+    assert settings.history_window == int(configured.hist.window)
+    assert settings.history_min_periods == int(configured.hist.min_periods)
+    assert settings.earnings_scale_quarters == int(configured.fundamentals_features.earnings_scale_quarters)
+    assert all(isinstance(value, int) for value in (settings.history_window, settings.history_min_periods, settings.earnings_scale_quarters))
+    assert settings.intrinsic_cfg is configured.intrinsic
+    print("SANITY: the production settings factory preserves the configured integer controls and the existing intrinsic configuration.")
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["hist", "hist.window", "hist.min_periods", "fundamentals_features", "fundamentals_features.earnings_scale_quarters", "intrinsic"],
+)
+def test_fundamental_settings_refuse_missing_required_config(sqlite_store: DataStore, missing: str) -> None:
+    context = _context(sqlite_store)
+    owner = context.config.data_aggregate
+    path = missing.split(".")
+    for key in path[:-1]:
+        owner = owner[key]
+    del owner[path[-1]]
+
+    step = StepCubeFundamentals(context, context.config)
+    with pytest.raises(ConfigAttributeError, match=path[-1]):
+        step._feature_settings()
+    print(f"SANITY: the production settings factory refuses missing required {missing} instead of choosing a hidden default.")
 
 
 def test_the_cube_left_joins_three_sec_columns_onto_the_sharadar_spine(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:

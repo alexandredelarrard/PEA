@@ -5,6 +5,8 @@ supported absence (short volume 0, total unknown)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -14,6 +16,7 @@ from src.data_store.schema import Tables
 from src.utils.security_series import finra_key, finra_marker_kind, short_volume_series
 from tests.canonical_schema import create_canonical
 from tests.conftest import _store
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.data_extract.institutionals.test_short_volume_security import MASTER_ROWS, _lineage, _master
 from tests.data_extract.institutionals.test_short_volume_security import UNIVERSE as RULE_UNIVERSE
 
@@ -90,7 +93,7 @@ def test_classes_sum_times_ratio_with_a_supported_absence_and_a_lineage_fallback
         ),
     )
 
-    short, finra = inputs.load_short_volume(sqlite_store, UNIVERSE, _lines(), _red_lineage())
+    short, finra = inputs.load_short_volume(source_context(sqlite_store, Path(".")), UNIVERSE, _lines(), _red_lineage())
 
     assert short is not None and list(short.columns) == ["date", "ticker", "short_volume", "total_volume"]
     assert pd.api.types.is_datetime64_any_dtype(short["date"]) and not short.duplicated(["ticker", "date"]).any()
@@ -139,7 +142,7 @@ def test_an_unresolved_finra_key_blocks_a_company_only_inside_its_master_line(sq
         ),
     )
 
-    short, _ = inputs.load_short_volume(sqlite_store, ["META"], master, lineage)
+    short, _ = inputs.load_short_volume(source_context(sqlite_store, Path(".")), ["META"], master, lineage)
 
     assert short is not None
     got = {f"{d:%Y-%m-%d}": (s, v) for d, _, s, v in short.itertuples(index=False)}
@@ -260,7 +263,7 @@ def test_real_stored_lines_reach_the_builder_as_company_series() -> None:
     summed = lines.loc[lines["lineage_role"].isin(["canonical_current", "canonical_predecessor", "secondary_class"])]
     multi = sorted(summed.groupby("canonical_company")["cusip"].nunique().loc[lambda n: n.gt(1)].index)
 
-    short, _ = inputs.load_short_volume(store, multi, lines, lineage)
+    short, _ = inputs.load_short_volume(source_context(store, Path(".")), multi, lines, lineage)
 
     assert short is not None and not short.duplicated(["ticker", "date"]).any() and set(short["ticker"]) <= set(multi)
     raw = store.load(Tables.sec_short_volume_security, columns=["date", "source_symbol", "short_volume"])

@@ -15,6 +15,8 @@ It also owns the live-test gate: `@pytest.mark.live` tests skip unless PEA_LIVE_
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -57,8 +59,9 @@ from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory  # n
 from src.data_aggregate.utils.price.frames import PriceFrames  # noqa: E402
 from src.data_store.errors import TableEmptyError  # noqa: E402
 from src.data_store.schema import BY_NAME, Tables, name_of, resolve  # noqa: E402
-from src.data_store.store import DataStore  # noqa: E402
+from src.data_store.store import DataStore, WriteCounts  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
+from src.utils.window import Window  # noqa: E402
 from tests.canonical_schema import create_canonical  # noqa: E402
 
 DATA = ROOT / "data"
@@ -144,6 +147,9 @@ class FakeStore:
     @staticmethod
     def _filter(df: pd.DataFrame, where: dict[str, Any] | None) -> pd.DataFrame:
         for col, val in (where or {}).items():
+            if isinstance(val, Window):
+                df = df.loc[val.mask(pd.to_datetime(df[col], format="mixed"))]
+                continue
             df = cast(
                 pd.DataFrame,
                 df[df[col].isin(list(val))] if isinstance(val, list | tuple | set | frozenset) else df[df[col] == val],
@@ -164,7 +170,7 @@ class FakeStore:
 
     def distinct(self, table: Any, column: str, **kw: Any) -> list[Any]:
         df = self.t.get(name_of(table))
-        return [] if df is None or df.empty else df[column].dropna().unique().tolist()
+        return [] if df is None or df.empty else self._filter(df, kw.get("where"))[column].dropna().unique().tolist()
 
     def bounds(self, table: Any, column: str | None = None) -> tuple[Any | None, Any | None]:
         df = self.t.get(name_of(table))
@@ -173,9 +179,13 @@ class FakeStore:
             return (None, None)
         return (df[col].min(), df[col].max())
 
-    def max_date(self, table: Any, column: str | None = None) -> pd.Timestamp | None:
-        lo, hi = self.bounds(table, column)
-        return None if hi is None else cast(pd.Timestamp, pd.Timestamp(hi)).normalize()
+    def max_date(self, table: Any, column: str | None = None, *, where: dict[str, Any] | None = None) -> pd.Timestamp | None:
+        frame = self.t.get(name_of(table))
+        clock = column or resolve(table).date_col
+        if frame is None or clock is None:
+            return None
+        values = self._filter(frame, where)[clock].dropna()
+        return None if values.empty else pd.Timestamp(values.max()).normalize()
 
     def max_date_by(self, table: Any, key_col: str, date_col: str | None = None) -> dict[str, pd.Timestamp]:
         """Per-key latest stored date. The grouped counterpart of `max_date` -- what
@@ -203,6 +213,13 @@ class FakeStore:
     ) -> pd.DataFrame | None:
         name = name_of(table)
         df = self._filter(self.t[name], where) if name in self.t else pd.DataFrame()
+        clock = kw.get("date_col") or resolve(table).date_col
+        if clock is not None and clock in df:
+            dates = pd.to_datetime(df[clock], format="mixed")
+            if kw.get("since") is not None:
+                df = df.loc[dates.ge(pd.Timestamp(kw["since"]))]
+            if kw.get("until") is not None:
+                df = df.loc[pd.to_datetime(df[clock], format="mixed").le(pd.Timestamp(kw["until"]))]
         marker = None if markers or name not in BY_NAME else BY_NAME[name].empty_marker
         if marker is not None and marker[0] in df.columns:
             values = cast(pd.Series, df[marker[0]])
@@ -214,6 +231,40 @@ class FakeStore:
         if columns:
             df = df[list(columns)]
         return cast(pd.DataFrame, (df.head(limit) if limit else df).copy().reset_index(drop=True))
+
+    def iter_load(self, table: Any, *, chunksize: int = 200_000, **kwargs: Any) -> Iterator[pd.DataFrame]:
+        kwargs.pop("optional", None)
+        frame = self.load(table, optional=True, **kwargs)
+        if frame is not None:
+            for offset in range(0, len(frame), chunksize):
+                yield frame.iloc[offset : offset + chunksize].copy()
+
+    @contextmanager
+    def transaction(self) -> Iterator[FakeStore]:
+        before = {key: frame.copy(deep=True) for key, frame in self.t.items()}
+        count = len(self.writes)
+        try:
+            yield self
+        except Exception:
+            self.t = before
+            del self.writes[count:]
+            raise
+
+    def replace_window(self, table: Any, frame: pd.DataFrame, window: Window, where: dict[str, Any], *, schema_rebuild: bool = False) -> WriteCounts:
+        clock = resolve(table).date_col
+        assert clock is not None and window.mask(frame[clock]).all()
+        selected = self._filter(frame, where)
+        assert len(selected) == len(frame)
+        name = name_of(table)
+        old = self.t.get(name, frame.iloc[:0])
+        removed = self._filter(old, {**where, clock: window})
+        keep = old.drop(index=removed.index)
+        if set(old.columns) != set(frame.columns):
+            assert schema_rebuild and keep.empty
+            keep = frame.iloc[:0]
+        self.t[name] = pd.concat([keep, frame], ignore_index=True)
+        self.writes.append(("replace_window", name, frame.copy()))
+        return WriteCounts(len(removed), len(frame))
 
     # -- writes -- #
     def save(self, table: Any, df: pd.DataFrame, pk: list[str] | tuple[str, ...] | None = None) -> int:

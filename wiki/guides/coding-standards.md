@@ -164,7 +164,7 @@ Cube builders keep heavy frames local to `run()`, load only their declared price
 ## data_store folder and dedicated files
 
 the data store folder holds the definition of tables in schema.py which has to be used to define anything constant regarding each table in the database:
-- the name of the table, refresh frequency, starting date, granularity, pk, etc.
+- table identity, grain, primary keys, structural resume keys and source columns. Configurable start/end dates, reprocessing, PIT delays, freshness and cube warm-up belong in [data.yml](../../configs/data.yml), read through [data_policy.py](../../src/utils/data_policy.py).
 
 the store.py is a file only defined and updated to hold all the necessary functions to handle the table :
 - extract, read, write, iter load, upsert, append, etc.

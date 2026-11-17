@@ -34,6 +34,7 @@ from src.data_aggregate.utils.price.checks import mask_seam_windows, measure_sea
 from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW, momentum_characteristic
+from tests.support.config import fixture_config
 
 #: DHR's registered event -- the largest of the six. `close_total` re-bases at the FTV spinoff
 #: and `pct_change()` reads the seam between the two bases as a +61.218% return.
@@ -429,12 +430,12 @@ def test_every_part_warmup_exceeds_the_longest_mask_reach():
     only because the mask could not have reached an emitted row anyway: the first emitted row
     sits a full warm-up after the load start, and the warm-up is longer than the reach.
     """
-    from src.data_aggregate.utils.common.parts import part_for
     from src.data_store.schema import Tables
 
     reach = max(back for back, _ in SEAM_WINDOWS.values()) - 1
-    momentum = part_for(Tables.cube_part_momentum).warmup_trading_days
-    targets = part_for(Tables.cube_part_targets).warmup_trading_days
+    config = fixture_config()
+    momentum = config.data.tables[Tables.cube_part_momentum.name].warmup.grid.value
+    targets = config.data.tables[Tables.cube_part_targets.name].warmup.grid.value
 
     assert reach == 251
     assert momentum > reach, (momentum, reach)

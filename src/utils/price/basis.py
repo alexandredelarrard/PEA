@@ -11,6 +11,7 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows
+from src.utils.data_policy import source_read_window
 from src.utils.identity_tables import identity_columns, read_identity
 from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.price.adjustments import ShareBasis, quantity_basis, resolve_share_events
@@ -45,7 +46,12 @@ def load_quantity_basis(
     names = sorted(set(tickers))
     store = context.store
     series, df_security = load_price_identity(context, names) if identity is None else identity
-    df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+    retained = source_read_window(context.config, Tables.prices_splits, context.run.as_of)
+    df_splits = (
+        store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names, "date": retained}, optional=True)
+        if retained is not None
+        else None
+    )
     df_actions = store.load(
         Tables.sharadar_actions,
         columns=["ticker", "date", "action", "value"],

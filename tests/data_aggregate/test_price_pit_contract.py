@@ -11,17 +11,19 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.utils.price.features import pit_fields
-from src.data_aggregate.utils.price.frames import load_price_frames
+from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.price.inputs import PriceInputs
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries
 from src.utils.price.adjustments import ShareBasis
+from src.utils.window import WindowRun
+from tests.support.config import fixture_config
 from tests.support.universe import seed_universe
+from tests.support.windows import run_cube
 
 
 def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
@@ -79,26 +81,32 @@ def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
     )
     peer_path = directory / "peers.json"
     peer_path.write_text(json.dumps({"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}), encoding="utf-8")
-    config = OmegaConf.create({"data_aggregate": {}, "data_extract": {"redundant_ticks": []}})
+    config = fixture_config()
     return SimpleNamespace(
-        store=store, config=config, config_dir=directory, log=logging.getLogger(__name__), paths={"SECTOR_PEERS_PATH": peer_path}, universe=universe
+        store=store,
+        config=config,
+        config_dir=directory,
+        log=logging.getLogger(__name__),
+        paths={"SECTOR_PEERS_PATH": peer_path},
+        universe=universe,
+        run=WindowRun("incremental", "fixed price fixture", index[-1]),
     )
 
 
 def test_actual_builder_publishes_quoted_prices_and_split_carried_counts(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
-    StepCubePrices(context, context.config).run(full=True)
+    run_cube(StepCubePrices(context, context.config), full=True)
     df_prices = sqlite_store.load(Tables.cube_part_prices)
     assert {"close_pit", "shares_outstanding_pit", "mcap_pit"}.issubset(df_prices)
     df_a = df_prices.loc[df_prices["ticker"].eq("AAA")].sort_values("date")
     assert df_a["close_pit"].iloc[:5].eq(100.0).all()
     assert df_a["close_pit"].iloc[5:].eq(25.0).all()
-    assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
+    assert df_a["shares_outstanding_pit"].iloc[1:5].eq(100.0).all() and pd.isna(df_a["shares_outstanding_pit"].iloc[0])
     assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
-    assert df_a["mcap_pit"].eq(10_000.0).all()
+    assert df_a["mcap_pit"].iloc[1:].eq(10_000.0).all() and pd.isna(df_a["mcap_pit"].iloc[0])
     assert df_a["ret"].dropna().eq(0).all()
     fields = ("close_pit", "shares_outstanding_pit", "mcap_pit")
-    frames = load_price_frames(sqlite_store, peers={}, fields=fields)
+    frames = load_price_frames(context, peers={}, fields=fields, calendar=load_trading_calendar(context))
     assert frames.close_split is None
     for field in fields:
         assert getattr(frames, field).dtypes.eq("float64").all()
@@ -110,20 +118,21 @@ def test_actual_builder_publishes_quoted_prices_and_split_carried_counts(sqlite_
 def test_historical_prefix_invalidation_reaches_before_old_warmup(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_raw = sqlite_store.load(Tables.prices)
     day = sorted(pd.to_datetime(df_raw["date"]).unique())[20]
     changed = pd.to_datetime(df_raw["date"]).eq(day) & df_raw["ticker"].eq("AAA")
     df_raw.loc[changed, ["close_split", "close_total"]] = 51.0
     sqlite_store.replace(Tables.prices, df_raw)
-    step.run(full=False)
-    df_incremental = sqlite_store.load(Tables.cube_part_prices)
-    actual = df_incremental.loc[pd.to_datetime(df_incremental["date"]).eq(day) & df_incremental["ticker"].eq("AAA"), "close_split"].iloc[0]
-    assert actual == 51.0, "A changed historical prefix must be replaced even before the old520-session warmup"
-    step.run(full=True)
+    before = sqlite_store.load(Tables.cube_part_prices)
+    with pytest.raises(ValueError, match="Historical.*explicit full"):
+        run_cube(step, full=False)
+    pd.testing.assert_frame_equal(before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
+    run_cube(step, full=True)
     df_full = sqlite_store.load(Tables.cube_part_prices)
-    pd.testing.assert_frame_equal(df_incremental, df_full, check_exact=True)
-    print("SANITY: a source correction740sessions before the frontier is rewritten; actual incremental and full outputs match exactly.")
+    actual = df_full.loc[pd.to_datetime(df_full["date"]).eq(day) & df_full["ticker"].eq("AAA"), "close_split"].iloc[0]
+    assert actual == 51.0
+    print("SANITY: a historical prefix correction is refused without mutation in normal mode and applied by an explicit full rebuild.")
 
 
 def test_builder_reads_sources_once_and_promotes_old_schema_before_payload(
@@ -131,27 +140,29 @@ def test_builder_reads_sources_once_and_promotes_old_schema_before_payload(
 ) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_existing = sqlite_store.load(Tables.cube_part_prices)
     legacy = df_existing.drop(columns=[field for field in ("close_pit", "shares_outstanding_pit", "mcap_pit") if field in df_existing])
     sqlite_store.replace(Tables.cube_part_prices, legacy)
+    with pytest.raises(ValueError, match="columns changed"):
+        run_cube(step, full=False)
+    pd.testing.assert_frame_equal(legacy, sqlite_store.load(Tables.cube_part_prices))
     calls: list[tuple[Any, dict]] = []
-    original = sqlite_store.load
+    original = sqlite_store.iter_load
 
     def capture(table: Any, **kwargs: Any) -> Any:
         calls.append((table, kwargs))
         return original(table, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "load", capture)
-    step.run(full=False)
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    run_cube(step, full=True)
     price_calls = [kwargs for table, kwargs in calls if table == Tables.prices]
-    assert len(price_calls) == 1
-    assert price_calls[0].get("since") is None
+    assert len(price_calls) == 1 and price_calls[0]["where"]["date"].start == pd.Timestamp(context.config.data.tables.prices.start_date)
     for table in {item[0] for item in calls}:
         assert sum(item[0] == table for item in calls) == 1, table
     assert {"close_pit", "shares_outstanding_pit", "mcap_pit"}.issubset(sqlite_store.columns(Tables.cube_part_prices))
     print(
-        "SANITY: old schema promotes before the large read; each source table is read once and the completed three-field candidate is published together."
+        "SANITY: normal mode refuses old schema without mutation; explicit full mode streams each projected, bounded source once and publishes the complete candidate."
     )
 
 
@@ -163,7 +174,7 @@ def test_invalid_candidate_never_reaches_the_writer(sqlite_store: Any, tmp_path:
     writes: list[Any] = []
     monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))
     with pytest.raises(ValueError, match="positive|invalid"):
-        StepCubePrices(context, context.config).run(full=True)
+        run_cube(StepCubePrices(context, context.config), full=True)
     assert not writes
     print("SANITY: an invalid total-return input is refused before any price-part write.")
 
@@ -171,14 +182,14 @@ def test_invalid_candidate_never_reaches_the_writer(sqlite_store: Any, tmp_path:
 def test_zero_open_is_null_only_in_the_candidate(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_expected = sqlite_store.load(Tables.cube_part_prices)
     df_source = sqlite_store.load(Tables.prices)
     row = df_source.index[0]
     day, ticker = df_source.loc[row, ["date", "ticker"]]
     df_source.loc[row, "open"] = 0.0
     sqlite_store.replace(Tables.prices, df_source)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_actual = sqlite_store.load(Tables.cube_part_prices)
     selected = pd.to_datetime(df_expected["date"]).eq(pd.Timestamp(day)) & df_expected["ticker"].eq(ticker)
     df_expected.loc[selected, "open"] = float("nan")
@@ -190,13 +201,13 @@ def test_zero_open_is_null_only_in_the_candidate(sqlite_store: Any, tmp_path: Pa
 def test_missing_yahoo_price_factor_is_not_assumed_already_correct(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     sqlite_store.delete(Tables.prices_splits, where={"ticker": "AAA"})
-    StepCubePrices(context, context.config).run(full=True)
+    run_cube(StepCubePrices(context, context.config), full=True)
     df_prices = sqlite_store.load(Tables.cube_part_prices)
     df_a = df_prices.loc[df_prices["ticker"].eq("AAA")].sort_values("date")
     assert df_a["close_pit"].iloc[:5].isna().all()
     assert df_a["mcap_pit"].iloc[:5].isna().all()
     assert df_a["close_pit"].iloc[5:].eq(25.0).all()
-    assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
+    assert df_a["shares_outstanding_pit"].iloc[1:5].eq(100.0).all() and pd.isna(df_a["shares_outstanding_pit"].iloc[0])
     assert df_prices.loc[df_prices["ticker"].eq("BBB"), "close_pit"].eq(10.0).all()
     print(
         "SANITY: a Sharadar-only restatement cannot certify an ambiguous pre-event Yahoo quote; count evidence and unaffected securities remain available."
@@ -206,28 +217,25 @@ def test_missing_yahoo_price_factor_is_not_assumed_already_correct(sqlite_store:
 def test_removed_history_clears_an_empty_replacement_tail_and_retries_exactly(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     dates = sqlite_store.distinct(Tables.prices, "date")
     removed = sorted(dates)[-20:]
     sqlite_store.delete(Tables.prices, where={"date": removed})
-    step.run(full=False)
-    df_first = sqlite_store.load(Tables.cube_part_prices)
-    assert len(df_first) == 740 * 2
-    assert pd.to_datetime(df_first["date"]).max() < pd.Timestamp(removed[0])
-    step.run(full=False)
-    pd.testing.assert_frame_equal(df_first, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
-    step.run(full=True)
-    pd.testing.assert_frame_equal(df_first, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
-    print("SANITY: removed saved keys are deleted even with no replacement rows after the cutoff; repeat/full builds remain exactly equal.")
+    before = sqlite_store.load(Tables.cube_part_prices)
+    for full in (False, True):
+        with pytest.raises(RuntimeError, match="calendar.*frontier"):
+            run_cube(step, full=full)
+        pd.testing.assert_frame_equal(before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
+    print("SANITY: an incomplete price feed cannot silently delete a saved output suffix; both normal and full builds refuse before writes.")
 
 
 def test_existing_empty_price_schema_is_a_full_cold_build(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_before = sqlite_store.load(Tables.cube_part_prices)
     sqlite_store.delete(Tables.cube_part_prices, where={"date": sqlite_store.NOT_NULL})
-    step.run(full=False)
+    run_cube(step, full=False)
     pd.testing.assert_frame_equal(df_before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
     print("SANITY: an existing empty price schema promotes to a complete candidate without a late reload.")
 
@@ -235,20 +243,18 @@ def test_existing_empty_price_schema_is_a_full_cold_build(sqlite_store: Any, tmp
 def test_interrupted_nonatomic_tail_write_recovers_on_retry(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_before = sqlite_store.load(Tables.cube_part_prices)
-    original = type(sqlite_store).append_tail
 
-    def interrupted(store: Any, table: Any, frame: pd.DataFrame, cutoff: Any, **kwargs: Any) -> int:
-        original(store, table, frame.iloc[:0], cutoff, **kwargs)
+    def interrupted(_connection: Any, _frame: pd.DataFrame, _table: Any, **kwargs: Any) -> int:
         raise RuntimeError("interrupted after tail delete")
 
     with monkeypatch.context() as patch:
-        patch.setattr(type(sqlite_store), "append_tail", interrupted)
+        patch.setattr("src.data_store.store.copy_load", interrupted)
         with pytest.raises(RuntimeError, match="interrupted after tail delete"):
-            step.run(full=False)
+            run_cube(step, full=False)
     pd.testing.assert_frame_equal(df_before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
-    step.run(full=False)
+    run_cube(step, full=False)
     pd.testing.assert_frame_equal(df_before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
     print("SANITY: an interruption after the tail delete rolls the incremental publication back; a retry from unchanged sources is exact.")
 
@@ -264,7 +270,7 @@ def test_invalid_yahoo_adjustment_evidence_refuses_publication(
     writes: list[Any] = []
     monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))
     with pytest.raises(ValueError, match="Invalid Yahoo"):
-        StepCubePrices(context, context.config).run(full=True)
+        run_cube(StepCubePrices(context, context.config), full=True)
     assert not writes
     print("SANITY: malformed Yahoo adjustment ratios cannot silently become identity factors or reach the writer.")
 
@@ -272,7 +278,7 @@ def test_invalid_yahoo_adjustment_evidence_refuses_publication(
 def test_new_public_share_observation_preserves_the_earlier_prefix(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
-    step.run(full=True)
+    run_cube(step, full=True)
     df_before = sqlite_store.load(Tables.cube_part_prices)
     public = pd.Timestamp(sorted(sqlite_store.distinct(Tables.prices, "date"))[400])
     fiscal = pd.Timestamp("2020-12-31")
@@ -295,12 +301,17 @@ def test_new_public_share_observation_preserves_the_earlier_prefix(sqlite_store:
             }
         ),
     )
-    step.run(full=False)
+    with pytest.raises(ValueError, match="Historical.*explicit full"):
+        run_cube(step, full=False)
+    pd.testing.assert_frame_equal(df_before, sqlite_store.load(Tables.cube_part_prices), check_exact=True)
+    run_cube(step, full=True)
+    calendar = load_trading_calendar(context)
+    eligible = calendar[calendar.searchsorted(public + pd.Timedelta(days=1))]
     df_after = sqlite_store.load(Tables.cube_part_prices).sort_values(["date", "ticker"]).reset_index(drop=True)
     df_before = df_before.sort_values(["date", "ticker"]).reset_index(drop=True)
-    prior = pd.to_datetime(df_before["date"]).lt(public)
+    prior = pd.to_datetime(df_before["date"]).lt(eligible)
     pd.testing.assert_frame_equal(df_before.loc[prior].reset_index(drop=True), df_after.loc[prior].reset_index(drop=True), check_exact=True)
-    later = df_after["ticker"].eq("AAA") & pd.to_datetime(df_after["date"]).ge(public)
+    later = df_after["ticker"].eq("AAA") & pd.to_datetime(df_after["date"]).ge(eligible)
     assert df_after.loc[later, "shares_outstanding_pit"].eq(440.0).all()
     assert df_after.loc[later, "mcap_pit"].eq(11_000.0).all()
     print(
@@ -313,11 +324,11 @@ def test_count_restoration_uses_matched_vendor_vintage_not_stale_cache(sqlite_st
     df_history = sqlite_store.load(Tables.sharadar_fundamentals_history)
     df_history.loc[df_history["ticker"].eq("AAA"), "sharesOutstandingPit"] = 50.0
     sqlite_store.replace(Tables.sharadar_fundamentals_history, df_history)
-    StepCubePrices(context, context.config).run(full=True)
+    run_cube(StepCubePrices(context, context.config), full=True)
     df_a = sqlite_store.load(Tables.cube_part_prices, where={"ticker": "AAA"}).sort_values("date")
-    assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
+    assert df_a["shares_outstanding_pit"].iloc[1:5].eq(100.0).all() and pd.isna(df_a["shares_outstanding_pit"].iloc[0])
     assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
-    assert df_a["mcap_pit"].eq(10_000.0).all()
+    assert df_a["mcap_pit"].iloc[1:].eq(10_000.0).all() and pd.isna(df_a["mcap_pit"].iloc[0])
     assert sqlite_store.load(Tables.sharadar_fundamentals_history, where={"ticker": "AAA"})["sharesOutstandingPit"].eq(50.0).all()
     print("SANITY: the new count restores the corroborated vendor vintage, rather than trusting a stale cachedPIT value; the source is unchanged.")
 
@@ -334,12 +345,12 @@ def test_vendor_catch_up_preserves_original_counts_and_quoted_cap(sqlite_store: 
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "lastupdated"] = df_history.loc[selected, "as_of"].iloc[0]
     sqlite_store.replace(Tables.sharadar_fundamentals_history, df_history)
     sqlite_store.replace(Tables.sharadar_fundamentals_facts, df_vendor)
-    StepCubePrices(context, context.config).run(full=True)
+    run_cube(StepCubePrices(context, context.config), full=True)
     df_before = sqlite_store.load(Tables.cube_part_prices)
     df_a = df_before.loc[df_before["ticker"].eq("AAA")].sort_values("date")
-    assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
+    assert df_a["shares_outstanding_pit"].iloc[1:5].eq(100.0).all() and pd.isna(df_a["shares_outstanding_pit"].iloc[0])
     assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
-    assert df_a["mcap_pit"].eq(10_000.0).all()
+    assert df_a["mcap_pit"].iloc[1:].eq(10_000.0).all() and pd.isna(df_a["mcap_pit"].iloc[0])
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.sharadar_fundamentals_history), df_history, check_exact=True)
     df_history.loc[selected, "sharesOutstanding"] = 400.0
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "sharesbas"] = 400.0
@@ -347,7 +358,7 @@ def test_vendor_catch_up_preserves_original_counts_and_quoted_cap(sqlite_store: 
     df_vendor.loc[df_vendor["ticker"].eq("AAA"), "lastupdated"] = df_a["date"].iloc[6]
     sqlite_store.replace(Tables.sharadar_fundamentals_history, df_history)
     sqlite_store.replace(Tables.sharadar_fundamentals_facts, df_vendor)
-    StepCubePrices(context, context.config).run(full=True)
+    run_cube(StepCubePrices(context, context.config), full=True)
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube_part_prices), df_before, check_exact=True)
     print("SANITY: a vendor catch-up changes its representation, preserving every historical quote/count/cap; the stale cache is never rewritten.")
 
@@ -374,7 +385,7 @@ def test_pit_fields_refuse_an_unproven_predecessor_count_owner() -> None:
         market=pd.Series(100.0, index=index),
         peers={},
         vendor=df_vendor,
-        shares=df_history,
+        shares=df_history.assign(_available_on=df_history["as_of"]),
         actions=None,
         splits=df_events.rename(columns={"value": "ratio"}),
         predecessors=(),

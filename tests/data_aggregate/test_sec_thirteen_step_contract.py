@@ -18,14 +18,16 @@ from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
+from src.utils.window import Window
 from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
+from tests.support.config import fixture_config
 from tests.support.sec_thirteen_panel import unsaved_panel
+from tests.support.windows import run_cube
 
-BOND_LINES = read_config(str(Path(__file__).resolve().parents[2] / "configs")).data_aggregate.bond_lines
+BOND_LINES = fixture_config().data_aggregate.bond_lines
 
 
 def _manager_batch_owner(
@@ -61,7 +63,7 @@ def _manager_batch_owner(
         finally:
             closed.append(True)
 
-    monkeypatch.setattr(step, "_load_resources", lambda: resources)
+    monkeypatch.setattr(step, "_load_resources", lambda *_args: resources)
     monkeypatch.setattr(step, "_institutional_features", lambda resources: None)
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", source)
     monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: grid)
@@ -79,8 +81,8 @@ def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest
     packets = [first, (second[0].iloc[:0], second[1])]
     before = [tuple(df_rows.copy(deep=True) for df_rows in packet) for packet in packets]
     step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
-    prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
-    step.run(full=True)
+    prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, config=fixture_config())
+    run_cube(step, full=True)
     assert closed == [True, True] and save.call_count == 1
     for old, actual in zip(before, packets, strict=True):
         for expected, df_rows in zip(old, actual, strict=True):
@@ -102,7 +104,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     monkeypatch.setattr(step, "_institutional_features", broad)
     monkeypatch.setattr(step, "_superinvestor_history", elite)
     result = unsaved_panel(step)
-    assert step._store is sqlite_store and step._part.table == Tables.cube_part_sec_thirteen
+    assert step._store is sqlite_store
     assert broad.call_count == elite.call_count == 1
     assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration"} | {"f_" + name for name in EMISSION}
     assert result.f_ic_inst_concentration.dropna().eq(pd.Series([0.4], dtype="float32").iloc[0]).all()
@@ -148,7 +150,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
         def load(self, *args: Any, **kwargs: Any) -> Any:
             raise AssertionError("Whole roster books use bounded source iteration")
 
-    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
+    result = iter_filing_vintages(context(Store(), Path(".")), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
     assert result is not None
     [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0
@@ -174,7 +176,7 @@ def test_schema_change_requires_explicit_full_rebuild(sqlite_store: Any, monkeyp
         step.run()
     assert project.call_count == 1
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube_part_sec_thirteen), previous, check_dtype=False)
-    step.run(full=True)
+    run_cube(step, full=True)
     assert project.call_count == 2 and len(project.call_args.args[2]) == len(days)
     persisted = sqlite_store.load(Tables.cube_part_sec_thirteen)
     assert persisted is not None
@@ -242,11 +244,11 @@ def _roster_history(
     ciks = sorted({str(cik) for book in books for cik in book.cik})
     monkeypatch.setattr(step_module, "load_price_frames", lambda *args, **kwargs: frames)
     monkeypatch.setattr(step_module, "load_peers_or_raise", lambda context: {})
-    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda store, table: pd.DataFrame({"cik": ciks}))
+    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda context, table, **kwargs: pd.DataFrame({"cik": ciks}))
     monkeypatch.setattr(step_module, "filer_ciks", lambda ciks, config_dir: set(ciks))
     monkeypatch.setattr(step_module, "load_manager_cohorts", lambda config_dir, roster, k: {"": frozenset(roster), "topk": frozenset(roster)})
     step = StepCubeSecThirteen(ctx, ctx.config)
-    history = step._superinvestor_history(step._load_resources())
+    history = step._superinvestor_history(step._load_resources(Window(grid[0], grid[-1]), grid))
     assert history is not None, "the roster books stored in sec13f_hr produce no superinvestor history"
     return history
 

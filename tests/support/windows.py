@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -28,3 +28,25 @@ def window_plan(
         frontier,
         (("ticker", tuple(scope)),),
     )
+
+
+def run_cube(step: Any, *, full: bool = False, tickers: tuple[str, ...] = ()) -> dict:
+    """Drive the production root-run contract on an isolated fixture context."""
+    context = step._context
+    original = context.run
+    context.run = WindowRun("full" if full else "incremental", "known-truth public cube run", original.instant)
+    try:
+        return step.run(tickers=tickers) if tickers else step.run()
+    finally:
+        context.run = original
+
+
+def plan_cube(step: Any, calendar: pd.DatetimeIndex, *, full: bool) -> Any:
+    """Plan text cache work using the same fixture root-run contract."""
+    context = step._context
+    original = context.run
+    context.run = WindowRun("full" if full else "incremental", "known-truth public cube plan", original.instant)
+    try:
+        return step.plan_window(calendar)
+    finally:
+        context.run = original

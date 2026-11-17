@@ -32,12 +32,13 @@ from src.data_aggregate.utils.text.earnings_call_features import (
 )
 from src.data_aggregate.utils.text.earnings_call_preparation import SENTIMENT_TAGS, TextPlan, sentiment_rows
 from src.data_aggregate.utils.text.nlp_sentiment import get_sentiment_engine
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.gpt_extract import embed_texts, openai_api_key
+from src.utils.data_policy import source_read_window, window_policy
 from src.utils.step import Step
 from src.utils.text.earnings_call_split import CALL_SECTIONS, split_call
 from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_paragraphs, word_count
-from src.utils.window import Offset, Window, WindowPolicy
+from src.utils.window import WindowPlan
 
 
 class StepCubeText(Step):
@@ -53,7 +54,6 @@ class StepCubeText(Step):
         self._sentiment_model = settings.sentiment_model
         self._embedding_model = embedding.model
         self._lag = int(config.data.tables.earnings_call_sections.pit.lag.value)
-        self._refresh_days = settings.refresh_calendar_days
         self._signal_sessions = settings.signal_sessions
         self._embedding_batch = embedding.batch_size
         self._embedding_max_chars = embedding.max_chars
@@ -63,7 +63,6 @@ class StepCubeText(Step):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a nonempty model name")
         for name, value, minimum in (
-            ("refresh_calendar_days", self._refresh_days, 1),
             ("signal_sessions", self._signal_sessions, 1),
             ("embedding.batch_size", self._embedding_batch, 1),
             ("embedding.max_chars", self._embedding_max_chars, 1),
@@ -74,31 +73,61 @@ class StepCubeText(Step):
         self._sentiment_cache = f"{self._sentiment_model}:{cleaning_version}"
         self._embedding_cache = f"{self._embedding_model}:{cleaning_version}"
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[Table, WindowPlan]:
         # Plan once and share preparation between the independent model stages.
-        calendar = load_trading_calendar(self._store)
-        plan = self.plan_window(calendar, full=full)
+        calendar = load_trading_calendar(self._context)
+        plan = self.plan_window(calendar)
+        if plan is None:
+            return {}
         prepared = self.prepare_sections(plan)
         self.run_sentiments(prepared, plan)
         self.run_embeddings(prepared, plan)
         del prepared
         # Build features from the saved outputs after both models finish.
         self.run_features(calendar, plan)
+        return {Tables.cube_part_text: plan.window}
 
-    def plan_window(self, calendar: pd.DatetimeIndex, *, full: bool) -> TextPlan:
+    def plan_window(self, calendar: pd.DatetimeIndex) -> TextPlan | None:
         """Compare all source keys with each model table; plan the separate cube tail."""
         # Load compact source/model metadata once.
-        source = self._store.load(Tables.earnings_call_sections, columns=["ticker", "quarter", "as_of"], where={"paragraph": 1}, optional=True)
-        sentiment = self._store.load(Tables.earnings_call_sentiment, columns=SENTIMENT_COLUMNS, optional=True)
-        embedding = self._store.load(Tables.earning_calls_embedding, columns=["ticker", "quarter", "seq", "as_of", "model"], optional=True)
+        window = plan_window(self._context, Tables.cube_part_text, calendar)
+        if window is None:
+            return None
+        source_window = source_read_window(self._config, Tables.earnings_call_sections, window.read.end)
+        sentiment_window = source_read_window(self._config, Tables.earnings_call_sentiment, window.read.end)
+        embedding_window = source_read_window(self._config, Tables.earning_calls_embedding, window.read.end)
+        scope = {"ticker": self._universe.tickers}
+        source = (
+            self._store.load(
+                Tables.earnings_call_sections,
+                columns=["ticker", "quarter", "as_of"],
+                where={**scope, "paragraph": 1, "as_of": source_window},
+                optional=True,
+            )
+            if source_window is not None
+            else None
+        )
+        sentiment = (
+            self._store.load(Tables.earnings_call_sentiment, columns=SENTIMENT_COLUMNS, where={**scope, "as_of": sentiment_window}, optional=True)
+            if sentiment_window is not None
+            else None
+        )
+        embedding = (
+            self._store.load(
+                Tables.earning_calls_embedding,
+                columns=["ticker", "quarter", "seq", "as_of", "model"],
+                where={**scope, "as_of": embedding_window},
+                optional=True,
+            )
+            if embedding_window is not None
+            else None
+        )
 
         # Refuse an implicit schema rebuild before any model work.
         columns = self._store.columns(Tables.cube_part_text)
         expected = {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
-        if columns and set(columns) != expected and not full:
+        if columns and set(columns) != expected and not window.is_full:
             raise ValueError("Text feature columns changed; request an explicit full feature rebuild")
-        policy = WindowPolicy(Window(calendar[0], calendar[-1]), Offset(self._refresh_days, "calendar_days"), Offset(0, "calendar_days"))
-        window = plan_window(self._store, Tables.cube_part_text, policy, calendar, full=full, scope=self._universe.tickers)
 
         # Validate cached scores and match each saved model to the source call.
         source = source if source is not None else pd.DataFrame(columns=["ticker", "quarter", "as_of"])
@@ -114,13 +143,19 @@ class StepCubeText(Step):
         embedding = embedding if embedding is not None else pd.DataFrame(columns=["ticker", "quarter", "seq", "as_of", "model"])
         embedded = completed_embedding_calls(embedding, self._embedding_cache, source)
         source_keys = set(map(tuple, source[["ticker", "quarter"]].to_numpy()))
+        writable = {}
+        for table in (Tables.earnings_call_sentiment, Tables.earning_calls_embedding):
+            policy = window_policy(self._config, table, self._context.run.as_of)
+            writable[table] = (
+                set(map(tuple, source.loc[policy.requested.mask(source["as_of"]), ["ticker", "quarter"]].to_numpy())) if policy is not None else set()
+            )
         plan = TextPlan(
             window=window,
             source=source,
             sentiment=valid,
             embedding_keys=embedding,
-            sentiment_work=source_keys - scored,
-            embedding_work=source_keys - embedded,
+            sentiment_work=(source_keys - scored) & writable[Tables.earnings_call_sentiment],
+            embedding_work=(source_keys - embedded) & writable[Tables.earning_calls_embedding],
             eligible=scored.copy(),
         )
         # Report inference work separately from the feature rewrite range.
@@ -321,7 +356,9 @@ class StepCubeText(Step):
 
         # Reuse sentiment, materialize prices once, and open one embedding stream.
         sentiment = plan.sentiment
-        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=plan.window.read.start) if not scope.empty else None
+        frames = (
+            load_price_frames(self._context, peers={}, calendar=calendar, fields=self._FIELDS, window=plan.window.read) if not scope.empty else None
+        )
         embeddings = self._store.iter_load(
             Tables.earning_calls_embedding,
             chunksize=5_000,

@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 
 from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.sec_thirteen.bond_lines import bond_line_mask
@@ -25,12 +26,11 @@ from src.data_aggregate.utils.sec_thirteen.value_basis import (
     unrealistic_lines,
 )
 from src.utils.identity_tables import TAGGED_ROLES, CusipTags, tag_cusips
+from src.utils.institutional_vintages import valid_reporting_periods
 
 logger = logging.getLogger(__name__)
 
 
-#: First report period kept: the 13F electronic filing era; an earlier period is a typo.
-_FIRST_PERIOD = pd.Timestamp("1999-01-01")
 #: Coerced to a midnight `datetime64` on both manifests and positions.
 _DATES = ("period", "filing_date")
 #: 13F share legs counted in the canonical class (x the dated ratio); every other amount is summed as filed.
@@ -101,14 +101,16 @@ def company_lines(tagged: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
     return out[["ratio", "target"]]
 
 
-def clean_filings(df_filings: pd.DataFrame, df_holdings: pd.DataFrame, bond_lines: Mapping[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Normalize source dates, drop filings whose report period is impossible (before 1999 or after its filing), and keep equity only:
+def clean_filings(
+    df_filings: pd.DataFrame, df_holdings: pd.DataFrame, bond_lines: Mapping[str, Any], config: DictConfig
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Normalize dates, reject invalid reporting quarters or periods after filing, and keep equity only:
     bond lines leave the book (debt rows and the share lines `bond_line_mask` flags under `bond_lines`) and every other row's bond legs
     are zeroed, with each manifest's stored row count reduced to match. The text columns the mask reads are dropped."""
     for df in (df_filings, df_holdings):
         for column in _DATES:
             df[column] = pd.to_datetime(df[column])
-    impossible = df_filings["period"].lt(_FIRST_PERIOD) | df_filings["period"].gt(df_filings["filing_date"])
+    impossible = ~valid_reporting_periods(df_filings, config)
     if impossible.any():
         typos = set(df_filings.loc[impossible, "accession_number"])
         df_filings = df_filings.loc[~impossible].reset_index(drop=True)

@@ -12,16 +12,20 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_aggregate.transformers import step_cube_text as step_text
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import invalidate_earnings_call_derivatives
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window, WindowRun
 from tests.fixtures.earnings_call_rows import FIXTURE_PATHS, fixture_paragraphs
+from tests.support.config import fixture_config
 from tests.support.universe import seed_universe
+from tests.support.windows import plan_cube, run_cube
 
 
 class ReplayStore:
@@ -39,7 +43,13 @@ class ReplayStore:
         if rows.empty:
             return rows
         for column, value in (where or {}).items():
-            rows = rows[rows[column].isin(value)] if isinstance(value, list | tuple | set) else rows[rows[column].eq(value)]
+            rows = (
+                rows.loc[value.mask(pd.to_datetime(rows[column], format="mixed"))]
+                if isinstance(value, Window)
+                else rows[rows[column].isin(value)]
+                if isinstance(value, list | tuple | set)
+                else rows[rows[column].eq(value)]
+            )
         if since is not None:
             rows = rows[pd.to_datetime(rows.as_of, format="mixed").ge(pd.Timestamp(since))]
         if until is not None:
@@ -124,14 +134,17 @@ def seeded_case(base: DataStore, stems: list[str]) -> tuple[Context, DictConfig,
             {"symbol": tickers, "issuer_cik": ciks, "valid_from": "2000-01-01", "valid_to": None, "source": "manual", "evidence_period": "fixture"}
         ),
     )
-    config = OmegaConf.create(
-        {
-            "data_aggregate": {"earnings_calls": {"sentiment_model": "yiyanghkust/finbert-tone", "refresh_calendar_days": 30, "signal_sessions": 66}},
-            "gpt": {"embedding": {"model": "text-embedding-3-small", "batch_size": 128, "max_chars": 28000}},
-        }
-    )
+    config = fixture_config()
     context = cast(
-        Context, SimpleNamespace(store=store, log=logging.getLogger("test.text"), config=config, config_dir=Path("configs"), universe=universe)
+        Context,
+        SimpleNamespace(
+            store=store,
+            log=logging.getLogger("test.text"),
+            config=config,
+            config_dir=Path("configs"),
+            universe=universe,
+            run=WindowRun("incremental", "fixed text fixture", calendar[-1]),
+        ),
     )
     return context, config, store
 
@@ -153,7 +166,7 @@ def test_public_run_prepares_each_selected_call_once(sqlite_store: DataStore, mo
         patch.object(store, "iter_load", wraps=store.iter_load) as streams,
         patch.object(step_text, "write_part", wraps=step_text.write_part) as writes,
     ):
-        StepCubeText(context, config).run(full=True)
+        run_cube(StepCubeText(context, config), full=True)
     payload = [
         call
         for call in reads.call_args_list
@@ -174,8 +187,8 @@ def test_embedding_cursor_closes_when_feature_calculation_fails(sqlite_store: Da
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     configure_models(monkeypatch)
     step = StepCubeText(context, config)
-    calendar = step_text.load_trading_calendar(context.store)
-    plan = step.plan_window(calendar, full=True)
+    calendar = step_text.load_trading_calendar(context)
+    plan = plan_cube(step, calendar, full=True)
     prepared = step.prepare_sections(plan)
     step.run_sentiments(prepared, plan)
     step.run_embeddings(prepared, plan)
@@ -215,7 +228,7 @@ def configure_models(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicM
 def prepare_step(context: Context, config: DictConfig) -> tuple[StepCubeText, Any, pd.DataFrame]:
     step = StepCubeText(context, config)
     calendar = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.cube_part_prices, "date"))).sort_values()
-    plan = step.plan_window(calendar, full=True)
+    plan = plan_cube(step, calendar, full=True)
     return step, plan, step.prepare_sections(plan)
 
 
@@ -253,17 +266,17 @@ def test_previous_cleaning_version_retries_both_models(sqlite_store: DataStore, 
     context, config, store = seeded_case(sqlite_store, ["JPM_2024Q3"])
     factory, _, embedding = configure_models(monkeypatch)
     step = StepCubeText(context, config)
-    step.run(full=True)
+    run_cube(step, full=True)
     scores = store.load(Tables.earnings_call_sentiment)
     assert scores is not None
     store.save(Tables.earnings_call_sentiment, scores.assign(model="yiyanghkust/finbert-tone:speaker-clean-v2"))
     store.vector_rows["model"] = "text-embedding-3-small:speaker-clean-v2"
-    plan = StepCubeText(context, config).plan_window(step_text.load_trading_calendar(context.store), full=False)
+    plan = plan_cube(StepCubeText(context, config), step_text.load_trading_calendar(context), full=False)
     assert plan.sentiment_work == plan.embedding_work == {("JPM", "2024Q3")}
     assert not plan.eligible
     factory.reset_mock()
     embedding.reset_mock()
-    step.run(full=True)
+    run_cube(step, full=True)
     assert factory.called and embedding.called
     scores = store.load(Tables.earnings_call_sentiment)
     assert scores is not None and scores["model"].str.endswith(":speaker-clean-v3").all()
@@ -275,7 +288,7 @@ def test_previous_cleaning_version_retries_both_models(sqlite_store: DataStore, 
 def test_mixed_saved_date_formats_do_not_repeat_inference(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, date_only: str) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3", "JPM_2024Q3"])
     factory, _, embedding = configure_models(monkeypatch)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     before = store.load(Tables.cube_part_text)
     assert before is not None
     store.vector_rows["as_of"] = pd.to_datetime(store.vector_rows["as_of"]).dt.strftime("%Y-%m-%d")
@@ -284,9 +297,9 @@ def test_mixed_saved_date_formats_do_not_repeat_inference(sqlite_store: DataStor
     factory.reset_mock()
     embedding.reset_mock()
     step = StepCubeText(context, config)
-    plan = step.plan_window(step_text.load_trading_calendar(context.store), full=True)
+    plan = plan_cube(step, step_text.load_trading_calendar(context), full=True)
     assert not plan.embedding_work
-    step.run(full=True)
+    run_cube(step, full=True)
     after = store.load(Tables.cube_part_text)
     assert after is not None and not factory.called and not embedding.called
     pd.testing.assert_frame_equal(before, after, check_exact=True)
@@ -299,7 +312,7 @@ def test_partial_calls_are_complete_and_warm_run_skips_models(sqlite_store: Data
     context, config, store = seeded_case(sqlite_store, ["COIN_2026Q2", "PSKY_2025Q2"])
     factory, engine, embedding = configure_models(monkeypatch)
     step = StepCubeText(context, config)
-    step.run(full=True)
+    run_cube(step, full=True)
     scores = store.load(Tables.earnings_call_sentiment)
     assert scores is not None and len(scores) == 6
     absent = scores[scores["n_words"].eq(0)]
@@ -332,13 +345,13 @@ def test_optional_stage_leaves_other_features_available(sqlite_store: DataStore,
         factory.return_value = None
     else:
         monkeypatch.setattr(step_text, "openai_api_key", lambda: None)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     panel = store.load(Tables.cube_part_text)
     assert panel is not None
     assert panel["f_ec_qa_coherence_mean" if missing == "sentiment" else "f_ec_prep_tone"].notna().any()
     assert panel["f_ec_prep_tone" if missing == "sentiment" else "f_ec_qa_coherence_mean"].isna().all()
     step = StepCubeText(context, config)
-    plan = step.plan_window(pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
+    plan = plan_cube(step, pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
     assert bool(plan.sentiment_work) == (missing == "sentiment")
     assert bool(plan.embedding_work) == (missing == "embedding")
     assert embedding.called == (missing == "sentiment")
@@ -352,7 +365,7 @@ def test_incomplete_embeddings_stay_pending_without_emitting_features(
 ) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     factory, _, embedding = configure_models(monkeypatch)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     before = store.load(Tables.cube_part_text)
     assert before is not None and before["f_ec_qa_coherence_mean"].notna().all()
     if broken == "gap":
@@ -365,17 +378,17 @@ def test_incomplete_embeddings_stay_pending_without_emitting_features(
     factory.reset_mock()
     embedding.reset_mock()
     step = StepCubeText(context, config)
-    assert ("ADP", "2026Q3") in step.plan_window(step_text.load_trading_calendar(context.store), full=full).embedding_work
-    step.run(full=full)
+    assert ("ADP", "2026Q3") in plan_cube(step, step_text.load_trading_calendar(context), full=full).embedding_work
+    run_cube(step, full=full)
     after = store.load(Tables.cube_part_text)
     assert after is not None
-    cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=30)
+    cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=7)
     rewritten = after if full else after[pd.to_datetime(after["date"]).ge(cutoff)]
     assert not rewritten.empty and rewritten["f_ec_prep_tone"].notna().all()
     assert rewritten["f_ec_qa_coherence_mean"].isna().all()
     assert not factory.called and not embedding.called
     monkeypatch.setattr(step_text, "openai_api_key", api_key)
-    StepCubeText(context, config).run(full=full)
+    run_cube(StepCubeText(context, config), full=full)
     repaired = store.load(Tables.cube_part_text)
     assert repaired is not None and embedding.call_count == 1 and not factory.called
     pd.testing.assert_frame_equal(before, repaired, check_exact=True)
@@ -407,7 +420,7 @@ def test_stage_order_and_configured_models(sqlite_store: DataStore, monkeypatch:
         return original_load(table, *args, **kwargs)
 
     monkeypatch.setattr(store, "load", read)
-    step.run(full=True)
+    run_cube(step, full=True)
     assert events == ["prepare_sections", "run_sentiments", "run_embeddings", "run_features"]
     factory.assert_called_once_with("fixture/alternate-tone")
     assert embedding.call_args.kwargs == {"model": "fixture/alternate-embedding", "batch_size": 128, "max_chars": 28000}
@@ -427,7 +440,7 @@ def test_crash_after_model_save_reuses_outputs(sqlite_store: DataStore, monkeypa
 
     monkeypatch.setattr(step, "run_features", interrupted)
     with pytest.raises(RuntimeError, match="before feature save"):
-        step.run(full=True)
+        run_cube(step, full=True)
     assert store.load(Tables.earnings_call_sentiment) is not None and not store.vector_rows.empty
     factory.reset_mock()
     embedding.reset_mock()
@@ -439,10 +452,10 @@ def test_crash_after_model_save_reuses_outputs(sqlite_store: DataStore, monkeypa
 def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     factory, engine, embedding = configure_models(monkeypatch)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     before = store.load(Tables.cube_part_text)
     assert before is not None
-    cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=30)
+    cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=7)
     store.delete(Tables.earnings_call_sentiment, {"ticker": "ADP"})
     engine.score_texts.side_effect = lambda texts: [{"pos": 0.8, "neg": 0.1, "neu": 0.1} for _ in texts]
     with patch.object(store, "load", wraps=store.load) as reads, patch.object(store, "iter_load", wraps=store.iter_load) as streams:
@@ -465,32 +478,30 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
     assert len(vector_read) == 1 and vector_read[0].kwargs["date_col"] == "as_of"
     factory.reset_mock()
     embedding.reset_mock()
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     repaired = store.load(Tables.cube_part_text)
     assert repaired is not None and repaired["f_ec_prep_tone"].eq(float(np.float32(0.7))).all()
     assert not factory.called and not embedding.called
-    print("SANITY: exact 30-calendar-day tail leaves older rows untouched; explicit full repairs them without repeating paid inference.")
+    print("SANITY: exact 7-calendar-day tail leaves older rows untouched; explicit full repairs them without repeating paid inference.")
 
 
 def test_invalidated_empty_call_clears_tail_then_full(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.data_extract.utils.behavioral.utils_earnings_call_cache import invalidate_earnings_call_derivatives
-
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     factory, _, embedding = configure_models(monkeypatch)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     before = store.load(Tables.cube_part_text)
     assert before is not None
-    cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=30)
+    cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=7)
     rows = store.load(Tables.earnings_call_sections)
     assert rows is not None
-    invalidate_earnings_call_derivatives(context, rows)
+    invalidate_earnings_call_derivatives(store, rows)
     store.replace(Tables.earnings_call_sections, rows.assign(content="Thank you."))
     factory.reset_mock()
     embedding.reset_mock()
     StepCubeText(context, config).run()
     tail = store.load(Tables.cube_part_text)
     assert tail is not None and pd.to_datetime(tail["date"]).lt(cutoff).all()
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     assert store.load(Tables.cube_part_text, optional=True) is None
     assert not factory.called and not embedding.called
     print("SANITY: unusable source clears stale ordinary-tail output, then explicit empty full rebuild clears all history.")
@@ -501,10 +512,10 @@ def test_output_overlap_is_calendar_days(sqlite_store: DataStore, frontier: str)
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     rows = pd.DataFrame({"date": [frontier], "ticker": ["ADP"], **{f"f_{name}": [0.0] for name in EARNINGS_CALL_FEATURES}})
     store.replace(Tables.cube_part_text, rows)
-    plan = StepCubeText(context, config).plan_window(pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
-    assert plan.window.write.start == pd.Timestamp(frontier) - pd.Timedelta(days=30)
+    plan = plan_cube(StepCubeText(context, config), pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
+    assert plan.window.write.start == pd.Timestamp(frontier) - pd.Timedelta(days=7)
     assert plan.window.read.start == plan.window.write.start
-    print(f"SANITY: frontier {frontier} rewrites inclusively from exactly 30 calendar days earlier.")
+    print(f"SANITY: frontier {frontier} rewrites inclusively from exactly 7 calendar days earlier.")
 
 
 def test_missed_runs_equal_full_without_repeating_models(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -515,13 +526,13 @@ def test_missed_runs_equal_full_without_repeating_models(sqlite_store: DataStore
     assert prices is not None and source is not None
     initial_edge = pd.Timestamp(source["as_of"].iloc[0]) + pd.offsets.BDay(8)
     store.replace(Tables.cube_part_prices, prices[pd.to_datetime(prices["date"]).le(initial_edge)])
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     store.replace(Tables.cube_part_prices, prices)
     factory.reset_mock()
     embedding.reset_mock()
     StepCubeText(context, config).run()
     incremental = store.load(Tables.cube_part_text)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     full = store.load(Tables.cube_part_text)
     assert incremental is not None and full is not None
     pd.testing.assert_frame_equal(

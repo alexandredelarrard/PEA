@@ -10,12 +10,14 @@ import pandas as pd
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
+from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.price.observations import fundamental_share_observations
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
-from src.utils.macro import load_macro_series
+from src.utils.data_policy import source_read_window
 from src.utils.price.adjustments import ShareBasis, unsupported_units
+from src.utils.publication import publication_rows
 
 logger = logging.getLogger(__name__)
 PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
@@ -28,19 +30,23 @@ def load_fundamental_share_observations(
     wanted = ["ticker", "date", "reportperiod", "calendardate", "lastupdated", "sharesbas", "shareswa", "shareswadil", "dps"]
     available = set(context.store.columns(Tables.sharadar_fundamentals_facts))
     missing = pd.Series(pd.NaT, index=history.index, dtype="datetime64[ns]")
-    dates = pd.to_datetime(history.get("as_of", missing), errors="coerce")
+    dates = pd.to_datetime(history.get("_source_as_of", history.get("as_of", missing)), errors="coerce")
     fiscal = pd.to_datetime(history.get("fiscal_end", missing), errors="coerce")
     raw = None
-    if dates.notna().any() and fiscal.notna().any():
+    retained = source_read_window(context.config, Tables.sharadar_fundamentals_facts, context.run.as_of)
+    if retained is not None and dates.notna().any() and fiscal.notna().any():
         raw = context.store.load(
             Tables.sharadar_fundamentals_facts,
             columns=[field for field in wanted if field in available] or wanted,
             where={"ticker": sorted(set(history["ticker"].astype(str))), "dimension": "ARQ"},
-            since=fiscal.min() - pd.DateOffset(years=1),
-            until=dates.max(),
+            since=max(retained.start, fiscal.min() - pd.DateOffset(years=1)),
+            until=min(retained.end, dates.max()),
             optional=True,
         )
-    return fundamental_share_observations(history, raw, basis, predecessors)
+    df_original = history.assign(as_of=dates)
+    df_observed = fundamental_share_observations(df_original, raw, basis, predecessors)
+    df_observed["as_of"] = history["as_of"]
+    return df_observed
 
 
 @dataclass(frozen=True)
@@ -81,29 +87,23 @@ def load_price_inputs(context: Context, tickers: list[str], bugfix: dict) -> Pri
     predecessors = _owner_series(df_owners)
     action_tickers = sorted(set(tickers) | {item.vendor_ticker for item in predecessors})
     actions_present, splits_present = store.exists(Tables.sharadar_actions), store.exists(Tables.prices_splits)
-    df_bars = store.load(Tables.prices, columns=PRICE_COLS, where={"ticker": tickers})
-    market = load_macro_series(store, MACRO_MARKET_SERIES)
-    df_actions = store.load(
-        Tables.sharadar_actions,
-        columns=["ticker", "date", "action", "value"],
-        where={"ticker": action_tickers, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF, "adrratiosplit"]},
-        optional=True,
-    )
-    df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": tickers}, optional=True)
-    wanted = ["ticker", "date", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]
+    df_bars = load_source(context, Tables.prices, tickers, columns=PRICE_COLS)
+    df_macro = load_source(context, Tables.prices_macro, [MACRO_MARKET_SERIES], columns=["date", "ticker", "close"])
+    market = None if df_macro is None else df_macro.loc[df_macro.ticker.eq(MACRO_MARKET_SERIES)].set_index("date")["close"].sort_index()
+    df_actions = load_source(context, Tables.sharadar_actions, action_tickers, columns=["ticker", "date", "action", "value"])
+    if df_actions is not None:
+        df_actions = df_actions.loc[df_actions.action.isin([SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF, "adrratiosplit"])]
+    df_splits = load_source(context, Tables.prices_splits, tickers, columns=["ticker", "date", "ratio"])
+    wanted = ["ticker", "date", "dimension", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]
     available = set(store.columns(Tables.sharadar_fundamentals_facts))
-    df_vendor = store.load(
-        Tables.sharadar_fundamentals_facts,
-        columns=[field for field in wanted if field in available] or wanted,
-        where={"ticker": tickers, "dimension": "ARQ"},
-        optional=True,
+    df_vendor = load_source(context, Tables.sharadar_fundamentals_facts, tickers, columns=[field for field in wanted if field in available] or wanted)
+    if df_vendor is not None:
+        df_vendor = df_vendor.loc[df_vendor.dimension.eq("ARQ")]
+    df_shares = load_source(
+        context, Tables.sharadar_fundamentals_history, tickers, columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"]
     )
-    df_shares = store.load(
-        Tables.sharadar_fundamentals_history,
-        columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"],
-        where={"ticker": tickers},
-        optional=True,
-    )
+    if df_shares is not None and market is not None:
+        df_shares = publication_rows(context.config, Tables.sharadar_fundamentals_history, df_shares, pd.DatetimeIndex(market.index), "_available_on")
     peers = load_peers(context)
     if df_bars is None or df_bars.empty or market is None:
         raise ValueError("Price creation requires observed Yahoo bars and the authoritative market calendar")

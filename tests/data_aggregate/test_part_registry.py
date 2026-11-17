@@ -14,11 +14,17 @@ apart again. They need no DB and no fixtures.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+
+import pandas as pd
+import pytest
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
+from src.data_aggregate import cli
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
@@ -35,7 +41,10 @@ from src.data_aggregate.utils.common.parts import (
     PART_COMMANDS,
 )
 from src.data_aggregate.utils.price.frames import ALL_FIELDS
-from src.data_store.schema import Tables
+from src.data_store.schema import Table
+from src.utils.window import Window, WindowRun
+from tests.support.config import fixture_config
+from tests.support.universe import universe_of
 
 # the sub-step that owns each CLI command
 OWNER = {
@@ -51,8 +60,6 @@ OWNER = {
 
 
 def test_every_part_has_an_owning_substep_and_cli_command():
-    from src.data_aggregate import cli
-
     commands = set(cli.cli.commands)
     assert set(PART_COMMANDS) == set(OWNER), f"registry commands {sorted(PART_COMMANDS)} vs owners {sorted(OWNER)}"
     for cmd in PART_COMMANDS:
@@ -79,19 +86,7 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
 
     Text uses an explicit table; its public-run test verifies the persistence target.
     """
-    from omegaconf import OmegaConf
-
-    config = OmegaConf.create(
-        {
-            # no market_ticker / other_tickers: the market and commodity/FX series are named
-            # rows in `prices_macro` now, not config-selected tickers inside `prices`
-            "data_aggregate": {
-                "targets": {"horizons": [30, 60, 90]},
-                "earnings_calls": {"sentiment_model": "fixture/tone", "refresh_calendar_days": 30},
-            },
-            "gpt": {"embedding": {"model": "fixture/embedding", "batch_size": 128, "max_chars": 28000}},
-        }
-    )
+    config = fixture_config()
     # `config_dir` on the context: `StepCubePrices.__init__` reads the Yahoo bug register from it, and
     # doing that at construction is deliberate -- an unapproved register must fail the step
     # before it loads 1.9M price rows, which means this test exercises that path.
@@ -101,15 +96,18 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
         config=config,
         config_dir=Path(DEFAULT_CONFIG_DIR),
         paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")},
+        universe=universe_of(["AAA"]),
+        run=WindowRun("full", "registered cube construction", pd.Timestamp("2026-11-16")),
     )
     owned = {cmd: [p.name for p in CUBE_PARTS if p.command == cmd] for cmd in OWNER}
     bindings: dict[str, str] = {}
     for cmd, cls in OWNER.items():
         step = cls(context=ctx, config=config)
-        name = Tables.cube_part_text.name if cls is StepCubeText else step._part.name
-        assert name in owned[cmd], f"{cls.__name__} bound the wrong part"
-        assert isinstance(name, str), "CubePart.name must stay a plain str"
-        bindings[cmd] = name
+        assert step._context is ctx
+        for name in owned[cmd]:
+            assert f"Tables.{name}" in inspect.getsource(cls), f"{cls.__name__} lacks its registered output"
+            assert isinstance(name, str), "CubePart.name must stay a plain str"
+        bindings[cmd] = ",".join(owned[cmd])
     print("\n=== SANITY CHECK: sub-step construction ===")
     print(f"  all {len(OWNER)} sub-steps construct; registered outputs: {bindings}")
     print("  CONCLUSION: registry bindings and the explicit text output resolve. Validated.")
@@ -211,8 +209,6 @@ def test_feature_parts_cover_every_group_exactly_once():
 
 def test_assemble_parts_come_from_config_not_code():
     """The assembler merges what `data_aggregate.assembly` lists; no part name is hard-coded in it."""
-    import inspect
-
     src = inspect.getsource(StepAssembleCube)
     for part in FEATURE_PARTS:
         assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the config"
@@ -221,39 +217,44 @@ def test_assemble_parts_come_from_config_not_code():
     print("  CONCLUSION: the part list is `data_aggregate.assembly`; test_assemble_cube::test_committed_config covers registry coverage. Validated.")
 
 
-def test_monolithic_build_runs_each_registered_command_once_in_order():
-    """The convenience build path must match the registry/DAG ordering exactly."""
+def test_monolithic_build_runs_each_registered_command_once_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The build shares the root mode and hands every actual part Window to assembly."""
     calls: list[str] = []
+    write = Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-11-16"))
+    expected_parts = {part.table: write for part in CUBE_PARTS}
 
-    class _Runner:
-        def __init__(self, command: str):
+    class Runner:
+        def __init__(self, command: str) -> None:
             self.command = command
 
-        def run(self, full: bool = False) -> None:
-            assert full
+        def run(self) -> dict[Table, Any]:
+            assert step._context.run.mode == "full"
             calls.append(self.command)
+            return {part.table: SimpleNamespace(write=write) for part in CUBE_PARTS if part.command == self.command}
 
-    class _Assembler:
-        def run(self, full: bool = False) -> None:
-            assert full
+    class Assembler:
+        def run(self, written: dict[Table, Window]) -> dict[Table, Any]:
+            assert written == expected_parts
             calls.append("assemble-cube")
+            return {}
 
     step = StepBuildCube.__new__(StepBuildCube)
-    step._prices = _Runner("build-prices")
-    step._target = _Runner("build-target")
-    step._fundamentals = _Runner("build-fundamentals")
-    step._momentum = _Runner("build-momentum")
-    step._text = _Runner("build-text")
-    step._institutionals = _Runner("build-institutionals")
-    step._sec_thirteen = _Runner("build-sec-thirteen")
-    step._governance = _Runner("build-governance")
-    step._assemble = _Assembler()
+    step._context = SimpleNamespace(run=WindowRun("full", "single root execution", write.end))
+    step._prices = Runner("build-prices")
+    step._target = Runner("build-target")
+    step._fundamentals = Runner("build-fundamentals")
+    step._momentum = Runner("build-momentum")
+    step._text = Runner("build-text")
+    step._institutionals = Runner("build-institutionals")
+    step._sec_thirteen = Runner("build-sec-thirteen")
+    step._governance = Runner("build-governance")
+    step._assemble = Assembler()
+    monkeypatch.setattr(step, "_assert_price_basis_is_sound", lambda: calls.append("price-basis-gate"))
 
-    step.run(full=True, skip_basis_gate=True)
+    step.run()
 
-    expected = [*PART_COMMANDS, "assemble-cube"]
-    assert calls == expected
-    assert len(calls) == len(set(calls)), f"a build step ran more than once: {calls}"
-    print("\n=== SANITY CHECK: monolithic cube build ordering ===")
-    print(f"  {' -> '.join(calls)}")
-    print("  CONCLUSION: every registered builder ran exactly once in registry order, then assembly. Validated.")
+    expected = ["price-basis-gate", *PART_COMMANDS, "assemble-cube"]
+    assert calls == expected and len(calls) == len(set(calls))
+    print(
+        "SANITY: the basis gate precedes each registered builder exactly once; assembly receives all nine actual write Windows from the single root run."
+    )

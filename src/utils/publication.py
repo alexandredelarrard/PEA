@@ -25,13 +25,13 @@ def period_end(tag: str) -> date:
 def _market_day(value: object) -> pd.Timestamp:
     try:
         stamp = pd.Timestamp(value)
+        if pd.isna(stamp):
+            return pd.NaT
+        if stamp.tz is not None:
+            stamp = stamp.tz_convert(MARKET_TIMEZONE).tz_localize(None)
+        return stamp.normalize().as_unit("ns")
     except (ValueError, TypeError, OverflowError):
         return pd.NaT
-    if pd.isna(stamp):
-        return pd.NaT
-    if stamp.tz is not None:
-        stamp = stamp.tz_convert(MARKET_TIMEZONE).tz_localize(None)
-    return stamp.normalize()
 
 
 def market_days(values: pd.Series) -> pd.Series:
@@ -92,3 +92,18 @@ def publication_dates(config: DictConfig, table: Table, rows: pd.DataFrame, sess
     if policy.mode == "direct":
         days = days + _lag(policy.lag)
     return roll_to_session(days, sessions)
+
+
+def publication_rows(config: DictConfig, table: Table, rows: pd.DataFrame, sessions: pd.DatetimeIndex, target: str) -> pd.DataFrame:
+    """Prepare eligible observations while retaining a replaced raw clock and refusing a second lag."""
+    clock = str(publication_policy(config, table).clock)
+    original = f"_source_{clock}"
+    if original in rows:
+        raise ValueError(f"{table.name}: source publication has already been applied")
+    dates = publication_dates(config, table, rows, sessions)
+    df_ready = rows.loc[dates.notna()].copy()
+    df_ready[original] = df_ready[clock]
+    if target != clock and target in df_ready:
+        df_ready[f"_source_{target}"] = df_ready[target]
+    df_ready[target] = dates.loc[dates.notna()].array
+    return df_ready

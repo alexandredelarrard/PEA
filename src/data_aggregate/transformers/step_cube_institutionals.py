@@ -11,9 +11,8 @@ from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
@@ -48,12 +47,12 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 )
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.data_policy import publication_policy
 from src.utils.identity_tables import read_identity
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
-from src.utils.window import Offset, Window, WindowPlan, WindowPolicy
+from src.utils.window import Window, WindowPlan
 
 
 class StepCubeInstitutionals(Step):
@@ -63,31 +62,22 @@ class StepCubeInstitutionals(Step):
         super().__init__(context=context, config=config)
         self._store = context.store
         self._cfg = config.data_aggregate
-        self._part = part_for(Tables.cube_part_institutionals)
         self._bugfix = load_bugfix(context.config_dir)
         self._insider_lag = int(publication_policy(config, Tables.insider_transactions).lag.value)
         self._availability = InstitutionalAvailability.from_config(config)
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[Table, WindowPlan]:
         # Plan the saved tail before loading the full feature dependencies.
-        trading_index = load_trading_calendar(self._store)
-        window = plan_window(
-            self._store,
-            Tables.cube_part_institutionals,
-            WindowPolicy(
-                Window(trading_index[0], trading_index[-1]),
-                Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"),
-                Offset(self._warmup(), "trading_sessions"),
-            ),
-            trading_index,
-            full=full,
-            scope=self._universe.tickers,
-        )
+        trading_index = load_trading_calendar(self._context)
+        window = plan_window(self._context, Tables.cube_part_institutionals, trading_index)
+        if window is None:
+            return {}
 
         # Compute once; history-dependent features need the complete calendar.
-        df_panel = self.build_panel()
+        df_panel = self.build_panel(window.read, trading_index)
 
         self._write_panel(df_panel, window)
+        return {Tables.cube_part_institutionals: window}
 
     @staticmethod
     def _output_keys(rows: pd.DataFrame) -> pd.MultiIndex:
@@ -114,10 +104,6 @@ class StepCubeInstitutionals(Step):
         count = write_part(self._store, part, rows, window, drop_empty=True)
         self._log.info("Institutional output: refresh from %s; wrote %s rows", window.write.start, count)
 
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
     def _fill_unknown_units(self, df_factor: pd.DataFrame) -> pd.DataFrame:
         """A ticker with no basis on any date (units unverified) converts at `unknown_unit_factor`, with a warning.
 
@@ -136,11 +122,11 @@ class StepCubeInstitutionals(Step):
             df_factor[unknown] = factor
         return df_factor
 
-    def build_panel(self) -> pd.DataFrame:
+    def build_panel(self, window: Window, calendar: pd.DatetimeIndex) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
 
         # Load shared price and class inputs once.
-        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
+        frames = load_price_frames(self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=window)
         df_lines = institutional_inputs.load_ftd_lines(self._store)
         df_lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
@@ -160,7 +146,7 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
-        source = institutional_inputs.load_insider_transactions(self._store, frames.universe, identity_intervals)
+        source = institutional_inputs.load_insider_transactions(self._context, frames.universe, identity_intervals)
         if source is None or source.transactions.empty:
             return None
         source = institutional_inputs.lag_insider_source(
@@ -168,7 +154,7 @@ class StepCubeInstitutionals(Step):
         )
 
         # load and clean roles per person
-        df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)
+        df_roles = institutional_inputs.load_insider_role_evidence(self._context, source.transactions, frames.universe, frames.trading_index)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
@@ -197,9 +183,9 @@ class StepCubeInstitutionals(Step):
         df_classes = (
             lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)] if lines is not None else None
         )
-        df_short, df_finra = institutional_inputs.load_short_volume(self._store, frames.universe, lines, lineage)
-        df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe, lines, self._bugfix)
-        df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._store, df_classes), self._bugfix)
+        df_short, df_finra = institutional_inputs.load_short_volume(self._context, frames.universe, lines, lineage)
+        df_fails, df_coverage = institutional_inputs.load_fails(self._context, frames.universe, lines, self._bugfix)
+        df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._context, df_classes), self._bugfix)
 
         # Put FINRA, FTD and outstanding quantities in each ticker's last saved security units (`q * F_T / F_d`).
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
@@ -235,8 +221,8 @@ class StepCubeInstitutionals(Step):
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
 
         # Load the two schedules and independent global completeness frontiers.
-        df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
-        df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        df_13d = capital_inputs.load_source(self._context, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        df_13g = capital_inputs.load_source(self._context, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
         identity = SubjectIdentity.from_tables(lineage, lines) if lineage is not None and lines is not None else None
         if identity is None:
             self._log.warning("lineage or CUSIP lines absent -> 13D/13G filings are counted without the subject-side identity filter")

@@ -31,6 +31,8 @@ from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, TAGGED_ROLES, CusipTags, universe_cusips
 from tests.conftest import _store
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_snapshot_books
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
+from tests.support.config import fixture_config
 
 BOND_LINES = read_config(str(Path(__file__).resolve().parents[2] / "configs")).data_aggregate.bond_lines
 BRK_A, BRK_B, GOOG, GOOGL, AVB = "084670108", "084670702", "02079K107", "02079K305", "053484101"
@@ -86,10 +88,12 @@ def _book(cik: str, filed: str, positions: Mapping[str, tuple[float, float]], ti
 
 def _broad_snapshots(store: DataStore, tags: CusipTags, universe: tuple[str, ...]) -> list[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]]:
     """The broad part's own read, clean and resolve, replayed as the full public snapshot of each publication day."""
-    packets = iter_filing_vintages(store, GRID.max(), bond_lines=BOND_LINES, universe=universe, cusips=universe_cusips(tags.lines, universe))
+    packets = iter_filing_vintages(
+        source_context(store, Path(".")), GRID.max(), bond_lines=BOND_LINES, universe=universe, cusips=universe_cusips(tags.lines, universe)
+    )
     assert packets is not None
     with closing(clean_public_batches(packets, tags, universe, CLOSE)) as batches:
-        history = prepare_institutional_book_history(batches, GRID, settle_days=3)
+        history = prepare_institutional_book_history(batches, GRID, config=fixture_config())
     assert history is not None
     return list(iter_snapshot_books(*history))
 
@@ -144,10 +148,10 @@ def test_a_superinvestor_book_as_filed_holds_one_position_per_company(sqlite_sto
     filed = {BRK_A: AS_FILED[BRK_A], BRK_B: AS_FILED[BRK_B], AVB: (10.0, 2_000.0)}
     merged = {BRK_B: AS_MERGED[BRK_B], AVB: (10.0, 2_000.0)}
     sqlite_store.save(Tables.sec13f_hr, pd.concat([_book(FILED, "2024-05-10", filed, tickers), _book(MERGED, "2024-05-10", merged, COMPANY)]))
-    packets = iter_filing_vintages(sqlite_store, GRID.max(), [FILED, MERGED], bond_lines=BOND_LINES)
+    packets = iter_filing_vintages(source_context(sqlite_store, Path(".")), GRID.max(), [FILED, MERGED], bond_lines=BOND_LINES)
     assert packets is not None
     with closing(clean_public_batches(packets, TAGS, None, CLOSE)) as batches:
-        snapshots = prepare_superinvestor_book_history(batches, GRID, 90)
+        snapshots = prepare_superinvestor_book_history(batches, GRID, 90, fixture_config())
     assert snapshots
     archive = snapshots[-1].archive
     columns = ["cusip", "ticker", "position_type", "shares", "value_usd", "class_evidence", "value_basis_shares_source"]
@@ -168,9 +172,13 @@ def test_an_invalid_marker_never_reaches_the_cube_input(sqlite_store: Any) -> No
     assert "invalid-1" in set(sqlite_store.load(Tables.sec13f_hr, markers=True).accession_number), "the marker is stored"
 
     reads = {
-        "whole books": iter_filing_vintages(sqlite_store, GRID.max(), [FILED, MERGED], bond_lines=BOND_LINES),
+        "whole books": iter_filing_vintages(source_context(sqlite_store, Path(".")), GRID.max(), [FILED, MERGED], bond_lines=BOND_LINES),
         "universe-scoped": iter_filing_vintages(
-            sqlite_store, GRID.max(), bond_lines=BOND_LINES, universe=UNIVERSE, cusips=universe_cusips(TAGS.lines, UNIVERSE)
+            source_context(sqlite_store, Path(".")),
+            GRID.max(),
+            bond_lines=BOND_LINES,
+            universe=UNIVERSE,
+            cusips=universe_cusips(TAGS.lines, UNIVERSE),
         ),
     }
     for name, packets in reads.items():
@@ -206,10 +214,14 @@ def test_real_stored_books_reach_the_builders_at_company_grain() -> None:
     assert rows is not None
 
     # The builders' input: the step's own read, clean and resolve on these managers.
-    packets = iter_filing_vintages(store, pd.Timestamp.today(), ciks, bond_lines=BOND_LINES, universe=universe, cusips=cusips)
+    packets = iter_filing_vintages(
+        source_context(store, Path(".")), pd.Timestamp.today(), ciks, bond_lines=BOND_LINES, universe=universe, cusips=cusips
+    )
     assert packets is not None
     with closing(clean_public_batches(packets, lines, universe, None)) as batches:
-        history = prepare_institutional_book_history(batches, pd.bdate_range(newest - pd.Timedelta(days=400), pd.Timestamp.today()), settle_days=3)
+        history = prepare_institutional_book_history(
+            batches, pd.bdate_range(newest - pd.Timedelta(days=400), pd.Timestamp.today()), config=fixture_config()
+        )
     assert history is not None
     df_compact, _ = history
     df_quarter = df_compact.xs(newest, level="period")

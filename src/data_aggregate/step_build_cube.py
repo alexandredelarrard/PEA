@@ -43,7 +43,9 @@ from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError
 from src.data_aggregate.utils.common.part_status import part_status_report
+from src.data_store.schema import Table
 from src.utils.step import Step
+from src.utils.window import WindowPlan
 from src.validate.utils.prices import gate, run_prices_validation
 
 __all__ = ["StepBuildCube", "FeatureCollisionError"]
@@ -64,19 +66,18 @@ class StepBuildCube(Step):
         self._governance = StepCubeGovernance(context=context, config=config)
         self._assemble = StepAssembleCube(context=context, config=config)
 
-    def run(self, full: bool = False, skip_basis_gate: bool = False) -> None:
-        if not skip_basis_gate:
-            self._assert_price_basis_is_sound()
+    def run(self) -> dict[Table, WindowPlan]:
+        self._assert_price_basis_is_sound()
 
-        self._prices.run(full=full)
-        self._target.run(full=full)
-        self._fundamentals.run(full=full)
-        self._momentum.run(full=full)
-        self._text.run(full=full)
-        self._institutionals.run(full=full)
-        self._sec_thirteen.run(full=full)
-        self._governance.run(full=full)
-        self._assemble.run(full=full)
+        written = self._prices.run()
+        written.update(self._target.run())
+        written.update(self._fundamentals.run())
+        written.update(self._momentum.run())
+        written.update(self._text.run())
+        written.update(self._institutionals.run())
+        written.update(self._sec_thirteen.run())
+        written.update(self._governance.run())
+        return self._assemble.run({table: plan.write for table, plan in written.items()})
 
     def _assert_price_basis_is_sound(self) -> None:
         """Refuse to build on a price table with unexplained adjustment seams.

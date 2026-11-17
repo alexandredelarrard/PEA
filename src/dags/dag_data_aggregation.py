@@ -55,6 +55,7 @@ CONFIGS = f"{PROJECT}/configs"
 PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
+RUN_MODE = "{{ '-F' if dag_run.conf.get('full', False) else '' }}"
 RUN_AS_OF = "{{ macros.datetime.fromisoformat(dag_run.conf.get('as_of') or dag_run.start_date.isoformat()).isoformat() }}"
 
 # The ordered cube sub-steps, `parts.PART_COMMANDS` written out: the DAG processor parses this
@@ -92,11 +93,15 @@ dag = DAG(
 
 
 def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None = None) -> BashOperator:
-    cutoff = f' --as-of "{RUN_AS_OF}"' if base == AGG else ""
+    cutoff = f' --as-of "{RUN_AS_OF}" {RUN_MODE}' if base == AGG else ""
+    receipts = "{{ ti.xcom_pull(task_ids=" + repr([name.replace("-", "_") for name in CHAIN]) + ") | tojson }}"
     return BashOperator(
         task_id=task_id or cmd.split()[0].replace("-", "_"),
         bash_command=f"{base} {cmd} -c {CONFIGS}{cutoff}",
         cwd=PROJECT,
+        env={"CUBE_COMPONENT_WINDOWS": receipts} if cmd == "assemble-cube" else None,
+        append_env=True,
+        do_xcom_push=cmd in CHAIN,
         pool=pool,
         trigger_rule=TriggerRule.ALL_DONE,
         dag=dag,

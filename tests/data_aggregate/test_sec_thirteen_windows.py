@@ -10,17 +10,15 @@ from unittest.mock import Mock
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.sec_thirteen import institutional_features as inst_module
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.utils.window import Window, WindowPlan
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 from tests.support.sec_thirteen_panel import unsaved_panel
-from tests.support.windows import window_plan
+from tests.support.windows import run_cube, window_plan
 
 
 def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[StepCubeSecThirteen, pd.DatetimeIndex]:
@@ -29,7 +27,6 @@ def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[Ste
         "Known-truth no-event history needs an existing empty feed"
     )
     ctx = context(store, path)
-    ctx.config.data_aggregate = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "sec_thirteen": {}})
     monkeypatch.setattr(step_module, "load_peers_or_raise", lambda ctx: {})
     return StepCubeSecThirteen(ctx, ctx.config), days
 
@@ -113,15 +110,14 @@ def _shares(store: Any, days: pd.DatetimeIndex, offsets: Sequence[int], amounts:
 
 
 def _bounded(projections: tuple[Mock, Mock], days: pd.DatetimeIndex, maximum: int) -> None:
-    for family, projection in enumerate(projections):
+    for projection in projections:
         for call in projection.call_args_list:
             frames = call.args[1]
             assert 0 < len(frames.trading_index) <= maximum
             for field in ("close_pit", "shares_outstanding_pit", "mcap_pit"):
                 pd.testing.assert_index_equal(getattr(frames, field).index, frames.trading_index)
             assert frames.universe == ("AAA",)
-            if family == 0:
-                pd.testing.assert_index_equal(call.kwargs["trading_calendar"], days)
+            assert frames.trading_index.difference(days).empty
 
 
 def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -152,9 +148,7 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
     )
 
 
-def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(inst_module, "INST_LEVEL_FLOOR_PERIOD", pd.Timestamp("2013-06-30"))
-    monkeypatch.setattr(inst_module, "INST_DELTA_FLOOR_PERIOD", pd.Timestamp("2013-09-30"))
+def test_early_window_preserves_filing_based_prepared_eligibility(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, _ = _owner(sqlite_store, monkeypatch, tmp_path)
     days = pd.bdate_range("2013-08-01", periods=120, name="date")
     sqlite_store.replace(
@@ -183,9 +177,8 @@ def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, mon
     )
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= "2013-08-15"]))
     values = tail.set_index("date").f_ic_inst_concentration
-    assert values.loc[["2013-08-15", "2013-08-16"]].isna().all()
-    assert values.loc["2013-08-19"] == 0.25
-    print("SANITY: the three-session publication floor stays tied to the full clock when output starts inside that floor.")
+    assert values.eq(0.25).all()
+    print("SANITY: prepared filing-based eligibility survives a later output boundary; no quarter-end settlement floor is reapplied.")
 
 
 @pytest.mark.parametrize("new_sessions", [0, 5])
@@ -196,7 +189,7 @@ def test_run_refreshes_same_day_or_new_dates_without_changing_prefix(
     prepared = _prepare(step, monkeypatch, _facts(days, (5, 95), ic_inst_concentration=[0.25, 0.5]), _elite(days, (5,), ic_super_holders=[0.5]))
     expected = _saved(_full(step))
     last = len(days) - 1 - new_sessions
-    cutoff = days[last - 7]
+    cutoff = days[last] - pd.Timedelta(days=100)
     initial = expected.loc[expected.date <= days[last]].copy()
     initial.loc[initial.date >= cutoff, "f_ic_inst_concentration"] = -9.0
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
@@ -213,9 +206,9 @@ def test_run_refreshes_same_day_or_new_dates_without_changing_prefix(
     step.run()
     pd.testing.assert_frame_equal(_load(sqlite_store), first)
     assert [source.call_count for source in prepared] == [2, 2]
-    _bounded(projections, days, 8 + new_sessions)
+    _bounded(projections, days, len(days))
     print(
-        f"SANITY: SQLite refresh repairs the inclusive eight-date tail plus {new_sessions} new dates, preserves the older prefix and is idempotent."
+        f"SANITY: SQLite refresh repairs the configured100-calendar-day tail plus {new_sessions} new dates, preserves the older prefix and is idempotent."
     )
 
 
@@ -236,7 +229,7 @@ def test_unknown_tail_clears_stale_rows_and_preserves_historical_schema(sqlite_s
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert set(sqlite_store.columns(Tables.cube_part_sec_thirteen)) == set(initial.columns)
     assert broad.call_count == elite.call_count == 1
-    _bounded(projections, days, 8)
+    _bounded(projections, days, len(days))
     step.run()
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     print("SANITY: an explicitly unknown tail deletes stale SQLite values while retaining supported historical columns and the unchanged prefix.")
@@ -258,7 +251,7 @@ def test_failed_saved_family_refuses_writes(sqlite_store: Any, monkeypatch: pyte
     monkeypatch.setattr(sqlite_store, "replace", replace)
     monkeypatch.setattr(sqlite_store, "replace_window", append)
     with pytest.raises(RuntimeError, match="source preparation failed"):
-        step.run(full=full)
+        run_cube(step, full=full)
     assert replace.call_count == append.call_count == 0
     pd.testing.assert_frame_equal(_load(sqlite_store), initial, check_dtype=False)
     print(f"SANITY: failed {family} preparation with full={full} preserves all saved cells and makes zero write calls.")
@@ -274,7 +267,7 @@ def test_shortened_price_calendar_refuses_even_a_full_rebuild(sqlite_store: Any,
     monkeypatch.setattr(sqlite_store, "replace", replace)
     monkeypatch.setattr(sqlite_store, "replace_window", append)
     with pytest.raises(RuntimeError, match="calendar ends before"):
-        step.run(full=full)
+        run_cube(step, full=full)
     assert replace.call_count == append.call_count == 0
     assert [source.call_count for source in prepared] == [0, 0]
     pd.testing.assert_frame_equal(_load(sqlite_store), initial, check_dtype=False)
@@ -299,7 +292,7 @@ def test_missing_saved_rewrite_date_refuses_without_writes(
     monkeypatch.setattr(sqlite_store, "distinct", distinct)
 
     with pytest.raises(RuntimeError, match="calendar.*saved"):
-        step.run(full=full)
+        run_cube(step, full=full)
 
     assert replace.call_count == append.call_count == 0
     assert [source.call_count for source in prepared] == [0, 0]
@@ -330,7 +323,7 @@ def test_schema_promotion_refuses_missing_saved_prefix_date(sqlite_store: Any, m
     saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
     assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
     with pytest.raises(RuntimeError, match="calendar.*saved"):
-        step.run(full=True)
+        run_cube(step, full=True)
     print("SANITY: explicit column rebuild checks the whole saved calendar and preserves the missing prefix row with zero writes and one date read.")
 
 
@@ -349,7 +342,7 @@ def test_missing_saved_prefix_date_allows_one_incremental_write(sqlite_store: An
     step.run()
 
     expected = initial.copy()
-    expected.loc[expected.date >= days[-8], "f_ic_inst_concentration"] = 0.25
+    expected.loc[expected.date >= days[-1] - pd.Timedelta(days=100), "f_ic_inst_concentration"] = 0.25
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert replace.call_count == 0 and append.call_count == 1
     assert [source.call_count for source in prepared] == [1, 1]
@@ -391,7 +384,7 @@ def test_schema_change_reprojects_full_once_from_prepared_facts(
     for projection in projections:
         projection.reset_mock()
     distinct.reset_mock()
-    step.run(full=True)
+    run_cube(step, full=True)
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert broad.call_count == elite.call_count == 1
     assert replace.call_count == 0 and append.call_count == 1
@@ -460,7 +453,7 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
         elite.reset_mock()
         for projection in projections:
             projection.reset_mock()
-    step.run(full=denominator == "globally_absent")
+    run_cube(step, full=denominator == "globally_absent")
     result = _load(sqlite_store)
     derived = {"f_ic_inst_ownership_pct", "f_ic_inst_value_to_mcap"}
     if denominator == "globally_absent":
@@ -470,7 +463,7 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
     else:
         assert derived <= set(result.columns)
         assert result.loc[result.date >= days[-8], list(derived)].isna().all().all()
-        _bounded(projections, days, 8)
+        _bounded(projections, days, len(days))
     assert broad.call_count == elite.call_count == 1
     print(f"SANITY: {denominator} has its own schema outcome; unavailable tail denominators never erase valid historical support.")
 
@@ -539,7 +532,7 @@ def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store
     elite.reset_mock()
     for projection in projections:
         projection.reset_mock()
-    step.run(full=True)
+    run_cube(step, full=True)
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert broad.call_count == elite.call_count == 1
     assert sum(len(call.args[1].trading_index) == len(days) for call in projections[0].call_args_list) == 1

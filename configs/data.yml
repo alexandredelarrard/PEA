@@ -950,7 +950,11 @@ data:
       freshness: null
       warmup:
         grid:
-          mode: full_history
+          # Call signal/prior-call context is selected on the retained market clock.
+          # The dense price-availability grid only needs the output interval.
+          mode: offset
+          value: 0
+          unit: trading_sessions
     cube_part_institutionals:
       status: active
       start_date: '1995-11-13'

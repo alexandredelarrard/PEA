@@ -139,7 +139,7 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
 
 
 def _visible_day(day: pd.Timestamp, table: Table, idx: pd.DatetimeIndex, config: DictConfig) -> pd.Timestamp:
-    """The session from which a filing-day-stamped `day` of `table` is usable."""
+    """The actual retained publication session of a source date."""
     return publication_dates(config, table, pd.DataFrame({"filing_date": [day]}), idx).iloc[0]
 
 
@@ -182,6 +182,8 @@ def build_ownership_feature_panel(
     """Point-in-time schedule filing counts, masked by each source's coverage."""
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     columns = pd.Index(frames.universe, name="ticker")
+    if idx.empty:
+        return _empty_panel()
     names = {Tables.sec_13d: "ic_act_13d_count_126d_z", Tables.sec_13g: "ic_bo_13g_count_126d_z"}
 
     # Count each usable schedule's filings, one leg per schedule.
@@ -204,9 +206,10 @@ def build_ownership_feature_panel(
             source_start = (
                 _visible_day(availability.source_date(table), table, idx, config) if availability is not None else df_filings["filing_date"].min()
             )
-            df_counts = df_counts.where(
-                _coverage_mask(frames, idx, columns, pd.Timestamp(source_start), _visible_day(complete_through, table, idx, config))
-            )
+            frontier = _visible_day(complete_through, table, idx, config)
+            # A known complete prefix beyond the output calendar covers its last session.
+            frontier = idx[-1] if pd.isna(frontier) else frontier
+            df_counts = df_counts.where(_coverage_mask(frames, idx, columns, pd.Timestamp(source_start), frontier))
 
         # Standardise across the universe each date so regime changes in filing volume cancel.
         fields[name] = xs_z(df_counts, clip=COUNT_CLIP, zero_sd_to_nan=True)

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from src.data_store.schema import Tables
-from src.utils.publication import publication_dates
+from src.utils.institutional_vintages import filing_public_dates
+from src.utils.publication import publication_dates, publication_rows
 from tests.data_extract.fake_context import extract_config
 
 
@@ -61,3 +63,28 @@ def test_archive_release_estimates_preserve_later_observed_availability() -> Non
     ftd = pd.DataFrame({"period": ["202610a", "202610b"]})
     assert publication_dates(config, Tables.sec_fails_to_deliver_security, ftd, sessions).tolist() == [pd.Timestamp("2026-11-05"), pd.NaT]
     print("SANITY: notes use quarter+21/monthly day12 and preserve later availability; FTD uses half-month end+21, never an early last session.")
+
+
+def test_publication_rows_preserve_raw_clock_and_refuse_a_second_lag() -> None:
+    config = extract_config()
+    sessions = pd.DatetimeIndex(["2026-11-06", "2026-11-09", "2026-11-10", "2026-11-11"])
+    rows = pd.DataFrame({"as_of": pd.to_datetime(["2026-11-06", "2026-11-10"])}, index=[0, 0])
+    prepared = publication_rows(config, Tables.sharadar_fundamentals_history, rows, sessions, "as_of")
+    assert prepared.as_of.tolist() == list(pd.to_datetime(["2026-11-09", "2026-11-11"]))
+    assert prepared["_source_as_of"].tolist() == rows.as_of.tolist()
+    with pytest.raises(ValueError, match="already"):
+        publication_rows(config, Tables.sharadar_fundamentals_history, prepared, sessions, "as_of")
+    print(
+        "SANITY: publication rows retain actual filing clocks and arbitrary input indices, roll calendar-day buffers to market sessions and refuse a second lag."
+    )
+
+
+def test_far_future_holdings_period_cannot_break_valid_publication() -> None:
+    config = extract_config()
+    manifests = pd.DataFrame({"filing_date": ["2026-11-10", "2026-11-10"], "period": ["2026-09-30", "3006-09-30"]})
+    original = manifests.copy(deep=True)
+    sessions = pd.DatetimeIndex(["2026-11-10", "2026-11-12", "2026-11-13", "2026-11-16"])
+    dates = filing_public_dates(manifests, sessions, config)
+    assert dates.iloc[0] == pd.Timestamp("2026-11-12") and pd.isna(dates.iloc[1])
+    pd.testing.assert_frame_equal(manifests, original)
+    print("SANITY: the observed far-future13F period is excluded without breaking a valid filing or changing stored source cells.")

@@ -8,39 +8,62 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 
-from src.data_store.schema import Table
+from src.context import Context
+from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW
+from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-from src.utils.window import Offset, WindowPlan, WindowPolicy, WindowRun, resolve_window, shift_date
-
-# Legacy effective value; the approved policy migration replaces its owner in P3/P5.
-PART_REFRESH_TRADING_DAYS = 7
+from src.utils.data_policy import window_policy
+from src.utils.window import Offset, Window, WindowPlan, WindowRun, resolve_window, shift_date
 
 logger = logging.getLogger(__name__)
 
 
-def window_start(trading_index: pd.DatetimeIndex, last: pd.Timestamp, n_back: int) -> pd.Timestamp:
-    """The date `n_back` trading days BEFORE `last` on the (untrimmed) price calendar."""
-    return shift_date(last, Offset(n_back, "trading_sessions"), trading_index)
-
-
-def plan_window(store: DataStore, part: Table, policy: WindowPolicy, calendar: pd.DatetimeIndex, *, full: bool, scope: Sequence[str]) -> WindowPlan:
-    """Read the selected frontier once and pass the resolved scope through to publication."""
-    selected = tuple(sorted(set(scope)))
+def plan_window(
+    context: Context,
+    part: Table,
+    calendar: pd.DatetimeIndex,
+    scope: Sequence[str] | None = None,
+    *,
+    inherited_start: pd.Timestamp | None = None,
+) -> WindowPlan | None:
+    """Resolve the configured cube policy against one scoped frontier and the root run."""
+    policy = window_policy(context.config, part, context.run.as_of)
+    selected = tuple(sorted(set(context.universe.tickers if scope is None else scope)))
     if not selected:
         raise ValueError(f"{part.name}: cube planning requires an explicit ticker scope")
-    last = store.max_date(part, where={"ticker": selected})
-    run = (
-        WindowRun("full", "explicit full build", policy.requested.end)
-        if full
-        else WindowRun("initial", "no selected output", policy.requested.end)
-        if last is None
-        else WindowRun("incremental", "configured overlap", policy.requested.end)
-    )
-    return resolve_window(policy, run, last, calendar, (("ticker", selected),))
+    if policy is None:
+        return None
+    if calendar.empty:
+        raise ValueError(f"{part.name}: a retained market calendar is required")
+    end = min(policy.requested.end, calendar[-1])
+    if end < policy.requested.start:
+        return None
+    last = context.store.max_date(part, where={"ticker": selected, "date": policy.requested})
+    if last is not None and pd.Timestamp(last) > calendar[-1]:
+        raise RuntimeError(f"{part.name}: source calendar ends before the saved frontier; no rows may be replaced")
+
+    # Available source dates may narrow the hard ceiling; they never replace its policy.
+    policy = replace(policy, requested=Window(policy.requested.start, end))
+    run = context.run
+    if last is None and run.mode == "incremental":
+        run = WindowRun("initial", "no selected output", run.instant)
+    plan = resolve_window(policy, run, last, calendar, (("ticker", selected),), inherited_start=inherited_start)
+    part_info = PART_BY_NAME.get(part.name)
+    required = max((value for _, value in part_info.binding_lookbacks), default=0) if part_info is not None else 0
+    if part in {Tables.cube_part_targets, Tables.cube_part_betas}:
+        required = max(required, MOMENTUM_SEAM_WINDOW[0] + int(context.config.data_aggregate.betas.window))
+    if part == Tables.cube_part_fundamentals:
+        required = max(required, int(context.config.data_aggregate.hist.window))
+    insufficient = policy.warmup is not None and policy.warmup.unit == "trading_sessions" and policy.warmup.value < required
+    if insufficient or plan.read.start > shift_date(plan.write.start, Offset(required, "trading_sessions"), calendar):
+        raise ValueError(f"{part.name}: configured warm-up does not cover its {required}-session calculation dependency")
+    return plan
 
 
 def changed_tickers(store: DataStore, part: Table, df_rows: pd.DataFrame, window: WindowPlan) -> list[str]:

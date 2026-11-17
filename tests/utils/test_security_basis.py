@@ -109,7 +109,9 @@ def test_capitalization_uses_dated_exact_lineage_and_unknown_successor_ends_supp
     )
     original = df_history.copy(deep=True)
     observations = capitalization_observations(df_history, df_vendor, basis)
-    shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["AAA"])))
+    shares, scale = project_security_shares(
+        observations.assign(_available_on=observations["as_of"]), basis, security_basis_frame(basis, index, pd.Index(["AAA"]))
+    )
     assert scale.loc[:"2024-01-01", "AAA"].isna().all()
     assert scale.loc["2024-01-02":"2024-01-05", "AAA"].eq(1.5).all()
     assert scale.loc["2024-01-08":, "AAA"].isna().all()
@@ -146,7 +148,9 @@ def test_real_sharadar_class_scope_and_public_support() -> None:
     df_empty = pd.DataFrame({"ticker": pd.Series(dtype="str"), "date": pd.Series(dtype="datetime64[ns]"), "value": pd.Series(dtype="float64")})
     basis = ShareBasis(df_empty, df_empty, df_empty, {})
     observations = capitalization_observations(df_history, df_vendor, basis)
-    shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(names)))
+    shares, scale = project_security_shares(
+        observations.assign(_available_on=observations["as_of"]), basis, security_basis_frame(basis, calendar, pd.Index(names))
+    )
     df_latest = observations.sort_values("as_of").groupby("ticker").tail(1)
     for ticker in names:
         row = df_latest.loc[df_latest["ticker"].eq(ticker)].iloc[0]
@@ -333,7 +337,9 @@ def test_missing_fiscal_keys_cannot_establish_or_extend_capitalization_support(p
         }
     )
     observations = capitalization_observations(df_history, df_raw, basis)
-    shares, scale = project_security_shares(observations, basis, security_basis_frame(basis, calendar, pd.Index(["AAA"])))
+    shares, scale = project_security_shares(
+        observations.assign(_available_on=observations["as_of"]), basis, security_basis_frame(basis, calendar, pd.Index(["AAA"]))
+    )
     assert scale.loc["2024-01-03":"2024-01-05", "AAA"].eq(1.5).all()
     assert scale.loc["2024-01-08":, "AAA"].isna().all()
     assert shares.loc["2024-01-08":, "AAA"].eq(120.0).all()

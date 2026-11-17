@@ -2,7 +2,6 @@ data_aggregate:
   earnings_calls:
     sentiment_model: yiyanghkust/finbert-tone
     signal_sessions: 66  # forward-fill lifetime on the market calendar; source lag belongs to data.yml
-    refresh_calendar_days: 30
   assembly:
     optional_parts:
       - cube_part_text
@@ -65,40 +64,11 @@ data_aggregate:
       # One user-owned ordered raw-CIK list: superinvestors/ranked_managers.json.
       # The checked-in ascending default is provisional, with retrospective roster bias.
       # List/K/policy changes require an explicit full rebuild.
-      max_age_calendar_days: 100  # first public usability; amendments never reset age. Consecutive public dates are 91-92 days apart (p90),
-                                  # 99.8% within 100, so a book is carried until its successor is public or 100 days pass
+      max_age_calendar_days: 90   # forward-fill from first public usability; amendments never reset this book lifetime
       selection:
         k: 20                   # fixed prefix; no runtime ranking or replacement
 
-    # THE 13F AVAILABILITY GRID (D1). A 13F period is public only once it is filed, so each
-    # `(ticker, period)` is first published at its availability date over the filings public
-    # by then, and re-emitted on each later date a material filing arrives. Both dials trade
-    # STALENESS against COMPLETENESS, which is why they are here and not only in
-    # `constants.py` -- the constants are the declared defaults and carry the full sweep
-    # tables that sized them.
-    f13_settle_trading_days: 3   # trading days past the 45-day deadline SNAPPED FORWARD onto
-                                 # the trading calendar (the 45th day is not a session on 13
-                                 # of 53 quarters). Measured on SHARES -- a raw `value_usd`
-                                 # sweep is contaminated by the 1000x unit defect and reads
-                                 # 2020-12-31 as 33% complete against the true 91%.
-                                 # ⚠ 3 IS NOT THE COMPLETENESS KNEE (that is 1, which
-                                 # collects the weekend population: 9 quarters below 90%
-                                 # complete -> 4). 3 is where the NAIVE quarter-on-quarter
-                                 # difference overtakes a matched sample as an estimator of
-                                 # the fully-revised truth -- median absolute error, two
-                                 # disjoint ticker samples agreeing:
-                                 #   N=0  naive 4.05pp  matched 2.03pp
-                                 #   N=2  naive 2.19pp  matched 2.01pp
-                                 #   N=3  naive 1.83pp  matched 2.01pp  <- here
-                                 #   N=4  naive 1.58pp  matched 2.00pp
-                                 # Matched is FLAT (it cancels the maturity mismatch and is
-                                 # then stuck with early-filer selection); naive improves
-                                 # monotonically. So 3 is what makes "no matched-sample
-                                 # self-join" measured rather than inherited. Realised lag
-                                 # p50 50 calendar days.
-                                 # ⚠ RAISING IT PAST ~10 breaks the emission-window ordering
-                                 # `_assert_emission_windows_ordered` guards, because the
-                                 # revision window still runs to period+105d.
+    # Publication lag belongs to data.tables.sec13f_hr.pit; both book families inherit it.
 
   bond_lines:                # share lines that are really bond principal; shared by the 13F cube cleaning (they leave the book like debt rows)
                              # and the manager profile (they weigh by filed value in the bond path). Regexes on upper-case text, searched anywhere

@@ -32,7 +32,10 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_store.schema import Tables
+from src.utils.data_policy import window_policy
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_filing, stub_edgar_step
+from tests.data_extract.fake_context import extract_config
 from tests.data_extract.test_cli_options import stub_identity_step, stub_zips_step
 from tests.support.universe import seed_universe
 
@@ -51,12 +54,22 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
 }
 
 
+def _bind_context(monkeypatch: pytest.MonkeyPatch, context: Any) -> None:
+    """Apply CLI root run options to the existing offline Context."""
+
+    def construct(path: str, **kwargs: Any) -> tuple[Any, Any]:
+        context.run = WindowRun("full" if kwargs.get("full") else "incremental", "CLI contract", pd.Timestamp(kwargs.get("as_of") or "2026-09-30"))
+        return context.config, context
+
+    monkeypatch.setattr(cli_mod, "get_config_context", construct)
+
+
 @pytest.fixture
 def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
+    config = extract_config()
     context = SimpleNamespace(name="ctx", config=config, config_dir="configs", store=SimpleNamespace(create_declared=lambda table: None))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    _bind_context(monkeypatch, context)
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")])
     stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append({"context": context, **kwargs}))
     return calls
@@ -65,8 +78,7 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 @pytest.mark.parametrize("command", sorted(COMMANDS))
 def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: list[dict[str, Any]]) -> None:
     fetch, takes_full = COMMANDS[command]
-    years = 15 if command == "insider-edgar" else 7
-    args = [command, "-t", "aapl,msft", *([] if command == "insider-edgar" else ["-y", "7"]), *(["-F"] if takes_full else [])]
+    args = [command, "-t", "aapl,msft", *(["-F"] if takes_full else [])]
 
     result = CliRunner().invoke(cli_mod.cli, args)
 
@@ -75,11 +87,15 @@ def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: 
     call = recorded[0]
     assert call["fetch"] is fetch
     assert call["tickers"] == ["AAPL", "MSFT"]
-    assert call["years_history"] == years
+    assert "years_history" not in call
+    policy = window_policy(call["context"].config, fetch.done, call["as_of"])
+    assert policy.requested.end == pd.Timestamp("2026-09-30")
     assert call.get("full", False) is takes_full
     assert cli_mod._document_fetches()[fetch.done.name] is fetch
     print(f"\n=== SANITY: `{command}` dispatch ===")
-    print(f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, years={years}, full={call.get('full', False)});")
+    print(
+        f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, configured fixed dates, full={call.get('full', False)});"
+    )
     print(f"  resume-plan lists {fetch.done.name}.")
 
 
@@ -87,10 +103,12 @@ def test_edgar_command_without_years_uses_the_configured_window(recorded: list[d
     result = CliRunner().invoke(cli_mod.cli, ["sec-13g", "-t", "JNJ"])
 
     assert result.exit_code == 0, result.output
-    assert recorded[0]["years_history"] == 15
+    assert "years_history" not in recorded[0]
+    policy = window_policy(recorded[0]["context"].config, Tables.sec_13g, recorded[0]["as_of"])
+    assert policy.requested.start == pd.Timestamp("1995-11-16")
     assert recorded[0]["full"] is False
     print("\n=== SANITY: default window ===")
-    print("  no -y -> data_extract.years_history (15) reaches the driver; no -F -> full=False.")
+    print("  fixed data.yml start/end reach the driver through Context; no -F -> incremental root mode.")
 
 
 @pytest.mark.parametrize("command", ["sec-8k-items", "insider-edgar", "sec-employees-text", "sec-def14a-text"])
@@ -120,8 +138,8 @@ def test_markers_counts_and_deletes_by_sentinel(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_resume_plan_prints_one_line_per_document_table(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config=config)))
+    context = SimpleNamespace(name="ctx", config=extract_config())
+    _bind_context(monkeypatch, context)
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     monkeypatch.setattr(edgar_driver, "universe_rows", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
@@ -156,12 +174,12 @@ def test_steps_import_and_dag_parses() -> None:
 @pytest.fixture
 def insider_calls(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     calls: list[tuple[str, dict[str, Any]]] = []
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
+    config = extract_config()
     context = SimpleNamespace(name="ctx", config=config, config_dir="configs", universe=seed_universe(sqlite_store, ["AAPL", "ALL"]))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    _bind_context(monkeypatch, context)
     stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(
-        step_zips, "fetch_insider_transactions", lambda context, tickers, years, **kwargs: calls.append(("bulk", {"tickers": tickers, **kwargs}))
+        step_zips, "fetch_insider_transactions", lambda context, tickers: calls.append(("bulk", {"tickers": tickers, "mode": context.run.mode}))
     )
     stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append(("edgar", kwargs)))
     return calls
@@ -182,36 +200,33 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
         assert result.exit_code == 0, result.output
 
     assert [kind for kind, _ in insider_calls] == ["bulk", "edgar", "bulk", "edgar"]
-    assert {k: insider_calls[1][1][k] for k in ("tickers", "years_history", "full", "no_cap")} == {
+    assert {k: insider_calls[1][1][k] for k in ("tickers", "full", "no_cap")} == {
         "tickers": ["AAPL"],
-        "years_history": 15,
         "full": True,
         "no_cap": False,
     }
     assert insider_calls[3][1]["full"] is False and insider_calls[0][1]["tickers"] == ["AAPL"]
-    assert insider_calls[0][1]["reparse"] is False and insider_calls[2][1]["reparse"] is True
+    assert insider_calls[0][1]["mode"] == "incremental" and insider_calls[2][1]["mode"] == "full"
     assert insider_calls[1][1]["fetch"] is INSIDER_EDGAR_FETCH and insider_calls[3][1]["fetch"] is INSIDER_EDGAR_FETCH
     print("\n=== SANITY: insider commands (D-8) ===")
     print("  zips-ingest --only insider -> bulk parse only (-F re-parses); insider-edgar -F -> live walk only (full=True);")
     print("  the two in order run both halves. OK: the DAG can schedule the walk in its own pool.")
 
 
-def test_f109_f115_identity_sync_every_ticker_and_notes_download_years_reach_their_functions(
-    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_identity_sync_and_notes_download_use_shared_root_run(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """`identity --only sync`, and `zips-download --only notes` then `identity --only capture-evidence`."""
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
+    config = extract_config()
     calls: list[tuple[str, dict[str, Any]]] = []
-    context = SimpleNamespace(name="ctx", store=sqlite_store, config_dir="configs", universe=seed_universe(sqlite_store, ["AAA"]))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    context = SimpleNamespace(name="ctx", config=config, store=sqlite_store, config_dir="configs", universe=seed_universe(sqlite_store, ["AAA"]))
+    _bind_context(monkeypatch, context)
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     stub_identity_step(monkeypatch, config, context)
-    monkeypatch.setattr(step_identity, "pending_dei_periods", lambda ctx, cache, full: calls.append(("dei", {"full": full})) or [])
-    monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
+    monkeypatch.setattr(step_identity, "pending_dei_periods", lambda ctx, cache: calls.append(("dei", {"mode": ctx.run.mode})) or [])
+    monkeypatch.setattr(step_identity, "scan_form345_cache", lambda cache, window: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(step_identity, "build_symbol_tenure", lambda *args: pd.DataFrame())
-    monkeypatch.setattr(step_identity, "recheck_tickers", lambda scopes, as_of, every: calls.append(("sync", {"every": every})) or [])
+    monkeypatch.setattr(step_identity, "recheck_tickers", lambda ctx, scopes, every: calls.append(("sync", {"every": every})) or [])
     stub_zips_step(monkeypatch, config)
-    monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: calls.append(("periods", {"years": years})) or ["2026q1"])
+    monkeypatch.setattr(step_zips, "notes_periods", lambda ctx: calls.append(("periods", {"as_of": ctx.run.as_of.isoformat()})) or ["2026q1"])
     monkeypatch.setattr(step_zips, "download_notes_periods", lambda ctx, cache, periods: calls.append(("notes", {"periods": periods})) or 0)
 
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "sync", "--full"]).exit_code == 0
@@ -219,10 +234,10 @@ def test_f109_f115_identity_sync_every_ticker_and_notes_download_years_reach_the
     assert CliRunner().invoke(cli_mod.cli, ["zips-download", "--only", "notes"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-evidence"]).exit_code == 0
     assert [kwargs.get("every") for name, kwargs in calls if name == "sync"] == [True, False]
-    assert [kwargs for name, kwargs in calls if name in ("periods", "notes")] == [{"years": 32}, {"periods": ["2026q1"]}]
-    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], (
+    assert [kwargs for name, kwargs in calls if name in ("periods", "notes")] == [{"as_of": "2026-09-30T00:00:00"}, {"periods": ["2026q1"]}]
+    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"mode": "incremental"}], (
         "identity --only capture-evidence captures the cover-page symbols"
     )
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
     print("  identity --only sync --full re-checks every ticker (recheck_tickers every=True), without it only the recent stamps;")
-    print("  zips-download --only notes lists years_history 31 + 1 Notes years; identity --only capture-evidence captures")
+    print("  notes downloads and identity evidence use Context.run and fixed table policies; capture-evidence captures")

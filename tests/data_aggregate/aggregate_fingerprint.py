@@ -60,8 +60,10 @@ from src.data_aggregate.utils.institutionals.short_flow_features import FtdSourc
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.config import read_config
+from src.utils.publication import publication_rows
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
+from tests.support.config import fixture_config
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("aggregate_fingerprint_baseline.json")
@@ -984,12 +986,15 @@ def compute() -> dict:
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
     out["panel.earnings"] = frame_digest(
-        build_earnings_feature_panel(earn, PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close))
+        build_earnings_feature_panel(
+            publication_rows(fixture_config(), Tables.earnings_surprises, earn, idx, "as_of"),
+            PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close),
+        )
     )
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(
         build_dividend_feature_panel(
-            div,
+            publication_rows(fixture_config(), Tables.prices_dividends, div, idx, "available_on"),
             replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
             FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
         )
@@ -999,7 +1004,7 @@ def compute() -> dict:
     share_events = resolve_share_events(None, splits, {})
     df_basis = security_basis_frame(share_events, idx, close.columns)
     observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0)
-    saved_shares, _ = project_security_shares(observations, share_events, df_basis)
+    saved_shares, _ = project_security_shares(observations.assign(_available_on=observations["as_of"]), share_events, df_basis)
     df_terminal = terminal_basis_factor(df_basis)
     price_frames = make_frames(
         idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
@@ -1056,7 +1061,7 @@ def compute() -> dict:
     # The fixture's own tags: no company line, its stored (cusip, ticker) pairs as the market-wide map.
     fixture_tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), df_books.loc[df_books.ticker.ne("_empty"), ["cusip", "ticker"]])
     df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), fixture_tags, None, valuation_close))[1]
-    book_history = prepare_superinvestor_book_history(((df_filings, df_books) for _ in range(1)), idx, 90)
+    book_history = prepare_superinvestor_book_history(((df_filings, df_books) for _ in range(1)), idx, 90, fixture_config())
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
     basis_grid = idx.union(pd.DatetimeIndex(df_books["period"].unique()))

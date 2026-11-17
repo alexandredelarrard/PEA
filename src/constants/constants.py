@@ -467,10 +467,6 @@ MODEL_GENERATION_ARTIFACT_FORMAT = "transformer-pickle-generation-v2"
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
 # --------------------------------------------------------------------------- #
 
-# Fundamentals can change when monthly notes metadata arrives after its filing date, so its
-# incremental build rewrites a wider bounded tail than the shared five-session price repair.
-FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
-
 # The cube + the ad-hoc intermediate `cube_part_*` tables the sub-steps hand to each other are
 # declared in src/data_store/schema.py (`Tables.cube`, `Tables.cube_part_*`), the parts with
 # `managed=False`: they carry a declared PK and date column but own their own DDL (inferred from

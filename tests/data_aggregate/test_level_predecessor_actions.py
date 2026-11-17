@@ -15,7 +15,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
@@ -24,9 +23,11 @@ from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
 from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import split_events as genuine_splits
 from src.utils.price.levels import level_factor
+from src.utils.window import WindowRun
 from src.validate.utils import prices as vprices
 from tests.conftest import FakeStore
 from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
+from tests.support.config import fixture_config
 from tests.support.universe import universe_of
 
 LOGGER = "test.level_predecessor_actions"
@@ -111,8 +112,9 @@ def _cube_s(context: SimpleNamespace, tickers: list[str], owners: list[dict] | N
     peer_path = context.config_dir / "peers.json"
     peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in tickers}), encoding="utf-8")
     context.paths = {"SECTOR_PEERS_PATH": peer_path}
-    context.config = OmegaConf.create({"data_aggregate": {}, "data_extract": {"redundant_ticks": []}})
-    StepCubePrices(context, context.config).run(full=True)
+    context.config = fixture_config()
+    context.run = WindowRun("full", "explicit predecessor price build", pd.Timestamp("2026-11-16"))
+    StepCubePrices(context, context.config).run()
     rows = context.store.load(Tables.cube_part_prices)
     return rows.pivot(index="date", columns="ticker", values="level_factor").reindex(index=DAYS, columns=tickers)
 

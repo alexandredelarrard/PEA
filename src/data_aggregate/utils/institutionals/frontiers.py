@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Table
+from src.utils.data_policy import source_read_window
 from src.utils.freshness import max_age_days
 
 
@@ -22,7 +23,10 @@ def schedule_complete_through(context: Context, table: Table, last_session: pd.T
     D is `last_session` when the table's latest `filing_date` (markers included) lies within its
     configured freshness tolerance of that session, else the latest `filing_date`. None for an absent or empty table.
     """
-    latest = context.store.max_date(table, "filing_date")
+    retained = source_read_window(context.config, table, context.run.as_of)
+    if retained is None:
+        return None
+    latest = context.store.max_date(table, "filing_date", where={"filing_date": retained})
     if latest is None or last_session is None:
         return latest
     last = _normalized_timestamp(last_session)

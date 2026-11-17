@@ -86,16 +86,16 @@ def test_required_sources_are_scheduled_without_retired_attention_sources():
     print("  OK: the retired Google Trends source is absent and the final gate is present")
 
 
-def test_freshness_inventory_comes_only_from_schema():
+def test_freshness_inventory_comes_from_table_configuration():
     root = DAG_FILE.parents[2]
     cli_source = _source(root / "src/data_extract/cli.py")
-    assert "freshness_tables()" in cli_source
+    assert "freshness_tables(context.config)" in cli_source
     assert "SOURCE_TABLES" not in cli_source
     assert not (root / "src/data_extract/freshness.py").exists()
 
     print("\n=== SANITY CHECK: one freshness inventory ===")
-    print("  extraction-status consumes schema.freshness_tables(); no parallel registry exists")
-    print("  OK: schema.py is the sole table/cadence/date-column source of truth")
+    print("  extraction-status consumes freshness_tables(context.config); no parallel inventory exists")
+    print("  OK: data.yml owns cadence; schema.py retains table and column identity")
 
 
 #: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, FTD, SEC current tickers),
@@ -655,8 +655,21 @@ def test_identity_reads_no_input_written_later_in_the_night():
     reads = {"universe_tickers"}  # `context.universe`
     for path in IDENTITY_BUILD_FILES:
         tree = ast.parse(_source(root / path))
+        policy_references = {
+            id(reference)
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in {"source_read_window", "window_policy", "archive_scopes"}
+            for reference in ast.walk(call)
+        }
         reads |= {
-            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "Tables"
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "Tables"
+            and id(node) not in policy_references
         }
     ancestors: set[str] = set()
     pending = list(dag.tasks["identity"].upstream)

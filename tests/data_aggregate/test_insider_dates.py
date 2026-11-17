@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -12,6 +13,7 @@ from src.data_aggregate.utils.institutionals.inputs import load_insider_transact
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
 from src.data_store.schema import Tables
 from tests.data_aggregate.insider_pit_reference import row, source_frame
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 
 @pytest.mark.parametrize("column", ["original_submission_date", "transaction_date"])
@@ -291,7 +293,7 @@ def test_loader_normalizes_before_first_filing_and_role_metadata(sqlite_store: A
         return iter([df_source]) if table == Tables.insider_transactions else original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", stream)
-    loaded = load_insider_transactions(sqlite_store, ["AAA"], None)
+    loaded = load_insider_transactions(source_context(sqlite_store, Path(".")), ["AAA"], None)
     assert loaded is not None and loaded.first_filed["AAA"] == pd.Timestamp("2024-01-10")
     assert loaded.transactions["filing_date"].isna().tolist() == [True, False]
     assert loaded.transactions["filing_date_raw"].iloc[0].year == 1

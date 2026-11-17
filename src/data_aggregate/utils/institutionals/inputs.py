@@ -10,6 +10,8 @@ from typing import Any, cast
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
+from src.context import Context
+from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OTHER_OFFICER,
     clean_officer_title,
@@ -21,9 +23,12 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.data_policy import publication_policy, source_read_window
 from src.utils.identity_tables import read_identity
+from src.utils.publication import publication_rows
 from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, load_fails_basis, prepare_master, short_volume_series
 from src.utils.string import pad_cik, yahoo_symbol
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +46,21 @@ def load_ftd_lines(store: DataStore) -> pd.DataFrame | None:
     return read_identity(store, Tables.universe_cusip, columns=FTD_LINE_COLUMNS, where={"source": "ftd"}, optional=True)
 
 
-def load_class_bars(store: DataStore, class_lines: pd.DataFrame | None) -> pd.DataFrame:
+def load_class_bars(context: Context, class_lines: pd.DataFrame | None) -> pd.DataFrame:
     """Projected raw secondary-class volume bars, read once."""
     symbols = sorted(set(class_lines["market_symbol"].map(yahoo_symbol))) if class_lines is not None else []
-    df_bars = store.load(Tables.prices, columns=["ticker", "date", "volume"], where={"ticker": symbols}, optional=True) if symbols else None
+    df_bars = load_source(context, Tables.prices, symbols, columns=["ticker", "date", "volume"]) if symbols else None
     return df_bars if df_bars is not None else pd.DataFrame(columns=["ticker", "date", "volume"])
 
 
 def load_short_volume(
-    store: DataStore, universe: Sequence[str], lines: pd.DataFrame | None, lineage: pd.DataFrame | None
+    context: Context, universe: Sequence[str], lines: pd.DataFrame | None, lineage: pd.DataFrame | None
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     """The short-volume series of the `universe` companies and the lineage-fallback stamps the tenure mask reads, built
     from the as-filed FINRA lines, the step's `universe_cusip` lines and its `universe_cik_symbol` rows
     (`security_series.short_volume_series`)."""
     # one read of the stored lines
-    stored = store.load(Tables.sec_short_volume_security, columns=list(SHORT_LINE_COLUMNS), optional=True)
+    stored = load_source(context, Tables.sec_short_volume_security, columns=list(SHORT_LINE_COLUMNS))
     if stored is None or stored.empty or lines is None or lineage is None or not universe:
         logger.warning("%s or the identity tables are absent -> short-volume features are skipped.", Tables.sec_short_volume_security.name)
         return None, None
@@ -76,18 +81,24 @@ class InsiderSource:
     first_filed: pd.Series
 
 
-def load_insider_transactions(store: DataStore, universe: Sequence[str] | None, lines: pd.DataFrame | None) -> InsiderSource | None:
+def load_insider_transactions(context: Context, universe: Sequence[str] | None, lines: pd.DataFrame | None) -> InsiderSource | None:
     """Retain full issuer metadata, then select canonical economic rows and actual empty markers."""
     table = Tables.insider_transactions
+    store = context.store
+    retained = source_read_window(context.config, table, context.run.as_of)
     present = store.columns(table)
-    if not present:
+    if not present or retained is None:
         logger.warning("%s is absent -> insider features are skipped.", table.name)
         return None
 
     # keep columns needed & read data in chunks; the frontier is the whole table's newest filing
-    complete_through = store.max_date(table, "filing_date")
+    lag = int(publication_policy(context.config, table).lag.value)
+    cutoff = min(retained.end, context.run.as_of - pd.Timedelta(days=lag))
+    complete_through = (
+        store.max_date(table, "filing_date", where={"filing_date": Window(retained.start, cutoff)}) if cutoff >= retained.start else None
+    )
     columns = set(present).intersection(set((*table.read_columns, "issuer_cik", "lineage_role", "economic_date")))
-    where: dict[str, Any] = {}
+    where: dict[str, Any] = {"filing_date": retained}
     if universe is not None:
         where["ticker"] = sorted(set(universe))
     chunks = list(store.iter_load(table, columns=list(columns), where=where, markers=True))
@@ -115,7 +126,18 @@ def lag_insider_source(source: InsiderSource, lag_days: int, sessions: pd.Dateti
     for column in ("filing_date", "original_submission_date"):
         df_rows[column] = publication_day(df_rows[column], lag_days, sessions)
     frontier = None if source.complete_through is None else publication_day(pd.Series([source.complete_through]), lag_days, sessions).iloc[0]
-    return replace(source, transactions=df_rows, complete_through=frontier, first_filed=publication_day(source.first_filed, lag_days, sessions))
+    if (
+        source.complete_through is not None
+        and pd.notna(source.complete_through)
+        and source.complete_through + pd.Timedelta(days=lag_days) > sessions[-1]
+    ):
+        frontier = sessions[-1]  # known operational completeness, independently of future event eligibility
+    return replace(
+        source,
+        transactions=df_rows.loc[df_rows.filing_date.notna()],
+        complete_through=frontier,
+        first_filed=publication_day(source.first_filed, lag_days, sessions),
+    )
 
 
 def canonical_class_units(df_rows: pd.DataFrame, lines: pd.DataFrame | None) -> pd.DataFrame:
@@ -147,7 +169,7 @@ def canonical_class_units(df_rows: pd.DataFrame, lines: pd.DataFrame | None) -> 
     return out
 
 
-def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame, universe: Sequence[str] | None = None) -> pd.DataFrame:
+def load_insider_role_evidence(context: Context, insider: pd.DataFrame, universe: Sequence[str], calendar: pd.DatetimeIndex) -> pd.DataFrame:
     """Projected proxy title evidence for unique same-issuer/full-name owner identities only."""
 
     columns = list(Tables.def14a_executive_comp.read_columns)
@@ -155,13 +177,12 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame, universe
         return pd.DataFrame(columns=columns)
 
     # Load only proxy rows for tickers with a missing job claim.
-    df_proxy = store.load(
-        Tables.def14a_executive_comp, columns=["ticker", "cik", "as_of", "name", "title", "fiscal_year"], where={"ticker": universe}, optional=True
-    )
+    df_proxy = load_source(context, Tables.def14a_executive_comp, universe, columns=["ticker", "cik", "as_of", "name", "title", "fiscal_year"])
     if df_proxy is None or df_proxy.empty:
         return pd.DataFrame(columns=columns)
 
-    # Match dated public titles only after an actual proxy payload is available.
+    # Match dated public titles only after the proxy's configured eligibility.
+    df_proxy = publication_rows(context.config, Tables.def14a_executive_comp, df_proxy, calendar, "as_of")
     df_proxy = df_proxy.loc[~df_proxy["cik"].isnull()].copy()
     df_owners = _role_owner_identities(insider.loc[insider["issuer_cik"].map(pad_cik).fillna("").ne("")])
     if df_proxy.empty or df_owners.empty:
@@ -220,16 +241,16 @@ def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.Da
 
 
 def load_fails(
-    store: DataStore, universe: Sequence[str], lines: pd.DataFrame | None, bugfix: dict
+    context: Context, universe: Sequence[str], lines: pd.DataFrame | None, bugfix: dict
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     """The FTD series of the `universe` companies and the market-wide served calendar, built from the as-filed security
     lines and the step's `universe_cusip` lines (`security_series.fails_series`)."""
     # one read of the stored lines and of the share basis of the FTD lines' classes and companies
-    stored = store.load(Tables.sec_fails_to_deliver_security, columns=list(LINE_COLUMNS), optional=True)
+    stored = load_source(context, Tables.sec_fails_to_deliver_security, columns=list(LINE_COLUMNS))
     master = prepare_master(lines) if lines is not None else None
     if stored is None or stored.empty or master is None or master.empty:
         return None, None
-    basis = load_fails_basis(store, bugfix, master)
+    basis = load_fails_basis(context, bugfix, master)
 
     # every company's series and the served dates; the economics of the universe only
     series, coverage = fails_series(stored, master, basis)

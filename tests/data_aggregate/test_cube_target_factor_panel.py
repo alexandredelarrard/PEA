@@ -127,7 +127,7 @@ def test_factor_panel_matches_hand_composed_reference():
     frames, fundamentals, close, ret, macro_wide, macro_long, dates = _synthetic_inputs()
     step = _step(macro_long)
 
-    panel, macro_cols = step._factor_panel(frames, fundamentals)
+    panel, macro_cols = step._factor_panel(frames, fundamentals, macro_long.pivot(index="date", columns="ticker", values="close"))
 
     # hand-composed reference: the same building blocks `_factor_panel` calls, composed
     # independently here rather than by importing its loop
@@ -162,16 +162,16 @@ def test_factor_panel_matches_hand_composed_reference():
     print("  CONCLUSION: bit-identical to composing the same blocks by hand. Validated.")
 
 
-def test_factor_panel_makes_exactly_one_macro_read():
+def test_factor_panel_reuses_preloaded_macro_without_store_reads():
     """The consolidation claim, pinned: ONE read of ONE table for all macro information.
     Three reads across two tables before (cube_part_market twice, macro once)."""
     frames, fundamentals, *_rest, macro_long, _dates = _synthetic_inputs()
     step = _step(macro_long)
 
-    step._factor_panel(frames, fundamentals)
+    step._factor_panel(frames, fundamentals, macro_long.pivot(index="date", columns="ticker", values="close"))
 
     store = cast(_SpyStore, step._store)
-    assert store.reads == ["prices_macro"], f"reads were {store.reads}"
+    assert store.reads == [], f"the pure calculation unexpectedly reread {store.reads}"
 
     print("\n=== SANITY CHECK: one macro read, one pivot ===")
     print(f"  _factor_panel store reads: {store.reads}")
@@ -185,7 +185,7 @@ def test_panel_market_column_is_the_market_series_return():
     frames, fundamentals, close, ret, macro_wide, macro_long, dates = _synthetic_inputs()
     step = _step(macro_long)
 
-    panel, _ = step._factor_panel(frames, fundamentals)
+    panel, _ = step._factor_panel(frames, fundamentals, macro_long.pivot(index="date", columns="ticker", values="close"))
 
     assert "market" in panel.columns, "the panel lost its market column"
     pd.testing.assert_series_equal(
@@ -201,5 +201,5 @@ def test_panel_market_column_is_the_market_series_return():
 
 if __name__ == "__main__":
     test_factor_panel_matches_hand_composed_reference()
-    test_factor_panel_makes_exactly_one_macro_read()
+    test_factor_panel_reuses_preloaded_macro_without_store_reads()
     test_panel_market_column_is_the_market_series_return()

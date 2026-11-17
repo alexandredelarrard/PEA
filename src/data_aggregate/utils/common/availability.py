@@ -108,7 +108,7 @@ class InstitutionalAvailability:
     ) -> pd.DataFrame:
         """Boolean `(date x ticker)` mask, inclusive of `start`."""
         idx = pd.DatetimeIndex(index).normalize()
-        row = idx >= pd.Timestamp(start).normalize()
+        row = np.zeros(len(idx), dtype=bool) if pd.isna(start) else idx >= pd.Timestamp(start).normalize()
         values = np.broadcast_to(row[:, None], (len(idx), len(columns))).copy()
         return pd.DataFrame(values, index=idx, columns=columns, dtype=bool)
 
@@ -120,7 +120,7 @@ class InstitutionalAvailability:
     ) -> pd.DataFrame:
         """Boolean mask through an inclusive observed source frontier."""
         idx = pd.DatetimeIndex(index).normalize()
-        row = idx <= pd.Timestamp(end).normalize()
+        row = np.zeros(len(idx), dtype=bool) if pd.isna(end) else idx <= pd.Timestamp(end).normalize()
         values = np.broadcast_to(row[:, None], (len(idx), len(columns))).copy()
         return pd.DataFrame(values, index=idx, columns=columns, dtype=bool)
 

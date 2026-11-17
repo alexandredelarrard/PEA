@@ -191,6 +191,12 @@ def _validate_table_dates(config: DictConfig, table: Table, item: DictConfig) ->
             raise ValueError(f"{table.name}: invalid freshness clock or cadence")
     if table.kind == KIND_PART and "warmup" not in item:
         raise ValueError(f"{table.name}: cube parts require explicit computation context")
+    if table in {Tables.cube_part_prices, Tables.cube_part_institutionals} and item.warmup.grid.mode != "full_history":
+        raise ValueError(f"{table.name}: cumulative anchors and sparse event state require full_history context")
+    if table == Tables.cube_part_targets:
+        overlap = _offset(item.reprocess.overlap)
+        if overlap.unit != "trading_sessions" or overlap.value < max(config.data_aggregate.targets.horizons):
+            raise ValueError("Target rewrite must cover the maximum configured forward horizon in trading_sessions")
     if item.reprocess.mode in {"not_applicable", "stage_owned"}:
         raise ValueError(f"{table.name}: active table requires an executable work policy")
 

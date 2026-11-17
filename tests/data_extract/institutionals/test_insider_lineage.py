@@ -26,6 +26,7 @@ from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
 from src.utils.window import WindowRun
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.data_extract.fake_context import extract_config
 from tests.support.identity_sync import run_sync
 from tests.support.universe import as_roster
@@ -369,7 +370,7 @@ def test_the_cube_reads_canonical_insider_rows_only(sqlite_store: Any) -> None:
         ]
     )
     sqlite_store.save(Tables.insider_transactions, rows)
-    got = institutional_inputs.load_insider_transactions(sqlite_store, ["MRK"], None)
+    got = institutional_inputs.load_insider_transactions(source_context(sqlite_store, Path(".")), ["MRK"], None)
     assert got is not None and sorted(got.transactions["accession_number"]) == ["a0", "a1"]
     print("\nSANITY: the insider reader keeps canonical_predecessor and canonical_current rows; acquired and unstamped rows are not read")
 

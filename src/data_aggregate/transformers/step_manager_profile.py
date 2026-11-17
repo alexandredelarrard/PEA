@@ -17,6 +17,7 @@ from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book,
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
 from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS, changed_rows, plan_refresh, profile_frame, stored_details
 from src.data_store.schema import Tables
+from src.utils.data_policy import source_read_window, window_policy
 from src.utils.step import Step
 
 
@@ -37,13 +38,17 @@ class StepManagerProfile(Step):
         self._overrides = load_category_overrides(context.config_dir, self._rules)
         self._store = context.store
 
-    def run(self, full: bool = False) -> int:
+    def run(self) -> int:
         """Profile the stale quarters of `sec_13f_manager_details` (all of them when `full`); returns the rows written."""
         started = time.monotonic()
 
         # load: the key, name and profile columns of the manager rows once; nothing else is read while every row is profiled
-        wanted = ["cik", "period", "source_period", "manager_name", *PROFILE_COLUMNS]
-        df_stored = self._store.load(Tables.sec_13f_manager_details, columns=wanted, optional=True)
+        policy = window_policy(self._config, Tables.sec_13f_manager_details, self._context.run.as_of)
+        retained = source_read_window(self._config, Tables.sec_13f_manager_details, self._context.run.as_of)
+        if policy is None or retained is None:
+            return 0
+        wanted = ["cik", "period", "source_period", "first_filed_date", "manager_name", *PROFILE_COLUMNS]
+        df_stored = self._store.load(Tables.sec_13f_manager_details, columns=wanted, where={"first_filed_date": retained}, optional=True)
         if df_stored is None:
             self._log.info("manager profile: no manager rows stored yet")
             return 0
@@ -51,7 +56,7 @@ class StepManagerProfile(Step):
 
         # plan: the quarters whose rows lack a profile or whose name changed
         category = apply_overrides(classify_names(details["manager_name"], self._rules), details["cik"], self._overrides)
-        refresh = plan_refresh(details, category, full, int(self._cfg.window_quarters))
+        refresh = plan_refresh(details, category, self._context.run.mode in {"initial", "full", "recovery"}, int(self._cfg.window_quarters))
         if refresh is None:
             self._log.info("manager profile: %d rows, all profiled; 0 quarters read (%.1f s)", len(details), time.monotonic() - started)
             return 0
@@ -59,6 +64,8 @@ class StepManagerProfile(Step):
         # compute: one chronological pass over the quarters, then the 4-quarter profile of the rewritten rows
         qstats = self._quarter_pass(details, refresh.compute)
         profile = profile_frame(details, category, profile_rows(qstats, self._cfg), refresh.write)
+        writable = details.loc[policy.requested.mask(details["first_filed_date"]), ["cik", "period"]]
+        profile = profile.merge(writable, on=["cik", "period"], how="inner", validate="one_to_one")
 
         # save: only the rows that differ
         changed = self._save(changed_rows(profile, details))
@@ -119,11 +126,14 @@ class StepManagerProfile(Step):
     def _read_lines(self, ciks: list[str], periods: list[pd.Timestamp]) -> pd.DataFrame:
         """Markers and lines of `ciks` over `periods`, read on the primary key in CIK chunks (the table has no period index)."""
         # `iter_load` streams one scope; this read is one bounded load per CIK chunk, which it cannot express.
+        retained = source_read_window(self._config, Tables.sec13f_hr, self._context.run.as_of)
+        if retained is None:
+            return pd.DataFrame(columns=list(LINE_COLUMNS))
         chunk = 1_000
         stamps = [period.strftime("%Y-%m-%d") for period in periods]
         frames = []
         for start in range(0, len(ciks), chunk):
-            where = {"cik": ciks[start : start + chunk], "period": stamps}
+            where = {"cik": ciks[start : start + chunk], "period": stamps, "filing_date": retained}
             frame = self._store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
             if frame is not None:
                 frames.append(frame)

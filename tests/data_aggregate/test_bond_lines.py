@@ -24,6 +24,7 @@ from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings
 from src.data_store.schema import Tables
 from src.utils.config import read_config
 from tests.data_aggregate.test_manager_profile import NO_PREFIX, _frame, _raw, live_prefixes, live_reference, live_store, load_raw
+from tests.support.config import fixture_config
 
 ROOT = Path(__file__).resolve().parents[2]
 EMPTY = "_empty"
@@ -164,7 +165,7 @@ def _cube_packet(bond_cfg: DictConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.D
             for c, n, t, k, p, s, v, d in rows
         ]
     )
-    cleaned_filings, cleaned = clean_filings(filings.copy(), holdings.copy(), bond_cfg)
+    cleaned_filings, cleaned = clean_filings(filings.copy(), holdings.copy(), bond_cfg, fixture_config())
     return filings, holdings, cleaned_filings, cleaned
 
 

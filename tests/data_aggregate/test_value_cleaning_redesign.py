@@ -180,7 +180,8 @@ def test_filings_with_an_impossible_period_and_all_bond_lines_leave_the_book() -
             "debt_value": [0.0, 5e6, 7.0, 0.0, 0.0, 0.0],
         }
     )
-    got_filings, got_holdings = clean_filings(filings, holdings, read_config(str(ROOT / "configs")).data_aggregate.bond_lines)
+    config = read_config(str(ROOT / "configs"))
+    got_filings, got_holdings = clean_filings(filings, holdings, config.data_aggregate.bond_lines, config)
     assert got_filings["accession_number"].tolist() == ["ok"] and got_filings["parsed_row_count"].tolist() == [2]
     assert got_holdings["cusip"].tolist() == ["a", "c"] and got_holdings["debt_prn"].eq(0.0).all() and len(got_holdings) == 2
     print(

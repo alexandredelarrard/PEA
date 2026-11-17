@@ -3,37 +3,34 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
 
 import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, changed_tickers, plan_window, write_part
-from src.data_aggregate.utils.common.parts import part_for
+from src.data_aggregate.utils.common.incremental import changed_tickers, plan_window, write_part
 from src.data_aggregate.utils.price.checks import check_candidate, describe
 from src.data_aggregate.utils.price.clean import apply_null_ret, clean_prices
 from src.data_aggregate.utils.price.features import as_traded_volume, pit_fields, resolve_price_basis
 from src.data_aggregate.utils.price.frames import frames_to_long, universe_columns
 from src.data_aggregate.utils.price.inputs import load_price_inputs
 from src.data_aggregate.utils.price.returns import compute_sector_returns
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.frames import daily_returns
 from src.utils.price.levels import apply_level_bugfix, level_factor
 from src.utils.step import Step
-from src.utils.window import Offset, Window, WindowPlan, WindowPolicy, WindowRun
+from src.utils.window import WindowPlan
 
 
 class StepCubePrices(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
-        self._part = part_for(Tables.cube_part_prices)
         self._store = context.store
         self._bugfix = load_bugfix(context.config_dir)
 
-    def run(self, full: bool = False, tickers: Sequence[str] = ()) -> None:
-        # A ticker list rebuilds those tickers from scratch; `full` alone rebuilds the whole part.
+    def run(self, tickers: Sequence[str] = ()) -> dict[Table, WindowPlan]:
+        # Explicit ticker recovery keeps the full cross-section for price/peer computations.
         rebuild = self._universe.subset(tickers) if tickers else []
         inputs = load_price_inputs(self._context, self._universe.tickers, self._bugfix)
 
@@ -45,7 +42,9 @@ class StepCubePrices(Step):
         wide = {field: df_frame.reindex(columns=names) for field, df_frame in wide.items()}
         df_close = wide["close_split"]
         index = pd.DatetimeIndex(df_close.index)
-        window = self._plan_window(full and not rebuild, index)
+        window = plan_window(self._context, Tables.cube_part_prices, index, rebuild or None)
+        if window is None:
+            return {}
         basis = resolve_price_basis(df_close, inputs, self._bugfix)
 
         # Compute one level history and the three valuation outputs on that same basis.
@@ -64,32 +63,18 @@ class StepCubePrices(Step):
         check_candidate(df_rows)
         self._log.info("%s; %d null-return repairs; %d candidate rows", describe(df_factor), applied, len(df_rows))
 
-        # Publish: whole part, or whole selected/changed tickers plus the others' tail.
-        self._write_candidate(df_rows, window, rebuild)
+        # Publish only the resolved Window and explicitly selected ticker scope.
+        return {Tables.cube_part_prices: self._write_candidate(df_rows, window)}
 
-    def _plan_window(self, full: bool, calendar: pd.DatetimeIndex) -> WindowPlan:
-        """Resolve publication from the authoritative input calendar and selected frontier."""
-        policy = WindowPolicy(Window(calendar[0], calendar[-1]), Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"), None)
-        return plan_window(self._store, Tables.cube_part_prices, policy, calendar, full=full, scope=self._universe.tickers)
-
-    def _write_candidate(self, df_rows: pd.DataFrame, window: WindowPlan, tickers: list[str]) -> None:
-        """Publish the ordinary tail and separately scoped basis/explicit ticker recovery."""
+    def _write_candidate(self, df_rows: pd.DataFrame, window: WindowPlan) -> WindowPlan:
+        """Require explicit root recovery before replacing older price history."""
         part = Tables.cube_part_prices
-        if window.is_full:
-            write_part(self._store, part, df_rows, window)
-            return
-        selected = set(dict(window.scope)["ticker"])
-        rebuild = sorted(selected.intersection(tickers or changed_tickers(self._store, part, df_rows, window)))
-        remaining = tuple(sorted(selected - set(rebuild)))
-        with self._store.transaction() as store:
-            if remaining and not tickers:
-                write_part(store, part, df_rows, replace(window, scope=(("ticker", remaining),)))
-            if rebuild:
-                recovery = replace(
-                    window,
-                    write=window.requested,
-                    run=WindowRun("recovery", "explicit ticker or changed historical price basis", window.run.as_of),
-                    scope=(("ticker", tuple(rebuild)),),
-                )
-                write_part(store, part, df_rows, recovery)
-        self._log.info("Price part: recovery for %s; ordinary tail from %s", rebuild, window.write.start)
+        columns = self._store.columns(part)
+        if columns and set(columns) != set(df_rows.columns) and not window.is_full:
+            raise ValueError("Price columns changed; an explicit full retained-schema rebuild is required")
+        if not window.is_full:
+            changed = changed_tickers(self._store, part, df_rows, window)
+            if changed:
+                raise ValueError(f"Historical price changes for {changed} require an explicit full cube rebuild; no price rows were changed")
+        write_part(self._store, part, df_rows, window)
+        return window

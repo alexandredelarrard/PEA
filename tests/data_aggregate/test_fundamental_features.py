@@ -13,8 +13,8 @@ Two layers:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -38,7 +38,9 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_store.schema import Tables
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 
 # --------------------------------------------------------------------------- #
@@ -1093,12 +1095,6 @@ def test_true_enterprise_value_fully_diluted():
 # --------------------------------------------------------------------------- #
 # Memory-safe scoped facts read: only the pension tags the builder uses         #
 # --------------------------------------------------------------------------- #
-class _Ctx:
-    def __init__(self, store):
-        self.store = store
-        self.log = logging.getLogger("test")
-
-
 def test_load_notes_num_scoped_reads_only_needed_tags(sqlite_store):
     """`load_notes_num_scoped` returns ONLY the 4 pension tags the panel reads (PBO, plan assets and
     the 2 net-liability tags) — the other footnote tags are never materialised. Runs on
@@ -1113,18 +1109,20 @@ def test_load_notes_num_scoped_reads_only_needed_tags(sqlite_store):
             "value": 100.0,
             "filed": "2025-02-14",
             "available_at": "2025-03-12",
+            "period": "2024q4",
         }
         for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
-    ctx = _Ctx(sqlite_store)
-    assert load_notes_num_scoped(ctx) is None  # cold DB: table absent -> None, not a raise
-    sqlite_store.save("notes_num", pd.DataFrame(rows))
-    out = load_notes_num_scoped(ctx)
+    ctx = source_context(sqlite_store, Path("."))
+    calendar = pd.bdate_range("2024-01-01", "2026-11-16")
+    assert load_notes_num_scoped(ctx, calendar) is None  # cold DB: table absent -> None, not a raise
+    sqlite_store.save(Tables.notes_num, pd.DataFrame(rows))
+    out = load_notes_num_scoped(ctx, calendar)
     assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS}, "non-pension footnote tags leaked in"
     assert len(out) == 4, f"expected only the 4 pension tags, got {len(out)}"
-    assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh"]
+    assert {"ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh", "period", "_source_filed"} <= set(out.columns)
     # no matching row -> None (builder then treats pension as unavailable)
-    assert load_notes_num_scoped(ctx, tickers=("NOSUCH",)) is None
+    assert load_notes_num_scoped(ctx, calendar, tickers=("NOSUCH",)) is None
     print("\n=== SANITY CHECK: scoped facts read ===")
     print(
         f"  notes_num -> only {_FN_PBO_TAG}, {_FN_PLAN_ASSETS_TAG} and the 2 net-liability tags loaded "

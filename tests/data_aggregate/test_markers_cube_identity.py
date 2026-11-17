@@ -8,7 +8,7 @@ are built from that store, 20 marker rows are added, and everything is built aga
 from __future__ import annotations
 
 from collections.abc import Callable
-from types import SimpleNamespace
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
@@ -29,6 +29,7 @@ from src.utils.config import read_config
 from tests.conftest import _store, make_frames
 from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 TICKERS = ["AAPL", "DIS", "HPQ", "JPM", "PG"]
 GRID_START = pd.Timestamp("2024-01-02")
@@ -99,12 +100,12 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
                 ScheduleSource(
                     Tables.sec_13d,
                     store.load(Tables.sec_13d, project=True),
-                    schedule_complete_through(SimpleNamespace(store=store, config=read_config("./configs")), Tables.sec_13d, close.index.max()),
+                    schedule_complete_through(source_context(store, Path(".")), Tables.sec_13d, close.index.max()),
                 ),
                 ScheduleSource(
                     Tables.sec_13g,
                     store.load(Tables.sec_13g, project=True),
-                    schedule_complete_through(SimpleNamespace(store=store, config=read_config("./configs")), Tables.sec_13g, close.index.max()),
+                    schedule_complete_through(source_context(store, Path(".")), Tables.sec_13g, close.index.max()),
                 ),
             ),
             read_config("./configs"),
@@ -114,7 +115,7 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
     pinned: dict[str, pd.Series] = {}
 
     def insider(store: DataStore) -> pd.DataFrame:
-        source = load_insider_transactions(store, TICKERS, None)
+        source = load_insider_transactions(source_context(store, Path(".")), TICKERS, None)
         assert source is not None
         complete_through = pinned.setdefault("through", source.complete_through)
         return build_insider_feature_panel(frames, source.transactions, coverage=InsiderCoverage.from_availability(None, complete_through))
@@ -148,7 +149,7 @@ def test_markers_never_change_a_cube_cell(sqlite_store: DataStore) -> None:
         pytest.skip(f"live source rows unavailable: {type(exc).__name__}: {exc}")
     builders = _builders(prices)
     frontiers = {
-        t: schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), t, prices["date"].max())
+        t: schedule_complete_through(source_context(sqlite_store, Path(".")), t, prices["date"].max())
         for t in (Tables.sec_13d, Tables.sec_13g, Tables.insider_transactions)
     }
     before = {name: _canonical(build(sqlite_store)) for name, build in builders.items()}
@@ -160,9 +161,7 @@ def test_markers_never_change_a_cube_cell(sqlite_store: DataStore) -> None:
     after = {name: _canonical(build(sqlite_store)) for name, build in builders.items()}
 
     assert n_markers == 20 and stored == {t: n for t, n in MARKERS_PER_TABLE.items()}
-    assert {
-        t: schedule_complete_through(SimpleNamespace(store=sqlite_store, config=read_config("./configs")), t, prices["date"].max()) for t in frontiers
-    } == frontiers
+    assert {t: schedule_complete_through(source_context(sqlite_store, Path(".")), t, prices["date"].max()) for t in frontiers} == frontiers
     for name in builders:
         assert not before[name].empty, f"{name}: built nothing from real rows"
         pd.testing.assert_frame_equal(before[name], after[name], check_exact=True)

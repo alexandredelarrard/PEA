@@ -111,14 +111,18 @@ def reconcile_13f_source(
 def filing_public_dates(manifests: pd.DataFrame, trading_index: pd.DatetimeIndex, config: DictConfig) -> pd.Series:
     """Each filing's public/accepted date plus its configured calendar buffer, for every book family."""
     public = publication_dates(config, Tables.sec13f_hr, manifests, trading_index)
-    periods = market_days(manifests["period"])
-    filed = market_days(manifests["filing_date"])
-    valid = periods.notna() & periods.le(filed)
+    valid = valid_reporting_periods(manifests, config)
     if not valid.all():
-        logger.warning(
-            "13F: excluded %d filings with missing/future holdings periods from PIT projection; stored source rows are unchanged", int((~valid).sum())
-        )
+        logger.warning("13F: excluded %d invalid or pre-coverage reporting periods; stored source rows are unchanged", int((~valid).sum()))
     return public.where(valid)
+
+
+def valid_reporting_periods(manifests: pd.DataFrame, config: DictConfig) -> pd.Series:
+    """Valid reporting quarters within configured source coverage, never after their filing."""
+    periods, filed = market_days(manifests["period"]), market_days(manifests["filing_date"])
+    valid = periods.notna() & periods.dt.is_quarter_end & periods.le(filed)
+    coverage = config.data.tables[Tables.sec13f_hr.name].coverage_start
+    return valid if coverage is None else valid & periods.ge(pd.Timestamp(coverage))
 
 
 def prepare_book_vintages(

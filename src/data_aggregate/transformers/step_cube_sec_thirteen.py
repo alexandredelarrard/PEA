@@ -13,10 +13,9 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
@@ -31,11 +30,11 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_aggregate.utils.sec_thirteen.value_basis import MIN_ROW_COVERAGE, prepare_public_value_quotes
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.identity_tables import CusipTags, universe_cusips
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
-from src.utils.window import Offset, Window, WindowPolicy
+from src.utils.window import Window, WindowPlan
 
 
 @dataclass(frozen=True)
@@ -63,42 +62,36 @@ class StepCubeSecThirteen(Step):
         super().__init__(context=context, config=config)
         self._store = context.store
         self._cfg = config.data_aggregate
-        self._part = part_for(Tables.cube_part_sec_thirteen)
         self._availability = InstitutionalAvailability.from_config(config)
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[Table, WindowPlan]:
         """Plan the effective window, prepare both families once, project them on the window and save it."""
         # Plan the actual rewrite footprint before loading dependency payloads.
-        calendar = load_trading_calendar(self._store)
+        calendar = load_trading_calendar(self._context)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
-        saved_dates = pd.DatetimeIndex(self._store.distinct(Tables.cube_part_sec_thirteen, "date"))
-        window = plan_window(
-            self._store,
-            Tables.cube_part_sec_thirteen,
-            WindowPolicy(
-                Window(calendar[0], calendar[-1]), Offset(PART_REFRESH_TRADING_DAYS, "trading_sessions"), Offset(self._warmup(), "trading_sessions")
-            ),
-            calendar,
-            full=full,
-            scope=self._universe.tickers,
+        window = plan_window(self._context, Tables.cube_part_sec_thirteen, calendar)
+        if window is None:
+            return {}
+        saved_dates = pd.DatetimeIndex(
+            self._store.distinct(Tables.cube_part_sec_thirteen, "date", where={**dict(window.scope), "date": window.write})
         )
         self._require_saved_calendar(saved_dates, calendar, window.write.start)
 
         # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
-        resources = self._load_resources()
+        resources = self._load_resources(Window(calendar[0], window.read.end), calendar)
         prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
         self._require_saved_families(prepared, existing_columns)
 
         # Project the output window; a full window is the whole history.
         dates = resources.frames.trading_index
-        output_dates = dates if window.read.start is None else dates[dates >= window.read.start]
+        output_dates = dates[(dates >= window.read.start) & (dates <= window.read.end)]
         panels = self._project_panels(resources, prepared, output_dates)
         supported = self._feature_columns(panels)
 
         # Probe older windows, newest first, for columns the output window cannot show.
         unresolved = set() if window.is_full else self._possible_columns(resources, prepared) - supported
         end = int(dates.searchsorted(output_dates[0])) if len(output_dates) else len(dates)
-        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
+        span = max(1, len(output_dates))
         while unresolved and end:
             start = max(0, end - span)
             broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
@@ -120,6 +113,7 @@ class StepCubeSecThirteen(Step):
             df_panel = df_panel.reindex(columns=existing_columns)
 
         write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
+        return {Tables.cube_part_sec_thirteen: window}
 
     @staticmethod
     def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
@@ -127,15 +121,11 @@ class StepCubeSecThirteen(Step):
         if not rewrite_dates.difference(calendar).empty:
             raise RuntimeError("SEC13F price calendar ends before the saved output frontier or omits a saved rewrite date; no rows may be replaced.")
 
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
-    def _load_resources(self) -> SecThirteenResources:
+    def _load_resources(self, window: Window, calendar: pd.DatetimeIndex) -> SecThirteenResources:
         # Read the shared dependencies once before any cleaning or feature work.
-        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
+        frames = load_price_frames(self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=window)
         frames.require(*self._FIELDS)
-        history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
+        history = capital_inputs.load_source(self._context, Tables.superinvestor_roster)
         tags = CusipTags.load(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
@@ -156,7 +146,7 @@ class StepCubeSecThirteen(Step):
         # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
         universe, until = resources.frames.universe, resources.frames.trading_index.max()
         packets = thirteen_inputs.iter_filing_vintages(
-            self._store, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
+            self._context, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
         )
         if packets is None:
             return None
@@ -182,7 +172,7 @@ class StepCubeSecThirteen(Step):
 
         # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
         until, ciks = resources.frames.trading_index.max(), sorted(resources.cohorts[""])
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"])
+        packets = thirteen_inputs.iter_filing_vintages(self._context, until, ciks, bond_lines=self._cfg["bond_lines"])
         if packets is None:
             return None
 
@@ -191,7 +181,7 @@ class StepCubeSecThirteen(Step):
         cfg = self._cfg["sec_thirteen"]
         age_days = int(cfg["superinvestor"]["max_age_calendar_days"])
         consensus = build_consensus_quotes(
-            lambda: thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"]),
+            lambda: thirteen_inputs.iter_filing_vintages(self._context, until, ciks, bond_lines=self._cfg["bond_lines"]),
             resources.tags,
             resources.frames.close_pit,
             resources.limits,

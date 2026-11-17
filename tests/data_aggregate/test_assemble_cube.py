@@ -20,9 +20,10 @@ from src.data_store.errors import UnknownTableError
 from src.data_store.schema import Tables, name_of
 from src.data_store.store import WriteCounts
 from src.modelling.utils.panel import load_frame
-from src.utils.config import read_config
-from src.utils.window import Window
+from src.utils.window import Window, WindowRun
+from tests.support.config import fixture_config
 from tests.support.universe import universe_of
+from tests.support.windows import run_cube
 
 
 def _parts() -> dict[str, pd.DataFrame]:
@@ -44,13 +45,22 @@ def _config(**assembly: Any) -> Any:
         "compulsory_parts": [p.name for p in _ASSEMBLED if p.table not in _OPTIONAL],
         **assembly,
     }
-    return OmegaConf.create({"data_aggregate": {"assembly": policy}})
+    config = fixture_config()
+    config.data_aggregate.assembly = OmegaConf.create(policy)
+    return config
 
 
 def _step(store: Any, monkeypatch: pytest.MonkeyPatch, config: Any = None) -> StepAssembleCube:
     config = config if config is not None else _config()
     universe = universe_of(["AAA"], rows={"AAA": {"sector": "Tech", "industry_group": "Software"}})
-    context = SimpleNamespace(store=store, config=config, log=logging.getLogger(__name__), config_dir="configs", universe=universe)
+    context = SimpleNamespace(
+        store=store,
+        config=config,
+        log=logging.getLogger(__name__),
+        config_dir="configs",
+        universe=universe,
+        run=WindowRun("incremental", "fixed assembly fixture", pd.Timestamp("2026-11-16")),
+    )
     step = StepAssembleCube(context=context, config=config)
     step._context = cast(Context, context)
     step._config = config
@@ -80,7 +90,11 @@ class _SpyStore:
             return None
         out = frame.copy()
         for key, values in (kwargs.get("where") or {}).items():
-            out = out[out[key].isin(values if isinstance(values, (list, tuple)) else [values])]
+            out = (
+                out.loc[values.mask(out[key])]
+                if isinstance(values, Window)
+                else out[out[key].isin(values if isinstance(values, (list, tuple)) else [values])]
+            )
         for key, operator in (("since", "ge"), ("until", "le")):
             if kwargs.get(key) is not None:
                 out = out[getattr(pd.to_datetime(out["date"]), operator)(pd.Timestamp(kwargs[key]))]
@@ -103,8 +117,13 @@ class _SpyStore:
             else None
         )
 
-    def distinct(self, table: Any, column: str) -> list[Any]:
-        return self.tables[name_of(table)][column].drop_duplicates().tolist() if self.exists(table) else []
+    def distinct(self, table: Any, column: str, *, where: Any = None) -> list[Any]:
+        if not self.exists(table):
+            return []
+        frame = self.tables[name_of(table)]
+        for key, value in (where or {}).items():
+            frame = frame.loc[value.mask(frame[key])] if isinstance(value, Window) else frame.loc[frame[key].isin(value)]
+        return frame[column].drop_duplicates().tolist()
 
     def replace_window(self, table: Any, frame: pd.DataFrame, window: Window, where: Any, *, schema_rebuild: bool = False) -> WriteCounts:
         previous = self.tables.get(name_of(table), frame.iloc[:0])
@@ -298,14 +317,14 @@ def test_physical_schema_narrows(sqlite_store: Any, monkeypatch: pytest.MonkeyPa
     with pytest.raises(ValueError, match="explicit retained-schema rebuild"):
         _step(sqlite_store, monkeypatch, _config(columns={Tables.cube_part_fundamentals.name: ["v_3"]})).run()
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube), before)
-    _step(sqlite_store, monkeypatch, _config(columns={Tables.cube_part_fundamentals.name: ["v_3"]})).run(full=True)
+    run_cube(_step(sqlite_store, monkeypatch, _config(columns={Tables.cube_part_fundamentals.name: ["v_3"]})), full=True)
     assert not {"extra", "v_5"} & set(sqlite_store.columns(Tables.cube))
     assert sqlite_store.row_count(Tables.cube) == 2
     print("SANITY: actual SQLite output schema removes deselected and skipped optional columns; price rows remain.")
 
 
 def test_committed_config() -> None:
-    assembly = read_config("configs").data_aggregate.assembly
+    assembly = fixture_config().data_aggregate.assembly
     listed = [*assembly.compulsory_parts, *assembly.optional_parts]
     assert set(assembly.optional_parts) == {Tables.cube_part_text.name, Tables.cube_part_institutionals.name, Tables.cube_part_sec_thirteen.name}
     assert len(listed) == len(set(listed))
@@ -342,6 +361,9 @@ def test_assembled_cube_feeds_the_modelling_reader(sqlite_store: Any, monkeypatc
 def test_existing_cube_rewrites_only_the_overlap_window(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     for name, frame in _parts().items():
         sqlite_store.replace(name, frame.assign(date=pd.to_datetime(frame.date).replace({pd.Timestamp("2023-01-03"): pd.Timestamp("2026-11-13")})))
+    sqlite_store.save(
+        Tables.cube_part_prices, pd.DataFrame({"date": pd.bdate_range("2023-01-02", "2026-11-16"), "ticker": "MARKET_CLOCK", "close_split": 100.0})
+    )
     _step(sqlite_store, monkeypatch).run()
 
     # a new session, a restated value inside the window (last stored date) and one before it
@@ -354,6 +376,9 @@ def test_existing_cube_rewrites_only_the_overlap_window(sqlite_store: Any, monke
         if name == Tables.cube_part_fundamentals.name:
             new["v_3"] = [7.0, 5.0, 6.0]
         sqlite_store.replace(name, new)
+    sqlite_store.save(
+        Tables.cube_part_prices, pd.DataFrame({"date": pd.bdate_range("2023-01-02", "2026-11-16"), "ticker": "MARKET_CLOCK", "close_split": 100.0})
+    )
     _step(sqlite_store, monkeypatch).run()
 
     cube = sqlite_store.load(Tables.cube, columns=["date", "ticker", "v_3"])

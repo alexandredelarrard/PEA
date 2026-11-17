@@ -14,11 +14,14 @@ half, which moved from `cube_part_market`'s dates to `cube_part_prices`' own dat
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.price.frames import get_trading_days, load_trading_calendar
 from src.data_store.schema import Tables
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 MARKET = "SPY"
 
@@ -85,7 +88,7 @@ def test_load_trading_calendar_reads_cube_part_prices_dates(sqlite_store):
     long = pd.DataFrame([{"date": d, "ticker": t, "close": 10.0} for d in dates for t in ("AAPL", "MSFT")])
     sqlite_store.replace(Tables.cube_part_prices, long)
 
-    idx = load_trading_calendar(sqlite_store)
+    idx = load_trading_calendar(source_context(sqlite_store, Path(".")))
     assert isinstance(idx, pd.DatetimeIndex) and idx.name == "date"
     assert list(idx) == list(dates)  # deduped across tickers, sorted
 

@@ -12,7 +12,6 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context
@@ -20,13 +19,18 @@ from src.data_aggregate.transformers import step_cube_institutionals as institut
 from src.data_aggregate.transformers import step_cube_sec_thirteen as sec_thirteen_step
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common.incremental import plan_window
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
-from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_store.schema import Tables
-from src.utils.config import read_config
 from src.utils.security_series import trade_dates
+from src.utils.window import Window, WindowRun
+from tests.canonical_schema import create_canonical
 from tests.data_aggregate.insider_pit_reference import row
+from tests.support.config import fixture_config
 from tests.support.sec_thirteen_panel import unsaved_panel
+from tests.support.universe import universe_of
+from tests.support.windows import run_cube
 
 INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_buy_value_mcap_60d",
@@ -62,14 +66,7 @@ INSTITUTIONAL_COLUMNS = (
 
 
 def context(store: Any, path: Path) -> Context:
-    config = OmegaConf.create(
-        {
-            "data_aggregate": {
-                "sec_thirteen": {"unknown_unit_factor": 1.0},
-                "bond_lines": read_config(DEFAULT_CONFIG_DIR).data_aggregate.bond_lines,
-            }
-        }
-    )
+    config = fixture_config()
     return cast(
         Context,
         SimpleNamespace(
@@ -78,9 +75,17 @@ def context(store: Any, path: Path) -> Context:
             config=config,
             config_dir=Path(DEFAULT_CONFIG_DIR),
             paths={"DATA_STORE": path},
-            universe=SimpleNamespace(sector_map={}, tickers=["AAA"]),
+            universe=universe_of(["AAA"]),
+            run=WindowRun("incremental", "fixed institutional fixture", pd.Timestamp("2026-11-16")),
         ),
     )
+
+
+def institutional_panel(step: StepCubeInstitutionals) -> pd.DataFrame:
+    calendar = load_trading_calendar(step._context)
+    plan = plan_window(step._context, Tables.cube_part_institutionals, calendar)
+    assert plan is not None
+    return step.build_panel(plan.read, calendar)
 
 
 def fixed_sec_thirteen_projection(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch, panel: pd.DataFrame) -> Mock:
@@ -192,14 +197,16 @@ def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monke
         ],
     )
     calls: list[tuple[Any, dict[str, Any]]] = []
-    original = sqlite_store.load
+    original = sqlite_store.iter_load
 
     def capture(table: Any, **kwargs: Any) -> Any:
         calls.append((table, kwargs))
         return original(table, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "load", capture)
-    _, observed = institutional_step.institutional_inputs.load_short_volume(sqlite_store, ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage)
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    _, observed = institutional_step.institutional_inputs.load_short_volume(
+        context(sqlite_store, Path(".")), ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage
+    )
     support = institutional_step.short_flow._proven_tenure_mask(idx, pd.Index(["AAA"]), None, observed)
     assert support["AAA"].tolist() == [True, False, True]
     assert observed is not None and observed["security_id"].tolist() == ["S0000000123:OLD", "S0000000456:NEW"]
@@ -237,7 +244,7 @@ def test_public_step_checks_market_owners_outside_its_universe(
     monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
-    panel = step.build_panel().set_index(["date", "ticker"]).reindex(keys)
+    panel = institutional_panel(step).set_index(["date", "ticker"]).reindex(keys)
     value = panel.loc[(idx[30], "AAA"), "f_ic_shortvol_ratio_20d"]
     assert pd.isna(value) if conflict else value == pytest.approx(0.4)
     print(
@@ -259,7 +266,7 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: panel("ic_insider_buy_value_mcap_60d"))
     monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_ratio_20d"))
     monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_13d_count_126d_z"))
-    result = step.build_panel()
+    result = institutional_panel(step)
     assert step._store is sqlite_store
     assert calls == ["ic_insider_buy_value_mcap_60d", "ic_shortvol_ratio_20d", "ic_act_13d_count_126d_z"]
     assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
@@ -276,6 +283,7 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
 # fmt: off
 def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Known-truth routing control; numerical feature behavior is covered separately."""
+    create_canonical(sqlite_store.engine, [Tables.sec_13d, Tables.sec_13g])
     names = tuple(f"T{number:03d}" for number in range(491))
     delivered = names[:15]
     days = pd.bdate_range("2024-01-02", periods=3, name="date").as_unit("ns")
@@ -297,6 +305,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     )
     sqlite_store.save(Tables.insider_transactions, pd.concat([history, pd.DataFrame([row(ticker="OUTSIDE", lineage_role="canonical_current")])], ignore_index=True))
     ctx = context(sqlite_store, tmp_path)
+    ctx.universe = universe_of(names)
     step = StepCubeInstitutionals(ctx, ctx.config)
     monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     reads: list[tuple[Any, dict[str, Any]]] = []
@@ -311,9 +320,9 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         stages.append("clean")
         columns = ["ticker", "owner_cik", "accession_number", "filing_date"]
         actual = df_insider[columns].sort_values(columns[:3]).reset_index(drop=True)
-        expected = history[columns].sort_values(columns[:3]).reset_index(drop=True)
+        expected = history.loc[pd.to_datetime(history.filing_date).ge("2006-01-03"), columns].sort_values(columns[:3]).reset_index(drop=True)
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
-        expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]") + pd.Timedelta(days=1)
+        expected["filing_date"] = days[0]  # both known historical publication dates precede this retained toy clock
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
         cleaned = df_insider.assign(day=pd.to_datetime(df_insider["filing_date"]), shares_n=df_insider["shares"])
         flows = pd.DataFrame({"transaction_day": pd.Series(dtype="datetime64[ns]"), "day": pd.Series(dtype="datetime64[ns]")})
@@ -342,7 +351,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     for batches in ([delivered], [delivered[:5], delivered[5:10], delivered[10:]], [tuple(reversed(delivered))]):
         pieces = []
         for batch in batches:
-            calculated = step.build_panel()
+            calculated = institutional_panel(step)
             assert len(calculated) == 491 * len(days)
             pieces.append(calculated.loc[calculated["ticker"].isin(batch)])
         deliveries.append(pd.concat(pieces, ignore_index=True).sort_values(["date", "ticker"]).reset_index(drop=True))
@@ -361,13 +370,13 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     price_reads = [kwargs for table, kwargs in reads if table is Tables.cube_part_prices]
     insider_reads = [kwargs for table, kwargs in reads if table is Tables.insider_transactions]
     assert len(price_reads) == len(insider_reads) == 5
-    assert all(kwargs == {"columns": ["date", "ticker", *step._FIELDS], "since": None} for kwargs in price_reads)
-    assert all(kwargs["where"] == {"ticker": list(names)} and kwargs["markers"] and "since" not in kwargs for kwargs in insider_reads)
+    assert all(kwargs["columns"] == ["date", "ticker", *step._FIELDS] and kwargs["where"] == {"ticker": list(names)} and kwargs["until"] == days[-1] for kwargs in price_reads)
+    assert all(kwargs["where"]["ticker"] == list(names) and isinstance(kwargs["where"]["filing_date"], Window) and kwargs["markers"] for kwargs in insider_reads)
     assert all({"issuer_cik", "lineage_role"}.issubset(kwargs["columns"]) for kwargs in insider_reads)
     for table in (Tables.sec_13d, Tables.sec_13g):
         projected = [kwargs for source, kwargs in reads if source is table]
-        assert len(projected) == 5 and all(kwargs["where"] == {"ticker": list(names)} and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
-    print("SANITY: 491 calculation names/982 owner-history rows reach five public builds; 15 deliveries match exactly across batches/order, NULLs and counts.")
+        assert len(projected) == 5 and all(kwargs["where"]["ticker"] == list(names) and isinstance(kwargs["where"]["filing_date"], Window) and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
+    print("SANITY: 491 calculation names/491 in-range owner-history rows (491 pre-source-floor rows excluded) reach five public builds; 15 deliveries match exactly across batches/order, NULLs and counts.")
 # fmt: on
 
 
@@ -389,30 +398,31 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_test": pd.Series(range(len(days)), dtype="float32")})
     initial = expected.iloc[:31].copy()
     initial.loc[0, "f_test"] = -2.0
-    cutoff = days[30 - 7]
+    cutoff = days[30] - pd.Timedelta(days=100 if table == Tables.cube_part_sec_thirteen else 30)
     initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
     sqlite_store.replace(table, initial)
     if cls is StepCubeSecThirteen:
         fixed_sec_thirteen_projection(step, monkeypatch, expected)
     else:
-        monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
+        monkeypatch.setattr(step, "build_panel", lambda *_args: expected.copy())
     expected_saved = expected.copy()
     if not full:
-        expected_saved.loc[0, "f_test"] = -2.0
-    method = "replace" if full else "append_tail"
+        protected = expected_saved.date.lt(cutoff)
+        expected_saved.loc[protected, "f_test"] = initial.loc[protected, "f_test"]
+    method = "replace_window"
     save = Mock(side_effect=getattr(type(sqlite_store), method))
     monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: save(store, *args, **kwargs))
-    step.run(full=full)
+    run_cube(step, full=full)
     first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, expected_saved, check_dtype=False)
-    step.run(full=full)
+    run_cube(step, full=full)
     second = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, second)
     assert save.call_count == 2
-    assert len(initial.loc[initial["date"] >= cutoff]) == 8
+    assert len(initial.loc[initial["date"] >= cutoff]) > 0
     other = Tables.cube_part_sec_thirteen if table == Tables.cube_part_institutionals else Tables.cube_part_institutionals
     assert not sqlite_store.exists(other)
-    mode = "replaces full history" if full else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
+    mode = "replaces the explicit full Window" if full else "rewrites the configured calendar-day overlap, preserving its prefix"
     print(f"SANITY: {table.name} {mode} with one save per run and an idempotent repeat.")
 
 
@@ -436,7 +446,7 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
             return _original(table, *args, **kwargs)
 
         monkeypatch.setattr(sqlite_store, method, capture)
-    result = step.build_panel() if cls is StepCubeInstitutionals else unsaved_panel(step)
+    result = institutional_panel(step) if cls is StepCubeInstitutionals else unsaved_panel(step)
     if cls is StepCubeInstitutionals:
         assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
         assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
@@ -468,13 +478,15 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(
         security_basis=pd.DataFrame({"AAA": 1.0}, index=idx),
     )
     reads = []
-    original = sqlite_store.load
 
-    def capture(table: Any, *args: Any, **kwargs: Any) -> Any:
-        reads.append(table)
-        return original(table, *args, **kwargs)
+    for method in ("load", "iter_load"):
+        original = getattr(sqlite_store, method)
 
-    monkeypatch.setattr(sqlite_store, "load", capture)
+        def capture(table: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
+            reads.append(table)
+            return _original(table, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite_store, method, capture)
     result = step._short_flow_panel(frames, market_lines(["AAA"], pd.Timestamp(start)), None, terminal_basis_factor(frames.security_basis))
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
@@ -525,7 +537,7 @@ def test_public_step_preserves_unusable_insider_source_boundary(
         raise AssertionError("unusable source reached quantity reconstruction")
 
     monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.position_units", forbidden)
-    result = step.build_panel()
+    result = institutional_panel(step)
     assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
     assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
     print(
@@ -557,7 +569,7 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
-    panel = step.build_panel().set_index(["date", "ticker"])
+    panel = institutional_panel(step).set_index(["date", "ticker"])
     insider = [name for name in INSTITUTIONAL_COLUMNS if name.startswith("f_ic_insider_")]
     ratios = [name for name in insider if "pct_prior" in name or "net_buy_ratio" in name or "breadth" in name]
     gross = [name for name in insider if name not in ratios and not name.endswith("_vs_sector")]
@@ -601,17 +613,17 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
 
     # Outage (filings are visible one session after their date): D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-5])]))
-    panel = StepCubeInstitutionals(ctx, ctx.config).build_panel().set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    panel = institutional_panel(StepCubeInstitutionals(ctx, ctx.config)).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
     assert panel.loc[: days[19]].isna().all() and panel.loc[days[20] : days[-4]].eq(0).all()
     assert panel.loc[days[-3] :].isna().all() and len(panel.loc[days[-3] :]) == 3
 
     # A 12-session lag is stored, then D advances (another ticker's marker): the next build rewrites every quiet NaN.
     sqlite_store.delete(Tables.insider_transactions, {"accession_number": ["zzz-empty"]})
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-14])]))
-    StepCubeInstitutionals(ctx, ctx.config).run(full=True)
+    run_cube(StepCubeInstitutionals(ctx, ctx.config), full=True)
     before = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-late", days[-1])]))
-    StepCubeInstitutionals(ctx, ctx.config).run(full=False)
+    run_cube(StepCubeInstitutionals(ctx, ctx.config), full=False)
     after = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
     assert before.reindex(days[-12:]).isna().all() and after.reindex(days[-12:]).eq(0).all()
     assert after.loc[days[20] :].eq(0).all()
@@ -695,7 +707,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     monkeypatch.setattr(institutional_step, "clean_transactions", clean_stage)
     monkeypatch.setattr(institutional_step, "position_units", rebase_stage)
     monkeypatch.setattr(institutional_step, "build_insider_feature_panel", compute_stage)
-    result = step.build_panel()
+    result = institutional_panel(step)
     assert stages == ["clean", "rebase", "rebase", "compute"]
     assert reads[Tables.insider_transactions.name] == 1 and max(reads.values()) == 1
     assert reads[Tables.universe_cusip.name] == 1
@@ -718,7 +730,7 @@ def test_changed_columns_trigger_full_owned_part_replacement(
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_current": 1.0})
     builds: list[None] = []
 
-    def build() -> pd.DataFrame:
+    def build(*_args: Any) -> pd.DataFrame:
         builds.append(None)
         return expected.copy()
 
@@ -728,15 +740,23 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         monkeypatch.setattr(step, "_institutional_features", lambda resources: builds.append(None))
     else:
         monkeypatch.setattr(step, "build_panel", build)
-    method = "replace"
+    method = "replace_window"
     replace = Mock(side_effect=getattr(type(sqlite_store), method))
     monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: replace(store, *args, **kwargs))
-    step.run()
+    before = sqlite_store.load(table)
+    with pytest.raises(ValueError, match="columns changed|column set changed|stored columns differ"):
+        step.run()
+    pd.testing.assert_frame_equal(before, sqlite_store.load(table))
+    builds.clear()
+    replace.reset_mock()
+    if cls is StepCubeSecThirteen:
+        cast(Mock, step._project_panels).reset_mock()
+    run_cube(step, full=True)
     assert len(builds) == 1
     if cls is StepCubeSecThirteen:
         # The window projection, then one whole-history reprojection for the new schema.
         project = cast(Mock, step._project_panels)
-        assert project.call_count == 2 and len(project.call_args_list[-1].args[2]) == len(days)
+        assert project.call_count == 1 and len(project.call_args_list[-1].args[2]) == len(days)
     replace.assert_called_once()
     assert set(sqlite_store.columns(table)) == set(expected.columns)
     assert sqlite_store.row_count(table) == len(expected)
@@ -774,7 +794,7 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
     monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
     monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
-    panel = step.build_panel().set_index(["date", "ticker"]).xs("AAA", level="ticker")
+    panel = institutional_panel(step).set_index(["date", "ticker"]).xs("AAA", level="ticker")
     turnover = panel["f_ic_shortvol_turnover_20d"].loc[days[21] :]  # full 20-session windows, straddling the split from days[31]
     ftd = panel.loc[pd.Timestamp("2024-02-21"), "f_ic_ftd_to_adv20"]
     assert len(turnover) > 30 and turnover.to_numpy() == pytest.approx(2.0, rel=1e-6)

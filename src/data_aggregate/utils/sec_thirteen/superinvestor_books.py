@@ -125,7 +125,7 @@ def _append_revisions(revisions: dict[BookKey, list[PublicBook]], df_round: pd.D
 
 
 def _public_book_schedule(
-    revisions: Mapping[BookKey, tuple[PublicBook, ...]], trading_index: pd.DatetimeIndex, max_age_days: int, config: DictConfig
+    revisions: Mapping[BookKey, tuple[PublicBook, ...]], trading_index: pd.DatetimeIndex, max_age_days: int
 ) -> tuple[dict[pd.Timestamp, list[PublicBook]], pd.DatetimeIndex]:
     """Add first-session expiry events independently of later publications."""
     publications: dict[pd.Timestamp, list[PublicBook]] = defaultdict(list)

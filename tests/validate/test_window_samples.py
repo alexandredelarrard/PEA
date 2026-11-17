@@ -7,18 +7,19 @@ import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from click.testing import CliRunner
+from sqlalchemy import Connection, CursorResult, event
 
 from src.constants.constants_price import MACRO_ALL_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import write_part
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, KeySample
 from src.utils.config import read_config
 from src.utils.window import Window, WindowPlan, WindowRun
 from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
@@ -105,6 +106,37 @@ def test_capture_selects_five_tickers_in_2026(sqlite_store: DataStore, tmp_path:
     assert pd.to_datetime(captured.date).dt.year.eq(2026).all()
     assert len(captured) == 5
     print("SANITY: one repeatable2026 key per requested ticker is captured; older rows cannot satisfy the five-ticker baseline.")
+
+
+def test_capture_keys_keep_first_row_per_group_and_close_stream(sqlite_store: DataStore) -> None:
+    # Repeated source groups must not consume the bounded unique-group quota.
+    df_rows = pd.DataFrame(
+        {
+            "ticker": ["AAPL", "AAPL", "MSFT", "MSFT", "XOM", "XOM"],
+            "date": pd.to_datetime(["2026-07-01", "2026-07-02"] * 3),
+            "feature": range(6),
+        }
+    )
+    sqlite_store.replace(Tables.cube_part_text, df_rows)
+    streams: list[tuple[Connection, CursorResult[Any]]] = []
+
+    def capture_stream(connection: Connection, _clause: Any, _multiparams: Any, _params: Any, options: Any, result: CursorResult[Any]) -> None:
+        if options.get("stream_results"):
+            streams.append((connection, result))
+
+    event.listen(sqlite_store.engine, "after_execute", capture_stream)
+    try:
+        df_selected = sqlite_store.sample_keys(Tables.cube_part_text, KeySample("ticker", 2, {"ticker": ["AAPL", "MSFT", "XOM"]}, clock="date"))
+        df_empty = sqlite_store.sample_keys(Tables.cube_part_text, KeySample("ticker", 2, {"ticker": []}, clock="date"))
+    finally:
+        event.remove(sqlite_store.engine, "after_execute", capture_stream)
+
+    assert df_selected["ticker"].tolist() == ["AAPL", "MSFT"]
+    assert pd.to_datetime(df_selected["date"]).eq(pd.Timestamp("2026-07-01")).all()
+    assert df_selected["__sample_group"].tolist() == ["AAPL", "MSFT"]
+    assert df_empty.empty and list(df_empty.columns) == [*Tables.cube_part_text.pk, "__sample_group", "__sample_clock"]
+    assert len(streams) == 2 and all(connection.closed and result.closed for connection, result in streams)
+    print("SANITY: sampling keeps the first key per group, caps two unique groups, respects empty scope and closes both streams and connections.")
 
 
 def test_undated_companion_sample_uses_2026_parent_filing_dates(sqlite_store: DataStore, tmp_path: Path) -> None:

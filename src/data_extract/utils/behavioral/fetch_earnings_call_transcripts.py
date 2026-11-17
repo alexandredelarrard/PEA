@@ -558,6 +558,14 @@ def _write_batch(context: Context, paragraphs: pd.DataFrame, reissued: pd.DataFr
         return bound.save(_TABLE, paragraphs)
 
 
+def _remove_gone_calls(store: DataStore, calls: pd.DataFrame) -> None:
+    """Reconcile absent source calls and their derivatives in one transaction."""
+    if calls.empty:
+        return
+    with store.transaction() as bound:
+        _remove_calls(bound, calls)
+
+
 def extract_earnings_calls(
     context: Context,
     *,
@@ -617,9 +625,7 @@ def extract_earnings_calls(
         )
 
         # A complete bounded reconciliation may remove absent calls; ordinary runs only replace candidates.
-        if not df_gone.empty:
-            with context.store.transaction() as bound:
-                _remove_calls(bound, df_gone)
+        _remove_gone_calls(context.store, df_gone)
         df_needed = pd.concat(
             [
                 df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]"), is_reissued=False),

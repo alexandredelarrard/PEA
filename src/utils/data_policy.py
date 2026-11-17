@@ -158,9 +158,9 @@ def _validate_reprocess(table: Table, item: DictConfig) -> None:
             raise ValueError(f"{table.name}: unsupported grid warm-up {grid.mode}")
         for source in item.warmup.get("sources", {}).values():
             _offset(source)
+        if "sources" in item.warmup and table != Tables.cube_part_fundamentals:
+            raise ValueError(f"{table.name}: no per-source computation context is defined")
         if "sources" in item.warmup:
-            if table != Tables.cube_part_fundamentals:
-                raise ValueError(f"{table.name}: no per-source computation context is defined")
             _keys(item.warmup.sources, {"financial_history", "earnings_surprises", "notes_num", "fundamentals_employees"})
     if "lookahead" in item:
         _keys(item.lookahead, {"mode"})
@@ -221,12 +221,12 @@ def validate_data_policy(config: DictConfig) -> None:
         _validate_reprocess(table, item)
         _validate_publication(config, table, item.pit)
         source, seen = item, {table.name}
-        while source.reprocess.mode == "source_changes":
+        while source.reprocess.mode == "source_changes" and str(source.reprocess.source) not in seen:
             name = str(source.reprocess.source)
-            if name in seen:
-                raise ValueError(f"{table.name}: cyclic changed-source ownership")
             seen.add(name)
             source = policies[name]
+        if source.reprocess.mode == "source_changes":
+            raise ValueError(f"{table.name}: cyclic changed-source ownership")
     for offset in config.data.planning.values():
         _offset(offset)
     share = config.data.freshness.prediction_min_fresh_share

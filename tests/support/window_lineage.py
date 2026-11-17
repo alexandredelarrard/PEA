@@ -502,10 +502,6 @@ def _thirteen_f(context: Context, sessions: pd.DatetimeIndex, pins: list[dict[st
     ]
 
 
-def _assemble(context: Context, state: _State, records: list[dict[str, Any]]) -> dict[str, Any]:
-    return _assemble_fields(context, [state], {state.field: records})[state.field]
-
-
 def _assemble_fields(context: Context, states: list[_State], probes: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     """Persist only in disposable SQLite, then use the real projection/merge/write path."""
     state = states[0]

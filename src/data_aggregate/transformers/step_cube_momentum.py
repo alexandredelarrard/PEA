@@ -33,7 +33,7 @@ from src.data_aggregate.utils.price.frames import (
 from src.data_store.schema import Table, Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
-from src.utils.window import Window, WindowPlan
+from src.utils.window import WindowPlan
 
 
 class StepCubeMomentum(Step):
@@ -59,16 +59,13 @@ class StepCubeMomentum(Step):
         window = plan_window(self._context, Tables.cube_part_momentum, calendar)
         if window is None:
             return {}
-        frames = self._load_frames(window.read, calendar)
+        frames = load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=self._FIELDS, window=window.read
+        )
         panel = self._price_panel(frames)
         del frames
         write_part(self._store, Tables.cube_part_momentum, panel, window, drop_empty=True)
         return {Tables.cube_part_momentum: window}
-
-    def _load_frames(self, window: Window, calendar: pd.DatetimeIndex) -> PriceFrames:
-        return load_price_frames(
-            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=self._FIELDS, window=window
-        )
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
         frames.require("close_split", "close_total", "open", "sector_ret", "ret")

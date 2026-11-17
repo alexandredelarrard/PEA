@@ -10,6 +10,7 @@ from omegaconf import OmegaConf
 
 from src.context import Context
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.institutionals.short_flow_features import _ftd_available_dates, _publish_ftd_zip_states
 from src.data_store.schema import Tables
 from src.utils.data_policy import publication_policy
 from src.utils.publication import publication_rows
@@ -28,8 +29,20 @@ from src.validate.cli import cli
 from src.validate.result import CheckResult, Finding, jsonable
 from tests.support.config import fixture_config
 from tests.support.universe import universe_of
-from tests.support.window_lineage import _assemble, _assemble_fields, _finish_group, _Journal, _packet_rows, _short_metadata_window, _stage_family
-from tests.support.window_samples import WindowSamples
+from tests.support.window_lineage import (
+    _assemble,
+    _assemble_fields,
+    _finish_group,
+    _ftd_metadata_periods,
+    _ftd_selected_rows,
+    _Journal,
+    _packet_rows,
+    _probe_rows,
+    _short_metadata_window,
+    _stage_family,
+    measure_window_lineage,
+)
+from tests.support.window_samples import WindowSamples, assert_lineage_results
 
 
 def test_lineage_command_is_permanent() -> None:
@@ -166,16 +179,10 @@ def test_targetpart_batch_keeps_source_identities(sqlite_store: object, monkeypa
 
 
 def test_pinned_source_lineage(window_samples: WindowSamples) -> None:
-    results = window_samples.measure_lineage()
-    failed = [result.summary() for result in results.values() if result.status == "fail"]
-    assert not failed, "\n".join(failed)
+    results = measure_window_lineage(window_samples)
+    assert_lineage_results(results, window_samples.planning)
     measured = [name for name, result in results.items() if result.status == "pass"]
     abstained = [name for name, result in results.items() if result.status == "abstain"]
-    required = [result for result in results.values() if result.metrics.get("required_routes")]
-    assert required and all(result.status == "pass" for result in required), "Required semantic lineage routes are incomplete: " + str(abstained)
-    assert window_samples.planning and all(result["status"] == "pass" for result in window_samples.planning.values()), (
-        "Configured production planning evidence is incomplete or incorrect"
-    )
     print(f"SANITY: actual source-to-state-to-assembly measured for {measured}; unmeasured tables remain explicit ABSTAIN: {abstained}.")
 
 
@@ -217,6 +224,61 @@ def test_short_metadata_retains_prior_year_publication_boundary() -> None:
     print(
         "SANITY: genuine global short-volume metadata retains the prior-year raw session publishing into2026; scoped economic history remains separate and complete."
     )
+
+
+def test_ftd_null_publication_barrier_is_source_evidence() -> None:
+    context, _, _ = _known_state()
+    sessions = pd.bdate_range("2025-11-03", "2026-01-09").difference(pd.to_datetime(["2025-11-27", "2025-12-25", "2026-01-01"]))
+    raw = pd.DataFrame(
+        {
+            "ticker": "AAA",
+            "period": ["202511b", "202512a"],
+            "date": pd.to_datetime(["2025-11-28", "2025-12-15"]),
+            "fails_quantity": [10.0, float("nan")],
+        }
+    )
+    lag = int(publication_policy(context.config, Tables.sec_fails_to_deliver_security).lag.value)
+    settlement = raw.pivot(index="date", columns="ticker", values="fails_quantity").reindex(sessions)
+    daily = _publish_ftd_zip_states(settlement, raw, sessions, _ftd_available_dates(raw, lag))
+    rows = publication_rows(context.config, Tables.sec_fails_to_deliver_security, raw, sessions, "as_of")
+    state = _State(Tables.sec_fails_to_deliver_security, Tables.cube_part_institutionals, rows, "fails_quantity", daily)
+    records, findings = _boundaries(context, state, sessions)
+    assert not findings and len(records) == 3 and len(_probe_rows(context, state, sessions)) == 3
+    assert records[0]["value"] == 10.0 and pd.isna(records[1]["value"]) and pd.isna(records[2]["value"])
+    assert records[1]["source"]["period"] == "202512a"
+    print(
+        "SANITY: an actual published NULL FTD vector supersedes the earlier positive ZIP; NULL is measured evidence, never a search for an older non-null state."
+    )
+
+
+def test_ftd_metadata_retains_actual_null_seed(sqlite_store: object) -> None:
+    context, _, _ = _known_state()
+    context.store = sqlite_store
+    sessions = pd.bdate_range("2025-11-03", "2026-01-09").difference(pd.to_datetime(["2025-11-27", "2025-12-25", "2026-01-01"]))
+    source = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2025-10-31", "2025-11-14", "2025-11-28", "2025-12-15", "2025-12-31"]),
+            "cusip": "111111111",
+            "period": ["202510b", "202511a", "202511b", "202512a", "202512b"],
+            "fails_quantity": [5.0, 10.0, float("nan"), 20.0, 30.0],
+        }
+    )
+    sqlite_store.replace(Tables.sec_fails_to_deliver_security, source)
+    periods = _ftd_metadata_periods(context, sessions, Window(pd.Timestamp("2009-07-01"), sessions[-1]))
+    assert periods == {"202511b", "202512a"}
+    assert sqlite_store.load(Tables.sec_fails_to_deliver_security).shape[0] == len(source)
+    print(
+        "SANITY: actual persisted ZIP metadata keeps the latest prior NULL seed and publishing2026 period, without choosing an older positive ZIP or trimming economic rows."
+    )
+
+
+def test_ftd_capture_uses_latest_global_served_row_even_when_absent() -> None:
+    sessions = pd.bdate_range("2025-12-01", "2026-01-09").difference(pd.to_datetime(["2025-12-25", "2026-01-01"]))
+    series = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2025-12-01"]), "period": ["202512a"], "fails_quantity": [10.0]})
+    coverage = pd.DataFrame({"date": pd.to_datetime(["2025-12-01", "2025-12-15"]), "period": "202512a"})
+    rows = _ftd_selected_rows(series, coverage, sessions, ["AAA"])
+    assert len(rows) == 1 and rows.date.iloc[0] == pd.Timestamp("2025-12-15") and pd.isna(rows.fails_quantity.iloc[0])
+    print("SANITY: FTD ancestry points to the actual latest global served session's NULL vector cell, never the last surviving positive ticker row.")
 
 
 def test_same_day_filing_policy_is_rejected() -> None:

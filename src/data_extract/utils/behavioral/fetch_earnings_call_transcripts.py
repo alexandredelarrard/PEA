@@ -36,7 +36,7 @@ from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, I
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_extract.utils.common.resume import planner_bounds, source_plan
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, Where
 from src.utils.data_policy import window_policy
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
@@ -426,7 +426,7 @@ def _call_windows(context: Context, scope: set[str]) -> dict[str, Window]:
 def _stored_calls(context: Context, calls: pd.DataFrame, windows: Mapping[str, Window]) -> pd.DataFrame | None:
     """Read bounded reconciliation rows and exact candidate keys together, including old-date collisions."""
     full = context.run.mode in {"full", "recovery"}
-    scopes: list[dict[str, object]] = []
+    scopes: Where = []
     if full:
         scopes.extend({"ticker": key, "paragraph": FIRST_PARAGRAPH, "as_of": span} for key, span in windows.items())
     scopes.extend(

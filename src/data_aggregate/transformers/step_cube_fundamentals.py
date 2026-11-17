@@ -148,13 +148,13 @@ class StepCubeFundamentals(Step):
 
     def _feature_settings(self) -> FundamentalFeatureSettings:
         """Read the existing financial history and intrinsic-model controls."""
-        hist = self._cfg.get("hist", {})
-        features = self._cfg.get("fundamentals_features", {})
+        hist = self._cfg.hist
+        features = self._cfg.fundamentals_features
         return FundamentalFeatureSettings(
-            history_window=int(hist.get("window", 1260)),
-            history_min_periods=int(hist.get("min_periods", 252)),
-            earnings_scale_quarters=int(features.get("earnings_scale_quarters", 8)),
-            intrinsic_cfg=self._cfg.get("intrinsic", {}),
+            history_window=int(hist.window),
+            history_min_periods=int(hist.min_periods),
+            earnings_scale_quarters=int(features.earnings_scale_quarters),
+            intrinsic_cfg=self._cfg.intrinsic,
         )
 
     # ---- inputs ---- #

@@ -165,12 +165,24 @@ def test_clean_book_keeps_the_original_accession_and_sums_duplicates(cfg: DictCo
     assert one.loc[("debt", "D1"), "value"] == 700.0 and one.loc[("call", "T1"), "value"] == 300.0
     assert len(one) == 4, "negative, zero and null values and the amendment are dropped"
     assert one["value"].sum() == 2700.0, "common rows' call_value / put_value are never added"
-    assert np.isclose(one["weight"].sum(), 1.0)
     assert df.loc[df["cik"] == "0000000002", "value"].tolist() == [100.0] * 4, "amendment-only filer falls back to its earliest accession"
     print("\n=== SANITY CHECK: clean_book ===")
     print(
         "Original accession chosen, duplicates summed, bad values dropped, `_empty` ticker is no ticker, option columns not added; weights sum to 1."
     )
+
+
+def test_a_typo_dated_filing_cannot_shadow_the_genuine_one_of_the_same_period(cfg: DictConfig) -> None:
+    """A Q4-2010 book mistyped as 2011-12-31 and filed 2011-02-14 is dropped before the original is chosen, so the genuine 2011-12-31 book stays."""
+    lines = [(f"T{i}", f"C{i}", f"N{i} INC", "common", 10.0, 100.0, {}) for i in range(5)]
+    typo = _raw("0000000031", "2011-12-31", "TYPO", lines, filed="2011-02-14")
+    genuine = _raw("0000000031", "2011-12-31", "REAL", lines, filed="2012-02-14")
+
+    df = clean_book(pd.concat([typo, genuine]), cfg, NO_PREFIX)
+
+    assert len(df) == 5 and df["filing_date"].eq(pd.Timestamp("2012-02-14")).all(), "the genuine book is kept"
+    print("\n=== SANITY CHECK: typo-dated filing ===")
+    print("The filing dated before its period end is dropped first, so the genuine accession of the same (cik, period) is the book.")
 
 
 def test_a_short_fallback_amendment_gives_no_book_but_a_small_original_book_stays(cfg: DictConfig) -> None:

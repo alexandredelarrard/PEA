@@ -67,11 +67,11 @@ def cfg() -> DictConfig:
 def reference() -> pd.DataFrame:
     frame = pd.DataFrame(
         {
-            "permaticker": [1, 2],
-            "ticker": ["LISTED", "ASDEBT"],
-            "category": ["Domestic Common Stock", "ADR Common Stock"],
-            "sector": ["Technology", "Energy"],
-            "lastpricedate": pd.to_datetime(["2024-06-01", "2024-06-01"]),
+            "permaticker": [1, 2, 3, 4],
+            "ticker": ["LISTED", "ASDEBT", "FUNDX", "PREFX"],
+            "category": ["Domestic Common Stock", "ADR Common Stock", "ETF", "Domestic Preferred"],
+            "sector": ["Technology", "Energy", "", "Financial Services"],
+            "lastpricedate": pd.to_datetime(["2024-06-01"] * 4),
         }
     )
     return sharadar_reference(frame)
@@ -120,6 +120,23 @@ def test_a_sharadar_listed_line_keeps_its_class_whatever_the_name(reference: pd.
     assert out["asset"].tolist() == ["equity_us", "equity_foreign"]
     assert out["sector_col"].tolist() == ["pct_sector_technology", "pct_sector_energy"]
     print("SANITY: listed tickers keep their Sharadar class and sector whatever their issuer name says.")
+
+
+def test_a_listed_line_of_a_non_stock_category_is_read_by_the_name_rules(reference: pd.DataFrame, cfg: DictConfig) -> None:
+    """A Sharadar ETF or preferred category is not a stock class: its name decides the asset and the real-estate sector."""
+    rows: list[tuple[str | None, str, str | None]] = [
+        ("MSCI EMERG MKT", "ISHARES TR", "FUNDX"),
+        ("COM", "WEINGARTEN RLTY INVS", "FUNDX"),
+        ("TRUST", "BP PRUDHOE BAY ROYALTY TRUST", "FUNDX"),
+        ("COM", "ISHARES TR", "PREFX"),
+    ]
+    out = classify_securities(_lines(rows), reference, cfg)
+
+    assert out["asset"].tolist() == ["etf", "equity_us", "other", "equity_us"]
+    assert out["sector_col"].tolist() == ["pct_sector_unmapped", "pct_sector_real_estate", "pct_sector_unmapped", "pct_sector_financial_services"]
+    print(
+        "SANITY: a listed ticker whose Sharadar category is not Domestic, ADR or Canadian falls through to the title and issuer rules; Domestic stays authoritative."
+    )
 
 
 def test_debt_and_option_rows_are_never_name_classified(reference: pd.DataFrame, cfg: DictConfig) -> None:

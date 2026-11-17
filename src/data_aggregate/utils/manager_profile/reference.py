@@ -65,15 +65,16 @@ def _generic_titles(title: pd.Series, rule: DictConfig) -> pd.Series:
 def classify_securities(lines: pd.DataFrame, reference: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
     """Add each line's `asset` (one of ASSETS) and `sector_col`.
 
-    A listed ticker keeps Sharadar's class and sector; a common line Sharadar lacks is read by `cfg.security_markers` on
-    `title_of_class | issuer_name`: fund-like, then real-estate sector, then foreign, then a generic US title; else `other`.
+    A ticker Sharadar lists as a domestic, ADR or Canadian stock keeps its class and sector; any other common line (unlisted, or listed
+    under a non-stock category) is read by `cfg.security_markers` on `title_of_class | issuer_name`: fund-like, then real-estate sector,
+    then foreign, then a generic US title; else `other`.
     """
     # Sharadar class and sector by ticker.
     df = lines.join(reference, on="ticker")
-    kind, listed = df["kind"], df["security_class"].notna()
+    kind, listed = df["kind"], df["security_class"].isin(["us", "foreign"])
     common = kind.eq("common")
 
-    # Name rules on the unlisted common lines, each later rule on the lines the earlier ones left.
+    # Name rules on the common lines Sharadar does not class as a stock, each later rule on the lines the earlier ones left.
     marks = cfg.security_markers
     unlisted = common & ~listed
     title = df["title_of_class"].fillna("").astype(str).str.upper().str.replace(r"\s+", " ", regex=True).str.strip()

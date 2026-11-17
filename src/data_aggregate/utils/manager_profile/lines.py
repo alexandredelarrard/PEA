@@ -36,7 +36,7 @@ LINE_COLUMNS = (
 _VALUE_COLUMN = {"common": "value_usd", "debt": "debt_value", "call": "call_value", "put": "put_value"}
 _BOOK_KEYS = ["cik", "period", "filing_date", "accession_number"]
 #: Columns of the cleaned lines `clean_book` returns.
-_CLEAN_COLUMNS = ["cik", "period", "kind", "key", "ticker", "cusip", "issuer_name", "title_of_class", "filing_date", "shares", "value", "weight"]
+_CLEAN_COLUMNS = ["cik", "period", "kind", "key", "ticker", "issuer_name", "title_of_class", "filing_date", "shares", "value"]
 
 
 def _original_book(raw: pd.DataFrame, min_lines: int) -> pd.DataFrame:
@@ -45,8 +45,9 @@ def _original_book(raw: pd.DataFrame, min_lines: int) -> pd.DataFrame:
     A fallback accession is an amendment, not a whole book: one with fewer than `min_lines` lines gives no book (a small book filed
     as an original 13F-HR is kept, small on purpose).
     """
-    # Normalise the dates and split markers from lines.
+    # Normalise the dates, drop filings dated before their period end (typos) and split markers from lines.
     df = raw.assign(period=pd.to_datetime(raw["period"]), filing_date=pd.to_datetime(raw["filing_date"]))
+    df = df[df["filing_date"] >= df["period"]]
     is_marker = df["cusip"].eq(EMPTY_MARKER)
     markers, lines = df[is_marker], df[~is_marker]
 
@@ -58,9 +59,8 @@ def _original_book(raw: pd.DataFrame, min_lines: int) -> pd.DataFrame:
     fallback = fallback[fallback["n_lines"] >= min_lines]
     chosen = pd.concat([original, fallback]).drop_duplicates(["cik", "period"])[["cik", "period", "accession_number"]]
 
-    # Keep the chosen accession's lines, dropping filings dated before their period end.
+    # Keep the chosen accession's lines.
     book = lines.merge(chosen, on=["cik", "period", "accession_number"])
-    book = book[book["filing_date"] >= book["period"]].copy()
     book["position_type"] = book["position_type"].fillna("common").str.lower()
     return book
 
@@ -114,7 +114,7 @@ def _line_tickers(book: pd.DataFrame, prefixes: pd.Series) -> pd.Series:
 
 
 def _clean_lines(book: pd.DataFrame, value: pd.Series, ticker: pd.Series) -> pd.DataFrame:
-    """Keep positive values, sum duplicate lines per (cik, kind, ticker or cusip) and weight by book total; `ticker` is each line's resolved ticker."""
+    """Keep positive values and sum duplicate lines per (cik, kind, ticker or cusip); `ticker` is each line's resolved ticker."""
     # One value per line, from the column of its kind.
     lines = book.assign(kind=book["position_type"], value=value, ticker=ticker, key=ticker.fillna(book["cusip"]))
     lines = lines[lines["kind"].isin(_VALUE_COLUMN) & lines["value"].gt(0)]
@@ -124,19 +124,17 @@ def _clean_lines(book: pd.DataFrame, value: pd.Series, ticker: pd.Series) -> pd.
     grouped = lines.groupby(keys, sort=False)
     out = grouped.agg(
         ticker=("ticker", "first"),
-        cusip=("cusip", "first"),
         issuer_name=("issuer_name", "first"),
         title_of_class=("title_of_class", "first"),
         filing_date=("filing_date", "first"),
         value=("value", "sum"),
     )
     out = out.assign(shares=grouped["shares"].sum(min_count=1)).reset_index()
-    out["weight"] = out["value"] / out.groupby(["cik", "period"])["value"].transform("sum")
     return out[_CLEAN_COLUMNS]
 
 
 def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.DataFrame:
-    """Cleaned lines (kind, key, ticker, cusip, issuer_name, title_of_class, filing_date, shares, value, weight) of every manager's original accession in `raw`.
+    """Cleaned lines (kind, key, ticker, issuer_name, title_of_class, filing_date, shares, value) of every manager's original accession in `raw`.
 
     `prefixes` (`reference.prefix_tickers`) names the ticker of a CUSIP carried without one. Equity values take the cube's two-pass
     book-unit repair; lines it re-values above their whole filed book (a garbage `shares` column) are dropped. Share lines that are bond

@@ -15,6 +15,7 @@ STAT_COLUMNS = (
     "hhi",
     "turnover",
     "new_position_rate",
+    "book_return",
     *(f"pct_{asset}" for asset in ASSETS),
     *(f"pct_cap_{cap}" for cap in _CAPS),
     *SECTOR_COLUMNS,
@@ -25,10 +26,10 @@ STAT_COLUMNS = (
 
 
 def compact_book(lines: pd.DataFrame) -> pd.DataFrame:
-    """Each manager's equity positions as `cik, key, shares, weight` (weight over the equity total), kept for the next quarter."""
+    """Each manager's equity positions as `cik, key, asset, shares, value, weight` (weight over the equity total), kept for the next quarter."""
     equity = lines[lines["kind"].eq("common")]
     weight = equity["value"] / equity.groupby("cik")["value"].transform("sum")
-    return equity[["cik", "key", "shares"]].assign(weight=weight).reset_index(drop=True)
+    return equity[["cik", "key", "asset", "shares", "value"]].assign(weight=weight).reset_index(drop=True)
 
 
 def _equity(lines: pd.DataFrame, prev_agg: pd.DataFrame | None) -> pd.DataFrame:
@@ -98,6 +99,36 @@ def _turnover(equity: pd.DataFrame, prev_book: pd.DataFrame | None, threshold: f
     return pd.DataFrame({"turnover": turnover.where(np.isfinite(turnover)), "new_position_rate": rate})
 
 
+def _book_return(equity: pd.DataFrame, prev_book: pd.DataFrame | None, cfg: DictConfig) -> pd.Series:
+    """Price return of the preceding quarter's US equity positions held fixed in shares, by previous value, over the names still in the book.
+
+    Each name's return is its implied price (value / shares) ratio, so a trade does not count as a gain. A name whose price ratio is outside
+    `return_price_band`, or whose shares moved by more than `split_share_move` while its value moved by at most `split_value_tolerance` (a
+    split), is left out.
+    """
+    # No preceding quarter, no return.
+    if prev_book is None:
+        return pd.Series(dtype=float, name="book_return")
+
+    # Positions held in both quarters with a usable price.
+    held = prev_book[prev_book["asset"].eq("equity_us") & prev_book["shares"].gt(0) & prev_book["value"].gt(0)]
+    both = held.merge(equity[["cik", "key", "shares", "value"]], on=["cik", "key"], suffixes=("_prev", "_cur"))
+    both = both[both["shares_cur"].gt(0) & both["value_cur"].gt(0)]
+
+    # Drop price outliers and splits.
+    shares_ratio, value_ratio = both["shares_cur"] / both["shares_prev"], both["value_cur"] / both["value_prev"]
+    price_ratio = value_ratio / shares_ratio
+    low, high = (float(bound) for bound in cfg.return_price_band)
+    split = np.log(shares_ratio).abs().gt(np.log1p(float(cfg.split_share_move))) & np.log(value_ratio).abs().le(
+        np.log1p(float(cfg.split_value_tolerance))
+    )
+    kept = both[price_ratio.between(low, high) & ~split]
+
+    # Previous-value weighted price return.
+    gain = (kept["value_prev"] * (price_ratio[kept.index] - 1.0)).groupby(kept["cik"]).sum()
+    return (gain / kept.groupby("cik")["value_prev"].sum()).rename("book_return")
+
+
 def _active_share(equity: pd.DataFrame) -> pd.Series:
     """Half the summed absolute weight gap to the previous aggregate book (names the manager does not hold count in full)."""
     gap = (equity["ew"] - equity["agg_weight"].fillna(0.0)).abs()
@@ -122,6 +153,7 @@ def quarter_stats(lines: pd.DataFrame, prev_book: pd.DataFrame | None, prev_agg:
         _concentration(equity),
         _sector_cap(equity),
         _turnover(equity, prev_book, float(cfg.turnover_threshold)),
+        _book_return(equity, prev_book, cfg),
         _active_share(equity),
         book["value"].sum().rename("book_value_usd"),
     ]

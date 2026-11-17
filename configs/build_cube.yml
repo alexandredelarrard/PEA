@@ -171,6 +171,9 @@ build_cube:
     amendment_only_min_lines: 4  # a (cik, period) whose only stored accession is a 13F-HR/A (no original 13F-HR) with fewer lines than this has no book
     bond_lines: ${build_cube.bond_lines}  # the shared share-line to bond mapping above
     turnover_threshold: 0.10 # a position counts as changed when its share count moves by more than this fraction (e.g. 0.05-0.25)
+    return_price_band: [0.10, 10.0]  # book_return: a name whose implied price (value / shares) ratio between two quarters is outside this band is left out (e.g. [0.2, 5.0] to [0.05, 20.0])
+    split_share_move: 0.20   # book_return: a name is a split when its share count moved by more than this fraction (e.g. 0.10-0.40) ...
+    split_value_tolerance: 0.25  # ... while its value moved by at most this fraction (e.g. 0.10-0.35; a split moves shares and price in opposite directions)
     cap_breakpoints: [0.70, 0.20]  # share of cumulative 13F value ranked by ticker size: large = top 0.70, mid = next 0.20, small = the rest
     price_check_min_filers: 3  # distinct filers a (quarter, CUSIP) needs before its median value / shares is the consensus price of the
                                # cube's repair_value_basis that rescales and nulls mis-reported lines (same meaning as min_consensus_filers above)

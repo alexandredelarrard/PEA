@@ -265,6 +265,42 @@ def test_a_quarter_read_as_decimals_still_compares_with_the_next_quarter(referen
     print("a Decimal-typed quarter reads as float and its successor's turnover is 0.5, no isfinite error.")
 
 
+def _book_return(items_prev: list[tuple], items_cur: list[tuple], reference: pd.DataFrame, cfg: DictConfig) -> float:
+    q0, q1 = _cleaned("A", Q0, items_prev, reference), _cleaned("A", Q1, items_cur, reference)
+    return float(quarter_stats(q1, compact_book(q0), quarter_aggregate(q0, cfg.cap_breakpoints), cfg).iloc[0]["book_return"])
+
+
+def test_book_return_is_the_previous_us_book_price_return_whatever_the_trades(reference: pd.DataFrame, cfg: DictConfig) -> None:
+    before = [
+        ("T1", "common", 100.0, 1000.0, ""),
+        ("T2", "common", 100.0, 2000.0, ""),
+        ("T4", "common", 40.0, 2000.0, ""),
+        ("T3", "common", 100.0, 1000.0, ""),
+    ]
+    after = [("T1", "common", 100.0, 1100.0, ""), ("T2", "common", 50.0, 1200.0, ""), ("T3", "common", 100.0, 2000.0, "")]
+
+    result = _book_return(before, after, reference, cfg)
+
+    assert np.isclose(result, (1000 * 0.10 + 2000 * 0.20) / 3000), (
+        "T1 +10% and T2 +20% by previous value; the halved T2 stake, the exited T4 and the foreign T3 do not count"
+    )
+    print("\n=== SANITY CHECK: book return ===")
+    print(f"book return {result:.4f} = 500 / 3000: price moves of the held names, trades and foreign names ignored.")
+
+
+def test_book_return_leaves_out_splits_and_price_outliers(reference: pd.DataFrame, cfg: DictConfig) -> None:
+    before = [("T1", "common", 100.0, 1000.0, ""), ("T2", "common", 100.0, 2000.0, ""), ("T4", "common", 40.0, 2000.0, "")]
+    after = [("T1", "common", 200.0, 1100.0, ""), ("T2", "common", 100.0, 2400.0, ""), ("T4", "common", 40.0, 40000.0, "")]
+
+    result = _book_return(before, after, reference, cfg)
+
+    assert np.isclose(result, 0.20), (
+        "T1 doubled its shares at half the price (a split) and T4's price rose twentyfold (outside the band): only T2 counts"
+    )
+    print("\n=== SANITY CHECK: book return, split and band ===")
+    print(f"book return {result:.4f}: the split name and the 20x price name are left out.")
+
+
 def test_asset_mix_sums_to_one_with_bonds_and_options(reference: pd.DataFrame, cfg: DictConfig) -> None:
     items = [
         ("T1", "common", 10.0, 2000.0, "ONE INC"),
@@ -291,7 +327,9 @@ def test_asset_mix_sums_to_one_with_bonds_and_options(reference: pd.DataFrame, c
 def test_missing_evidence_reads_null_never_zero(reference: pd.DataFrame, cfg: DictConfig) -> None:
     lines = _cleaned("A", Q1, [("T1", "common", 10.0, 1000.0, "ONE INC")], reference)
     first = quarter_stats(lines, None, None, cfg).iloc[0]
-    assert first[["turnover", "new_position_rate", "active_share", *CAPS, "mapped_share"]].isna().all(), "no preceding quarter, no aggregate"
+    assert first[["turnover", "new_position_rate", "book_return", "active_share", *CAPS, "mapped_share"]].isna().all(), (
+        "no preceding quarter, no aggregate"
+    )
     assert first["n_positions"] == 1 and np.isclose(first["hhi"], 1.0)
 
     bonds = _cleaned("B", Q1, [("B1", "debt", 0.0, 900.0, "A BOND")], reference)

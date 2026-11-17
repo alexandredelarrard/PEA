@@ -43,6 +43,7 @@ PROFILE_COLUMNS = {
     "hhi": "DOUBLE PRECISION",
     "turnover": "DOUBLE PRECISION",
     "new_position_rate": "DOUBLE PRECISION",
+    "book_return": "DOUBLE PRECISION",
     "pct_equity_us": "DOUBLE PRECISION",
     "pct_equity_foreign": "DOUBLE PRECISION",
     "pct_etf": "DOUBLE PRECISION",
@@ -90,15 +91,15 @@ def test_every_documented_column_is_in_the_spliced_ddl_and_the_schema_comment() 
 
 
 def test_the_declared_block_creates_every_column_with_its_type(sqlite_store: Any) -> None:
-    """A missing table is created from its declaration with all 40 columns; each takes the documented SQL type."""
+    """A missing table is created from its declaration with all 41 columns; each takes the documented SQL type."""
     sqlite_store.create_declared(Tables.sec_13f_manager_details)
 
     live = dict(reflect_columns(sqlite_store.engine, "sec_13f_manager_details"))
     expected = {**EXTRACT_COLUMNS, **PROFILE_COLUMNS}
-    assert list(live) == list(expected) and len(live) == 40
+    assert list(live) == list(expected) and len(live) == 41
     # SQLite reads DOUBLE PRECISION back as REAL.
     sqlite_kinds = {"DATE": {"DATE"}, "TEXT": {"TEXT"}, "BIGINT": {"BIGINT"}, "DOUBLE PRECISION": {"REAL", "FLOAT", "DOUBLE", "DOUBLE_PRECISION"}}
     for name, sql in expected.items():
         assert str(live[name]).upper() in sqlite_kinds[sql.replace(" NOT NULL", "")], (name, live[name])
     print("\n=== SANITY CHECK: creation from the declaration ===")
-    print("  create_declared builds 40 columns in declared order with DATE / TEXT / DOUBLE PRECISION / BIGINT types. Validated.")
+    print("  create_declared builds 41 columns in declared order with DATE / TEXT / DOUBLE PRECISION / BIGINT types. Validated.")

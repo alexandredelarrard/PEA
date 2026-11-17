@@ -1248,3 +1248,8 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 
 - Coverage: `build_cube.bond_lines` and `bond_line_mask` (`src/data_aggregate/utils/sec_thirteen/bond_lines.py`) find share lines that are bond principal; the 13F cube cleaning (`clean_filings`) drops them like `debt` rows before the price repair, the manager profile routes them to the bond path (filed value, book unit factor, `pct_bond`); `build_cube.manager_profile.amendment_only_min_lines` (4) skips a (cik, period) whose only accession is a 13F-HR/A with fewer lines. Stored profile values change after `build-manager-profile -F`, the cube part after `build-sec-thirteen -F`.
 - Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — manager profile book return
+
+- Coverage: `sec_13f_manager_details` gains `book_return` (31 profile columns): the price return of the previous quarter's US equity positions held fixed in shares, averaged over the profile window; split names and price outliers are left out (`build_cube.manager_profile.return_price_band`, `split_share_move`, `split_value_tolerance`). The live table needs one `ALTER TABLE ... ADD COLUMN book_return DOUBLE PRECISION` before the next profile run. The manager profile also casts raw 13F numeric columns to float (a Decimal-typed quarter broke the next quarter's turnover).
+- Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md).

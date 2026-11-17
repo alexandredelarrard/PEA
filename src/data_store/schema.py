@@ -843,7 +843,9 @@ class Tables:
     # the keyword rules, no match is fund, then the CIK override file `configs/superinvestors/manager_categories.json`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
     # of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
     # more than `turnover_threshold` in shares; null when the preceding quarter is missing); `new_position_rate` (mean share
-    # of current positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
+    # of current positions new this quarter; same null rule); `book_return` (mean price return of the preceding quarter's US equity
+    # positions held fixed in shares, weighted by previous value, over the names kept by the split and price-band rules; null without a
+    # preceding quarter or a held US name); asset mix, mean share of the book's total reported value:
     # `pct_equity_us`, `pct_equity_foreign`, `pct_etf` (ETFs, ETNs, mutual and closed-end funds), `pct_bond`, `pct_options`,
     # `pct_other` (the six sum to 1; a common line Sharadar lacks is read by title and issuer name rules);
     # cap mix, mean share of equity weight by the 13F-derived size of each ticker (aggregate reported value across

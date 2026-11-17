@@ -124,72 +124,88 @@ def _boundaries(context: Context, state: _State, sessions: pd.DatetimeIndex) -> 
     policies = {table: dict(OmegaConf.to_container(publication_policy(context.config, table), resolve=True)) for table in tables}
     dates: dict[tuple[Any, ...], pd.Timestamp] = {}
     for ticker in context.universe.tickers:
-        keep_null = state.table in {Tables.sec_8k_votes, Tables.sec_fails_to_deliver_security}
-        rows = state.rows.loc[state.rows.ticker.eq(ticker) & (state.rows[state.field].notna() | keep_null)].copy()
-        if state.table == Tables.dividends:
-            # The producer still computes its entire history, including observed
-            # zero days. Only actual cash events contribute to a TTM cash value.
-            rows = rows.loc[pd.to_numeric(rows[state.field], errors="coerce").ne(0)]
-        rows = rows.sort_values("as_of", kind="stable")
-        if state.table not in {Tables.insider_transactions, Tables.sec_13d, Tables.sec_13g}:
-            rows = rows.drop_duplicates("as_of", keep="last")
-        units = state.rows.loc[state.rows.ticker.eq(ticker)].sort_values("as_of", kind="stable")
-        candidate_rows = units if rows.empty and state.table == Tables.notes_num else rows
-        candidates = candidate_rows.loc[pd.to_datetime(candidate_rows.as_of).dt.year.eq(year)]
-        if candidates.empty and state.table in {Tables.notes_num, Tables.dividends}:
-            candidates = units.loc[pd.to_datetime(units.as_of).dt.year.eq(year)]
-        if candidates.empty:
-            continue
-        event = candidates.iloc[0]
-        event_identity, event_ready = _source_row(state, event, sessions, policies, dates)
-        if pd.isna(event_ready):
-            continue
-        if pd.Timestamp(event.as_of) != event_ready and state.table != Tables.insider_transactions:
+        observed, ticker_findings = _ticker_boundaries(state, ticker, sessions, policies, dates, year)
+        records.extend(observed)
+        findings.extend(ticker_findings)
+    return records, findings
+
+
+def _ticker_boundaries(
+    state: _State,
+    ticker: str,
+    sessions: pd.DatetimeIndex,
+    policies: dict[Table, dict[str, Any]],
+    dates: dict[tuple[Any, ...], pd.Timestamp],
+    year: int,
+) -> tuple[list[dict[str, Any]], list[Finding]]:
+    records: list[dict[str, Any]] = []
+    findings: list[Finding] = []
+    keep_null = state.table in {Tables.sec_8k_votes, Tables.sec_fails_to_deliver_security}
+    df_rows = state.rows.loc[state.rows.ticker.eq(ticker) & (state.rows[state.field].notna() | keep_null)].copy()
+    if state.table == Tables.dividends:
+        # The producer still computes its entire history, including observed
+        # zero days. Only actual cash events contribute to a TTM cash value.
+        df_rows = df_rows.loc[pd.to_numeric(df_rows[state.field], errors="coerce").ne(0)]
+    df_rows = df_rows.sort_values("as_of", kind="stable")
+    if state.table not in {Tables.insider_transactions, Tables.sec_13d, Tables.sec_13g}:
+        df_rows = df_rows.drop_duplicates("as_of", keep="last")
+    df_units = state.rows.loc[state.rows.ticker.eq(ticker)].sort_values("as_of", kind="stable")
+    df_candidate_rows = df_units if df_rows.empty and state.table == Tables.notes_num else df_rows
+    df_candidates = df_candidate_rows.loc[pd.to_datetime(df_candidate_rows.as_of).dt.year.eq(year)]
+    if df_candidates.empty and state.table in {Tables.notes_num, Tables.dividends}:
+        df_candidates = df_units.loc[pd.to_datetime(df_units.as_of).dt.year.eq(year)]
+    if df_candidates.empty:
+        return records, findings
+    event = df_candidates.iloc[0]
+    event_identity, event_ready = _source_row(state, event, sessions, policies, dates)
+    if pd.isna(event_ready):
+        return records, findings
+    if pd.Timestamp(event.as_of) != event_ready and state.table != Tables.insider_transactions:
+        findings.append(
+            Finding.at(
+                8,
+                "Observed boundary unit has wrong producer usability",
+                "Configured source clock and session roll",
+                source=event_identity,
+                actual=event.as_of,
+                expected_date=event_ready,
+            )
+        )
+    position = sessions.get_loc(pd.Timestamp(event.as_of))
+    observed, clock_findings = _observations(state, df_rows, sessions, policies, dates)
+    findings.extend(clock_findings)
+    for day in sessions[max(0, position - 1) : position + 2]:
+        eligible = [item for item in observed if pd.notna(item[0]) and item[0] <= day]
+        actual = state.daily.reindex(index=[day], columns=[ticker]).iloc[0, 0]
+        expected_value, identity, ready = _expected_state(state, eligible, day, sessions)
+        same = bool(pd.isna(actual) and pd.isna(expected_value)) or bool(np.isclose(actual, expected_value, rtol=1e-12, atol=0, equal_nan=True))
+        if not same:
             findings.append(
                 Finding.at(
                     8,
-                    "Observed boundary unit has wrong producer usability",
-                    "Configured source clock and session roll",
-                    source=event_identity,
-                    actual=event.as_of,
-                    expected_date=event_ready,
+                    "Production daily state differs from independently eligible source",
+                    "Latest eligible whole observation only",
+                    ticker=ticker,
+                    field=state.field,
+                    date=day,
+                    source=identity,
+                    ready=ready,
+                    actual=actual,
+                    expected_value=expected_value,
                 )
             )
-        position = sessions.get_loc(pd.Timestamp(event.as_of))
-        observed, clock_findings = _observations(state, rows, sessions, policies, dates)
-        findings.extend(clock_findings)
-        for day in sessions[max(0, position - 1) : position + 2]:
-            eligible = [item for item in observed if pd.notna(item[0]) and item[0] <= day]
-            actual = state.daily.reindex(index=[day], columns=[ticker]).iloc[0, 0]
-            expected_value, identity, ready = _expected_state(state, eligible, day, sessions)
-            same = bool(pd.isna(actual) and pd.isna(expected_value)) or bool(np.isclose(actual, expected_value, rtol=1e-12, atol=0, equal_nan=True))
-            if not same:
-                findings.append(
-                    Finding.at(
-                        8,
-                        "Production daily state differs from independently eligible source",
-                        "Latest eligible whole observation only",
-                        ticker=ticker,
-                        field=state.field,
-                        date=day,
-                        source=identity,
-                        ready=ready,
-                        actual=actual,
-                        expected_value=expected_value,
-                    )
-                )
-            records.append(
-                {
-                    "ticker": ticker,
-                    "date": day,
-                    "source": identity,
-                    "usable_on": ready,
-                    "value": actual,
-                    "event_source": event_identity,
-                    "event_usable_on": event_ready,
-                    "known_empty": rows.empty,
-                }
-            )
+        records.append(
+            {
+                "ticker": ticker,
+                "date": day,
+                "source": identity,
+                "usable_on": ready,
+                "value": actual,
+                "event_source": event_identity,
+                "event_usable_on": event_ready,
+                "known_empty": df_rows.empty,
+            }
+        )
     return records, findings
 
 
@@ -231,11 +247,15 @@ def _expected_state(
 
 
 def _observations(
-    state: _State, rows: pd.DataFrame, sessions: pd.DatetimeIndex, policies: dict[Table, dict[str, Any]], dates: dict[tuple[Any, ...], pd.Timestamp]
+    state: _State,
+    df_rows: pd.DataFrame,
+    sessions: pd.DatetimeIndex,
+    policies: dict[Table, dict[str, Any]],
+    dates: dict[tuple[Any, ...], pd.Timestamp],
 ) -> tuple[list[tuple[pd.Timestamp, pd.Series, dict[str, Any]]], list[Finding]]:
     observed = []
     findings = []
-    for _, row in rows.iterrows():
+    for _, row in df_rows.iterrows():
         identity, expected = _source_row(state, row, sessions, policies, dates)
         insider = state.table == Tables.insider_transactions
         observed.append((pd.Timestamp(row.as_of) if insider else expected, row, identity))
@@ -299,6 +319,18 @@ def _requested(manifest: dict[str, Any], table: Table) -> set[str]:
     return set(item.get("sample_scope", {}).get("groups", []))
 
 
+def _entry_routes(entry: dict[str, Any], table: Table) -> list[str]:
+    if table not in timing_sample_tables():
+        raise ValueError("Model and portfolio outputs are excluded from lineage validation")
+    if "field" in entry and entry.get("route_id", route_family(table, entry["field"])) != route_family(table, entry["field"]):
+        raise ValueError("Replay field does not belong to its declared semantic route")
+    names = [entry["route_id"]] if "route_id" in entry else [name for name, (source, _) in _required_routes().items() if source == table]
+    for name in names:
+        if name not in _required_routes() or _required_routes()[name][0] != table:
+            raise ValueError(f"Undeclared semantic route {name}")
+    return names
+
+
 def check_window_lineage(context: Context, replay: dict[str, Any], manifest: dict[str, Any]) -> dict[str, CheckResult]:
     """Verify each required route against immutable requested groups; FAIL dominates missing evidence."""
     sessions = pd.DatetimeIndex(pd.to_datetime(replay["sessions"]))
@@ -307,14 +339,7 @@ def check_window_lineage(context: Context, replay: dict[str, Any], manifest: dic
     families: dict[str, list[CheckResult]] = {name: [] for name in _required_routes()}
     for entry in replay["routes"]:
         table = resolve(entry["table"])
-        if table not in timing_sample_tables():
-            raise ValueError("Model and portfolio outputs are excluded from lineage validation")
-        if "field" in entry and entry.get("route_id", route_family(table, entry["field"])) != route_family(table, entry["field"]):
-            raise ValueError("Replay field does not belong to its declared semantic route")
-        names = [entry["route_id"]] if "route_id" in entry else [name for name, (source, _) in _required_routes().items() if source == table]
-        for name in names:
-            if name not in families or _required_routes()[name][0] != table:
-                raise ValueError(f"Undeclared semantic route {name}")
+        for name in _entry_routes(entry, table):
             requested = _requested(manifest, _required_routes()[name][1])
             families[name].append(_check_route(context, entry, requested, sessions))
     combined = {
@@ -353,12 +378,20 @@ def _check_route(context: Context, entry: dict[str, Any], requested: set[str], s
                 pinned=sorted(requested),
             )
         )
-    rows = pd.DataFrame(entry["rows"])
-    daily = pd.DataFrame(entry["daily"])
-    daily["date"] = pd.to_datetime(daily.date)
-    daily = daily.pivot(index="date", columns="ticker", values="value").apply(pd.to_numeric, errors="coerce")
+    df_rows = pd.DataFrame(entry["rows"])
+    df_daily = pd.DataFrame(entry["daily"])
+    df_daily["date"] = pd.to_datetime(df_daily.date)
+    df_daily = df_daily.pivot(index="date", columns="ticker", values="value").apply(pd.to_numeric, errors="coerce")
     state = _State(
-        table, resolve(entry["part"]), rows, entry["field"], daily, entry["clock"], entry["age_days"], entry["lifetime_sessions"], entry["exception"]
+        table,
+        resolve(entry["part"]),
+        df_rows,
+        entry["field"],
+        df_daily,
+        entry["clock"],
+        entry["age_days"],
+        entry["lifetime_sessions"],
+        entry["exception"],
     )
     scoped = SimpleNamespace(config=context.config, universe=SimpleNamespace(tickers=sorted(requested)))
     records, boundary_findings = _boundaries(scoped, state, sessions)
@@ -370,7 +403,7 @@ def _check_route(context: Context, entry: dict[str, Any], requested: set[str], s
         findings,
         scope={"tickers": sorted({row["ticker"] for row in records})},
         metrics={
-            "source_rows": len(rows),
+            "source_rows": len(df_rows),
             "dependency_scope": entry.get("dependency_scope"),
             "field": state.field,
             "boundaries": records,
@@ -425,12 +458,12 @@ def _combine_table(name: str, required: list[CheckResult]) -> CheckResult:
 
 
 def _assembly_findings(entry: dict[str, Any], records: list[dict[str, Any]]) -> list[Finding]:
-    assembled = pd.DataFrame(entry["assembly"]["assembled"])
-    assembled["date"] = pd.to_datetime(assembled.date)
+    df_assembled = pd.DataFrame(entry["assembly"]["assembled"])
+    df_assembled["date"] = pd.to_datetime(df_assembled.date)
     column = entry["assembly"]["column"]
-    joined = pd.DataFrame(records).merge(assembled, on=["date", "ticker"], how="outer", validate="one_to_one", indicator=True)
-    same = joined._merge.eq("both").all() and np.allclose(
-        pd.to_numeric(joined.value).astype("float32"), pd.to_numeric(joined[column]), rtol=0, atol=0, equal_nan=True
+    df_joined = pd.DataFrame(records).merge(df_assembled, on=["date", "ticker"], how="outer", validate="one_to_one", indicator=True)
+    same = df_joined._merge.eq("both").all() and np.allclose(
+        pd.to_numeric(df_joined.value).astype("float32"), pd.to_numeric(df_joined[column]), rtol=0, atol=0, equal_nan=True
     )
     findings = []
     if not same:

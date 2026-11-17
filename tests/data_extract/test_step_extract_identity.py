@@ -17,8 +17,8 @@ from src.data_extract.transformers.step_extract_identity import StepExtractIdent
 from src.data_extract.utils.identity.cik_history import BACKLOG_COLUMNS
 from src.data_extract.utils.identity.company_anchor import CompanyAnchor
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
-from src.data_store.schema import Tables
-from src.utils.window import WindowRun
+from src.data_store.schema import Table, Tables
+from src.utils.window import Window, WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.identity.test_ftd_evidence_table import _HEADER, _lineage
@@ -139,6 +139,64 @@ def test_run_captures_first_then_builds_and_syncs_with_one_scan(monkeypatch: pyt
     print("\n=== SANITY CHECK: StepExtractIdentity.run operations ===")
     print(f"  {' -> '.join(order)}; one scan shared by the tenure and the CIK history")
     print("  OK: the captures land before the builders read their evidence, and the sync runs on the rebuilt tables")
+
+
+@pytest.mark.parametrize("first", ["capture", "cik"])
+def test_public_insider_stages_lazily_share_one_bounded_scan(monkeypatch: pytest.MonkeyPatch, first: str) -> None:
+    window = Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-08-31"))
+    scans: list[tuple[Path, Window]] = []
+
+    def scan(cache: Path, selected: Window) -> SimpleNamespace:
+        assert selected is window
+        scans.append((cache, selected))
+        return SimpleNamespace(owner_pairs=pd.DataFrame())
+
+    def load(table: Table, **kwargs: Any) -> None:
+        raise RuntimeError("stop after the shared scan")
+
+    monkeypatch.setattr(module, "cache_dir", lambda context, name: Path(name))
+    monkeypatch.setattr(module, "source_read_window", lambda *args: window)
+    monkeypatch.setattr(module, "scan_form345_cache", scan)
+    monkeypatch.setattr(module, "pending_dei_periods", lambda *args: [])
+    monkeypatch.setattr(module, "load_manual_symbol_tenure", lambda *args: pd.DataFrame())
+    monkeypatch.setattr(module, "load_rejected_symbol_tenure", lambda *args: pd.DataFrame())
+    monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
+    monkeypatch.setattr(module, "load_built_tenure", lambda *args: pd.DataFrame())
+    monkeypatch.setattr(StepExtractIdentity, "run_company_anchor", lambda self: CompanyAnchor(company_id={}, sharadar_cik={}, roster_cik={}))
+    step = StepExtractIdentity(_context(SimpleNamespace(load=load)), _config())  # type: ignore[arg-type]
+    assert not scans, "constructing an identity step must not read cached filings"
+
+    if first == "capture":
+        step.run_capture_evidence()
+    with pytest.raises(RuntimeError, match="stop after the shared scan"):
+        step.run_cik_history()
+    step.run_capture_evidence()
+    with pytest.raises(RuntimeError, match="stop after the shared scan"):
+        step.run_cik_history()
+
+    assert scans == [(Path("insider"), window)]
+    print(
+        f"SANITY: {first} can run first; repeated public stages reuse one lazy scan with the same bounded Window, even after a downstream load fails."
+    )
+
+
+def test_inactive_insider_window_does_not_block_standalone_company_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load(table: Table, **kwargs: Any) -> pd.DataFrame | None:
+        if table == Tables.sec_company_tickers:
+            return pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": [111, 222]})
+        return None
+
+    monkeypatch.setattr(module, "cache_dir", lambda context, name: Path(name))
+    monkeypatch.setattr(module, "source_read_window", lambda *args: None)
+    monkeypatch.setattr(module, "pending_dei_periods", lambda *args: [])
+    step = StepExtractIdentity(_context(SimpleNamespace(load=load)), _config())  # type: ignore[arg-type]
+
+    assert step.run_company_anchor().roster_cik == {"AAA": "0000000111", "BBB": "0000000222"}
+    for stage in (step.run_capture_evidence, step.run_cik_history):
+        with pytest.raises(ValueError, match="no configured insider source context"):
+            stage()
+    assert step._scan is None
+    print("SANITY: an inactive insider interval allows the standalone company anchor; both insider-dependent stages still refuse the missing Window.")
 
 
 @pytest.mark.parametrize("boom", ["dei", "symbols", "cusips", "sync"])

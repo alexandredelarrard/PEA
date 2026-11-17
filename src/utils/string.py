@@ -42,6 +42,11 @@ def pad_cik_series(values: pd.Series) -> pd.Series:
     return digits.str.zfill(10).where(digits != "", "").astype(object)
 
 
+def alternation(patterns: list[str]) -> str:
+    """One regex matching any pattern on whole-word boundaries (letters and digits)."""
+    return r"(?<![A-Z0-9])(?:" + "|".join(patterns) + r")(?![A-Z0-9])"
+
+
 def normalise_ticker(value: object) -> str:
     """Canonical ticker spelling: stripped and upper-case."""
     return str(value).strip().upper()

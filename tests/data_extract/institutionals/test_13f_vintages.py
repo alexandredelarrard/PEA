@@ -31,11 +31,14 @@ from src.data_extract.utils.institutionals.fetch_13f_vintages import pending_vin
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
+
+BOND_LINES = read_config(str(Path(__file__).resolve().parents[3] / "configs")).data_aggregate.bond_lines
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
 
@@ -972,8 +975,18 @@ def test_vintage_recovery_cli_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert runner.invoke(module.cli, ["thirteen-f-vintages"]).exit_code == 2
     assert runner.invoke(module.cli, ["thirteen-f-vintages", "--max-filings", "1"]).exit_code == 2
-    assert runner.invoke(module.cli, ["thirteen-f-managers"]).exit_code == 2, "the nightly manager catch-up is removed"
-    print("SANITY: exact scoped recovery CLI passes; missing scope is rejected; thirteen-f-managers no longer exists.")
+    managed: list[dict[str, Any]] = []
+
+    class _Step:
+        def __init__(self, context: Any, config: Any) -> None:
+            pass
+
+        def run_managers(self, **kwargs: Any) -> None:
+            managed.append(kwargs)
+
+    monkeypatch.setattr(module, "StepExtractInstitutionals", _Step)
+    assert runner.invoke(module.cli, ["thirteen-f-managers", "--full"]).exit_code == 0 and managed[-1]["full"] is True
+    print("SANITY: exact scoped recovery CLI passes; missing scope is rejected; thirteen-f-managers routes to run_managers(full).")
 
 
 def test_recovered_real_amendments_and_active_prior_are_causal() -> None:
@@ -1374,7 +1387,10 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
         save_hr_filing(filing_store, m, h, cmap)  # stored as filed, tagged by the market map
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
-    step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
+    step._cfg, step._availability = (
+        {"sec_thirteen": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
+        None,
+    )
     step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
@@ -1413,7 +1429,10 @@ def ordinary_step(
         save_hr_filing(filing_store, manifest, holdings, ORDINARY_CMAP)  # stored as filed, tagged by the market map
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
-    step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
+    step._cfg, step._availability = (
+        {"sec_thirteen": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
+        None,
+    )
     step._settle_days = 0
     step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
@@ -1434,7 +1453,7 @@ def normal_resources(frames: PriceFrames) -> SecThirteenResources:
     cohort = frozenset({"0000000001"})
     capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": cast(pd.DataFrame, frames.close_pit) * 1e9}
     tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), ORDINARY_CMAP)
-    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort}, tags)
+    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort}, tags, {})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1634,9 +1653,9 @@ def test_normal_elite_expiry_does_not_wait_for_another_filing(
 ) -> None:
     step, frames = ordinary_step(filing_store, monkeypatch, (packet("only", "2024-08-14", {"111111111": 100}),))
     _, elite = normal_panels(step, frames)
-    assert elite.loc[(pd.Timestamp("2024-11-13"), "AAA"), "f_ic_super_holders"] == 1
-    assert pd.isna(elite.loc[(pd.Timestamp("2024-11-14"), "AAA"), "f_ic_super_holders"])
-    print("SANITY: the default90-calendar-day source-book expiry clears the daily level without another filing.")
+    assert elite.loc[(pd.Timestamp("2024-11-22"), "AAA"), "f_ic_super_holders"] == 1
+    assert pd.isna(elite.loc[(pd.Timestamp("2024-11-25"), "AAA"), "f_ic_super_holders"])
+    print("SANITY: the default 100-calendar-day source-book expiry clears the daily level without another filing.")
 
 
 def test_same_day_versions_follow_acceptance_time_before_accession_order() -> None:

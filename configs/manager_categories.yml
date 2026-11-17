@@ -1,0 +1,324 @@
+# Manager category rules for sec_13f_manager_details.category (src/data_aggregate/utils/manager_profile/categories.py).
+#
+# A name is cleaned (clean:), then the rules run in the order listed and the FIRST rule with a matching pattern
+# and no matching `unless` pattern gives the category; a name no rule matches gets `default_category`.
+# A hand override (configs/superinvestors/manager_categories.json, CIK -> category) wins over every rule.
+# Patterns are regular expressions on the cleaned, upper-case name, matched on word boundaries (a pattern never
+# matches inside a longer word; `$` anchors the end of the name). Categories (`categories:`): pension, insurance,
+# bank, broker_dealer, sovereign, fund (mutual, hedge, active and passive managers and advisers), other.
+# Reorder or edit a rule here to change a category; the code holds no keywords.
+manager_categories:
+  categories: [pension, insurance, bank, broker_dealer, sovereign, fund, other]  # the legal values of a rule, a default and an override
+  default_category: fund     # a name no rule matches (mostly advisers, partnerships and funds with a legal form)
+  clean:
+    # Tokens removed wherever they stand (legal forms and articles; upper case, no dots).
+    drop_tokens: [LLC, LLLP, LLP, LP, LTD, LTDA, LIMITED, INC, INCORPORATED, CORP, CORPORATION, PLC, NA, FSB, SA, AG, AB, NV, BV, GMBH, PTE, PTY, PUBL, THE]
+    # Tokens removed only at the end of the name, repeatedly (so "Brown Brothers & Co." reads "BROWN BROTHERS").
+    trailing_tokens: [CO, COMPANY, AND]
+
+  rules:
+    - name: sovereign_entity
+      category: sovereign
+      description: Central banks, sovereign wealth funds and state investment authorities.
+      patterns:
+        - 'CENTRAL BANK(?: OF .*)?$'
+        - NORGES BANK
+        - TEMASEK
+        - GIC
+        - SOVEREIGN WEALTH
+        - INVESTMENT AUTHORITY
+        - MONETARY AUTHORITY
+        - FEDERAL RESERVE
+        - RESERVE BANK
+        - SWISS NATIONAL BANK
+        - KUWAIT INVESTMENT
+        - ABU DHABI
+        - QATAR INVESTMENT
+        - PUBLIC INVESTMENT FUND
+        - GOVERNMENT OF .*
+        - '^BANK OF (?:CANADA|ENGLAND|JAPAN|ISRAEL|KOREA|FRANCE|ITALY)$'
+      unless:
+        - ADVISORS?
+        - ADVISERS?
+        - ADVISORY
+        - WEALTH MANAGEMENT
+
+    - name: insurance_carrier
+      category: insurance
+      description: Insurers, reinsurers, life and annuity carriers (listed before pension so TIAA reads as insurance).
+      patterns:
+        - INSURANCE
+        - REINSURANCE
+        - ASSURANCE
+        - ASSURANCES
+        - ASSURED GUARANTY
+        - CASUALTY
+        - INDEMNITY
+        - SURETY
+        - UNDERWRITERS
+        - ANNUITY
+        - MUTUAL LIFE
+        - LIFE (?:AND|INSURANCE|ASSURANCE|INTERNATIONAL)
+        - LIFE$
+      unless:
+        - ADVISORS?
+        - ADVISERS?
+        - PLANNING
+        - WEALTH
+        - ASSET MANAGEMENT
+        - INVESTMENT MANAGEMENT
+        - FUND ADVISORS
+        - PROFIT SHARING
+        - COLLECTIVE TRUST
+        - MARKETING
+        - RETIREMENT SYSTEMS?
+        - RETIREMENT (?:FUND|TRUST)
+        - PENSION (?:FUND|PLANS?|TRUST)
+
+    - name: pension_plan
+      category: pension
+      description: Public and corporate pension, retirement and superannuation funds, teacher and employee systems.
+      patterns:
+        - PENSION
+        - PENSIONS
+        - RETIREMENT (?:SYSTEMS?|FUND|PLANS?|TRUST|BOARD|ASSOCIATION|MANAGEMENT BOARD)
+        - PROVIDENT CO OF .*EMPLOYEES
+        - RETIREES
+        - TEACHERS
+        - SUPERANNUATION
+        - PROVIDENT FUND
+        - PUBLIC EMPLOYEES
+        - STATE EMPLOYEES
+        - PERS
+        - STRS
+        - INVESTMENT BOARD
+        - BOARD OF INVESTMENTS
+        - SUPER FUND
+        - PENSIONFUND
+        - PENSIOENFONDS
+        - TJANSTEPENSION
+        - EMERYTALNE
+        - FONDEN
+      unless:
+        - ADVISORS?
+        - ADVISERS?
+        - ADVISORY
+        - ADVICE
+        - PLANNING
+        - WEALTH
+        - FINANCIAL
+        - SPECIALISTS?
+        - GUYS
+        - CONSULTING
+        - SERVICES
+        - INVESTORS?
+        - SOLUTIONS
+        - COACH
+
+    - name: nonprofit_or_family
+      category: other
+      description: Foundations, endowments, universities, churches, hospitals and revocable or irrevocable trusts.
+      patterns:
+        - FOUNDATION
+        - ENDOWMENT
+        - ENDOWMENTS
+        - UNIVERSITY
+        - COLLEGE
+        - SCHOOL
+        - CHURCH
+        - DIOCESE
+        - HOSPITAL
+        - MUSEUM
+        - CHARITABLE
+        - CHARITIES
+        - REVOCABLE
+        - IRREVOCABLE
+      unless:
+        - ADVISORS?
+        - ADVISERS?
+        - WEALTH
+        - MANAGEMENT
+        - PARTNERS
+        - CAPITAL
+        - PLANNING
+        - FINANCIAL
+        - INVESTMENTS?
+
+    - name: broker_dealer_or_prop
+      category: broker_dealer
+      description: Broker-dealers, wirehouses, market makers and proprietary trading firms.
+      patterns:
+        - SECURITIES
+        - BROKERAGE
+        - BROKERS?[A-Z]*
+        - DEALER
+        - CAPITAL MARKETS
+        - MARKET MAKERS?
+        - TRADING
+        - PROPRIETARY
+        - CLEARING
+        - BD
+        - GOLDMAN SACHS
+        - MORGAN STANLEY
+        - MERRILL LYNCH
+        - JANE STREET
+        - VIRTU
+        - SUSQUEHANNA
+        - JEFFERIES
+        - PIPER SANDLER
+        - RAYMOND JAMES
+        - STIFEL
+        - LPL FINANCIAL
+        - EDWARD D? ?JONES
+        - STERNE AGEE
+        - ING BARING
+        - CANTOR FITZGERALD
+        - INTERACTIVE BROKERS
+        - OPTIVER
+        - SMITH BARNEY
+        - BEAR STEARNS
+        - LEHMAN BROTHERS
+        - PAINEWEBBER
+        - COWEN
+        - BAIRD
+        - SALOMON
+        - LABRANCHE
+        - GRUNTAL
+      unless:
+        - ADVISORS?
+        - ADVISERS?
+        - PLANNING
+        - PARTNERS
+        - ASSET MANAGEMENT
+        - ASSET MNMGT
+        - FUND MANAGEMENT
+        - INVESTMENT MANAGEMENT
+        - REAL ESTATE SECURITIES
+
+    - name: bank_or_trust_company
+      category: bank
+      description: Banks, bank holding companies, savings institutions, credit unions and trust companies.
+      patterns:
+        - BANK
+        - BANKS
+        - BANCORP
+        - BANCORPORATION
+        - BANCSHARES
+        - BANC
+        - BANCO
+        - BANQUE
+        - SAVINGS
+        - CREDIT UNION
+        - CREDIT SUISSE
+        - TRUST COMPANY
+        - TRUST CO
+        - BANKSHARES
+        - TRUST$
+        - CITIGROUP
+        - JPMORGAN
+        - WELLS FARGO
+        - STATE STREET
+        - BNY MELLON
+        - MUFG
+        - HSBC
+        - BARCLAYS
+        - DEUTSCHE
+        - UBS
+        - KBC
+        - RBC
+        - TD
+        - MIZUHO
+        - WILMINGTON
+        - VONTOBEL
+        - SWEDBANK
+        - HANDELSBANKEN
+        - ERSTE
+        - INTESA
+        - DESJARDINS
+        - COMMERZBANK
+      unless:
+        - ADVISORS?
+        - ADVISERS?
+        - ADVISORY
+        - WEALTH
+        - PLANNING
+        - CAPITAL MANAGEMENT
+        - ASSET MANAGEMENT
+        - INVESTMENT MANAGEMENT
+        - FUND MANAGEMENT
+        - INVESTMENT TRUST
+        - SERIES TRUST
+        - INVESTMENTS
+        - COUNSEL
+        - REAL ESTATE
+
+    - name: fund_or_asset_manager
+      category: fund
+      description: Mutual, hedge, active and passive fund managers, investment advisers, wealth managers and capital partnerships.
+      patterns:
+        - FUNDS?
+        - ETFS?
+        - HEDGE
+        - ASSETS?
+        - MANAGEMENT
+        - MNMGT
+        - MANAGERS?
+        - ADVISORS?
+        - ADVISERS?
+        - ADVISORY
+        - ADV
+        - CAPITAL
+        - PARTNERS
+        - PARTNERSHIP
+        - INVESTMENTS?
+        - INVESTORS?
+        - '[A-Z]*WEALTH'
+        - FINANCIAL
+        - PLANNING
+        - COUNSEL
+        - EQUITY
+        - EQUITIES
+        - VENTURES?
+        - STRATEGIES
+        - ASSOCIATES
+        - PORTFOLIO
+        - FIDUCIARY
+        - RETIREMENT
+        - REAL ESTATE SECURITIES
+        - OFFSHORE
+        - GESTION
+        - FONDFORVALTNING
+        - FORVALTNING
+        - VANGUARD
+        - BLACKROCK
+        - FIDELITY
+        - INVESCO
+        - FRANKLIN
+        - WELLINGTON
+        - DIMENSIONAL
+        - T ROWE PRICE
+        - GEODE
+        - RENAISSANCE TECHNOLOGIES
+        - BRIDGEWATER
+        - TWO SIGMA
+        - AQR
+        - MILLENNIUM
+        - POINT72
+        - D E SHAW
+        - GP
+        - GENPAR
+        - GENERAL PARTNER
+        - INVEST[A-Z]*
+        - INVESTIMENTOS
+        - GESTAO
+        - RECURSOS
+        - PORTFOLIOS
+        - PLANNERS
+        - KAPITAL[A-Z]*
+        - FONDER
+        - FONDS
+        - FUNDUSZY
+        - INWESTYCYJNYCH
+        - TOWARZYSTWO
+        - ADMINISTRADORA
+        - CAYMAN

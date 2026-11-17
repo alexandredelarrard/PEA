@@ -65,7 +65,8 @@ data_aggregate:
       # One user-owned ordered raw-CIK list: superinvestors/ranked_managers.json.
       # The checked-in ascending default is provisional, with retrospective roster bias.
       # List/K/policy changes require an explicit full rebuild.
-      max_age_calendar_days: 90  # first public usability; amendments never reset age
+      max_age_calendar_days: 100  # first public usability; amendments never reset age. Consecutive public dates are 91-92 days apart (p90),
+                                  # 99.8% within 100, so a book is carried until its successor is public or 100 days pass
       selection:
         k: 20                   # fixed prefix; no runtime ranking or replacement
 
@@ -98,6 +99,126 @@ data_aggregate:
                                  # ⚠ RAISING IT PAST ~10 breaks the emission-window ordering
                                  # `_assert_emission_windows_ordered` guards, because the
                                  # revision window still runs to period+105d.
+
+  bond_lines:                # share lines that are really bond principal; shared by the 13F cube cleaning (they leave the book like debt rows)
+                             # and the manager profile (they weigh by filed value in the bond path). Regexes on upper-case text, searched anywhere
+    cusip_pattern: '\d{3}[0-9A-Z]{3}[A-Z][0-9A-Z]{2}'  # a CUSIP is a bond when it has 9 characters, a numeric issuer code and a LETTER as issue
+                                                       # number (character 7); equity issue numbers are digits. The numeric issuer code drops
+                                                       # SEDOL-like codes such as 00B63DG21
+    cusip_excluded_prefixes: ['000']                   # placeholder issuer codes
+    name_exclusions:         # a line whose `issuer_name title_of_class` has any of these is a fund, ADR or placeholder, never a bond by CUSIP
+      - ISHARES              # iShares iBond ETFs have letter issue numbers and are equities
+      - '\bETF\b'
+      - '\bFUND\b'
+      - '\bTRUST\b'
+      - '\bADR\b'
+      - '\bLP\b'
+      - '\bLLC\b'
+    title_markers:           # a line with no ticker is a bond when its `title_of_class` has any of these (note, convertible, debenture, coupon, maturity date)
+      - '(?<![A-Z])(?:NOTES?|NTS?|CONV\w*|CNV\w*|CVT|CV|DEBENTURES?|DEBS?|BONDS?|FRNT|DUE)(?![A-Z])'
+      - '%'
+      - '\b\d{1,2}/\d{1,2}/\d{2,4}\b'
+      - '\b\d{1,2}/\d{4}\b'
+    title_exclusions:        # ... unless `title_of_class issuer_name` also has any of these (preferreds, warrants, units and rights are not bonds)
+      - '(?<![A-Z])(?:PFD\w*|PREF\w*|WARRANTS?|WTS?|UNITS?|RIGHTS?)(?![A-Z])'
+      - '\*W'
+      - 'W EXP'
+      - 'PAGE \d+ RUN DATE'
+
+  manager_profile:           # 13F manager behavioural profile (sec_13f_manager_details); category rules: configs/manager_categories.yml
+    window_quarters: 4       # a profile is the mean of the single-quarter statistics of the last N report quarters (e.g. 2-8)
+    min_quarters: 2          # quarters with a statistic needed before a profile is emitted (<= window_quarters)
+    amendment_only_min_lines: 4  # a (cik, period) whose only stored accession is a 13F-HR/A (no original 13F-HR) with fewer lines than this has no book
+    bond_lines: ${data_aggregate.bond_lines}  # the shared share-line to bond mapping above
+    turnover_threshold: 0.10 # a position counts as changed when its share count moves by more than this fraction (e.g. 0.05-0.25)
+    cap_breakpoints: [0.70, 0.20]  # share of cumulative 13F value ranked by ticker size: large = top 0.70, mid = next 0.20, small = the rest
+    price_check_min_filers: 3  # distinct filers a (quarter, CUSIP) needs before its median value / shares is the consensus price of the
+                               # cube's repair_value_basis that rescales and nulls mis-reported lines (same meaning as min_consensus_filers above)
+    security_markers:        # name rules for common lines Sharadar does not list; regexes on the upper-case `title_of_class | issuer_name`, whole words
+                             # only; applied in this order: etf, then real_estate (sector only), then foreign, then us_titles; a listed line keeps Sharadar's class
+      etf:                   # fund-like lines: ETFs, ETNs, mutual and closed-end funds (the `pct_etf` asset); never bare TRUST, UNIT(S), SH BEN INT, INVESTMENT TRUST, BD
+        markers:
+          - ETFS?                       # exchange-traded fund / ETF names
+          - ETNS?                       # exchange-traded notes
+          - ETP
+          - EFT                         # ETF typo
+          - EETF
+          - EXCHANGE.?TRADED
+          - EXCHANGED TRADED
+          - MUTUAL FUNDS?               # exact phrase; bare MUTUAL names banks (Washington Mutual)
+          - MUTFUND
+          - MUFD
+          - MTLFND
+          - CLOSED.?END
+          - CEF
+          - ISHARES
+          - ISHS
+          - SPDR
+          - (?<!AMERICAN )VANGUARD      # American Vanguard is an operating company
+          - VNG
+          - VIPERS?
+          - POWERSHARES
+          - PSHS
+          - PROSHARES
+          - INVESCO(?! LTD)             # Invesco Ltd is an operating company
+          - INVSCO
+          - FUNDS?                      # open-end, closed-end and index funds
+          - FDS?
+          - FND
+          - INDEX
+          - INDX
+          - IDX
+          - TR UNIT                     # trust units of SPY, QQQ, DIA
+          - UNIT SER
+          - UT ?SER
+          - SELECT SECTOR
+          - MSCI
+          - S&P(?! GLOBAL INC)          # S&P Global Inc is an operating company
+          - S&AMP
+          - RUSSELL
+          - FTSE
+          - BARCL[A-Z]*
+          - BRCLY
+          - IBOND[A-Z]*
+          - IBOXX
+      real_estate:           # sector Real Estate (`pct_sector_real_estate`) for an unlisted line the etf rule did not take; its asset comes from the later steps
+        markers:
+          - REITS?
+          - REAL ESTATE INVESTMENT TRUST
+          - REAL ESTATE
+          - RL EST
+          - PROPERTIES
+          - PPTYS?
+          - REALTY
+          - RLTY
+          - PROPERTY TRUST
+      foreign:               # strong foreign-listing words (`pct_equity_foreign`); never AMERN, bare N Y, ORD, LTD, PLC, N V, S A or a letter-led CUSIP
+        markers:
+          - ADRS?
+          - ADR\(
+          - SPONSADR
+          - SPONADR
+          - SP ?ADR
+          - ADSS?
+          - AMERICAN DEPOSIT[A-Z]*
+          - GDR
+          - DEPOS?I?TO?R?Y RECEIPTS?
+          - SPONSORED
+          - SPONS?
+          - SPONSD
+          - SPNSRD
+          - NAMEN
+          - AKT
+          - N Y REG(?:ISTRY)?
+          - NY ?REG
+          - CHF
+          - SUB VTG
+          - LTD VTG
+          - LMT VTG
+          - AG
+      us_titles:             # a title that only says "common stock of some class" is US equity: every word is a filler or an anchor, one is an anchor
+        anchors: [COM, COMMON, COMM, CMN, CS, 'STOCKS?', STK, CL, CLASS, CLA, CLB, CAP, EQUITY, EQUITIES, EQTY, COMNEW, COMMSTCK, COMMONSTOCK]
+        fillers: [NEW, NE, SER, SERIES, PAR, NPV, NON, VTG, VT, SHARES, A, B, C, 'USD[0-9./]*', 'STOCKUSD[0-9./]*', '\$[0-9./]*', '[0-9./]+']
 
   hist:                      # self-history (valuation mean-reversion) window for
                              # the f_<yield>_vs_hist features ("cheap vs own past")

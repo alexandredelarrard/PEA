@@ -409,7 +409,7 @@ data:
       start_date: '1999-07-01'
       end_date: null
       source_start: '1999-07-01'
-      coverage_start: '2013-06-30'
+      coverage_start: '1999-06-30'
       reprocess:
         mode: missing_documents
         archive_fallback: missing_units
@@ -423,6 +423,27 @@ data:
         roll: market_session
       freshness:
         clock: period
+        cadence: quarterly
+    sec_13f_manager_details:
+      status: active
+      start_date: '1999-07-01'
+      end_date: null
+      source_start: '1999-07-01'
+      coverage_start: '1999-06-30'
+      reprocess:
+        mode: tail
+        overlap:
+          value: 92
+          unit: calendar_days
+      pit:
+        mode: direct
+        clock: first_filed_date
+        lag:
+          value: 2
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: first_filed_date
         cadence: quarterly
     insider_transactions:
       status: active

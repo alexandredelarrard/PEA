@@ -45,22 +45,25 @@ EMISSION = dict.fromkeys((f"ic_super_{prefix}{metric}" for prefix in ("", "topk_
 
 
 def compute_superinvestor_feature_history(
-    snapshots: Sequence[PublicBookSnapshot], cohorts: Mapping[str, frozenset[str]], universe: tuple[str, ...], market: BehaviorMarket
+    snapshots: Sequence[PublicBookSnapshot],
+    cohorts: Mapping[str, frozenset[str]],
+    universe: tuple[str, ...],
+    market: BehaviorMarket,
 ) -> dict[str, pd.DataFrame]:
     """Summarize every revision and join every compared pair once, then reduce both masks per event with identical
     equations: one sparse (event day x ticker) level frame per feature."""
     index = pd.Index(universe, dtype=object)
     event_rows: list[dict[str, pd.Series]] = []
     books = dict.fromkeys(book for snapshot in snapshots for book in (*snapshot.archive.values(), *snapshot.level_books.values()))
-    table = summarize_books(list(books), index)
+    table = summarize_books(list(books), index, market.min_coverage)
     selections = [{lag: comparable_pairs(snapshot, lag) for lag in (1, 4)} for snapshot in snapshots]
     compared = dict.fromkeys((current, prior) for selected in selections for lag in (1, 4) for _, current, prior in selected[lag])
     pairs = join_pairs(list(compared), table)
     for snapshot, selected in zip(snapshots, selections, strict=True):
-        durations = {cik: holding_duration(book, snapshot.archive, table) for cik, book in snapshot.level_books.items() if book.support.comparable}
+        durations = {cik: holding_duration(book, snapshot.archive, table) for cik, book in snapshot.level_books.items() if book.support.book_known}
         level = prepare_level_sample(snapshot, table, durations, index)
         quarter, year = prepare_pair_sample(selected[1], pairs, market), prepare_pair_sample(selected[4], pairs, market)
-        whole_sample = prepare_whole_book_sample(quarter)
+        whole_sample = prepare_whole_book_sample(quarter, market.min_coverage)
         for name, cohort in cohorts.items():
             changes = quantity_metrics(quarter, cohort, index)
             annual = quantity_metrics(year, cohort, index)

@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.sec_thirteen import institutional_features as inst_module
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.utils.window import Window, WindowPlan
@@ -152,6 +153,8 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
 
 
 def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(inst_module, "INST_LEVEL_FLOOR_PERIOD", pd.Timestamp("2013-06-30"))
+    monkeypatch.setattr(inst_module, "INST_DELTA_FLOOR_PERIOD", pd.Timestamp("2013-09-30"))
     step, _ = _owner(sqlite_store, monkeypatch, tmp_path)
     days = pd.bdate_range("2013-08-01", periods=120, name="date")
     sqlite_store.replace(

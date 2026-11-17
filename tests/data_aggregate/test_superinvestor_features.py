@@ -90,7 +90,7 @@ def _market(split: bool = False) -> BehaviorMarket:
         else pd.DataFrame(columns=["ticker", "date", "value"])
     )
     basis = ShareBasis(actual=actions, vendor=actions, price=actions, policies={})
-    return BehaviorMarket(index, quotes, security_basis_frame(basis, index, quotes.columns))
+    return BehaviorMarket(index, quotes, security_basis_frame(basis, index, quotes.columns), 0.8)
 
 
 def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> dict[str, pd.DataFrame]:
@@ -486,8 +486,10 @@ def test_duration_retains_supported_book_and_current_level_barriers(barrier: str
     history = _compute(snapshot)
     for cohort in ("", "topk"):
         actual = _value(history, "quarters_held", cohort=cohort)
-        assert np.isnan(actual) if barrier in ("current_partial", "current_empty", "expired") else actual == 1
-    print(f"SANITY: {barrier} preserves the existing adjacent-book/current-level barrier without inventing tenure or a sale.")
+        # A confidential or partial book still lists what is held, so it extends tenure; only a missing, empty or expired book is a barrier.
+        expected = 2 if barrier in ("partial", "restricted", "current_partial") else 1
+        assert np.isnan(actual) if barrier in ("current_empty", "expired") else actual == expected
+    print(f"SANITY: {barrier}: a book that cannot prove absence still extends tenure; missing, empty and expired books remain barriers.")
 
 
 def test_duration_keeps_ticker_identity_across_class_and_cusip_changes() -> None:

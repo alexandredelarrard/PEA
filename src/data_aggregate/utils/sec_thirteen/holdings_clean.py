@@ -7,19 +7,30 @@ row; `sum_company_rows` then merges a company's rows onto its canonical CUSIP pe
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import closing
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
-from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, prepare_public_value_quotes, repair_value_basis
+from src.data_aggregate.utils.sec_thirteen.bond_lines import bond_line_mask
+from src.data_aggregate.utils.sec_thirteen.value_basis import (
+    MIN_CONSENSUS_FILERS,
+    consensus_prices,
+    log_register,
+    prepare_public_value_quotes,
+    repair_value_basis,
+    unrealistic_lines,
+)
 from src.utils.identity_tables import TAGGED_ROLES, CusipTags, tag_cusips
 
 logger = logging.getLogger(__name__)
 
 
+#: First report period kept: the 13F electronic filing era; an earlier period is a typo.
+_FIRST_PERIOD = pd.Timestamp("1999-01-01")
 #: Coerced to a midnight `datetime64` on both manifests and positions.
 _DATES = ("period", "filing_date")
 #: 13F share legs counted in the canonical class (x the dated ratio); every other amount is summed as filed.
@@ -90,12 +101,63 @@ def company_lines(tagged: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
     return out[["ratio", "target"]]
 
 
-def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Normalize source dates without changing accession grain or missing quantities."""
+def clean_filings(df_filings: pd.DataFrame, df_holdings: pd.DataFrame, bond_lines: Mapping[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Normalize source dates, drop filings whose report period is impossible (before 1999 or after its filing), and keep equity only:
+    bond lines leave the book (debt rows and the share lines `bond_line_mask` flags under `bond_lines`) and every other row's bond legs
+    are zeroed, with each manifest's stored row count reduced to match. The text columns the mask reads are dropped."""
     for df in (df_filings, df_holdings):
         for column in _DATES:
             df[column] = pd.to_datetime(df[column])
-    return df_filings, df_holdings
+    impossible = df_filings["period"].lt(_FIRST_PERIOD) | df_filings["period"].gt(df_filings["filing_date"])
+    if impossible.any():
+        typos = set(df_filings.loc[impossible, "accession_number"])
+        df_filings = df_filings.loc[~impossible].reset_index(drop=True)
+        df_holdings = df_holdings.loc[~df_holdings["accession_number"].isin(typos)]
+    bonds = df_holdings["position_type"].astype(str).str.lower().eq("debt") | bond_line_mask(df_holdings, bond_lines)
+    if bonds.any():
+        removed = df_holdings.loc[bonds].groupby("accession_number").size()
+        df_filings = df_filings.assign(
+            parsed_row_count=df_filings["parsed_row_count"] - df_filings["accession_number"].map(removed).fillna(0).astype(int)
+        )
+        df_holdings = df_holdings.loc[~bonds]
+    for leg in (leg for leg in ("debt_prn", "debt_value", "raw_debt_value") if leg in df_holdings):
+        df_holdings = df_holdings.assign(**{leg: 0.0})
+    return df_filings, df_holdings.drop(columns=["issuer_name", "title_of_class"], errors="ignore").reset_index(drop=True)
+
+
+def _tag_batch(df_filings: pd.DataFrame, df_raw: pd.DataFrame, tags: CusipTags, members: set[str] | None, whole_books: bool) -> pd.DataFrame:
+    """Tag a batch, restrict it to `members` when given, and carry each filing's cover total onto its lines when the books are whole."""
+    df_tagged = tag_company_lines(df_raw, tags.lines, tags.cmap)
+    tickers = df_tagged["ticker"].astype(object)
+    keep = tickers.notna() if members is None else tickers.isin(members)
+    df_tagged = df_tagged.assign(ticker=tickers.where(keep, None))
+    if whole_books and "declared_value_total" in df_filings:
+        df_tagged["declared_value_total"] = df_tagged["accession_number"].map(df_filings.set_index("accession_number")["declared_value_total"])
+    return df_tagged
+
+
+def build_consensus_quotes(
+    open_packets: Callable[[], Generator[tuple[pd.DataFrame, pd.DataFrame]] | None],
+    tags: CusipTags,
+    valuation_close: pd.DataFrame | None,
+    limits: Mapping[str, pd.Series] | None = None,
+) -> pd.Series | None:
+    """One price per (period, cusip) for securities `valuation_close` does not cover: the median over every filer's line of value / shares,
+    taken after each filing's unit is decided on the priced lines, in one pass over the whole books and one groupby."""
+    packets = open_packets()
+    if packets is None:
+        return None
+    period_quotes = prepare_public_value_quotes(valuation_close)
+    cleaned: list[pd.DataFrame] = []
+    with closing(packets):
+        for df_filings, df_raw in packets:
+            df_holdings, _ = repair_value_basis(
+                _tag_batch(df_filings, df_raw, tags, None, True), valuation_close, period_quotes=period_quotes, limits=limits
+            )
+            cleaned.append(df_holdings.reindex(columns=["period", "cusip", "cik", "shares", "value_usd", "position_type", "value_basis_dropped"]))
+    if not cleaned:
+        return None
+    return consensus_prices(pd.concat(cleaned, ignore_index=True), MIN_CONSENSUS_FILERS)
 
 
 def clean_public_batches(
@@ -103,28 +165,45 @@ def clean_public_batches(
     tags: CusipTags,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
+    *,
+    consensus: pd.Series | None = None,
+    limits: Mapping[str, pd.Series] | None = None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
-    """Prepare shared quotes once, then per batch tag each filed row and repair raw accession values before
-    reconciliation, retaining unsupported rows. `tag_company_lines` tags every row (the stored ticker is not read),
-    one row per stored row so the resolver's count checks hold: a company's share classes in canonical-class shares
-    (x the dated ratio, before the value repair) with its canonical CUSIP in `COMPANY_CUSIP`. No ticker where nothing
-    tags a row, nor outside `universe` when given; unmapped and off-universe positions stay in the book."""
+    """Prepare shared quotes once, then per batch tag each filed row and clean its values before reconciliation, retaining unsupported
+    rows. `tag_company_lines` tags every row (the stored ticker is not read), one row per stored row so the resolver's count checks hold:
+    a company's share classes in canonical-class shares (x the dated ratio, before the value repair) with its canonical CUSIP in
+    `COMPANY_CUSIP`. No ticker where nothing tags a row, nor outside `universe` when given; unmapped and off-universe positions stay in
+    the book. Securities the price table does not cover are priced by `consensus`. A line the cleaning cannot support is nulled, never its
+    book; the run is summarised once, in percent, when the stream ends, and lines above the market cap or dollar ceilings are excluded."""
     period_quotes = prepare_public_value_quotes(valuation_close)
     members = None if universe is None else set(universe)
-    with closing(packets):
-        for df_filings, df_raw in packets:
-            # Tags and canonical-class shares, then one vector repair per batch; an empty batch passes through unrepaired.
-            df_tagged = tag_company_lines(df_raw, tags.lines, tags.cmap)
-            tickers = df_tagged["ticker"].astype(object)
-            keep = tickers.notna() if members is None else tickers.isin(members)
-            df_holdings, df_register = repair_value_basis(
-                df_tagged.assign(ticker=tickers.where(keep, None)), valuation_close, period_quotes=period_quotes
-            )
-            del df_raw, df_tagged
+    registers: list[pd.DataFrame] = []
+    unrealistic = 0
+    try:
+        with closing(packets):
+            for df_filings, df_raw in packets:
+                # One vector repair per batch; an empty batch passes through unrepaired.
+                df_tagged = _tag_batch(df_filings, df_raw, tags, members, members is None)
+                df_holdings, df_register = repair_value_basis(
+                    df_tagged, valuation_close, period_quotes=period_quotes, consensus=consensus, limits=limits
+                )
+                del df_raw, df_tagged
+                registers.append(df_register)
 
-            # Report the unit decisions, then null the excluded amounts; the rows stay in the book.
-            log_register(df_register, float(df_holdings.value_usd.sum()))
-            excluded = df_holdings.get("value_basis_excluded", pd.Series(False, index=df_holdings.index))
-            df_holdings.loc[excluded, ["shares", "value_usd"]] = np.nan
-            yield df_filings, df_holdings
-            del df_filings, df_holdings
+                # Null the excluded amounts; the rows stay in the book.
+                excluded = df_holdings.get("value_basis_excluded", pd.Series(False, index=df_holdings.index))
+                df_holdings.loc[excluded, ["shares", "value_usd"]] = np.nan
+                df_holdings = df_holdings.drop(columns="declared_value_total", errors="ignore")
+                impossible = unrealistic_lines(df_holdings, limits)
+                df_holdings.loc[impossible, ["shares", "value_usd"]] = np.nan
+                unrealistic += int(impossible.sum())
+                yield df_filings, df_holdings
+                del df_filings, df_holdings
+    finally:
+        if registers:
+            register = pd.concat(registers, ignore_index=True)
+            log_register(register, float(register["value_before"].sum()))
+            logger.info(
+                "13F cleaning | %s line(s) excluded as unrealistic (above 110%% of the issuer's market cap or the dollar ceilings)",
+                f"{unrealistic:,}",
+            )

@@ -17,11 +17,13 @@ type BookPair = tuple[str, PublicBook, PublicBook]
 
 @dataclass(frozen=True)
 class BehaviorMarket:
-    """Saved as-traded quotes (`close_pit`), authoritative sessions and the forward quantity basis F (`security_basis`)."""
+    """Saved as-traded quotes (`close_pit`), authoritative sessions, the forward quantity basis F (`security_basis`) and the share of a
+    book's lines that must carry a usable value for the book to be valued (`data_aggregate.institutionals.value_basis.min_row_coverage`)."""
 
     trading_index: pd.DatetimeIndex
     close_pit: pd.DataFrame
     basis: pd.DataFrame
+    min_coverage: float
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class BookTable:
     top: np.ndarray
     value: np.ndarray
     total: np.ndarray
+    coverage: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -70,8 +73,9 @@ class WholeBookSample:
     df_books: pd.DataFrame
 
 
-def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTable:
-    """Summarize each revision once: per-security evidence, whole-book value and per-output-ticker levels."""
+def summarize_books(books: Sequence[PublicBook], universe: pd.Index, min_coverage: float) -> BookTable:
+    """Summarize each revision once: per-security evidence, whole-book value and per-output-ticker levels. A line without a usable value is
+    left out of the book total; the book is valued when at least `min_coverage` of its lines carry one."""
     columns = ["cusip", "ticker", "position_type", "shares", "value_usd"]
     columns += ["class_evidence", "value_basis_shares_source"]
     frames = [book.df_positions.reindex(columns=columns) for book in books]
@@ -96,9 +100,11 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     df_positions["held"] = df_positions.shares.gt(0) | df_positions.value_usd.gt(0)
     df_positions["held_known"] = df_positions.held | (df_positions.quantity_known & df_positions.value_known)
     starts = np.searchsorted(df_positions["_book"].to_numpy(), np.arange(len(books) + 1))
-    values = df_positions.value_usd.to_numpy()
-    valued = df_positions.value_known.groupby(df_positions["_book"]).all().reindex(range(len(books)), fill_value=True).to_numpy()
-    total = np.array([values[start:stop].sum() if known else np.nan for start, stop, known in zip(starts[:-1], starts[1:], valued, strict=True)])
+    values = np.where(df_positions.value_known, df_positions.value_usd, 0.0)
+    coverage = df_positions.value_known.groupby(df_positions["_book"]).mean().reindex(range(len(books)), fill_value=1.0).to_numpy()
+    total = np.array(
+        [values[start:stop].sum() if cov >= min_coverage else np.nan for start, stop, cov in zip(starts[:-1], starts[1:], coverage, strict=True)]
+    )
 
     # Rank all common positions per book, including those outside the output universe.
     df_positions = df_positions.sort_values(["_book", "value_usd", "cusip"], ascending=[True, False, True], kind="stable")
@@ -114,6 +120,11 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     inside = cols >= 0
     rows, cols = df_tickers.index.get_level_values("_book").to_numpy()[inside], cols[inside]
     levels = {name: np.zeros((len(books), len(universe))) for name in ("held", "top", "value")}
+
+    # A book that cannot prove absence (confidential or combination filing) lists what is held; every name it leaves out is unknown.
+    unproven = np.array([not book.support.zero_eligible for book in books], dtype=bool)
+    for level in levels.values():
+        level[unproven, :] = np.nan
     levels["held"][rows, cols] = grouped.held.any().astype(float).where(grouped.held_known.all()).to_numpy()[inside]
     levels["top"][rows, cols] = grouped.top10.any().astype(float).to_numpy()[inside]
     levels["value"][rows, cols] = df_tickers.value_usd.to_numpy()[inside]
@@ -122,7 +133,7 @@ def summarize_books(books: Sequence[PublicBook], universe: pd.Index) -> BookTabl
     comparison = df_positions[kept].sort_values("_book", kind="stable")
     codes = {book: code for code, book in enumerate(books)}
     previous = {period: (period.to_period("Q") - 1).end_time.normalize() for period in {book.period for book in books}}
-    return BookTable(codes, previous, comparison.reset_index(drop=True), starts, levels["held"], levels["top"], levels["value"], total)
+    return BookTable(codes, previous, comparison.reset_index(drop=True), starts, levels["held"], levels["top"], levels["value"], total, coverage)
 
 
 def holding_duration(book: PublicBook, archive: Mapping[BookKey, PublicBook], table: BookTable) -> np.ndarray:
@@ -132,7 +143,7 @@ def holding_duration(book: PublicBook, archive: Mapping[BookKey, PublicBook], ta
     prior = book
     while active.any():
         prior = archive.get((book.cik, table.previous[prior.period]))
-        if prior is None or not prior.support.comparable:
+        if prior is None or not prior.support.book_known:
             break
         active &= table.held[table.codes[prior]] == 1.0
         duration[active] += 1
@@ -178,7 +189,8 @@ def level_metrics(sample: LevelSample, cohort: frozenset[str], universe: pd.Inde
 
 
 def comparable_pairs(snapshot: PublicBookSnapshot, lag: int) -> list[BookPair]:
-    """Fresh managers whose common-quarter book and exact lagged archive book are both supported."""
+    """Fresh managers whose common-quarter book and exact lagged archive book are both known. A book that cannot prove absence
+    (confidential or combination filing) still pairs; `join_pairs` leaves its absent positions unknown instead of zero."""
     if snapshot.common_period is None:
         return []
     prior_period = (snapshot.common_period.to_period("Q") - lag).end_time.normalize()
@@ -186,7 +198,7 @@ def comparable_pairs(snapshot: PublicBookSnapshot, lag: int) -> list[BookPair]:
     return [
         (cik, current, prior)
         for cik, current, prior in pairs
-        if current.period == snapshot.common_period and current.support.comparable and prior is not None and prior.support.comparable
+        if current.period == snapshot.common_period and current.support.book_known and prior is not None and prior.support.book_known
     ]
 
 
@@ -203,7 +215,11 @@ def join_pairs(pairs: Sequence[tuple[PublicBook, PublicBook]], table: BookTable)
     df_pair["ticker"] = df_pair.ticker_current.combine_first(df_pair.ticker_prior)
     df_pair["current"] = df_pair.shares_current.mask(current_absent, 0.0)
     df_pair["prior"] = df_pair.shares_prior.mask(prior_absent, 0.0)
-    df_pair["known"] = (df_pair.quantity_known_current.fillna(False) | current_absent) & (df_pair.quantity_known_prior.fillna(False) | prior_absent)
+    zero_current = np.array([current.support.zero_eligible for current, _ in pairs], dtype=bool)[df_pair["_pair"].to_numpy()]
+    zero_prior = np.array([prior.support.zero_eligible for _, prior in pairs], dtype=bool)[df_pair["_pair"].to_numpy()]
+    known_current = df_pair.quantity_known_current.fillna(False).to_numpy(dtype=bool) | (current_absent.to_numpy() & zero_current)
+    known_prior = df_pair.quantity_known_prior.fillna(False).to_numpy(dtype=bool) | (prior_absent.to_numpy() & zero_prior)
+    df_pair["known"] = known_current & known_prior
 
     # A changed identity/class is not an evidenced split or a verified round trip.
     both = df_pair._merge.eq("both")
@@ -280,19 +296,19 @@ def quantity_metrics(sample: PairSample, cohort: frozenset[str], universe: pd.In
     return result
 
 
-def prepare_whole_book_sample(sample: PairSample) -> WholeBookSample:
-    """Prepare whole-manager eligibility and fixed-price amounts before cohort masks."""
+def prepare_whole_book_sample(sample: PairSample, min_coverage: float) -> WholeBookSample:
+    """Prepare whole-manager eligibility and fixed-price amounts before cohort masks. A manager enters when at least `min_coverage` of its
+    compared positions are supported; the unsupported ones are left out of its union, not the manager."""
     if sample.df_positions.empty:
         return WholeBookSample(pd.DataFrame(), pd.DataFrame())
     df_positions = sample.df_positions
     priced = np.isfinite(df_positions.price) & df_positions.price.gt(0)
     supported = df_positions.known & priced
-    eligible = supported.groupby(df_positions.cik).all()
-    df_positions = df_positions.loc[df_positions.cik.isin(eligible.index[eligible])]
+    eligible = supported.groupby(df_positions.cik).mean().ge(min_coverage)
+    df_positions = df_positions.loc[df_positions.cik.isin(eligible.index[eligible]) & supported]
     if df_positions.empty:
         return WholeBookSample(pd.DataFrame(), pd.DataFrame())
 
-    # A missing union position excludes its manager rather than shrinking the book.
     df_positions = df_positions.assign(prior_value=df_positions.prior * df_positions.price, current_value=df_positions.current * df_positions.price)
     df_books = df_positions.groupby("cik")[["prior_value", "current_value"]].sum()
     df_tickers = df_positions.groupby(["cik", "ticker"])[["prior", "current", "prior_value", "current_value"]].sum()

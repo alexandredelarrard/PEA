@@ -18,11 +18,14 @@ from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
 from tests.support.sec_thirteen_panel import unsaved_panel
+
+BOND_LINES = read_config(str(Path(__file__).resolve().parents[2] / "configs")).data_aggregate.bond_lines
 
 
 def _manager_batch_owner(
@@ -49,7 +52,7 @@ def _manager_batch_owner(
         security_basis=basis,
     )
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
-    resources = SecThirteenResources(frames, {"": ciks}, _hr_tags([holdings for _, holdings in packets]))
+    resources = SecThirteenResources(frames, {"": ciks}, _hr_tags([holdings for _, holdings in packets]), {})
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
@@ -78,7 +81,7 @@ def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest
     step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
     prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
     step.run(full=True)
-    assert closed == [True] and save.call_count == 1
+    assert closed == [True, True] and save.call_count == 1
     for old, actual in zip(before, packets, strict=True):
         for expected, df_rows in zip(old, actual, strict=True):
             pd.testing.assert_frame_equal(expected, df_rows)
@@ -145,7 +148,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
         def load(self, *args: Any, **kwargs: Any) -> Any:
             raise AssertionError("Whole roster books use bounded source iteration")
 
-    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"])
+    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
     assert result is not None
     [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0

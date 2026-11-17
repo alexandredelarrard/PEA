@@ -120,7 +120,7 @@ def test_summary_retains_only_owned_comparison_evidence(empty: bool) -> None:
     book.df_positions.index = pd.Index([] if empty else [8, 3, 5], name="position")
     book.df_positions["source_accession"] = "retained-on-public-book"
     original = book.df_positions.copy(deep=True)
-    table = metrics.summarize_books([book], pd.Index(["AAA", "BBB"], dtype=object))
+    table = metrics.summarize_books([book], pd.Index(["AAA", "BBB"], dtype=object), 0.8)
 
     rows = table.df_positions
     assert list(rows.columns) == ["_book", "_cusip", "ticker", "shares", "value", "quantity_known", "class_evidence"]
@@ -176,7 +176,7 @@ def test_duration_limits_starting_tickers_before_walking_the_archive() -> None:
     snapshot = _snapshot(books)
     archive = Mock(wraps=snapshot.archive)
     universe = pd.Index(["AAA"], dtype=object)
-    table = metrics.summarize_books(books, universe)
+    table = metrics.summarize_books(books, universe, 0.8)
     for _ in range(2):
         archive.reset_mock()
         durations = {"1": metrics.holding_duration(books[-1], archive, table)}
@@ -204,7 +204,7 @@ def test_held_rows_follow_evidence_and_separate_revisions(optional: str) -> None
     revised.df_positions.loc[revised.df_positions.ticker.eq("AAA"), "position_type"] = "call"
     revised_original = revised.df_positions.copy(deep=True)
 
-    table = metrics.summarize_books([book, revised], pd.Index(["AAA", "BBB", "OUT"], dtype=object))
+    table = metrics.summarize_books([book, revised], pd.Index(["AAA", "BBB", "OUT"], dtype=object), 0.8)
     # A proven zero needs filed shares; without the unverified flag the value counts as verified.
     expected_out = np.nan if optional in ("missing_source", "missing_both") else 0.0
     np.testing.assert_array_equal(table.held, [[1.0, 1.0, expected_out], [np.nan, 1.0, expected_out]])

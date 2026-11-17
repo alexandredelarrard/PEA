@@ -23,6 +23,7 @@ from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecTh
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
+from src.utils.config import read_config
 from src.utils.security_series import trade_dates
 from tests.data_aggregate.insider_pit_reference import row
 from tests.support.sec_thirteen_panel import unsaved_panel
@@ -61,7 +62,14 @@ INSTITUTIONAL_COLUMNS = (
 
 
 def context(store: Any, path: Path) -> Context:
-    config = OmegaConf.create({"data_aggregate": {"sec_thirteen": {"unknown_unit_factor": 1.0}}})
+    config = OmegaConf.create(
+        {
+            "data_aggregate": {
+                "sec_thirteen": {"unknown_unit_factor": 1.0},
+                "bond_lines": read_config(DEFAULT_CONFIG_DIR).data_aggregate.bond_lines,
+            }
+        }
+    )
     return cast(
         Context,
         SimpleNamespace(

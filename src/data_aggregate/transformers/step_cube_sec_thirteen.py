@@ -21,7 +21,7 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import build_consensus_quotes, clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
 from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
@@ -30,6 +30,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSIO
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
+from src.data_aggregate.utils.sec_thirteen.value_basis import MIN_ROW_COVERAGE, prepare_public_value_quotes
 from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags, universe_cusips
 from src.utils.step import Step
@@ -44,6 +45,7 @@ class SecThirteenResources:
     frames: PriceFrames
     cohorts: Mapping[str, frozenset[str]] | None
     tags: CusipTags
+    limits: Mapping[str, pd.Series]
 
 
 @dataclass(frozen=True)
@@ -142,18 +144,26 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("sec_thirteen", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, cohorts, tags)
+
+        # Issuer caps per quarter end bound every cleaned line: no position may exceed its issuer.
+        limits = {
+            "mcap": prepare_public_value_quotes(frames.mcap_pit),
+            "shares_out": prepare_public_value_quotes(frames.shares_outstanding_pit),
+        }
+        return SecThirteenResources(frames, cohorts, tags, {name: series for name, series in limits.items() if series is not None})
 
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
         # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
         universe, until = resources.frames.universe, resources.frames.trading_index.max()
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until, universe=universe, cusips=universe_cusips(resources.tags.lines, universe))
+        packets = thirteen_inputs.iter_filing_vintages(
+            self._store, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
+        )
         if packets is None:
             return None
 
         # Each filed row tagged and in canonical-class shares before the value repair; amended books arrive whole and the
         # compact rows sum each company per manager-quarter after the resolver.
-        with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit)) as batches:
+        with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit, limits=resources.limits)) as batches:
             history = prepare_institutional_book_history(batches, resources.frames.trading_index, config=self._config)
         if history is None:
             return None
@@ -171,19 +181,29 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
-        packets = thirteen_inputs.iter_filing_vintages(self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]))
+        until, ciks = resources.frames.trading_index.max(), sorted(resources.cohorts[""])
+        packets = thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"])
         if packets is None:
             return None
 
-        # Clean whole books once, retaining off-universe and unmapped positions and provenance.
-        cfg = self._cfg.get("sec_thirteen", {})
-        age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, resources.tags, None, resources.frames.close_pit)) as batches:
+        # Clean whole books once, retaining off-universe and unmapped positions and provenance. Securities the price cube does not cover
+        # are priced by one consensus per (quarter, CUSIP), built in a first pass over the same books.
+        cfg = self._cfg["sec_thirteen"]
+        age_days = int(cfg["superinvestor"]["max_age_calendar_days"])
+        consensus = build_consensus_quotes(
+            lambda: thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"]),
+            resources.tags,
+            resources.frames.close_pit,
+            resources.limits,
+        )
+        with closing(
+            clean_public_batches(packets, resources.tags, None, resources.frames.close_pit, consensus=consensus, limits=resources.limits)
+        ) as batches:
             books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days, self._config)
         if books is None:
             return None
-        assert resources.frames.close_pit is not None and resources.frames.security_basis is not None
-        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis)
+        min_coverage = MIN_ROW_COVERAGE
+        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis, min_coverage)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
     @staticmethod

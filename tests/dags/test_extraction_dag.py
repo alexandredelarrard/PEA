@@ -42,6 +42,7 @@ REQUIRED_COMMANDS = {
     "zips-ingest",
     "edgar-index",
     "thirteen-f",
+    "thirteen-f-managers",
     "insider-edgar",
     "sec-fundamentals-facts",
     "sec-fundamentals-history",
@@ -297,7 +298,7 @@ def test_the_edgar_index_refreshes_once_before_the_seven_edgar_walks(monkeypatch
     task = params["edgar_index"]
     assert task["pool"] == "sec_api" and task["pool_slots"] == 2 and " edgar-index -c " in str(task["bash_command"])
     assert "edgar_index" in graph["identity"]
-    assert graph["edgar_index"] == EDGAR_WALKS | {"extraction_status"}, sorted(graph["edgar_index"])
+    assert graph["edgar_index"] == EDGAR_WALKS | {"thirteen_f_managers", "extraction_status"}, sorted(graph["edgar_index"])
     assert all(params[walk]["pool"] == "sec_api" for walk in EDGAR_WALKS)
     print("\n=== SANITY CHECK: one nightly EDGAR index refresh (P7b) ===")
     print(f"  identity -> edgar_index (sec_api, 2 slots) -> {sorted(EDGAR_WALKS)}")
@@ -404,7 +405,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
         task_id for task_id in dag.tasks if task_id not in {*UNIVERSE_TASKS, "identity_check", "extraction_status", "trigger_data_aggregation"}
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
-    lenient = {"identity", "price_history", "earnings_surprises", "fundamentals_check", "zips_ingest_13f"}
+    lenient = {"identity", "price_history", "earnings_surprises", "fundamentals_check", "zips_ingest_13f", "thirteen_f_managers"}
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
@@ -454,6 +455,26 @@ def test_the_13f_zip_ingest_runs_after_identity_and_the_walk_even_when_the_walk_
     print("\n=== SANITY CHECK: 13F ZIP ingest task (AC-007) ===")
     print(f"  zips_ingest_13f: pool {task.kwargs['pool']}, trigger {task.trigger_rule}, upstream {sorted(task.upstream)}")
     print("  replay: thirteen_f failed -> zips_ingest_13f still runs; no backfill task or CLI command remains. Validated.")
+
+
+def test_the_13f_manager_details_follow_the_zip_ingest_and_the_index_even_when_either_fails():
+    """AC-008: `thirteen-f-managers` in sec_bulk after zips_ingest_13f (ALL_DONE) and edgar_index (ALL_SUCCESS), so it runs on ALL_DONE."""
+    dag = load_dag(DAG_FILE)
+    task = dag.tasks["thirteen_f_managers"]
+    assert task.kwargs["pool"] == "sec_bulk" and " thirteen-f-managers -c " in str(task.kwargs["bash_command"])
+    assert dag.tasks["zips_ingest_13f"].trigger_rule == ALL_DONE and dag.tasks["edgar_index"].trigger_rule == ALL_SUCCESS
+    assert task.trigger_rule == ALL_DONE, "a failed index refresh or ZIP ingest still leaves the stored evidence to read"
+    assert task.upstream == {"universe_sync", "zips_ingest_13f", "edgar_index"}, sorted(task.upstream)
+    assert "thirteen_f_managers" in dag.tasks["extraction_status"].upstream
+    for failed in (["zips_ingest_13f"], ["edgar_index"], ["thirteen_f"]):
+        states = replay(dag, failed)
+        assert states["thirteen_f_managers"] == "success" and states["trigger_data_aggregation"] == "success", (failed, states)
+    states = replay(dag, ["identity"])
+    assert states["thirteen_f_managers"] == "success", "ALL_DONE: upstream_failed parents still run it"
+
+    print("\n=== SANITY CHECK: 13F manager details task (AC-008) ===")
+    print(f"  thirteen_f_managers: pool {task.kwargs['pool']}, trigger {task.trigger_rule}, upstream {sorted(task.upstream)}")
+    print("  replay: the ZIP ingest, the index or the walk failed -> the task still runs and aggregation is still triggered. Validated.")
 
 
 #: Modules whose entry points walk EDGAR filing by filing (the document walks, the EDGAR step running them, the 13F walks).

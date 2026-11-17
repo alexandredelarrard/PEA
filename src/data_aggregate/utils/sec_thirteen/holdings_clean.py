@@ -7,9 +7,8 @@ row; `sum_company_rows` then merges a company's rows onto its canonical CUSIP pe
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import closing
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -104,14 +103,13 @@ def clean_public_batches(
     tags: CusipTags,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
-    value_basis: Mapping[str, Any] | None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
     """Prepare shared quotes once, then per batch tag each filed row and repair raw accession values before
     reconciliation, retaining unsupported rows. `tag_company_lines` tags every row (the stored ticker is not read),
     one row per stored row so the resolver's count checks hold: a company's share classes in canonical-class shares
     (x the dated ratio, before the value repair) with its canonical CUSIP in `COMPANY_CUSIP`. No ticker where nothing
     tags a row, nor outside `universe` when given; unmapped and off-universe positions stay in the book."""
-    period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
+    period_quotes = prepare_public_value_quotes(valuation_close)
     members = None if universe is None else set(universe)
     with closing(packets):
         for df_filings, df_raw in packets:
@@ -120,7 +118,7 @@ def clean_public_batches(
             tickers = df_tagged["ticker"].astype(object)
             keep = tickers.notna() if members is None else tickers.isin(members)
             df_holdings, df_register = repair_value_basis(
-                df_tagged.assign(ticker=tickers.where(keep, None)), valuation_close, value_basis, period_quotes=period_quotes
+                df_tagged.assign(ticker=tickers.where(keep, None)), valuation_close, period_quotes=period_quotes
             )
             del df_raw, df_tagged
 

@@ -184,7 +184,7 @@ def test_full_reaches_the_existing_source_operation(
 
 def test_fundamentals_check_runs_the_check_on_the_ticker_subset(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], dict[str, Any]]] = []
-    context.config.data_extract.fundamentals_check = SimpleNamespace(gap_pct=0.03, field_share=0.05, top_tickers=3)
+    context.config.validate = SimpleNamespace(fundamentals_comparison=SimpleNamespace(gap_pct=0.03, field_share=0.05, top_tickers=3))
     context.config_dir = "configs"
     monkeypatch.setattr(step_fundamentals, "check_fundamentals_sources", lambda ctx, tickers, **kwargs: calls.append((tickers, kwargs)))
     monkeypatch.setattr(step_fundamentals, "build_fundamentals_history", Mock(side_effect=AssertionError("the check builds no history")))

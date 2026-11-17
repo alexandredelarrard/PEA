@@ -32,7 +32,7 @@ class StepAssembleCube(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
+        self._cfg = config.data_aggregate
 
     def run(self, full: bool = False) -> None:
         self._warn_on_part_edges()

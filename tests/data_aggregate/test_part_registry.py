@@ -85,7 +85,7 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
         {
             # no market_ticker / other_tickers: the market and commodity/FX series are named
             # rows in `prices_macro` now, not config-selected tickers inside `prices`
-            "build_cube": {
+            "data_aggregate": {
                 "targets": {"horizons": [30, 60, 90]},
                 "earnings_calls": {"sentiment_model": "fixture/tone", "refresh_calendar_days": 30},
             },
@@ -210,7 +210,7 @@ def test_feature_parts_cover_every_group_exactly_once():
 
 
 def test_assemble_parts_come_from_config_not_code():
-    """The assembler merges what `build_cube.assembly` lists; no part name is hard-coded in it."""
+    """The assembler merges what `data_aggregate.assembly` lists; no part name is hard-coded in it."""
     import inspect
 
     src = inspect.getsource(StepAssembleCube)
@@ -218,7 +218,7 @@ def test_assemble_parts_come_from_config_not_code():
         assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the config"
     assert "PART_BY_NAME" not in src
     print("\n=== SANITY CHECK: assemble is config-driven ===")
-    print("  CONCLUSION: the part list is `build_cube.assembly`; test_assemble_cube::test_committed_config covers registry coverage. Validated.")
+    print("  CONCLUSION: the part list is `data_aggregate.assembly`; test_assemble_cube::test_committed_config covers registry coverage. Validated.")
 
 
 def test_monolithic_build_runs_each_registered_command_once_in_order():

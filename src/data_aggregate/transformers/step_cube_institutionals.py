@@ -59,7 +59,7 @@ class StepCubeInstitutionals(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
+        self._cfg = config.data_aggregate
         self._part = part_for(Tables.cube_part_institutionals)
         self._bugfix = load_bugfix(context.config_dir)
         self._insider_lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name]
@@ -123,7 +123,7 @@ class StepCubeInstitutionals(Step):
         `ic_ftd_to_adv20`) is off by the quote-unit ratio for an ADR."""
         unknown = df_factor.columns[df_factor.isna().all()]
         if len(unknown):
-            factor = float(self._cfg.institutionals.unknown_unit_factor)
+            factor = float(self._cfg.sec_thirteen.unknown_unit_factor)
             self._log.warning(
                 "units unknown for %d ticker(s) %s: terminal-unit factor %s used, values may be off by the quote-unit ratio",
                 len(unknown),

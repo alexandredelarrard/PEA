@@ -47,7 +47,7 @@ class StepCubeMomentum(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
-        self._cfg = config.build_cube
+        self._cfg = config.data_aggregate
         self._part = part_for(Tables.cube_part_momentum)
         self._store = context.store
         # the `null_ret` entries reach this step as MASKS, not as repairs: `StepCubePrices`

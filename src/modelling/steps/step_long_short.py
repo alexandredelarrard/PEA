@@ -327,7 +327,7 @@ class StepLongShort(Step):
         if not horizons:
             raise FileNotFoundError(
                 f"The cube carries no 'target_{self.target_type}_h*' column at all. Run StepBuildCube first "
-                f"(and confirm build_cube.targets.labels includes '{self.target_type}')."
+                f"(and confirm data_aggregate.targets.labels includes '{self.target_type}')."
             )
         restriction = self._config.model.get("horizons")
         if restriction is not None:

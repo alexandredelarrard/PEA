@@ -1,6 +1,6 @@
 """Shared config plumbing for the OFFLINE data_extract tests (tmp_path fake contexts).
 
-The real `configs/paths.yml` and `configs/gpt.yml` are loaded rather than a hand-written stub, so
+The real `configs/config.yml` and `configs/gpt.yml` are loaded rather than a hand-written stub, so
 cache folders, filenames and model defaults stay in one place.
 """
 
@@ -11,7 +11,7 @@ from typing import cast
 
 from omegaconf import DictConfig, OmegaConf
 
-_PATHS_YML = Path(__file__).resolve().parents[2] / "configs" / "paths.yml"
+_PATHS_YML = Path(__file__).resolve().parents[2] / "configs" / "config.yml"
 _GPT_YML = Path(__file__).resolve().parents[2] / "configs" / "gpt.yml"
 
 

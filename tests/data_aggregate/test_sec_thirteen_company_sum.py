@@ -85,7 +85,7 @@ def _broad_snapshots(store: DataStore, tags: CusipTags, universe: tuple[str, ...
     """The broad part's own read, clean and resolve, replayed as the full public snapshot of each publication day."""
     packets = iter_filing_vintages(store, GRID.max(), universe=universe, cusips=universe_cusips(tags.lines, universe))
     assert packets is not None
-    with closing(clean_public_batches(packets, tags, universe, CLOSE, None)) as batches:
+    with closing(clean_public_batches(packets, tags, universe, CLOSE)) as batches:
         history = prepare_institutional_book_history(batches, GRID, settle_days=3)
     assert history is not None
     return list(iter_snapshot_books(*history))
@@ -143,7 +143,7 @@ def test_a_superinvestor_book_as_filed_holds_one_position_per_company(sqlite_sto
     sqlite_store.save(Tables.sec13f_hr, pd.concat([_book(FILED, "2024-05-10", filed, tickers), _book(MERGED, "2024-05-10", merged, COMPANY)]))
     packets = iter_filing_vintages(sqlite_store, GRID.max(), [FILED, MERGED])
     assert packets is not None
-    with closing(clean_public_batches(packets, TAGS, None, CLOSE, None)) as batches:
+    with closing(clean_public_batches(packets, TAGS, None, CLOSE)) as batches:
         snapshots = prepare_superinvestor_book_history(batches, GRID, 90)
     assert snapshots
     archive = snapshots[-1].archive
@@ -203,7 +203,7 @@ def test_real_stored_books_reach_the_builders_at_company_grain() -> None:
     # The builders' input: the step's own read, clean and resolve on these managers.
     packets = iter_filing_vintages(store, pd.Timestamp.today(), ciks, universe=universe, cusips=cusips)
     assert packets is not None
-    with closing(clean_public_batches(packets, lines, universe, None, None)) as batches:
+    with closing(clean_public_batches(packets, lines, universe, None)) as batches:
         history = prepare_institutional_book_history(batches, pd.bdate_range(newest - pd.Timedelta(days=400), pd.Timestamp.today()), settle_days=3)
     assert history is not None
     df_compact, _ = history

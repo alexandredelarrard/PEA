@@ -27,7 +27,7 @@ SOURCE = "cube_part_institutionals:insider_transactions"
 
 def _context(store: Any) -> Any:
     config = extract_config(source_freshness={"insider_max_lag_days": 4})
-    config.build_cube = {"assembly": {"optional_parts": [Tables.cube_part_text.name, Tables.cube_part_institutionals.name]}}
+    config.data_aggregate = {"assembly": {"optional_parts": [Tables.cube_part_text.name, Tables.cube_part_institutionals.name]}}
     return SimpleNamespace(store=store, config=config, log=LOG, universe=universe_of(["AAA"]))
 
 

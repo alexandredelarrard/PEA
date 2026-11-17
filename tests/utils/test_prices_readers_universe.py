@@ -56,7 +56,7 @@ def _prices(tickers: list[str], sessions: pd.DatetimeIndex, level: float) -> pd.
 def _config() -> DictConfig:
     loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
     config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"]}))
-    config.validate.defaults["universe_expected"] = len(UNIVERSE)
+    config.universe = universe_config(UNIVERSE).universe
     return config
 
 
@@ -110,7 +110,7 @@ def test_cube_prices_reads_the_universe_only(tmp_path: Path) -> None:
         peer_path = tmp_path / "peers.json"
         peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in UNIVERSE}), encoding="utf-8")
         context.paths, context.config_dir = {"SECTOR_PEERS_PATH": peer_path}, tmp_path
-        context.config.build_cube = {}
+        context.config.data_aggregate = {}
         StepCubePrices(context, context.config).run(full=True)
         return context.store.load(Tables.cube_part_prices).sort_values(["ticker", "date"])
 

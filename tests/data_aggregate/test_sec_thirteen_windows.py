@@ -28,7 +28,7 @@ def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[Ste
         "Known-truth no-event history needs an existing empty feed"
     )
     ctx = context(store, path)
-    ctx.config.build_cube = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "institutionals": {}})
+    ctx.config.data_aggregate = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "sec_thirteen": {}})
     monkeypatch.setattr(step_module, "load_peers_or_raise", lambda ctx: {})
     return StepCubeSecThirteen(ctx, ctx.config), days
 

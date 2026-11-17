@@ -212,7 +212,7 @@ The same nine part objects are driven by eight builders in the composite build, 
 
 ### Assemble selected inputs and check readiness
 
-Edit `build_cube.assembly` in [build_cube.yml](../../configs/build_cube.yml) using the [column selection contract](../reference/configuration.md#cube-assembly-selection), then run `rtk "$PY" -m src data_aggregate assemble-cube -c ./configs` followed by `rtk "$PY" -m src data_aggregate cube-status -c ./configs`. Assembly has no `-F` option. This rebuilds the derived cube from persisted parts; it does not rebuild feature parts.
+Edit `data_aggregate.assembly` in [data_aggregate.yml](../../configs/data_aggregate.yml) using the [column selection contract](../reference/configuration.md#cube-assembly-selection), then run `rtk "$PY" -m src data_aggregate assemble-cube -c ./configs` followed by `rtk "$PY" -m src data_aggregate cube-status -c ./configs`. Assembly has no `-F` option. This rebuilds the derived cube from persisted parts; it does not rebuild feature parts.
 
 The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) requires prices, targets, betas, fundamentals, momentum and governance. Text/institutionals/SEC thirteen can be absent or empty; populated broken inputs stop the build. Every price date/ticker remains, including the newest session with null future labels. Selected names are projected before payload reads. Removing selected columns or skipping a former optional source physically removes its old cube columns; confirm model-input compatibility before using narrower output.
 
@@ -324,7 +324,7 @@ rtk docker compose -f docker-compose.yml exec airflow-scheduler /opt/pipeline/bi
 Then check real FinBERT inference through the same engine used by `build-text` (the first invocation may cache model weights):
 
 ~~~powershell
-rtk docker compose -f docker-compose.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.data_aggregate.utils.text.nlp_sentiment import get_sentiment_engine; from omegaconf import OmegaConf; logging.basicConfig(level=logging.INFO); c=OmegaConf.load('configs/build_cube.yml'); e=get_sentiment_engine(c.build_cube.earnings_calls.sentiment_model); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
+rtk docker compose -f docker-compose.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.data_aggregate.utils.text.nlp_sentiment import get_sentiment_engine; from omegaconf import OmegaConf; logging.basicConfig(level=logging.INFO); c=OmegaConf.load('configs/data_aggregate.yml'); e=get_sentiment_engine(c.data_aggregate.earnings_calls.sentiment_model); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
 ~~~
 
 These checks do not build the cube or write application tables. A successful image build proves CUDA support was installed; only the GPU-host kernel and inference checks prove the driver's runtime and GPU architecture work. The existing score cache is reused; changing device does not require a full text rebuild. The routing/failure checks live in [test_nlp_sentiment.py](../../tests/utils/test_nlp_sentiment.py).

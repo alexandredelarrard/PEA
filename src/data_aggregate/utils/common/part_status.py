@@ -27,7 +27,7 @@ def _edge_detail(part_max: pd.Timestamp | None, reference: pd.Timestamp | None) 
 
 def cube_part_edge_report(context: Context) -> dict[str, Any]:
     store = context.store
-    optional = set(context.config.build_cube.assembly.optional_parts)
+    optional = set(context.config.data_aggregate.assembly.optional_parts)
     universe = set(context.universe.tickers)
     maxima = store.max_date_by(Tables.prices, "ticker")
     reference = max((day for ticker, day in maxima.items() if ticker in universe), default=None)

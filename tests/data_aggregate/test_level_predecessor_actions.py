@@ -111,7 +111,7 @@ def _cube_s(context: SimpleNamespace, tickers: list[str], owners: list[dict] | N
     peer_path = context.config_dir / "peers.json"
     peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in tickers}), encoding="utf-8")
     context.paths = {"SECTOR_PEERS_PATH": peer_path}
-    context.config = OmegaConf.create({"build_cube": {}, "data_extract": {"redundant_ticks": []}})
+    context.config = OmegaConf.create({"data_aggregate": {}, "data_extract": {"redundant_ticks": []}})
     StepCubePrices(context, context.config).run(full=True)
     rows = context.store.load(Tables.cube_part_prices)
     return rows.pivot(index="date", columns="ticker", values="level_factor").reindex(index=DAYS, columns=tickers)

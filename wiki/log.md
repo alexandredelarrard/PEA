@@ -1222,3 +1222,10 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` publication clock now covers Schedule 13D/13G (1-day buffer, filing date, source start and frontier moved to the publication session); `TODO.md` item closed. Branch fix/institutionals-13dg-lag; aggregate fingerprint baseline not refreshed.
+
+## 2026-11-16: refresh (configuration ownership, implementation P2)
+
+- Profile: internal/standard
+- source_commit: c82132b6 (was39b261e8; P2 working-tree changes documented alongside implementation)
+- Coverage: deterministic config loading, stage filenames, preserved path/model/JSON ownership, fixed repair thresholds and financial schemas, operative earnings-call lifetime with independent validation expectation. Operational date/PIT policy migration remains in subsequent phases.
+- Pages: [Configuration](./reference/configuration.md), [Constants and configuration](./modules/constants-and-configuration.md), and affected stage/guide links.

@@ -7,8 +7,6 @@ uncertain common and option values use tagged underlying-share market estimates.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -19,22 +17,24 @@ from src.data_aggregate.utils.common.quotes import period_close
 logger = logging.getLogger(__name__)
 KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9
 _VALUE_COLUMNS = ("value_usd", "call_value", "put_value", "debt_value", "other_value")
+_MIN_SECURITIES = 15
+_MIN_AGREEMENT = 0.8
+_PRICE_TOLERANCE = 0.1
 _MAX_PRICE_AGE_DAYS = 7
 
 
-def prepare_public_value_quotes(close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.Series | None:
+def prepare_public_value_quotes(close: pd.DataFrame | None) -> pd.Series | None:
     """Prepare the existing age-bounded quote lookup once for streamed DATE periods."""
     if close is None or close.empty:
         return None
-    max_age_days = _repair_policy(value_basis)[3]
     first = pd.Timestamp(close.index.min()).normalize()
-    last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=max_age_days)
+    last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=_MAX_PRICE_AGE_DAYS)
     periods = pd.Series(pd.date_range(first, last))
-    return period_close(close, periods, max_age_days)
+    return period_close(close, periods, _MAX_PRICE_AGE_DAYS)
 
 
 def repair_value_basis(
-    holdings: pd.DataFrame, close: pd.DataFrame | None, policy: Mapping[str, Any] | None = None, *, period_quotes: pd.Series | None = None
+    holdings: pd.DataFrame, close: pd.DataFrame | None, *, period_quotes: pd.Series | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Normalize filing values, reconstruct missing equity inputs and mark exclusions.
 
@@ -43,7 +43,6 @@ def repair_value_basis(
     an unresolved factor leaves their dollar-unit assumption explicit. Options use their own underlying
     quantities; debt needs an instrument quote. Source frames remain unchanged and repeat repair is idempotent.
     """
-    min_securities, min_agreement, price_tolerance, max_age_days = _repair_policy(policy)
     df_out = holdings.copy()
     if "value_basis_repaired" in df_out or df_out.empty:
         return df_out, _empty_register()
@@ -55,7 +54,7 @@ def repair_value_basis(
     value = pd.to_numeric(df_out["value_usd"], errors="coerce").astype("float64")
     shares = pd.to_numeric(df_out["shares"], errors="coerce").astype("float64")
     if period_quotes is None and "ticker" in df_out and close is not None and not close.empty:
-        period_quotes = period_close(close, df_out["period"], max_age_days)
+        period_quotes = period_close(close, df_out["period"], _MAX_PRICE_AGE_DAYS)
     quote = _row_quotes(df_out, period_quotes)
     common = df_out["position_type"].astype(str).str.lower().eq("common") if "position_type" in df_out else pd.Series(True, index=df_out.index)
     swapped = common & value.eq(shares) & shares.gt(0)
@@ -63,13 +62,13 @@ def repair_value_basis(
     ratio = ratio.where(np.isfinite(ratio) & ratio.gt(0))
 
     # One unit factor per filing, voted by raw common holdings only, scales every monetary leg.
-    df_register = _book_factors(df_out, keys, ratio, min_securities, min_agreement, price_tolerance)
+    df_register = _book_factors(df_out, keys, ratio)
     scale = _apply_book_factors(df_out, df_register, keys)
 
     # Individual common valuations are checked only after the raw book unit is frozen.
     position_ratio = df_out["value_usd"] / shares.where(shares.gt(0)) / quote
     mismatch = common & np.isfinite(position_ratio) & position_ratio.gt(0)
-    df_out["value_basis_price_mismatch"] = mismatch & ~position_ratio.between(1 - price_tolerance, 1 + price_tolerance)
+    df_out["value_basis_price_mismatch"] = mismatch & ~position_ratio.between(1 - _PRICE_TOLERANCE, 1 + _PRICE_TOLERANCE)
     _repair_common_quantities(df_out, value, shares, quote, scale, common)
 
     # Market estimates per leg, then whole-row exclusions once unsupported sibling dollars are nulled.
@@ -77,20 +76,6 @@ def repair_value_basis(
     _keep_sibling_exposures(df_out)
     unresolved = common & df_out["shares"].gt(0).fillna(False) & quote.isna() & df_out["value_usd"].isna()
     return df_out, _repair_register(df_register, keys, df_out, value, estimates, unresolved)
-
-
-def _repair_policy(policy: Mapping[str, Any] | None) -> tuple[int, float, float, int]:
-    """Validated support, agreement, tolerance and price-age settings of the value-basis config."""
-    settings = {"min_securities": 15, "min_agreement": 0.8, "price_tolerance": 0.1, "max_price_age_days": _MAX_PRICE_AGE_DAYS}
-    unknown = set(dict(policy or {})) - set(settings)
-    if unknown:
-        raise TypeError(f"Unknown 13F value-basis settings: {sorted(unknown)}")
-    settings.update(dict(policy or {}))
-    min_securities, min_agreement = int(settings["min_securities"]), float(settings["min_agreement"])
-    price_tolerance, max_age_days = float(settings["price_tolerance"]), int(settings["max_price_age_days"])
-    if min_securities < 1 or not 0.5 < min_agreement <= 1 or not 0 < price_tolerance < 0.5 or max_age_days < 0:
-        raise ValueError("Invalid 13F value-basis support or price-age policy")
-    return min_securities, min_agreement, price_tolerance, max_age_days
 
 
 def _row_quotes(df_out: pd.DataFrame, period_quotes: pd.Series | None) -> pd.Series:
@@ -103,9 +88,7 @@ def _row_quotes(df_out: pd.DataFrame, period_quotes: pd.Series | None) -> pd.Ser
     return quote
 
 
-def _book_factors(
-    df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, min_securities: int, min_agreement: float, price_tolerance: float
-) -> pd.DataFrame:
+def _book_factors(df_out: pd.DataFrame, keys: list[str], ratio: pd.Series) -> pd.DataFrame:
     """Per filing: median security ratio, the supported factor, priced count, agreement and status."""
     security = "cusip" if "cusip" in df_out else "ticker"
     evidence = df_out[keys + [security]].assign(_ratio=ratio).groupby(keys + [security], dropna=False)["_ratio"].median()
@@ -116,22 +99,22 @@ def _book_factors(
 
     # One vote per security; a unit-changing factor also needs enough distinct securities.
     for candidate in (1.0, 0.001, 1000.0):
-        support = (evidence * candidate).between(1 - price_tolerance, 1 + price_tolerance)
+        support = (evidence * candidate).between(1 - _PRICE_TOLERANCE, 1 + _PRICE_TOLERANCE)
         fraction = support.groupby(level=list(range(len(keys))), dropna=False).sum() / count.where(count.gt(0))
-        match = (measured * candidate).between(1 - price_tolerance, 1 + price_tolerance) & fraction.ge(min_agreement)
+        match = (measured * candidate).between(1 - _PRICE_TOLERANCE, 1 + _PRICE_TOLERANCE) & fraction.ge(_MIN_AGREEMENT)
         if candidate != 1.0:
-            match &= count.ge(min_securities)
+            match &= count.ge(_MIN_SECURITIES)
         factor.loc[match] = candidate
         agreement = agreement.where(~match, fraction)
 
     # Thin or unpriced books keep their filed unit under an explicit status.
     status = pd.Series("abstained", index=factor.index)
     status.loc[factor.notna()] = "market_checked"
-    status.loc[factor.eq(1.0) & count.lt(min_securities)] = "source_only_thin"
+    status.loc[factor.eq(1.0) & count.lt(_MIN_SECURITIES)] = "source_only_thin"
     factor.loc[count.eq(0)] = 1.0
     status.loc[count.eq(0)] = "source_only_no_price"
     columns = {"median_ratio": measured, "factor": factor, "priced_securities": count, "agreement": agreement, "status": status}
-    return pd.concat([series.rename(name) for name, series in columns.items()], axis=1).reset_index().assign(price_tolerance=price_tolerance)
+    return pd.concat([series.rename(name) for name, series in columns.items()], axis=1).reset_index().assign(price_tolerance=_PRICE_TOLERANCE)
 
 
 def _apply_book_factors(df_out: pd.DataFrame, df_register: pd.DataFrame, keys: list[str]) -> pd.Series:

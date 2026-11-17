@@ -439,7 +439,6 @@ SHARADAR_COLLAPSE_KEY: tuple[str, ...] = ("ticker", "as_of")
 SHARADAR_COLLAPSE_ORDER = "fiscal_end"
 
 # Earnings-call output contract shared by the builder and read-only validator.
-EARNINGS_CALL_SIGNAL_SESSIONS = 66
 EARNINGS_CALL_FEATURES = (
     "ec_prep_tone",
     "ec_prep_tone_delta",

@@ -44,7 +44,7 @@ def _config(**assembly: Any) -> Any:
         "compulsory_parts": [p.name for p in _ASSEMBLED if p.table not in _OPTIONAL],
         **assembly,
     }
-    return OmegaConf.create({"build_cube": {"assembly": policy}})
+    return OmegaConf.create({"data_aggregate": {"assembly": policy}})
 
 
 def _step(store: Any, monkeypatch: pytest.MonkeyPatch, config: Any = None) -> StepAssembleCube:
@@ -54,7 +54,7 @@ def _step(store: Any, monkeypatch: pytest.MonkeyPatch, config: Any = None) -> St
     step = StepAssembleCube(context=context, config=config)
     step._context = cast(Context, context)
     step._config = config
-    step._cfg = config.build_cube
+    step._cfg = config.data_aggregate
     step._log = context.log
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise", lambda *_: {"AAA": {"BBB": 1.0}})
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube._CHUNK_ROWS", 1)
@@ -245,7 +245,7 @@ def test_unknown_part_name(monkeypatch: pytest.MonkeyPatch) -> None:
     original_cube = pd.DataFrame({"preserved": [1.0]})
     store.tables[Tables.cube.name] = original_cube.copy()
     config = _config()
-    config.build_cube.assembly.optional_parts.append("cube_part_typo")
+    config.data_aggregate.assembly.optional_parts.append("cube_part_typo")
     with pytest.raises(UnknownTableError):
         _step(store, monkeypatch, config).run()
     assert not store.writes
@@ -305,7 +305,7 @@ def test_physical_schema_narrows(sqlite_store: Any, monkeypatch: pytest.MonkeyPa
 
 
 def test_committed_config() -> None:
-    assembly = read_config("configs").build_cube.assembly
+    assembly = read_config("configs").data_aggregate.assembly
     listed = [*assembly.compulsory_parts, *assembly.optional_parts]
     assert set(assembly.optional_parts) == {Tables.cube_part_text.name, Tables.cube_part_institutionals.name, Tables.cube_part_sec_thirteen.name}
     assert len(listed) == len(set(listed))

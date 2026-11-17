@@ -126,7 +126,7 @@ def seeded_case(base: DataStore, stems: list[str]) -> tuple[Context, DictConfig,
     )
     config = OmegaConf.create(
         {
-            "build_cube": {"earnings_calls": {"sentiment_model": "yiyanghkust/finbert-tone", "refresh_calendar_days": 30}},
+            "data_aggregate": {"earnings_calls": {"sentiment_model": "yiyanghkust/finbert-tone", "refresh_calendar_days": 30, "signal_sessions": 66}},
             "gpt": {"embedding": {"model": "text-embedding-3-small", "batch_size": 128, "max_chars": 28000}},
         }
     )
@@ -386,7 +386,7 @@ def test_incomplete_embeddings_stay_pending_without_emitting_features(
 
 def test_stage_order_and_configured_models(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
-    config.build_cube.earnings_calls.sentiment_model = "fixture/alternate-tone"
+    config.data_aggregate.earnings_calls.sentiment_model = "fixture/alternate-tone"
     config.gpt.embedding.model = "fixture/alternate-embedding"
     factory, _, embedding = configure_models(monkeypatch)
     step = StepCubeText(context, config)

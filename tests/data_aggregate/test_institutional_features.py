@@ -1089,7 +1089,6 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
 
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
-    step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
     step._settle_days = F13_SETTLE_TRADING_DAYS
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])

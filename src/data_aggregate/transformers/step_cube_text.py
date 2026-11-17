@@ -48,12 +48,13 @@ class StepCubeText(Step):
 
         # Keep configured model and window settings on the step.
         self._store = context.store
-        settings = config.build_cube.earnings_calls
+        settings = config.data_aggregate.earnings_calls
         embedding = config.gpt.embedding
         self._sentiment_model = settings.sentiment_model
         self._embedding_model = embedding.model
         self._lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.earnings_call_sections.name]
         self._refresh_days = settings.refresh_calendar_days
+        self._signal_sessions = settings.signal_sessions
         self._embedding_batch = embedding.batch_size
         self._embedding_max_chars = embedding.max_chars
 
@@ -63,6 +64,7 @@ class StepCubeText(Step):
                 raise ValueError(f"{name} must be a nonempty model name")
         for name, value, minimum in (
             ("refresh_calendar_days", self._refresh_days, 1),
+            ("signal_sessions", self._signal_sessions, 1),
             ("embedding.batch_size", self._embedding_batch, 1),
             ("embedding.max_chars", self._embedding_max_chars, 1),
         ):
@@ -312,7 +314,7 @@ class StepCubeText(Step):
         roster, lineage, tenure = load_issuer_identity(self._context)
         source = plan.source[pd.MultiIndex.from_frame(plan.source[["ticker", "quarter"]]).isin(plan.eligible)]
         identified = attach_issuer_identity(source, roster, lineage, tenure)
-        scope = feature_history_scope(identified, calendar, plan.window.read.start, self._lag)
+        scope = feature_history_scope(identified, calendar, plan.window.read.start, self._lag, self._signal_sessions)
         where = {"ticker": sorted(scope["ticker"].unique()), "quarter": sorted(scope["quarter"].unique())}
         history_from = None if scope.empty else pd.Timestamp(scope["as_of"].min())
         history_until = None if scope.empty else pd.Timestamp(scope["as_of"].max())
@@ -349,6 +351,7 @@ class StepCubeText(Step):
             calendar,
             availability=None if frames is None else frames.availability,
             availability_lag_days=self._lag,
+            signal_sessions=self._signal_sessions,
             since=plan.window.read.start,
         )
 

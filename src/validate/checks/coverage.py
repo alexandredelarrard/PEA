@@ -5,7 +5,7 @@ Which names are in the table, and for how much of the history they could have be
 
 THREE THINGS THIS CHECK REFUSES TO DO, each because doing it produced a false result before:
 
-1. **It measures against `context.universe`**, the tickers of `configs/universe.yml`. The
+1. **It measures against `configs/universe.yml`**, and independently checks persisted membership. The
    share-class aliases declared there (`GOOG`, `FOX`, `NWS`, `BRK-A`) are outside the universe
    by declaration and reported as INFO, never as unknown names.
 
@@ -47,6 +47,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
+from src.utils.tickers_universe.universe import universe_config
 from src.validate.frame import as_ts
 from src.validate.io import cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
@@ -101,9 +102,13 @@ def check_coverage(
             CHECK, spec_t.name, f"coverage is a (ticker x session) question and this table has date_col={date_col!r}, ticker column={ticker_col!r}"
         )
 
-    universe = context.universe.tickers
+    members = context.store.load(Tables.universe_tickers, columns=["ticker"], where={"in_universe": True}, optional=True)
+    if members is None:
+        return CheckResult.abstained(CHECK, spec_t.name, "persisted universe membership is unavailable")
+    universe, aliases = universe_config(config)
     universe_set = set(universe)
-    excluded = set(context.universe.alias_symbols)
+    observed_members = sorted(members["ticker"].astype(str).str.strip().str.upper())
+    excluded = {symbol for symbols in aliases.values() for symbol in symbols}
 
     # -- the reference grid: one row per (ticker, session) that actually traded ---------- #
     ref_cols = context.store.columns(reference)
@@ -146,14 +151,16 @@ def check_coverage(
     findings: list[Finding] = []
 
     # -- 1. the universe itself ----------------------------------------------------------- #
-    if len(universe) != spec.universe_expected:
+    if observed_members != universe:
         findings.append(
             Finding.at(
                 5,
-                observed=f"configs/universe.yml lists {len(universe)} names",
-                expected=f"{spec.universe_expected} (configs/validate.yml universe_expected)",
-                universe=len(universe),
-                declared=spec.universe_expected,
+                observed=f"{Tables.universe_tickers.name} contains {len(observed_members)} members",
+                expected=f"{len(universe)} configured members in configs/universe.yml",
+                universe=len(observed_members),
+                declared=len(universe),
+                missing_members=sorted(universe_set - set(observed_members)),
+                unexpected_members=sorted(set(observed_members) - universe_set),
             )
         )
 

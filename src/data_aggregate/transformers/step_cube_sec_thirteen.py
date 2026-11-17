@@ -61,9 +61,9 @@ class StepCubeSecThirteen(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
+        self._cfg = config.data_aggregate
         self._part = part_for(Tables.cube_part_sec_thirteen)
-        self._settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
+        self._settle_days = int(self._cfg.get("sec_thirteen", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
         cfg = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
@@ -108,7 +108,7 @@ class StepCubeSecThirteen(Step):
             unresolved.difference_update(supported)
             end = start
 
-        # A schema change reprojects the whole history; otherwise the window keeps the saved columns and their order.
+        # Full rebuilds adopt the projected schema; incremental writes require the retained columns.
         if window.is_full:
             df_panel = self._merge_panels(resources.frames, panels)
         elif supported != set(existing_columns) - {"date", "ticker"}:
@@ -143,7 +143,7 @@ class StepCubeSecThirteen(Step):
         cohorts = None
         if history is not None:
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
-            cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
+            cfg = self._cfg.get("sec_thirteen", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
         return SecThirteenResources(frames, cohorts, tags)
 
@@ -151,13 +151,12 @@ class StepCubeSecThirteen(Step):
         # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
         universe, until = resources.frames.universe, resources.frames.trading_index.max()
         packets = thirteen_inputs.iter_filing_vintages(self._store, until, universe=universe, cusips=universe_cusips(resources.tags.lines, universe))
-        cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
 
         # Each filed row tagged and in canonical-class shares before the value repair; amended books arrive whole and the
         # compact rows sum each company per manager-quarter after the resolver.
-        with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit)) as batches:
             history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
         if history is None:
             return None
@@ -180,9 +179,9 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Clean whole books once, retaining off-universe and unmapped positions and provenance.
-        cfg = self._cfg.get("institutionals", {})
+        cfg = self._cfg.get("sec_thirteen", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        with closing(clean_public_batches(packets, resources.tags, None, resources.frames.close_pit, cfg.get("value_basis"))) as batches:
+        with closing(clean_public_batches(packets, resources.tags, None, resources.frames.close_pit)) as batches:
             books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
         if books is None:
             return None

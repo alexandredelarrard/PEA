@@ -54,7 +54,7 @@ def test_disclosure_new_event_resets_and_missing_returns_are_not_zero() -> None:
 def test_disclosure_window_requires_explicit_feature_schema_migration() -> None:
     idx = pd.bdate_range("2026-01-05", periods=3)
     returns = pd.DataFrame({"AAA": 0.1}, index=idx)
-    with pytest.raises(ValueError, match="feature schema"):
+    with pytest.raises(TypeError, match="reaction_sessions"):
         disclosure_return_fields(pd.DataFrame(), returns, returns, reaction_sessions=4)
     print("\nSANITY: a four-session window cannot silently change the three-day feature definition.")
 

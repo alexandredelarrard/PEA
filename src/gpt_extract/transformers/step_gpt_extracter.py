@@ -37,8 +37,6 @@ from src.utils.step import Step
 _KEY_PATTERNS: dict[str, tuple[str, ...]] = {
     "open_ai": ("OPENAI_API_KEY", "OPEN_AI_API_KEY"),
     "open_ai_cheap": ("OPENAI_API_KEY", "OPEN_AI_API_KEY"),
-    "groq": ("GROQ_API_KEY",),
-    "deepseek": ("DEEPSEEK_API_KEY",),
     "google": ("GOOGLE_API_KEY",),
 }
 
@@ -70,8 +68,6 @@ class GptExtracter(Step):
         gpt = self._config.gpt
         self.default_api: str = gpt.default_api
         self.llm_model: Mapping[str, str] = gpt.llm_model
-        self.temperature = gpt.get("temperature")
-        self.seed = gpt.get("seed")
         self.max_token = gpt.get("max_token")
         self.threads = int(gpt.get("threads") or 1)
         self.cache = bool(gpt.get("cache", True))
@@ -204,7 +200,6 @@ class GptExtracter(Step):
         provider = _PROVIDER_CLASSES[methode](
             model=model,
             api_key=api_key,
-            # temperature=self.temperature,
             max_token=self.max_token,
             cache=self.cache,
             reasoning=model in self.reasoning_models,

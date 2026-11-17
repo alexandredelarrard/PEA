@@ -354,7 +354,7 @@ def estimate_all_betas(
     stock_sector_factor: pd.DataFrame | None = None,  # date x ticker, DIFFERENT per stock
     window: int = 126,
     min_obs: int = 80,
-    # The TUNED values live in configs/build_cube.yml, which is what the pipeline reads. These
+    # The TUNED values live in configs/data_aggregate.yml, which is what the pipeline reads. These
     # signature defaults stay NEUTRAL on purpose: a non-None `ridge_alpha_market` default makes
     # `ridge_alpha` inert for the market column, so every test and notebook caller that varies
     # `ridge_alpha` alone would silently measure nothing (it did -- three cases in
@@ -540,6 +540,7 @@ def estimate_betas_for_stock(
         market_prior=market_prior,
         **kwargs,
     )[name]
+
 
 def _betas_to_long(betas: dict[str, pd.DataFrame], availability: pd.DataFrame | None = None) -> pd.DataFrame:
     """Keep non-empty beta rows, restricted to observed own-price dates when supplied."""

@@ -111,7 +111,7 @@ After this definition/schema change, fully rebuild fundamentals and assemble the
 
 ## Review fixes: negative-base growth, F-score coverage (2026-11-12)
 
-Found by the [cube_part_fundamentals data check](../../reports/data-check/cube-part-fundamentals-data-check/report.md), which recomputed 100 raw features independently and matched the cube; these are the defects it found. All three change values, so rebuild `cube_part_fundamentals` with `-F` and assemble the cube, and re-baseline the aggregate fingerprint, before training.
+Found by the cube_part_fundamentals data check (local, ignored evidence: `reports/data-check/cube-part-fundamentals-data-check/report.md`), which recomputed 100 raw features independently and matched the cube; these are the defects it found. All three change values, so rebuild `cube_part_fundamentals` with `-F` and assemble the cube, and re-baseline the aggregate fingerprint, before training.
 
 - **Growth on a negative base.** `f_fcf_growth`, `f_q_earnings_growth` and the operating-income leg of `f_operating_leverage_elasticity` use `signed_pct` (change divided by the absolute prior value) in [fundamental_features.py](../../src/data_aggregate/utils/fundamentals/fundamental_features.py). The plain `current / prior - 1` inverted the sign whenever the prior value was negative (a loss that halves read as -50%): 14.2%, 9.5% and 6.1% of cells. A loss halving is now +0.5 and a loss turning to profit +1.5. `signed_pct` exists only for rows with a fiscal period end; the PEGY net-income fallback, which runs only without an earnings archive, still uses `pct`. [Known-truth test](../../tests/data_aggregate/test_phase3_financial_contracts.py).
 - **Piotroski F-score.** Each of the nine signals is awarded only where all its inputs exist. The score is the awarded count rescaled to 0 to 9 and is defined when at least seven signals are computable (`_MIN_FSCORE_SIGNALS`). Tickers without a current-assets series (banks, REITs, homebuilders, 86 of 491) used to get no score at all, because the signal frames were summed on mismatched columns. A first-year filing with only three computable signals is now unscored instead of 3/9. Unknown share units still blank the score.
@@ -133,7 +133,7 @@ Found by the [cube_part_fundamentals data check](../../reports/data-check/cube-p
 | total | `total`, `fte` or `total_incl_contractors` | total |
 | FT only | `full_time_only` | FT |
 
-  α is `build_cube.workforce.part_time_weight` in [build_cube.yml](../../configs/build_cube.yml) (0.65). It must lie in [0.5, 1]; any other value raises.
+  α is `data_aggregate.workforce.part_time_weight` in [data_aggregate.yml](../../configs/data_aggregate.yml) (0.65). It must lie in [0.5, 1]; any other value raises.
 - **Level is a log.** `f_revenue_per_employee` is the natural log of TTM revenue per headcount-proxy unit, defined for positive revenue only (dollars per head span $50k to $8M, so the level is multiplicative); `revenue_per_employee_growth` still uses the raw ratio. Rebuild `cube_part_fundamentals` with `-F` before using it historically.
 - **Basis rule.** `employee_growth`, `revenue_per_employee_growth` and `headcount_elasticity` are NaN when the proxy's basis differs from its basis a fiscal year earlier, and the daily carry stops at the switch, so a pre-switch growth never stays visible across it. `revenue_per_employee` uses the proxy and is not masked.
 

@@ -1475,9 +1475,7 @@ def build_fundamental_feature_panel(
         reported_history_fields(
             df_history,
             prices.trading_index,
-            earnings_lags=settings.earnings_lags,
             earnings_scale_quarters=settings.earnings_scale_quarters,
-            persistence_quarters=settings.persistence_quarters,
         )
     )
     fields = {key: (value.astype("float32") if isinstance(value, pd.DataFrame) and not value.empty else value) for key, value in fields.items()}

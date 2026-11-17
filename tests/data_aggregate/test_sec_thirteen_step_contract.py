@@ -158,7 +158,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
     )
 
 
-def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_schema_change_requires_explicit_full_rebuild(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeSecThirteen(ctx, ctx.config)
@@ -167,13 +167,16 @@ def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch:
     panel = previous.drop(columns="f_previous").assign(f_current=2.0)
     project = fixed_sec_thirteen_projection(step, monkeypatch, panel)
     monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: days)
-    step.run()
-    # The incremental window projection, then one whole-history reprojection reused by the schema fallback.
-    assert project.call_count == 2 and len(project.call_args_list[-1].args[2]) == len(days)
+    with pytest.raises(ValueError, match="explicit full rebuild"):
+        step.run()
+    assert project.call_count == 1
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube_part_sec_thirteen), previous, check_dtype=False)
+    step.run(full=True)
+    assert project.call_count == 2 and len(project.call_args.args[2]) == len(days)
     persisted = sqlite_store.load(Tables.cube_part_sec_thirteen)
     assert persisted is not None
     pd.testing.assert_frame_equal(persisted.sort_values(["date", "ticker"]).reset_index(drop=True), panel.reset_index(drop=True), check_dtype=False)
-    print("SANITY: a changed feature schema replaces the part once using the already computed full-history panel.")
+    print("SANITY: normal schema drift preserves rows; only an explicit full rebuild replaces the computed schema.")
 
 
 def _hr_book(cik: str, period: str, filed: str, rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
@@ -219,7 +222,6 @@ def _roster_history(
     store.save(Tables.sec13f_hr, pd.concat(books, ignore_index=True))
     store.save(Tables.cusip_ticker_map, _hr_tags(books).cmap)
     ctx = context(store, tmp_path)
-    ctx.config.build_cube.institutionals.value_basis = {"min_securities": 1}
     grid = pd.bdate_range("2024-01-02", "2024-12-31")
     close = pd.DataFrame([quotes] * len(grid), index=grid)
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", "2024-12-31"), columns=list(quotes))
@@ -277,8 +279,9 @@ def test_unmapped_rows_stay_in_the_whole_book_without_a_ticker(sqlite_store: Any
     q2 = _hr_book(
         "0000000001", "2024-06-30", "2024-08-12", [("AAA000001", "AAA", 12_000.0, 1_200_000.0), (*second, 1_400_000.0), (*third, 1_400_000.0)]
     )
-    packets = iter([(pd.DataFrame(), q1.loc[q1.parse_status.eq("position")])])
-    assert next(clean_public_batches(packets, _hr_tags([q1]), None, None, None))[1]["ticker"].tolist() == ["AAA", None, None]
+    packets = (packet for packet in [(pd.DataFrame(), q1.loc[q1.parse_status.eq("position")])])
+    [(_, cleaned)] = list(clean_public_batches(packets, _hr_tags([q1]), None, None))
+    assert cleaned["ticker"].tolist() == ["AAA", None, None]
     history = _roster_history(sqlite_store, monkeypatch, tmp_path, {"AAA": 100.0}, [q1, q2])
     assert _on(history, "ic_super_conviction_weight", "2024-06-28")["AAA"] == pytest.approx(0.25)
     assert _on(history, "ic_super_conviction_weight", "2024-08-20")["AAA"] == pytest.approx(0.3)

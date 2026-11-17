@@ -58,7 +58,7 @@ class StepCubeFundamentals(Step):
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
-        self._cfg = config.build_cube
+        self._cfg = config.data_aggregate
         self._part = part_for(Tables.cube_part_fundamentals)
         self._store = context.store
         self._bugfix = load_bugfix(context.config_dir)
@@ -150,9 +150,7 @@ class StepCubeFundamentals(Step):
         return FundamentalFeatureSettings(
             history_window=int(hist.get("window", 1260)),
             history_min_periods=int(hist.get("min_periods", 252)),
-            earnings_lags=int(features.get("earnings_lags", 8)),
             earnings_scale_quarters=int(features.get("earnings_scale_quarters", 8)),
-            persistence_quarters=int(features.get("persistence_quarters", 8)),
             intrinsic_cfg=self._cfg.get("intrinsic", {}),
         )
 
@@ -326,7 +324,6 @@ class StepCubeFundamentals(Step):
             earnings,
             frames.ret,
             frames.sector_ret,
-            reaction_sessions=int(self._cfg.get("fundamentals_features", {}).get("reaction_sessions", 3)),
         )
         return build_fundamental_views(fields, frames.peers, output_since=output_since)
 

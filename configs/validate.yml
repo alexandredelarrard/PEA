@@ -9,8 +9,15 @@ validate:
     # One deadline for the complete per-table capture/replay, including evidence writing.
     budget_seconds: 300
 
+  # The read-only SEC vs Sharadar check (`fundamentals/check_sources.py`, `fundamentals-check`): a
+  # shared field is listed when at least `field_share` of the exactly matched (ticker, as_of) rows
+  # differ by more than `gap_pct` of |Sharadar|, with its `top_tickers` worst tickers. It only logs.
+  fundamentals_comparison:
+    gap_pct: 0.03
+    field_share: 0.05
+    top_tickers: 3
   earnings_calls:
-    signal_sessions: 66
+    expected_signal_sessions: 66  # independent scientific expectation; operative control is data_aggregate.earnings_calls.signal_sessions
     redundancy_spearman_abs: 0.90
     redundancy_fail_abs: 0.985
     drift_psi_warn: 0.25
@@ -23,10 +30,6 @@ validate:
 
   defaults:
     redundancy_r: 0.985
-    # Exact equality is asked as `a != b`, not `|a-b| > tol`: "one column under two names" is a
-    # stronger and cheaper claim than a correlation, and a tolerance would weaken it to a
-    # near-correlation the r test already makes.
-    exact_equal_tol: 0.0
     # check_06.CLIP_LIMIT -- more than 9% of a peer-z leg sitting ON the clip is "investigate".
     clip_limit_share: 0.09
     # check_06.TIE_LIMIT -- half a cross-section on one rank is a plateau, not a ranking.
@@ -45,8 +48,6 @@ validate:
     frozen_min_days: 30
     # Fewer names than this on a date and a cross-sectional statistic is noise, not a ranking.
     min_tickers_xs: 20
-    # The number of tickers in configs/universe.yml.
-    universe_expected: 491
     # The floor on BOTH of `coverage`'s per-ticker shares -- the interior of a ticker's own
     # span in the table, and its last `recent_sessions`. Measured 2026-09-21 over 491 names on
     # three parts, the two populations are far apart and this sits in the gap:

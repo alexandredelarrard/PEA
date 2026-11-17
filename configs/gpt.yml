@@ -4,8 +4,6 @@ gpt:
     open_ai: "gpt-6-luna"
     open_ai_cheap: "gpt-6-luna"  # model choice for high-volume employee extraction
     google: gemini-2.5-flash-lite-preview-06-17
-    groq: llama-3.1-8b-instant
-    deepseek: deepseek-chat
     local: lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF
   default_api: open_ai
 
@@ -17,8 +15,6 @@ gpt:
   prices_per_million:
     gpt-6-sol: {input: 2.00, cached_input: 0.20, output: 10.00}
     gpt-6-luna: {input: 0.10, cached_input: 0.01, output: 0.50}
-  temperature: 0.01
-  seed: 1234
 
   # null = do not send an output cap. 4096 truncates a large proxy: Def14AExtract returns up to
   # 5 NEOs x 3 fiscal years plus ~12 directors and ~25 holders.
@@ -27,7 +23,7 @@ gpt:
   threads: 12          # measured: 12-wide gives 9.1-10.6 s/filing with zero 429s
   cache: true          # send prompt_cache_key -> cached input tokens are ~10x cheaper
 
-  # Input text budgets are the caller's: `data_extract.llm_text_budget` (configs.yml).
+  # Input text budgets are the caller's: `data_extract.llm_text_budget` (data_extract.yml).
 
   embedding:
     model: text-embedding-3-small

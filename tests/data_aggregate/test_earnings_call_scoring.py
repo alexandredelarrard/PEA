@@ -24,7 +24,7 @@ def test_scoring_reads_each_table_once(sqlite_store: DataStore, monkeypatch: pyt
     assert sum("content" in call.kwargs["columns"] for call in source) == 1
     scores = store.load(Tables.earnings_call_sentiment)
     assert scores is not None and len(scores) == 3 * len(FIXTURE_PATHS)
-    factory.assert_called_once_with(config.build_cube.earnings_calls.sentiment_model)
+    factory.assert_called_once_with(config.data_aggregate.earnings_calls.sentiment_model)
     engine.reset_mock()
     factory.reset_mock()
     step, plan, prepared = prepare_step(context, config)

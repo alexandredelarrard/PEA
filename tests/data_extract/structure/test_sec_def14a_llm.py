@@ -163,7 +163,7 @@ def test_the_prompt_is_cut_and_postprocess_gets_the_uncut_payload(run: Run, monk
     assert seen["governance"] == long_payload
     assert all(seen[key] == PAYLOADS[key] for key in PAYLOADS if key != "governance")
     print("\n=== SANITY: prompt cut vs postprocess input ===")
-    print(f"  {len(long_payload):,}-char governance payload: prompt holds its first {BUDGET:,} chars (configs.yml), not the tail;")
+    print(f"  {len(long_payload):,}-char governance payload: prompt holds its first {BUDGET:,} chars (config.yml), not the tail;")
     print("  postprocess got the stored uncut payload for all 5 sections. Validated.")
 
 

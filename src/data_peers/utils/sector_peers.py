@@ -142,7 +142,7 @@ def combine_similarity(
     whichever source IS present.
 
     ⚠ THAT RENORMALIZATION IS NOT A FALLBACK AT THE LIVE CONFIG. It reweights over the sources
-    present, and `configs/peers.yml` sets `w_corr: 0 / w_embed: 1`, so for a ticker with no
+    present, and `configs/data_peers.yml` sets `w_corr: 0 / w_embed: 1`, so for a ticker with no
     embedding row both weights are zero -- `wc = notna * 0 = 0` and `we = 0 * 1 = 0` -- the
     denominator is NaN and the ticker's ENTIRE row comes back NaN. `_weights_from_similarity`
     then returns `{}`, an empty basket, and `compute_sector_returns` skips the name: 0 non-null

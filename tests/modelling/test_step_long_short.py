@@ -116,7 +116,7 @@ def _setup(
             "diagnostics": {"enabled": True, "top_n_features": 2, "shap_sample": 200, "pdp_grid": 6},
             "backtest": {"n_quantiles": 5},
         },
-        "build_cube": {"output": {"save_cv_results": True, "save_signal": True}},
+        "data_aggregate": {"output": {"save_cv_results": True, "save_signal": True}},
         "train": {"start_date": str(pd.Timestamp(dates[0]).date()), "end_date": str(pd.Timestamp(dates[-40]).date())},
         "data_extract": {"prediction_fresh_share": 0.95},
     }
@@ -128,7 +128,9 @@ def _setup(
         "MODELS_DIR": tmp_path / "models",
         "CUBE_CV_RESULTS_PATH": tmp_path / "cv.parquet",
     }
-    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe)
+    context: Any = SimpleNamespace(
+        store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe
+    )
     return StepLongShort(context=context, config=cfg), spy, cfg  # type: ignore[arg-type]
 
 

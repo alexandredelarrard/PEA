@@ -13,12 +13,10 @@ def disclosure_return_fields(
     stock_returns: pd.DataFrame,
     peer_returns: pd.DataFrame,
     *,
-    reaction_sessions: int = 3,
     max_age_days: int = 185,
 ) -> dict[str, pd.DataFrame]:
     """Compound both legs separately; a missing session never becomes a zero return."""
-    if reaction_sessions != 3:
-        raise ValueError("the earnings_abret_3d feature schema requires three reaction sessions")
+    reaction_sessions = 3
     idx = stock_returns.index
     if not isinstance(idx, pd.DatetimeIndex):
         raise TypeError("disclosure returns require a DatetimeIndex")

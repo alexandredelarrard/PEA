@@ -149,17 +149,16 @@ def test_packet_stream_closes_on_processing_failure(sqlite_store: Any, monkeypat
 
 def test_streamed_value_repair_reuses_exact_age_bounded_quotes() -> None:
     close = pd.DataFrame({"ABC": [10.0, 11.0]}, index=pd.to_datetime(["2024-05-10", "2024-05-20"]))
-    policy = {"max_price_age_days": 7}
     raw = _payload().loc[lambda frame: frame.parse_status.eq("position")].iloc[:1].copy()
     raw["shares"], raw["value_usd"] = 2.0, 20.0
     periods = pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-12", "2024-05-18", "2024-05-25", "2024-05-28"])
-    expected = [values.repair_value_basis(raw.assign(period=period), close, policy)[0] for period in periods]
+    expected = [values.repair_value_basis(raw.assign(period=period), close)[0] for period in periods]
 
     with patch.object(values, "period_close", wraps=values.period_close) as lookup:
-        quotes = values.prepare_public_value_quotes(close, policy)
+        quotes = values.prepare_public_value_quotes(close)
         assert lookup.call_count == 1
     with patch.object(values, "period_close", side_effect=AssertionError("quote history was rebuilt per book")):
-        actual = [values.repair_value_basis(raw.assign(period=period), close, policy, period_quotes=quotes)[0] for period in periods]
+        actual = [values.repair_value_basis(raw.assign(period=period), close, period_quotes=quotes)[0] for period in periods]
 
     for before, after in zip(expected, actual, strict=True):
         pd.testing.assert_frame_equal(before, after)
@@ -176,7 +175,7 @@ def _stored_tags(stored: pd.DataFrame) -> CusipTags:
 
 def _clean_union(raw: pd.DataFrame, universe: tuple[str, ...] | None, close: pd.DataFrame | None) -> pd.DataFrame:
     """The whole position union cleaned as one batch."""
-    with closing(clean_public_batches(((pd.DataFrame(), raw) for _ in range(1)), _stored_tags(raw), universe, close, None)) as batches:
+    with closing(clean_public_batches(((pd.DataFrame(), raw) for _ in range(1)), _stored_tags(raw), universe, close)) as batches:
         return next(batches)[1]
 
 
@@ -219,7 +218,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     expected = list(iter_public_books(manifests, prepared, grid, settle_days=3))
     stream = inputs.iter_filing_vintages(sqlite_store, grid.max())
     assert stream is not None
-    with closing(holdings_clean.clean_public_batches(stream, _stored_tags(stored), universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(stream, _stored_tags(stored), universe, close)) as batches:
         history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert history is not None
     actual = list(iter_snapshot_books(*history))
@@ -239,7 +238,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     # The universe-scoped read (universe positions + whole amended books) replays the same books.
     scoped = inputs.iter_filing_vintages(sqlite_store, grid.max(), universe=universe)
     assert scoped is not None
-    with closing(holdings_clean.clean_public_batches(scoped, _stored_tags(stored), universe, close, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(scoped, _stored_tags(stored), universe, close)) as batches:
         scoped_history = books.prepare_institutional_book_history(batches, grid, settle_days=3)
     assert scoped_history is not None
     for (day, df_compact, states), (scoped_day, df_scoped, scoped_states) in zip(actual, iter_snapshot_books(*scoped_history), strict=True):
@@ -390,7 +389,7 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
         batches = holdings_clean.clean_public_batches(
-            packets, _stored_tags(payload), universe, pd.DataFrame(10.0, index=grid, columns=list(universe)), None
+            packets, _stored_tags(payload), universe, pd.DataFrame(10.0, index=grid, columns=list(universe))
         )
         with closing(batches):
             history = books.prepare_institutional_book_history(batches, grid, settle_days=0)
@@ -463,7 +462,7 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
         expected = _clean_union(raw, None, close)
         expected_register = registers.pop()
-        with closing(holdings_clean.clean_public_batches(source, _stored_tags(raw), None, close, None)) as batches:
+        with closing(holdings_clean.clean_public_batches(source, _stored_tags(raw), None, close)) as batches:
             result = list(batches)
     # Empty books retain their manifests and contribute no position rows to the union.
     actual = pd.concat([packet[1] for packet in result if not packet[1].empty], ignore_index=True)
@@ -497,10 +496,10 @@ def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
     raw.loc[raw.cusip.eq("000000002"), "ticker"] = "_empty"
     # Known truth: only the ABC rows keep a ticker; OUT is off the universe, `_empty` is unmapped; no company line.
     tagged = raw.assign(ticker=raw["ticker"].where(raw["ticker"].eq("ABC"), None).astype(object), **{COMPANY_CUSIP: None})
-    expected, _ = values.repair_value_basis(tagged, None, None)
+    expected, _ = values.repair_value_basis(tagged, None)
     expected.loc[expected.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     packets = ((pd.DataFrame(), raw) for _ in range(1))
-    with closing(holdings_clean.clean_public_batches(packets, _stored_tags(raw), ("ABC",), None, None)) as batches:
+    with closing(holdings_clean.clean_public_batches(packets, _stored_tags(raw), ("ABC",), None)) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
     assert len(actual) == len(raw) and actual.ticker.isna().sum() == raw.ticker.ne("ABC").sum() > 0

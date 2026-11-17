@@ -79,7 +79,7 @@ def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
     )
     peer_path = directory / "peers.json"
     peer_path.write_text(json.dumps({"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}), encoding="utf-8")
-    config = OmegaConf.create({"build_cube": {}, "data_extract": {"redundant_ticks": []}})
+    config = OmegaConf.create({"data_aggregate": {}, "data_extract": {"redundant_ticks": []}})
     return SimpleNamespace(
         store=store, config=config, config_dir=directory, log=logging.getLogger(__name__), paths={"SECTOR_PEERS_PATH": peer_path}, universe=universe
     )

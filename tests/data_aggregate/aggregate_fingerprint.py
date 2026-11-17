@@ -1051,7 +1051,7 @@ def compute() -> dict:
     )
     # The fixture's own tags: no company line, its stored (cusip, ticker) pairs as the market-wide map.
     fixture_tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), df_books.loc[df_books.ticker.ne("_empty"), ["cusip", "ticker"]])
-    df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), fixture_tags, None, valuation_close, None))[1]
+    df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), fixture_tags, None, valuation_close))[1]
     book_history = prepare_superinvestor_book_history(((df_filings, df_books) for _ in range(1)), idx, 90)
     assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})

@@ -24,8 +24,8 @@ class StepExtractFundamentals(Step):
         build_fundamentals_history(self._context, tickers, rebuild_history=full, verify_history=verify)
 
     def run_check(self, tickers: list[str]) -> None:
-        """Log the SEC vs Sharadar check on `tickers` (thresholds: `data_extract.fundamentals_check`); reads only, writes nothing."""
-        limits = self._config.data_extract.fundamentals_check
+        """Log the SEC vs Sharadar check on `tickers` (thresholds: `validate.fundamentals_comparison`); reads only, writes nothing."""
+        limits = self._config.validate.fundamentals_comparison
         check_fundamentals_sources(
             self._context, tickers, gap_pct=float(limits.gap_pct), field_share=float(limits.field_share), top_tickers=int(limits.top_tickers)
         )

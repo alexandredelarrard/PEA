@@ -58,7 +58,7 @@ def _age(store: Any, table: Table, tickers: list[str], days: int) -> None:
 def _step(tmp_path: Path, store: Any, monkeypatch: pytest.MonkeyPatch, min_share: float = 0.95) -> StepLongShort:
     cfg = make_config(
         model={"target_type": "rank", "models_dir": str(tmp_path / "models")},
-        build_cube={"output": {}},
+        data_aggregate={"output": {}},
         data_extract={"prediction_fresh_share": min_share},
     )
     meta = {"horizons": [30], "feature_cols": ["f0"], "categorical_cols": [], "model_types": ["stub"], "train_ic_ir": {"30": 1.0}}

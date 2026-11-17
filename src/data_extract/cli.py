@@ -347,7 +347,7 @@ def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, 
 @cli.command(
     name="fundamentals-check",
     help="Read-only SEC vs Sharadar check: logs the tickers held by one history only, the Sharadar CIKs outside their company, "
-    "the exact (ticker, as_of) match share and the shared fields where enough rows differ (`data_extract.fundamentals_check`). "
+    "the exact (ticker, as_of) match share and the shared fields where enough rows differ (`validate.fundamentals_comparison`). "
     "Writes nothing; a finding never fails the task.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)

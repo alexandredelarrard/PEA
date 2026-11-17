@@ -1281,3 +1281,11 @@ The user explicitly retains governance fills from later filings and the existing
 - source_commit: 133b75c6 (FTD and employee source unchanged from bd4014f4).
 - Coverage: FTD catch-up within selected missing/incomplete archive units, explicit bounded replay of completed units, and employee filing-date decision reuse in every mode with failed-call retry. Documentation checks only; no recovery or LLM call ran.
 - Pages: [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — explicit bounded timing replay
+
+- Profile: internal/standard
+- source_commit: af9cda4c7daa2c94e7c5c09675d8452174252b02.
+- Coverage: [permanent direct runner](../tests/support/run_window_samples.py), shared scalar/session setup, explicit selected-source replay, independent publication/plan checks and disposable writes. The lightweight pytest fixture no longer imports every producer. FTD evidence retains actual publication periods and the true prior ZIP seed, including null barriers; economic histories remain intact.
+- Evidence:19 focused protocol/known-truth controls passed with zero external tripwire attempts. The complete final per-table run and independent final review remain pending. No production data rebuild, inference or predictive-model validation ran.
+- Pages: [Testing and validation](./guides/testing.md).

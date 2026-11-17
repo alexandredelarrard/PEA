@@ -25,15 +25,21 @@ def part_has_rows(store: DataStore, table: Table, where: dict | None = None) -> 
 
 
 def write_receipt(context: Context, plans: dict[Table, WindowPlan]) -> str:
-    """Serialize actual committed write bounds for CLI/DAG handoff, without timing overrides."""
-    if any(plan.run.as_of != context.run.as_of for plan in plans.values()):
+    """Serialize committed write bounds and the exact execution cutoff for CLI/DAG handoff."""
+    if any(plan.run.as_of != context.run.as_of or plan.run.instant != context.run.instant for plan in plans.values()):
         raise ValueError("Component write plan belongs to another run")
     parts = {
         table.name: {"start": plan.write.start.isoformat(), "end": plan.write.end.isoformat(), "tickers": list(dict(plan.scope)["ticker"])}
         for table, plan in plans.items()
     }
     return json.dumps(
-        {"as_of": context.run.as_of.isoformat(), "mode": context.run.mode, "configuration": _pipeline_configuration(context), "parts": parts},
+        {
+            "as_of": context.run.as_of.isoformat(),
+            "instant": context.run.instant.isoformat(),
+            "mode": context.run.mode,
+            "configuration": _pipeline_configuration(context),
+            "parts": parts,
+        },
         separators=(",", ":"),
     )
 
@@ -45,18 +51,19 @@ def _pipeline_configuration(context: Context) -> str:
 
 
 def read_receipts(context: Context, payload: str) -> dict[Table, Window]:
-    """Validate committed component dates, complete key scope and the common root run."""
+    """Validate component dates, complete key scope and the exact common root cutoff."""
     receipts = json.loads(payload)
     if not isinstance(receipts, list) or not receipts:
         raise ValueError("Component receipts must be a nonempty list of successful upstream results")
     records = [json.loads(receipt) if isinstance(receipt, str) else receipt for receipt in receipts]
     configuration = _pipeline_configuration(context)
-    fields = {"as_of", "mode", "configuration", "parts"}
+    fields = {"as_of", "instant", "mode", "configuration", "parts"}
     if any(
         not isinstance(record, dict)
         or set(record) != fields
         or not isinstance(record.get("parts"), dict)
         or pd.Timestamp(record["as_of"]) != context.run.as_of
+        or pd.Timestamp(record["instant"]) != context.run.instant
         or record["mode"] != context.run.mode
         for record in records
     ):

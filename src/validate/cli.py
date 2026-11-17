@@ -43,6 +43,8 @@ from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
 from src.validate.checks.institutionals import check_institutionals
 from src.validate.checks.modelling import check_modelling
+from src.validate.checks.window_lineage import check_window_lineage
+from src.validate.checks.window_plan import check_window_plans
 from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
 from src.validate.io import CACHE_DIR, OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
@@ -136,6 +138,41 @@ def window_sample(table: str, out: str, config_path: str, manifest_path: Path) -
     click.echo(result.summary())
     click.echo(f"  -> {path}")
     sys.exit(EXIT[result.status])
+
+
+@cli.command(name="window-lineage", help="Independently verify a fresh production source-state/assembly replay from the pinned-sample suite.")
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--replay", "replay_path", required=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--manifest", "manifest_path", required=True, type=click.Path(exists=True, path_type=Path))
+def window_lineage(out: str, config_path: str, replay_path: Path, manifest_path: Path) -> None:
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    results = check_window_lineage(context, replay, json.loads(manifest_path.read_text(encoding="utf-8")))
+    planning = check_window_plans(context, replay)
+    target = run_dir(out) / OUT_DIR / "window_lineage.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "lineage": {name: result.to_json() for name, result in results.items()},
+                "planning": {name: result.to_json() for name, result in planning.items()},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    results = {**results, **{f"plan:{name}": result for name, result in planning.items()}}
+    for result in results.values():
+        click.echo(result.summary())
+    click.echo(f"  -> {target}")
+    sys.exit(
+        1
+        if any(result.status == "fail" for result in results.values())
+        else 3
+        if any(result.status == "abstain" for result in results.values())
+        else 0
+    )
 
 
 @cli.command(help="Independently reconcile saved-fold modelling IC/IR, native contributions/PDP, source chronology and report identities.")

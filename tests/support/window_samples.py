@@ -17,8 +17,11 @@ import pytest
 from src.context import Context, get_config_context
 from src.data_store.schema import Table
 from src.utils.config import read_config
+from src.validate.checks.window_lineage import check_window_lineage
+from src.validate.checks.window_plan import check_window_plans
 from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
 from src.validate.result import CheckResult, jsonable
+from tests.support.window_lineage import replay_window_lineage
 
 _STARTED = pytest.StashKey[float]()
 
@@ -46,23 +49,34 @@ class WindowSamples:
     capturing: bool
     manifest: dict[str, Any] = field(default_factory=dict)
     results: dict[str, Any] = field(default_factory=dict)
+    lineage: dict[str, Any] = field(default_factory=dict)
+    planning: dict[str, Any] = field(default_factory=dict)
 
     def publish(self) -> None:
         # Save partial evidence atomically after each completed table; the watchdog never writes.
         elapsed = time.perf_counter() - self.started
-        payload = {"elapsed_seconds": elapsed, "budget_seconds": self.budget, "tables": self.results}
+        payload = {
+            "elapsed_seconds": elapsed,
+            "budget_seconds": self.budget,
+            "tables": self.results,
+            "lineage": self.lineage,
+            "planning": self.planning,
+        }
         reports = [(self.out / "samples.json", payload)]
         if self.capturing:
             reports.append((self.baseline / "manifest.json", self.manifest))
         for path, report in reports:
             temporary = path.with_suffix(".tmp")
             temporary.write_text(json.dumps(jsonable(report), indent=2), encoding="utf-8")
-            try:
-                temporary.replace(path)
-            except PermissionError:
-                # Windows indexers can briefly hold the previous evidence file open.
-                time.sleep(0.1)
-                temporary.replace(path)
+            for attempt in range(5):
+                try:
+                    temporary.replace(path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    # Windows indexers can briefly hold the previous evidence file open.
+                    time.sleep(0.1 * (attempt + 1))
 
     def measure(self, table: Table) -> CheckResult:
         # Reuse the immutable pin, or capture the configured number of scoped groups.
@@ -85,7 +99,39 @@ class WindowSamples:
         if self.capturing:
             entry["baseline"] = result.to_json()
         elif result.status == "pass" and result.metrics["sha256"] != entry.get("baseline", {}).get("metrics", {}).get("sha256"):
-            result = CheckResult.abstained("window_sample", table.name, "Pinned source cells changed; this is not an unchanged-source replay")
+            baseline_metrics = entry.get("baseline", {}).get("metrics", {})
+            old_rows = {tuple(str(row.get(key)) for key in table.pk): row for row in baseline_metrics.get("records", [])}
+            changes = []
+            for row in result.metrics["records"]:
+                previous = old_rows.get(tuple(str(row.get(key)) for key in table.pk), {})
+                changed = {key: {"old": previous.get(key), "new": value} for key, value in row.items() if previous.get(key) != value}
+                if changed:
+                    metadata = {
+                        key: row[key]
+                        for key in ("first_filed_date", "available_at", "updated_at", "source", "source_period", "accession_number")
+                        if key in row
+                    }
+                    changes.append({"pk": {key: row[key] for key in table.pk}, "fields": changed, "source_metadata": metadata})
+            result = CheckResult(
+                "window_sample",
+                table.name,
+                "abstain",
+                "Pinned source cells changed; this is not an unchanged-source replay",
+                scope=result.scope,
+                metrics={
+                    "expected_sha256": baseline_metrics.get("sha256"),
+                    "observed_sha256": result.metrics["sha256"],
+                    "changes": changes,
+                    "expected_dtypes": dict(
+                        zip(
+                            baseline_metrics.get("identity", {}).get("columns", []),
+                            baseline_metrics.get("identity", {}).get("dtypes", []),
+                            strict=True,
+                        )
+                    ),
+                    "observed_dtypes": dict(zip(result.metrics["identity"]["columns"], result.metrics["identity"]["dtypes"], strict=True)),
+                },
+            )
 
         # Freeze actual cells/nulls and observed work time, without certifying producers.
         measured = result.to_json()
@@ -102,6 +148,20 @@ class WindowSamples:
         entry.update({"kind": table.kind, "pk": list(table.pk), "clock": table.date_col, "producer_replay": "unmeasured"})
         self.manifest["tables"][table.name] = entry
         return entry
+
+    def measure_lineage(self) -> dict[str, CheckResult]:
+        """Use the same context and deadline; the immutable scalar pin stays untouched."""
+        if self.context is None:
+            raise RuntimeError("The sample source context has not been constructed")
+        self.lineage = {table.name: {"status": "abstain", "reason": "Not measured before interruption/deadline"} for table in timing_sample_tables()}
+        self.publish()
+        replay = replay_window_lineage(self.context, self.manifest, self.out / "lineage-replay.jsonl")
+        (self.out / "lineage-replay.json").write_text(json.dumps(replay, indent=2), encoding="utf-8")
+        results = check_window_lineage(self.context, replay, self.manifest)
+        self.planning = {name: result.to_json() for name, result in check_window_plans(self.context, replay).items()}
+        self.lineage = {name: result.to_json() for name, result in results.items()}
+        self.publish()
+        return results
 
 
 @pytest.fixture(scope="session")

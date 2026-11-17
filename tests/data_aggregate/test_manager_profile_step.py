@@ -318,6 +318,7 @@ def test_real_sample_books_match_the_pure_pipeline(store: Any, cfg: DictConfig) 
     assert details is not None
     details = details[[column for column in EXTRACT_COLUMNS if column in details.columns]]
     store.save(Tables.sec13f_hr, pd.concat(raw.values(), ignore_index=True)[list(LINE_COLUMNS)].assign(parse_status="complete"))
+    store.create_declared(Tables.sec_13f_manager_details)
     store.save(Tables.sec_13f_manager_details, details)
     store.save(Tables.cusip_ticker_map, live.load(Tables.cusip_ticker_map))
     store.save(Tables.sharadar_tickers, live.load(Tables.sharadar_tickers))

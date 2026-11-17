@@ -121,19 +121,19 @@ class SuperinvestorOverrides:
         return (started[-1] if started else chain[0]).cik
 
 
-def _superinvestors_config_dir(config_dir: str | Path | None = None) -> Path:
+def superinvestors_config_dir(config_dir: str | Path | None = None) -> Path:
     """The absolute `<config_dir>/superinvestors` directory; `None` means the default configs dir."""
     return Path(config_dir or DEFAULT_CONFIG_DIR).resolve() / SUPERINVESTORS_CONFIG_SUBDIR
 
 
 def roster_history_path(config_dir: str | Path | None = None) -> Path:
-    """The committed Dataroma roster history file under `_superinvestors_config_dir`."""
-    return _superinvestors_config_dir(config_dir) / ROSTER_HISTORY_FILENAME
+    """The committed Dataroma roster history file under `superinvestors_config_dir`."""
+    return superinvestors_config_dir(config_dir) / ROSTER_HISTORY_FILENAME
 
 
 def load_superinvestor_overrides(config_dir: str | Path | None = None) -> SuperinvestorOverrides:
     """The superinvestor hand resolutions, cached per resolved config directory."""
-    return _overrides_at(str(_superinvestors_config_dir(config_dir)))
+    return _overrides_at(str(superinvestors_config_dir(config_dir)))
 
 
 @cache

@@ -39,6 +39,10 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"WorklistRequest", "document_worklist"}),
         "the EDGAR driver's read-only planner; the employees LLM step reads the text walk's pending filings from it to hold back later dates",
     ),
+    "src.data_extract.utils.edgar_extract.edgar_index": (
+        frozenset({"entries"}),
+        "the cached EDGAR index reader owned by edgar_extract; the 13F manager extract names pre-2013 filings from the same cache",
+    ),
     "src.data_extract.utils.edgar_extract.empty_markers": (frozenset({"marker_frame", "marker_mask"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.parallel_fetch": (frozenset({"run_per_ticker"}), _DRIVER),
     "src.data_extract.utils.edgar_extract.insider_common": (
@@ -61,8 +65,8 @@ PLACEMENT_EXCEPTIONS: dict[str, tuple[frozenset[str], str]] = {
     "src.data_extract.utils.structure.votes.guard": (frozenset({"has_vote_table"}), _DEF14A),
     "src.data_extract.utils.zips.fetch_financial_notes": (frozenset({"cached_notes_periods"}), _NOTES_CACHE),
     "src.data_extract.utils.zips.thirteen_f_datasets": (
-        frozenset({"cached_data_sets", "thirteen_f_cache"}),
-        "the 13F data-set cache owned by the zip download; the 13F ZIP ingest in institutionals reads the same cached zips",
+        frozenset({"DataSet", "cached_data_sets", "thirteen_f_cache"}),
+        "the 13F data-set cache owned by the zip download; the 13F ZIP ingest and the manager extract in institutionals read the same cached zips",
     ),
 }
 

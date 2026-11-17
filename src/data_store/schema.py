@@ -41,7 +41,7 @@ RESUME_MARKET = "market"
 RESUME_SNAPSHOT = "snapshot"
 
 # The sentinel a child-sequence or label column takes on an empty-filing marker row.
-_EMPTY = "_empty"
+EMPTY_MARKER = "_empty"
 #: The 10-K family the employees text walk reads and its LLM pass decides.
 _ANNUAL_REPORT_FORMS = ("10-K", "10-K/A", "10-K405", "10-K405/A")
 #: The proxy forms the DEF 14A text walk reads and its LLM pass extracts.
@@ -531,7 +531,7 @@ class Tables:
         freshness="quarterly",
         managed=False,
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-Q"), source_start="2009-04-15"),
-        empty_marker=("field", _EMPTY),
+        empty_marker=("field", EMPTY_MARKER),
         desc="fundamentals (linkbase)",
         retrieval_columns=(
             "ticker",
@@ -787,13 +787,10 @@ class Tables:
     # securities. Consumers filter the universe after source completeness and amendment resolution.
     # Original and amended books coexist. Historical latest-only rows retain _legacy accession.
     #
-    # ⚠ NOT USABLE BEFORE 2013-06-30, even though min(period) is 1987-03-31. Distinct managers
-    # per ticker per quarter: 14 (2012-09-30), 22 (2012-12-31), 41 (2013-03-31), then 556
-    # (2013-06-30). The 15-year all-filer backfill only reached real coverage from mid-2013, so
-    # every earlier quarter carries a handful of managers per name and every breadth /
-    # concentration / QoQ-delta statistic computed on them describes THE FETCH, not the market.
-    # The numbers themselves look perfectly valid, which is what makes the cutoff a consumer's
-    # responsibility rather than something a null check would catch.
+    # The all-filer backfill holds every 13F-HR from 1999-07-01: about 1,200 filers in 1999 rising
+    # to about 2,700 in 2012 (3,300 at 2013-06-30, when the XML format starts). Pre-2013 text
+    # filings parse less completely, so the filer count steps up at 2013-06-30; consumers read
+    # comparable books (the same filer in both quarters) so the step is not a market signal.
     sec13f_hr = Table(
         "sec13f_hr",
         ("cik", "period", "accession_number", "ticker", "cusip"),
@@ -819,11 +816,54 @@ class Tables:
         optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
         # Market-wide nightly walk; `zips-ingest --only 13f` then stores every 13F-HR(/A) accession of
         # the cached SEC 13F data sets that is not stored yet, through the walk's writer.
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="2013-06-30"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="1999-06-30"),
         # One marker per accession, cusip and ticker '_empty': parse_status 'complete' for a stored
         # book, 'invalid' (reason in value_unit_evidence) for a data-set packet that failed
         # validation; the ZIP ingest skips both, the walk reads 'complete' only.
-        empty_marker=("cusip", _EMPTY),
+        empty_marker=("cusip", EMPTY_MARKER),
+    )
+    # One row per 13F filer (CIK) and report quarter, from 1999-06-30: who the filer is and how it invests.
+    # Two writers own different columns and neither touches the other's (precedent: `universe_tickers`). The extract creates the table whole, all 40 columns (`create_declared` from the `sql/schema.sql` block), so the profile columns exist empty and no step ALTERs it.
+    # A row is available at `first_filed_date`; comparisons across quarters are by `period`.
+    #
+    # Extract columns, written by `data_extract` (`thirteen-f-managers`) exactly as the SEC gives them, no deduction:
+    # `cik`; `period` (report quarter end; a filing whose own period is not a quarter end is placed in the latest quarter end on or
+    # before its first filing date); `manager_name` (cover name for ZIP-era periods, EDGAR master-index company
+    # name before; never null); `state_or_country` and `sec_file_number` (cover; null before the ZIP era);
+    # `report_type` (`holdings` | `combination`; null before 2013, the index does not carry it); `accession_number`
+    # (the original 13F-HR, the earliest accession of the period when none is stored; amendments are ignored);
+    # `first_filed_date` (first public filing of the period, never moved later); `source` (ZIP name or
+    # `edgar_index`: where the name came from); `source_period` (the period the filing is stored under in `sec13f_hr`: equal to
+    # `period`, except for a snapped filing, where it is the filing's own non-quarter-end period). 13F-NT notice filers are not stored.
+    #
+    # Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `build_cube.manager_profile`) over the
+    # trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
+    # unknown, never zero), from books filed on or before `first_filed_date`:
+    # `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other, from the cleaned `manager_name` by
+    # the keyword rules, no match is fund, then the CIK override file `configs/superinvestors/manager_categories.json`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
+    # of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
+    # more than `turnover_threshold` in shares; null when the preceding quarter is missing); `new_position_rate` (mean share
+    # of current positions new this quarter; same null rule); asset mix, mean share of the book's total reported value:
+    # `pct_equity_us`, `pct_equity_foreign`, `pct_etf` (ETFs, ETNs, mutual and closed-end funds), `pct_bond`, `pct_options`,
+    # `pct_other` (the six sum to 1; a common line Sharadar lacks is read by title and issuer name rules);
+    # cap mix, mean share of equity weight by the 13F-derived size of each ticker (aggregate reported value across
+    # filers, split into large, mid and small at `cap_breakpoints`): `pct_cap_small`, `pct_cap_mid`,
+    # `pct_cap_large`; sector mix, mean share of equity weight: `pct_sector_<sector>` for Sharadar's 11 sectors
+    # (`basic_materials`, `communication_services`, `consumer_cyclical`, `consumer_defensive`, `energy`,
+    # `financial_services`, `healthcare`, `industrials`, `real_estate`, `technology`, `utilities`) and `pct_sector_unmapped`;
+    # `active_share` (mean of 0.5 x the sum of absolute differences between the manager's equity weights and the
+    # aggregate 13F weights; near 0 for an index-like book); `book_value_usd` (median total value of the cleaned book);
+    # `mapped_share` (mean share of equity value whose ticker has a sector and a size); `n_quarters_used` (quarters
+    # in the window that had a usable book).
+    sec_13f_manager_details = Table(
+        "sec_13f_manager_details",
+        ("cik", "period"),
+        date_col="period",
+        ticker_col=None,
+        date_type_cols=("period", "first_filed_date", "source_period"),
+        freshness="quarterly",
+        freshness_date_col="first_filed_date",
+        resume=Resume(RESUME_MARKET, "cik", "first_filed_date", 92, source_start="1999-07-01"),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
     # that table). One table for both sources: EDGAR daily rows are authoritative
@@ -889,7 +929,7 @@ class Tables:
         resume=Resume(
             RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("3", "4", "5", "3/A", "4/A", "5/A"), period_col="quarter", source_start="2006-01-01"
         ),
-        empty_marker=("security_type", _EMPTY),
+        empty_marker=("security_type", EMPTY_MARKER),
         desc="insider Forms 3/4/5 (EDGAR)",
         retrieval_columns=(
             "accession_number",
@@ -1247,7 +1287,7 @@ class Tables:
         ),
         freshness="yearly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
-        empty_marker=("def14a_json", _EMPTY),
+        empty_marker=("def14a_json", EMPTY_MARKER),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
     # Free by construction: the tokens are already paid, so these rows cost nothing beyond the
@@ -1266,7 +1306,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("name", _EMPTY),
+        empty_marker=("name", EMPTY_MARKER),
         # StepCubeGovernance. 134,490 rows is a real read beside the 21.7M-row 13F table in
         # the same build, and the table is WIDE with columns the governance builders never
         # touch (`cik`, `gender_basis`, `reconciles`, `fiscal_year`).
@@ -1284,7 +1324,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("name", _EMPTY),
+        empty_marker=("name", EMPTY_MARKER),
         marker_key_fill=(("fiscal_year", -1),),
         read_columns=("ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"),
     )
@@ -1295,7 +1335,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("name", _EMPTY),
+        empty_marker=("name", EMPTY_MARKER),
         # StepCubeGovernance, 80,252 rows. ⚠ SIX components, and the first is `fees_earned` --
         # Item 402(k) has no `salary` and no `bonus` line. `impute_director_comp` sums
         # exactly these six into a NULL `total`.
@@ -1320,7 +1360,7 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
         resume=def14a_llm.resume,
-        empty_marker=("holder_name", _EMPTY),
+        empty_marker=("holder_name", EMPTY_MARKER),
     )
     sec_8k = Table(
         "sec_8k",
@@ -1329,7 +1369,7 @@ class Tables:
         date_type_cols=("filing_date", "period_of_report"),
         freshness="daily",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A"), source_start="1993-01-01"),
-        empty_marker=("item", _EMPTY),
+        empty_marker=("item", EMPTY_MARKER),
         desc="8-K (edgartools)",
         retrieval_columns=(
             "ticker",
@@ -1367,7 +1407,7 @@ class Tables:
         date_type_cols=("filed", "period_of_report"),
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q"), source_start="1993-01-01"),
-        empty_marker=("section", _EMPTY),
+        empty_marker=("section", EMPTY_MARKER),
         desc="10-K/10-Q text (edgartools)",
         retrieval_columns=(
             "ticker",
@@ -1392,7 +1432,7 @@ class Tables:
         date_type_cols=("filing_date", "period_of_report"),
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
-        empty_marker=("source_document", _EMPTY),
+        empty_marker=("source_document", EMPTY_MARKER),
         desc="10-K employees text (EDGAR)",
         retrieval_columns=(
             "ticker",
@@ -1418,7 +1458,7 @@ class Tables:
         date_type_cols=("filing_date",),
         freshness="yearly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
-        empty_marker=("section", _EMPTY),
+        empty_marker=("section", EMPTY_MARKER),
         desc="DEF 14A text (EDGAR)",
         retrieval_columns=(
             "ticker",

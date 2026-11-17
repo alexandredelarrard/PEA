@@ -1222,3 +1222,29 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 
 - Profile: internal/standard
 - Coverage: `modules/data-aggregate.md` publication clock now covers Schedule 13D/13G (1-day buffer, filing date, source start and frontier moved to the publication session); `TODO.md` item closed. Branch fix/institutionals-13dg-lag; aggregate fingerprint baseline not refreshed.
+
+## 2026-11-15: refresh — 13F book cleaning redesign
+
+- Coverage: unit per filing (modal power of ten, at least five priced securities, 80% inside the 0.35-3.5 band), one-time line repair, consensus price for securities the price table does not cover, 80% line and cover acceptance, one ceiling rule that excludes lines instead of stopping the build, periods outside 1999-today and bond lines removed, 100-day carry, book_known replacing comparison_eligible. A full rebuild of `cube_part_sec_thirteen` ran without a stop: 0.22% of broad books rejected.
+- Pages: [Data aggregate](./modules/data-aggregate.md), [Data access](./guides/data-access.md).
+
+## 2026-11-15: refresh — 13F coverage floor at 1999-06-30
+
+- source_commit: 2e86ce2f
+- Coverage: `sec13f_hr` `coverage_start` and the `data_availability` entry move to 1999-06-30, the first 13F period, so the 13F cube starts there instead of at the 2013 XML era; the stale "not usable before 2013" comment is replaced.
+- Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md).
+
+## 2026-11-16: refresh — 13F manager details and manager profile
+
+- Coverage: new table `sec_13f_manager_details` (key `(cik, period)`, nine extract and thirty profile columns, two writers); extract step `thirteen-f-managers` (DAG task `thirteen_f_managers`, `sec_bulk`, ALL_DONE after `zips_ingest_13f` and `edgar_index`) from cached data-set covers, the cached EDGAR index and stored markers, original 13F-HR accession only, no 13F-NT; profile step `build-manager-profile` (DAG task `build_manager_profile` beside `build_momentum`, `max_active_tasks` 2, not a cube part) with name-keyword categories in `configs/manager_categories.yml` and tunables in `build_cube.manager_profile`; the dev table holds 408,842 extract rows and no profile values yet (first production backfill pending).
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Live database](./reference/live-database.md), [Configuration](./reference/configuration.md), [Data extraction](./modules/data-extract.md), [Data aggregate](./modules/data-aggregate.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-16: refresh — manager profile classification (P11)
+
+- Coverage: title and issuer name rules for common lines Sharadar does not list (`build_cube.manager_profile.security_markers`); category rules extended, `unknown` retired (no match is `fund`) and a CIK override file `configs/superinvestors/manager_categories.json`; a window quarter filed after the row's own book is dropped from its mean. Stored profile values are unchanged until `build-manager-profile -F` runs.
+- Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-16: refresh — shared bond-line mapping and amendment-only stub books (P12)
+
+- Coverage: `build_cube.bond_lines` and `bond_line_mask` (`src/data_aggregate/utils/sec_thirteen/bond_lines.py`) find share lines that are bond principal; the 13F cube cleaning (`clean_filings`) drops them like `debt` rows before the price repair, the manager profile routes them to the bond path (filed value, book unit factor, `pct_bond`); `build_cube.manager_profile.amendment_only_min_lines` (4) skips a (cik, period) whose only accession is a 13F-HR/A with fewer lines. Stored profile values change after `build-manager-profile -F`, the cube part after `build-sec-thirteen -F`.
+- Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md).

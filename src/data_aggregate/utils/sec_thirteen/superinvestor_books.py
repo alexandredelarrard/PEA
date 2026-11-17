@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
@@ -12,6 +13,8 @@ import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import sum_company_rows
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books, single_version_books, single_version_support
+
+logger = logging.getLogger(__name__)
 
 type BookKey = tuple[str, pd.Timestamp]
 
@@ -28,7 +31,8 @@ class BookSupport:
 
     @property
     def comparable(self) -> bool:
-        """Known, complete and unrestricted enough to support reported zeros, tenure and quarter comparisons."""
+        """Complete and unrestricted enough to read an absent position as an exit. Every other use needs only `book_known`: what a
+        confidential or combination filing lists is held, it just cannot prove what it leaves out."""
         return self.book_known and self.zero_eligible and self.comparison_eligible
 
 
@@ -149,6 +153,30 @@ def _advance_latest_books(latest: dict[str, PublicBook], published: list[PublicB
             latest[book.cik] = book
 
 
+def log_book_usability(revisions: Mapping[BookKey, tuple[PublicBook, ...]]) -> None:
+    """One aggregated line per reason: the share of manager-quarters, and of managers, each cleaning rule takes out of the features."""
+    latest = [versions[-1] for versions in revisions.values()]
+    if not latest:
+        return
+    books, ciks = len(latest), {book.cik for book in latest}
+    unknown = [book for book in latest if not book.support.book_known]
+    no_exit = [book for book in latest if book.support.book_known and not book.support.zero_eligible]
+    confidential = [book for book in no_exit if book.support.restricted]
+    usable_ciks = {book.cik for book in latest if book.support.book_known}
+    pct = lambda items: 100.0 * len(items) / books  # noqa: E731
+    logger.info(
+        "13F superinvestor books: %s manager-quarters / %s managers | unusable (no resolved book) %.2f%% | usable for holders and weights but "
+        "not for exits: confidential %.2f%%, other (combination / not a holdings report) %.2f%% | managers with no usable quarter at all: %s (%.1f%%)",
+        f"{books:,}",
+        f"{len(ciks):,}",
+        pct(unknown),
+        pct(confidential),
+        pct(no_exit) - pct(confidential),
+        len(ciks - usable_ciks),
+        100.0 * len(ciks - usable_ciks) / len(ciks),
+    )
+
+
 def prepare_superinvestor_book_history(
     packets: Iterable[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, max_age_days: int
 ) -> tuple[PublicBookSnapshot, ...] | None:
@@ -184,6 +212,7 @@ def prepare_superinvestor_book_history(
         return ()
 
     archive = MappingProxyType({key: tuple(revisions[key]) for key in sorted(revisions, key=lambda key: revisions[key][0].public_at)})
+    log_book_usability(archive)
     publications, days = _public_book_schedule(archive, grid, max_age_days)
     snapshots: list[PublicBookSnapshot] = []
     latest: dict[str, PublicBook] = {}

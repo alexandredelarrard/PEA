@@ -1,0 +1,377 @@
+{
+  "_README": [
+    "Hand category of large 13F managers whose name reads wrong or carries no keyword (holding companies of insurers, banks and brokers without the word, plans, operating companies). Loaded by src/data_aggregate/utils/manager_profile/categories.load_category_overrides; a listed CIK takes this category in place of the name rules of configs/manager_categories.yml.",
+    "overrides: ten-digit manager CIK -> {category, name}. `category` is one of manager_categories.categories (pension, insurance, bank, broker_dealer, sovereign, fund, other); `name` is the manager name as filed (documentation only). The loader raises on a CIK that is not ten digits or a category outside that list.",
+    "Labels are judgements of what the filer is. Add a CIK here when a large manager is mislabelled; do not add one for a name a rule can read."
+  ],
+  "overrides": {
+    "0000005103": {
+      "category": "insurance",
+      "name": "AMERICAN GENERAL CORP /TX/"
+    },
+    "0000005272": {
+      "category": "insurance",
+      "name": "AMERICAN INTERNATIONAL GROUP, INC."
+    },
+    "0000011544": {
+      "category": "insurance",
+      "name": "BERKLEY W R CORP"
+    },
+    "0000014661": {
+      "category": "bank",
+      "name": "BROWN BROTHERS HARRIMAN & CO"
+    },
+    "0000020171": {
+      "category": "insurance",
+      "name": "CHUBB CORP"
+    },
+    "0000020286": {
+      "category": "insurance",
+      "name": "CINCINNATI FINANCIAL CORP"
+    },
+    "0000021175": {
+      "category": "insurance",
+      "name": "CNA FINANCIAL CORP"
+    },
+    "0000036995": {
+      "category": "bank",
+      "name": "WACHOVIA CORP NEW"
+    },
+    "0000039263": {
+      "category": "bank",
+      "name": "CULLEN/FROST BANKERS, INC."
+    },
+    "0000040545": {
+      "category": "other",
+      "name": "GENERAL ELECTRIC CO"
+    },
+    "0000047217": {
+      "category": "other",
+      "name": "HEWLETT PACKARD CO"
+    },
+    "0000050863": {
+      "category": "other",
+      "name": "Intel Corp"
+    },
+    "0000059558": {
+      "category": "insurance",
+      "name": "LINCOLN NATIONAL CORP"
+    },
+    "0000060086": {
+      "category": "insurance",
+      "name": "Loews Corp"
+    },
+    "0000069970": {
+      "category": "bank",
+      "name": "NATIONAL CITY CORP"
+    },
+    "0000074260": {
+      "category": "insurance",
+      "name": "OLD REPUBLIC INTERNATIONAL CORP"
+    },
+    "0000075754": {
+      "category": "broker_dealer",
+      "name": "PAINE WEBBER GROUP INC"
+    },
+    "0000086104": {
+      "category": "insurance",
+      "name": "SAFECO CORP"
+    },
+    "0000086312": {
+      "category": "insurance",
+      "name": "TRAVELERS COMPANIES, INC."
+    },
+    "0000312272": {
+      "category": "broker_dealer",
+      "name": "COMMONWEALTH EQUITY SERVICES, LLC"
+    },
+    "0000314984": {
+      "category": "insurance",
+      "name": "THRIVENT FINANCIAL FOR LUTHERANS"
+    },
+    "0000701221": {
+      "category": "insurance",
+      "name": "CIGNA CORP"
+    },
+    "0000713676": {
+      "category": "bank",
+      "name": "PNC FINANCIAL SERVICES GROUP, INC."
+    },
+    "0000719245": {
+      "category": "bank",
+      "name": "WESTPAC BANKING CORP"
+    },
+    "0000732892": {
+      "category": "broker_dealer",
+      "name": "LAZARD FRERES & CO LLC"
+    },
+    "0000757657": {
+      "category": "broker_dealer",
+      "name": "STEPHENS INC /AR/"
+    },
+    "0000764068": {
+      "category": "insurance",
+      "name": "Legal & General Group Plc"
+    },
+    "0000775366": {
+      "category": "insurance",
+      "name": "LUTHERAN BROTHERHOOD"
+    },
+    "0000775368": {
+      "category": "insurance",
+      "name": "ALLEGHANY CORP /DE"
+    },
+    "0000783412": {
+      "category": "other",
+      "name": "DAILY JOURNAL CORP"
+    },
+    "0000815917": {
+      "category": "broker_dealer",
+      "name": "JONES FINANCIAL COMPANIES LLLP"
+    },
+    "0000898286": {
+      "category": "pension",
+      "name": "Caisse de depot et placement du Quebec"
+    },
+    "0000898419": {
+      "category": "insurance",
+      "name": "PRUDENTIAL PLC"
+    },
+    "0000898427": {
+      "category": "insurance",
+      "name": "AXA S.A."
+    },
+    "0000899051": {
+      "category": "insurance",
+      "name": "ALLSTATE CORP"
+    },
+    "0000914712": {
+      "category": "other",
+      "name": "CMGI INC"
+    },
+    "0000915191": {
+      "category": "insurance",
+      "name": "FAIRFAX FINANCIAL HOLDINGS LTD/ CAN"
+    },
+    "0000948518": {
+      "category": "insurance",
+      "name": "Dai-ichi Life Holdings, Inc."
+    },
+    "0001001085": {
+      "category": "other",
+      "name": "Brookfield Corp /ON/"
+    },
+    "0001006605": {
+      "category": "other",
+      "name": "PENSKE MOTORSPORTS INC"
+    },
+    "0001013761": {
+      "category": "insurance",
+      "name": "AETNA INC /CT/"
+    },
+    "0001021249": {
+      "category": "insurance",
+      "name": "UNITED SERVICES AUTOMOBILE ASSOCIATION"
+    },
+    "0001021454": {
+      "category": "insurance",
+      "name": "ALLIANZ OF AMERICA INC/DE"
+    },
+    "0001039765": {
+      "category": "bank",
+      "name": "ING GROEP NV"
+    },
+    "0001053321": {
+      "category": "pension",
+      "name": "OMERS ADMINISTRATION Corp"
+    },
+    "0001054074": {
+      "category": "bank",
+      "name": "BESSEMER GROUP INC"
+    },
+    "0001056527": {
+      "category": "broker_dealer",
+      "name": "CIBC WORLD MARKETS CORP"
+    },
+    "0001065521": {
+      "category": "other",
+      "name": "SOFTBANK GROUP CORP."
+    },
+    "0001067983": {
+      "category": "insurance",
+      "name": "Berkshire Hathaway Inc"
+    },
+    "0001077583": {
+      "category": "broker_dealer",
+      "name": "BOWEN HANES & CO INC"
+    },
+    "0001080107": {
+      "category": "broker_dealer",
+      "name": "D.A. DAVIDSON & CO."
+    },
+    "0001089877": {
+      "category": "bank",
+      "name": "KEYBANK NATIONAL ASSOCIATION/OH"
+    },
+    "0001096343": {
+      "category": "insurance",
+      "name": "MARKEL GROUP INC."
+    },
+    "0001097362": {
+      "category": "insurance",
+      "name": "SUN LIFE FINANCIAL INC"
+    },
+    "0001126328": {
+      "category": "insurance",
+      "name": "PRINCIPAL FINANCIAL GROUP INC"
+    },
+    "0001127508": {
+      "category": "insurance",
+      "name": "Allianz SE"
+    },
+    "0001137774": {
+      "category": "insurance",
+      "name": "PRUDENTIAL FINANCIAL INC"
+    },
+    "0001139734": {
+      "category": "fund",
+      "name": "BARCLAYS GLOBAL INVESTORS UK HOLDINGS LTD"
+    },
+    "0001140022": {
+      "category": "insurance",
+      "name": "AVIVA PLC"
+    },
+    "0001163653": {
+      "category": "broker_dealer",
+      "name": "NOMURA HOLDINGS INC"
+    },
+    "0001166588": {
+      "category": "broker_dealer",
+      "name": "BNP PARIBAS FINANCIAL MARKETS"
+    },
+    "0001191672": {
+      "category": "bank",
+      "name": "CREDIT AGRICOLE S A"
+    },
+    "0001269107": {
+      "category": "insurance",
+      "name": "SWISS RE FINANCIAL SERVICES CORP"
+    },
+    "0001274981": {
+      "category": "bank",
+      "name": "NATIXIS"
+    },
+    "0001276520": {
+      "category": "insurance",
+      "name": "GENWORTH FINANCIAL INC"
+    },
+    "0001329948": {
+      "category": "broker_dealer",
+      "name": "Janney Montgomery Scott LLC"
+    },
+    "0001331875": {
+      "category": "insurance",
+      "name": "Fidelity National Financial, Inc."
+    },
+    "0001333986": {
+      "category": "insurance",
+      "name": "Equitable Holdings, Inc."
+    },
+    "0001351917": {
+      "category": "insurance",
+      "name": "MENORA MIVTACHIM HOLDINGS LTD."
+    },
+    "0001362539": {
+      "category": "insurance",
+      "name": "Swiss Re Financial Products CORP"
+    },
+    "0001368163": {
+      "category": "bank",
+      "name": "Zurcher Kantonalbank (Zurich Cantonalbank)"
+    },
+    "0001370102": {
+      "category": "pension",
+      "name": "State of Alaska, Department of Revenue"
+    },
+    "0001389958": {
+      "category": "broker_dealer",
+      "name": "PEAK6 LLC"
+    },
+    "0001418333": {
+      "category": "bank",
+      "name": "MACQUARIE GROUP LTD"
+    },
+    "0001421224": {
+      "category": "broker_dealer",
+      "name": "CIBC WORLD MARKET INC."
+    },
+    "0001445893": {
+      "category": "broker_dealer",
+      "name": "CTC LLC"
+    },
+    "0001451623": {
+      "category": "broker_dealer",
+      "name": "BENJAMIN EDWARDS INC"
+    },
+    "0001452861": {
+      "category": "broker_dealer",
+      "name": "IMC-Chicago, LLC"
+    },
+    "0001462160": {
+      "category": "bank",
+      "name": "Mitsubishi UFJ Trust & Banking Corp"
+    },
+    "0001475365": {
+      "category": "bank",
+      "name": "Sumitomo Mitsui Trust Group, Inc."
+    },
+    "0001519921": {
+      "category": "insurance",
+      "name": "SWISS RE LTD"
+    },
+    "0001534653": {
+      "category": "bank",
+      "name": "Skandinaviska Enskilda Banken AB (publ)"
+    },
+    "0001587973": {
+      "category": "pension",
+      "name": "State of Tennessee, Department of Treasury"
+    },
+    "0001603935": {
+      "category": "insurance",
+      "name": "Aviva Holdings Ltd."
+    },
+    "0001677044": {
+      "category": "broker_dealer",
+      "name": "OSAIC HOLDINGS, INC."
+    },
+    "0001694164": {
+      "category": "pension",
+      "name": "AustralianSuper Pty Ltd"
+    },
+    "0001708828": {
+      "category": "broker_dealer",
+      "name": "CLEAR STREET LLC"
+    },
+    "0001711615": {
+      "category": "insurance",
+      "name": "TIAA, FSB"
+    },
+    "0001761054": {
+      "category": "pension",
+      "name": "Treasurer of the State of North Carolina"
+    },
+    "0001948391": {
+      "category": "other",
+      "name": "Japan Science & Technology Agency"
+    },
+    "0001997405": {
+      "category": "bank",
+      "name": "TIAA TRUST, NATIONAL ASSOCIATION"
+    },
+    "0001999606": {
+      "category": "broker_dealer",
+      "name": "TD Waterhouse Canada Inc."
+    }
+  }
+}

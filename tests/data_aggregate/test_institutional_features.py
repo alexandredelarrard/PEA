@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
+from src.constants.constants import DEFAULT_CONFIG_DIR, F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.sec_thirteen import institutional_features as _features
@@ -29,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import availability_date
 from src.utils.price.adjustments import ShareBasis
@@ -324,29 +325,26 @@ def test_per_ticker_coverage_onset_guard():
 
 
 def _pre_floor_fixture() -> pd.DataFrame:
-    periods = ["2012-12-31", "2013-03-31", "2013-06-30", "2013-09-30"]
+    periods = ["1998-12-31", "1999-03-31", "1999-06-30", "1999-09-30"]
     return pd.DataFrame(
         [{"cik": f"M{m}", "period": p, "ticker": "A", "shares": 100.0 + m, "value_usd": 100.0 + m} for p in periods for m in range(30)]
     )
 
 
-def test_d16_hard_cutoff_before_the_2013_break():
-    """D16. The 13F numbers before 2013-06-30 exist and look valid but describe the fetch, so
-    nothing computed from them survives -- and since step 2.4 they are not computed at all:
-    the pre-floor cut drops the rows before the loop rather than nulling their output after."""
+def test_d16_hard_cutoff_before_the_first_13f_period():
+    """D16. Nothing before the first 13F period (1999-06-30) is computed: the pre-floor cut drops
+    the rows before the loop rather than nulling their output after."""
     qf = _quarter_features(_pre_floor_fixture()).set_index("period")
-    for p in ("2012-12-31", "2013-03-31"):
+    for p in ("1998-12-31", "1999-03-31"):
         assert pd.Timestamp(p) not in qf.index, f"{p} was still emitted"
     assert np.isfinite(_as_float(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_holders"]))
-    assert np.isnan(_as_float(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_breadth_chg"])), (
-        "the first post-break quarter has no comparable predecessor (L10)"
-    )
+    assert np.isnan(_as_float(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_breadth_chg"])), "the first quarter has no comparable predecessor (L10)"
     assert np.isfinite(_as_float(qf.loc[INST_DELTA_FLOOR_PERIOD, "ic_inst_breadth_chg"]))
     print("\n=== SANITY CHECK: D16 hard cutoff ===")
     print(
         f"  the two pre-{INST_LEVEL_FLOOR_PERIOD.date()} quarters are not emitted at all, "
         f"and deltas are NaN before {INST_DELTA_FLOOR_PERIOD.date()} -- both measured from "
-        "the 192 -> 3,046 filer jump. Validated."
+        "the first 13F period. Validated."
     )
 
 
@@ -361,9 +359,9 @@ def test_the_pre_floor_cut_leaves_the_delta_floor_onward_identical(monkeypatch):
     h = _clean_holdings(_pre_floor_fixture(), key=("ticker", "cik", "period"))
     cut = _qf(h, min_prior_holders=0).set_index("period")
 
-    monkeypatch.setattr(_mod, "INST_LEVEL_FLOOR_PERIOD", pd.Timestamp("1990-01-01"))
+    monkeypatch.setattr(_mod, "INST_LEVEL_FLOOR_PERIOD", pd.Timestamp("1980-01-01"))
     uncut = _qf(h, min_prior_holders=0).set_index("period")
-    assert pd.Timestamp("2012-12-31") in uncut.index, "the A/B did not actually disable the cut"
+    assert pd.Timestamp("1998-12-31") in uncut.index, "the A/B did not actually disable the cut"
 
     tail = cut.index[cut.index >= INST_DELTA_FLOOR_PERIOD]
     pd.testing.assert_frame_equal(cut.loc[tail], uncut.loc[tail])
@@ -1089,7 +1087,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
 
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
-    step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
+    step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}, "bond_lines": read_config(DEFAULT_CONFIG_DIR).build_cube.bond_lines}
     step._settle_days = F13_SETTLE_TRADING_DAYS
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
@@ -1106,7 +1104,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         security_basis=basis,
     )
     resources = SecThirteenResources(
-        frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
+        frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})), {}
     )
 
     def panel() -> pd.DataFrame | None:

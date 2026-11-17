@@ -392,17 +392,17 @@ def test_gate_passes_recorded_inactive_exception():
 
 
 def test_gate_clamps_pre_xml_window():
-    """Before the XML era the local tables are sparse, so a pre-XML window extends to the first XML quarter;
+    """Before the first 13F period the local tables are empty, so an earlier window extends to that period;
     after it the window is the plain [Q-4q, Q+2q]."""
     a, b, c = "0000000001", "0000000002", "0000000003"
-    evidence = {(a, date(2013, 6, 30)), (b, date(2013, 9, 30)), (c, date(2015, 12, 31))}
-    assert si.assert_active([_gate_row("A", a, "2012-03-07")], evidence, {}, _no_listing) == []  # Q 2011-12-31
+    evidence = {(a, date(1999, 6, 30)), (b, date(1999, 9, 30)), (c, date(2015, 12, 31))}
+    assert si.assert_active([_gate_row("A", a, "1998-03-07")], evidence, {}, _no_listing) == []  # Q 1997-12-31
     with pytest.raises(si.SuperinvestorResolutionError) as err:
-        si.assert_active([_gate_row("B", b, "2012-03-07"), _gate_row("C", c, "2015-03-01")], evidence, {}, lambda cik: set())
+        si.assert_active([_gate_row("B", b, "1998-03-07"), _gate_row("C", c, "2015-03-01")], evidence, {}, lambda cik: set())
     assert '"B"' in str(err.value) and '"C"' in str(err.value)
     print("\n=== SANITY: pre-XML window clamp ===")
     print(
-        "  2012-03-07 passes on a 2013-06-30 book (window end clamped to the XML-era start) but not on 2013-09-30; a 2015 snapshot is not clamped. Validated."
+        "  1998-03-07 passes on a 1999-06-30 book (window end clamped to the first 13F period) but not on 1999-09-30; a 2015 snapshot is not clamped. Validated."
     )
 
 

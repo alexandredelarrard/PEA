@@ -157,14 +157,6 @@ class StepExtractIdentity(Step):
         self._lifecycle: Lifecycle | None = None
         self._first_build = False
 
-    def _insider_scan(self) -> Form345Scan:
-        """Reuse the bounded identity evidence scan across the public sub-runs."""
-        if self._insider_window is None:
-            raise ValueError("Identity snapshot has no configured insider source context")
-        if self._scan is None:
-            self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
-        return self._scan
-
     def run_capture_evidence(self) -> int:
         """Notes cover-page symbols of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured (the FTD
         lines the CUSIP history reads are stored by the FTD ingest)."""
@@ -173,7 +165,10 @@ class StepExtractIdentity(Step):
         written = sum(capture_dei_period(self._context, self._notes_cache, period) for period in tqdm(periods, desc="SEC notes cover-page symbols"))
 
         # one Form 3/4/5 scan: the `form345` / `manual` tenure (minus the cited rejections) here, the owner sets in the CIK history
-        self._scan = self._insider_scan()
+        if self._scan is None:
+            if self._insider_window is None:
+                raise ValueError("Identity snapshot has no configured insider source context")
+            self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
         manual, rejected = load_manual_symbol_tenure(str(self._config_dir)), load_rejected_symbol_tenure(str(self._config_dir))
         self._tenure = build_symbol_tenure(self._context, self._scan, manual, rejected)
         return written
@@ -208,7 +203,11 @@ class StepExtractIdentity(Step):
         # load the anchor, the tenure and Form 3/4/5 scan of this run (else the stored ones), the dei evidence, the SEC profile, the curation
         anchor = self._anchor if self._anchor is not None else self.run_company_anchor()
         tenure = self._tenure if self._tenure is not None else load_built_tenure(self._context)
-        scan = self._insider_scan()
+        if self._scan is None:
+            if self._insider_window is None:
+                raise ValueError("Identity snapshot has no configured insider source context")
+            self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
+        scan = self._scan
         dei_rows = self._context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
         events = [{column: self._context.store.NOT_NULL} for column in _PROFILE_COLUMNS[1:]]
         profile = self._context.store.load(Tables.sec_cik_profile, columns=list(_PROFILE_COLUMNS), where=events, optional=True)

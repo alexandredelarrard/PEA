@@ -7,7 +7,7 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -15,13 +15,10 @@ from typing import Any, cast
 import pytest
 
 from src.context import Context, get_config_context
-from src.data_store.schema import Table
+from src.data_store.schema import ALL, KIND_PART, Table, Tables
 from src.utils.config import read_config
-from src.validate.checks.window_lineage import check_window_lineage
-from src.validate.checks.window_plan import check_window_plans
 from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
 from src.validate.result import CheckResult, jsonable
-from tests.support.window_lineage import replay_window_lineage
 
 _STARTED = pytest.StashKey[float]()
 
@@ -149,20 +146,6 @@ class WindowSamples:
         self.manifest["tables"][table.name] = entry
         return entry
 
-    def measure_lineage(self) -> dict[str, CheckResult]:
-        """Use the same context and deadline; the immutable scalar pin stays untouched."""
-        if self.context is None:
-            raise RuntimeError("The sample source context has not been constructed")
-        self.lineage = {table.name: {"status": "abstain", "reason": "Not measured before interruption/deadline"} for table in timing_sample_tables()}
-        self.publish()
-        replay = replay_window_lineage(self.context, self.manifest, self.out / "lineage-replay.jsonl")
-        (self.out / "lineage-replay.json").write_text(json.dumps(replay, indent=2), encoding="utf-8")
-        results = check_window_lineage(self.context, replay, self.manifest)
-        self.planning = {name: result.to_json() for name, result in check_window_plans(self.context, replay).items()}
-        self.lineage = {name: result.to_json() for name, result in results.items()}
-        self.publish()
-        return results
-
 
 @pytest.fixture(scope="session")
 def window_samples(request: pytest.FixtureRequest) -> Iterator[WindowSamples]:
@@ -176,7 +159,13 @@ def window_samples(request: pytest.FixtureRequest) -> Iterator[WindowSamples]:
         raise pytest.UsageError("Choose capture or baseline, not both")
     path = capture or baseline
     assert path is not None and out is not None
-    started = request.config.stash[_STARTED]
+    with window_sample_session(path, out, capture is not None, request.config.stash[_STARTED]) as run:
+        yield run
+
+
+@contextmanager
+def window_sample_session(path: Path, out: Path, capturing: bool, started: float) -> Iterator[WindowSamples]:
+    """One readonly setup/deadline shared by pytest and the direct complete-sample worker."""
     config = read_config("configs")
     budget = float(config.validate.window_samples.budget_seconds)
     if budget <= 0:
@@ -190,7 +179,7 @@ def window_samples(request: pytest.FixtureRequest) -> Iterator[WindowSamples]:
         out,
         started,
         budget,
-        capture is not None,
+        capturing,
         {
             "schema_version": 3,
             "year": int(config.validate.window_samples.year),
@@ -211,11 +200,23 @@ def window_samples(request: pytest.FixtureRequest) -> Iterator[WindowSamples]:
         path.mkdir(parents=True, exist_ok=True)
         out.mkdir(parents=True, exist_ok=True)
         manifest_path = path / "manifest.json"
-        if capture is not None and manifest_path.exists():
-            raise pytest.UsageError("Capture refuses to overwrite a pinned baseline; reuse --window-baseline")
-        if baseline is not None:
+        if capturing and manifest_path.exists():
+            raise ValueError("Capture refuses to overwrite a pinned baseline; reuse --window-baseline")
+        if not capturing:
             run.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         run.publish()
         _, run.context = get_config_context("configs", use_cache=True, save=False)
         yield run
         run.publish()
+
+
+def assert_lineage_results(results: dict[str, CheckResult], planning: dict[str, Any]) -> None:
+    """Identical required-source and complete actual-planner acceptance in both entry points."""
+    failed = [result.summary() for result in results.values() if result.status == "fail"]
+    assert not failed, "\n".join(failed)
+    required = [result for result in results.values() if result.metrics.get("required_routes")]
+    assert required and all(result.status == "pass" for result in required), "Required semantic lineage routes are incomplete"
+    expected = {table.name for table in ALL if table.kind == KIND_PART} | {Tables.cube.name}
+    assert set(planning) == expected and all(result["status"] == "pass" for result in planning.values()), (
+        "All ten actual production planners must pass"
+    )

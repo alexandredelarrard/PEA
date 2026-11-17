@@ -51,17 +51,34 @@ from src.data_store.store import DataStore, KeySample
 from src.utils.data_policy import publication_policy, source_read_window
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 from src.utils.price.adjustments import load_bugfix
-from src.utils.publication import publication_dates, publication_rows
+from src.utils.publication import publication_dates, publication_rows, roll_to_session
 from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, finra_key, load_fails_basis, prepare_master, short_volume_series
 from src.utils.window import Window, WindowPlan, WindowRun
-from src.validate.checks.window_lineage import _State, route_family
+from src.validate.checks.window_lineage import _State, check_window_lineage, route_family
+from src.validate.checks.window_plan import check_window_plans
 from src.validate.checks.window_sample import timing_sample_tables
-from src.validate.result import jsonable
+from src.validate.result import CheckResult, jsonable
 from tests.support.window_lineage_sources import employees, insiders, ownership, ownership_identity, votes
+from tests.support.window_samples import WindowSamples
 
 
 class _MissingEvidenceError(ValueError):
     pass
+
+
+def measure_window_lineage(run: WindowSamples) -> dict[str, CheckResult]:
+    """Replay only at the explicit lineage entry point, using the existing context/deadline."""
+    if run.context is None:
+        raise RuntimeError("The sample source context has not been constructed")
+    run.lineage = {table.name: {"status": "abstain", "reason": "Not measured before interruption/deadline"} for table in timing_sample_tables()}
+    run.publish()
+    replay = replay_window_lineage(run.context, run.manifest, run.out / "lineage-replay.jsonl")
+    (run.out / "lineage-replay.json").write_text(json.dumps(replay, indent=2), encoding="utf-8")
+    results = check_window_lineage(run.context, replay, run.manifest)
+    run.planning = {name: result.to_json() for name, result in check_window_plans(run.context, replay).items()}
+    run.lineage = {name: result.to_json() for name, result in results.items()}
+    run.publish()
+    return results
 
 
 @dataclass
@@ -207,13 +224,22 @@ def _security_rows(
         symbols = context.store.distinct(table, "source_symbol", where={"date": interval})
         selected = {"source_symbol": [symbol for symbol in symbols if finra_key(symbol) in wanted], "date": interval}
     metadata_interval = _short_metadata_window(context, sessions, interval) if table == Tables.sec_short_volume_security else interval
-    global_days = set(context.store.distinct(table, "date", where={"date": metadata_interval}))
-    own_days = set(context.store.distinct(table, "date", where=selected))
+    metadata_scope: dict[str, Any] = {"date": metadata_interval}
+    if table == Tables.sec_fails_to_deliver_security:
+        metadata_scope["period"] = sorted(_ftd_metadata_periods(context, sessions, interval))
+    global_days = set(context.store.distinct(table, "date", where=metadata_scope))
+    own_metadata_scope = {**selected, **({"period": metadata_scope["period"]} if "period" in metadata_scope else {})}
+    own_days = set(context.store.distinct(table, "date", where=own_metadata_scope))
     missing = sorted(global_days - own_days)
     # Never request calendar-day-count groups: nonserved weekends would make the
     # streaming sampler read the entire global payload seeking nonexistent groups.
     witnesses = (
-        context.store.sample_keys(table, KeySample("date", len(missing), {"date": missing}, "date"))
+        context.store.sample_keys(
+            table,
+            KeySample(
+                "date", len(missing), {"date": missing, **({"period": metadata_scope["period"]} if "period" in metadata_scope else {})}, "date"
+            ),
+        )
         if missing
         else pd.DataFrame(columns=list(table.pk))
     )
@@ -224,7 +250,7 @@ def _security_rows(
     result = pd.concat(chunks, ignore_index=True).drop_duplicates(list(table.pk))
     result.attrs["lineage_dependency_scope"] = {
         "economic_history": {"start": interval.start, "end": interval.end},
-        "global_served_date_metadata": {"start": metadata_interval.start, "end": metadata_interval.end},
+        "global_served_date_metadata": {"start": metadata_interval.start, "end": metadata_interval.end, "periods": metadata_scope.get("period")},
         "global_served_dates": len(global_days),
         "witness_rows": len(witnesses),
         "economic_and_witness_rows": len(result),
@@ -242,6 +268,36 @@ def _short_metadata_window(context: Context, sessions: pd.DatetimeIndex, retaine
     if anchors.empty:
         raise _MissingEvidenceError("No source session publishes into the asserted sample year")
     return Window(max(retained.start, anchors[0]), retained.end)
+
+
+def _ftd_metadata_periods(context: Context, sessions: pd.DatetimeIndex, retained: Window) -> set[str]:
+    """Actual published ZIPs in the asserted interval plus their genuine prior vector seed."""
+    table = Tables.sec_fails_to_deliver_security
+    stats = context.store.key_stats(table, "period", "date", where={"date": retained})
+    if stats.empty:
+        raise _MissingEvidenceError("No persisted FTD ZIP-period metadata")
+    calendar = sessions[sessions.year == int(context.config.validate.window_samples.year)]
+    if calendar.empty:
+        raise _MissingEvidenceError("No actual market sessions in the asserted sample year")
+    start = sessions[max(0, sessions.get_loc(calendar[0]) - 1)]
+    end = sessions[min(len(sessions) - 1, sessions.get_loc(calendar[-1]) + 1)]
+    coverage = stats.rename(columns={"key": "period", "last": "date"})[["period", "date"]]
+    lag = int(publication_policy(context.config, table).lag.value)
+    ready = roll_to_session(pd.Series(_ftd_available_dates(coverage, lag)), sessions)
+    events = pd.DataFrame({"period": ready.index, "published": ready.to_numpy()}).dropna().sort_values(["published", "period"])
+    # Follow the publisher's forward-ZIP ordering; the seed is chosen from real
+    # publication metadata, never by searching economic values for non-null data.
+    forward = []
+    current = ""
+    for event in events.itertuples(index=False):
+        if event.period > current:
+            forward.append(event)
+            current = event.period
+    selected = {event.period for event in forward if start <= event.published <= end}
+    prior = [event for event in forward if event.published < start]
+    if prior:
+        selected.add(prior[-1].period)
+    return selected
 
 
 def _security_identity(context: Context) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -292,7 +348,7 @@ def _fails(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     lag = int(publication_policy(context.config, table).lag.value)
     available = _ftd_available_dates(coverage, lag)
     daily = _publish_ftd_zip_states(state, coverage, sessions, available)
-    rows = series.sort_values("date").drop_duplicates(["ticker", "period"], keep="last")
+    rows = _ftd_selected_rows(series, coverage, sessions, context.universe.tickers)
     rows = publication_rows(context.config, table, rows, sessions, "as_of")
     ids = {period: group[list(table.pk)].to_dict("records") for period, group in raw.groupby("period")}
     rows["_source_units"] = rows.period.map(ids)
@@ -307,6 +363,14 @@ def _fails(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
             exception="Complete sampled security units plus genuine global served-date witnesses; production settlement conversion and ZIP-state publication, before rolling economic ratios.",
         )
     ]
+
+
+def _ftd_selected_rows(series: pd.DataFrame, coverage: pd.DataFrame, sessions: pd.DatetimeIndex, tickers: list[str]) -> pd.DataFrame:
+    """The publisher selects the latest actual served session's whole vector, including NULL."""
+    latest = coverage.loc[pd.to_datetime(coverage.date).isin(sessions), ["period", "date"]].drop_duplicates()
+    latest = latest.sort_values("date").drop_duplicates("period", keep="last")
+    grid = latest.merge(pd.DataFrame({"ticker": tickers}), how="cross")
+    return grid.merge(series, on=["ticker", "date", "period"], how="left", validate="one_to_one")
 
 
 def _dividends(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
@@ -776,7 +840,8 @@ def _probe_rows(context: Context, state: _State, sessions: pd.DatetimeIndex) -> 
     records = []
     year = int(context.config.validate.window_samples.year)
     for ticker in context.universe.tickers:
-        rows = state.rows.loc[state.rows.ticker.eq(ticker) & state.rows[state.field].notna()].sort_values("as_of", kind="stable")
+        keep_null = state.table in {Tables.sec_8k_votes, Tables.sec_fails_to_deliver_security}
+        rows = state.rows.loc[state.rows.ticker.eq(ticker) & (state.rows[state.field].notna() | keep_null)].sort_values("as_of", kind="stable")
         if state.table == Tables.dividends:
             rows = rows.loc[pd.to_numeric(rows[state.field], errors="coerce").ne(0)]
         if rows.empty and state.table == Tables.notes_num:

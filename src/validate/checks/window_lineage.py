@@ -124,7 +124,7 @@ def _boundaries(context: Context, state: _State, sessions: pd.DatetimeIndex) -> 
     policies = {table: dict(OmegaConf.to_container(publication_policy(context.config, table), resolve=True)) for table in tables}
     dates: dict[tuple[Any, ...], pd.Timestamp] = {}
     for ticker in context.universe.tickers:
-        keep_null = state.table == Tables.sec_8k_votes
+        keep_null = state.table in {Tables.sec_8k_votes, Tables.sec_fails_to_deliver_security}
         rows = state.rows.loc[state.rows.ticker.eq(ticker) & (state.rows[state.field].notna() | keep_null)].copy()
         if state.table == Tables.dividends:
             # The producer still computes its entire history, including observed

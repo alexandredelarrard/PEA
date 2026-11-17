@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: c82132b6add9ac3fe3b44fb7320e02579e4b82dd
+source_commit: 35161d2e8590b0fca321cb61697144b68bfdd2d6
 integration_parents:
   - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
   - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
@@ -238,7 +238,7 @@ Assess always recomputes scores, metrics, SHAP/PDP and HTML from saved models an
 
 Each cube part resolves its `data.tables.<part>` policy through [plan_window](../../src/data_aggregate/utils/common/incremental.py) and the immutable [Window types](../../src/utils/window.py). `Context.run` owns the execution instant and mode; substeps receive the resolved plan instead of redefining full mode or overlap. Configured start/end dates bound writes in every mode. Warm-up expands reads, retaining sparse causal history, whole 13F books and required share-basis lineage without authorizing older writes. Naturally short history retains its ordinary null/minimum-observation behavior; an undersized configured warm-up is refused.
 
-Normal rewrites are governance380 calendar days, fundamentals/13F100, prices/betas/momentum/institutionals30 and text7. Targets rewrite90 actual market sessions to mature their configured forward labels. [Assembly](../../src/data_aggregate/transformers/step_assemble_cube.py) takes the earliest actual write boundary of its selected components plus its own catch-up boundary. It does not compare raw numbers with mixed units. Separate CLI/DAG tasks exchange [write receipts](../../src/data_aggregate/utils/common/assembly.py) with the same execution cutoff, mode, configuration and complete ticker scope. A missing or incompatible receipt cannot certify assembly.
+Normal rewrites are governance380 calendar days, fundamentals/13F100, prices/betas/momentum/institutionals30 and text7. Targets rewrite90 actual market sessions to mature their configured forward labels. [Assembly](../../src/data_aggregate/transformers/step_assemble_cube.py) takes the earliest actual write boundary of its selected components plus its own catch-up boundary. It does not compare raw numbers with mixed units. Separate CLI/DAG tasks exchange [write receipts](../../src/data_aggregate/utils/common/assembly.py) with the same original execution instant, root mode, configuration and complete ticker scope. Pass the same explicit `--as-of` value to the part tasks and assembly; matching calendar dates alone do not establish matching execution cutoffs. A cold component may still resolve to initial mode inside an incremental root run. Missing or incompatible receipts, including older receipts that record only a day, cannot certify assembly; regenerate the affected part receipts before assembly.
 
 Publication buffers come only from source policies in data.yml and roll forward to retained actual market sessions, including holidays. Raw filing, acceptance, call and ex-dividend dates remain available separately from eligibility. Both13F book families use filing/later public acceptance+2 calendar days; the90-calendar-day superinvestor book lifetime is separate. Retained stale or invalid sources do not become known zero.
 

@@ -1289,3 +1289,10 @@ The user explicitly retains governance fills from later filings and the existing
 - Coverage: [permanent direct runner](../tests/support/run_window_samples.py), shared scalar/session setup, explicit selected-source replay, independent publication/plan checks and disposable writes. The lightweight pytest fixture no longer imports every producer. FTD evidence retains actual publication periods and the true prior ZIP seed, including null barriers; economic histories remain intact.
 - Evidence:19 focused protocol/known-truth controls passed with zero external tripwire attempts. The complete final per-table run and independent final review remain pending. No production data rebuild, inference or predictive-model validation ran.
 - Pages: [Testing and validation](./guides/testing.md).
+
+## 2026-11-17: refresh — exact execution cutoff in assembly receipts
+
+- Profile: internal/standard
+- source_commit: 35161d2e8590b0fca321cb61697144b68bfdd2d6.
+- Coverage: [configuration guidance](./reference/configuration.md#cube-timing-and-recovery) now requires the same original execution instant across separate part and assembly tasks. Older day-only receipts must be regenerated; legitimate cold-component initial mode within an incremental root run remains supported.
+- Evidence: five baseline failures reproduced the cutoff/legacy issues; all15 focused checks passed after correction, with zero external tripwire attempts. No production receipt migration, data rebuild or model validation ran. Integrated independent validation remains pending.

@@ -8,6 +8,8 @@ validate:
   window_samples:
     # One deadline for the complete per-table capture/replay, including evidence writing.
     budget_seconds: 300
+    year: 2026                 # Fixed year for source and cube sample keys.
+    keys_per_table: 5          # Tickers, or source units for tables without tickers.
 
   # The read-only SEC vs Sharadar check (`fundamentals/check_sources.py`, `fundamentals-check`): a
   # shared field is listed when at least `field_share` of the exactly matched (ticker, as_of) rows

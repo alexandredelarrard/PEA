@@ -8,17 +8,16 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-import pandas as pd
 import pytest
 
 from src.context import Context, get_config_context
-from src.data_store.schema import ALL, Table
+from src.data_store.schema import Table
 from src.utils.config import read_config
-from src.validate.checks.window_sample import SampleSelection, check_window_sample
+from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
 from src.validate.result import CheckResult, jsonable
 
 _STARTED = pytest.StashKey[float]()
@@ -58,10 +57,17 @@ class WindowSamples:
         for path, report in reports:
             temporary = path.with_suffix(".tmp")
             temporary.write_text(json.dumps(jsonable(report), indent=2), encoding="utf-8")
-            temporary.replace(path)
+            try:
+                temporary.replace(path)
+            except PermissionError:
+                # Windows indexers can briefly hold the previous evidence file open.
+                time.sleep(0.1)
+                temporary.replace(path)
 
     def measure(self, table: Table) -> CheckResult:
-        # Reuse the pinned selection, or discover one deterministic complete primary key.
+        # Reuse the immutable pin, or capture the configured number of scoped groups.
+        if table not in timing_sample_tables():
+            raise ValueError(f"{table.name}: model and portfolio outputs are excluded from timing validation")
         before = time.perf_counter()
         if self.context is None:
             raise RuntimeError("The sample source context has not been constructed")
@@ -89,32 +95,13 @@ class WindowSamples:
         return result
 
     def capture(self, table: Table) -> dict[str, Any]:
-        # Inspect only this table, then request one indexed primary key, never a global max.
+        # The production selector owns fixed-year, grouped and inherited-clock key planning.
         if self.context is None:
             raise RuntimeError("The sample source context has not been constructed")
-        columns = self.context.store.columns(table)
-        entry: dict[str, Any]
-        if not columns:
-            entry = {"reason": "Source table absent"}
-        elif not set(table.pk) <= set(columns):
-            entry = {"reason": "Live schema lacks the registered primary key"}
-        else:
-            df_key = self.context.store.load(table, columns=table.pk, order_by=table.pk, limit=1, markers=True, optional=True)
-            entry = self.selection(table, columns, df_key)
+        entry = capture_window_selection(self.context, table)
         entry.update({"kind": table.kind, "pk": list(table.pk), "clock": table.date_col, "producer_replay": "unmeasured"})
         self.manifest["tables"][table.name] = entry
         return entry
-
-    @staticmethod
-    def selection(table: Table, columns: list[str], df_key: pd.DataFrame | None) -> dict[str, Any]:
-        # Exact keys bound every subsequent read; vectors remain explicit provenance gaps.
-        if df_key is None or df_key.empty:
-            return {"reason": "Source table empty"}
-        if df_key.isna().any(axis=None):
-            return {"reason": "Selected source primary key contains NULL"}
-        projection = tuple(col for col in columns if col != table.vector_col)
-        where = jsonable(df_key.iloc[0].to_dict())
-        return {"selection": asdict(SampleSelection(projection, where)), "excluded_vector": table.vector_col}
 
 
 @pytest.fixture(scope="session")
@@ -137,8 +124,21 @@ def window_samples(request: pytest.FixtureRequest) -> Iterator[WindowSamples]:
     # Enforce read-only PostgreSQL at connection level; public producer tests use SQLite.
     previous = os.environ.get("PGOPTIONS")
     os.environ["PGOPTIONS"] = f"{previous or ''} -c default_transaction_read_only=on -c statement_timeout={int(budget * 1000)}"
-    run = WindowSamples(None, path, out, started, budget, capture is not None, {"tables": {}})
-    run.results = {table.name: {"status": "abstain", "reason": "Not measured before interruption/deadline"} for table in ALL}
+    run = WindowSamples(
+        None,
+        path,
+        out,
+        started,
+        budget,
+        capture is not None,
+        {
+            "schema_version": 3,
+            "year": int(config.validate.window_samples.year),
+            "keys_per_table": int(config.validate.window_samples.keys_per_table),
+            "tables": {},
+        },
+    )
+    run.results = {table.name: {"status": "abstain", "reason": "Not measured before interruption/deadline"} for table in timing_sample_tables()}
     timer = threading.Timer(max(0, budget - (time.perf_counter() - started)), os._exit, args=(124,))
     timer.daemon = True
     with ExitStack() as cleanup:

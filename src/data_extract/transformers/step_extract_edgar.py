@@ -81,14 +81,13 @@ class StepExtractEdgar(Step):
         """Run one walk through the shared driver, on an index covering its window: refreshed unless this step,
         or today's refresh, already covered it."""
         policy = window_policy(self._config, fetch.done, self._context.run.as_of)
-        if policy is not None:
-            window = policy.requested
-            covered = self._indexed_window is not None and self._indexed_window.intersection(window) == window
-            if not covered and not edgar_index.refreshed_today(self._context, window):
-                if self._indexed_window is not None:
-                    window = Window(min(window.start, self._indexed_window.start), max(window.end, self._indexed_window.end))
-                refresh_index(self._context, window)
-                self._indexed_window = window
+        window = policy.requested if policy is not None else None
+        covered = self._indexed_window is not None and window is not None and self._indexed_window.intersection(window) == window
+        if window is not None and not covered and not edgar_index.refreshed_today(self._context, window):
+            if self._indexed_window is not None:
+                window = Window(min(window.start, self._indexed_window.start), max(window.end, self._indexed_window.end))
+            refresh_index(self._context, window)
+            self._indexed_window = window
         return run_edgar_fetch(self._context, fetch, self._run)
 
     def run_index(self) -> None:

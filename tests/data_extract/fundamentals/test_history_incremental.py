@@ -172,6 +172,19 @@ def test_unchanged_ticker_computes_no_snapshot(sqlite_store: Any, snapshots: lis
     print(f"  first build: {first} snapshots, {stored} rows; re-run with no new filing: 0 snapshots, 0 rows, 0 full facts reads. Validated.")
 
 
+def test_unavailable_source_during_recovery_preserves_good_history(sqlite_store: Any, snapshots: list[str]) -> None:
+    sqlite_store.save(Tables.sec_fundamentals_facts, _quarters())
+    context = _context(sqlite_store)
+    mod.build_fundamentals_history(context, ["TST"])
+    before = sqlite_store.load(Tables.sec_fundamentals_history).sort_values("as_of").reset_index(drop=True)
+    sqlite_store.delete(Tables.sec_fundamentals_facts, {"ticker": "TST"})
+    context.run = WindowRun("full", "explicit history recovery with unavailable source", context.run.instant)
+    mod.build_fundamentals_history(context, ["TST"])
+    after = sqlite_store.load(Tables.sec_fundamentals_history).sort_values("as_of").reset_index(drop=True)
+    pd.testing.assert_frame_equal(after, before)
+    print("SANITY: explicit recovery preserves all good history when its source facts are unavailable; absence is not a known empty result.")
+
+
 # --------------------------------------------------------------------------- #
 # helpers on the store                                                         #
 # --------------------------------------------------------------------------- #
@@ -335,14 +348,21 @@ def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: li
     _built(sqlite_store, snapshots)
     context = _context(sqlite_store)
 
-    # (a) Stored provenance disagrees with the rebuilt event list; lineage-recent -> check -> full -> rebuilt.
+    # (a) A replay detects changed stored provenance; only explicit recovery may accept it.
     _tamper(sqlite_store, "TST", "2023-08-01", publication_form="10-K")
-    monkeypatch.setattr(mod, "_scope_changed_recently", lambda context, tickers, as_of=None: frozenset({"TST"}))
+    monkeypatch.setattr(mod, "_scope_changed_recently", lambda context, tickers: frozenset({"TST"}))
+    before = _stored(sqlite_store, "TST")
+    with pytest.raises(ValueError, match="append-only"):
+        mod.build_fundamentals_history(context, ["TST"])
+    pd.testing.assert_frame_equal(_stored(sqlite_store, "TST"), before)
+    snapshots.clear()
+    context.run = WindowRun("full", "explicit provenance repair", context.run.as_of)
     mod.build_fundamentals_history(context, ["TST"])
     provenance = len(snapshots)
     history = _stored(sqlite_store, "TST")
     form = history.loc[pd.to_datetime(history["as_of"]) == pd.Timestamp("2023-08-01"), "publication_form"].iloc[0]
     assert provenance == 4 and form == "10-Q", (provenance, form)
+    context.run = WindowRun("incremental", "resume append-only events", context.run.as_of)
 
     # (b) A back-dated original: its date is not stored -> check -> full; it adds its own row.
     monkeypatch.setattr(mod, "_scope_changed_recently", lambda context, tickers: frozenset())
@@ -360,7 +380,7 @@ def test_event_list_mismatch_forces_full_replay(sqlite_store: Any, snapshots: li
         mod.build_fundamentals_history(context, ["TST"])
 
     print("\n=== SANITY CHECK: event-list mismatch ===")
-    print(f"  tampered stored publication_form (lineage-recent): {provenance} snapshots, row rebuilt to {form!r}")
+    print(f"  changed provenance is refused with stored rows retained; explicit recovery uses {provenance} snapshots and restores {form!r}")
     print(f"  back-dated original 2023-06-15, no hand-off: {backfilled} snapshots, its row added (5 rows)")
     print("  late original 2023-09-15 with a changed stored row before it: drift error (append-only). Validated.")
 
@@ -445,10 +465,18 @@ def test_rebuild_history_deletes_and_replays_in_full(sqlite_store: Any, snapshot
 # --------------------------------------------------------------------------- #
 def test_verify_history_flag_reaches_the_history_build(monkeypatch: pytest.MonkeyPatch) -> None:
     builds: list[dict] = []
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, _context(None)))
+    config = extract_config()
+
+    def configured_context(path: str, **kwargs: Any) -> tuple[Any, Any]:
+        context = _context(None)
+        context.run = WindowRun("full" if kwargs["full"] else "incremental", "CLI history fixture", context.run.as_of)
+        return config, context
+
+    monkeypatch.setattr(cli_mod, "get_config_context", configured_context)
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")])
-    monkeypatch.setattr(step_mod, "build_fundamentals_history", lambda context, tickers, **kwargs: builds.append(kwargs))
+    monkeypatch.setattr(
+        step_mod, "build_fundamentals_history", lambda context, tickers, **kwargs: builds.append({"mode": context.run.mode, **kwargs})
+    )
     runner = CliRunner()
     for args in (
         ["sec-fundamentals-history", "-t", "AAA"],
@@ -460,12 +488,12 @@ def test_verify_history_flag_reaches_the_history_build(monkeypatch: pytest.Monke
     names = set(cli_mod.cli.list_commands(None))  # type: ignore[arg-type]
     helps = {name: runner.invoke(cli_mod.cli, [name, "--help"]).output for name in ("sec-fundamentals-history", "sec-fundamentals-facts")}
 
-    assert [(b["rebuild_history"], b["verify_history"]) for b in builds] == [(False, False), (False, True), (True, False)], builds
+    assert [(b["mode"], b["verify_history"]) for b in builds] == [("incremental", False), ("incremental", True), ("full", False)], builds
     assert "fundamentals-history-sec" not in names and "sec-fundamentals-history" in names
     assert "--verify-history" in helps["sec-fundamentals-history"] and "--verify-history" not in helps["sec-fundamentals-facts"]
     print("\n=== SANITY CHECK: sec-fundamentals-history wiring ===")
     print(
-        f"  (rebuild, verify) per call: {[(b['rebuild_history'], b['verify_history']) for b in builds]} through StepExtractFundamentals.run_history; "
+        f"  (context mode, verify) per call: {[(b['mode'], b['verify_history']) for b in builds]} through StepExtractFundamentals.run_history; "
         "fundamentals-history-sec is gone; only the history command lists --verify-history. Validated."
     )
 
@@ -490,7 +518,8 @@ def _pool_run(store: Any, workers: int) -> pd.DataFrame:
     serial = _context(store)
     mod.build_fundamentals_history(serial, ["BBB"])
     _keep_first(store, "BBB", _stored(store, "BBB"), 3)
-    context = SimpleNamespace(**vars(serial), config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=workers)))
+    context = serial
+    context.config.data_extract.fundamentals_workers = workers
     mod.build_fundamentals_history(context, tickers)
     return store.load(Tables.sec_fundamentals_history).sort_values(["ticker", "as_of"]).reset_index(drop=True)
 
@@ -581,7 +610,8 @@ def test_a_ticker_whose_drift_guard_raises_does_not_stop_the_others(
     sqlite_store.save(Tables.sec_fundamentals_facts, _quarters("CCC", _WINDOWS[3:]))
 
     _CountingPool.submitted = []
-    context = SimpleNamespace(**vars(_context(sqlite_store)), config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=workers)))
+    context = _context(sqlite_store)
+    context.config.data_extract.fundamentals_workers = workers
     with caplog.at_level(logging.INFO, logger=LOGGER), pytest.raises(ValueError, match="append-only") as raised:
         mod.build_fundamentals_history(context, tickers)
     built = {ticker: len(_stored(sqlite_store, ticker)) for ticker in tickers}

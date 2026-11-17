@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.context import Context
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 
 
-def invalidate_earnings_call_derivatives(context: Context, calls: pd.DataFrame) -> int:
+def invalidate_earnings_call_derivatives(store: DataStore, calls: pd.DataFrame) -> int:
     """Delete derived rows for every transcript call about to be replaced."""
     if calls.empty:
         return 0
@@ -16,6 +16,6 @@ def invalidate_earnings_call_derivatives(context: Context, calls: pd.DataFrame) 
     keys = calls[["ticker", "quarter"]].drop_duplicates()
     for ticker, group in keys.groupby("ticker", sort=False):
         where = {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()}
-        invalidated += context.store.delete(Tables.earnings_call_sentiment, where)
-        invalidated += context.store.delete(Tables.earning_calls_embedding, where)
+        invalidated += store.delete(Tables.earnings_call_sentiment, where)
+        invalidated += store.delete(Tables.earning_calls_embedding, where)
     return invalidated

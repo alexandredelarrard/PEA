@@ -9,10 +9,9 @@ that symbol's lineage window, its CUSIP-6 is a prefix of a universe company's Sh
 is on such an in-window symbol-matched line (a reused symbol brings no other issuer's family); the scope never reads
 `universe_cusip`. The identity step
 reads these lines as CUSIP evidence; the institutionals cube maps them to companies (`src/utils/security_series.py`).
-Values are cumulative net unsettled balances, not new fails. A run that stores a new period also re-reads every other
-cached period with the current scope (a keyed upsert) in the same transaction, so a key newly in scope (a lineage
-symbol, a Sharadar or curated CUSIP, or a key no later file lists) gets its whole history; a run that stores no new
-period reads no file. `full` re-reads every cached ZIP.
+Values are cumulative net unsettled balances, not new fails. Normal ingestion reads missing source units only.
+Explicit Context full/recovery replays completed units within configured dates. CUSIP-family discovery and catch-up
+stay inside the selected units and commit in one transaction; completed history needs an explicit recovery request.
 """
 
 from __future__ import annotations
@@ -237,11 +236,11 @@ def _save_lines(store: DataStore, period: str, lines: pd.DataFrame, replace: boo
     return store.save(table, lines) if not lines.empty else 0
 
 
-def _read_periods(reads: _Reads, periods: list[str], windows: pd.DataFrame, replace: bool) -> int:
+def _read_periods(reads: _Reads, periods: list[str], windows: pd.DataFrame) -> int:
     """Read each period once and save its lines of the symbols inside their `windows`, the scope's CUSIP-6 and the CUSIP-6
     found so far; a CUSIP-6 a symbol-matched line adds is in scope for the periods read after it. Returns the lines written."""
     written = 0
-    for period in tqdm(periods, desc="SEC fails-to-deliver" if replace else "SEC fails-to-deliver (re-read)"):
+    for period in tqdm(periods, desc="SEC fails-to-deliver"):
         raw = read_ftd_period(reads.cache, period)
         if raw is None:
             continue
@@ -249,7 +248,7 @@ def _read_periods(reads: _Reads, periods: list[str], windows: pd.DataFrame, repl
         reads.held[period] = frozenset(raw["cusip"].str[:6].unique())
         kept, seen = scope_lines(raw, windows, reads.known | set(reads.found))
         reads.found.update({prefix: reads.order[period] for prefix in seen - reads.known - reads.found.keys()})
-        written += _save_lines(reads.store, period, kept, replace)
+        written += _save_lines(reads.store, period, kept, True)
     return written
 
 
@@ -265,37 +264,29 @@ def _catch_up(reads: _Reads) -> int:
 
 
 def fetch_fails_to_deliver(context: Context) -> int:
-    """Store the in-scope lines of each new cached FTD period as filed (`full`: every cached period); returns lines written.
-
-    A run that stores a new period also re-reads every other cached period with the current scope (a keyed upsert), so a
-    key newly in scope gets its whole history; a run that stores no new period reads nothing. The periods read before a
-    symbol-matched line added a CUSIP-6 are read again for it. The run commits once, so a killed run stores nothing.
-    """
-    # load: the lineage, the Sharadar CUSIPs, the curation and the planned periods
+    """Ingest missing cached units or explicit bounded recovery, with atomic scope discovery inside selected units."""
     table = Tables.sec_fails_to_deliver_security
     full = context.run.mode in {"full", "recovery"}
+    if window_policy(context.config, table, context.run.as_of) is None:
+        return 0
+    cache = cache_dir(context, context.config.local.paths.fails_deliver)
+    listed_periods, stored = archive_periods(context, [table], sorted(cached_ftd_periods(cache)))
+    pending = listed_periods if full else [period for period in listed_periods if period not in stored]
+    if not pending:
+        return 0
     lineage = load_stored_lineage(context)
     sharadar = context.store.load(Tables.sharadar_tickers, columns=list(SHARADAR_CUSIP_COLUMNS), optional=True)
     manual = load_security_manual(str(context.config_dir))
-    cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    listed_periods, stored = archive_periods(context, [table], sorted(cached_ftd_periods(cache)))
     if lineage is None or lineage.empty:
         logger.warning("FTD: no universe_cik_symbol yet (run `identity` first); nothing stored")
         return 0
 
     # the scope: dated lineage symbols and the Sharadar / curated CUSIP-6
     scope = ftd_scope(lineage, sharadar_cusips(context.universe.frame, sharadar), manual)
-    pending = listed_periods if full else [period for period in listed_periods if period not in stored]
-
-    # save, in one transaction (a killed run leaves its new periods pending, so the next run repeats the re-read): each
-    # new period, then, once one is stored, every other cached period, then the periods read before a CUSIP-6 was found
+    # Catch-up stays inside selected units; completed historical units require explicit recovery.
     with context.store.transaction() as bound:
         reads = _Reads(cache, scope.prefixes, bound)
-        written = _read_periods(reads, pending, scope.windows, True)
-        others = [period for period in listed_periods if period not in pending] if written else []
-        grown = _read_periods(reads, others, scope.windows, False)
-        grown += _catch_up(reads)
-    logger.info(
-        "FTD: %d new period(s) read, %d line(s); full re-read of %d other cached period(s), %d line(s)", len(pending), written, len(others), grown
-    )
+        written = _read_periods(reads, pending, scope.windows)
+        grown = _catch_up(reads)
+    logger.info("FTD: %d selected unit(s), %d source line(s), %d within-scope catch-up line(s)", len(pending), written, grown)
     return written + grown

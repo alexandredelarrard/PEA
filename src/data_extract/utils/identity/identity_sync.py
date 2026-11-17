@@ -7,7 +7,7 @@ table (`PURGE_TABLES`):
   table's own dated / windowed rule) is re-tickered there by delete + insert; a row already stored under the new key wins.
 - Purge: every other row filed outside its company's scope; a row dated after the company's `ended_on` is left.
 Then the insider lineage stamps of the changed and receiving tickers are rewritten (co-registrant rows purged). No zip
-is read: a CIK new to a scope gets its archive rows from its fetcher's rescan (`resume.archive_worklist`), and a ticker
+is read: filling older archive rows after a scope change requires explicit bounded full/recovery, and a ticker
 whose facts moved has its SEC history rebuilt by the nightly history build (`build_fundamentals_history`).
 """
 
@@ -77,7 +77,7 @@ def sync_filer_rows(context: Context, spec: FilerTable, tickers: Sequence[str], 
     # load: the rows filed outside each ticker's scope
     if not tickers or not context.store.exists(spec.table):
         return [], []
-    found = foreign_filer_rows(context.store, spec, tickers, *owned)
+    found = foreign_filer_rows(context, spec, tickers, *owned)
 
     # compute: the rows to move, and the rest up to each company's end
     moving = moved_filer_rows(spec, found, *owned)
@@ -87,7 +87,7 @@ def sync_filer_rows(context: Context, spec: FilerTable, tickers: Sequence[str], 
     # save: the moves first, then the purge (insider rows through their source patch: a shared accession keeps the other issuer)
     moves = move_filer_rows(context.store, spec, moving)
     if spec.table == Tables.insider_transactions:
-        patch_insider_source(context.store, pd.DataFrame(), foreign[[*Tables.insider_transactions.pk, "ticker", "issuer_cik"]])
+        patch_insider_source(context, pd.DataFrame(), foreign[[*Tables.insider_transactions.pk, "ticker", "issuer_cik"]])
     else:
         delete_filer_rows(context.store, spec, foreign)
     records = removal_records(spec.table.name, foreign, spec)

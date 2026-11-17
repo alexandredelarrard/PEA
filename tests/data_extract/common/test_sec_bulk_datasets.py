@@ -11,7 +11,7 @@ import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -167,49 +167,43 @@ def test_insider_parse_real_zip():
 
 
 def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
-    """Quarter-skip comes from the DB: a stored quarter is skipped; NVDA, added after the newest stored quarter ended
-    and holding no zip-covered row of its window CIK, gets every cached stored quarter re-parsed for that CIK alone, but
-    only on a run whose new quarter is cached; once it holds one nothing is re-parsed."""
+    """Stored quarters are reused normally; an EDGAR-only row does not complete a missing archive unit."""
     from src.data_extract.utils.common.resume import archive_worklist
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     create_canonical(ds.engine, [Tables.insider_transactions])
     ds.save(
-        "insider_transactions",
+        Tables.insider_transactions,
         pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
-    universe = seed_universe(ds, ["AAPL", "MSFT", "NVDA"], rows={"NVDA": {"universe_added_on": pd.Timestamp("2024-06-25")}})
-    lineage = {
-        "company_id": "E3",
-        "canonical_ticker": "NVDA",
-        "cik": "0000000003",
-        "role": "cik_window",
-        "symbol": "",
-        "valid_from": pd.Timestamp("1900-01-01"),
-    }
-    lineage_rows = pd.DataFrame([lineage | {"scope_changed_at": pd.Timestamp("2020-01-01")}])
-    context: Any = SimpleNamespace(
-        store=ds, universe=universe, config=extract_config(), run=WindowRun("incremental", "archive completion fixture", pd.Timestamp("2024-07-01"))
+    keys = ["AAPL", "MSFT", "NVDA"]
+    universe = seed_universe(ds, keys, rows={"NVDA": {"universe_added_on": pd.Timestamp("2024-06-25")}})
+    context = SimpleNamespace(
+        store=ds, universe=universe, config=extract_config(), run=WindowRun("incremental", "archive unit fixture", pd.Timestamp("2024-07-01"))
     )
-    quarters, keys = ["2024q1", "2024q2"], ["AAPL", "MSFT", "NVDA"]
-
-    uncached = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, keys, lineage_rows)
-    work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, keys, lineage_rows)
-    assert dict(uncached.units()) == {"2024q2": keys}, "the new quarter is not cached: no run stores it, no rescan"
-    assert dict(work.units()) == {"2024q1": ["NVDA"], "2024q2": keys} and work.rescan_ciks == {"NVDA": frozenset({"0000000003"})}
-
-    edgar = {"accession_number": "e1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "NVDA", "issuer_cik": "3", "source": "edgar"}
-    ds.save("insider_transactions", pd.DataFrame([edgar | {"quarter": None}]))
-    edgar_only = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, keys, lineage_rows)
-    assert dict(edgar_only.units()) == {"2024q1": ["NVDA"], "2024q2": keys}, "an EDGAR row carries no quarter"
-
-    ds.save("insider_transactions", pd.DataFrame([edgar | {"accession_number": "a2", "source": "zip", "quarter": "2024q1"}]))
-    again = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1", "2024q2"}, keys, lineage_rows)
-    assert dict(again.units()) == {"2024q2": keys}
-
-    print("\n=== SANITY: insider work list from the DB ===")
-    print("  2024q1 stored -> skipped for established keys; new NVDA re-reads cached 2024q1 for CIK 3 alone, only once 2024q2 is cached,")
-    print("  still after an EDGAR row (no quarter); once NVDA has a zip-covered row only 2024q2 is left. Validated.")
+    quarters = ["2024q1", "2024q2"]
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, keys)
+    assert dict(work.units()) == {"2024q2": keys}
+    ds.save(
+        Tables.insider_transactions,
+        pd.DataFrame(
+            [
+                {
+                    "accession_number": "e1",
+                    "security_type": "nonderiv",
+                    "row_sequence": 1,
+                    "ticker": "NVDA",
+                    "issuer_cik": "3",
+                    "source": "edgar",
+                    "quarter": None,
+                }
+            ]
+        ),
+    )
+    assert dict(archive_worklist(context, (Tables.insider_transactions,), quarters, keys).units()) == {"2024q2": keys}
+    context.run = WindowRun("full", "explicit unit recovery", context.run.instant)
+    assert dict(archive_worklist(context, (Tables.insider_transactions,), quarters, keys).units()) == {"2024q1": keys, "2024q2": keys}
+    print("SANITY: new roster keys and EDGAR-only rows do not replay a completed quarter; explicit Context recovery replays the configured unit set.")
 
 
 def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_nothing(tmp_path, monkeypatch):

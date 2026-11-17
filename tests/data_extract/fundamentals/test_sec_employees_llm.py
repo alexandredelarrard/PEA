@@ -22,11 +22,11 @@ from src.data_extract.utils.edgar_extract.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.edgar_extract.fetch_employees_text import EMPLOYEES_TEXT_FETCH
 from src.data_store.schema import Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
-from src.utils.string import run_date
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import FakeEmployeesLLM, TenK, fake_context, patch_index_filings, roster_run, seed_index
 from tests.data_extract.edgar_fixtures import employee_answer as answer
 
-TODAY = run_date(None)
+TODAY = pd.Timestamp("2026-11-16")
 
 
 def body(count: int) -> str:
@@ -52,12 +52,13 @@ def seed(ctx: Any, monkeypatch: pytest.MonkeyPatch, filings: list[TenK]) -> None
     patch_index_filings(monkeypatch, {f.accession_number: f for f in filings})
 
 
-def walk(ctx: Any, *, years_history: int = 15, no_cap: bool = True) -> None:
+def walk(ctx: Any, *, no_cap: bool = True) -> None:
     run_edgar_fetch(ctx, EMPLOYEES_TEXT_FETCH, roster_run(ctx, ["AAA"], as_of=TODAY, no_cap=no_cap), max_workers=1)
 
 
-def decide(ctx: Any, extractor: FakeEmployeesLLM, *, years_history: int = 15, full: bool = False) -> pd.DataFrame:
-    mod.fetch_employees_llm(ctx, ["AAA"], years_history, [extractor], full=full)  # type: ignore[list-item]
+def decide(ctx: Any, extractor: FakeEmployeesLLM, *, full: bool = False) -> pd.DataFrame:
+    ctx.run = WindowRun("full" if full else "incremental", "employee cache fixture", ctx.run.instant)
+    mod.fetch_employees_llm(ctx, ["AAA"], [extractor])  # type: ignore[list-item]
     stored = ctx.store.load(Tables.fundamentals_employees, optional=True)
     return pd.DataFrame(columns=guard.FRAME_COLUMNS) if stored is None else stored.sort_values("as_of", ignore_index=True)
 
@@ -65,7 +66,7 @@ def decide(ctx: Any, extractor: FakeEmployeesLLM, *, years_history: int = 15, fu
 def test_decided_dates_make_no_call(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = world()
     filings = [TenK(accession(year), f"{year}-03-01", body(1000 * year)) for year in (2022, 2023, 2024)]
-    seed(ctx, monkeypatch, filings)
+    seed(ctx, monkeypatch, [TenK(accession(2021), "2021-03-01", "   "), *filings])
     walk(ctx)
     quiet = answer(0, "").model_copy(update={"status": "not_disclosed", "total": None, "total_quote": None})
     paraphrase = answer(50, "The company employs 50 people.")  # not in the text, and far from the earlier count: no recovery
@@ -76,16 +77,20 @@ def test_decided_dates_make_no_call(world: Any, monkeypatch: pytest.MonkeyPatch)
     n_first = len(extractor.calls)
     second = decide(ctx, extractor)
     n_second = len(extractor.calls) - n_first
-    decide(ctx, extractor, full=True)
+    ctx.store.delete(Tables.fundamentals_employees, {"ticker": "AAA", "as_of": pd.Timestamp("2024-03-01")})
+    third = decide(ctx, extractor, full=True)
     n_full = len(extractor.calls) - n_first - n_second
 
     assert n_first == 3 and first["status"].tolist() == ["found", "not_disclosed", "unsupported"]
     assert first["employees_total"].iloc[0] == 2022000 and first["employees_total"].iloc[1:].isna().all()
-    assert n_second == 0 and len(second) == 3 and n_full == 3
+    assert n_second == 0 and len(second) == len(third) == 3 and n_full == 1
+    assert extractor.calls[-1] == accession(2024)
     assert first["source_document"].eq("primary").all() and first["cik"].eq("0000000001").all()
     print("\n=== SANITY CHECK: decided dates make no call (AC-003) ===")
     print(f"  night one: {n_first} call(s) -> found, not_disclosed, unsupported rows; rerun: {n_second} call(s), so NULL-status")
-    print(f"  rows count as decided; --full re-decided {n_full}.")
+    print(
+        f"  rows remain reused under --full; the deleted decision alone was recomputed ({n_full} call), and completed empty source markers did not block it."
+    )
 
 
 def test_a_capped_walk_splitting_a_same_day_pair_holds_the_date(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,21 +157,27 @@ def test_marker_rows_make_no_call_and_no_row(world: Any, monkeypatch: pytest.Mon
     print("  the blank 2023 filing is a walk marker: no call and no row; it is walked, so 2024 is not held back and is decided.")
 
 
-def test_the_window_floor_bounds_the_worklist(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configured_source_and_output_dates_bound_the_worklist(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = world()
     old = TenK(accession(2001), "2001-03-01", body(9000))
     recent = TenK(accession(2024), "2024-03-01", body(41000))
-    seed(ctx, monkeypatch, [old, recent])
-    walk(ctx, years_history=31)
-    extractor = FakeEmployeesLLM({f.accession_number: answer(n, body(n)) for f, n in ((old, 9000), (recent, 41000))})
+    future = TenK(accession(2025), "2025-03-01", body(42000))
+    seed(ctx, monkeypatch, [old, recent, future])
+    walk(ctx)
+    ctx.config.data.tables.fundamentals_employees.start_date = "2011-01-01"
+    ctx.config.data.tables.fundamentals_employees.end_date = "2025-12-31"
+    ctx.config.data.tables.sec_employees_text.end_date = "2024-12-31"
+    extractor = FakeEmployeesLLM({f.accession_number: answer(n, body(n)) for f, n in ((old, 9000), (recent, 41000), (future, 42000))})
 
-    decided = decide(ctx, extractor, years_history=15)
+    decided = decide(ctx, extractor)
 
     stored = ctx.store.load(Tables.sec_employees_text)["accession_number"].tolist()
-    assert sorted(stored) == sorted([old.accession_number, recent.accession_number])
+    assert sorted(stored) == sorted([old.accession_number, recent.accession_number, future.accession_number])
     assert extractor.calls == [recent.accession_number] and len(decided) == 1
     print("\n=== SANITY CHECK: window floor (M6) ===")
-    print(f"  both filings stored; a 15-year run (floor {(TODAY - pd.DateOffset(years=15)).date()}) sent only the 2024 one.")
+    print(
+        "  all three source filings remain stored; configured output start and source end admit only the2024 decision, without payload reads/calls for2001 or2025."
+    )
 
 
 INVALID_JSON = "ValidationError: 1 validation error for EmployeeAnswer\n  Invalid JSON: expected value at line 1 column 2 [type=json_invalid]"
@@ -254,10 +265,12 @@ def test_tickers_run_concurrently_one_extractor_each(tmp_path: Path, sqlite_stor
 
     barrier = threading.Barrier(2, timeout=20)
     gated = [GatedLLM(answers, barrier), GatedLLM(answers, barrier)]
-    mod.fetch_employees_llm(ctx, ["AAA", "BBB"], 15, gated)  # type: ignore[arg-type]
+    mod.fetch_employees_llm(ctx, ["AAA", "BBB"], gated)  # type: ignore[arg-type]
     concurrent = ctx.store.load(Tables.fundamentals_employees).sort_values(["ticker", "as_of"], ignore_index=True)
     serial = FakeEmployeesLLM(answers)
-    mod.fetch_employees_llm(ctx, ["AAA", "BBB"], 15, [serial], full=True)  # type: ignore[list-item]
+    ctx.store.delete(Tables.fundamentals_employees, {"ticker": ["AAA", "BBB"]})
+    ctx.run = WindowRun("full", "independent serial missing-decision replay", ctx.run.instant)
+    mod.fetch_employees_llm(ctx, ["AAA", "BBB"], [serial])  # type: ignore[list-item]
     again = ctx.store.load(Tables.fundamentals_employees).sort_values(["ticker", "as_of"], ignore_index=True)
 
     served = sorted(sorted({call[:10] for call in extractor.calls}) for extractor in gated)
@@ -267,4 +280,4 @@ def test_tickers_run_concurrently_one_extractor_each(tmp_path: Path, sqlite_stor
     assert sorted(serial.calls) == sorted(f.accession_number for f in every)
     print("\n=== SANITY CHECK: tickers run concurrently (ON-1) ===")
     print(f"  2 extractors x 1 ticker each, both tickers calling at once (barrier of 2 passed); {len(concurrent)} rows stored,")
-    print("  identical to a one-extractor serial --full re-decision of the same filings; per-ticker saves, no extra call.")
+    print("  identical to a one-extractor serial replay of missing decisions; per-ticker saves, no extra call.")

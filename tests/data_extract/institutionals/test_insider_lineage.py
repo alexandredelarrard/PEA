@@ -25,6 +25,7 @@ from src.data_extract.utils.edgar_extract import insider_common as ic
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.fake_context import extract_config
 from tests.support.identity_sync import run_sync
 from tests.support.universe import as_roster
@@ -383,8 +384,9 @@ def _context(store: Any, tmp_path: Path) -> SimpleNamespace:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("test.insider_lineage"),
-        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
+        config=extract_config(),
         config_dir="./configs",
+        run=WindowRun("incremental", "stored insider lineage fixture", pd.Timestamp("2026-11-16")),
     )
 
 
@@ -405,6 +407,36 @@ def _stored(identity: Any) -> pd.DataFrame:
     sources = {"amb": "edgar", "pld": "zip", "opld": "zip", "dlr": "edgar"}
     sourced = kept.assign(source=kept["accession_number"].map(sources))
     return sourced[[c for c in ic.INSIDER_COLUMNS if c in sourced.columns]]
+
+
+def test_lineage_restamp_stays_inside_requested_dates_and_tickers(sqlite_store: Any, tmp_path: Path) -> None:
+    rows = []
+    for accession, filed, ticker, cik in (
+        ("old", "2026-05-01", "MRK", SGP),
+        ("inside", "2026-07-01", "MRK", SGP),
+        ("future", "2026-11-01", "MRK", SGP),
+        ("other", "2026-07-01", "PLD", AMB),
+    ):
+        rows.append(
+            {
+                **_tx(accession, cik, ticker, txn=filed, filed=filed),
+                "ticker": ticker,
+                "source_symbol": ticker,
+                "source": "edgar",
+                "lineage_role": None if accession == "other" else "acquired_constituent",
+                "economic_date": pd.Timestamp(filed),
+            }
+        )
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame(rows))
+    context = _context(sqlite_store, tmp_path)
+    item = context.config.data.tables[Tables.insider_transactions.name]
+    item.start_date, item.end_date = "2026-06-01", "2026-09-30"
+    records = ins.restamp_insider_lineage(context, ["MRK"], identity=_identity())
+    saved = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"]).set_index("accession_number")
+    assert records == [] and saved.loc["inside", "lineage_role"] == "canonical_current"
+    assert saved.loc[["old", "future"], "lineage_role"].eq("acquired_constituent").all()
+    assert pd.isna(saved.loc["other", "lineage_role"])
+    print("SANITY: insider lineage repairs only the requested ticker and configured dates; unstamped other tickers are retained.")
 
 
 def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_path: Path) -> None:

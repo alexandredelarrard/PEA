@@ -292,7 +292,16 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
 
 @pytest.mark.parametrize("bad", ["malformed", "wrong-period"])
 def test_ftd_bad_cached_payload_is_skipped_and_kept(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            paths={"DATA_STORE": tmp_path},
+            config=extract_config(),
+            log=logging.getLogger(__name__),
+            run=WindowRun("incremental", "FTD cache fixture", pd.Timestamp("2026-07-30")),
+        ),
+    )
     good = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
     sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd._parse_ftd_lines(good).assign(period="202607a")[list(ftd.SECURITY_COLUMNS)])
     before_raw = sqlite_store.load(Tables.sec_fails_to_deliver_security)
@@ -309,11 +318,11 @@ def test_ftd_bad_cached_payload_is_skipped_and_kept(sqlite_store: DataStore, mon
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
-    assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
+    assert ftd.download_fails_to_deliver(context) == 1
     assert ftd.read_ftd_period(path.parent, "202607a") is None, "the bad cached period is skipped"
     assert path.exists() and not requests
     path.unlink()
-    assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
+    assert ftd.download_fails_to_deliver(context) == 1
     assert len(requests) == 1 and path.exists()
     read = ftd.read_ftd_period(path.parent, "202607a")
     assert read is not None and read["cusip"].tolist() == ["526057104"]
@@ -324,17 +333,16 @@ def test_ftd_bad_cached_payload_is_skipped_and_kept(sqlite_store: DataStore, mon
 
 
 @pytest.mark.parametrize("bad", ["missing-member", "invalid-row-key"])
-def test_insider_normal_planner_retries_invalid_cached_quarter(
+def test_explicit_insider_recovery_retries_invalid_cached_quarter(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str
 ) -> None:
     context, identity = _parser_identity_context(sqlite_store, tmp_path)
     monkeypatch.setattr(insider_zip, "load_identity", lambda ctx: identity)
     monkeypatch.setattr(insider_zip, "quarter_periods", lambda *args: ["2026q3"])
-    monkeypatch.setattr(insider_zip, "_screen_stored_rows", lambda *args: 0)
     members = _bulk_members()
     path = tmp_path / context.config.local.paths.insider_transactions / "2026q3.zip"
     _archive(path, members)
-    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-01")) == 1
+    assert insider_zip.fetch_insider_transactions(context, ["LEN"]) == 1
     sqlite_store.save(
         Tables.insider_transactions,
         pd.DataFrame(
@@ -362,18 +370,19 @@ def test_insider_normal_planner_retries_invalid_cached_quarter(
         return 200
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
-    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, reparse=True, as_of=pd.Timestamp("2026-10-01")) == 0
+    context.run = WindowRun("recovery", "explicit invalid-quarter recovery", pd.Timestamp("2026-10-01"))
+    assert insider_zip.fetch_insider_transactions(context, ["LEN"]) == 0
     stored_frame = sqlite_store.load(Tables.insider_transactions)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before)
     assert path.exists() and not requests
     path.unlink()
-    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-01")) == 1
+    assert insider_zip.fetch_insider_transactions(context, ["LEN"]) == 1
     recovered_rows = sqlite_store.load(Tables.insider_transactions)
     assert recovered_rows is not None
     assert len(requests) == 1 and recovered_rows["shares"].tolist() == [12.0]
     print(
-        "SANITY: incomplete or semantically invalid insider ZIP preserves good payload/proof and the cached file; once removed, the next normal worklist downloads it again."
+        "SANITY: incomplete or semantically invalid insider ZIP preserves good payload/proof and the cached file; once removed, the explicit recovery worklist downloads and parses it again."
     )
 
 
@@ -567,7 +576,12 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
         ],
     )
     context = SimpleNamespace(
-        store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(store)
+        store=store,
+        paths={"DATA_STORE": directory},
+        config=extract_config(),
+        log=logging.getLogger(__name__),
+        universe=_len_universe(store),
+        run=WindowRun("incremental", "fixed insider parser fixture", pd.Timestamp("2026-10-06")),
     )
     identity = _identity()
     for table, frame in identity.source_cohort.items():
@@ -613,11 +627,10 @@ def test_actual_bulk_parser_run_writes_the_quarter(sqlite_store: DataStore, monk
     context, identity = _parser_identity_context(sqlite_store, tmp_path)
     monkeypatch.setattr(insider_zip, "load_identity", lambda ctx: identity)
     monkeypatch.setattr(insider_zip, "quarter_periods", lambda *args: ["2026q3"])
-    monkeypatch.setattr(insider_zip, "_screen_stored_rows", lambda *args: 0)
     members = _bulk_members()
     members["FOOTNOTES.TSV"] += "0000920760-26-000001\tF1\tActual source note\n"
     _archive(tmp_path / context.config.local.paths.insider_transactions / "2026q3.zip", members)
-    insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-06"))
+    insider_zip.fetch_insider_transactions(context, ["LEN"])
     assert sqlite_store.row_count(Tables.insider_transactions) > 0 and sqlite_store.row_count(Tables.insider_footnotes) == 1
     print("SANITY: actual bulk parsing writes the quarter's rows and its one footnote.")
 

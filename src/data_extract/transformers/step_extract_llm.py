@@ -65,7 +65,7 @@ class StepExtractLlm(Step):
         fetch_8k_votes_llm(self._context, self._tickers, self._votes)
 
     def run_employees_llm(self) -> None:
-        """Decide the employee counts of the stored `sec_employees_text` filings with no row yet (`full`: all of them)."""
+        """Fill missing employee decisions; valid saved decisions are reused in every run mode."""
         fetch_employees_llm(self._context, self._tickers, self._employees)
 
     def run(self) -> None:

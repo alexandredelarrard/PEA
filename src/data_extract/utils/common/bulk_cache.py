@@ -40,7 +40,6 @@ __all__ = [
 ]
 
 DEFAULT_TIMEOUT = 300  # seconds
-_RELEASE_DAY = 12  # estimated release: this day of the month after the period end
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +73,8 @@ def cache_dir(context: Context, key: str) -> Path:
 
 
 def is_cached(path: Path) -> bool:
-    """True when `path` is a non-empty cached archive."""
-    return path.exists() and path.stat().st_size > 0
+    """Recognize a complete ZIP container without decoding or decompressing its payload."""
+    return path.is_file() and zipfile.is_zipfile(path)
 
 
 def ensure_zip(
@@ -106,6 +105,9 @@ def ensure_zip(
             continue
         if status != 200:
             failures.append(f"{url}: HTTP {status}")
+            continue
+        if not is_cached(path):
+            failures.append(f"{url}: invalid ZIP container")
             continue
         return path
     if failures:

@@ -265,7 +265,8 @@ def build_sharadar_history(context: Context, tickers: list[str]) -> None:
     splits = basis.vendor
 
     frame = build_frame(vendor, actions, field_map, yf_splits=yf_splits, report=report, splits=splits)
-    frame = frame.loc[plan.write.mask(frame["as_of"])]
+    if not frame.empty:
+        frame = frame.loc[plan.write.mask(frame["as_of"])]
     if frame.empty:
         context.log.warning("Sharadar history: the transform produced 0 rows")
         return

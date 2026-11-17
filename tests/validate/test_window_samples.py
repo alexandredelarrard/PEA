@@ -14,32 +14,37 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+from src.constants.constants_price import MACRO_ALL_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import write_part
-from src.data_store.schema import ALL, Table, Tables
+from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.window import Window, WindowPlan, WindowRun
-from src.validate.checks.window_sample import SampleSelection, check_window_sample
+from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
 from src.validate.cli import cli
+from tests.canonical_schema import create_canonical
+from tests.support.universe import universe_of
 from tests.support.window_samples import WindowSamples
 
-_DATA_TABLES = tuple(
-    table
-    for table in ALL
-    if table
-    not in {
-        Tables.cube_signal,
-        Tables.predictions,
-        Tables.predictions_latest,
-        Tables.trend_asset_returns,
-        Tables.strategy,
-    }
-)
+
+def _scoped_context(store: DataStore, tickers: list[str]) -> Context:
+    return cast(
+        Context,
+        SimpleNamespace(
+            store=store,
+            config=read_config("configs"),
+            universe=universe_of(tickers),
+            run=WindowRun("incremental", "scoped sample storage fixture", pd.Timestamp("2026-11-16")),
+        ),
+    )
 
 
-@pytest.mark.parametrize("table", _DATA_TABLES, ids=lambda table: table.name)
+@pytest.mark.parametrize("table", timing_sample_tables(), ids=lambda table: table.name)
 def test_pinned_table_cells(window_samples: WindowSamples, table: Table) -> None:
     result = window_samples.measure(table)
+    if window_samples.manifest["tables"].get(table.name, {}).get("applicability") == "inactive":
+        pytest.skip(result.reason)
     assert result.status == "pass", result.summary()
     print(f"SANITY: {table.name}: exact scoped PK/clock/value/null capture; producer economics remain separately measured.")
 
@@ -53,6 +58,133 @@ def test_sample_requires_explicit_scope(sqlite_store: DataStore) -> None:
     with pytest.raises(ValueError, match="explicit key/partition scope"):
         check_window_sample(context, Tables.cube_part_text, selection=selection)
     print("SANITY: an unscoped sample is refused before reading table rows.")
+
+
+@pytest.mark.parametrize("table", [Tables.cube_signal, Tables.predictions, Tables.predictions_latest, Tables.trend_asset_returns, Tables.strategy])
+def test_model_outputs_are_excluded_before_any_store_access(table: Table, tmp_path: Path) -> None:
+    context = cast(Context, SimpleNamespace())
+    selection = SampleSelection(tuple(table.pk), {table.pk[0]: "excluded"})
+    with pytest.raises(ValueError, match="outputs are excluded"):
+        check_window_sample(context, table, selection=selection)
+    run = WindowSamples(context, tmp_path, tmp_path, time.perf_counter(), 300, True, {"tables": {}})
+    with pytest.raises(ValueError, match="outputs are excluded"):
+        run.measure(table)
+    assert run.manifest["tables"] == {} and run.results == {}
+    print(f"SANITY: {table.name} is excluded before schema, clock, value or artifact access and produces no model-validation result.")
+
+
+def test_capture_selects_five_tickers_in_2026(sqlite_store: DataStore, tmp_path: Path) -> None:
+    tickers = ["AAPL", "AMZN", "JPM", "MSFT", "XOM"]
+    rows = pd.DataFrame(
+        [
+            {"ticker": ticker, "date": pd.Timestamp(day), "feature": float(index)}
+            for index, ticker in enumerate(tickers)
+            for day in ("2025-11-10", "2026-07-01")
+        ]
+    )
+    sqlite_store.replace(Tables.cube_part_text, rows)
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store,
+            config=read_config("configs"),
+            universe=universe_of(tickers),
+            run=WindowRun("incremental", "five-key sample contract", pd.Timestamp("2026-11-16")),
+        ),
+    )
+    baseline, out = tmp_path / "capture", tmp_path / "out"
+    baseline.mkdir()
+    out.mkdir()
+    run = WindowSamples(context, baseline, out, time.perf_counter(), 300, True, {"tables": {}})
+
+    result = run.measure(Tables.cube_part_text)
+
+    assert result.status == "pass", result.summary()
+    captured = pd.DataFrame(result.metrics["records"])
+    assert set(captured.ticker) == set(tickers)
+    assert pd.to_datetime(captured.date).dt.year.eq(2026).all()
+    assert len(captured) == 5
+    print("SANITY: one repeatable2026 key per requested ticker is captured; older rows cannot satisfy the five-ticker baseline.")
+
+
+def test_undated_companion_sample_uses_2026_parent_filing_dates(sqlite_store: DataStore, tmp_path: Path) -> None:
+    tickers = ["AAPL", "AMZN", "JPM", "MSFT", "XOM"]
+    create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
+    filings = [
+        {
+            "accession_number": f"{ticker}-2026",
+            "security_type": "nonderiv",
+            "row_sequence": 1,
+            "ticker": ticker,
+            "filing_date": pd.Timestamp("2026-07-01"),
+        }
+        for ticker in tickers
+    ]
+    filings.append({**filings[0], "accession_number": "000-old", "filing_date": pd.Timestamp("2025-11-10")})
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame(filings))
+    notes = pd.DataFrame(
+        [{"accession_number": row["accession_number"], "footnote_id": "F1", "footnote_text": "known source note"} for row in filings]
+    )
+    sqlite_store.save(Tables.insider_footnotes, notes)
+    baseline, out = tmp_path / "baseline", tmp_path / "out"
+    baseline.mkdir()
+    out.mkdir()
+    run = WindowSamples(_scoped_context(sqlite_store, tickers), baseline, out, time.perf_counter(), 300, True, {"tables": {}})
+
+    result = run.measure(Tables.insider_footnotes)
+
+    assert result.status == "pass", result.summary()
+    captured = pd.DataFrame(result.metrics["records"])
+    assert set(captured.accession_number) == {f"{ticker}-2026" for ticker in tickers}
+    scope = run.manifest["tables"][Tables.insider_footnotes.name]["sample_scope"]
+    assert scope["source_table"] == Tables.insider_transactions.name
+    assert pd.to_datetime(scope["source_dates"]).year.tolist() == [2026] * 5
+    print("SANITY: five undated companion units are sampled through actual2026 parent filings; older accessions cannot fill the quota.")
+
+
+def test_macro_sample_uses_series_keys_instead_of_equity_tickers(sqlite_store: DataStore) -> None:
+    series = list(MACRO_ALL_SERIES[:5])
+    sqlite_store.replace(Tables.prices_macro, pd.DataFrame({"ticker": series, "date": pd.Timestamp("2026-07-01"), "close": 1.0}))
+    entry = capture_window_selection(_scoped_context(sqlite_store, ["AAPL"]), Tables.prices_macro)
+    assert "selection" in entry, entry
+    assert set(entry["sample_scope"]["groups"]) == set(series)
+    print("SANITY: macro samples select five actual series in 2026 independently of the equity ticker roster.")
+
+
+def test_capture_reports_a_shortfall_without_smaller_or_older_substitutes(sqlite_store: DataStore, tmp_path: Path) -> None:
+    rows = pd.DataFrame({"ticker": ["AAPL", "MSFT"], "date": pd.to_datetime(["2026-07-01", "2025-11-10"]), "feature": [1.0, 2.0]})
+    sqlite_store.replace(Tables.cube_part_text, rows)
+    baseline, out = tmp_path / "baseline", tmp_path / "out"
+    baseline.mkdir()
+    out.mkdir()
+    run = WindowSamples(
+        _scoped_context(sqlite_store, ["AAPL", "AMZN", "JPM", "MSFT", "XOM"]), baseline, out, time.perf_counter(), 300, True, {"tables": {}}
+    )
+
+    result = run.measure(Tables.cube_part_text)
+
+    assert result.status == "abstain" and "1 of 5" in result.reason
+    entry = run.manifest["tables"][Tables.cube_part_text.name]
+    assert "selection" not in entry and entry["sample_scope"]["groups"] == ["AAPL"]
+    print("SANITY: insufficient2026 coverage is explicit; neither fewer tickers nor prior-year rows become a passing sample.")
+
+
+def test_capture_cli_pins_once_and_refuses_to_overwrite(sqlite_store: DataStore, tmp_path: Path) -> None:
+    tickers = ["AAPL", "AMZN", "JPM", "MSFT", "XOM"]
+    rows = pd.DataFrame({"ticker": tickers, "date": pd.Timestamp("2026-07-01"), "feature": 1.0})
+    sqlite_store.replace(Tables.cube_part_text, rows)
+    context = _scoped_context(sqlite_store, tickers)
+    args = ["window-capture", "-T", Tables.cube_part_text.name, "-o", str(tmp_path / "capture")]
+    with patch("src.validate.cli.get_config_context", return_value=(context.config, context)):
+        captured = CliRunner().invoke(cli, args)
+    assert captured.exit_code == 0, captured.output
+    target = tmp_path / "capture" / "_cache" / f"window-{Tables.cube_part_text.name}.json"
+    before = target.read_bytes()
+    with patch("src.validate.cli.get_config_context", side_effect=AssertionError("An existing pin cannot read new source data")):
+        refused = CliRunner().invoke(cli, args)
+    assert refused.exit_code == 1 and "already exists" in refused.output
+    assert target.read_bytes() == before
+    print("SANITY: the reusable capture CLI writes an immutable five-key pin and refuses replacement before reopening the database.")
 
 
 def test_sample_preserves_values_and_nulls(sqlite_store: DataStore) -> None:
@@ -86,9 +218,18 @@ def test_source_identity_distinguishes_null_and_both_infinities(sqlite_store: Da
 
 def test_changed_source_abstains_without_rewriting_baseline(sqlite_store: DataStore, tmp_path: Path) -> None:
     # Pin exact storage truth, then change one source cell through the normal store.
-    df_rows = pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2026-11-09"]), "feature": [1.0]})
+    tickers = ["AAPL", "AMZN", "JPM", "MSFT", "XOM"]
+    df_rows = pd.DataFrame({"ticker": tickers, "date": pd.Timestamp("2026-11-09"), "feature": 1.0})
     sqlite_store.replace(Tables.cube_part_text, df_rows)
-    context = cast(Context, SimpleNamespace(store=sqlite_store))
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store,
+            config=read_config("configs"),
+            universe=universe_of(tickers),
+            run=WindowRun("incremental", "immutable grouped sample", pd.Timestamp("2026-11-16")),
+        ),
+    )
     baseline, out = tmp_path / "baseline", tmp_path / "out"
     baseline.mkdir()
     out.mkdir()

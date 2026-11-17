@@ -554,7 +554,7 @@ def sec_8k_votes(config_path: str, tickers: str | None, as_of: datetime | None) 
     name="sec-employees-llm",
     help="Stored sec_employees_text -> fundamentals_employees (LLM): total, full-time and part-time counts with basis, status, "
     "filer CIK, accession and source quotes, one row per filing date. No download. Dates that already have a row (NULL-status "
-    "rows included) are skipped unless --full; dates after a filing the text walk has not stored yet wait for it. A failed LLM "
+    "rows included) are reused in every mode; dates after a filing the text walk has not stored yet wait for it. A failed LLM "
     "call or ticker is logged and retried next run; the task exits 0.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)

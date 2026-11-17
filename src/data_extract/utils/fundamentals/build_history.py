@@ -980,6 +980,9 @@ class _Pending:
 
 def _save_history(context: Context, ticker: str, history: pd.DataFrame | None, work: HistoryWork, catalogue: Catalogue) -> int:
     """Commit only the authorized event Window, with explicit recovery and protected earlier events."""
+    if history is None:
+        context.log.warning("history: %s source facts unavailable; keeping stored history", ticker)
+        return 0
     plan = source_plan(context, Tables.sec_fundamentals_history, work.newest, (("ticker", (ticker,)),))
     if plan is None:
         return 0
@@ -992,9 +995,7 @@ def _save_history(context: Context, ticker: str, history: pd.DataFrame | None, w
         optional=True,
     )
     recovery = context.run.mode in {"full", "recovery"}
-    if history is None and not recovery:
-        return 0
-    rows = pd.DataFrame(columns=catalogue.history_columns) if history is None else history.loc[plan.write.mask(history["as_of"])]
+    rows = history.loc[plan.write.mask(history["as_of"])]
     if recovery:
         effects = context.store.replace_window(Tables.sec_fundamentals_history, rows, plan.write, {"ticker": [ticker]})
         context.log.warning("history: %s REBUILT -- %d row(s) deleted and recomputed inside %s..%s", ticker, effects.deleted, *plan.write)

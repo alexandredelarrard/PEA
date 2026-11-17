@@ -24,7 +24,7 @@ from src.data_store.schema import Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import source_read_window, window_policy
 from src.utils.tickers_universe.universe import before_end
 
 #: The `sec_def14a_text` columns the worklist reads; `payload` is read per ticker, for its proxies worth a payload.
@@ -58,15 +58,16 @@ def fetch_def14a_llm(
     # load: the five output tables (created from their committed DDL on a first run), the walked proxies in the window
     # (no payloads), the ticker names and end bounds
     policy = window_policy(context.config, Tables.def14a_llm, context.run.as_of)
-    if policy is None:
+    source = source_read_window(context.config, Tables.sec_def14a_text, context.run.as_of)
+    window = policy.requested.intersection(source) if policy is not None and source is not None else None
+    if window is None:
         return
-    floor = policy.requested.start
     df_text = context.store.load(
         Tables.sec_def14a_text,
         columns=_TEXT_COLUMNS,
         where={"ticker": tickers},
-        since=floor,
-        until=policy.requested.end,
+        since=window.start,
+        until=window.end,
         date_col="filing_date",
         optional=True,
     )
@@ -84,10 +85,10 @@ def fetch_def14a_llm(
     # compute: each ticker's open sections, saved per section
     updated = 0
     for ticker, df_filings in tqdm(df_proxies.groupby("ticker", sort=False), desc="DEF 14A LLM"):
-        works = ticker_works(context, str(ticker), df_filings, floor)
+        works = ticker_works(context, str(ticker), df_filings)
         updated += call_sections(context, str(ticker), section_requests(context, works, budget), extractors, batch_size)
 
     # save: the cross-ticker gender reconciliation after saved updates
     if updated:
-        finalise_gender(context)
+        finalise_gender(context, tickers)
     context.log.info("DEF 14A: %d section answer(s) extracted; sections at retry=2 skipped", updated)

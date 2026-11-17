@@ -20,7 +20,7 @@ from src.data_extract.utils.fundamentals.employee_guard import COUNT_COLUMNS, Fi
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import source_read_window, window_policy
 
 # The `sec_employees_text` columns the worklist reads; `windows` and `pieces` are read per ticker, for its undecided filings.
 _TEXT_COLUMNS = ["ticker", "accession_number", "cik", "form", "filing_date", "period_of_report", "source_document"]
@@ -45,6 +45,14 @@ def _undecided(df_text: pd.DataFrame | None, df_done: pd.DataFrame | None, pendi
     earliest filing the text walk has not stored yet; plus the number of undecided (ticker, date) pairs held back."""
     # clean: the filing day and the amendment flag of each text row
     df = (pd.DataFrame(columns=_TEXT_COLUMNS) if df_text is None else df_text).copy()
+    walked = {ticker: set(rows["accession_number"].astype(str)) for ticker, rows in df.groupby("ticker", sort=False)}
+    first_pending: dict[str, pd.Timestamp] = {}
+    for ticker, units in pending.items():
+        missing = units.loc[~units["accession"].astype(str).isin(walked.get(ticker, set()))]
+        if not missing.empty:
+            first_pending[ticker] = pd.Timestamp(missing["filed"].min()).normalize()
+    marker_column, marker_value = cast(tuple[str, object], Tables.sec_employees_text.empty_marker)
+    df = df.loc[~df[marker_column].eq(marker_value)].copy()
     df["filed"] = pd.to_datetime(df["filing_date"]).dt.normalize()
     df["is_amendment"] = df["form"].astype(str).str.upper().str.endswith("/A")
     keys = pd.MultiIndex.from_arrays([df["ticker"].astype(str), df["filed"]])
@@ -55,7 +63,6 @@ def _undecided(df_text: pd.DataFrame | None, df_done: pd.DataFrame | None, pendi
     else:
         done = pd.MultiIndex.from_arrays([df_done["ticker"].astype(str), pd.to_datetime(df_done["as_of"]).dt.normalize()])
         decided = pd.Series(keys.isin(done), index=df.index)
-    first_pending = {ticker: pd.Timestamp(df_units["filed"].min()).normalize() for ticker, df_units in pending.items() if not df_units.empty}
     held = df["filed"].ge(pd.to_datetime(df["ticker"].map(first_pending)))
     n_held = keys[(~decided & held).to_numpy()].nunique()
     return df[~decided & ~held].reset_index(drop=True), int(n_held)
@@ -170,22 +177,27 @@ def _log_run(context: Context, df_keys: pd.DataFrame, results: list[EmployeeTick
 
 
 def fetch_employees_llm(context: Context, tickers: list[str], extractors: Sequence[LLMExtractor]) -> None:
-    """Decide every stored employees text in the window whose filing date has no row (a NULL row with its status when no
-    count is supported); `full` re-decides them all. Dates from a ticker's earliest filing the walk has not stored yet wait.
-    Each worker reads its own ticker's `windows`/`pieces`, which bounds memory. `len(extractors)` tickers run at once, one
-    extractor each; a failed call or ticker is logged and listed again next run."""
+    """Fill missing employee decisions inside configured dates, reusing valid decisions under every Context mode."""
     # load: the window's text rows (no windows or pieces), the stored rows, the text walk's pending filings
     policy = window_policy(context.config, Tables.fundamentals_employees, context.run.as_of)
-    if policy is None:
+    source = source_read_window(context.config, Tables.sec_employees_text, context.run.as_of)
+    history = source_read_window(context.config, Tables.fundamentals_employees, context.run.as_of)
+    if policy is None or source is None or history is None:
         return
-    window = policy.requested
-    full = context.run.mode in {"full", "recovery"}
+    window = policy.requested.intersection(source)
+    if window is None:
+        return
     cik_map = universe_rows(context, tickers)
     df_text = context.store.load(
-        Tables.sec_employees_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=window.start, until=window.end, optional=True
+        Tables.sec_employees_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=window.start, until=window.end, optional=True, markers=True
     )
     stored = context.store.load(
-        Tables.fundamentals_employees, columns=["ticker", "as_of", *COUNT_COLUMNS], where={"ticker": tickers}, until=window.end, optional=True
+        Tables.fundamentals_employees,
+        columns=["ticker", "as_of", *COUNT_COLUMNS],
+        where={"ticker": tickers},
+        since=history.start,
+        until=window.end,
+        optional=True,
     )
     forms = cast(Resume, Tables.sec_employees_text.resume).forms
     request = WorklistRequest(
@@ -194,11 +206,12 @@ def fetch_employees_llm(context: Context, tickers: list[str], extractors: Sequen
         identity=load_identity(context),
         done_scope=DONE_PER_KEY,
     )
-    pending = document_worklist(context, Tables.sec_employees_text, request).units
+    planned = document_worklist(context, Tables.sec_employees_text, request).units
+    pending = {ticker: units.loc[window.mask(units["filed"])] for ticker, units in planned.items()}
 
     # compute: the undecided dates, then each ticker's decisions (saved per ticker)
     df_history = pd.DataFrame(columns=["ticker", "as_of", *COUNT_COLUMNS]) if stored is None else stored
-    df_todo, n_held = _undecided(df_text, None if full else df_history, pending)
+    df_todo, n_held = _undecided(df_text, df_history, pending)
     df_keys = cik_map[cik_map["ticker"].isin(df_todo["ticker"])].reset_index(drop=True)
     lent: queue.SimpleQueue[LLMExtractor] = queue.SimpleQueue()
     for extractor in extractors:

@@ -36,6 +36,8 @@ from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, I
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_extract.utils.common.resume import planner_bounds, source_plan
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
+from src.utils.data_policy import window_policy
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
 from src.utils.window import Window
@@ -452,6 +454,15 @@ def _require_call_scope(context: Context, calls: pd.DataFrame, windows: Mapping[
     if not allowed.all():
         raise ValueError("Earnings-call replacement crosses its configured Window; run an explicit bounded historical recovery")
 
+    # A replacement also invalidates cached source outputs; their own dates must authorize that work.
+    for table in (Tables.earnings_call_sentiment, Tables.earning_calls_embedding):
+        policy = window_policy(context.config, table, context.run.as_of)
+        if policy is None:
+            raise ValueError(f"{table.name}: call invalidation requires an active configured Window")
+        dates = calls["old_as_of"] if "old_as_of" in calls else calls["as_of"]
+        if not (policy.requested.mask(dates) | pd.to_datetime(dates).isna()).all():
+            raise ValueError(f"{table.name}: call invalidation crosses its configured Window")
+
 
 def _paragraph_signature(rows: pd.DataFrame) -> tuple[tuple[object, ...], ...]:
     """Retained raw content and speaker order; null speaker spellings compare equally."""
@@ -529,18 +540,22 @@ def _verify_calls(
     return selected
 
 
-def _remove_calls(context: Context, calls: pd.DataFrame) -> None:
+def _remove_calls(store: DataStore, calls: pd.DataFrame) -> None:
     """Invalidate derived outputs before replacing or deleting source paragraphs."""
-    invalidate_earnings_call_derivatives(context, calls)
+    invalidate_earnings_call_derivatives(store, calls)
     for ticker, group in calls.groupby("ticker", sort=False):
-        context.store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
+        store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
 
 
 def _write_batch(context: Context, paragraphs: pd.DataFrame, reissued: pd.DataFrame) -> int:
     """Preserve invalidation and the earliest refresh date before replacing old paragraphs."""
-    if not reissued.empty:
-        _remove_calls(context, reissued)
-    return context.store.save(_TABLE, paragraphs) if not paragraphs.empty else 0
+    if paragraphs.empty:
+        return 0
+    replacements = reissued.merge(paragraphs[_KEY].drop_duplicates(), on=_KEY, how="inner")
+    with context.store.transaction() as bound:
+        if not replacements.empty:
+            _remove_calls(bound, replacements)
+        return bound.save(_TABLE, paragraphs)
 
 
 def extract_earnings_calls(
@@ -603,7 +618,8 @@ def extract_earnings_calls(
 
         # A complete bounded reconciliation may remove absent calls; ordinary runs only replace candidates.
         if not df_gone.empty:
-            _remove_calls(context, df_gone)
+            with context.store.transaction() as bound:
+                _remove_calls(bound, df_gone)
         df_needed = pd.concat(
             [
                 df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]"), is_reissued=False),

@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, false, func, inspect, or_, select, text, true, tuple_
+from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, false, func, inspect, null, or_, select, text, true, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -48,6 +48,17 @@ class WriteCounts:
 
     deleted: int
     inserted: int
+
+
+@dataclass(frozen=True, slots=True)
+class KeySample:
+    """One deterministic key per group, optionally dated through a linked source table."""
+
+    group: str
+    count: int
+    where: dict[str, Any]
+    clock: str | None = None
+    source: SchemaTable | None = None
 
 
 @contextmanager
@@ -587,6 +598,45 @@ class DataStore:
         for edge in ("first", "last"):
             df[edge] = pd.to_datetime(df[edge], errors="coerce").dt.normalize()
         return df.astype({"key": str, "n": "int64"})
+
+    def sample_keys(self, table: SchemaTable, sample: KeySample) -> pd.DataFrame:
+        """Select bounded group keys in one query; linked source dates never become an unscoped join."""
+        if isinstance(sample.count, bool) or not isinstance(sample.count, int) or sample.count < 1:
+            raise ValueError("Key samples require a positive group count")
+        columns = [*table.pk, "__sample_group", "__sample_clock"]
+        source = sample.source or table
+        if not self.exists(table) or not self.exists(source):
+            return pd.DataFrame(columns=columns)
+        payload, dated = self._table(table), self._table(source)
+        if sample.group not in dated.c or sample.clock is not None and sample.clock not in dated.c:
+            raise ValueError("Sample group and publication clock must belong to the selected source")
+        shared = set(table.pk) & set(source.pk)
+        if source != table and not shared:
+            raise ValueError("A linked key sample requires a shared registered source key")
+
+        # Stream scoped keys and stop as soon as the requested groups are present. A global
+        # rank/sort would read the whole holdings history merely to pin five sample rows.
+        relation = payload if source == table else payload.join(dated, and_(*(payload.c[key] == dated.c[key] for key in sorted(shared))))
+        group = dated.c[sample.group]
+        clock = dated.c[sample.clock] if sample.clock is not None else None
+        where = _where(dated, sample.where) & group.is_not(None)
+        stmt = (
+            select(
+                *(payload.c[key] for key in table.pk),
+                group.label("__sample_group"),
+                (clock if clock is not None else null()).label("__sample_clock"),
+            )
+            .select_from(relation)
+            .where(where)
+        )
+        selected: dict[object, dict[str, Any]] = {}
+        with _connection(self._database) as conn:
+            with conn.execution_options(stream_results=True, max_row_buffer=_CHUNK).execute(stmt) as rows:
+                for row in rows.mappings():
+                    selected.setdefault(row["__sample_group"], dict(row))
+                    if len(selected) == sample.count:
+                        break
+        return pd.DataFrame(selected.values(), columns=columns).sort_values("__sample_group").reset_index(drop=True)
 
     def distinct(
         self, table, column: str, *, where: dict | None = None, order: str | None = None, limit: int | None = None, dropna: bool = True

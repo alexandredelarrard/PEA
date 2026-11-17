@@ -164,7 +164,7 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
             warning=lambda msg, *a: warnings.append(msg % a if a else msg),
             error=lambda msg, *a: errors.append(msg % a if a else msg),
         ),
-        config=extract_config(data_extract={"years_history": 15, **data_extract}),
+        config=extract_config(data_extract=data_extract),
         run=WindowRun("incremental", "offline source fixture", pd.Timestamp("2026-09-30")),
         ensure_edgar_identity=lambda: None,
         config_dir=write_roster_config(tmp_path),

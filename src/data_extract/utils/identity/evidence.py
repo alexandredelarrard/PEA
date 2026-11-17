@@ -63,6 +63,7 @@ def pending_dei_periods(context: Context, cache: Path) -> list[str]:
 
 def capture_dei_period(context: Context, cache: Path, period: str) -> int:
     """Replace one period's `dei` rows with its zip's cover-page symbols unless unchanged; returns the rows written."""
+    # Admit only a configured source unit before reading its evidence partition.
     if period not in archive_scopes(context, (Tables.notes_num, Tables.notes_text), (period,)):
         raise ValueError(f"Identity evidence unit {period} is outside the configured notes source Window")
     # Load only a permitted complete source unit and its existing evidence partition.

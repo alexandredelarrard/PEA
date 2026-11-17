@@ -643,29 +643,33 @@ def test_reissued_call_failure_preserves_retry_(tmp_path: Path, sqlite_store: An
     old = _call("AAA", 2010, 1, "2010-04-20", 1, 3)
     ect.extract_earnings_calls(ctx, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
     _seed_derivatives(sqlite_store, [("AAA", "2010Q1", "2010-04-20")])
+    before = _sections(sqlite_store)
+    before_sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    before_embeddings = sqlite_store.load(Tables.earning_calls_embedding)
     corrected = _call("AAA", 2010, 1, "2010-04-22", 99, 2, tag="v2")
     source = _source(_write(tmp_path / "corrected.parquet", [[corrected]]), "corrected")[0]
-    save, delete = sqlite_store.save, sqlite_store.delete
+    store_type = type(sqlite_store)
+    save, delete = store_type.save, store_type.delete
 
-    def fail_save(table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
+    def fail_save(store: Any, table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
         if failure == "paragraph_write" and table == Tables.earnings_call_sections:
             raise RuntimeError(f"injected {failure}")
-        return save(table, frame, **kwargs)
+        return save(store, table, frame, **kwargs)
 
-    def fail_delete(table: Any, where: dict[str, Any]) -> int:
+    def fail_delete(store: Any, table: Any, where: dict[str, Any]) -> int:
         if failure == "invalidation" and table == Tables.earning_calls_embedding:
             raise RuntimeError(f"injected {failure}")
-        return delete(table, where)
+        return delete(store, table, where)
 
     with monkeypatch.context() as injected:
-        injected.setattr(sqlite_store, "save", fail_save)
-        injected.setattr(sqlite_store, "delete", fail_delete)
+        injected.setattr(store_type, "save", fail_save)
+        injected.setattr(store_type, "delete", fail_delete)
         with pytest.raises(RuntimeError, match=f"injected {failure}"):
             ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source)
 
-    if failure != "paragraph_write":
-        retained = _sections(sqlite_store)
-        assert len(retained) == 3 and set(retained["transcript_id"]) == {1}
+    pd.testing.assert_frame_equal(_sections(sqlite_store), before)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_call_sentiment), before_sentiment)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earning_calls_embedding), before_embeddings)
     ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source)
     rows = _sections(sqlite_store)
     pending = sqlite_store.load(Tables.earnings_call_sentiment, optional=True)
@@ -675,6 +679,45 @@ def test_reissued_call_failure_preserves_retry_(tmp_path: Path, sqlite_store: An
     assert embeddings is None or embeddings.empty
     assert ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source).rows_written == 0
     print(f"SANITY: {failure} failure retries without stale cache, orphan paragraphs or fabricated completion state.")
+
+
+def test_an_empty_reissue_keeps_the_valid_stored_call_and_cache(tmp_path: Path, sqlite_store: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    old = _call("AAA", 2026, 2, "2026-07-20", 1, 3)
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
+    _seed_derivatives(sqlite_store, [("AAA", "2026Q2", "2026-07-20")])
+    before = _sections(sqlite_store)
+    before_sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    before_embeddings = sqlite_store.load(Tables.earning_calls_embedding)
+    empty = _call("AAA", 2026, 2, "2026-07-22", 99, 0)
+
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "empty.parquet", [[empty]]), "empty")[0])
+
+    pd.testing.assert_frame_equal(_sections(sqlite_store), before)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_call_sentiment), before_sentiment)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earning_calls_embedding), before_embeddings)
+    print("SANITY: an empty replacement transcript preserves the complete saved call and cached source outputs for retry.")
+
+
+@pytest.mark.parametrize("table", [Tables.earnings_call_sentiment, Tables.earning_calls_embedding], ids=lambda table: table.name)
+def test_reissue_cannot_invalidate_a_cache_outside_its_own_dates(tmp_path: Path, sqlite_store: Any, table: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    old = _call("AAA", 2026, 2, "2026-07-20", 1, 3)
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
+    _seed_derivatives(sqlite_store, [("AAA", "2026Q2", "2026-07-20")])
+    before = _sections(sqlite_store)
+    before_sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    before_embeddings = sqlite_store.load(Tables.earning_calls_embedding)
+    context.config.data.tables[table.name].start_date = "2026-08-01"
+    corrected = _call("AAA", 2026, 2, "2026-07-22", 99, 2)
+
+    with pytest.raises(ValueError, match=f"{table.name}.*Window"):
+        ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "corrected.parquet", [[corrected]]), "new")[0])
+
+    pd.testing.assert_frame_equal(_sections(sqlite_store), before)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_call_sentiment), before_sentiment)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earning_calls_embedding), before_embeddings)
+    print(f"SANITY: {table.name}'s configured dates gate invalidation before source paragraphs or either cache change.")
 
 
 def test_metadata_failure_cannot_remove_stored_calls(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:

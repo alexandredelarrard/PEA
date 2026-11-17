@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,8 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.data_policy import window_policy
 from src.utils.window import Window, WindowRun
+from tests.canonical_schema import create_canonical
+from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, master_text, seed_index
 from tests.data_extract.prices.test_one_download import FakeYahoo, _recorded
 from tests.support.store_identity import store_identity
@@ -441,3 +445,93 @@ def test_direct_notes_subruns_filter_provided_units_before_io(
         assert notes.ingest_financial_notes(context, tmp_path, ["AAA", "BBB"], periods) == 0
     assert visited == ["2026q1", "2026q2"]
     print(f"SANITY: direct notes {operation} enforces configured unit bounds before cache/provider/clock I/O.")
+
+
+def _cached_notes_unit(cache: Path, period: str) -> None:
+    end = pd.Period(period.upper(), freq="Q").end_time.normalize().strftime("%Y%m%d")
+    accession = f"new-{period}"
+    members = {
+        "sub.tsv": f"adsh\tcik\tform\tfy\tfp\tfiled\n{accession}\t7\t10-Q\t2026\tQ1\t{end}\n",
+        "num.tsv": (
+            "adsh\ttag\tddate\tqtrs\tuom\tdimn\tcoreg\tfootnote\tvalue\n"
+            f"{accession}\tDefinedBenefitPlanBenefitObligation\t{end}\t0\tUSD\t0\t\t\t100\n"
+        ),
+        "txt.tsv": (
+            "adsh\ttag\tddate\tqtrs\tdimn\tcoreg\tescaped\ttxtlen\tfootnote\tvalue\n"
+            f"{accession}\tDefinedBenefitPlanDisclosureTextBlock\t{end}\t0\t0\t\t0\t12\t\tPension note\n"
+        ),
+    }
+    path = cache / f"{period}_notes.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    observed = pd.Timestamp("2026-10-21", tz="UTC").timestamp()
+    os.utime(path, (observed, observed))
+
+
+def test_completed_notes_units_stay_untouched_until_explicit_bounded_recovery(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _context(tmp_path, sqlite_store)
+    create_canonical(sqlite_store.engine, [Tables.notes_num, Tables.notes_text])
+    sqlite_store.delete(Tables.universe_tickers, {"ticker": ["AAA", "BBB"]})
+    context.universe = seed_universe(sqlite_store, ["AAPL"])
+    identity = dated_identity(
+        [("AAPL", "0000000007", "cik_window", SENTINEL, None)],
+        {"AAPL": "0000000007"},
+        changed_at={"AAPL": pd.Timestamp("2026-07-05")},
+    )
+    monkeypatch.setattr(notes, "load_identity", lambda ctx: identity)
+    periods = ["2026q1", "2026q2", "2026q3"]
+    for period in periods:
+        _cached_notes_unit(tmp_path, period)
+    for table in (Tables.notes_num, Tables.notes_text):
+        item = context.config.data.tables[table.name]
+        item.start_date, item.end_date = "2026-01-01", "2026-09-30"
+        sqlite_store.save(
+            table,
+            pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAPL",
+                        "cik": "0000000001",
+                        "adsh": f"old-{p}",
+                        "tag": "existing",
+                        "ddate": pd.Timestamp("2026-03-31"),
+                        "qtrs": 0,
+                        "period": p,
+                        "available_at": pd.Timestamp("2026-07-21").date(),
+                        "value": 1.0 if table == Tables.notes_num else "kept",
+                    }
+                    for p in periods[:2]
+                ]
+            ),
+        )
+    parsed: list[str] = []
+    read = notes._read_notes
+
+    def observe(path: Path, identity: Any, universe: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+        unit = path.stem.removesuffix("_notes")
+        parsed.append(unit)
+        assert context.run.mode == "full" or unit == "2026q3", "normal ingest reopened a completed archive"
+        return read(path, identity, universe)
+
+    monkeypatch.setattr(notes, "_read_notes", observe)
+    assert notes.ingest_financial_notes(context, tmp_path, ["AAPL"], periods) == 2
+    assert parsed == ["2026q3"], "new lineage and a new archive must not replay completed units"
+    parsed.clear()
+    assert notes.ingest_financial_notes(context, tmp_path, ["AAPL"], periods) == 0 and parsed == []
+    before = {table: sqlite_store.load(table) for table in (Tables.notes_num, Tables.notes_text)}
+    for table in before:
+        item = context.config.data.tables[table.name]
+        item.start_date, item.end_date = "2026-04-01", "2026-06-30"
+    context.run = WindowRun("full", "explicit bounded notes recovery", context.run.instant)
+    assert notes.ingest_financial_notes(context, tmp_path, ["AAPL"], periods) == 2 and parsed == ["2026q2"]
+    for table, original in before.items():
+        after = sqlite_store.load(table)
+        protected = original.loc[original.period.ne("2026q2")].sort_values("adsh").reset_index(drop=True)
+        actual = after.loc[after.period.ne("2026q2")].sort_values("adsh").reset_index(drop=True)
+        pd.testing.assert_frame_equal(actual, protected)
+    print(
+        "SANITY: real cached notes parse only the missing quarter; repeat is a no-op, while explicit recovery replays its configured unit and protects other units."
+    )

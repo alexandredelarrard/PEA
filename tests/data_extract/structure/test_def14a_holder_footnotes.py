@@ -18,6 +18,8 @@ from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_extract.utils.structure.def14a.work import load_work, save_section
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 
 EOG_NAMES = (
     ("The Vanguard Group", "(b)", 34_810_950),
@@ -98,9 +100,14 @@ def test_eog_letter_cleanup_persists_once_and_leaves_ge_facts_untouched(
     sqlite_store.save(section.table, pd.concat([df_seed, df_ge], ignore_index=True))
     df_ge_before = sqlite_store.load(section.table, where={"ticker": "GE"}).copy()
     stamp: dict[str, Any] = eog_holders.iloc[0][["ticker", "accession_number", "as_of", "cik"]].to_dict()
-    context = cast(Context, SimpleNamespace(store=sqlite_store))
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "stored holder repair", pd.Timestamp("2026-11-16"))
+        ),
+    )
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
-    work = load_work(context, "EOG", filings, pd.Timestamp("2015-01-01"))[0]
+    work = load_work(context, "EOG", filings)[0]
     raw = Def14AExtract.model_validate({"ownership_holders": eog_holders.to_dict("records")}).model_dump_json()
 
     # Replay the same already-paid labels through actual save/delete persistence twice.
@@ -148,8 +155,13 @@ def test_parenthetical_stock_label_keeps_issuer_quantity_in_either_order(sqlite_
         dict(**stamp, holder_name="Dennis M. Ulak (Enron Corp. common stock)", holder_type="director_officer", shares=4_822, retry=1),
     ]
     sqlite_store.save(Tables.def14a_ownership, pd.DataFrame(rows[::-1] if reverse else rows))
-    context = cast(Context, SimpleNamespace(store=sqlite_store))
-    work = load_work(context, "EOG", pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}]), pd.Timestamp("1996-01-01"))[0]
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "stored holder repair", pd.Timestamp("2026-11-16"))
+        ),
+    )
+    work = load_work(context, "EOG", pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}]))[0]
     section = next(item for item in SECTIONS if item.key == "ownership")
     answer = OwnershipExtract(percent_unit="fraction", shares_scale="units")
     processed = postprocess_section(section, answer, stamp, work.saved, work.parent)

@@ -18,7 +18,7 @@ from omegaconf import DictConfig
 from src.data_aggregate.transformers.step_manager_profile import StepManagerProfile
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
-from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS
+from src.data_aggregate.utils.manager_profile.refresh import INT_COLUMNS, PROFILE_COLUMNS
 from src.data_extract.utils.institutionals.manager_rows import EXTRACT_COLUMNS
 from src.data_store.schema import Tables
 from src.utils.config import read_config
@@ -314,8 +314,10 @@ def test_real_sample_books_match_the_pure_pipeline(store: Any, cfg: DictConfig) 
     merged = table.merge(expected, on=["cik", "period"], suffixes=("", "_expected"))
     last = merged[merged["period"] == pd.Timestamp(periods[-1])]
     assert changed == len(details) and len(last) >= 40
-    for column in ("hhi", "turnover", "active_share", "pct_equity_us", "book_value_usd"):
+    for column in ("hhi", "turnover", "active_share", "pct_equity_us"):
         pd.testing.assert_series_equal(last[column], last[f"{column}_expected"], check_names=False, rtol=1e-9)
+    for column in INT_COLUMNS:
+        pd.testing.assert_series_equal(last[column].astype(float), last[f"{column}_expected"].round(), check_names=False)
     assert table["category"].notna().all()
     print("\n=== SANITY CHECK: real sample through the step ===")
     print(

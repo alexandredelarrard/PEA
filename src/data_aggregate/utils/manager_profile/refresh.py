@@ -11,6 +11,8 @@ from src.data_aggregate.utils.manager_profile.quarter_stats import STAT_COLUMNS
 
 #: Profile columns of `sec_13f_manager_details`, written by the profile step only.
 PROFILE_COLUMNS = ("category", *STAT_COLUMNS, "n_quarters_used")
+#: Profile statistics stored as whole numbers (the window mean of the position count and the median book value, rounded).
+INT_COLUMNS = ["n_positions", "book_value_usd"]
 _KEYS = ["cik", "period"]
 
 
@@ -57,8 +59,9 @@ def profile_frame(details: pd.DataFrame, category: pd.Series, profile: pd.DataFr
     """Profile columns for every stored row of the rewritten quarters; a row without a usable book keeps only its category."""
     rows = details.loc[details["period"].isin(write), _KEYS].assign(category=category)
     out = rows.merge(profile, on=_KEYS, how="left").reindex(columns=[*_KEYS, *PROFILE_COLUMNS])
-    out["n_quarters_used"] = out["n_quarters_used"].astype("Int64")
-    return out.astype({name: float for name in STAT_COLUMNS})
+    out = out.astype({name: float for name in STAT_COLUMNS})
+    out[INT_COLUMNS + ["n_quarters_used"]] = out[INT_COLUMNS + ["n_quarters_used"]].round().astype("Int64")
+    return out
 
 
 def changed_rows(profile: pd.DataFrame, details: pd.DataFrame) -> pd.DataFrame:

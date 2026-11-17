@@ -840,7 +840,7 @@ class Tables:
     # trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
     # unknown, never zero), from books filed on or before `first_filed_date`:
     # `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other, from the cleaned `manager_name` by
-    # the keyword rules, no match is fund, then the CIK override file `configs/superinvestors/manager_categories.json`); `n_positions` (mean number of equity positions); `hhi` (mean Herfindahl index
+    # the keyword rules, no match is fund, then the CIK override file `configs/superinvestors/manager_categories.json`); `n_positions` (mean number of equity positions, rounded to a whole number); `hhi` (mean Herfindahl index
     # of position weights); `turnover` (mean share of the prior quarter's book, by weight, that exited or changed by
     # more than `turnover_threshold` in shares; null when the preceding quarter is missing); `new_position_rate` (mean share
     # of current positions new this quarter; same null rule); `book_return` (mean price return of the preceding quarter's US equity
@@ -854,7 +854,7 @@ class Tables:
     # (`basic_materials`, `communication_services`, `consumer_cyclical`, `consumer_defensive`, `energy`,
     # `financial_services`, `healthcare`, `industrials`, `real_estate`, `technology`, `utilities`) and `pct_sector_unmapped`;
     # `active_share` (mean of 0.5 x the sum of absolute differences between the manager's equity weights and the
-    # aggregate 13F weights; near 0 for an index-like book); `book_value_usd` (median total value of the cleaned book);
+    # aggregate 13F weights; near 0 for an index-like book); `book_value_usd` (median total value of the cleaned book, whole USD);
     # `mapped_share` (mean share of equity value whose ticker has a sector and a size); `n_quarters_used` (quarters
     # in the window that had a usable book).
     sec_13f_manager_details = Table(

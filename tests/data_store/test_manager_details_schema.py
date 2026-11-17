@@ -39,7 +39,7 @@ SECTORS = (
 )
 PROFILE_COLUMNS = {
     "category": "TEXT",
-    "n_positions": "DOUBLE PRECISION",
+    "n_positions": "BIGINT",
     "hhi": "DOUBLE PRECISION",
     "turnover": "DOUBLE PRECISION",
     "new_position_rate": "DOUBLE PRECISION",
@@ -55,7 +55,7 @@ PROFILE_COLUMNS = {
     "pct_cap_large": "DOUBLE PRECISION",
     **{f"pct_sector_{name}": "DOUBLE PRECISION" for name in SECTORS},
     "active_share": "DOUBLE PRECISION",
-    "book_value_usd": "DOUBLE PRECISION",
+    "book_value_usd": "BIGINT",
     "mapped_share": "DOUBLE PRECISION",
     "n_quarters_used": "BIGINT",
 }

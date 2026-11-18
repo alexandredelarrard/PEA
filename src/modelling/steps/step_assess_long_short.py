@@ -14,9 +14,10 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.assemble.cube import target_column
 from src.data_store.schema import Tables
-from src.modelling.transformers import BaseModel, LinearRegression
 from src.modelling.transformers.assessment_diagnostics import explain_linear, explain_tree
 from src.modelling.transformers.assessment_report import render_assessment
+from src.modelling.transformers.base import BaseModel
+from src.modelling.transformers.linear_regression import LinearRegression
 from src.modelling.utils.artifacts import (
     METADATA_FILE,
     file_identity,

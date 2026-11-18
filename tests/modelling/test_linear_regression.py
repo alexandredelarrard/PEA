@@ -14,8 +14,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression
-from src.modelling.transformers.linear_regression import _standardize
+from src.modelling.transformers.base import BaseModel
+from src.modelling.transformers.lightgbm_model import LightGBMModel
+from src.modelling.transformers.linear_regression import LinearRegression, _standardize
 from src.modelling.utils.artifacts import save_member
 from src.modelling.utils.cv import purged_wf_splits
 from src.modelling.utils.ensemble import ensemble_predict

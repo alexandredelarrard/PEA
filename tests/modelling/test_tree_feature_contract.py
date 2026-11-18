@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from src.modelling.transformers import model_class
+from src.modelling.transformers.families import model_class
 from tests.modelling.model_fixtures import ctx, make_config, signal_panel
 
 

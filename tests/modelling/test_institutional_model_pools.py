@@ -13,7 +13,9 @@ import pytest
 
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort, union_all_columns
-from src.modelling.transformers import LightGBMModel, LinearRegression, RandomForestModel
+from src.modelling.transformers.lightgbm_model import LightGBMModel
+from src.modelling.transformers.linear_regression import LinearRegression
+from src.modelling.transformers.random_forest import RandomForestModel
 from src.utils.config import read_config
 
 

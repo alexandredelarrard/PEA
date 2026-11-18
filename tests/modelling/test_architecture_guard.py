@@ -31,6 +31,8 @@ EXPECTED_TRANSFORMERS = {
     "assessment_report.py",
     "assessment_report.html",
     "base.py",
+    "cluster.py",
+    "families.py",
     "lightgbm_model.py",
     "random_forest.py",
     "linear_regression.py",

@@ -1,31 +1,6 @@
 """Reusable, config-driven modelling transformers.
 
-Model families (`BaseModel` subclasses) are registered by the names `model.ensemble` uses.
-Rich diagnostics live in assessment_diagnostics and run only during assessment.
+Import from the owning module: `base` (`BaseModel`), the family modules, `families` (`MODEL_FAMILIES`, `model_class`)
+or `cluster` (`ClusterTransformer`, which loads no model family). Rich diagnostics live in assessment_diagnostics
+and run only during assessment.
 """
-
-from __future__ import annotations
-
-from src.modelling.transformers.base import BaseModel
-from src.modelling.transformers.lightgbm_model import LightGBMModel
-from src.modelling.transformers.linear_regression import LinearRegression
-from src.modelling.transformers.random_forest import RandomForestModel
-
-MODEL_FAMILIES: dict[str, type[BaseModel]] = {
-    "lgbm": LightGBMModel,
-    "lightgbm": LightGBMModel,
-    "random_forest": RandomForestModel,
-    "elasticnet": LinearRegression,
-    "ridge": LinearRegression,
-}
-
-
-def model_class(family: str) -> type[BaseModel]:
-    """The transformer class for a `model.ensemble` name; unknown names are a config error."""
-    try:
-        return MODEL_FAMILIES[family]
-    except KeyError:
-        raise ValueError(f"unknown model family {family!r} in model.ensemble; expected one of {sorted(MODEL_FAMILIES)}") from None
-
-
-__all__ = ["BaseModel", "LightGBMModel", "LinearRegression", "MODEL_FAMILIES", "RandomForestModel", "model_class"]

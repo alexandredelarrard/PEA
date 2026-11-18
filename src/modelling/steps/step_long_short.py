@@ -23,8 +23,11 @@ from src.constants.constants import PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_E
 from src.context import Context
 from src.data_aggregate.utils.assemble.cube import horizons_in, is_meta_column, target_column
 from src.data_store.schema import Tables
-from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression, RandomForestModel, model_class
-from src.modelling.transformers.base import half_life_years
+from src.modelling.transformers.base import BaseModel, half_life_years
+from src.modelling.transformers.families import model_class
+from src.modelling.transformers.lightgbm_model import LightGBMModel
+from src.modelling.transformers.linear_regression import LinearRegression
+from src.modelling.transformers.random_forest import RandomForestModel
 from src.modelling.utils.artifacts import (
     METADATA_FILE,
     configuration_snapshot,

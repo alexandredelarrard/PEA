@@ -23,7 +23,8 @@ from src.context import get_config_context
 from src.data_aggregate.utils.assemble.cube import horizons_in, target_column
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort, union_all_columns
-from src.modelling.transformers import LightGBMModel, RandomForestModel
+from src.modelling.transformers.lightgbm_model import LightGBMModel
+from src.modelling.transformers.random_forest import RandomForestModel
 from src.modelling.utils.artifacts import configuration_snapshot, load_ensemble, read_metadata
 from src.modelling.utils.assessment import write_json
 from src.modelling.utils.ensemble import PREDICTION_COLUMNS, ensemble_predict

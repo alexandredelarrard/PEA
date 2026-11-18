@@ -15,8 +15,7 @@ import pandas as pd
 import pytest
 
 from src.data_store.schema import Tables
-from src.modelling.transformers import LightGBMModel
-from src.modelling.transformers.lightgbm_model import train_booster
+from src.modelling.transformers.lightgbm_model import LightGBMModel, train_booster
 from src.modelling.utils.artifacts import save_member
 from src.modelling.utils.metrics import daily_ic
 from tests.modelling.model_fixtures import NUMERIC, ctx, make_config, signal_panel

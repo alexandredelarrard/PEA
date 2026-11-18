@@ -14,7 +14,8 @@ from src.data_store.schema import Tables
 from src.modelling.steps import step_assess_long_short as assess_module
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
-from src.modelling.transformers import BaseModel, LinearRegression
+from src.modelling.transformers.base import BaseModel
+from src.modelling.transformers.linear_regression import LinearRegression
 from src.modelling.utils.metrics import daily_ic
 from src.validate.checks.modelling import check_modelling, check_training_readiness
 from tests.modelling.test_step_long_short import _setup

@@ -1,0 +1,43 @@
+# Manager clustering and the per-cluster 13F cube features (StepManagerProfile.run_clustering, StepCubeSecThirteen).
+cluster:
+  fit: false                 # true refits k-means on the full history (run locally once, then set back to false); false only labels rows
+  centroids_path: cluster_centroids.json  # fitted centroids, a file in configs/ that the nightly run only reads
+  k: 10                      # k-means clusters fitted on fund managers (e.g. 8-12)
+  keep: 7                    # fitted clusters kept after the exclude rule; must equal the number left (e.g. 6-8)
+  seed: 0                    # seed of the row sample and of k-means (any integer)
+  n_init: 30                 # k-means restarts, the best inertia is kept (e.g. 10-50)
+  max_rows_per_quarter: 2000 # fit rows drawn per report quarter so recent, larger quarters do not dominate (e.g. 1000-5000)
+  fit_filters: {category: fund, min_positions: 10, min_book_usd: 20000000}  # a manager row is clustered when its category matches and it has at least these positions and USD book
+  features:                  # clustering inputs, z-scored with equal weight; `rank` = percentile rank within the quarter; no return column is allowed
+    - pct_cap_small          # share of the book in small caps
+    - pct_cap_mid            # share in mid caps
+    - pct_cap_large          # share in large caps
+    - pct_equity_us          # share in US equities
+    - pct_equity_foreign     # share in foreign equities
+    - pct_etf                # share in ETFs and funds
+    - pct_bond               # share in bonds
+    - active_share           # distance to the aggregate 13F weights (0 = index-like)
+    - {name: book_value_usd, transform: rank}  # size of the book, ranked within the quarter
+    - {name: hhi, transform: rank}             # concentration, ranked within the quarter
+    - {name: turnover, transform: rank}        # share of positions changed, ranked within the quarter
+  exclude: {pct_etf: 0.40, pct_equity_foreign: 0.40}  # fitted clusters whose centroid has pct_etf or pct_equity_foreign at or above these shares are dropped (e.g. 0.30-0.50)
+  cluster_label_delay_days: 90   # a quarter is labelled once period + this many days has passed (e.g. 90)
+  top_x: null                # keep only the top-X managers of a cluster; null keeps every member
+  history_start: 2000-01-01  # first date of the cluster features (YYYY-MM-DD)
+  availability_buffer_days: 7    # days added to the 45-day filing deadline before a quarter's features are published (e.g. 0-14)
+  max_age_calendar_days: 100     # a quarter's values are carried at most this many days after its publication (e.g. 92-130)
+  consistency_tolerance: 1.0e-6  # largest difference allowed when the newest saved quarter is recomputed before an incremental run
+  max_clusters: 11           # more clusters than this logs a WARNING about the column count
+  max_features_per_cluster: 10   # more features in one cluster than this logs a WARNING about the column count
+  stability:                 # acceptance thresholds of the stability check against the research partition
+    min_ari: 0.70            # adjusted Rand index between two partitions (e.g. 0.6-0.9)
+    min_jaccard: 0.50        # best Jaccard overlap of each kept cluster with a research cluster (e.g. 0.4-0.7)
+    min_persistence: 0.85    # share of managers keeping their cluster from one quarter to the next (e.g. 0.8-0.95)
+    min_share: 0.03          # smallest share of fund rows in a kept cluster (e.g. 0.02-0.05)
+    max_share: 0.25          # largest share of fund rows in a kept cluster (e.g. 0.2-0.35)
+  clusters:                  # features per cluster; fund clusters take ids 0..keep-1, categories have fixed ids
+    fund:          {features: [net_breadth, new_position_rate, net_share_flow, top10_chg, rank_gap, rank_gap_chg, stickiness, cap_proximity], min_holders: 8}  # each fund cluster; min_holders = managers needed to hold or exit a stock for a value (e.g. 4-12)
+    bank:          {id: 7,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg, rank_gap, rank_gap_chg, stickiness, option_intensity], min_holders: 8}  # banks, id 7
+    insurance:     {id: 8,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg, rank_gap, rank_gap_chg, stickiness, flow_x_vol], min_holders: 4}  # insurers, id 8
+    broker_dealer: {id: 9,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg], min_holders: 5}  # broker-dealers, id 9
+    pension:       {id: 10, features: [net_breadth, new_position_rate, net_share_flow, top10_chg], min_holders: 4}  # pension funds, id 10

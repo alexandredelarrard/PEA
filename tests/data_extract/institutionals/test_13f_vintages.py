@@ -18,7 +18,6 @@ from click.testing import CliRunner
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import get_config_context
 from src.data_extract.utils.institutionals import fetch_13f_vintages as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_hr_filing
@@ -27,7 +26,7 @@ from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
-from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
+from src.utils.institutional_vintages import F13_SETTLE_TRADING_DAYS, filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
 from tests.support.store_identity import store_identity
 

@@ -58,9 +58,6 @@ SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 # `_FILING_LAG_DAYS = 45` in each of them.
 SEC_13F_FILING_LAG_DAYS = 45
 
-# The 13F AVAILABILITY DATE, in TRADING days past the snapped deadline.
-F13_SETTLE_TRADING_DAYS = 3
-
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
 # 13F-HR filers so a fund name resolves to its institutional-manager CIK. {company}

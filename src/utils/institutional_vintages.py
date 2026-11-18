@@ -11,7 +11,10 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS, SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_RATIO_BOUNDS
+from src.constants.constants import SEC_13F_FILING_LAG_DAYS, SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_RATIO_BOUNDS
+
+#: The 13F availability date, in trading days past the snapped filing deadline.
+F13_SETTLE_TRADING_DAYS = 3
 
 
 def literal_13f_cusip(value: Any) -> str | None:

@@ -28,7 +28,7 @@ from src.data_aggregate.utils.price.frames import (
 from src.data_store.schema import Table, Tables
 from src.utils.data_policy import publication_policy, source_read_window
 from src.utils.filer_tables import def14a_evidence_mask
-from src.utils.publication import market_days, publication_rows
+from src.utils.publication import publication_rows
 from src.utils.step import Step
 from src.utils.window import Window, WindowPlan
 
@@ -122,27 +122,14 @@ class StepCubeGovernance(Step):
         self._log.info("Loaded %s: %s rows x %s cols", Tables.sec_8k_votes.name, len(df), len(df.columns))
         return df
 
-    def _load_proxy_child(self, table: Table, parents: pd.DataFrame, columns: Sequence[str] | None = None) -> pd.DataFrame | None:
-        """Read a proxy child once through the actual authorized parent filing keys."""
-        retained = source_read_window(self._config, table, self._context.run.as_of)
-        if retained is None:
-            return None
+    def _load_proxy_child(self, table: Table, columns: Sequence[str] | None = None) -> pd.DataFrame | None:
+        """Read configured child history, including donors without a usable scalar parent."""
         clock = str(publication_policy(self._config, table).clock)
-        shared = [key for key in Tables.def14a_llm.pk if key in table.pk]
-        keys = parents.loc[retained.mask(parents[clock]), [*shared, clock]].drop_duplicates()
-        keys[clock] = market_days(keys[clock])
-        if keys.empty:
-            return None
         if table == Tables.def14a_executive_comp and columns is None:
             columns = [*table.pk, clock, "total", "reconciles", *EXEC_COMPONENTS]
         if columns is not None:
-            columns = list(dict.fromkeys([*columns, *shared, clock]))
-        filters = {key: keys[key].unique().tolist() for key in shared}
-        df_rows = self._store.load(table, columns=columns, project=columns is None, where={**filters, clock: retained}, optional=True)
-        if df_rows is None:
-            return None
-        df_rows[clock] = market_days(df_rows[clock])
-        return df_rows.merge(keys, on=[*shared, clock], how="inner", validate="many_to_one")
+            columns = list(dict.fromkeys([*columns, *Tables.def14a_llm.pk, clock]))
+        return load_source(self._context, table, columns=columns)
 
     def _load_fundamentals(self, window: Window | None) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
@@ -172,11 +159,11 @@ class StepCubeGovernance(Step):
 
         raw = GovernanceInputs(
             def14a=df,
-            exec_comp=self._load_proxy_child(Tables.def14a_executive_comp, df),
-            directors=self._load_proxy_child(Tables.def14a_directors, df),
-            director_comp=self._load_proxy_child(Tables.def14a_director_comp, df),
+            exec_comp=self._load_proxy_child(Tables.def14a_executive_comp),
+            directors=self._load_proxy_child(Tables.def14a_directors),
+            director_comp=self._load_proxy_child(Tables.def14a_director_comp),
             votes=self._load_votes(windows[Tables.sec_8k_votes]),
-            ownership=self._load_proxy_child(Tables.def14a_ownership, df, _OWNERSHIP_COLUMNS),
+            ownership=self._load_proxy_child(Tables.def14a_ownership, _OWNERSHIP_COLUMNS),
         )
         fundamentals = self._load_fundamentals(windows[Tables.sharadar_fundamentals_history])
         retained = frames

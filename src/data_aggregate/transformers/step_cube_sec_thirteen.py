@@ -1,277 +1,248 @@
-"""Load once, reconcile public13F books, calculate features and save one effective window."""
+"""Per-cluster 13F cube features: plan the due report quarters, compute each from the stored cluster labels, carry them daily and save one window."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from contextlib import closing
+import time
 from dataclasses import dataclass
 from typing import cast
 
+import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common import inputs as capital_inputs
-from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.quotes import lookup_asof
-from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
-from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import build_consensus_quotes, clean_public_batches
-from src.data_aggregate.utils.sec_thirteen.institutional_books import prepare_institutional_book_history
-from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
-from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
-from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
-from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
-from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
-from src.data_aggregate.utils.sec_thirteen.value_basis import prepare_public_value_quotes
+from src.data_aggregate.utils.manager_profile.lines import clean_book
+from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
+from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
+from src.data_aggregate.utils.sec_thirteen.cluster_config import COLUMN_PREFIX, ClusterSpec, cluster_specs, column_budget, column_names
+from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
+from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books, read_quarter_lines
+from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, publication_dates
 from src.data_store.schema import Tables
-from src.utils.identity_tables import CusipTags, universe_cusips
+from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
-from src.utils.superinvestor_roster import filer_ciks
+
+#: Volatility is the standard deviation of the last 250 daily returns (at least 120 observed), read at the quarter end.
+_VOLATILITY_WINDOW = 250
+_VOLATILITY_MIN_PERIODS = 120
+#: Calendar days of prices read before the oldest quarter to compute, enough for the volatility window.
+_PRICE_LOOKBACK_DAYS = 400
+_REBUILD = "run `data_aggregate build-sec-thirteen -F`"
 
 
 @dataclass(frozen=True)
-class SecThirteenResources:
-    """One loaded capital/security snapshot shared by both13F families, with the CUSIP tags both read once."""
+class Plan:
+    """What one run does: the configured clusters and columns, the saved part, the quarters to compute and the saved rows to carry."""
 
-    frames: PriceFrames
-    cohorts: Mapping[str, frozenset[str]] | None
+    specs: list[ClusterSpec]
+    columns: list[str]
+    saved_columns: list[str]
+    window: PartWindow
+    calendar: pd.DatetimeIndex
+    publication: pd.Series
+    due: list[pd.Timestamp]
+    compute: list[pd.Timestamp]
+    saved_quarter: pd.Timestamp | None
+    labels: pd.DataFrame
+    tail: pd.DataFrame | None
+    carried: pd.DataFrame | None
+
+
+@dataclass(frozen=True)
+class Resources:
+    """What the quarters read once: members by (label period, cluster), the references and the quarter-end market frames."""
+
+    members: dict[tuple[pd.Timestamp, int], list[str]]
+    labelled: dict[pd.Timestamp, frozenset[str]]
     tags: CusipTags
-    limits: Mapping[str, pd.Series]
+    reference: pd.DataFrame
+    prefixes: pd.Series
+    universe: tuple[str, ...]
+    mcap: pd.DataFrame
+    shares: pd.DataFrame
+    volatility: pd.DataFrame
 
 
-@dataclass(frozen=True)
-class PreparedSecThirteen:
-    institutional: pd.DataFrame | None
-    superinvestor: dict[str, pd.DataFrame] | None
+def _market_at(res: Resources, period: pd.Timestamp) -> pd.DataFrame:
+    """`MARKET_COLUMNS` per ticker at the quarter end `period` (market cap also a quarter back), the last observation on or before the day."""
+    back = period - pd.offsets.QuarterEnd(1)
+    frames_days = ((res.mcap, period), (res.mcap, back), (res.shares, period), (res.volatility, period))
+    values = [frame.reindex([day], method="ffill").iloc[0] for frame, day in frames_days]
+    return pd.DataFrame(dict(zip(MARKET_COLUMNS, values, strict=True)))
 
 
 class StepCubeSecThirteen(Step):
-    _FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis")
-    # Output-date frames; the saved basis F stays whole for quarter-end lookups before the output window.
-    _OUTPUT_FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
+    _FIELDS = ("mcap_pit", "shares_outstanding_pit", "ret")
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_sec_thirteen)
-        self._settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
-        cfg = config.get("data_availability")
-        self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
     def run(self, full: bool = False) -> None:
-        """Plan the effective window, prepare both families once, project them on the window and save it."""
-        # Plan the actual rewrite footprint before loading dependency payloads.
+        """Plan, read the due quarters' books, compute the per-cluster features, carry them over the trading days and save the window."""
+        started = time.monotonic()
+
+        # load and plan: the window, the labels and the saved tail, then the references and market of the quarters to compute
+        plan = self._plan(full)
+        resources = self._load(plan) if plan.compute else None
+
+        # compute, check, merge and save
+        computed = {} if resources is None else self._compute_quarters(plan, resources)
+        self._check(plan, computed)
+        rows = self._expand(plan, computed)
+        self._save(plan, rows)
+        self._log.info(
+            "sec thirteen clusters: %d quarters computed %s, %d rows written (%.1f s)",
+            len(plan.due),
+            [t.date().isoformat() for t in plan.due],
+            len(rows),
+            time.monotonic() - started,
+        )
+
+    def _plan(self, full: bool) -> Plan:
+        """The window, the quarters to compute and the saved rows to carry; raises before any quarter is read when the part cannot be extended."""
+        # load: the calendar, the saved column set and window, and the manager labels
+        cfg = self._config.cluster
+        specs = cluster_specs(cfg)
+        columns = column_names(specs)
         calendar = load_trading_calendar(self._store)
-        existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
-        saved_dates = pd.DatetimeIndex(self._store.distinct(Tables.cube_part_sec_thirteen, "date"))
-        window = plan_window(
-            self._store,
-            Tables.cube_part_sec_thirteen,
-            full=full,
-            warmup=self._warmup(),
-            trading_index=calendar,
-            refresh=PART_REFRESH_TRADING_DAYS,
-        )
-        self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
+        saved_columns = self._store.columns(self._part.table)
+        window = plan_window(self._store, self._part.table, full=full, warmup=0, trading_index=calendar, refresh=PART_REFRESH_TRADING_DAYS)
 
-        # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
-        resources = self._load_resources()
-        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
-        self._require_saved_families(prepared, existing_columns)
+        # check: a stored column set other than the configured one needs the full rebuild, never a hidden one
+        if not window.is_full and saved_columns and set(saved_columns) != {"date", "ticker", *columns}:
+            raise RuntimeError(f"{self._part.table} has {len(saved_columns) - 2} feature columns, the config {len(columns)}: {_REBUILD}")
+        df_labels = self._store.load(Tables.sec_13f_manager_details, columns=["cik", "period", "cluster"], optional=True)
+        if df_labels is None or df_labels["cluster"].isna().all():
+            raise RuntimeError("no cluster labels in sec_13f_manager_details: run `data_aggregate build-cluster` first")
+        labels = df_labels.assign(period=pd.to_datetime(df_labels["period"]).dt.normalize())
+        tail = None if window.is_full else self._store.load(self._part.table, since=window.refresh_from, optional=True)
 
-        # Project the output window; a full window is the whole history.
-        dates = resources.frames.trading_index
-        output_dates = dates if window.since is None else dates[dates >= window.since]
-        panels = self._project_panels(resources, prepared, output_dates)
-        supported = self._feature_columns(panels)
+        # plan: the publication day of every quarter with a previous label, the saved quarter and the quarters to compute
+        one, age = pd.offsets.QuarterEnd(1), pd.Timedelta(days=int(cfg.max_age_calendar_days))
+        periods = pd.DatetimeIndex(pd.date_range(labels["period"].min() + one, calendar[-1], freq="QE"))
+        published = publication_dates(periods, calendar, int(cfg.availability_buffer_days)).dropna()
+        published = published[published + age >= pd.Timestamp(cfg.history_start)]
+        saved = None if window.last is None else published[published <= window.last]
+        saved_quarter = None if saved is None or saved.empty else cast(pd.Timestamp, saved.index[-1])
+        due = list(published.index if window.last is None else published[published > window.last].index)
+        compute = [saved_quarter, *due] if due and saved_quarter is not None else due
+        if window.is_full and not due:
+            raise RuntimeError("no report quarter is published yet in the price calendar; nothing to build")
 
-        # Probe older windows, newest first, for columns the output window cannot show.
-        unresolved = set() if window.is_full else self._possible_columns(resources, prepared) - supported
-        end = int(dates.searchsorted(output_dates[0])) if len(output_dates) else len(dates)
-        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
-        while unresolved and end:
-            start = max(0, end - span)
-            broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
-            elite = prepared.superinvestor if any(column.startswith("f_ic_super_") for column in unresolved) else None
-            supported.update(self._feature_columns(self._project_panels(resources, PreparedSecThirteen(broad, elite), dates[start:end])))
-            unresolved.difference_update(supported)
-            end = start
+        # check: every quarter needs the labels of the quarter before it
+        labelled = set(labels.loc[labels["cluster"].notna(), "period"])
+        missing = [(t - one).date().isoformat() for t in compute if t - one not in labelled]
+        if missing:
+            raise RuntimeError(f"cluster labels missing for the report quarters {missing}: run `data_aggregate build-cluster` first")
 
-        # A schema change reprojects the whole history; otherwise the window keeps the saved columns and their order.
-        if window.is_full:
-            df_panel = self._merge_panels(resources.frames, panels)
-        elif supported != set(existing_columns) - {"date", "ticker"}:
-            df_panel = self._merge_panels(resources.frames, self._project_panels(resources, prepared, dates))
-        else:
-            output_frames = resources.frames.on(output_dates, *self._OUTPUT_FIELDS)
-            df_panel = self._merge_panels(output_frames, panels)
-            df_panel = output_frames.skeleton() if df_panel.empty else df_panel
-            df_panel = df_panel.assign(**{column: pd.Series(index=df_panel.index, dtype="float32") for column in supported - set(df_panel.columns)})
-            df_panel = df_panel.reindex(columns=existing_columns)
+        # merge: the saved values of the newest date, carried onto the days after it
+        carried = None
+        if tail is not None:
+            latest = tail[pd.to_datetime(tail["date"]) == window.last]
+            carried = latest.set_index("ticker")[columns].astype("float32")
+        return Plan(specs, columns, saved_columns, window, calendar, published, due, compute, saved_quarter, labels, tail, carried)
 
-        # Schema fallback reuses the prepared full-history panel and performs one save.
-        result = write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
-        if result == COLUMNS_CHANGED:
-            self._require_saved_calendar(saved_dates, calendar, None)
-            write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, PartWindow(None, None), drop_empty=True)
-
-    @staticmethod
-    def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
-        rewrite_dates = saved_dates if refresh_from is None else saved_dates[saved_dates >= refresh_from]
-        if not rewrite_dates.difference(calendar).empty:
-            raise RuntimeError("SEC13F price calendar ends before the saved output frontier or omits a saved rewrite date; no rows may be replaced.")
-
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
-    def _load_resources(self) -> SecThirteenResources:
-        # Read the shared dependencies once before any cleaning or feature work.
-        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
-        frames.require(*self._FIELDS)
-        history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
+    def _load(self, plan: Plan) -> Resources:
+        """The references, the labels as member lists and the quarter-end market frames of the quarters to compute, each read once."""
+        # load: the reference tables and the price fields over the span the quarters need
+        columns = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
+        df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=columns))
         tags = CusipTags.load(self._store)
+        oldest = min(plan.compute) - pd.offsets.QuarterEnd(1) - pd.Timedelta(days=_PRICE_LOOKBACK_DAYS)
+        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=None if plan.window.is_full else oldest)
+        frames.require(*self._FIELDS)
 
-        # The ordered list is user-owned; membership never depends on portfolio prices.
-        cohorts = None
-        if history is not None:
-            roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
-            cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
-            cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-
-        # Issuer caps per quarter end bound every cleaned line: no position may exceed its issuer.
-        policy = self._cfg.get("institutionals", {}).get("value_basis")
-        limits = {
-            "mcap": prepare_public_value_quotes(frames.mcap_pit, policy),
-            "shares_out": prepare_public_value_quotes(frames.shares_outstanding_pit, policy),
+        # clean: the labelled managers by label period and by cluster
+        labelled = plan.labels[plan.labels["cluster"].ge(0)]
+        members = {
+            (cast(pd.Timestamp, period), int(cast(float, cluster))): group["cik"].tolist()
+            for (period, cluster), group in labelled.groupby(["period", "cluster"])
         }
-        return SecThirteenResources(frames, cohorts, tags, {name: series for name, series in limits.items() if series is not None})
+        by_period = {cast(pd.Timestamp, period): frozenset(group["cik"]) for period, group in labelled.groupby("period")}
 
-    def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
-        # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
-        universe, until = resources.frames.universe, resources.frames.trading_index.max()
-        packets = thirteen_inputs.iter_filing_vintages(
-            self._store, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
-        )
-        cfg = self._cfg.get("institutionals", {})
-        if packets is None:
-            return None
+        # compute: the volatility frame
+        returns = cast(pd.DataFrame, frames.ret)
+        volatility = returns.rolling(_VOLATILITY_WINDOW, min_periods=_VOLATILITY_MIN_PERIODS).std()
+        reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(tags.cmap)
+        mcap, shares = cast(pd.DataFrame, frames.mcap_pit), cast(pd.DataFrame, frames.shares_outstanding_pit)
+        return Resources(members, by_period, tags, reference, prefixes, frames.universe, mcap, shares, volatility)
 
-        # Each filed row tagged and in canonical-class shares before the value repair; amended books arrive whole and the
-        # compact rows sum each company per manager-quarter after the resolver.
-        with closing(
-            clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit, cfg.get("value_basis"), limits=resources.limits)
-        ) as batches:
-            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
-        if history is None:
-            return None
-        compact, states = history
+    def _compute_quarters(self, plan: Plan, res: Resources) -> dict[pd.Timestamp, pd.DataFrame]:
+        """The feature frame (index ticker, the configured float32 columns) of each quarter to compute, oldest first; each book is built once."""
+        # clean: the managers each report period must provide, over every quarter that reads it (itself, the next one and four ahead)
+        one, four = pd.offsets.QuarterEnd(1), pd.offsets.QuarterEnd(4)
+        needs: dict[pd.Timestamp, frozenset[str]] = {}
+        for t in plan.compute:
+            for period in (t, t - one, t - four):
+                needs[period] = needs.get(period, frozenset()) | res.labelled.get(t - one, frozenset())
 
-        # Quantities count only where the saved basis F supports the ticker on the report date.
-        keys = compact.index.to_frame(index=False)
-        df_basis = cast(pd.DataFrame, resources.frames.security_basis)
-        if not compact.empty:
-            compact = compact.assign(shares=compact["shares"].where(lookup_asof(df_basis, keys["ticker"], keys["period"]).notna().to_numpy()))
-        return compute_institutional_feature_history(compact, states, df_basis=df_basis)
+        # compute: the books of the quarter, the quarter before and the year before, then every cluster's features
+        profile_cfg, universe = self._config.build_cube.manager_profile, set(res.universe)
+        books: dict[pd.Timestamp, pd.DataFrame] = {}
+        computed: dict[pd.Timestamp, pd.DataFrame] = {}
+        for t in plan.compute:
+            started = time.monotonic()
+            for period in sorted({t - four, t - one, t} - books.keys()):
+                raw = read_quarter_lines(self._store, sorted(needs[period]), period)
+                classified = classify_securities(clean_book(raw, profile_cfg, res.prefixes), res.reference, profile_cfg)
+                books[period] = company_books(classified, res.tags, universe)
+            quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res, t)
+            frames = [
+                cluster_feature_frame(quarter, res.members.get((t - one, spec.cluster_id), []), market, spec).add_prefix(
+                    f"{COLUMN_PREFIX}_{spec.cluster_id}_"
+                )
+                for spec in plan.specs
+            ]
+            computed[t] = pd.concat(frames, axis=1).reindex(columns=plan.columns).astype("float32")
+            books = {period: book for period, book in books.items() if period > t - four}
+            self._log.info("sec thirteen clusters: %s %d tickers (%.1f s)", t.date(), len(computed[t]), time.monotonic() - started)
+        return computed
 
-    def _superinvestor_history(self, resources: SecThirteenResources) -> dict[str, pd.DataFrame] | None:
-        if resources.cohorts is None:
-            return None
+    def _check(self, plan: Plan, computed: dict[pd.Timestamp, pd.DataFrame]) -> None:
+        """Stop unless the newest saved quarter, recomputed, equals its saved values within the tolerance; log the column budget."""
+        n_columns = column_budget(plan.specs, self._config.cluster)
+        self._log.info("sec thirteen clusters: %d cube columns", n_columns)
+        saved = plan.saved_quarter
+        if saved is None or saved not in computed or plan.carried is None:
+            return
 
-        # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
-        until, ciks = resources.frames.trading_index.max(), sorted(resources.cohorts[""])
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"])
-        if packets is None:
-            return None
-
-        # Clean whole books once, retaining off-universe and unmapped positions and provenance. Securities the price cube does not cover
-        # are priced by one consensus per (quarter, CUSIP), built in a first pass over the same books.
-        cfg = self._cfg.get("institutionals", {})
-        age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 100))
-        policy = cfg.get("value_basis")
-        consensus = build_consensus_quotes(
-            lambda: thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"]),
-            resources.tags,
-            resources.frames.close_pit,
-            policy,
-            resources.limits,
-        )
-        with closing(
-            clean_public_batches(packets, resources.tags, None, resources.frames.close_pit, policy, consensus=consensus, limits=resources.limits)
-        ) as batches:
-            books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
-        if books is None:
-            return None
-        min_coverage = float((policy or {}).get("min_row_coverage", 0.8))
-        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis, min_coverage)
-        return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
-
-    @staticmethod
-    def _require_saved_families(prepared: PreparedSecThirteen, saved_columns: Sequence[str]) -> None:
-        failed = (("f_ic_inst_", prepared.institutional is None), ("f_ic_super_", prepared.superinvestor is None))
-        for prefix, missing in failed:
-            if missing and any(column.startswith(prefix) for column in saved_columns):
-                raise RuntimeError(f"SEC13F source preparation failed for {prefix}; saved output is preserved.")
-
-    def _project_panels(
-        self, resources: SecThirteenResources, prepared: PreparedSecThirteen, dates: pd.DatetimeIndex
-    ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-        """Each prepared family's daily panel on `dates`."""
-        # Broad levels and changes, emitted raw through the peer-relative panel.
-        frames = resources.frames.on(dates, *self._OUTPUT_FIELDS)
-        broad = None if prepared.institutional is None else pd.DataFrame(columns=["date", "ticker"])
-        if prepared.institutional is not None and not prepared.institutional.empty:
-            fields = project_institutional_features(
-                prepared.institutional, frames, self._settle_days, trading_calendar=resources.frames.trading_index
+        # compare: the recomputed quarter against the saved rows of the newest saved day, a missing row reads as null
+        fresh = computed[saved]
+        index = fresh.index.union(plan.carried.index)
+        new, old = (frame.reindex(index=index, columns=plan.columns).to_numpy(dtype="float64") for frame in (fresh, plan.carried))
+        tolerance = float(self._config.cluster.consistency_tolerance)
+        differs = ~((np.isnan(new) & np.isnan(old)) | (np.abs(new - old) <= tolerance))
+        if differs.any():
+            raise RuntimeError(
+                f"the saved quarter {saved.date()} no longer reproduces ({int(differs.sum())} of {differs.size} cells differ, "
+                f"largest {np.nanmax(np.abs(new - old)):.3g}): the labels or centroids changed; {_REBUILD}"
             )
-            emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
-            broad = build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 
-        # Superinvestor levels from the source's availability start.
-        elite = None
-        if prepared.superinvestor is not None:
-            start = self._availability.source_date(Tables.sec13f_hr) if self._availability is not None else resources.frames.trading_index.min()
-            elite = project_superinvestor_features(prepared.superinvestor, frames, start)
-        return broad, elite
+    def _expand(self, plan: Plan, computed: dict[pd.Timestamp, pd.DataFrame]) -> pd.DataFrame:
+        """The rows to write: the saved tail as saved, then the trading days after it from the due quarters and the carried saved quarter."""
+        # merge: the frames by publication day; the newest saved quarter is the saved rows of the newest day
+        cfg = self._config.cluster
+        quarters = {plan.publication[t]: computed[t] for t in plan.due}
+        if plan.carried is not None and plan.saved_quarter is not None:
+            quarters[plan.publication[plan.saved_quarter]] = plan.carried
 
-    @staticmethod
-    def _merge_panels(frames: PriceFrames, panels: tuple[pd.DataFrame | None, pd.DataFrame | None]) -> pd.DataFrame:
-        merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(panels[0], "institutional (13F)")
-        merger.add(panels[1], "superinvestor (13F)")
-        return merger.to_long()
+        # compute: the days to fill, from the history start or after the newest saved day
+        calendar = plan.calendar
+        days = calendar[calendar >= pd.Timestamp(cfg.history_start)] if plan.window.last is None else calendar[calendar > plan.window.last]
+        daily = expand_daily(quarters, days, int(cfg.max_age_calendar_days))
+        if plan.tail is None:
+            return daily
 
-    @staticmethod
-    def _feature_columns(panels: tuple[pd.DataFrame | None, pd.DataFrame | None]) -> set[str]:
-        return set().union(*(set(panel.columns) - {"date", "ticker"} for panel in panels if panel is not None))
+        # post-process: the saved rows in the part's column order, then the new days
+        tail = plan.tail[["date", "ticker", *plan.columns]].assign(date=pd.to_datetime(plan.tail["date"]))
+        return tail if daily.empty else pd.concat([tail.astype({column: "float32" for column in plan.columns}), daily], ignore_index=True)
 
-    @staticmethod
-    def _possible_columns(resources: SecThirteenResources, prepared: PreparedSecThirteen) -> set[str]:
-        """Feature columns the prepared facts could support on some date."""
-        fields: set[str] = set(SUPERINVESTOR_EMISSION) if prepared.superinvestor is not None else set()
-        broad = prepared.institutional
-        if broad is None or broad.empty:
-            return {"f_" + name for name in fields}
-
-        # Broad features with a value, and the ratios whose saved denominator and source amount both exist.
-        fields.update(name for name in INSTITUTIONAL_EMISSION if name in broad and broad[name].notna().any())
-        denominators = (
-            (resources.frames.shares_outstanding_pit, "inst_shares", "ic_inst_ownership_pct"),
-            (resources.frames.mcap_pit, "inst_value", "ic_inst_value_to_mcap"),
-        )
-        fields.update(
-            name
-            for df_denominator, source, name in denominators
-            if cast(pd.DataFrame, df_denominator).gt(0).any().any() and source in broad and broad[source].notna().any()
-        )
-        return {"f_" + name for name in fields}
+    def _save(self, plan: Plan, rows: pd.DataFrame) -> None:
+        """One replace (full) or one inclusive tail append of `rows`; rows with no feature value are dropped."""
+        written = write_part(self._store, self._part.table, rows, plan.window, drop_empty=True, existing_columns=plan.saved_columns)
+        if written == COLUMNS_CHANGED:
+            raise RuntimeError(f"{self._part.table} column set changed during the run: {_REBUILD}")

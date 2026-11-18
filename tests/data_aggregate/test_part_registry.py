@@ -168,7 +168,7 @@ def test_substep_price_fields_are_declared_and_valid():
         "mcap_pit",
         "security_basis",
     }
-    assert set(StepCubeSecThirteen._FIELDS) == {"close_split", "close_pit", "shares_outstanding_pit", "mcap_pit", "security_basis"}
+    assert set(StepCubeSecThirteen._FIELDS) == {"mcap_pit", "shares_outstanding_pit", "ret"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
     # what the total-return series is for. That is why the exemption above stays a named

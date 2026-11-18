@@ -207,13 +207,11 @@ def test_proxy_companion_scope_preserves_pay_inputs(sqlite_store: Any) -> None:
         ),
     )
 
-    df_child = StepCubeGovernance(context, config)._load_proxy_child(table, parents)
+    df_child = StepCubeGovernance(context, config)._load_proxy_child(table)
 
     assert df_child is not None and {"accession_number", "as_of", "total", "salary"} <= set(df_child.columns)
     assert df_child.accession_number.tolist() == ["inside"] and df_child.total.iloc[0] == 100.0
-    print(
-        "SANITY: proxy companion reads inherit actual parent filing keys and their own finite source bounds while retaining the pay inputs required by governance."
-    )
+    print("SANITY: proxy companion reads retain their finite source bounds, Universe scope and the pay inputs required by governance.")
 
 
 def test_upstream_receipts_refuse_changed_pipeline_configuration(sqlite_store: Any) -> None:

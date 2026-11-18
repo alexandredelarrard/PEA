@@ -4,7 +4,7 @@ cluster.py  (src/modelling/transformers/cluster.py)
 `ClusterTransformer`: a standalone, data-agnostic k-means. `fit(df)` takes the configured features (optionally
 turned into a percentile rank within each `group_by` group), draws at most `max_rows_per_group` complete rows per
 group with the seed, z-scores every feature (equal weight) and fits k-means++; `transform(df)` returns the nearest
-centroid per row (null when a feature is null) without refitting. `save` / `load` round-trip the fit to JSON
+centroid per row without refitting: null when a required feature is null; a feature declared `optional` that is null is left out of that row's distance. `save` / `load` round-trip the fit to JSON
 (centroids, standardisation, feature specs, fit-sample sizes and a `version` hash that `load` verifies).
 It imports neither the model families nor the context.
 """
@@ -44,7 +44,7 @@ def _prepare(df: pd.DataFrame, features: list[str], ranked: list[str], group_by:
     return matrix, groups
 
 
-def _digest(specs: list[dict[str, str | None]], group_by: str | None, centroids: list[list[float]], mean: list[float], std: list[float]) -> str:
+def _digest(specs: list[dict[str, Any]], group_by: str | None, centroids: list[list[float]], mean: list[float], std: list[float]) -> str:
     """Short hash identifying a fit: what a label depends on (features, group, centroids and standardisation)."""
     payload = {"features": specs, "group_by": group_by, "centroids": centroids, "mean": mean, "std": std}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
@@ -52,20 +52,25 @@ def _digest(specs: list[dict[str, str | None]], group_by: str | None, centroids:
 
 class ClusterTransformer:
     def __init__(self, config: DictConfig) -> None:
-        """Read and validate the block: `features` (names or `{name, transform: rank}`), `group_by`, `k`, `seed`, `n_init`, `max_rows_per_group`."""
-        self._specs: list[dict[str, str | None]] = []
+        """Read and validate the block: `features` (names or `{name, transform: rank, optional: true}`), `group_by`, `k`, `seed`, `n_init`, `max_rows_per_group`."""
+        self._specs: list[dict[str, Any]] = []
         for entry in config.get("features") or []:
-            name, transform = (entry, None) if isinstance(entry, str) else (entry.get("name"), entry.get("transform"))
+            name, transform, optional = (
+                (entry, None, False) if isinstance(entry, str) else (entry.get("name"), entry.get("transform"), entry.get("optional"))
+            )
             if transform not in (None, RANK):
                 raise ValueError(f"cluster feature {name!r}: unknown transform {transform!r}; expected {RANK!r} or none")
             if any(spec["name"] == name for spec in self._specs):
                 raise ValueError(f"cluster feature {name!r} is listed twice")
-            self._specs.append({"name": str(name), "transform": transform})
+            self._specs.append({"name": str(name), "transform": transform, "optional": bool(optional)})
         if not self._specs:
             raise ValueError("cluster block needs at least one entry in features")
+        if all(spec["optional"] for spec in self._specs):
+            raise ValueError("cluster features cannot all be optional: a row needs at least one required feature")
 
         self.features = [str(spec["name"]) for spec in self._specs]
         self.ranked = [str(spec["name"]) for spec in self._specs if spec["transform"] == RANK]
+        self.optional = [str(spec["name"]) for spec in self._specs if spec["optional"]]
         self.group_by: str | None = config.get("group_by")
         self.k = int(config.k)
         self.seed = int(config.seed)
@@ -118,20 +123,27 @@ class ClusterTransformer:
         return self
 
     def transform(self, df: pd.DataFrame) -> pd.Series:
-        """Nearest-centroid label per row of `df` (nullable int, null where a feature is null); nothing is refitted."""
+        """Nearest-centroid label per row of `df` (nullable int); nothing is refitted.
+
+        A row with a null required feature has no label; a null optional feature is left out of that row's distance, so the label is a
+        function of the row (and of its group's ranks) alone.
+        """
         if self.version is None:
             raise RuntimeError("the cluster transformer is not fitted: call fit or load first")
 
-        # Standardise with the stored parameters; rows with a null feature get no label.
+        # Standardise with the stored parameters; a row with a null required feature gets no label.
         matrix, _ = _prepare(df, self.features, self.ranked, self.group_by)
         z = (matrix.to_numpy() - np.array(self.mean)) / np.array(self.std)
-        null_row = np.asarray(np.isnan(z).any(axis=1), dtype=bool)
+        missing = np.isnan(z)
+        required = np.array([name not in self.optional for name in self.features])
+        null_row = np.asarray(missing[:, required].any(axis=1), dtype=bool)
         valid = ~null_row
 
-        # Nearest centroid: argmin of |c|^2 - 2 z.c (|z|^2 is the same for every centroid).
+        # Nearest centroid over the features the row has: argmin of sum(|c|^2) - 2 z.c on those features (|z|^2 is the same for every centroid).
         centroids = np.array(self.centroids)
+        present = (~missing[valid]).astype(float)
         nearest = np.zeros(len(df), dtype="int64")
-        nearest[valid] = np.argmin((centroids**2).sum(axis=1) - 2.0 * z[valid] @ centroids.T, axis=1)
+        nearest[valid] = np.argmin(present @ (centroids**2).T - 2.0 * np.where(missing[valid], 0.0, z[valid]) @ centroids.T, axis=1)
         return pd.Series(pd.arrays.IntegerArray(nearest, null_row), index=df.index)
 
     def save(self, path: Path, extra: Mapping[str, Any] | None = None) -> None:

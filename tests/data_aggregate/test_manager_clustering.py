@@ -36,10 +36,12 @@ from src.modelling.transformers.cluster import ClusterTransformer
 from src.utils.config import read_config
 
 ROOT = Path(__file__).resolve().parents[2]
-FILTERS = {"category": "fund", "min_positions": 10, "min_book_usd": 20_000_000}
+FILTERS = {"category": "fund", "min_positions": 4, "min_book_usd": 20_000_000}
 PERIODS = [pd.Timestamp(p) for p in ("2022-03-31", "2022-06-30", "2022-09-30", "2022-12-31", "2023-03-31", "2023-06-30")]
 RECENT = pd.Timestamp.today().normalize() - pd.Timedelta(days=30)  # filed, but its label is not due for another 60 days
-CATEGORIES = {"bank": 7, "insurance": 8, "broker_dealer": 9, "pension": 10}
+CATEGORIES = {"bank": 7, "insurance": 8, "broker_dealer": 9, "pension": 10, "sovereign": 14, "other": 15}
+TRACKED = {11: "pct_etf", 12: "pct_etf", 13: "pct_equity_foreign"}  # tracked fund id -> the exclude key that drops its fitted cluster
+EXCLUDE = {"pct_etf": 0.40, "pct_equity_foreign": 0.40}
 STATS = ["pct_cap_small", "pct_cap_mid", "pct_cap_large", "pct_equity_us", "pct_equity_foreign", "pct_etf", "pct_bond", "active_share"]
 # group: rows per quarter, the eight composition stats, then book value, hhi and turnover (the three ranked features)
 GROUPS: dict[str, tuple[int, list[float], float, float, float]] = {
@@ -48,7 +50,23 @@ GROUPS: dict[str, tuple[int, list[float], float, float, float]] = {
     "mid_blend": (25, [0.20, 0.60, 0.20, 0.50, 0.30, 0.10, 0.05, 0.45], 4e9, 0.06, 0.30),
     "etf_book": (20, [0.10, 0.30, 0.60, 0.20, 0.10, 0.85, 0.05, 0.30], 1e9, 0.02, 0.45),
 }
-EXPECTED_NUMBER = {"small_us": 0, "large_us": 1, "mid_blend": 2, "etf_book": -1}  # numbered by descending fit size; the ETF group is dropped
+EXPECTED_NUMBER = {
+    "small_us": 0,
+    "large_us": 1,
+    "mid_blend": 2,
+    "etf_book": 11,
+}  # kept ones numbered by descending fit size; the ETF group is dropped, tracked as 11
+
+
+SMALL_WORLD_LABELS = [  # the registry of the planted world: k=4 fitted, 3 kept (0-2), one dropped (tracked 11)
+    {"id": -2, "name": "not_computable", "features": False},
+    {"id": -1, "name": "below_size_floor", "features": False},
+    *({"id": number, "name": f"fund_{number}", "features": True} for number in range(3)),
+    *({"id": cluster_id, "name": kind, "features": True} for kind, cluster_id in CATEGORIES.items() if cluster_id < 14),
+    {"id": 11, "name": "fund_etf_heavy", "features": False, "dropped_by": "pct_etf"},
+    {"id": 14, "name": "sovereign", "features": False, "category": "sovereign"},
+    {"id": 15, "name": "other", "features": False, "category": "other"},
+]
 
 
 def _centroid_transformer(raw: np.ndarray, sizes: list[int], features: list[str]) -> ClusterTransformer:
@@ -70,39 +88,73 @@ def _ten_clusters() -> tuple[ClusterTransformer, dict[int, int]]:
     small = np.linspace(0.1, 0.9, 10)
     sizes = [50, 10, 5, 30, 40, 20, 60, 99, 70, 98]
     transformer = _centroid_transformer(np.column_stack([etf, foreign, small]), sizes, ["pct_etf", "pct_equity_foreign", "pct_cap_small"])
-    return transformer, {8: 0, 6: 1, 0: 2, 4: 3, 3: 4, 5: 5, 1: 6}
+    return transformer, {8: 0, 6: 1, 0: 2, 4: 3, 3: 4, 5: 5, 1: 6, 7: 11, 2: 12, 9: 13}
 
 
 def test_keep_clusters_keeps_exactly_the_wanted_number_numbered_by_descending_size_else_raises() -> None:
     transformer, expected = _ten_clusters()
 
-    mapping = keep_clusters(transformer, {"pct_etf": 0.40, "pct_equity_foreign": 0.40}, 7)
+    mapping = keep_clusters(transformer, EXCLUDE, 7, TRACKED)
 
-    assert mapping == expected, "7 kept, numbered 0-6 by descending fit size (70, 60, 50, 40, 30, 20, 10)"
+    assert mapping == expected, "7 kept 0-6 by descending fit size (70, 60, 50, 40, 30, 20, 10); the 3 dropped take 11-13 by their centroid"
     with pytest.raises(ValueError, match="7"):
-        keep_clusters(transformer, {"pct_etf": 0.48, "pct_equity_foreign": 0.40}, 7)  # idx 2 survives: 8 remain
+        keep_clusters(transformer, {"pct_etf": 0.48, "pct_equity_foreign": 0.40}, 7, TRACKED)  # idx 2 survives: 8 remain
     with pytest.raises(ValueError, match="7"):
-        keep_clusters(transformer, {"pct_etf": 0.05}, 7)  # every cluster is dropped: 0 remain
+        keep_clusters(transformer, {"pct_etf": 0.05}, 7, {11: "pct_etf"})  # every cluster is dropped: 0 remain
     print("\n=== SANITY CHECK: keep_clusters ===")
-    print(f"10 fitted -> 7 kept {mapping}; the rule leaving 8 or 0 clusters raises instead of guessing. Validated.")
+    print(f"10 fitted -> 7 kept and 3 tracked {mapping}; the rule leaving 8 or 0 clusters raises instead of guessing. Validated.")
 
 
-def test_the_centroid_file_carries_ten_centroids_seven_kept_flags_and_the_numbers(tmp_path: Path) -> None:
+def test_tracked_ids_follow_the_rule_value_never_the_fit_size() -> None:
+    transformer, _ = _ten_clusters()
+    first = keep_clusters(transformer, EXCLUDE, 7, TRACKED)
+    transformer.sizes = [50, 10, 99, 30, 40, 20, 60, 5, 70, 98]  # a refit that swaps the sizes of the two ETF clusters (idx 2 and 7)
+    second = keep_clusters(transformer, EXCLUDE, 7, TRACKED)
+
+    assert {index: second[index] for index in (7, 2, 9)} == {7: 11, 2: 12, 9: 13} == {index: first[index] for index in (7, 2, 9)}
+    assert sorted(second.values()) == [*range(7), 11, 12, 13]
+    both = _centroid_transformer(
+        np.column_stack(
+            [
+                [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.50, 0.10, 0.45],  # idx 7 and 9 are above the ETF limit
+                [0.10, 0.10, 0.55, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.60],  # idx 2 and 9 are above the foreign limit
+                np.linspace(0.1, 0.9, 10),
+            ]
+        ),
+        [50, 10, 5, 30, 40, 20, 60, 99, 70, 98],
+        ["pct_etf", "pct_equity_foreign", "pct_cap_small"],
+    )
+    overlap = keep_clusters(both, EXCLUDE, 7, TRACKED)
+    assert (overlap[7], overlap[9], overlap[2]) == (11, 12, 13), (
+        "idx 9 is over both limits and goes by the first rule (pct_etf); idx 2 is the foreign one"
+    )
+    with pytest.raises(ValueError, match="tracked"):
+        keep_clusters(transformer, EXCLUDE, 7, {11: "pct_etf", 12: "pct_equity_foreign", 13: "pct_equity_foreign"})  # the fit drops 2 ETF + 1 foreign
+    print("\n=== SANITY CHECK: tracked ids ===")
+    print(
+        f"dropped clusters take 11, 12 (pct_etf 0.50, 0.45) and 13 (foreign 0.60) whatever the fit sizes {second}; a registry that disagrees with the fit raises. Validated."
+    )
+
+
+def test_the_centroid_file_carries_ten_centroids_the_kept_flags_the_numbers_and_the_tracked_ids(tmp_path: Path) -> None:
     transformer, mapping = _ten_clusters()
     path = tmp_path / "centroids.json"
 
-    write_centroids(transformer, mapping, path)
+    write_centroids(transformer, mapping, 7, path)
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert len(payload["centroids"]) == 10 and sum(payload["kept"]) == 7 and payload["kept"][8] and not payload["kept"][7]
     assert payload["number"] == [2, 6, None, 4, 3, 5, 1, None, 0, None]
-    assert read_mapping(path) == mapping
+    assert payload["tracked"] == [None, None, 12, None, None, None, None, 11, None, 13]
+    assert read_mapping(path) == mapping, "the saved ids of all ten fitted clusters come back"
     assert {"mean", "std", "features", "version", "sizes"} <= set(payload), "the transformer's own keys are kept"
-    path.write_text(json.dumps({k: v for k, v in payload.items() if k not in ("kept", "number")}), encoding="utf-8")
+    path.write_text(json.dumps({k: v for k, v in payload.items() if k not in ("kept", "number", "tracked")}), encoding="utf-8")
     with pytest.raises(ValueError, match="fit"):
         read_mapping(path)
     print("\n=== SANITY CHECK: centroid file ===")
-    print("10 centroids, 7 kept flags, numbers [2, 6, -, 4, 3, 5, 1, -, 0, -] round-trip; a file without them asks for a refit. Validated.")
+    print(
+        "10 centroids, 7 kept flags, numbers [2, 6, -, 4, 3, 5, 1, -, 0, -] and tracked ids [-, -, 12, -, -, -, -, 11, -, 13] round-trip; a file without them asks for a refit. Validated."
+    )
 
 
 def _rows(**columns: Any) -> pd.DataFrame:
@@ -131,36 +183,46 @@ def test_due_rows_are_unlabelled_rows_whose_period_plus_the_delay_has_passed() -
 
 def test_eligible_fund_rows_need_the_category_the_positions_and_the_book() -> None:
     details = _rows(
-        category=["fund", "fund", "fund", "bank", "fund", "fund"],
-        n_positions=[10, 9, 50, 50, np.nan, 50],
-        book_value_usd=[2e7, 5e9, 1.9e7, 5e9, 5e9, np.nan],
+        category=["fund", "fund", "fund", "bank", "fund", "fund", "fund"],
+        n_positions=[4, 3, 50, 50, np.nan, 50, 9],
+        book_value_usd=[2e7, 5e9, 1.9e7, 5e9, 5e9, np.nan, 3e7],
     )
 
     eligible = eligible_fund_rows(details, FILTERS)
 
-    assert eligible.index.tolist() == [0], "exactly the boundary row passes; fewer positions, a smaller book, a bank or a null fail"
-    print("\n=== SANITY CHECK: eligible_fund_rows ===")
-    print("only the fund with 10 positions and a 20M book is eligible; null positions or book fail. Validated.")
-
-
-def test_assemble_labels_numbers_funds_drops_the_rest_and_maps_categories() -> None:
-    due = _rows(
-        cik=[f"c{n}" for n in range(13)],
-        period=pd.Timestamp("2023-03-31"),
-        category=["fund"] * 5 + ["bank", "insurance", "broker_dealer", "pension", "bank", "sovereign", "other", "fund"],
-        n_positions=[50, 50, 5, 50, 50, 50, 50, 50, 50, 5, 50, 50, np.nan],
-        book_value_usd=[1e9, 1e9, 1e9, 1e6, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9],
+    assert eligible.index.tolist() == [0, 6], (
+        "the boundary row (4 positions, 20M) and a 9-position fund pass; 3 positions, a smaller book, a bank or a null fail"
     )
-    raw = pd.Series(pd.array([1, 3, 1, 2, pd.NA], dtype="Int64"), index=due.index[:5])  # clusters 1 and 2 are kept as 0 and 1; 3 was dropped
+    print("\n=== SANITY CHECK: eligible_fund_rows ===")
+    print(
+        "a fund with 4 positions and a 20M book is eligible (the floor is 4), so is one with 9; 3 positions, a smaller book, null positions or book fail. Validated."
+    )
 
-    labels = assemble_labels(due, raw, {1: 0, 2: 1}, CATEGORIES, FILTERS)
+
+def test_assemble_labels_gives_every_row_an_id_a_fund_cluster_a_tracked_cluster_a_category_the_floor_or_not_computable() -> None:
+    due = _rows(
+        cik=[f"c{n}" for n in range(16)],
+        period=pd.Timestamp("2023-03-31"),
+        category=["fund"] * 6 + ["bank", "insurance", "broker_dealer", "pension", "bank", "sovereign", "other", "sovereign", "other", "fund"],
+        n_positions=[50, 50, 3, 50, 50, 4, 50, 50, 50, 50, 3, 50, 50, 50, 3, np.nan],
+        book_value_usd=[1e9, 1e9, 1e9, 1e6, 1e9, 2e7, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e6, 1e9, 1e9],
+    )
+    eligible = [0, 1, 4, 5]  # the fund rows at or above the floor, the only ones the transformer labels
+    raw = pd.Series(pd.array([1, 3, pd.NA, 2], dtype="Int64"), index=due.index[eligible])  # fitted 1 -> 0, 2 -> 1, 3 was dropped and tracked as 11
+    mapping = {1: 0, 2: 1, 3: 11}
+
+    labels = assemble_labels(due, raw, mapping, CATEGORIES, FILTERS)
 
     assert labels.columns.tolist() == ["cik", "period", "cluster"] and labels["cik"].tolist() == due["cik"].tolist()
-    assert labels["cluster"].tolist() == [0, -1, -1, -1, -1, 7, 8, 9, 10, -1, -1, -1, -1]
-    assert labels["cluster"].notna().all(), "every due row is assigned: a fitted cluster, a category, or -1"
+    assert labels["cluster"].tolist() == [0, 11, -1, -1, -2, 1, 7, 8, 9, 10, -1, 14, 15, -1, -1, -1]
+    assert labels["cluster"].notna().all(), "every due row is assigned an id"
+    assert set(labels["cluster"]) <= {-2, -1, 0, 1, 7, 8, 9, 10, 11, 14, 15}
+    with pytest.raises(ValueError, match="mystery"):
+        assemble_labels(due.assign(category="mystery"), raw, mapping, CATEGORIES, FILTERS)
     print("\n=== SANITY CHECK: assemble_labels ===")
     print(
-        f"fund -> 0 / -1 (dropped cluster, 5 positions, 1M book, null feature); bank, insurance, broker_dealer, pension -> 7, 8, 9, 10; labels {labels['cluster'].tolist()}"
+        "fund -> 0 / 1 (kept), 11 (dropped, tracked), -2 (null required feature), -1 (3 positions, 1M book, null positions); "
+        f"bank, insurance, broker_dealer, pension -> 7-10, sovereign, other -> 14, 15, each -1 below the floor; labels {labels['cluster'].tolist()}"
     )
 
 
@@ -186,10 +248,16 @@ def _planted_details() -> tuple[pd.DataFrame, dict[str, str]]:
             add(f"{number:010d}", group, "fund", 80, stats, book, hhi, turnover)
             number += 1
     small = GROUPS["small_us"]
-    for group, n_positions, book in (("few_positions", 5, 3e8), ("small_book", 80, 1e6)):
+    for group, n_positions, book in (("few_positions", 3, 3e8), ("small_book", 80, 1e6), ("four_positions", 4, 3e8)):
         for _ in range(4):
             add(f"{number:010d}", group, "fund", n_positions, small[1], book, small[3], small[4])
             number += 1
+    for _ in range(4):  # a first row: turnover is null, everything else is the small-cap US book
+        add(f"{number:010d}", "first_row", "fund", 80, small[1], small[2], small[3], np.nan)
+        number += 1
+    for _ in range(4):  # a required feature (the small-cap share) is missing
+        add(f"{number:010d}", "missing_cap", "fund", 80, [np.nan, *small[1][1:]], small[2], small[3], small[4])
+        number += 1
     for category, count in (("bank", 5), ("insurance", 5), ("broker_dealer", 3), ("pension", 3), ("sovereign", 2), ("other", 2)):
         for _ in range(count):
             add(f"{number:010d}", category, category, 50, small[1], 1e9, small[3], small[4])
@@ -243,7 +311,7 @@ def workspace(sqlite_store: Any, tmp_path: Path) -> Workspace:
     (tmp_path / "superinvestors").mkdir()
     shutil.copy(ROOT / "configs" / "superinvestors" / "manager_categories.json", tmp_path / "superinvestors" / "manager_categories.json")
     cfg = read_config(str(ROOT / "configs"))
-    cfg = OmegaConf.merge(cfg, {"cluster": {"k": 4, "keep": 3, "n_init": 5, "fit": False}})
+    cfg = OmegaConf.merge(cfg, {"cluster": {"k": 4, "keep": 3, "n_init": 5, "fit": False, "labels": SMALL_WORLD_LABELS}})
     return Workspace(sqlite_store, tmp_path, cfg, group_of)  # type: ignore[arg-type]
 
 
@@ -265,13 +333,43 @@ def test_a_fit_writes_the_centroids_labels_every_due_row_and_warns_that_fit_is_s
     assert written == len(due) and due["cluster"].notna().all(), "every due row is labelled"
     assert table.loc[~table["period"].isin(PERIODS), "cluster"].isna().all(), "the not-yet-due quarter stays null"
     by_group = due.groupby("group")["cluster"].agg(["min", "max"])
-    for group, number in {**EXPECTED_NUMBER, "few_positions": -1, "small_book": -1, "sovereign": -1, "other": -1, **CATEGORIES}.items():
+    expected = {**EXPECTED_NUMBER, "few_positions": -1, "small_book": -1, "four_positions": 0, "first_row": 0, "missing_cap": -2, **CATEGORIES}
+    for group, number in expected.items():
         assert list(by_group.loc[group]) == [number, number], group
+    assert payload["tracked"].count(11) == 1 and sum(value is not None for value in payload["tracked"]) == 1, "one dropped cluster, tracked as 11"
     messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
     assert any("still true" in m for m in messages) and any("build-sec-thirteen -F" in m for m in messages)
     print("\n=== SANITY CHECK: fit and first labelling ===")
     print(
-        f"4 fitted, 3 kept {payload['number']}; {written} due rows labelled: groups {by_group['min'].astype(int).to_dict()}; the 'fit still true' and -F warnings are logged."
+        f"4 fitted, 3 kept {payload['number']}, 1 tracked {payload['tracked']}; {written} due rows labelled: groups {by_group['min'].astype(int).to_dict()}; "
+        "the 'fit still true' and -F warnings are logged."
+    )
+
+
+def test_a_missing_turnover_falls_back_to_the_nearest_cluster_and_a_label_depends_on_its_own_quarter_alone(workspace: Workspace) -> None:
+    workspace.step(fit=True).run_clustering()
+    before = _due(workspace.table())
+    first_row, missing_cap = before[before["group"] == "first_row"], before[before["group"] == "missing_cap"]
+    assert first_row["turnover"].isna().all() and (first_row["cluster"] == 0).all(), (
+        "no turnover: nearest cluster on the other 9 features, the small-cap US one"
+    )
+    assert missing_cap["pct_cap_small"].isna().all() and (missing_cap["cluster"] == -2).all(), "a required feature missing: not computable"
+
+    # Point in time: every other quarter changes (turnover, size and the small-cap share), the target quarter's labels must not.
+    target = PERIODS[2]
+    others = [period.strftime("%Y-%m-%d") for period in PERIODS if period != target]
+    workspace.store.update(Tables.sec_13f_manager_details, {"turnover": None, "pct_cap_small": 0.55, "book_value_usd": 5e8}, {"period": others})
+    workspace.step(fit=False).run_clustering(full=True)
+
+    after = _due(workspace.table())
+    same_quarter = before["period"] == target
+    pd.testing.assert_series_equal(after.loc[same_quarter].set_index("cik")["cluster"], before.loc[same_quarter].set_index("cik")["cluster"])
+    moved = int(after.loc[~same_quarter, "cluster"].ne(before.loc[~same_quarter, "cluster"]).sum())
+    assert moved > 0, "control: the edited quarters do relabel, so an unchanged target quarter is evidence"
+    print("\n=== SANITY CHECK: optional turnover and point in time ===")
+    print(
+        f"{len(first_row)} first-row funds (turnover null) -> cluster 0, {len(missing_cap)} funds missing the small-cap share -> -2; "
+        f"after editing the other 5 quarters the {int(same_quarter.sum())} labels of {target.date()} are unchanged while {moved} edited-quarter labels moved."
     )
 
 

@@ -59,7 +59,7 @@ PROFILE_COLUMNS = {
     "mapped_share": "DOUBLE PRECISION",
     "n_quarters_used": "BIGINT",
 }
-CLUSTER_COLUMNS = {"cluster": "SMALLINT"}
+CLUSTER_COLUMNS = {"cluster": "BIGINT"}
 
 
 def test_registry_lists_the_manager_details_table() -> None:
@@ -105,10 +105,9 @@ def test_the_declared_block_creates_every_column_with_its_type(sqlite_store: Any
         "DATE": {"DATE"},
         "TEXT": {"TEXT"},
         "BIGINT": {"BIGINT"},
-        "SMALLINT": {"SMALLINT"},
         "DOUBLE PRECISION": {"REAL", "FLOAT", "DOUBLE", "DOUBLE_PRECISION"},
     }
     for name, sql in expected.items():
         assert str(live[name]).upper() in sqlite_kinds[sql.replace(" NOT NULL", "")], (name, live[name])
     print("\n=== SANITY CHECK: creation from the declaration ===")
-    print("  create_declared builds 42 columns in declared order with DATE / TEXT / DOUBLE PRECISION / BIGINT / SMALLINT types. Validated.")
+    print("  create_declared builds 42 columns in declared order with DATE / TEXT / DOUBLE PRECISION / BIGINT types. Validated.")

@@ -216,3 +216,73 @@ def test_import_order_with_the_manager_profile_step() -> None:
     second = _run_python("import src.modelling.transformers.cluster\nimport src.data_aggregate.transformers.step_manager_profile\nprint('OK')")
     assert first.returncode == 0 and second.returncode == 0, first.stderr + second.stderr
     print("SANITY: the manager profile step and the cluster transformer import in either order without a cycle")
+
+
+def _optional_block(**overrides: Any) -> DictConfig:
+    """The planted block with `tiny_b` declared optional (its entry carries `optional: true`)."""
+    features = ["big_noise", "small_a", {"name": "tiny_b", "optional": True}]
+    return _block(features=features, **overrides)
+
+
+def test_a_missing_optional_feature_is_dropped_from_the_distance_of_that_row() -> None:
+    df, truth = _planted()
+    transformer = ClusterTransformer(_optional_block()).fit(df)
+    full = transformer.transform(df)
+    probe = df.copy()
+    probe["tiny_b"] = np.nan  # every row misses the optional feature
+    partial = transformer.transform(probe)
+
+    # Truth by hand: nearest centroid on the two remaining standardised dimensions.
+    z = (df[["big_noise", "small_a"]].to_numpy() - np.array(transformer.mean)[:2]) / np.array(transformer.std)[:2]
+    by_hand = ((z[:, None, :] - np.array(transformer.centroids)[None, :, :2]) ** 2).sum(axis=2).argmin(axis=1)
+    assert partial.notna().all() and partial.tolist() == by_hand.tolist(), "the label is the nearest centroid on the remaining dimensions"
+    agreement = float((partial.astype(int) == full.astype(int)).mean())
+    assert agreement >= 0.99, f"small_a alone separates the planted clusters; agreement with the full label {agreement:.3f}"
+    print(
+        f"SANITY: with the optional feature null on all {len(df)} rows every row is still labelled, equal to the hand-computed nearest centroid on 2 dims ({agreement:.3f} equal to the full-vector label)"
+    )
+
+
+def test_a_missing_required_feature_still_gives_a_null_label_and_all_null_rows_too() -> None:
+    df, _ = _planted(n_per_cluster=50)
+    transformer = ClusterTransformer(_optional_block()).fit(df)
+    probe = df.head(6).copy()
+    probe.loc[probe.index[1], "small_a"] = np.nan
+    probe.loc[probe.index[2], ["big_noise", "small_a", "tiny_b"]] = np.nan
+    probe.loc[probe.index[3], "tiny_b"] = np.nan
+    labels = transformer.transform(probe)
+
+    assert labels.isna().tolist() == [False, True, True, False, False, False]
+    print("SANITY: a row missing a required feature, or every feature, gets no label; a row missing only the optional one keeps one")
+
+
+def test_the_fallback_label_depends_on_the_row_alone() -> None:
+    df, _ = _planted(n_per_cluster=50)
+    transformer = ClusterTransformer(_optional_block()).fit(df)
+    probe = df.copy()
+    probe.loc[probe.index[::3], "tiny_b"] = np.nan
+    together = transformer.transform(probe)
+    rows = [transformer.transform(probe.iloc[[position]]).iloc[0] for position in range(0, len(probe), 7)]
+
+    assert together.iloc[::7].tolist() == rows, "a row's label is the same alone or among other rows (no look at other rows)"
+    reordered = transformer.transform(probe.sample(frac=1.0, random_state=1)).sort_index()
+    assert reordered.equals(together)
+    print(f"SANITY: {len(rows)} rows labelled one at a time equal their label in the full frame, and a shuffled frame gives the same labels")
+
+
+def test_optional_is_part_of_the_saved_fit(tmp_path: Path) -> None:
+    df, _ = _planted(n_per_cluster=50)
+    optional = ClusterTransformer(_optional_block()).fit(df)
+    required = ClusterTransformer(_block()).fit(df)
+    path = tmp_path / "centroids.json"
+    optional.save(path)
+    loaded = ClusterTransformer.load(path)
+    probe = df.head(10).copy()
+    probe["tiny_b"] = np.nan
+
+    assert optional.version != required.version, "the optional flag changes what a label depends on, so it is in the hash"
+    assert loaded.optional == ["tiny_b"] and loaded.transform(probe).equals(optional.transform(probe))
+    assert required.transform(probe).isna().all()
+    with pytest.raises(ValueError, match="optional"):
+        ClusterTransformer(_block(features=[{"name": name, "optional": True} for name in FEATURES]))
+    print("SANITY: the optional flag survives save and load, changes the version hash, and a block with every feature optional is refused")

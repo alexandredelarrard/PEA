@@ -586,9 +586,11 @@ CREATE TABLE IF NOT EXISTS "sec13f_hr" (
 -- in the window that had a usable book).
 --
 -- Cluster column, written by `data_aggregate` (`build-cluster`, knobs under `cluster`) and never by the profile or the extract:
--- `cluster` (SMALLINT, the manager cluster of the row: 0 to 6 a fitted fund cluster, 7 to 10 the bank, insurance, broker-dealer
--- and pension categories, -1 = labelled but in no cluster (excluded fund cluster, too few positions or too small a book,
--- any other category), null = not computed yet; filled once the row is `cluster_label_delay_days` old).
+-- `cluster` (BIGINT, the manager cluster of the row: 0 to 6 a fitted fund cluster, 7 to 10 the bank, insurance, broker-dealer
+-- and pension categories, 11 to 13 the fitted fund clusters kept out of the cube (ETF-heavy, ETF-mixed, foreign-heavy), 14 and 15
+-- the sovereign and other categories, -1 = below the size floor (too few positions or too small a book), -2 = eligible but a
+-- clustering feature is missing, null = not computed yet; filled once the row is `cluster_label_delay_days` old; the name
+-- behind each id is `cluster.labels` in `configs/cluster.yml`).
 
 CREATE TABLE IF NOT EXISTS "sec_13f_manager_details" (
     "cik" TEXT NOT NULL,
@@ -632,7 +634,7 @@ CREATE TABLE IF NOT EXISTS "sec_13f_manager_details" (
     "book_value_usd" BIGINT,
     "mapped_share" DOUBLE PRECISION,
     "n_quarters_used" BIGINT,
-    "cluster" SMALLINT,
+    "cluster" BIGINT,
     PRIMARY KEY ("cik", "period")
 );
 

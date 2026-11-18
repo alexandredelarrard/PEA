@@ -2,6 +2,8 @@
 
 A spec is one cluster id with its feature list and `min_holders`; fund clusters take the ids 0..keep-1, every category cluster its own `id`.
 Columns are `f_ic_cluster_<id>_<feature>`, in cluster-id then feature order.
+The `labels` registry names every stored `cluster` id: the sentinels -2 and -1, the ids that build features, and the tracked-only ids
+(a fitted fund cluster kept out of the cube, `dropped_by` an `exclude` key; a category with no feature block, `category`).
 """
 
 from __future__ import annotations
@@ -19,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 FUND = "fund"
 COLUMN_PREFIX = "f_ic_cluster"
+#: Stored label of a row below the size floor and of an eligible row with a missing clustering feature.
+BELOW_SIZE_FLOOR = -1
+NOT_COMPUTABLE = -2
+_SENTINELS = {NOT_COMPUTABLE: "not_computable", BELOW_SIZE_FLOOR: "below_size_floor"}
 #: Feature names the cluster feature function can compute.
 _CLUSTER_FEATURES = (
     "net_breadth",
@@ -53,7 +59,8 @@ def validate_cluster_config(cluster: DictConfig) -> None:
     """Raise ValueError unless the block is usable.
 
     No return column or unknown manager column among the clustering features, known per-cluster features, `exclude` keys among the
-    clustering features, `1 <= keep <= k`, positive `min_holders`, and distinct category ids outside the fund range.
+    clustering features, `1 <= keep <= k`, positive `min_holders`, distinct category ids outside the fund range, and a `labels` registry
+    that names every id (see `_validate_labels`).
     """
     # Clustering features: no return column, only manager-details columns.
     names = feature_names(cluster.features)
@@ -87,6 +94,74 @@ def validate_cluster_config(cluster: DictConfig) -> None:
         raise ValueError(
             f"cluster.clusters: category id values {category_ids} must be distinct and at least keep={cluster.keep} (fund ids 0..keep-1)"
         )
+    _validate_labels(cluster, {str(kind): int(block.id) for kind, block in blocks.items() if kind != FUND})
+
+
+def _validate_labels(cluster: DictConfig, feature_categories: dict[str, int]) -> None:
+    """Raise ValueError unless `cluster.labels` names every stored id exactly once.
+
+    Present: the sentinels -2 and -1 under their fixed names, the fund ids 0..keep-1 and each feature category under its kind. Every other id is
+    tracked only: a fund cluster `dropped_by` an `exclude` key (`k - keep` of them) or a `category` that has no block in `cluster.clusters`.
+    `features` is true exactly for the ids that build cube features.
+    """
+    entries = [dict(entry) for entry in cluster.get("labels") or []]
+    if not entries:
+        raise ValueError("cluster.labels is missing: name every stored cluster id there")
+    ids = [int(entry["id"]) for entry in entries]
+    repeated = sorted({cluster_id for cluster_id in ids if ids.count(cluster_id) > 1})
+    names = [str(entry.get("name") or "") for entry in entries]
+    if repeated:
+        raise ValueError(f"cluster.labels: duplicate ids {repeated}")
+    if "" in names or len(set(names)) != len(names):
+        raise ValueError("cluster.labels: every id needs its own non-empty name")
+    by_id = dict(zip(ids, entries, strict=True))
+
+    # Sentinels, kept fund ids and feature categories are all present, the categories named after their kind.
+    wrong = [f"{cluster_id} must be named {name!r}" for cluster_id, name in _SENTINELS.items() if by_id.get(cluster_id, {}).get("name") != name]
+    wrong += [
+        f"{cluster_id} must be named {kind!r}" for kind, cluster_id in feature_categories.items() if by_id.get(cluster_id, {}).get("name") != kind
+    ]
+    unnamed = [cluster_id for cluster_id in range(int(cluster.keep)) if cluster_id not in by_id]
+    if wrong or unnamed:
+        raise ValueError(f"cluster.labels: id {'; id '.join(wrong)}" if wrong else f"cluster.labels: no name for the fund ids {unnamed}")
+
+    # Tracked-only ids: no feature block, and either the exclude rule that drops the fitted cluster or the category.
+    built = {*range(int(cluster.keep)), *feature_categories.values()}
+    tracked = [entry for entry in entries if int(entry["id"]) not in built and int(entry["id"]) not in _SENTINELS]
+    in_blocks = [str(entry["category"]) for entry in entries if entry.get("category") is not None and entry["category"] in cluster.clusters]
+    if in_blocks:
+        raise ValueError(f"cluster.labels: category {in_blocks} has a block in cluster.clusters, so its only id is the one there")
+    for entry in tracked:
+        if (entry.get("dropped_by") is None) == (entry.get("category") is None):
+            raise ValueError(f"cluster.labels: tracked id {entry['id']} needs exactly one of dropped_by (fund cluster) or category")
+    rules = [str(entry["dropped_by"]) for entry in tracked if entry.get("dropped_by") is not None]
+    if [rule for rule in rules if rule not in cluster.exclude]:
+        raise ValueError(f"cluster.labels: dropped_by {sorted(set(rules) - set(cluster.exclude))} is not a cluster.exclude key")
+    if len(rules) != int(cluster.k) - int(cluster.keep):
+        raise ValueError(
+            f"cluster.labels: {len(rules)} tracked fund ids, but k - keep = {int(cluster.k) - int(cluster.keep)} fitted clusters are dropped"
+        )
+
+    # Features are built exactly for the kept fund ids and the feature categories.
+    flagged = {cluster_id for cluster_id, entry in by_id.items() if entry.get("features")}
+    if flagged != built:
+        raise ValueError(f"cluster.labels: features must be true exactly for the ids {sorted(built)}, got {sorted(flagged)}")
+
+
+def label_names(cluster: DictConfig) -> dict[int, str]:
+    """Stored id -> name for every id of the registry."""
+    return {int(entry.id): str(entry.name) for entry in cluster.labels}
+
+
+def fund_tracked_ids(cluster: DictConfig) -> dict[int, str]:
+    """Ids of the fitted fund clusters kept out of the cube, in id order, each with the `exclude` key that drops it."""
+    return {int(entry.id): str(entry.dropped_by) for entry in sorted(cluster.labels, key=lambda entry: int(entry.id)) if entry.get("dropped_by")}
+
+
+def category_ids(cluster: DictConfig) -> dict[str, int]:
+    """Category -> stored id: the feature categories of `cluster.clusters` and the tracked-only categories of `cluster.labels`."""
+    ids = {str(kind): int(block.id) for kind, block in cluster.clusters.items() if kind != FUND}
+    return ids | {str(entry.category): int(entry.id) for entry in cluster.labels if entry.get("category")}
 
 
 def cluster_specs(cluster: DictConfig) -> list[ClusterSpec]:

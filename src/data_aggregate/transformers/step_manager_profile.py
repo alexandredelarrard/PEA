@@ -1,6 +1,6 @@
 """Manager profile: enrich `sec_13f_manager_details` with the category and the behavioural profile of each (cik, period) row.
 
-`run_profile` writes the profile columns; `run_clustering` writes the `cluster` label (fitted fund clusters, categories, -1); `run` does both.
+`run_profile` writes the profile columns; `run_clustering` writes the `cluster` label (an id from `cluster.labels` for every row); `run` does both.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book, quarter_stats
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
 from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS, changed_rows, plan_refresh, profile_frame, stored_details
-from src.data_aggregate.utils.sec_thirteen.cluster_config import FUND, feature_names, validate_cluster_config
+from src.data_aggregate.utils.sec_thirteen.cluster_config import category_ids, feature_names, fund_tracked_ids, label_names, validate_cluster_config
 from src.data_store.schema import Tables
 from src.modelling.transformers.cluster import ClusterTransformer
 from src.utils.step import Step
@@ -59,7 +59,8 @@ class StepManagerProfile(Step):
         """Label the due rows of `sec_13f_manager_details` with their manager cluster; returns the rows written.
 
         `cluster.fit: false` only reads the saved centroids and labels the due rows (`full` relabels every due row, no refit); `fit: true`
-        first fits k-means on the eligible fund rows of every quarter, keeps `keep` clusters, saves the JSON and relabels every due row.
+        first fits k-means on the eligible fund rows of every quarter, keeps `keep` clusters (the dropped ones take tracked ids), saves the JSON and
+        relabels every due row.
         """
         started = time.monotonic()
         cfg = self._config.cluster
@@ -89,13 +90,12 @@ class StepManagerProfile(Step):
             spec = {"features": features, "group_by": "period", "k": cfg.k, "seed": cfg.seed, "n_init": cfg.n_init}
             transformer = ClusterTransformer(OmegaConf.create({**spec, "max_rows_per_group": cfg.max_rows_per_quarter}))
             transformer.fit(eligible_fund_rows(details, cfg.fit_filters))
-            mapping = keep_clusters(transformer, cfg.exclude, int(cfg.keep))
-            write_centroids(transformer, mapping, path)
+            mapping = keep_clusters(transformer, cfg.exclude, int(cfg.keep), fund_tracked_ids(cfg))
+            write_centroids(transformer, mapping, int(cfg.keep), path)
         else:
             transformer, mapping = ClusterTransformer.load(path), read_mapping(path)
-        categories = {kind: int(entry.id) for kind, entry in cfg.clusters.items() if kind != FUND}
         funds = eligible_fund_rows(details[details["period"].isin(due["period"].unique())], cfg.fit_filters)
-        labels = assemble_labels(due, transformer.transform(funds), mapping, categories, cfg.fit_filters)
+        labels = assemble_labels(due, transformer.transform(funds), mapping, category_ids(cfg), cfg.fit_filters)
 
         # check: a fit leaves `fit: true` behind and moves every historical label
         if cfg.fit:
@@ -108,7 +108,7 @@ class StepManagerProfile(Step):
             "manager clustering: %d of %d rows due and labelled, counts by cluster %s (%.1f s)",
             written,
             len(details),
-            labels["cluster"].value_counts().sort_index().to_dict(),
+            labels["cluster"].map(label_names(cfg)).value_counts().to_dict(),
             time.monotonic() - started,
         )
         return written

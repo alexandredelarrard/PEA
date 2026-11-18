@@ -7,7 +7,7 @@ cluster:
   seed: 0                    # seed of the row sample and of k-means (any integer)
   n_init: 30                 # k-means restarts, the best inertia is kept (e.g. 10-50)
   max_rows_per_quarter: 2000 # fit rows drawn per report quarter so recent, larger quarters do not dominate (e.g. 1000-5000)
-  fit_filters: {category: fund, min_positions: 10, min_book_usd: 20000000}  # a manager row is clustered when its category matches and it has at least these positions and USD book
+  fit_filters: {category: fund, min_positions: 4, min_book_usd: 20000000}  # size floor: a row with fewer positions or a smaller USD book is labelled -1 (every category); a fund at or above it is clustered
   features:                  # clustering inputs, z-scored with equal weight; `rank` = percentile rank within the quarter; no return column is allowed
     - pct_cap_small          # share of the book in small caps
     - pct_cap_mid            # share in mid caps
@@ -18,8 +18,8 @@ cluster:
     - active_share           # distance to the aggregate 13F weights (0 = index-like)
     - {name: book_value_usd, transform: rank}  # size of the book, ranked within the quarter
     - {name: hhi, transform: rank}             # concentration, ranked within the quarter
-    - {name: turnover, transform: rank}        # share of positions changed, ranked within the quarter
-  exclude: {pct_etf: 0.40, pct_equity_foreign: 0.40}  # fitted clusters whose centroid has pct_etf or pct_equity_foreign at or above these shares are dropped (e.g. 0.30-0.50)
+    - {name: turnover, transform: rank, optional: true}  # share of positions changed, ranked within the quarter; null on a manager's first row, so a null leaves it out of that row's distance
+  exclude: {pct_etf: 0.40, pct_equity_foreign: 0.40}  # fitted clusters whose centroid has pct_etf or pct_equity_foreign at or above these shares are dropped from the kept fund ids and take a tracked id (e.g. 0.30-0.50)
   cluster_label_delay_days: 90   # a quarter is labelled once period + this many days has passed (e.g. 90)
   top_x: null                # keep only the top-X managers of a cluster; null keeps every member (no code reads it yet; the key is kept on purpose)
   history_start: 2000-01-01  # first date of the cluster features (YYYY-MM-DD)
@@ -40,3 +40,22 @@ cluster:
     insurance:     {id: 8,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg, rank_gap, rank_gap_chg, stickiness, flow_x_vol], min_holders: 4}  # insurers, id 8
     broker_dealer: {id: 9,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg], min_holders: 5}  # broker-dealers, id 9
     pension:       {id: 10, features: [net_breadth, new_position_rate, net_share_flow, top10_chg], min_holders: 4}  # pension funds, id 10
+  labels:                    # the name behind every stored `cluster` id; features: true = the cube builds feature columns for it (the `clusters` block); the code reads ids, tracked ids and rules, names are for people
+    - {id: -2, name: not_computable, features: false}    # fund at or above the size floor with a required clustering feature null (turnover alone is optional)
+    - {id: -1, name: below_size_floor, features: false}  # any row below fit_filters (positions or book), whatever its category
+    - {id: 0, name: fund_0, features: true}   # kept fund clusters 0..keep-1, numbered by descending fit size (names read off the centroids of the saved fit)
+    - {id: 1, name: fund_1, features: true}
+    - {id: 2, name: fund_2, features: true}
+    - {id: 3, name: fund_3, features: true}
+    - {id: 4, name: fund_4, features: true}
+    - {id: 5, name: fund_5, features: true}
+    - {id: 6, name: fund_6, features: true}
+    - {id: 7, name: bank, features: true}             # feature categories: the id and the name are those of the `clusters` block
+    - {id: 8, name: insurance, features: true}
+    - {id: 9, name: broker_dealer, features: true}
+    - {id: 10, name: pension, features: true}
+    - {id: 11, name: fund_etf_heavy, features: false, dropped_by: pct_etf}            # tracked only: the dropped fund cluster with the highest centroid pct_etf (the ids go by the centroid value of the rule, never by fit size)
+    - {id: 12, name: fund_etf_mixed, features: false, dropped_by: pct_etf}            # the next dropped cluster by pct_etf
+    - {id: 13, name: fund_foreign_heavy, features: false, dropped_by: pct_equity_foreign}  # dropped by the foreign rule (highest pct_equity_foreign first)
+    - {id: 14, name: sovereign, features: false, category: sovereign}  # tracked only: manager category with no fund clustering and no features
+    - {id: 15, name: other, features: false, category: other}

@@ -9,7 +9,16 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from src.data_aggregate.utils.sec_thirteen.cluster_config import ClusterSpec, cluster_specs, column_budget, column_names, validate_cluster_config
+from src.data_aggregate.utils.sec_thirteen.cluster_config import (
+    ClusterSpec,
+    category_ids,
+    cluster_specs,
+    column_budget,
+    column_names,
+    fund_tracked_ids,
+    label_names,
+    validate_cluster_config,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGGER = "src.data_aggregate.utils.sec_thirteen.cluster_config"
@@ -31,6 +40,24 @@ def _clusters(**changes: dict[str, Any] | None) -> dict[str, Any]:
     return {**{str(kind): block for kind, block in clusters.items()}, **changes}
 
 
+def _labels(*, keep: int = 7, categories: dict[str, int] | None = None, tracked_funds: dict[int, str] | None = None) -> list[dict[str, Any]]:
+    """A label registry for `keep` fund ids, the feature categories, tracked fund ids (id -> exclude key) and sovereign/other."""
+    categories = {"bank": 7, "insurance": 8, "broker_dealer": 9, "pension": 10} if categories is None else categories
+    tracked_funds = {11: "pct_etf", 12: "pct_etf", 13: "pct_equity_foreign"} if tracked_funds is None else tracked_funds
+    return [
+        {"id": -2, "name": "not_computable", "features": False},
+        {"id": -1, "name": "below_size_floor", "features": False},
+        *({"id": number, "name": f"fund_{number}", "features": True} for number in range(keep)),
+        *({"id": cluster_id, "name": kind, "features": True} for kind, cluster_id in categories.items()),
+        *(
+            {"id": cluster_id, "name": f"fund_dropped_{cluster_id}", "features": False, "dropped_by": rule}
+            for cluster_id, rule in tracked_funds.items()
+        ),
+        {"id": 14, "name": "sovereign", "features": False, "category": "sovereign"},
+        {"id": 15, "name": "other", "features": False, "category": "other"},
+    ]
+
+
 def test_shipped_defaults() -> None:
     cluster = _config()
     assert cluster.fit is False and cluster.k == 10 and cluster.keep == 7
@@ -38,8 +65,10 @@ def test_shipped_defaults() -> None:
     assert cluster.centroids_path == "cluster_centroids.json" and cluster.top_x is None
     assert cluster.cluster_label_delay_days == 90 and cluster.availability_buffer_days == 7 and str(cluster.history_start) == "2000-01-01"
     assert cluster.max_clusters == 11 and cluster.max_features_per_cluster == 10 and cluster.max_age_calendar_days == 100
-    assert dict(cluster.fit_filters) == {"category": "fund", "min_positions": 10, "min_book_usd": 20_000_000}
+    assert dict(cluster.fit_filters) == {"category": "fund", "min_positions": 4, "min_book_usd": 20_000_000}
     assert dict(cluster.exclude) == {"pct_etf": 0.40, "pct_equity_foreign": 0.40}
+    optional = [entry.name for entry in cluster.features if not isinstance(entry, str) and entry.get("optional")]
+    assert optional == ["turnover"], "only turnover (null on a manager's first row) is optional"
     assert len(cluster.features) == 10 and set(cluster.stability) == {"min_ari", "min_jaccard", "min_persistence", "min_share", "max_share"}
     validate_cluster_config(cluster)
     print(
@@ -108,6 +137,49 @@ def test_the_exact_80_column_names() -> None:
     )
 
 
+def test_the_shipped_label_registry_names_every_id_and_marks_which_build_features() -> None:
+    cluster = _config()
+    ids = [int(entry.id) for entry in cluster.labels]
+
+    assert sorted(ids) == [-2, -1, *range(16)]
+    names = label_names(cluster)
+    assert names[-2] == "not_computable" and names[-1] == "below_size_floor" and names[14] == "sovereign" and names[15] == "other"
+    assert [names[i] for i in range(7, 11)] == ["bank", "insurance", "broker_dealer", "pension"]
+    assert [names[i] for i in (11, 12, 13)] == ["fund_etf_heavy", "fund_etf_mixed", "fund_foreign_heavy"]
+    assert all(names[i].startswith("fund_") for i in range(7)) and len(set(names.values())) == 18
+    assert fund_tracked_ids(cluster) == {11: "pct_etf", 12: "pct_etf", 13: "pct_equity_foreign"}
+    assert category_ids(cluster) == {"bank": 7, "insurance": 8, "broker_dealer": 9, "pension": 10, "sovereign": 14, "other": 15}
+    built = {int(entry.id) for entry in cluster.labels if entry.features}
+    assert built == set(range(11)) == {spec.cluster_id for spec in cluster_specs(cluster)}, "features are built for exactly the ids 0-10"
+    print("SANITY: the registry names the 18 ids -2, -1, 0..15 uniquely; ids 0-10 build features (the 11 specs), 11-15 are tracked only")
+
+
+def test_the_registry_is_checked_against_the_clusters_and_the_fit() -> None:
+    def rejects(match: str, **config: Any) -> None:
+        with pytest.raises(ValueError, match=match):
+            validate_cluster_config(_config(**config))
+
+    def edited(labels: list[dict[str, Any]], cluster_id: int, **changes: Any) -> list[dict[str, Any]]:
+        return [{**entry, **changes} if entry["id"] == cluster_id else entry for entry in labels]
+
+    validate_cluster_config(_config(labels=_labels()))
+    rejects("duplicate", labels=[*_labels(), {"id": 3, "name": "again", "features": True}])
+    rejects("name", labels=edited(_labels(), 8, name="bank"))
+    rejects("name", labels=edited(_labels(), 5, name=""))
+    rejects("-2", labels=[entry for entry in _labels() if entry["id"] != -2])
+    rejects("6", labels=[entry for entry in _labels() if entry["id"] != 6])
+    rejects("features", labels=edited(_labels(), 14, features=True))
+    rejects("features", labels=edited(_labels(), 9, features=False))
+    rejects("insurance", labels=edited(_labels(), 8, name="insurer"))
+    rejects("tracked", labels=_labels(tracked_funds={11: "pct_etf", 12: "pct_equity_foreign"}))
+    rejects("pct_cap_small", labels=_labels(tracked_funds={11: "pct_etf", 12: "pct_etf", 13: "pct_cap_small"}))
+    rejects("sovereign", labels=_labels(), clusters=_clusters(sovereign={"id": 14, "features": FOUR, "min_holders": 4}))
+    print(
+        "SANITY: a duplicate id or name, an unnamed or missing id, an absent sentinel, features flags that disagree with the clusters block, "
+        "a renamed feature category, a wrong tracked count or rule and a tracked category with a feature block are all rejected"
+    )
+
+
 def test_budget_within_limits_is_silent(caplog: pytest.LogCaptureFixture) -> None:
     specs = cluster_specs(_config())
     with caplog.at_level(logging.WARNING, logger=LOGGER):
@@ -123,7 +195,10 @@ def test_budget_warns_above_11_clusters_and_still_builds(caplog: pytest.LogCaptu
         "broker_dealer": {"id": 10, "features": FOUR, "min_holders": 5},
         "pension": {"id": 11, "features": FOUR, "min_holders": 4},
     }
-    cluster = _config(keep=8, clusters={"fund": _clusters()["fund"], **categories})
+    labels = _labels(
+        keep=8, categories={kind: block["id"] for kind, block in categories.items()}, tracked_funds={12: "pct_etf", 13: "pct_equity_foreign"}
+    )
+    cluster = _config(keep=8, clusters={"fund": _clusters()["fund"], **categories}, labels=labels)
     specs = cluster_specs(cluster)
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         n_columns = column_budget(specs, cluster)

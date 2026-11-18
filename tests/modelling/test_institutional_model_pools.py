@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.sec_thirteen.cluster_config import cluster_specs, column_names
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort, union_all_columns
 from src.modelling.transformers.lightgbm_model import LightGBMModel
@@ -53,17 +54,19 @@ def test_institutional_candidates_declared_and_selected_without_fitting(tmp_path
     ]
     config_dir = Path(__file__).resolve().parents[2] / "configs"
     config = read_config(str(config_dir))
+    cluster_columns = column_names(cluster_specs(config.cluster))  # the 80 per-cluster 13F columns replace the removed inst/super names
+    candidates = [*names, *cluster_columns]
     # `columns` is each family's candidate pool (the forest borrows LightGBM's when it declares none)
     for key in ("linear", "lgbm", "random_forest"):
         if "columns" not in config[key]:
             continue
         columns = list(config[key].columns)
         assert len(columns) == len(set(columns))
-        assert sorted(column for column in columns if column.startswith("f_ic_")) == sorted(names)
+        assert sorted(column for column in columns if column.startswith("f_ic_")) == sorted(candidates)
 
     dates = pd.bdate_range("2021-12-28", periods=4)
     cube = pd.DataFrame(1.0, index=range(len(dates)), columns=union_all_columns(config))
-    cube[names] = np.nan  # Schema selection must retain explicitly present, all-null inputs.
+    cube[candidates] = np.nan  # Schema selection must retain explicitly present, all-null inputs.
     cube["date"], cube["ticker"] = dates, "F010"
     for horizon in (30, 60, 90):
         cube[f"target_zscore_h{horizon}"] = 0.0
@@ -103,13 +106,13 @@ def test_institutional_candidates_declared_and_selected_without_fitting(tmp_path
         for horizon in schema.horizons:
             assert schema.family_cols_by_h[family][horizon] == model.configured_columns(config, horizon)
     selected = {c for by_h in schema.family_cols_by_h.values() for cols in by_h.values() for c in cols if c.startswith("f_ic_")}
-    assert selected and selected <= set(names) and selected <= set(schema.load_cols)
+    assert selected and selected <= set(candidates) and selected <= set(schema.load_cols)
     assert not any(column.startswith("target_") for column in schema.load_cols)
-    assert cube[names].isna().all().all() and not trips
+    assert cube[candidates].isna().all().all() and not trips
     assert step._training_as_of == pd.Timestamp("2021-12-31")
     assert not list(tmp_path.iterdir())
     counts = {family: len(columns) for family, columns in schema.family_cols.items()}
     print(
-        f"SANITY: all {len(names)} institutional inputs are declared candidates; the {len(selected)} selected at h30/h60/h90 load although all-null; "
+        f"SANITY: all {len(candidates)} institutional and cluster 13F inputs are declared candidates; the {len(selected)} selected at h30/h60/h90 load although all-null; "
         f"pools={counts}; zero fit/write/network trips."
     )

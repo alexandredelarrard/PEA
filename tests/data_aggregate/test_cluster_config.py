@@ -40,10 +40,10 @@ def test_shipped_defaults() -> None:
     assert cluster.max_clusters == 11 and cluster.max_features_per_cluster == 10 and cluster.max_age_calendar_days == 100
     assert dict(cluster.fit_filters) == {"category": "fund", "min_positions": 10, "min_book_usd": 20_000_000}
     assert dict(cluster.exclude) == {"pct_etf": 0.40, "pct_equity_foreign": 0.40}
-    assert len(cluster.features) == 11 and set(cluster.stability) == {"min_ari", "min_jaccard", "min_persistence", "min_share", "max_share"}
+    assert len(cluster.features) == 10 and set(cluster.stability) == {"min_ari", "min_jaccard", "min_persistence", "min_share", "max_share"}
     validate_cluster_config(cluster)
     print(
-        "SANITY: cluster.yml loads with fit false, k 10, keep 7, 11 clustering features, the stability thresholds and the budget keys; it validates"
+        "SANITY: cluster.yml loads with fit false, k 10, keep 7, 10 clustering features, the stability thresholds and the budget keys; it validates"
     )
 
 

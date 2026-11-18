@@ -19,9 +19,11 @@ import pytest
 from omegaconf import DictConfig
 
 from src.context import Context
+from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.cluster_config import cluster_specs, column_names
-from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, publication_dates
+from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, filing_deadlines, publication_dates
 from src.data_store.schema import Tables
 from src.utils.config import read_config
 from src.utils.institutional_vintages import availability_date
@@ -92,6 +94,24 @@ def test_expand_daily_never_uses_a_value_before_its_publication_day() -> None:
     early = daily[daily.index.get_level_values("date") < pd.Timestamp("2024-02-21")]
     assert early.empty
     print("SANITY: unordered quarters are placed by publication date: 5.0 up to 2024-05-21, 9.0 from 2024-05-22, none before the first publication.")
+
+
+def test_filing_deadline_is_the_trading_day_on_or_after_day_45_and_always_before_the_publication_less_the_buffer() -> None:
+    periods = pd.DatetimeIndex(pd.date_range("2022-03-31", "2025-03-31", freq="QE"))
+    deadlines = filing_deadlines(periods, DAYS)
+    published = publication_dates(periods, DAYS, 7)
+    # a weekend day 45 rolls to the next trading day (2022-06-30 + 45 = Sunday 08-14), a weekday stays
+    assert deadlines[pd.Timestamp("2022-06-30")] == pd.Timestamp("2022-08-15") and deadlines[pd.Timestamp("2022-09-30")] == pd.Timestamp("2022-11-14")
+    assert deadlines[pd.Timestamp("2024-12-31")] == pd.Timestamp("2025-02-14")
+    day_45 = pd.Series(periods + pd.Timedelta(days=45), index=periods)
+    rolled = deadlines.dropna() > day_45.reindex(deadlines.dropna().index)
+    # the only clock: the deadline is a trading day, never before day 45, and the publication day is at least the buffer after it
+    assert deadlines.dropna().isin(DAYS).all() and (deadlines.dropna() >= day_45.reindex(deadlines.dropna().index)).all() and rolled.any()
+    inside = published.dropna().index
+    assert ((published[inside] - pd.Timedelta(days=7)) >= deadlines[inside]).all()
+    print(
+        f"SANITY: {int(rolled.sum())} of {len(periods)} quarters roll a weekend day 45; the publication day is always at least 7 days after the deadline."
+    )
 
 
 # ---- the step on a planted SQLite world --------------------------------------------------------------------------------------------------------
@@ -313,3 +333,27 @@ def test_a_quarter_without_labels_for_the_quarter_before_stops_the_build(world: 
         w.step().run(full=True)
     assert w.reads == [] and not w.store.exists(Tables.cube_part_sec_thirteen) and w.writes == []
     print("SANITY: unlabelled 2024-06-30 stops the quarter 2024-09-30 before any line is read or any row written.")
+
+
+def test_the_step_cuts_every_book_at_the_deadline_the_publication_clock_uses(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    cut: dict[pd.Timestamp, pd.Timestamp] = {}
+    real = step_module.company_books
+
+    def spy(classified: pd.DataFrame, tags: Any, universe: Any, deadline: pd.Timestamp) -> pd.DataFrame:
+        if len(classified):
+            cut[pd.Timestamp(classified["period"].iloc[0])] = deadline
+        return real(classified, tags, universe, deadline)
+
+    monkeypatch.setattr(step_module, "company_books", spy)
+    w = world("2025-03-31")
+    w.step().run(full=True)
+
+    periods = pd.DatetimeIndex(sorted(cut))
+    calendar = load_trading_calendar(w.store)
+    clock = filing_deadlines(periods, calendar)
+    published = publication_dates(periods, calendar, 7)
+    assert len(periods) >= 6 and [cut[t] for t in periods] == list(clock)
+    assert ((published.dropna() - pd.Timedelta(days=7)) >= clock[published.dropna().index]).all()
+    print(
+        f"SANITY: the step cut the {len(periods)} books it read at the publication clock's own deadlines; each is at least 7 days before its publication."
+    )

@@ -15,12 +15,13 @@ import pandas as pd
 import pytest
 from dotenv import find_dotenv, load_dotenv
 
-from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.cluster_config import ClusterSpec, cluster_specs
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
 from src.data_aggregate.utils.sec_thirteen.cluster_lines import BOOK_COLUMNS, company_books
+from src.data_aggregate.utils.sec_thirteen.cluster_panel import filing_deadlines
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
@@ -250,7 +251,7 @@ def test_company_books_combine_share_classes_rank_before_filtering_and_respect_t
     ]
     on_time = _classified("m1", PERIOD + pd.Timedelta(days=45), items)
     late = _classified("m2", PERIOD + pd.Timedelta(days=46), items)
-    out = company_books(pd.concat([on_time, late], ignore_index=True), _tags(), {"GOOGL", "AAA", "ADRX"})
+    out = company_books(pd.concat([on_time, late], ignore_index=True), _tags(), {"GOOGL", "AAA", "ADRX"}, PERIOD + pd.Timedelta(days=45))
 
     assert list(out.columns) == list(BOOK_COLUMNS) and set(out["cik"]) == {"m1"}
     common = out[out["kind"].eq("common")].set_index("ticker")
@@ -264,6 +265,23 @@ def test_company_books_combine_share_classes_rank_before_filtering_and_respect_t
     print("\n=== SANITY CHECK: company books ===")
     print(out.drop(columns="filing_date").to_string(index=False))
     print("Share classes combine (150 sh, 600), BIGCO takes rank 1 off-universe, the filing one day late is excluded, options keep their rows.")
+
+
+def test_company_books_keep_the_filings_made_by_the_rolled_deadline_of_a_weekend_day_45() -> None:
+    period = pd.Timestamp("2021-09-30")  # day 45 is Sunday 2021-11-14: the SEC deadline (and the publication clock) rolls to Monday 11-15
+    days = pd.bdate_range("2021-01-04", "2022-03-31")
+    deadline = filing_deadlines(pd.DatetimeIndex([period]), days).iloc[0]
+    assert deadline == pd.Timestamp("2021-11-15")
+    items = [("CAA", "common", "equity_us", 10.0, 100.0)]
+    frames = []
+    for cik, filed in (("on_day_45", "2021-11-14"), ("on_deadline", "2021-11-15"), ("day_after", "2021-11-16")):
+        frames.append(_classified(cik, pd.Timestamp(filed), items).assign(period=period))
+    out = company_books(pd.concat(frames, ignore_index=True), _tags(), {"AAA"}, deadline)
+
+    assert sorted(out["cik"]) == ["on_day_45", "on_deadline"]
+    print("\n=== SANITY CHECK: rolled deadline ===")
+    print(out[["cik", "ticker", "filing_date"]].to_string(index=False))
+    print("Filings made on day 45 (Sunday) and on the rolled deadline (Monday) count; the one a day later does not.")
 
 
 # --------------------------------------------------------------------------- real data
@@ -329,15 +347,16 @@ def test_real_quarter_mapped_lines_cover_at_least_the_symbol_match_and_features_
     market = _market_at(store, PERIOD)
     universe = set(market.dropna(subset=["market_cap"]).index)
 
+    deadlines = filing_deadlines(pd.DatetimeIndex([PERIOD, before, prev4]), load_trading_calendar(store))
     books: dict[pd.Timestamp, pd.DataFrame] = {}
     symbol_cover = mapped_cover = 0.0
     for period in (PERIOD, before, prev4):
         raw = read_lines(store, ciks, [period])
         assert list(raw.columns) == list(LINE_COLUMNS)
         classified = classify_securities(clean_book(raw, cfg.build_cube.manager_profile, prefixes), reference, cfg.build_cube.manager_profile)
-        books[period] = company_books(classified, tags, universe)
+        books[period] = company_books(classified, tags, universe, deadlines[period])
         if period == PERIOD:
-            filed = pd.to_datetime(classified["filing_date"]) <= PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+            filed = pd.to_datetime(classified["filing_date"]) <= deadlines[PERIOD]
             common = classified[classified["kind"].eq("common") & filed]
             total = common["value"].sum()
             symbol_cover = common.loc[common["asset"].eq("equity_us") & common["ticker"].isin(universe), "value"].sum() / total

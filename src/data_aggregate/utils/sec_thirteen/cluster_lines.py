@@ -6,7 +6,6 @@ from collections.abc import Collection
 
 import pandas as pd
 
-from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.utils.identity_tables import CusipTags
 
 #: Columns of the company books: a manager's line per company and kind, its rank by value among all the manager's common
@@ -15,17 +14,17 @@ BOOK_COLUMNS = ("cik", "kind", "ticker", "shares", "value", "rank", "book_total"
 OPTION_KINDS = ("call", "put")
 
 
-def company_books(classified: pd.DataFrame, tags: CusipTags, universe: Collection[str]) -> pd.DataFrame:
+def company_books(classified: pd.DataFrame, tags: CusipTags, universe: Collection[str], deadline: pd.Timestamp) -> pd.DataFrame:
     """Each manager's lines of the quarter by company: `BOOK_COLUMNS`, one row per (cik, kind, ticker).
 
-    `classified` is `classify_securities(clean_book(...))` of one quarter (it carries `cusip`, `period` and `asset`). Only lines filed by
-    the quarter's 45-day deadline count. Every line takes the company ticker `tags.tag` gives its CUSIP on the period, so a company's
-    share classes sum into one row (an untagged line stays under its own key); `rank` and `book_total` are taken over all the manager's
-    common companies, then the rows keep the US-equity common companies of `universe` and the option lines (value only) on them.
+    `classified` is `classify_securities(clean_book(...))` of one quarter (it carries `cusip` and `asset`). Only lines filed on or before
+    `deadline`, the quarter's filing deadline (`cluster_panel.filing_deadlines`), count. Every line takes the company ticker `tags.tag`
+    gives its CUSIP on the period, so a company's share classes sum into one row (an untagged line stays under its own key); `rank` and
+    `book_total` are taken over all the manager's common companies, then the rows keep the US-equity common companies of `universe` and
+    the option lines (value only) on them.
     """
-    # clean: filings by the deadline of their own period
+    # clean: filings made by the quarter's deadline
     members = set(universe)
-    deadline = pd.to_datetime(classified["period"]) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
     lines = classified[pd.to_datetime(classified["filing_date"]) <= deadline]
     if lines.empty:
         return pd.DataFrame(columns=list(BOOK_COLUMNS))

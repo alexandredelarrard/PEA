@@ -1,6 +1,6 @@
 """The publication clock of the quarterly cluster features and their expansion onto trading days.
 
-A quarter is published once, on the first trading day on or after its 45-day filing deadline snapped to a trading day plus the buffer. From then
+A quarter is published once, on the first trading day on or after its filing deadline (45 days, rolled to a trading day) plus the buffer. From then
 until the next quarter is published, and at most `max_age_days` calendar days, its frame is the value of every ticker it holds a row for.
 """
 
@@ -14,13 +14,21 @@ import pandas as pd
 from src.utils.institutional_vintages import availability_date
 
 
+def filing_deadlines(periods: pd.DatetimeIndex, trading_index: pd.DatetimeIndex) -> pd.Series:
+    """Report period -> the last day a filing counts for it: the 45-day deadline rolled to the next trading day, NaT past the calendar.
+
+    The one deadline of a quarter: the books keep the filings made on or before it and the publication clock starts from it.
+    """
+    return availability_date(periods, trading_index, settle_trading_days=0)
+
+
 def publication_dates(periods: pd.DatetimeIndex, trading_index: pd.DatetimeIndex, buffer_days: int) -> pd.Series:
     """Report period -> publication day, indexed by `periods`: the filing-deadline trading day plus `buffer_days`, snapped forward onto a trading day.
 
     A period whose publication day falls after the last trading day is NaT.
     """
     # compute: the shared deadline day, then the buffer on the calendar
-    deadline = availability_date(periods, trading_index, settle_trading_days=0)
+    deadline = filing_deadlines(periods, trading_index)
     grid = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     target = (deadline + pd.Timedelta(days=buffer_days)).to_numpy()
     position = grid.searchsorted(target, side="left")

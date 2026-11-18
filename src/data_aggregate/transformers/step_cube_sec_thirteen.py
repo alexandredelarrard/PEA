@@ -19,7 +19,7 @@ from src.data_aggregate.utils.price.frames import load_price_frames, load_tradin
 from src.data_aggregate.utils.sec_thirteen.cluster_config import COLUMN_PREFIX, ClusterSpec, cluster_specs, column_budget, column_names
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
 from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books
-from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, publication_dates
+from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, filing_deadlines, publication_dates
 from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
@@ -210,6 +210,7 @@ class StepCubeSecThirteen(Step):
 
         # compute: the books of the quarter, the quarter before and the year before, then every cluster's features
         profile_cfg, universe = self._config.build_cube.manager_profile, set(res.universe)
+        deadlines = filing_deadlines(pd.DatetimeIndex(sorted(needs)), plan.calendar)
         books: dict[pd.Timestamp, pd.DataFrame] = {}
         computed: dict[pd.Timestamp, pd.DataFrame] = {}
         for t in plan.quarters.compute:
@@ -217,7 +218,7 @@ class StepCubeSecThirteen(Step):
             for period in sorted({t - four, t - one, t} - books.keys()):
                 raw = read_lines(self._store, sorted(needs[period]), [period])
                 classified = classify_securities(clean_book(raw, profile_cfg, res.references.prefixes), res.references.reference, profile_cfg)
-                books[period] = company_books(classified, res.references.tags, universe)
+                books[period] = company_books(classified, res.references.tags, universe, deadlines[period])
             quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res.market, t)
             frames = [
                 cluster_feature_frame(quarter, res.members.get((t - one, spec.cluster_id), []), market, spec).add_prefix(

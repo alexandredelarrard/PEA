@@ -211,7 +211,6 @@ def _series(ctx, keys: list[str], *, as_of: pd.Timestamp = _AS_OF, full: bool = 
     ctx.run = WindowRun("full" if full else "incremental", "series fixture", as_of)
     item = ctx.config.data.tables[table.name]
     item.start_date = "2021-09-30"
-    item.end_date = None
     return series_windows(ctx, table, SeriesRequest(keys, trading_calendar(ctx), until=_UNTIL))
 
 
@@ -238,16 +237,16 @@ def test_m1_a_new_key_alone_gets_its_full_window(tmp_path, sqlite_store):
 
     work = _series(ctx, ["AAA", "NEW"])
 
-    assert _spans(work, "NEW") == [("2021-09-30", "2026-09-30")]
+    assert _spans(work, "NEW") == [("2026-09-23", "2026-09-30")]
     assert _spans(work, "AAA") == [("2026-09-23", "2026-09-30")]
-    assert work.key_class == {"AAA": KEY_ESTABLISHED, "NEW": KEY_NEW} and len(work.groups()) == 2
+    assert work.key_class == {"AAA": KEY_ESTABLISHED, "NEW": KEY_ESTABLISHED} and len(work.groups()) == 1
     print("\n=== SANITY CHECK: M1 new key ===")
-    print("  NEW (added 2026-09-28, inside the 7-day overlap) -> full window; AAA stays forward from 2026-09-23.")
+    print("  NEW already has observations, so NEW and AAA each resume from their own last date minus seven calendar days.")
 
 
 def test_m1_a_new_key_is_pulled_in_full_once_then_resumes_forward(tmp_path, sqlite_store):
     """REQ-010: the second run of the night (and every later night inside the new-key window) is forward-only
-    once the key's stored history reaches the floor; a key whose history starts past the tolerance stays full."""
+    once the key has stored observations; an older missing prefix is explicit recovery rather than a hidden full pull."""
     ctx = fake_context(tmp_path, sqlite_store, ["AAA", "NEW", "LATE"])
     _universe(ctx, {"AAA": "1", "NEW": "2", "LATE": "3"}, added_on={"NEW": "2026-09-28", "LATE": "2026-09-28"})
     sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
@@ -262,10 +261,10 @@ def test_m1_a_new_key_is_pulled_in_full_once_then_resumes_forward(tmp_path, sqli
     assert _spans(first, "NEW") == [("2021-09-30", "2026-09-30")] and first.key_class["NEW"] == KEY_NEW
     assert _spans(again, "NEW") == _spans(again, "AAA") == [("2026-09-23", "2026-09-30")]
     assert again.key_class["NEW"] == KEY_ESTABLISHED and next_night.key_class["NEW"] == KEY_ESTABLISHED
-    assert _spans(again, "LATE") == [("2021-09-30", "2026-09-30")] and again.key_class["LATE"] == KEY_NEW
+    assert _spans(again, "LATE") == [("2026-09-23", "2026-09-30")] and again.key_class["LATE"] == KEY_ESTABLISHED
     print("\n=== SANITY CHECK: M1 new key, same-night rerun (REQ-010) ===")
     print(f"  NEW: full {_spans(first, 'NEW')} once; stored from 2021-10-01 (1 day past the floor) -> rerun {_spans(again, 'NEW')};")
-    print("  LATE, stored only from 2021-10-15 (past the 7-day tolerance), still gets the full window.")
+    print("  LATE also resumes from its own latest observation; a missing historical prefix does not silently widen its tail.")
 
 
 def test_m1_forward_window_is_the_key_s_own_last_date_minus_the_overlap(tmp_path, sqlite_store):
@@ -281,16 +280,37 @@ def test_m1_forward_window_is_the_key_s_own_last_date_minus_the_overlap(tmp_path
     print("  each key resumes from its OWN last date - 7 days: AAA from 09-23, the lagging LAG from 09-03.")
 
 
-def test_m1_a_rowless_established_key_resumes_from_the_table_frontier(tmp_path, sqlite_store):
+def test_m1_a_rowless_established_key_starts_at_its_own_floor(tmp_path, sqlite_store):
     ctx = fake_context(tmp_path, sqlite_store, ["AAA", "OLD"])
     _universe(ctx, {"AAA": "1", "OLD": "2"}, added_on={})
     sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
 
     work = _series(ctx, ["AAA", "OLD"])
 
-    assert _spans(work, "OLD") == [("2026-09-23", "2026-09-30")] and work.key_class["OLD"] == KEY_ROWLESS
+    assert _spans(work, "OLD") == [("2021-09-30", "2026-09-30")] and work.key_class["OLD"] == KEY_ROWLESS
     print("\n=== SANITY CHECK: M1 rowless key (D1a) ===")
-    print("  OLD has no row and is not new -> table-wide last date - overlap, not the full history.")
+    print("  OLD has no saved reference, so it starts at its own configured floor instead of borrowing AAA's frontier.")
+
+
+def test_document_completion_honors_the_configured_date_reference(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    cik_map = _universe(ctx, {"AAA": "1", "BBB": "2"})
+    seed_index(
+        ctx,
+        [
+            (1, "AAA", "8-K", "2026-09-01", "listed-day-one"),
+            (1, "AAA", "8-K", "2026-09-02", "listed-day-two"),
+            (2, "BBB", "8-K", "2026-09-01", "other-issuer"),
+        ],
+    )
+    _store(ctx, "AAA", ["stored-different-id"], filed="2026-09-01")
+    ctx.config.data.tables.sec_8k.overlap.column = "filing_date"
+    work = _plan(ctx, cik_map)
+    assert work.units["AAA"].accession.tolist() == ["listed-day-two"]
+    assert work.units["BBB"].accession.tolist() == ["other-issuer"]
+    print(
+        "SANITY: configured normalized filing-day references select actual work per issuer; another issuer's same-day completion cannot hide a gap."
+    )
 
 
 def test_m1_a_three_session_hole_becomes_a_three_session_window(tmp_path, sqlite_store):

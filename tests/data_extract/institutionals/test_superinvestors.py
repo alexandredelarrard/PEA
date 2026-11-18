@@ -720,8 +720,9 @@ def test_bounded_roster_rebuild_preserves_other_snapshot_dates(sqlite_store: Any
     table = si.Tables.superinvestor_roster
     before = sqlite_store.load(table)
     policy = context.config.data.tables[table.name]
-    policy.start_date, policy.end_date = "2016-01-01", "2016-12-31"
-    window = Window(pd.Timestamp(policy.start_date), pd.Timestamp(policy.end_date))
+    policy.start_date = "2016-01-01"
+    context.run = WindowRun(context.run.mode, "bounded roster recovery", pd.Timestamp("2016-12-31"))
+    window = Window(pd.Timestamp(policy.start_date), context.run.as_of)
     si.rebuild_roster(context, get_fn=context.edgar, listing_fn=_no_listing)
     after = sqlite_store.load(table)
     keys = list(table.pk)
@@ -734,7 +735,7 @@ def test_bounded_roster_rebuild_preserves_other_snapshot_dates(sqlite_store: Any
 
 def test_historical_roster_window_performs_no_live_capture(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
-    context.config.data.tables.superinvestor_roster.end_date = "2026-01-01"
+    context.run = WindowRun(context.run.mode, "historical roster observation", pd.Timestamp("2026-01-01"))
     monkeypatch.setattr(si, "_http_get", lambda url: pytest.fail("an out-of-window live observation must not be fetched or backdated"))
     assert si.upsert_roster_snapshot(context, get_fn=_fake_edgar, listing_fn=_no_listing).empty
     print("SANITY: a historical roster Window causes no live fetch and cannot backdate a current source observation.")

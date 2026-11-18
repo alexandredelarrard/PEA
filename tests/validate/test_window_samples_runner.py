@@ -1,5 +1,7 @@
 """Protocol controls for the direct complete-sample entry point."""
 
+import hashlib
+import json
 import sys
 import time
 from collections.abc import Iterator
@@ -11,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.data_store.schema import Table, Tables
+from src.utils.config import read_config
 from src.validate.checks.window_sample import timing_sample_tables
 from src.validate.result import CheckResult
 from tests.support import run_window_samples as worker
@@ -80,9 +83,26 @@ def test_shared_session_keeps_baseline_and_readonly_setup(monkeypatch: pytest.Mo
     monkeypatch.setattr(support, "get_config_context", context)
     with support.window_sample_session(baseline, out, False, time.perf_counter()) as run:
         assert len(run.results) == 59 and run.context is not None and not run.capturing
+        assert run.identity["source_manifest_sha256"] == hashlib.sha256(original.encode("utf-8")).hexdigest()
+        assert run.identity["pipeline_configuration_sha256"]
     assert manifest.read_text(encoding="utf-8") == original
+    assert json.loads((out / "samples.json").read_text(encoding="utf-8"))["identity"] == run.identity
     assert support.os.environ["PGOPTIONS"] == "-c statement_timeout=123"
     print("SANITY: pytest and direct entry share one readonly setup/deadline; immutable source pins and previous environment are preserved.")
+
+
+def test_current_policy_identity_is_separate_from_immutable_source_manifest(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    original = b'{"schema_version":3,"tables":{},"historical_policy":"retained"}'
+    manifest.write_bytes(original)
+    config = read_config("configs")
+    before = support._sample_identity(config, manifest)
+    config.data.tables.prices.overlap.days += 1
+    after = support._sample_identity(config, manifest)
+    assert before["source_manifest_sha256"] == after["source_manifest_sha256"]
+    assert before["pipeline_configuration_sha256"] != after["pipeline_configuration_sha256"]
+    assert manifest.read_bytes() == original
+    print("SANITY: changed current policy receives a new identity beside the exact unchanged historical source manifest.")
 
 
 def test_shared_acceptance_requires_every_actual_planner() -> None:

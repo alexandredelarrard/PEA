@@ -34,6 +34,7 @@ from src.data_aggregate.utils.price.checks import mask_seam_windows, measure_sea
 from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW, momentum_characteristic
+from src.data_store.schema import Tables
 from tests.support.config import fixture_config
 
 #: DHR's registered event -- the largest of the six. `close_total` re-bases at the FTV spinoff
@@ -424,27 +425,27 @@ def test_an_incremental_window_masks_the_same_trading_days_not_the_same_position
     )
 
 
-def test_every_part_warmup_exceeds_the_longest_mask_reach():
+def test_every_part_warmup_exceeds_the_longest_mask_reach() -> None:
     """Why a seam BEFORE an incremental window's load start needs no special handling. Such a
     seam is skipped by `measure_seams` (the date is not in the loaded index), and that is safe
     only because the mask could not have reached an emitted row anyway: the first emitted row
     sits a full warm-up after the load start, and the warm-up is longer than the reach.
     """
-    from src.data_store.schema import Tables
-
     reach = max(back for back, _ in SEAM_WINDOWS.values()) - 1
     config = fixture_config()
-    momentum = config.data.tables[Tables.cube_part_momentum.name].warmup.grid.value
-    targets = config.data.tables[Tables.cube_part_targets.name].warmup.grid.value
+    momentum = config.data.tables[Tables.cube_part_momentum.name].warmup.cube_part_prices
+    targets = config.data.tables[Tables.cube_part_targets.name].warmup.cube_part_prices
+    dates = _frames()["close_total"].index
+    anchor = dates[-1]
 
     assert reach == 251
-    assert momentum > reach, (momentum, reach)
-    assert targets > reach, (targets, reach)
+    assert len(dates[(dates >= anchor - pd.Timedelta(days=momentum)) & (dates < anchor)]) > reach
+    assert len(dates[(dates >= anchor - pd.Timedelta(days=targets)) & (dates < anchor)]) > reach
 
     print("\n=== SANITY CHECK: warm-up exceeds the mask reach ===")
     print(
         f"  longest mask reach s+{reach} (mom_12_1); cube_part_momentum warm-up "
-        f"{momentum} trading days, cube_part_targets {targets}. A seam before the load "
+        f"{momentum} calendar days, cube_part_targets {targets}. A seam before the load "
         "start cannot contaminate an emitted row. Validated."
     )
 

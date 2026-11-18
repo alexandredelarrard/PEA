@@ -21,7 +21,8 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
-from src.utils.window import Window
+from src.utils.window import Window, WindowPlan
+from tests.data_aggregate.sec_thirteen_read_windows import filing_window, read_windows
 from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
 from tests.support.config import fixture_config
@@ -55,7 +56,13 @@ def _manager_batch_owner(
         security_basis=basis,
     )
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
-    resources = SecThirteenResources(frames, {"": ciks}, _hr_tags([holdings for _, holdings in packets]), {})
+    resources = SecThirteenResources(
+        frames,
+        {"": ciks},
+        _hr_tags([holdings for _, holdings in packets]),
+        {},
+        windows=read_windows(Window(frames.trading_index[0], frames.trading_index[-1])),
+    )
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
@@ -128,7 +135,7 @@ def test_sec_thirteen_uses_required_configured_topk(sqlite_store: Any, monkeypat
     cohorts = Mock(return_value={"": frozenset(roster), "topk": frozenset(roster)})
     broad, elite, write = Mock(return_value=None), Mock(return_value=None), Mock()
     monkeypatch.setattr(step_module, "load_peers_or_raise", lambda context: {})
-    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda context, table: pd.DataFrame({"cik": sorted(roster)}))
+    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda context, table, **kwargs: pd.DataFrame({"cik": sorted(roster)}))
     monkeypatch.setattr(step_module, "filer_ciks", lambda ciks, config_dir: set(ciks))
     monkeypatch.setattr(step_module, "load_manager_cohorts", cohorts)
     monkeypatch.setattr(step, "_institutional_features", broad)
@@ -185,7 +192,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
         def load(self, *args: Any, **kwargs: Any) -> Any:
             raise AssertionError("Whole roster books use bounded source iteration")
 
-    result = iter_filing_vintages(context(Store(), Path(".")), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
+    result = iter_filing_vintages(context(Store(), Path(".")), filing_window(pd.Timestamp("2024-02-20")), ["1"], bond_lines=BOND_LINES)
     assert result is not None
     [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0
@@ -283,7 +290,9 @@ def _roster_history(
     monkeypatch.setattr(step_module, "filer_ciks", lambda ciks, config_dir: set(ciks))
     monkeypatch.setattr(step_module, "load_manager_cohorts", lambda config_dir, roster, k: {"": frozenset(roster), "topk": frozenset(roster)})
     step = StepCubeSecThirteen(ctx, ctx.config)
-    history = step._superinvestor_history(step._load_resources(Window(grid[0], grid[-1]), grid))
+    interval = Window(grid[0], grid[-1])
+    plan = WindowPlan(interval, interval, interval, ctx.run, None, (("ticker", tuple(quotes)),))
+    history = step._superinvestor_history(step._load_resources(plan, grid))
     assert history is not None, "the roster books stored in sec13f_hr produce no superinvestor history"
     return history
 

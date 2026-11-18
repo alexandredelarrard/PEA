@@ -14,7 +14,7 @@ from src.data_aggregate.utils.common.incremental import (
     plan_window,
     write_part,
 )
-from src.data_aggregate.utils.common.inputs import load_source
+from src.data_aggregate.utils.common.inputs import input_windows, load_source
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
@@ -26,9 +26,9 @@ from src.data_aggregate.utils.price.frames import (
     load_trading_calendar,
 )
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import publication_policy, source_read_window
+from src.utils.data_policy import publication_policy
 from src.utils.filer_tables import def14a_evidence_mask
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from src.utils.step import Step
 from src.utils.window import Window, WindowPlan
 
@@ -54,7 +54,8 @@ class StepCubeGovernance(Step):
         window = plan_window(self._context, Tables.cube_part_governance, calendar)
         if window is None:
             return {}
-        frames = self._load_frames(window.read, calendar)
+        windows = input_windows(self._context, Tables.cube_part_governance, window.write)
+        frames = self._load_frames(windows[Tables.cube_part_prices], calendar)
 
         output_frames = frames.on(frames.trading_index[frames.trading_index >= window.read.start], "close_split", "close_total")
         merger = PanelMerger(anchor=output_frames.skeleton())
@@ -90,19 +91,14 @@ class StepCubeGovernance(Step):
         self._log.info("Governance frontier current: %s (missing new dates=0)", expected_end.date())
 
     # ---- inputs ---- #
-    def _load_frames(self, window: Window, calendar: pd.DatetimeIndex) -> PriceFrames:
+    def _load_frames(self, window: Window | None, calendar: pd.DatetimeIndex) -> PriceFrames:
         """Load retained prices once for count lineage and conditional schema-support probes."""
-        retained = source_read_window(self._config, Tables.cube_part_prices, window.end)
-        if retained is None:
-            raise ValueError("No configured price lineage is available")
         return load_price_frames(
-            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=_PRICE_FIELDS, window=retained
+            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=_PRICE_FIELDS, window=window
         )
 
     def _load_def14a(self, window: Window | None) -> pd.DataFrame | None:
         """Load usable scalar observations, excluding archives and retry-only parents."""
-        if window is None:
-            return None
         df = load_source(self._context, Tables.def14a_llm, window=window)
         if df is not None:
             df = df.loc[def14a_evidence_mask(df)]
@@ -113,8 +109,6 @@ class StepCubeGovernance(Step):
 
     def _load_votes(self, window: Window | None) -> pd.DataFrame | None:
         """Load optional Item 5.07 vote records."""
-        if window is None:
-            return None
         df = load_source(self._context, Tables.sec_8k_votes, window=window)
         if df is None or df.empty:
             self._log.warning("No %s -> the four shareholder-dissent families are skipped.", Tables.sec_8k_votes.name)
@@ -122,19 +116,17 @@ class StepCubeGovernance(Step):
         self._log.info("Loaded %s: %s rows x %s cols", Tables.sec_8k_votes.name, len(df), len(df.columns))
         return df
 
-    def _load_proxy_child(self, table: Table, columns: Sequence[str] | None = None) -> pd.DataFrame | None:
+    def _load_proxy_child(self, table: Table, window: Window | None, columns: Sequence[str] | None = None) -> pd.DataFrame | None:
         """Read configured child history, including donors without a usable scalar parent."""
-        clock = str(publication_policy(self._config, table).clock)
+        clock = str(publication_policy(self._config, table).column)
         if table == Tables.def14a_executive_comp and columns is None:
             columns = [*table.pk, clock, "total", "reconciles", *EXEC_COMPONENTS]
         if columns is not None:
             columns = list(dict.fromkeys([*columns, *Tables.def14a_llm.pk, clock]))
-        return load_source(self._context, table, columns=columns)
+        return load_source(self._context, table, columns=columns, window=window)
 
     def _load_fundamentals(self, window: Window | None) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
-        if window is None:
-            return None
         df = load_source(
             self._context, Tables.sharadar_fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], window=window
         )
@@ -147,10 +139,7 @@ class StepCubeGovernance(Step):
     def _governance_panel(self, frames: PriceFrames, window: WindowPlan) -> pd.DataFrame | None:
         """Load the raw governance frames, clean them once, then build the features."""
         existing_columns = self._store.columns(Tables.cube_part_governance)
-        windows = {
-            table: source_read_window(self._config, table, window.read.end)
-            for table in (Tables.def14a_llm, Tables.sec_8k_votes, Tables.sharadar_fundamentals_history)
-        }
+        windows = input_windows(self._context, Tables.cube_part_governance, window.write)
         df = self._load_def14a(windows[Tables.def14a_llm])
         if df is None:
             return None
@@ -159,25 +148,16 @@ class StepCubeGovernance(Step):
 
         raw = GovernanceInputs(
             def14a=df,
-            exec_comp=self._load_proxy_child(Tables.def14a_executive_comp),
-            directors=self._load_proxy_child(Tables.def14a_directors),
-            director_comp=self._load_proxy_child(Tables.def14a_director_comp),
+            exec_comp=self._load_proxy_child(Tables.def14a_executive_comp, windows[Tables.def14a_executive_comp]),
+            directors=self._load_proxy_child(Tables.def14a_directors, windows[Tables.def14a_directors]),
+            director_comp=self._load_proxy_child(Tables.def14a_director_comp, windows[Tables.def14a_director_comp]),
             votes=self._load_votes(windows[Tables.sec_8k_votes]),
-            ownership=self._load_proxy_child(Tables.def14a_ownership, _OWNERSHIP_COLUMNS),
+            ownership=self._load_proxy_child(Tables.def14a_ownership, windows[Tables.def14a_ownership], _OWNERSHIP_COLUMNS),
         )
         fundamentals = self._load_fundamentals(windows[Tables.sharadar_fundamentals_history])
         retained = frames
-        frames = frames.on(frames.trading_index[frames.trading_index >= window.read.start], "close_split", "close_total")
-        inputs, stats = clean_governance_inputs(raw, frames)
-        lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
-        for key, value in stats.items():
-            if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):
-                self._log.info("  governance clean | %s: %s", key, f"{value:,}")
-        if lookahead:
-            self._log.warning(PAY_BACKFILL_WARNING, "; ".join(f"{k}: {v:,}" for k, v in lookahead.items()))
-
-        # Apply each source's configured eligibility once, using the retained lineage calendar.
-        calendar = pd.DatetimeIndex(frames.shares_outstanding_pit.index) if frames.shares_outstanding_pit is not None else frames.trading_index
+        # Prepare independent dated roots before any cross-source cleaning or fill.
+        calendar = retained.trading_index
         timed = {}
         for field, table in (
             ("def14a", Tables.def14a_llm),
@@ -185,14 +165,24 @@ class StepCubeGovernance(Step):
             ("directors", Tables.def14a_directors),
             ("director_comp", Tables.def14a_director_comp),
             ("votes", Tables.sec_8k_votes),
+            ("ownership", Tables.def14a_ownership),
         ):
-            source = getattr(inputs, field)
+            source = getattr(raw, field)
             if source is not None:
-                clock = str(publication_policy(self._config, table).clock)
-                timed[field] = publication_rows(self._config, table, source, calendar, clock)
-        inputs = replace(inputs, **timed)
+                source = point_in_time(source, self._config, table, calendar)
+                source[str(publication_policy(self._config, table).column)] = source["as_of"]
+                timed[field] = source
+        raw = replace(raw, **timed)
         if fundamentals is not None:
-            fundamentals = publication_rows(self._config, Tables.sharadar_fundamentals_history, fundamentals, calendar, "as_of")
+            fundamentals = point_in_time(fundamentals, self._config, Tables.sharadar_fundamentals_history, calendar)
+        inputs, stats = clean_governance_inputs(raw, retained)
+        frames = retained.on(retained.trading_index[retained.trading_index >= window.read.start], "close_split", "close_total")
+        lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
+        for key, value in stats.items():
+            if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):
+                self._log.info("  governance clean | %s: %s", key, f"{value:,}")
+        if lookahead:
+            self._log.warning(PAY_BACKFILL_WARNING, "; ".join(f"{k}: {v:,}" for k, v in lookahead.items()))
 
         panel = self._project_panel(inputs, fundamentals, frames)
 

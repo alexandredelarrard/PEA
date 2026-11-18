@@ -48,7 +48,6 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import publication_policy
 from src.utils.identity_tables import read_identity
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
@@ -63,7 +62,6 @@ class StepCubeInstitutionals(Step):
         self._store = context.store
         self._cfg = config.data_aggregate
         self._bugfix = load_bugfix(context.config_dir)
-        self._insider_lag = int(publication_policy(config, Tables.insider_transactions).lag.value)
         self._availability = InstitutionalAvailability.from_config(config)
 
     def run(self) -> dict[Table, WindowPlan]:
@@ -74,7 +72,7 @@ class StepCubeInstitutionals(Step):
             return {}
 
         # Compute once; history-dependent features need the complete calendar.
-        df_panel = self.build_panel(window.read, trading_index)
+        df_panel = self.build_panel(window, trading_index)
 
         self._write_panel(df_panel, window)
         return {Tables.cube_part_institutionals: window}
@@ -122,11 +120,17 @@ class StepCubeInstitutionals(Step):
             df_factor[unknown] = factor
         return df_factor
 
-    def build_panel(self, window: Window, calendar: pd.DatetimeIndex) -> pd.DataFrame:
+    def build_panel(self, window: WindowPlan, calendar: pd.DatetimeIndex) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
 
         # Load shared price and class inputs once.
-        frames = load_price_frames(self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=window)
+        windows = capital_inputs.input_windows(self._context, Tables.cube_part_institutionals, window.write)
+        for table in (Tables.universe_cusip, Tables.universe_cik_symbol):
+            if windows[table] is not None:
+                raise ValueError(f"{Tables.cube_part_institutionals.name}/{table.name}: complete identity intervals require null warmup")
+        frames = load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=windows[Tables.cube_part_prices]
+        )
         df_lines = institutional_inputs.load_ftd_lines(self._store)
         df_lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
@@ -134,27 +138,33 @@ class StepCubeInstitutionals(Step):
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(self._insider_panel(frames, df_lines, df_factor), "insider-trading")
-        merger.add(self._short_flow_panel(frames, df_lines, df_lineage, df_factor), "short-flow")
-        merger.add(self._ownership_panel(frames, df_lines, df_lineage), "beneficial-ownership")
+        merger.add(self._insider_panel(frames, df_lines, df_factor, windows), "insider-trading")
+        merger.add(self._short_flow_panel(frames, df_lines, df_lineage, df_factor, windows), "short-flow")
+        merger.add(self._ownership_panel(frames, df_lines, df_lineage, windows), "beneficial-ownership")
 
         # Keep declared inputs even when a source has no qualifying observations.
         emission = {**INSIDER_EMISSION, **short_flow.EMISSION, **OWNERSHIP_EMISSION}
         columns = [column for name, mode in emission.items() for column in (f"f_{name}", *([f"f_{name}_vs_peers"] if mode == "raw+peers" else []))]
         return merger.to_long().reindex(columns=["date", "ticker", *columns])
 
-    def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
+    def _insider_panel(
+        self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame, windows: dict[Table, Window | None]
+    ) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
-        source = institutional_inputs.load_insider_transactions(self._context, frames.universe, identity_intervals)
+        source = institutional_inputs.load_insider_transactions(
+            self._context, frames.universe, identity_intervals, windows[Tables.insider_transactions]
+        )
         if source is None or source.transactions.empty:
             return None
         source = institutional_inputs.lag_insider_source(
-            source, self._insider_lag, pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+            source, self._config, pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
         )
 
         # load and clean roles per person
-        df_roles = institutional_inputs.load_insider_role_evidence(self._context, source.transactions, frames.universe, frames.trading_index)
+        df_roles = institutional_inputs.load_insider_role_evidence(
+            self._context, source.transactions, frames.universe, frames.trading_index, windows[Tables.def14a_executive_comp]
+        )
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
@@ -177,15 +187,22 @@ class StepCubeInstitutionals(Step):
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, coverage, self._universe.sector_map)
 
     def _short_flow_panel(
-        self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None, df_factor: pd.DataFrame
+        self,
+        frames: PriceFrames,
+        lines: pd.DataFrame | None,
+        lineage: pd.DataFrame | None,
+        df_factor: pd.DataFrame,
+        windows: dict[Table, Window | None],
     ) -> pd.DataFrame | None:
         # Build the short-volume series and its lineage-fallback evidence and the FTD series from the as-filed lines; clean the raw class tape once.
         df_classes = (
             lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)] if lines is not None else None
         )
-        df_short, df_finra = institutional_inputs.load_short_volume(self._context, frames.universe, lines, lineage)
-        df_fails, df_coverage = institutional_inputs.load_fails(self._context, frames.universe, lines, self._bugfix)
-        df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._context, df_classes), self._bugfix)
+        df_short, df_finra = institutional_inputs.load_short_volume(
+            self._context, frames.universe, lines, lineage, windows[Tables.sec_short_volume_security], frames.trading_index
+        )
+        df_fails, df_coverage = institutional_inputs.load_fails(self._context, frames.universe, lines, self._bugfix, windows, frames.trading_index)
+        df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._context, df_classes, windows[Tables.prices]), self._bugfix)
 
         # Put FINRA, FTD and outstanding quantities in each ticker's last saved security units (`q * F_T / F_d`).
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
@@ -210,19 +227,23 @@ class StepCubeInstitutionals(Step):
             df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
             df_source = terminal_rows(df_source, ("fails_quantity",), df_factor)
             settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure)
-            available = short_flow._ftd_available_dates(
-                df_coverage, int(publication_policy(self._config, Tables.sec_fails_to_deliver_security).lag.value)
-            )
+            available = df_coverage.drop_duplicates("period").set_index("period")["as_of"].to_dict()
             publication = FtdPublication(df_coverage, available)
         fails = FtdSource(settlement, publication) if settlement is not None and publication is not None else None
-        return build_short_flow_feature_panel(frames, df_short, fails, capital, self._config, df_tenure)
+        return build_short_flow_feature_panel(frames, df_short, fails, capital, df_tenure)
 
-    def _ownership_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None) -> pd.DataFrame | None:
+    def _ownership_panel(
+        self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None, windows: dict[Table, Window | None]
+    ) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
 
         # Load the two schedules and independent global completeness frontiers.
-        df_13d = capital_inputs.load_source(self._context, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
-        df_13g = capital_inputs.load_source(self._context, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        df_13d = capital_inputs.load_source(
+            self._context, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS, window=windows[Tables.sec_13d]
+        )
+        df_13g = capital_inputs.load_source(
+            self._context, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS, window=windows[Tables.sec_13g]
+        )
         identity = SubjectIdentity.from_tables(lineage, lines) if lineage is not None and lines is not None else None
         if identity is None:
             self._log.warning("lineage or CUSIP lines absent -> 13D/13G filings are counted without the subject-side identity filter")

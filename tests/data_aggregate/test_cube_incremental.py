@@ -30,7 +30,7 @@ from src.data_store.schema import (
     resolve,
 )
 from src.data_store.store import DataStore
-from src.utils.window import Offset, Window, WindowRun, shift_date
+from src.utils.window import Window, WindowRun
 from tests.data_aggregate.test_price_pit_contract import seed_prices
 from tests.support.config import fixture_config
 from tests.support.universe import universe_of
@@ -87,11 +87,11 @@ def test_windowed_build_reproduces_full_tail() -> None:
     # [refresh_from - warmup, end]. This must cover the longest daily look-back (the 5-year =
     # 1260-day seasonality feature) -> the test fails if the map value is ever set too low.
     policy = fixture_config().data.tables.cube_part_momentum
-    warmup = int(policy.warmup.grid.value)
+    warmup = int(policy.warmup.cube_part_prices)
     cutoff_pos = 1900
     last = dates[cutoff_pos]
-    refresh_from = last - pd.Timedelta(days=int(policy.reprocess.overlap.value))
-    start = shift_date(refresh_from, Offset(warmup, str(policy.warmup.grid.unit)), dates)
+    refresh_from = last - pd.Timedelta(days=int(policy.overlap.days))
+    start = refresh_from - pd.Timedelta(days=warmup)
     refresh = int(((dates >= refresh_from) & (dates <= last)).sum()) - 1
     win = build_feature_panel(
         PriceFrames(
@@ -300,12 +300,14 @@ def test_step_forwards_the_registry_projection_and_configured_bounds() -> None:
         universe=universe_of(["AAPL"]),
         run=WindowRun("incremental", "projected source contract", pd.Timestamp("2026-11-16")),
     )
-    capital_inputs.load_source(context, Tables.sec_13d)
+    windows = capital_inputs.input_windows(context, Tables.cube_part_institutionals, Window(pd.Timestamp("2026-01-02"), context.run.as_of))
+    capital_inputs.load_source(context, Tables.sec_13d, window=windows[Tables.sec_13d])
     assert len(calls) == 1
     table, query = calls[0]
     assert table == Tables.sec_13d and query["project"] and query["columns"] is None
     assert query["where"]["ticker"] == ["AAPL"]
-    assert query["where"]["filing_date"] == Window(pd.Timestamp(config.data.tables.sec_13d.source_start), context.run.as_of)
+    assert query["date_col"] == "filing_date" and query["since"] == windows[Tables.sec_13d].start
+    assert query["until"] == context.run.as_of
     print("SANITY: one projected source stream carries the configured filing interval and universe scope.")
 
 
@@ -331,10 +333,12 @@ def test_universe_scope_is_pushed_down_to_the_read(sqlite_store: DataStore, monk
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = capital_inputs.load_source(context, Tables.sec_13d)
+    windows = capital_inputs.input_windows(context, Tables.cube_part_institutionals, Window(pd.Timestamp("2026-01-02"), context.run.as_of))
+    result = capital_inputs.load_source(context, Tables.sec_13d, window=windows[Tables.sec_13d])
     assert result is not None and set(result.ticker) == {"AAPL"}
     assert len(calls) == 1 and calls[0]["where"]["ticker"] == ["AAPL"]
-    assert isinstance(calls[0]["where"]["filing_date"], Window)
+    assert calls[0]["since"] == windows[Tables.sec_13d].start and calls[0]["until"] == context.run.as_of
+    assert calls[0]["date_col"] == "filing_date"
     print("SANITY: source predicates reach the real store once; outside symbols never enter cleaning.")
 
 

@@ -9,6 +9,7 @@ existing growth / revenue-per-employee math.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +19,8 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
+from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
+from src.data_aggregate.utils.common.inputs import input_windows
 from src.data_aggregate.utils.fundamentals.employee_features import (
     EMPLOYEE_COLUMNS,
     _employee_fields,
@@ -26,6 +29,9 @@ from src.data_aggregate.utils.fundamentals.employee_features import (
     headcount_proxy,
     part_time_weight,
 )
+from src.data_store.schema import Tables
+from src.utils.window import Window, WindowRun
+from tests.support.config import fixture_config
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 
@@ -234,32 +240,39 @@ def test_part_time_weight_is_read_from_build_cube_config_and_range_checked():
     print(f"  configs/data_aggregate.yml data_aggregate.workforce.part_time_weight = {alpha}; 0.3, 0.4 and 1.2 raise. Validated.")
 
 
-def test_step_loads_the_projected_employee_table_with_two_years_of_lookback():
-    from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
-    from src.data_store.schema import Tables
-
+def test_step_loads_projected_employee_history_with_its_declared_budget() -> None:
     calls: list[dict[str, Any]] = []
 
     class _Store:
-        def load(self, table: object, columns: object = None, where: object = None, **kwargs: object) -> pd.DataFrame:
+        @staticmethod
+        def columns(table: object) -> list[str]:
+            return list(EMPLOYEE_COLUMNS)
+
+        def iter_load(self, table: object, columns: object = None, where: object = None, **kwargs: object) -> Iterator[pd.DataFrame]:
             calls.append({"table": table, "columns": columns, "where": where, **kwargs})
-            return _employees([{"ticker": "AAA", "as_of": "2020-01-01", "employees_total": 1, "basis": "total"}])
+            yield _employees([{"ticker": "AAA", "as_of": "2020-01-01", "employees_total": 1, "basis": "total"}])
 
     step = cast(Any, object.__new__(StepCubeFundamentals))
-    step._context = SimpleNamespace(store=_Store())
+    step._context = SimpleNamespace(
+        store=_Store(), config=fixture_config(), run=WindowRun("incremental", "employee input budget", pd.Timestamp("2020-07-31"))
+    )
     step._store = step._context.store
     step._log = SimpleNamespace(warning=lambda *a, **k: None, info=lambda *a, **k: None)
-    frame = step._load_employees(("AAA", "BBB"), since=pd.Timestamp("2020-06-30"))
+    write = Window(pd.Timestamp("2020-06-30"), step._context.run.as_of)
+    window = input_windows(step._context, Tables.cube_part_fundamentals, write)[Tables.fundamentals_employees]
+    frame = step._load_employees(("AAA", "BBB"), window)
     assert frame is not None and len(calls) == 1
     call = calls[0]
     assert call["table"] == Tables.fundamentals_employees
     assert list(call["columns"]) == list(EMPLOYEE_COLUMNS)
     assert call["where"] == {"ticker": ["AAA", "BBB"]}
-    assert call["since"] == pd.Timestamp("2018-06-30") and call["optional"] is True
-    step._load_employees(("AAA",), since=None)
+    assert call["since"] == write.start - pd.Timedelta(days=3600) and call["until"] == step._context.run.as_of
+    step._load_employees(("AAA",), None)
     assert calls[1]["since"] is None
     print("\n=== SANITY CHECK: employee load ===")
-    print(f"  {Tables.fundamentals_employees} projected to {list(EMPLOYEE_COLUMNS)}, universe-scoped, since 2020-06-30 - 2y = 2018-06-30. Validated.")
+    print(
+        f"  {Tables.fundamentals_employees} uses one projected, ticker-scoped read at write.start -3600 calendar days; explicit full has no lower date bound."
+    )
 
 
 # --------------------------------------------------------------------------- #

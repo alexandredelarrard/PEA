@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
-from src.data_aggregate.utils.common.inputs import load_source
+from src.data_aggregate.utils.common.inputs import load_source, source_read_scope
 from src.data_aggregate.utils.common.pit import fiscal_values_to_daily
 from src.data_aggregate.utils.fundamentals.employee_features import EMPLOYEE_COLUMNS, attach_headcount, headcount_proxy, part_time_weight
 from src.data_aggregate.utils.governance.staleness import GOVERNANCE_EVENT_MAX_AGE_DAYS
@@ -25,18 +25,19 @@ from src.data_aggregate.utils.institutionals.insider_features import _first_fili
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from src.data_aggregate.utils.institutionals.ownership_features import SUBJECT_COLUMNS, SubjectIdentity, _filing_counts, _filings
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import publication_policy, source_read_window
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from src.validate.checks.window_lineage import _State
+from tests.support.window_samples import cube_input_windows
 
 
 def employees(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.fundamentals_employees
-    raw = load_source(context, table, columns=[*EMPLOYEE_COLUMNS, "accession_number"])
-    history = StepCubeFundamentals(context, context.config)._load_fundamentals(tuple(context.universe.tickers), sessions)
+    windows = cube_input_windows(context, Tables.cube_part_fundamentals, sessions)
+    raw = load_source(context, table, columns=[*EMPLOYEE_COLUMNS, "accession_number"], window=windows[table])
+    history = StepCubeFundamentals(context, context.config)._load_fundamentals(tuple(context.universe.tickers), sessions, windows)
     if raw is None:
         raise ValueError("Pinned employees have no complete source rows")
-    prepared = publication_rows(context.config, table, raw, sessions, "as_of")
+    prepared = point_in_time(raw, context.config, table, sessions)
     proxy = headcount_proxy(prepared, part_time_weight(context.config.data_aggregate))
     merge = pd.merge_asof
 
@@ -84,10 +85,12 @@ def votes(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
         "votes_abstain",
         "nominee_votes_json",
     ]
-    raw = load_source(context, table, columns=columns)
+    windows = cube_input_windows(context, Tables.cube_part_governance, sessions)
+    raw = load_source(context, table, columns=columns, window=windows[table])
     if raw is None:
         raise ValueError("Pinned vote units are absent")
-    prepared = publication_rows(context.config, table, raw, sessions, "filing_date")
+    prepared = point_in_time(raw, context.config, table, sessions)
+    prepared["filing_date"] = prepared["as_of"]
     fields, _ = vote_dissent_fields(prepared, sessions)
     history = _say_on_pay_history(prepared, {})
     if history is None or "sop_dissent" not in fields:
@@ -124,18 +127,17 @@ def ownership_identity(context: Context) -> SubjectIdentity:
 def ownership(context: Context, sessions: pd.DatetimeIndex, table: Table, identity: SubjectIdentity) -> list[_State]:
     # Identity filtering uses global full-history concentration statistics. Keep
     # the real universe population and all stored versions before selecting output keys.
-    interval = source_read_window(context.config, table, context.run.as_of)
-    chunks = list(
-        context.store.iter_load(
-            table, columns=SUBJECT_COLUMNS, where={"ticker": context.universe.source_tickers, "filing_date": interval}, markers=True
-        )
-    )
+    interval = cube_input_windows(context, Tables.cube_part_institutionals, sessions)[table]
+    scope = source_read_scope(context, table, interval)
+    where = {"ticker": context.universe.source_tickers, **scope.pop("where", {})}
+    chunks = list(context.store.iter_load(table, columns=SUBJECT_COLUMNS, where=where, markers=True, **scope))
     if not chunks:
         raise ValueError("No full-population ownership source history")
     raw = pd.concat(chunks, ignore_index=True)
     selected = _filings(raw, identity)
     selected = selected.loc[selected.ticker.isin(context.universe.tickers)]
-    prepared = publication_rows(context.config, table, selected, sessions, "filing_date")
+    prepared = point_in_time(selected, context.config, table, sessions)
+    prepared["filing_date"] = prepared["as_of"]
     daily = _filing_counts(prepared, sessions, pd.Index(context.universe.tickers))
     units = raw.loc[raw.ticker.isin(context.universe.tickers)].groupby(["ticker", "accession_number"], as_index=False).filing_date.min()
     units["selected_filing"] = (
@@ -143,7 +145,7 @@ def ownership(context: Context, sessions: pd.DatetimeIndex, table: Table, identi
         .isin(pd.MultiIndex.from_frame(selected[["ticker", "accession_number"]]))
         .astype(float)
     )
-    rows = publication_rows(context.config, table, units, sessions, "as_of")
+    rows = point_in_time(units, context.config, table, sessions)
     references = {
         key: group[[*table.pk, "filing_date"]].to_dict("records")
         for key, group in raw.loc[raw.ticker.isin(context.universe.tickers)].groupby(["ticker", "accession_number"])
@@ -152,8 +154,8 @@ def ownership(context: Context, sessions: pd.DatetimeIndex, table: Table, identi
     rows.attrs["lineage_dependency_scope"] = {
         "population_rows": len(raw),
         "population_tickers": sorted(raw.ticker.unique()),
-        "retained_start": interval.start,
-        "retained_end": interval.end,
+        "retained_start": None if interval is None else interval.start,
+        "retained_end": context.run.as_of,
         "markers": True,
     }
     return [
@@ -170,16 +172,17 @@ def ownership(context: Context, sessions: pd.DatetimeIndex, table: Table, identi
 
 
 def insiders(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
+    windows = cube_input_windows(context, Tables.cube_part_institutionals, sessions)
     lines = context.store.load(Tables.universe_cusip, columns=FTD_LINE_COLUMNS, optional=True)
-    source = load_insider_transactions(context, context.universe.tickers, lines)
-    prices = context.store.load(
-        Tables.cube_part_prices, columns=["date", "ticker", "close_pit", "shares_outstanding_pit"], where={"ticker": context.universe.tickers}
+    source = load_insider_transactions(context, context.universe.tickers, lines, window=windows[Tables.insider_transactions])
+    prices = load_source(
+        context, Tables.cube_part_prices, columns=["date", "ticker", "close_pit", "shares_outstanding_pit"], window=windows[Tables.cube_part_prices]
     )
     if source is None or prices is None:
         raise ValueError("Missing complete insider history or actual saved PIT valuation dependencies")
     source.transactions["_source_filing_date"] = source.transactions.filing_date
-    lagged = lag_insider_source(source, int(publication_policy(context.config, Tables.insider_transactions).lag.value), sessions)
-    roles = load_insider_role_evidence(context, lagged.transactions, context.universe.tickers, sessions)
+    lagged = lag_insider_source(source, context.config, sessions)
+    roles = load_insider_role_evidence(context, lagged.transactions, context.universe.tickers, sessions, window=windows[Tables.def14a_executive_comp])
     quotes = prices.pivot(index="date", columns="ticker", values="close_pit")
     shares = prices.pivot(index="date", columns="ticker", values="shares_outstanding_pit")
     trades, _ = clean_transactions(lagged.transactions, df_valuation_close=quotes, df_roles=roles, df_shares_outstanding=shares)

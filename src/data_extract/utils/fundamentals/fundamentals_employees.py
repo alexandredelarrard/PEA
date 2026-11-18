@@ -20,7 +20,7 @@ from src.data_extract.utils.fundamentals.employee_guard import COUNT_COLUMNS, Fi
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult
-from src.utils.data_policy import source_read_window, window_policy
+from src.utils.data_policy import overlap_column, source_read_window, window_policy
 
 # The `sec_employees_text` columns the worklist reads; `windows` and `pieces` are read per ticker, for its undecided filings.
 _TEXT_COLUMNS = ["ticker", "accession_number", "cik", "form", "filing_date", "period_of_report", "source_document"]
@@ -179,6 +179,9 @@ def _log_run(context: Context, df_keys: pd.DataFrame, results: list[EmployeeTick
 def fetch_employees_llm(context: Context, tickers: list[str], extractors: Sequence[LLMExtractor]) -> None:
     """Fill missing employee decisions inside configured dates, reusing valid decisions under every Context mode."""
     # load: the window's text rows (no windows or pieces), the stored rows, the text walk's pending filings
+    column = overlap_column(context.config, Tables.fundamentals_employees)
+    if column != "as_of":
+        raise ValueError("Employee completion requires as_of to preserve the shared filing-day decision")
     policy = window_policy(context.config, Tables.fundamentals_employees, context.run.as_of)
     source = source_read_window(context.config, Tables.sec_employees_text, context.run.as_of)
     history = source_read_window(context.config, Tables.fundamentals_employees, context.run.as_of)

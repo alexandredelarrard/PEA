@@ -18,7 +18,7 @@ from src.data_aggregate.utils.common.parts import PART_BY_NAME
 from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import input_read_window, window_policy
 from src.utils.window import Offset, Window, WindowPlan, WindowRun, resolve_window, shift_date
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ def plan_window(
     inherited_start: pd.Timestamp | None = None,
 ) -> WindowPlan | None:
     """Resolve the configured cube policy against one scoped frontier and the root run."""
-    policy = window_policy(context.config, part, context.run.as_of)
+    policy = window_policy(context.config, part, context.run.as_of, calendar)
     selected = tuple(sorted(set(context.universe.tickers if scope is None else scope)))
     if not selected:
         raise ValueError(f"{part.name}: cube planning requires an explicit ticker scope")
@@ -44,7 +44,7 @@ def plan_window(
     end = min(policy.requested.end, calendar[-1])
     if end < policy.requested.start:
         return None
-    last = context.store.max_date(part, where={"ticker": selected, "date": policy.requested})
+    last = context.store.max_date(part, where={"ticker": selected, "date": Window(policy.requested.start, context.run.as_of)})
     if last is not None and pd.Timestamp(last) > calendar[-1]:
         raise RuntimeError(f"{part.name}: source calendar ends before the saved frontier; no rows may be replaced")
 
@@ -54,15 +54,36 @@ def plan_window(
     if last is None and run.mode == "incremental":
         run = WindowRun("initial", "no selected output", run.instant)
     plan = resolve_window(policy, run, last, calendar, (("ticker", selected),), inherited_start=inherited_start)
+    if part == Tables.cube_part_targets:
+        horizon = max(int(value) for value in context.config.data_aggregate.targets.horizons)
+        days = int(context.config.data.tables[part.name].overlap.days)
+        anchor = policy.requested.end if last is None else min(pd.Timestamp(last), policy.requested.end)
+        history = calendar[calendar <= anchor]
+        earliest = shift_date(anchor, Offset(horizon, "trading_sessions"), calendar)
+        if days < horizon or (len(history) > horizon and anchor - pd.Timedelta(days=days) > earliest):
+            raise ValueError(
+                f"{part.name}.overlap.days={days} cannot cover the configured {horizon}-session target horizon on the retained market calendar"
+            )
+    price_input = Tables.prices if part == Tables.cube_part_prices else Tables.cube_part_prices
+    payload = input_read_window(context.config, part, price_input, plan.write, context.run.as_of)
+    read = Window(calendar[0] if payload is None else min(plan.write.start, payload.start), end)
+    plan = replace(plan, read=read)
     part_info = PART_BY_NAME.get(part.name)
     required = max((value for _, value in part_info.binding_lookbacks), default=0) if part_info is not None else 0
     if part in {Tables.cube_part_targets, Tables.cube_part_betas}:
         required = max(required, MOMENTUM_SEAM_WINDOW[0] + int(context.config.data_aggregate.betas.window))
     if part == Tables.cube_part_fundamentals:
         required = max(required, int(context.config.data_aggregate.hist.window))
-    insufficient = policy.warmup is not None and policy.warmup.unit == "trading_sessions" and policy.warmup.value < required
-    if insufficient or plan.read.start > shift_date(plan.write.start, Offset(required, "trading_sessions"), calendar):
-        raise ValueError(f"{part.name}: configured warm-up does not cover its {required}-session calculation dependency")
+    amount = context.config.data.tables[part.name].warmup[price_input.name]
+    available = calendar[calendar < plan.write.start]
+    insufficient = amount is not None and (
+        int(amount) < required
+        or (len(available) >= required and read.start > shift_date(plan.write.start, Offset(required, "trading_sessions"), calendar))
+    )
+    if insufficient:
+        raise ValueError(
+            f"{part.name}/{price_input.name}: configured calendar-day warmup does not cover its {required}-session calculation dependency"
+        )
     return plan
 
 

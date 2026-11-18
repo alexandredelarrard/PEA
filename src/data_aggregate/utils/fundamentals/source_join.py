@@ -32,7 +32,8 @@ def join_sec_columns(sharadar: pd.DataFrame, sec: pd.DataFrame | None) -> SecJoi
     if sec is None:
         frame = sharadar.assign(**{column: np.nan for column in prefixed})
         return SecJoin(frame, 0, len(sharadar), 0)
-    right = sec[[*_KEYS, *SEC_CARRIED_COLUMNS]].rename(columns=dict(zip(SEC_CARRIED_COLUMNS, prefixed, strict=True)))
+    clocks = [column for column in ("_sec_as_of", "_sec_source_as_of") if column in sec]
+    right = sec[[*_KEYS, *SEC_CARRIED_COLUMNS, *clocks]].rename(columns=dict(zip(SEC_CARRIED_COLUMNS, prefixed, strict=True)))
     right = right.assign(ticker=right["ticker"].astype(str), as_of=pd.to_datetime(right["as_of"]))
     spine = sharadar.assign(_ticker=sharadar["ticker"].astype(str), _as_of=pd.to_datetime(sharadar["as_of"]))
     joined = spine.merge(

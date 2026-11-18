@@ -1120,7 +1120,20 @@ def test_load_notes_num_scoped_reads_only_needed_tags(sqlite_store):
     out = load_notes_num_scoped(ctx, calendar)
     assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS}, "non-pension footnote tags leaked in"
     assert len(out) == 4, f"expected only the 4 pension tags, got {len(out)}"
-    assert {"ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh", "period", "_source_filed"} <= set(out.columns)
+    assert {
+        "ticker",
+        "tag",
+        "ddate",
+        "qtrs",
+        "value",
+        "filed",
+        "available_at",
+        "adsh",
+        "period",
+        "as_of",
+        "_source_period",
+        "_source_available_at",
+    } <= set(out.columns)
     # no matching row -> None (builder then treats pension as unavailable)
     assert load_notes_num_scoped(ctx, calendar, tickers=("NOSUCH",)) is None
     print("\n=== SANITY CHECK: scoped facts read ===")

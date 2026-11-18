@@ -21,7 +21,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
@@ -38,6 +38,7 @@ from src.validate.checks import (
     leakage,
 )
 from src.validate.spec import UndeclaredTableError
+from tests.support.config import fixture_config
 from tests.support.universe import seed_universe
 from tests.support.universe import universe_config as sample_universe_config
 
@@ -61,8 +62,7 @@ def _config(**defaults: Any) -> DictConfig:
 
     Loading the shipped file is deliberate: it makes every one of these tests a check that
     the config still carries every key `TableSpec` requires."""
-    loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
-    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"]}))
+    config = fixture_config()
     for key, value in defaults.items():
         config.validate.defaults[key] = value
     return config
@@ -562,7 +562,7 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     # FTD absence is an observed zero once the source is globally live. BBB deliberately has
     # no event at all: requiring its own first event would manufacture a leak on the correct 0.
     # The FTD line is stored as filed (CUSIP grain); `universe_cusip` maps its CUSIP to AAA.
-    ftd = pd.DataFrame({"cusip": ["000000001"], "date": [SESSIONS[10]], "fails_quantity": [1.0]})
+    ftd = pd.DataFrame({"cusip": ["000000001"], "date": [SESSIONS[10]], "period": ["202401a"], "fails_quantity": [1.0]})
     ftd.to_sql("sec_fails_to_deliver_security", sqlite_store.engine, index=False)
     # The FINRA lines too (symbol grain): `BRK/A`-style spellings meet the FTD key (`BBBA` here) through `finra_key`.
     lines = pd.DataFrame(

@@ -20,9 +20,11 @@ from src.data_aggregate.transformers import step_cube_sec_thirteen as sec_thirte
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.incremental import plan_window
+from src.data_aggregate.utils.common.inputs import input_windows
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_store.schema import Tables
+from src.utils.publication import point_in_time
 from src.utils.security_series import trade_dates
 from src.utils.window import Window, WindowRun
 from tests.canonical_schema import create_canonical
@@ -85,7 +87,7 @@ def institutional_panel(step: StepCubeInstitutionals) -> pd.DataFrame:
     calendar = load_trading_calendar(step._context)
     plan = plan_window(step._context, Tables.cube_part_institutionals, calendar)
     assert plan is not None
-    return step.build_panel(plan.read, calendar)
+    return step.build_panel(plan, calendar)
 
 
 def fixed_sec_thirteen_projection(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch, panel: pd.DataFrame) -> Mock:
@@ -205,7 +207,7 @@ def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monke
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     _, observed = institutional_step.institutional_inputs.load_short_volume(
-        context(sqlite_store, Path(".")), ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage
+        context(sqlite_store, Path(".")), ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage, None, idx
     )
     support = institutional_step.short_flow._proven_tenure_mask(idx, pd.Index(["AAA"]), None, observed)
     assert support["AAA"].tolist() == [True, False, True]
@@ -487,7 +489,8 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(
             return _original(table, *args, **kwargs)
 
         monkeypatch.setattr(sqlite_store, method, capture)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], pd.Timestamp(start)), None, terminal_basis_factor(frames.security_basis))
+    windows = input_windows(ctx, Tables.cube_part_institutionals, Window(idx[0], idx[-1]))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], pd.Timestamp(start)), None, terminal_basis_factor(frames.security_basis), windows)
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
@@ -637,6 +640,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
     sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-15", "000000001", "AAA", 100.0, "202401a")]))
     ctx = context(sqlite_store, tmp_path)
+    ctx.config.data.tables.sec_fails_to_deliver_security.pit.lag_days = 24
     step = StepCubeInstitutionals(ctx, ctx.config)
     frames = PriceFrames(
         trading_index=idx,
@@ -648,18 +652,21 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
     )
     calls: list[object] = []
 
-    def fixed_clock(coverage: pd.DataFrame, calendar_days: int) -> dict[str, pd.Timestamp]:
-        assert calendar_days == 21
-        calls.append(coverage)
-        return {"202401a": pd.Timestamp("2024-02-05")}
+    def source_clock(rows: pd.DataFrame, config: Any, table: Any, sessions: pd.DatetimeIndex) -> pd.DataFrame:
+        if table == Tables.sec_fails_to_deliver_security:
+            calls.append(rows)
+        return point_in_time(rows, config, table, sessions)
 
-    monkeypatch.setattr("src.data_aggregate.utils.institutionals.short_flow_features._ftd_available_dates", fixed_clock)
-    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), None, terminal_basis_factor(frames.security_basis))
+    monkeypatch.setattr(institutional_step.institutional_inputs, "point_in_time", source_clock)
+    windows = input_windows(ctx, Tables.cube_part_institutionals, Window(idx[0], idx[-1]))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), None, terminal_basis_factor(frames.security_basis), windows)
     assert result is not None and len(calls) == 1
     values = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
-    assert pd.isna(values.loc[(pd.Timestamp("2024-02-02"), "AAA")])
-    assert values.loc[(pd.Timestamp("2024-02-05"), "AAA")] == pytest.approx(0.1)
-    print("SANITY: the staged builder resolves the owning module's patched clock exactly once and publishes no FTD value before its fixed session.")
+    assert pd.isna(values.loc[(pd.Timestamp("2024-02-07"), "AAA")])
+    assert values.loc[(pd.Timestamp("2024-02-08"), "AAA")] == pytest.approx(0.1)
+    print(
+        "SANITY: the staged builder prepares the actual root once; configured period+24CD publishes Jan15's ZIP on Feb8, with no earlier FTD value."
+    )
 
 
 def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

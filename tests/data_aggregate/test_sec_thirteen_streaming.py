@@ -23,12 +23,51 @@ from src.data_store.schema import Tables
 from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
+from src.utils.window import Window, WindowRun
 from tests.data_aggregate import sec_thirteen_legacy_reference as snapshot_reference
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_snapshot_books, snapshot_feature_history
+from tests.data_aggregate.sec_thirteen_read_windows import filing_window
 from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.support.config import fixture_config
 
 BOND_LINES = read_config(str(Path(__file__).resolve().parents[2] / "configs")).data_aggregate.bond_lines
+
+
+@pytest.mark.parametrize("clock", ["filing_date", "accepted_at"])
+@pytest.mark.parametrize("full", [True, False])
+def test_declared_full_or_finite_read_reaches_actual_source_query(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, clock: str, full: bool) -> None:
+    payload = _payload()
+    old = payload.accession_number.eq("original")
+    future = payload.accession_number.eq("second")
+    payload.loc[old, "period"] = pd.Timestamp("1989-12-31")
+    payload.loc[old, "filing_date"] = pd.Timestamp("1990-05-15")
+    payload.loc[old, "accepted_at"] = pd.Timestamp("1990-05-15T10:00:00Z")
+    payload.loc[future, "filing_date"] = pd.Timestamp("2027-05-15")
+    payload.loc[future, "accepted_at"] = pd.Timestamp("2027-05-15T10:00:00Z")
+    sqlite_store.save(Tables.sec13f_hr, payload)
+    context = source_context(sqlite_store, Path("."))
+    context.config.data.tables.sec13f_hr.pit.column = clock
+    context.run = WindowRun("incremental", "13F payload clock instrumentation", pd.Timestamp("2024-05-16"))
+    window = None if full else Window(pd.Timestamp("2024-05-15"), context.run.as_of)
+    calls = []
+    original = sqlite_store.iter_load
+
+    def traced(table: Any, **kwargs: Any) -> Generator[pd.DataFrame]:
+        calls.append(kwargs)
+        yield from original(table, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "iter_load", traced)
+    packets = inputs.iter_filing_vintages(context, window, bond_lines=BOND_LINES)
+    assert packets is not None
+    with closing(packets):
+        accessions = {accession for filings, _ in packets for accession in filings.accession_number}
+    assert ("original" in accessions) == full
+    assert "second" not in accessions
+    assert len(calls) == 1 and calls[0]["since"] == (None if full else window.start)
+    assert calls[0]["until"] == context.run.as_of and calls[0]["date_col"] == clock
+    print(
+        f"SANITY: 13F {clock} full={full} reaches one projected source stream; full keeps retained pre-extraction-floor packets, finite is inclusive, and future packets stay excluded."
+    )
 
 
 def _payload() -> pd.DataFrame:
@@ -81,7 +120,7 @@ def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_stor
         yield from original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), pd.Timestamp("2024-05-16"), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(pd.Timestamp("2024-05-16")), bond_lines=BOND_LINES)
     assert packets is not None
     with closing(packets):
         result = list(packets)
@@ -113,7 +152,7 @@ def test_ordered_packets_cross_chunks_and_flush_empty_and_last_books(sqlite_stor
 def test_completed_packet_frames_are_released(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(inputs, "_CHUNKSIZE", 2)
     sqlite_store.save(Tables.sec13f_hr, _payload())
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), pd.Timestamp("2024-05-16"), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(pd.Timestamp("2024-05-16")), bond_lines=BOND_LINES)
     assert packets is not None
     references: list[weakref.ReferenceType[pd.DataFrame]] = []
     alive: list[int] = []
@@ -146,7 +185,7 @@ def test_packet_stream_closes_on_processing_failure(sqlite_store: Any, monkeypat
     monkeypatch.setattr(inputs, "_CHUNKSIZE", 2)
     if not consumer_fails:
         monkeypatch.setattr(inputs, "_partition_packet", fail_partition)
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), pd.Timestamp("2024-05-16"), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(pd.Timestamp("2024-05-16")), bond_lines=BOND_LINES)
     assert packets is not None
     with pytest.raises(RuntimeError, match="packet processing failed"), closing(packets):
         next(packets)
@@ -216,7 +255,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
         )
     )
     sqlite_store.save(Tables.sec13f_hr, stored)
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), grid.max(), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(grid.max()), bond_lines=BOND_LINES)
     assert packets is not None
     with closing(packets):
         expected_packets = list(packets)
@@ -225,7 +264,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     prepared = _clean_union(raw, universe, close)
     public = prepare_book_vintages(manifests, prepared, grid, fixture_config())
     expected = [(day, *snapshot_reference._cached_snapshot(cache)) for day, cache, _ in snapshot_reference._iter_public_book_cache(public, prepared)]
-    stream = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), grid.max(), bond_lines=BOND_LINES)
+    stream = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(grid.max()), bond_lines=BOND_LINES)
     assert stream is not None
     with closing(holdings_clean.clean_public_batches(stream, _stored_tags(stored), universe, close)) as batches:
         history = books.prepare_institutional_book_history(batches, grid, config=fixture_config())
@@ -245,7 +284,7 @@ def _compare_compact_replay(sqlite_store: Any, payload: pd.DataFrame, mapping: p
     )
 
     # The universe-scoped read (universe positions + whole amended books) replays the same books.
-    scoped = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), grid.max(), universe=universe, bond_lines=BOND_LINES)
+    scoped = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(grid.max()), universe=universe, bond_lines=BOND_LINES)
     assert scoped is not None
     with closing(holdings_clean.clean_public_batches(scoped, _stored_tags(stored), universe, close)) as batches:
         scoped_history = books.prepare_institutional_book_history(batches, grid, config=fixture_config())
@@ -338,7 +377,7 @@ def test_universe_read_keeps_every_marker_universe_rows_and_whole_amended_books(
 
     monkeypatch.setattr(sqlite_store, "load", capture)
     packets = inputs.iter_filing_vintages(
-        source_context(sqlite_store, Path(".")), pd.Timestamp("2024-06-30"), universe=("AAA",), bond_lines=BOND_LINES
+        source_context(sqlite_store, Path(".")), filing_window(pd.Timestamp("2024-06-30")), universe=("AAA",), bond_lines=BOND_LINES
     )
     assert packets is not None
     with closing(packets):
@@ -381,7 +420,7 @@ def test_default_stream_batches_many_whole_quarters(sqlite_store: Any, monkeypat
         yield from original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), pd.Timestamp("2024-05-16"), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(pd.Timestamp("2024-05-16")), bond_lines=BOND_LINES)
     assert packets is not None
     with closing(packets):
         result = list(packets)
@@ -398,7 +437,7 @@ def test_many_book_cleaning_calls_one_vector_repair_per_batch(sqlite_store: Any)
     sqlite_store.save(Tables.sec13f_hr, payload)
     grid = pd.bdate_range("2024-01-02", "2024-05-16")
     universe = ("T0", "T1", "T2")
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), grid.max(), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(grid.max()), bond_lines=BOND_LINES)
     assert packets is not None
     with patch.object(holdings_clean, "repair_value_basis", wraps=holdings_clean.repair_value_basis) as repair:
         batches = holdings_clean.clean_public_batches(
@@ -423,7 +462,7 @@ def test_empty_public_prefix_closes_the_stream(sqlite_store: Any, monkeypatch: p
             closed.append(True)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), pd.Timestamp("2020-01-01"), bond_lines=BOND_LINES)
+    packets = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(pd.Timestamp("2020-01-01")), bond_lines=BOND_LINES)
     assert packets is not None
     with closing(packets):
         assert list(packets) == []
@@ -456,7 +495,7 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(
     sqlite_store.save(Tables.sec13f_hr, pd.concat(packets, ignore_index=True))
     grid = pd.bdate_range("2024-01-02", "2024-05-16")
     close = pd.DataFrame(10.0, index=grid, columns=mapping.ticker)
-    source = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), grid.max(), bond_lines=BOND_LINES)
+    source = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(grid.max()), bond_lines=BOND_LINES)
     assert source is not None
     with closing(source):
         raw_packets = list(source)
@@ -470,7 +509,7 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(
         return df_holdings, df_register
 
     monkeypatch.setattr(inputs, "_CHUNKSIZE", chunksize)
-    source = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), grid.max(), bond_lines=BOND_LINES)
+    source = inputs.iter_filing_vintages(source_context(sqlite_store, Path(".")), filing_window(grid.max()), bond_lines=BOND_LINES)
     assert source is not None
     with patch.object(holdings_clean, "repair_value_basis", side_effect=capture):
         expected = _clean_union(raw, None, close)

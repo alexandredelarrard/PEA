@@ -243,7 +243,7 @@ def test_membership_requests_follow_the_registered_source_start(
 def test_action_snapshot_preserves_rows_outside_its_configured_dates(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _context(tmp_path, sqlite_store, ["AAA"])
     ctx.config.data.tables.sharadar_actions.start_date = "2026-01-01"
-    ctx.config.data.tables.sharadar_actions.end_date = "2026-06-30"
+    ctx.run = WindowRun(ctx.run.mode, "bounded action snapshot", pd.Timestamp("2026-06-30"))
     original = fetch_mod._clean_dated_frame(
         _actions([("2025-12-31", "AAA", "split", "N/A"), ("2026-03-01", "OLD", "split", "N/A"), ("2026-07-01", "AAA", "dividend", "N/A")]),
         Tables.sharadar_actions,

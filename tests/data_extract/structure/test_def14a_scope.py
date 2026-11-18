@@ -29,10 +29,10 @@ def _world(tmp_path: Path, store: DataStore, monkeypatch: pytest.MonkeyPatch) ->
         ],
     )
     context = fake_context(tmp_path, store, ["AAA"])
-    context.run = WindowRun("incremental", "bounded proxy reconciliation", pd.Timestamp("2026-11-16"))
+    context.run = WindowRun("incremental", "bounded proxy reconciliation", pd.Timestamp("2026-09-30"))
     for table in (Tables.def14a_llm, Tables.def14a_directors):
         item = context.config.data.tables[table.name]
-        item.start_date, item.end_date = "2026-06-01", "2026-09-30"
+        item.start_date = "2026-06-01"
     rows = [
         ("AAA", "inside", "Taylor Person", "2026-07-01", "male", "name"),
         ("AAA", "old", "Taylor Person", "2026-01-01", "male", "name"),
@@ -90,16 +90,15 @@ def test_gender_reconciliation_writes_only_authorized_dates_and_tickers(
     )
 
 
-def test_misaligned_parent_repair_is_refused_before_any_write(tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parent_window_excludes_a_proxy_without_any_write(tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     context = _world(tmp_path, sqlite_store, monkeypatch)
-    context.config.data.tables.def14a_llm.end_date = "2026-06-30"
+    context.config.data.tables.def14a_llm.start_date = "2026-07-02"
     before = _snapshot(sqlite_store)
-    with pytest.raises(ValueError, match="parent.*Window"):
-        fetch.fetch_def14a_llm(context, context.config, ["AAA"], {})
+    fetch.fetch_def14a_llm(context, context.config, ["AAA"], {})
     after = _snapshot(sqlite_store)
     for table in before:
         pd.testing.assert_frame_equal(after[table], before[table])
-    print("SANITY: a parent repair outside its configured Window is refused before changing either table.")
+    print("SANITY: a proxy outside the parent start/run Window changes no parent or child rows.")
 
 
 def test_parent_write_failure_rolls_back_the_authorized_director_update(

@@ -249,10 +249,8 @@ ROWLESS = "ZZZ"
 
 def _run_dates(table: Any) -> dict[str, pd.Timestamp]:
     """R-05 run dates around WBD's end: inside the grace, the last day of the table's overlap after the grace end, the day after."""
-    work = extract_config().data.tables[table.name].reprocess
-    offset = work.overlap if work.mode == "tail" else work.lookback
-    assert offset.unit == "calendar_days"
-    last_day = WBD_GRACE_END + pd.Timedelta(days=offset.value)
+    overlap = extract_config().data.tables[table.name].overlap
+    last_day = WBD_GRACE_END + pd.Timedelta(days=overlap.days)
     return {"inside the grace": pd.Timestamp("2026-10-12"), "last overlap day": last_day, "after": last_day + pd.Timedelta(days=1)}
 
 
@@ -374,7 +372,7 @@ def test_the_planner_end_is_the_tenth_session_after_the_end(fixture: tuple[DataS
 
     bounds, fallback = planner_bounds(bounded), planner_bounds(empty)
 
-    assert bounded.config.data.planning.ended_grace.value == 10
+    assert bounded.config.data_extract.listing_end_grace_sessions == 10
     assert bounds["WBD"][1] == WBD_GRACE_END and bounds["WBD"][0] == bounded.universe.bounds["WBD"][0], bounds["WBD"]
     assert bounds["AAPL"] == (AAPL_FIRST, None) and fallback["WBD"][1] is None, fallback["WBD"]
     print("\n=== SANITY CHECK: planner end with grace (U-65) ===")

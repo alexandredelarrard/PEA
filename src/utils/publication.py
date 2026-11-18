@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import date
+from numbers import Number
 from typing import Any, cast
 
 import pandas as pd
@@ -12,21 +15,28 @@ from pandas._libs.tslibs.nattype import NaTType
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_store.schema import Table
 from src.utils.data_policy import publication_policy
-from src.utils.window import Offset
+
+logger = logging.getLogger(__name__)
 
 
 def period_end(tag: str) -> date:
     """Calendar end of a quarterly, monthly or semi-monthly published archive unit."""
-    if len(tag) == 7 and tag[-1] in "ab":
-        end = pd.Period(year=int(tag[:4]), month=int(tag[4:6]), freq="M").end_time.date()
-        return end.replace(day=15) if tag[-1] == "a" else end
-    month = int(tag[-2:]) if "_" in tag else int(tag[-1]) * 3
-    return pd.Period(year=int(tag[:4]), month=month, freq="M").end_time.date()
+    match = re.fullmatch(r"(\d{4})(?:(\d{2})([ab])|_(\d{2})|[qQ]([1-4]))", tag)
+    if match is None:
+        raise ValueError(f"Invalid archive period: {tag!r}")
+    year, half_month, half, month, quarter = match.groups()
+    number = int(half_month or month or int(quarter) * 3)
+    end = pd.Period(year=int(year), month=number, freq="M").end_time.date()
+    return end.replace(day=15) if half == "a" else end
 
 
 def _market_day(value: object) -> pd.Timestamp | NaTType:
     try:
+        if isinstance(value, Number):
+            return pd.NaT
         # Raw source objects retain pandas' coercion and malformed-value handling.
+        if isinstance(value, str) and re.fullmatch(r"\d{4}(?:\d{2}[ab]|_\d{2}|[qQ][1-4])", value):
+            value = period_end(value)
         stamp = pd.Timestamp(cast(Any, value))
         if pd.isna(stamp):
             return pd.NaT
@@ -56,57 +66,25 @@ def roll_to_session(days: pd.Series, sessions: pd.DatetimeIndex) -> pd.Series:
     return result
 
 
-def _lag(policy: DictConfig) -> pd.Timedelta:
-    offset = Offset(policy.value, policy.unit)
-    if offset.unit != "calendar_days":
-        raise ValueError("Publication buffers must use calendar days")
-    return pd.Timedelta(days=offset.value)
-
-
-def archive_release_date(policy: DictConfig, period: str) -> pd.Timestamp:
-    """Configured notes release estimate, separate from any later observed availability."""
-    end = pd.Timestamp(period_end(period))
-    if "_" in period:
-        return end + pd.offsets.MonthBegin(1) + pd.Timedelta(days=int(policy.monthly_release_day) - 1)
-    return end + _lag(policy.quarterly_lag)
-
-
-def _notes_dates(policy: DictConfig, rows: pd.DataFrame) -> pd.Series:
-    releases = {period: archive_release_date(policy, str(period)) for period in rows["period"].dropna().unique()}
-    estimated = pd.to_datetime(rows["period"].map(releases))
-    filed = market_days(rows[str(policy.clock)]) + _lag(policy.filing_lag)
-    return pd.concat([estimated, filed], axis=1).max(axis=1)
-
-
-def publication_dates(config: DictConfig, table: Table, rows: pd.DataFrame, sessions: pd.DatetimeIndex) -> pd.Series:
-    """Resolve raw source clocks and inherited policy once; processing time is never a source date."""
+def point_in_time(df_source: pd.DataFrame, config: DictConfig, table: Table, sessions: pd.DatetimeIndex) -> pd.DataFrame:
+    """Apply the declared source column plus calendar lag once, retaining original evidence."""
     policy = publication_policy(config, table)
-    if policy.mode == "notes_release":
-        days = _notes_dates(policy, rows)
-    elif policy.mode == "half_month_end":
-        days = pd.to_datetime(rows[str(policy.clock)].astype(str).map(period_end)) + _lag(policy.lag)
-    elif policy.mode in {"direct", "completed_session", "dated_snapshot"}:
-        days = market_days(rows[str(policy.clock)])
-    else:
-        raise ValueError(f"{table.name}: no source publication clock for {policy.mode}")
-    later = [market_days(rows[str(column)]) for column in policy.get("later_clocks", []) if column in rows]
-    if later:
-        days = pd.concat([days, *later], axis=1).max(axis=1)
-    if policy.mode == "direct":
-        days = days + _lag(policy.lag)
-    return roll_to_session(days, sessions)
-
-
-def publication_rows(config: DictConfig, table: Table, rows: pd.DataFrame, sessions: pd.DatetimeIndex, target: str) -> pd.DataFrame:
-    """Prepare eligible observations while retaining a replaced raw clock and refusing a second lag."""
-    clock = str(publication_policy(config, table).clock)
+    clock = str(policy.column)
+    if clock not in df_source:
+        raise ValueError(f"{table.name}: configured source column {clock!r} is missing")
     original = f"_source_{clock}"
-    if original in rows:
+    if original in df_source:
         raise ValueError(f"{table.name}: source publication has already been applied")
-    dates = publication_dates(config, table, rows, sessions)
-    df_ready = rows.loc[dates.notna()].copy()
+    raw_dates = market_days(df_source[clock])
+    invalid = int(raw_dates.isna().sum())
+    if invalid:
+        logger.warning("%s: excluded %s invalid/missing source date values in %s", table.name, invalid, clock)
+    days = raw_dates + pd.Timedelta(days=int(policy.lag_days))
+    dates = roll_to_session(days, sessions)
+    eligible = dates.notna()
+    df_ready = df_source.loc[eligible].copy()
     df_ready[original] = df_ready[clock]
-    if target != clock and target in df_ready:
-        df_ready[f"_source_{target}"] = df_ready[target]
-    df_ready[target] = dates.loc[dates.notna()].array
+    if clock != "as_of" and "as_of" in df_ready:
+        df_ready["_source_as_of"] = df_ready["as_of"]
+    df_ready["as_of"] = dates.loc[eligible].array
     return df_ready

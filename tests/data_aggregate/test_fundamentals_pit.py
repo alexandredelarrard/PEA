@@ -20,7 +20,7 @@ from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.per_share import eps_price, ordinary_per_share_to_security, vendor_ordinary_per_share
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from tests.conftest import make_frames
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events
 from tests.support.config import fixture_config
@@ -55,7 +55,7 @@ def test_earnings_gate_has_no_price_resolution_or_raw_source_reads(monkeypatch: 
     monkeypatch.setattr(module, "load_quantity_basis", lambda *args, **kwargs: pytest.fail("EPS gate reloaded source units"))
     df_earnings = pd.DataFrame({"ticker": ["AAA"], "earnings_date": [days[0]], "eps_actual": [1.0], "eps_estimate": [0.5], "surprise_pct": [100.0]})
     df_result = build_earnings_feature_panel(
-        publication_rows(fixture_config(), Tables.earnings_surprises, df_earnings, frames.trading_index, "as_of"),
+        point_in_time(df_earnings, fixture_config(), Tables.earnings_surprises, frames.trading_index),
         frames,
         share_basis=known_no_share_events(),
     )

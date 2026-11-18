@@ -1,192 +1,111 @@
-"""Approved table-policy values and fail-fast configuration contracts."""
+"""The simplified policy has one owner and explicit additional input history."""
 
 from __future__ import annotations
 
 from copy import deepcopy
-from functools import cache
 
 import pandas as pd
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 
-from src.data_store.schema import ALL, Table, Tables
+from src.data_store.schema import Tables
 from src.utils.config import read_config
-from src.utils.data_policy import publication_policy, source_read_window, validate_data_policy, window_policy
-from src.utils.window import Offset, Window, WindowRun, resolve_window
+from src.utils.data_policy import input_read_window, publication_policy, source_read_window, validate_data_policy, window_policy
+from src.utils.window import Offset, Window
 
 
-@cache
-def _config() -> DictConfig:
-    return read_config("configs")
+def test_policy_inventory_and_price_derived_cube_dates() -> None:
+    config = read_config("configs")
+    assert len(config.data.tables) == 47
+    assert "universe_tickers" not in config.data.tables
+    assert all("start_date" not in item for name, item in config.data.tables.items() if name == "cube" or name.startswith("cube_part_"))
+    calendar = pd.DatetimeIndex(["2020-01-02", "2026-11-13", "2026-11-16"])
+    policy = window_policy(config, Tables.cube_part_momentum, pd.Timestamp("2026-11-13"), calendar)
+    assert policy is not None and policy.requested == Window(pd.Timestamp("2020-01-02"), pd.Timestamp("2026-11-13"))
+    assert policy.overlap == Offset(30, "calendar_days")
+    print("SANITY:47 applicable policies; cube bounds come from observed prices, with one calendar-day overlap.")
 
 
-def test_all_registry_tables_have_an_explicit_policy() -> None:
-    config = _config()
-    validate_data_policy(config)
-    assert set(config.data.tables) == {table.name for table in ALL}
-    assert config.data.tables.universe_tickers.status == "snapshot"
-    assert config.data.tables.notes_embedding.status == "inactive"
-    assert config.data.tables.predictions_latest.status == "model_owned"
-    print("SANITY: all64 table identities have explicit active, snapshot, inherited or inactive policies.")
+@pytest.mark.parametrize("field", ["status", "end_date", "source_start", "coverage_start", "freshness", "reprocess", "lookahead"])
+def test_obsolete_source_fields_are_rejected(field: str) -> None:
+    config = read_config("configs")
+    config.data.tables.prices[field] = None
+    with pytest.raises(ValueError, match="Invalid policy fields"):
+        validate_data_policy(config)
+    print(f"SANITY: obsolete source field {field} fails before I/O.")
 
 
-@pytest.mark.parametrize(
-    ("table", "value", "unit"),
-    [
-        (Tables.prices, 7, "calendar_days"),
-        (Tables.dividends, 7, "calendar_days"),
-        (Tables.prices_macro, 7, "calendar_days"),
-        (Tables.sharadar_fundamentals_facts, 100, "calendar_days"),
-        (Tables.sec_short_volume_security, 30, "calendar_days"),
-        (Tables.cube_part_prices, 30, "calendar_days"),
-        (Tables.cube_part_betas, 30, "calendar_days"),
-        (Tables.cube_part_targets, 90, "trading_sessions"),
-        (Tables.cube_part_fundamentals, 100, "calendar_days"),
-        (Tables.cube_part_momentum, 30, "calendar_days"),
-        (Tables.cube_part_text, 7, "calendar_days"),
-        (Tables.cube_part_institutionals, 30, "calendar_days"),
-        (Tables.cube_part_sec_thirteen, 100, "calendar_days"),
-        (Tables.cube_part_governance, 380, "calendar_days"),
-    ],
-)
-def test_approved_numeric_overlaps_are_operative(table: Table, value: int, unit: str) -> None:
-    policy = window_policy(_config(), table, pd.Timestamp("2026-11-16"))
-    assert policy is not None
-    assert policy.overlap == Offset(value, unit)
-    print(f"SANITY: {table.name} resolves {value} {unit} from its sole configured owner.")
+@pytest.mark.parametrize("field", ["planning", "freshness", "derived_feature_starts"])
+def test_obsolete_global_controls_are_rejected(field: str) -> None:
+    config = read_config("configs")
+    config.data[field] = {}
+    with pytest.raises(ValueError):
+        validate_data_policy(config)
+    print(f"SANITY: deleted global control {field} cannot become a second policy owner.")
 
 
-def test_nonrolling_work_has_no_artificial_overlap() -> None:
-    config = _config()
-    for table in (Tables.sec_13d, Tables.sec_fundamentals_facts, Tables.notes_num, Tables.sec13f_hr):
-        policy = window_policy(config, table, pd.Timestamp("2026-11-16"))
-        assert policy is not None
-        assert policy.overlap is None
-    assert config.data.tables.earnings_call_sections.reprocess.lookback == {"value": 180, "unit": "calendar_days"}
-    print("SANITY: documents/archives have no numeric replay tail; calls have an explicit180-day source check.")
+@pytest.mark.parametrize("value", [-1, True, 1.5, "full"])
+def test_invalid_warmup_is_rejected(value: object) -> None:
+    config = read_config("configs")
+    config.data.tables.cube_part_momentum.warmup.cube_part_prices = value
+    with pytest.raises(ValueError, match="calendar-day"):
+        validate_data_policy(config)
+    print(f"SANITY: invalid warmup {value!r} refuses instead of guessing history.")
 
 
-def test_fixed_dates_and_configured_overlap_reach_the_shared_resolver() -> None:
-    config = deepcopy(_config())
-    item = config.data.tables.cube_part_governance
-    item.start_date, item.end_date = "2025-01-01", "2026-11-13"
-    item.reprocess.overlap = {"value": 30, "unit": "calendar_days"}
-    calendar = pd.bdate_range("2020-01-01", "2026-11-16")
-    policy = window_policy(config, Tables.cube_part_governance, pd.Timestamp("2026-11-16"))
-    assert policy is not None
-    plan = resolve_window(
-        policy,
-        WindowRun("incremental", "configured policy counterfactual", pd.Timestamp("2026-11-16")),
-        pd.Timestamp("2026-11-13"),
-        calendar,
-        (("ticker", ("AAPL",)),),
+def test_missing_null_and_zero_warmup_are_distinct() -> None:
+    config = read_config("configs")
+    write = Window(pd.Timestamp("2020-01-02"), pd.Timestamp("2020-01-31"))
+    run = pd.Timestamp("2026-11-16")
+    amount = config.data.tables.cube_part_momentum.warmup.cube_part_prices
+    assert input_read_window(config, Tables.cube_part_momentum, Tables.cube_part_prices, write, run) == Window(
+        write.start - pd.Timedelta(days=amount), run
     )
-    assert plan.requested.start == pd.Timestamp("2025-01-01")
-    assert plan.write.start == pd.Timestamp("2026-10-14")
-    assert plan.write.end == pd.Timestamp("2026-11-13")
-    assert plan.read.start < plan.write.start
-    print("SANITY: changed YAML dates/overlap reach the shared bounded plan; warm-up only expands reads.")
+    config.data.tables.cube_part_momentum.warmup.cube_part_prices = 0
+    assert input_read_window(config, Tables.cube_part_momentum, Tables.cube_part_prices, write, run) == Window(write.start, run)
+    config.data.tables.cube_part_momentum.warmup.cube_part_prices = None
+    assert input_read_window(config, Tables.cube_part_momentum, Tables.cube_part_prices, write, run) is None
+    del config.data.tables.cube_part_momentum.warmup.cube_part_prices
+    with pytest.raises(ValueError, match="missing warmup"):
+        input_read_window(config, Tables.cube_part_momentum, Tables.cube_part_prices, write, run)
+    print("SANITY: stale rewrite anchors finite reads;0 keeps its inclusive start;null is full;missing is an error.")
 
 
-@pytest.mark.parametrize(
-    ("table", "expected"),
-    [(Tables.sec13f_hr, 2), (Tables.sec_13d, 1), (Tables.dividends, 1), (Tables.earnings_call_sections, 3), (Tables.earnings_surprises, 1)],
-)
-def test_explicit_publication_buffers(table: Table, expected: int) -> None:
-    policy = publication_policy(_config(), table)
-    assert policy.lag == {"value": expected, "unit": "calendar_days"}
-    assert policy.roll == "market_session"
-    print(f"SANITY: {table.name} declares +{expected} calendar days and actual-market-session roll.")
+def test_approved_ftd_basis_dependencies_are_explicit_full_reads() -> None:
+    config = read_config("configs")
+    mapping = config.data.tables.cube_part_institutionals.warmup
+    for table in (Tables.prices_splits, Tables.sharadar_actions, Tables.sharadar_fundamentals_facts):
+        assert table.name in mapping and mapping[table.name] is None
+    assert mapping.prices == 750
+    print("SANITY: approved FTD share anchors retain complete evidence; secondary-class tape retains750CD.")
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    ["unknown_table", "missing_table", "invalid_date", "invalid_unit", "unknown_clock", "inheritance_cycle"],
-)
-def test_invalid_data_policy_is_rejected_before_io(mutation: str) -> None:
-    config = deepcopy(_config())
-    if mutation == "unknown_table":
-        config.data.tables.typo = OmegaConf.create({"status": "inactive"})
-    elif mutation == "missing_table":
-        del config.data.tables.prices
-    elif mutation == "invalid_date":
-        config.data.tables.prices.start_date = "2026-02-30"
-    elif mutation == "invalid_unit":
-        config.data.tables.prices.reprocess.overlap.unit = "business_days"
-    elif mutation == "unknown_clock":
-        config.data.tables.prices.pit.clock = "unknown_publication_clock"
-    else:
-        config.data.tables.insider_transactions.pit = {"mode": "inherit", "source": "insider_footnotes"}
-    with pytest.raises(ValueError):
-        validate_data_policy(config)
-    print(f"SANITY: {mutation} fails policy validation before any source or store call.")
+def test_unknown_tables_columns_and_cube_start_are_contract_errors() -> None:
+    config = read_config("configs")
+    cases = [
+        ("data.tables.prices.pit.column", "unknown"),
+        ("data.tables.prices.overlap.column", "unknown"),
+        ("data.tables.cube_part_prices.start_date", "2020-01-01"),
+        ("data.tables.cube_part_momentum.warmup.unknown", 0),
+        ("data.tables.prices.overlap.method", "tail"),
+    ]
+    for path, value in cases:
+        changed = deepcopy(config)
+        OmegaConf.update(changed, path, value)
+        with pytest.raises(ValueError):
+            validate_data_policy(changed)
+    print("SANITY: unknown identities/clocks, old methods and cube start dates fail validation.")
 
 
-def test_candidate_work_is_bounded_from_the_shared_run_anchor() -> None:
-    config = _config()
-    day = pd.Timestamp("2026-11-16")
-    policy = window_policy(config, Tables.earnings_call_sections, day)
-    assert policy is not None
-    run = WindowRun("incremental", "routine source candidate check", day)
-    plan = resolve_window(policy, run, None, pd.bdate_range("2005-01-03", day), (("ticker", ("AAPL",)),))
-    assert plan.write.start == pd.Timestamp("2026-05-20")
-    assert plan.requested.start == pd.Timestamp("2005-01-01")
-    assert plan.write.end == day
-    print("SANITY: routine calls check180 calendar days from the run anchor, separate from hard source history.")
-
-
-def test_assembly_inherits_actual_component_start_and_its_own_catchup() -> None:
-    config = _config()
-    day = pd.Timestamp("2026-11-16")
-    policy = window_policy(config, Tables.cube, day)
-    assert policy is not None
-    run = WindowRun("incremental", "selected component assembly", day)
-    calendar = pd.bdate_range("1995-01-03", day)
-    with pytest.raises(ValueError, match="component"):
-        resolve_window(policy, run, pd.Timestamp("2025-09-15"), calendar, (("ticker", ("AAPL",)),))
-    plan = resolve_window(policy, run, pd.Timestamp("2025-09-15"), calendar, (("ticker", ("AAPL",)),), inherited_start=pd.Timestamp("2025-10-21"))
-    assert plan.write.start == pd.Timestamp("2025-09-15")
-    print("SANITY: assembly requires selected component boundaries and also catches up its own earlier missing dates.")
-
-
-def test_source_before_its_configured_history_has_no_work_window() -> None:
-    config = _config()
-    assert window_policy(config, Tables.earnings_call_sections, pd.Timestamp("2000-01-03")) is None
-    assert window_policy(config, Tables.universe_tickers, pd.Timestamp("2026-11-16")) is None
-    print("SANITY: unavailable early source history and undated snapshots have no invented execution interval.")
-
-
-def test_source_context_retains_the_configured_prefix_without_widening_writes() -> None:
-    config = deepcopy(_config())
-    item = config.data.tables.sec_fundamentals_facts
-    item.start_date, item.end_date, item.source_start = "2026-04-01", "2026-09-30", "1993-01-01"
-    requested = window_policy(config, Tables.sec_fundamentals_facts, pd.Timestamp("2026-11-16"))
-    retained = source_read_window(config, Tables.sec_fundamentals_facts, pd.Timestamp("2026-11-16"))
-    assert requested is not None and requested.requested == Window(pd.Timestamp("2026-04-01"), pd.Timestamp("2026-09-30"))
-    assert retained == Window(pd.Timestamp("1993-01-01"), pd.Timestamp("2026-09-30"))
-    print("SANITY: required source-prefix reads use the declared source floor and finite end; extraction writes keep their separate requested start.")
-
-
-@pytest.mark.parametrize(
-    ("path", "value"),
-    [
-        ("data.tables.prices.overlap", 3),
-        ("data.tables.prices.reprocess.lookback", {"value": 5, "unit": "calendar_days"}),
-        ("data.tables.prices.pit.lag", {"value": 1, "unit": "calendar_days"}),
-        ("data.tables.prices.pit", {"mode": "direct", "lag": {"value": 1, "unit": "calendar_days"}, "roll": "market_session"}),
-        ("data.tables.prices.freshness.max_age", 7),
-        ("data.tables.prices.lookahead", {"mode": "target_horizons"}),
-        ("data.tables.cube_part_prices.warmup.grid.days", 30),
-        ("data.tables.sec13f_hr.reprocess.archive_fallback", "snapshot"),
-        ("data.tables.sharadar_fundamentals_history.reprocess.source", Tables.sharadar_fundamentals_history.name),
-        ("data.tables.prices.status", "inactive"),
-        ("data.planning.mispelled_grace", {"value": 1, "unit": "calendar_days"}),
-        ("data.freshness.insider_max_lag_days", True),
-    ],
-)
-def test_ignored_or_contradictory_timing_options_are_refused(path: str, value: object) -> None:
-    config = deepcopy(_config())
-    OmegaConf.update(config, path, value, merge=False)
-    with pytest.raises(ValueError):
-        validate_data_policy(config)
-    print(f"SANITY: {path} is refused rather than silently becoming an ineffective timing owner.")
+def test_sources_retain_fixed_extraction_bounds_and_explicit_publication() -> None:
+    config = read_config("configs")
+    before = source_read_window(config, Tables.prices, pd.Timestamp("1990-01-01"))
+    assert before is None
+    early = source_read_window(config, Tables.prices, pd.Timestamp("2020-01-02"))
+    late = source_read_window(config, Tables.prices, pd.Timestamp("2026-11-16"))
+    assert early is not None and late is not None and early.start == late.start == pd.Timestamp("1995-10-09")
+    assert publication_policy(config, Tables.notes_num).lag_days == 12
+    assert publication_policy(config, Tables.notes_text).column == "period"
+    with pytest.raises(ValueError, match="no source publication"):
+        publication_policy(config, Tables.sharadar_actions)
+    print("SANITY: extraction starts stay fixed; notes use explicit period+12; structural snapshots have no invented lag.")

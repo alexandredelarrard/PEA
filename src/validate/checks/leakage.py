@@ -21,10 +21,8 @@ leg starts only after every declared source has begun publishing.
 
 ⚠ THE PUBLICATION CLOCK IS NOT THE PERIOD CLOCK. A 13F describes a quarter that ended 45 days
 before it was filed, and a Form 4 describes a trade that happened before it was reported. Three
-tables in this registry publish on a different clock than the period they describe --
-`notes_num` and `notes_text` (`filed`) and `insider_transactions`
-(`filing_date`) -- so the comparison reads `resolve(src).freshness_col`, which is the
-registry's own answer to that question, never `date_col` and never a name written here.
+tables publish on a configured source clock. The comparison reads each source's
+`data.tables.<name>.pit.column`; archive period tags are normalized to calendar ends.
 
 ⚠ AND BOTH SIDES GO THROUGH `frame.as_ts`. `sec_13d.filing_date`, `sec_13g.filing_date` and
 `sec_fails_to_deliver_security.date` and `sec_short_volume_security.date` are Postgres DATE and come back as
@@ -61,11 +59,10 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.data_policy import publication_policy
 from src.utils.identity_tables import read_identity
 from src.utils.security_series import finra_key
 from src.utils.string import squash
-from src.validate.frame import as_ts, column_groups, feature_columns
+from src.validate.frame import archive_period_end, as_ts, column_groups, feature_columns
 from src.validate.io import CHUNK_ROWS, cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
 from src.validate.spec import load_spec
@@ -143,11 +140,11 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     Returns `(series, clock)` where `clock` names the column used, so the result can show
     which clock each family was judged against rather than asking the reader to trust it."""
     spec = resolve(source)
-    clock = publication_policy(context.config, spec).get("clock")
+    clock = context.config.data.tables.get(spec.name, {}).get("pit", {}).get("column")
     security = _SECURITY_KEYS.get(spec.name)
     key_col = security[0] if security is not None else spec.ticker_col
     if clock is None or key_col is None:
-        raise LookupError(f"`{spec.name}` declares no publication clock (freshness_col={clock!r}, ticker_col={spec.ticker_col!r})")
+        raise LookupError(f"`{spec.name}` declares no publication clock (column={clock!r}, ticker_col={spec.ticker_col!r})")
     live = context.store.columns(spec)
     if clock not in live or key_col not in live:
         raise LookupError(f"`{spec.name}` does not carry {key_col!r}/{clock!r}")
@@ -156,7 +153,8 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     running: pd.Series | None = None
     for chunk in context.store.iter_load(spec, columns=[key_col, clock], chunksize=CHUNK_ROWS):
         keys = chunk[key_col].map(security[1]) if security is not None else chunk[key_col].astype(str).str.strip().str.upper()
-        chunk = chunk.assign(**{clock: as_ts(chunk[clock])}, key=keys)
+        dates = pd.to_datetime(chunk[clock].map(archive_period_end), errors="coerce") if clock == "period" else as_ts(chunk[clock])
+        chunk = chunk.assign(**{clock: dates}, key=keys)
         if owners is not None:
             chunk = chunk.merge(owners, on="key")
             covered = chunk[clock].ge(chunk["valid_from"]) & (chunk["valid_to"].isna() | chunk[clock].lt(chunk["valid_to"]))

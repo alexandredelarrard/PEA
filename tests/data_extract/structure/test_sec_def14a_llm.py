@@ -26,13 +26,14 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.utils.config import read_config
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.structure.test_def14a_retry_daily import PAYLOADS, _complete_answers
 from tests.support.universe import universe_of
 
 BUDGET = int(read_config("configs").data_extract.llm_text_budget.def14a)
-YESTERDAY = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+YESTERDAY = pd.Timestamp("2026-11-13")
 _FACT_TABLES = (Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors)
 
 
@@ -40,14 +41,13 @@ class Run:
     """One SQLite store, a stub provider that records `(schema, user)` and fails on a user prompt holding `fail_on`."""
 
     def __init__(self, path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        config = extract_config(
-            data_extract={"years_history": 15, "llm_text_budget": OmegaConf.to_container(read_config("configs").data_extract.llm_text_budget)}
-        )
+        config = extract_config(data_extract={"llm_text_budget": OmegaConf.to_container(read_config("configs").data_extract.llm_text_budget)})
         self.context = SimpleNamespace(
             store=DataStore(create_engine(f"sqlite:///{path}")),
             log=logging.getLogger("test.sec_def14a_llm"),
             config_dir="configs",
             config=config,
+            run=WindowRun("incremental", "stored proxy fixture", pd.Timestamp("2026-11-16")),
             universe=universe_of(["ZZ"]),
         )
         create_canonical(self.context.store.engine, [*_FACT_TABLES, Tables.sec_def14a_text])
@@ -138,9 +138,9 @@ def test_a_walked_proxy_with_no_payload_consumes_its_attempts(run: Run) -> None:
     assert run.attempts() == {table.name: [1] for table in _FACT_TABLES}
     run()
     run()
-    assert run.calls == [] and run.attempts() == {table.name: [2] for table in _FACT_TABLES}
+    assert run.calls == [] and run.attempts() == {table.name: [1] for table in _FACT_TABLES}
     print("\n=== SANITY: `_none` proxy ===")
-    print("  every domain empty: attempt 1, then 2, then nothing; 0 provider calls over three runs. Validated.")
+    print("  every domain is proven absent from its stored source: one reservation, no repeated writes or provider calls. Validated.")
 
 
 def test_the_prompt_is_cut_and_postprocess_gets_the_uncut_payload(run: Run, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,9 +181,9 @@ def test_new_archive_has_no_source(run: Run) -> None:
 
 def test_proxies_before_the_floor_are_not_sent(run: Run) -> None:
     run.answers.update(_complete_answers())
-    run.seed("old", YESTERDAY - pd.DateOffset(years=20), PAYLOADS)
+    run.seed("old", pd.Timestamp("1994-11-13"), PAYLOADS)
     run.seed("recent", YESTERDAY, PAYLOADS)
     run()
     assert len(run.calls) == 5 and run.context.store.load(Tables.def14a_llm).accession_number.tolist() == ["recent"]
     print("\n=== SANITY: window floor (M6) ===")
-    print("  years_history=15: the 20-year-old stored proxy is not sent; the recent one gets its 5 calls. Validated.")
+    print("  The stored proxy before start_date is not sent; the recent one gets its 5 calls. Validated.")

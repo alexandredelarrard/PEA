@@ -8,15 +8,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.inputs import input_windows
 from src.data_aggregate.utils.fundamentals.dividend_features import _dividend_fields
 from src.data_aggregate.utils.fundamentals.fundamental_features import _financial_eps_yield
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.price.inputs import load_fundamental_share_observations
 from src.data_aggregate.utils.price.observations import fundamental_share_observations
+from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries
 from src.utils.price import basis as basis_module
 from src.utils.price.adjustments import ShareBasis, quantity_basis
+from src.utils.window import Window, WindowRun
 from tests.conftest import make_frames
+from tests.support.config import fixture_config
 
 
 def _sources() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -157,11 +161,14 @@ def test_fundamental_source_projection_is_loaded_once_and_scoped() -> None:
         columns=lambda table: list(raw.columns),
         load=lambda table, **kwargs: requests.append(kwargs) or raw,
     )
-    result = load_fundamental_share_observations(SimpleNamespace(store=store), history, _basis(), ())
+    context = SimpleNamespace(
+        store=store, config=fixture_config(), run=WindowRun("incremental", "full original-share evidence", pd.Timestamp("2026-11-16"))
+    )
+    result = load_fundamental_share_observations(context, history, _basis(), (), None)
     assert len(requests) == 1
     assert requests[0]["where"] == {"ticker": ["APH"], "dimension": "ARQ"}
-    assert requests[0]["since"] == history.fiscal_end.iloc[0] - pd.DateOffset(years=1)
-    assert requests[0]["until"] == history.as_of.iloc[0]
+    assert requests[0]["since"] is None
+    assert requests[0]["until"] == context.run.as_of
     assert result.iloc[0].dilutedShares == 2500
     print("SANITY: the adapter performs one ticker/date-projected ARQ read including the preceding original quarter window.")
 
@@ -170,7 +177,11 @@ def test_sparse_quantity_loader_reuses_preloaded_identity(monkeypatch: pytest.Mo
     requests = []
     store = SimpleNamespace(load=lambda table, **kwargs: requests.append(table) or None, exists=lambda table: True)
     monkeypatch.setattr(basis_module, "load_price_identity", lambda *args: pytest.fail("Identity read twice"))
-    basis = basis_module.load_quantity_basis(SimpleNamespace(store=store), ["APH"], {}, ((), None))
+    context = SimpleNamespace(
+        store=store, config=fixture_config(), run=WindowRun("incremental", "full split/action evidence", pd.Timestamp("2026-11-16"))
+    )
+    windows = input_windows(context, Tables.cube_part_fundamentals, Window(context.run.as_of, context.run.as_of))
+    basis = basis_module.load_quantity_basis(context, ["APH"], {}, ((), None), windows)
     assert len(requests) == 2
     assert basis.actual_available
     print("SANITY: the sparse quantity loader reuses the same selected owner metadata and reads each event table once.")

@@ -16,6 +16,7 @@ from omegaconf.errors import ConfigAttributeError
 from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
+from src.data_aggregate.utils.common.inputs import input_windows
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
@@ -121,7 +122,8 @@ def test_the_cube_left_joins_three_sec_columns_onto_the_sharadar_spine(sqlite_st
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    frame = step._load_fundamentals(("AAA", "BBB"), _CALENDAR)
+    windows = input_windows(step._context, Tables.cube_part_fundamentals, Window(_CALENDAR[0], _CALENDAR[-1]))
+    frame = step._load_fundamentals(("AAA", "BBB"), _CALENDAR, windows)
     assert list(zip(frame.ticker, frame.as_of.dt.strftime("%Y-%m-%d"), strict=True)) == [
         ("AAA", "2024-02-02"),
         ("AAA", "2024-05-02"),
@@ -132,8 +134,9 @@ def test_the_cube_left_joins_three_sec_columns_onto_the_sharadar_spine(sqlite_st
     assert frame.iloc[0].sec_minorityInterest == 5.0 and frame.iloc[0].sec_operatingLeaseLiability == 1.0
     assert frame.loc[1:, [f"sec_{field}" for field in _CARRIED]].isna().all().all()
     assert [table for table, _ in calls] == [Tables.sharadar_fundamentals_history, Tables.sec_fundamentals_history]
-    for _table, query in calls:
-        assert query["where"]["ticker"] == ["AAA", "BBB"] and isinstance(query["where"]["as_of"], Window)
+    for table, query in calls:
+        assert query["where"]["ticker"] == ["AAA", "BBB"] and query["date_col"] == "as_of"
+        assert query["since"] == windows[table].start and query["until"] == windows[table].end
     assert calls[1][1]["columns"] == ["ticker", "as_of", *_CARRIED]
     print(
         "SANITY: the real source reads are projected and scoped once; exact raw filing keys join SEC fields before one configured market-session eligibility roll."
@@ -142,8 +145,9 @@ def test_the_cube_left_joins_three_sec_columns_onto_the_sharadar_spine(sqlite_st
 
 def test_a_missing_sec_history_only_warns(sqlite_store: DataStore, caplog: pytest.LogCaptureFixture) -> None:
     step = _history_step(sqlite_store, None)
+    windows = input_windows(step._context, Tables.cube_part_fundamentals, Window(_CALENDAR[0], _CALENDAR[-1]))
     with caplog.at_level(logging.WARNING):
-        frame = step._load_fundamentals(("AAA", "BBB"), _CALENDAR)
+        frame = step._load_fundamentals(("AAA", "BBB"), _CALENDAR, windows)
     assert len(frame) == 3 and frame.totalRevenue.tolist() == [10.0, 11.0, 20.0]
     assert frame[[f"sec_{field}" for field in _CARRIED]].isna().all().all()
     assert any(Tables.sec_fundamentals_history.name in record.message for record in caplog.records)
@@ -172,15 +176,16 @@ def test_sec_fact_reads_are_ticker_tag_and_filing_date_bounded(sqlite_store: Dat
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "load", capture)
-    rows = load_notes_num_scoped(context, _CALENDAR, tickers=("AAA", "BBB"), since=pd.Timestamp("2020-09-04"))
+    rows = load_notes_num_scoped(context, _CALENDAR, tickers=("AAA", "BBB"), window=Window(pd.Timestamp("2020-09-04"), context.run.as_of))
     assert rows is not None and rows.ticker.tolist() == ["AAA"]
-    assert rows.available_at.iloc[0] == pd.Timestamp("2024-02-02")
+    assert rows.available_at.iloc[0] == pd.Timestamp("2024-02-01")
+    assert pd.Timestamp(rows._source_available_at.iloc[0]) == pd.Timestamp("2024-02-01")
     assert len(calls) == 1 and calls[0][0] == Tables.notes_num
     query = calls[0][1]
-    assert query["where"]["filed"] == Window(pd.Timestamp("2020-09-04"), context.run.as_of)
+    assert query["where"]["period"] == ["2023q4"]
     assert set(query["where"]["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS}
     assert {"period", "available_at", "adsh"}.issubset(query["columns"])
-    print("SANITY: one notes read applies table/source/end bounds, ticker/tag scope and configured release/filing eligibility.")
+    print("SANITY: one notes payload read uses normalized archive-period bounds, ticker/tag scope and period+12 eligibility; raw metadata remains.")
 
 
 def test_final_fundamentals_panel_is_contained_by_the_price_skeleton():
@@ -221,8 +226,7 @@ def test_real_fundamentals_full_and_incremental_tail_parity(real_frames):
     calendar = close.index[(close.index >= pd.Timestamp("2019-01-01")) & (close.index <= edge_end)]
     tail_dates = calendar[(calendar >= edge_start) & (calendar <= edge_end)]
     assert len(tail_dates) >= 20, "accepted 2026-08-03..2026-09-04 real tail is unavailable"
-    start_pos = calendar.get_indexer([tail_dates[0]])[0]
-    warmup_start = calendar[max(0, start_pos - int(fixture_config().data.tables.cube_part_fundamentals.warmup.grid.value))]
+    warmup_start = tail_dates[0] - pd.Timedelta(days=int(fixture_config().data.tables.cube_part_fundamentals.warmup.cube_part_prices))
     window = calendar[calendar >= warmup_start]
 
     full = build_fundamental_feature_panel(

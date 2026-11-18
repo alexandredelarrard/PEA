@@ -45,26 +45,6 @@ def cube_part_edge_report(context: Context) -> dict[str, Any]:
     }
 
 
-def _insider_source_status(context: Context, reference: str | None, part_max_date: str | None, tolerance_days: int) -> dict[str, Any]:
-    """The insider source is on time when its newest stored filing date D (whole table, markers included) is at
-    most `tolerance_days` behind the reference price date."""
-    complete_through = context.store.max_date(Tables.insider_transactions, "filing_date")
-    lag_days = int((pd.Timestamp(reference) - complete_through).days) if reference is not None and complete_through is not None else None
-    status: dict[str, Any] = {
-        "complete_through": _fmt(complete_through),
-        "reference_price_date": reference,
-        "part_max_date": part_max_date,
-        "lag_days": lag_days,
-        "tolerance_days": tolerance_days,
-        "ok": bool(lag_days is not None and lag_days <= tolerance_days),
-    }
-    if complete_through is None:
-        status["reason"] = f"{Tables.insider_transactions.name} is absent or empty"
-    elif reference is None:
-        status["reason"] = "no reference price date"
-    return status
-
-
 def part_status_report(context: Context) -> dict[str, Any]:
     log = context.log
     store = context.store
@@ -90,24 +70,15 @@ def part_status_report(context: Context) -> dict[str, Any]:
     behind = list(misaligned)
     if reference is None:
         behind.append(Tables.prices.name)
-    institutional = parts[Tables.cube_part_institutionals.name]
-    tolerance = int(context.config.data.freshness.insider_max_lag_days)
-    if institutional["skipped"]:
-        insider_status = {"status": "skipped", "reason": "optional institutional part absent or empty", "ok": None}
-    else:
-        insider_status = _insider_source_status(context, reference, institutional["max_date"], tolerance)
-        if not insider_status["ok"]:
-            behind.append(f"{Tables.cube_part_institutionals.name}:insider_transactions")
     sources = {
         Tables.prices.name: {
             "max_date": reference,
             "ok": reference is not None,
             "refresh_command": "price-history (universe if universe_tickers is absent)",
         },
-        Tables.cube_part_institutionals.name: {"insider_transactions": insider_status},
     }
     report = {
-        "as_of": pd.Timestamp.today().normalize().strftime("%Y-%m-%d"),
+        "as_of": context.run.as_of.strftime("%Y-%m-%d"),
         "max_date": cube_max,
         "cube_max_date": cube_max,
         "price_max_date": edge["price_max_date"],
@@ -126,6 +97,4 @@ def part_status_report(context: Context) -> dict[str, Any]:
         )
     if reference is None:
         log.warning("No source-price reference for the analysis universe; run %s", sources[Tables.prices.name]["refresh_command"])
-    if not institutional["skipped"] and not insider_status["ok"]:
-        log.warning("Institutional insider source late: %s", insider_status)
     return report

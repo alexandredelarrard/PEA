@@ -82,7 +82,6 @@ def test_full_universe_can_advance_beyond_the_stored_frontier(
 def test_cold_subset_uses_the_bounded_run_date(tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, filing_store)
     ctx.config.data.tables.sec13f_hr.start_date = "2026-09-18"
-    ctx.config.data.tables.sec13f_hr.end_date = "2026-10-02"
     recent = _filing(1, "2026-09-29")
     windows, _ = _patch(monkeypatch, [recent])
 
@@ -123,7 +122,8 @@ def test_subset_ceiling_respects_fixed_bounds_and_empty_intersection(
     ctx = _ctx(tmp_path, filing_store)
     ctx.run = WindowRun("incremental", "bounded 13F scope", pd.Timestamp(as_of))
     ctx.config.data.tables.sec13f_hr.start_date = "2026-09-18"
-    ctx.config.data.tables.sec13f_hr.end_date = end
+    if end is not None:
+        ctx.run = WindowRun(ctx.run.mode, "bounded13F filing sample", min(ctx.run.as_of, pd.Timestamp(end)))
     _seed_hr(filing_store, "0000000009", stored)
     before, inside, after = (_filing(n, day) for n, day in enumerate(["2026-09-17", "2026-09-19", "2026-09-29"], 1))
     windows, _ = _patch(monkeypatch, [before, inside, after])
@@ -166,7 +166,8 @@ def test_explicit_subset_window_cannot_cross_config_or_root_bounds(
 ) -> None:
     ctx = _ctx(tmp_path, filing_store)
     ctx.config.data.tables.sec13f_hr.start_date = "2026-09-18"
-    ctx.config.data.tables.sec13f_hr.end_date = configured_end
+    if configured_end is not None:
+        ctx.run = WindowRun(ctx.run.mode, "bounded13F recovery", min(ctx.run.as_of, pd.Timestamp(configured_end)))
     windows, _ = _patch(monkeypatch, [])
 
     with pytest.raises(ValueError, match="configured hard bounds and the run date"):

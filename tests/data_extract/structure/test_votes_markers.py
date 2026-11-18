@@ -90,14 +90,15 @@ def _context(sqlite_store, *, short: bool = True, budget: int = 40000) -> Any:
 def test_vote_work_respects_source_output_and_run_dates(sqlite_store: Any, llm: Any, excluded: str) -> None:
     context = _context(sqlite_store, short=False)
     if excluded == "source":
-        context.config.data.tables[Tables.sec_8k.name].end_date = "2026-01-01"
+        context.config.data.tables[Tables.sec_8k.name].start_date = "2026-01-01"
     elif excluded == "output":
-        context.config.data.tables[Tables.sec_8k_votes.name].end_date = "2026-01-01"
+        context.config.data.tables[Tables.sec_8k_votes.name].start_date = "2026-01-01"
     else:
         context.run = WindowRun("incremental", "bounded source check", pd.Timestamp("2026-01-01"))
     extractor = votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION)
     votes_fetch.fetch_8k_votes_llm(context, _tickers(), extractor)
-    expected = {str(_FIXTURES[key]["accession_number"]) for key in ("aapl_2025", "jpm_2025")}
+    allowed = ("aee_2026",) if excluded != "run" else ("aapl_2025", "jpm_2025")
+    expected = {str(_FIXTURES[key]["accession_number"]) for key in allowed}
     assert set(llm.calls) == expected
     assert set(sqlite_store.distinct(Tables.sec_8k_votes, "accession_number")) == expected
     context.run = WindowRun("full", "explicit replay with saved decisions", context.run.as_of)
@@ -115,6 +116,18 @@ def llm(monkeypatch: pytest.MonkeyPatch) -> type[_CountingLLM]:
 
 def _tickers() -> list[str]:
     return sorted({str(_FIXTURES[key]["ticker"]) for key in _READ})
+
+
+def test_configured_filing_day_completion_is_per_ticker(sqlite_store, llm) -> None:
+    context = _context(sqlite_store, short=False)
+    context.config.data.tables.sec_8k_votes.overlap.column = "filing_date"
+    first = _source_row("aapl_2025")
+    other = {**first, "ticker": "OTHER", "accession_number": "other-filing"}
+    source = pd.DataFrame([first, other])
+    sqlite_store.save(Tables.sec_8k_votes, votes_fetch._marker_frame(str(first["ticker"]), pd.Series(first)))
+    todo = votes_fetch._plan_todo(context, source)
+    assert todo.accession_number.tolist() == ["other-filing"]
+    print("SANITY: configured filing-date references normalize saved dates and never complete another ticker on the same day.")
 
 
 def test_zero_proposal_filing_is_queued_once(sqlite_store, llm) -> None:

@@ -165,8 +165,7 @@ def test_configured_source_and_output_dates_bound_the_worklist(world: Any, monke
     seed(ctx, monkeypatch, [old, recent, future])
     walk(ctx)
     ctx.config.data.tables.fundamentals_employees.start_date = "2011-01-01"
-    ctx.config.data.tables.fundamentals_employees.end_date = "2025-12-31"
-    ctx.config.data.tables.sec_employees_text.end_date = "2024-12-31"
+    ctx.run = WindowRun("incremental", "bounded source/output employee work", pd.Timestamp("2024-12-31"))
     extractor = FakeEmployeesLLM({f.accession_number: answer(n, body(n)) for f, n in ((old, 9000), (recent, 41000), (future, 42000))})
 
     decided = decide(ctx, extractor)

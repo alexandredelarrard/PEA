@@ -22,9 +22,9 @@ def test_macro_rewrites_its_configured_tail_without_restarting_bond_levels(tmp_p
     rows["date"] = pd.to_datetime(rows["date"])
     wide = rows.pivot(index="date", columns="ticker", values="close").sort_index()
     context = fake_context(tmp_path, sqlite_store, ["AAPL"])
-    context.run = WindowRun("incremental", "real macro replay", pd.Timestamp("2026-11-16"))
+    context.run = WindowRun("incremental", "real macro replay", pd.Timestamp("2026-11-10T23:00:00-05:00"))
     item = context.config.data.tables.prices_macro
-    item.start_date, item.end_date = "1995-11-13", "2026-11-10"
+    item.start_date = "1995-11-13"
     future = rows.groupby("ticker").tail(1).assign(date=pd.Timestamp("2026-11-12"), close=137.0)
     sqlite_store.save(Tables.prices_macro, pd.concat([rows, future], ignore_index=True))
     before = sqlite_store.load(Tables.prices_macro).sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -42,9 +42,12 @@ def test_macro_rewrites_its_configured_tail_without_restarting_bond_levels(tmp_p
     monkeypatch.setattr(sqlite_store, "replace_window", replace_window)
     fm.fetch_macro(context)
     after = sqlite_store.load(Tables.prices_macro).sort_values(["ticker", "date"]).reset_index(drop=True)
-    expected_window = Window(pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-10"))
-    assert writes and all(window == expected_window for window, keys in writes)
-    outside = ~expected_window.mask(before["date"])
+    starts = {"equity_tr": pd.Timestamp("2026-11-03"), "yield_10y": pd.Timestamp("2026-11-02"), "bond_10y_tr": pd.Timestamp("2026-11-02")}
+    assert {key: window for window, keys in writes for key in keys} == {
+        key: Window(start, pd.Timestamp("2026-11-10")) for key, start in starts.items()
+    }
+    dates = pd.to_datetime(before["date"])
+    outside = dates.lt(before["ticker"].map(starts)) | dates.gt(pd.Timestamp("2026-11-10"))
     pd.testing.assert_frame_equal(after.loc[outside].reset_index(drop=True), before.loc[outside].reset_index(drop=True))
     after["date"] = pd.to_datetime(after["date"])
     bond = after.loc[after["ticker"].eq("bond_10y_tr")].set_index("date")["close"]
@@ -58,10 +61,14 @@ def test_macro_rewrites_its_configured_tail_without_restarting_bond_levels(tmp_p
     repeated = sqlite_store.load(Tables.prices_macro).sort_values(["ticker", "date"]).reset_index(drop=True)
     repeated["date"] = pd.to_datetime(repeated["date"])
     pd.testing.assert_frame_equal(repeated, after)
-    item.reprocess.overlap.value = 3
+    item.overlap.days = 3
     writes.clear()
     fm.fetch_macro(context)
-    assert writes and all(window.start == pd.Timestamp("2026-11-07") for window, keys in writes)
+    assert {key: window.start for window, keys in writes for key in keys} == {
+        "equity_tr": pd.Timestamp("2026-11-07"),
+        "yield_10y": pd.Timestamp("2026-11-06"),
+        "bond_10y_tr": pd.Timestamp("2026-11-06"),
+    }
     print(
         "SANITY: real31-year yield context preserves exact bond levels and boundary returns;7CD/3CD writes obey config, protect both ends and repeat idempotently."
     )

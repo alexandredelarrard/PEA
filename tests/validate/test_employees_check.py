@@ -140,7 +140,8 @@ def test_validation_uses_the_same_configured_filing_bounds(sqlite_store: Any, tm
     _seed(sqlite_store, _component_rows())
     context = _context(sqlite_store)
     item = context.config.data.tables.fundamentals_employees
-    item.start_date, item.end_date = "2018-01-01", "2019-12-31"
+    item.start_date = "2018-01-01"
+    context.run = WindowRun("incremental", "finite employee validation cutoff", pd.Timestamp("2019-12-31"))
     report = check_employees(context, since=SINCE, directory=tmp_path / "index")
     assert report.result.metrics["owned_dates"] == 2
     assert report.result.scope["rows"] == 2

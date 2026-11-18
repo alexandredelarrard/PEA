@@ -23,7 +23,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.incremental import stored_values
+from src.data_extract.utils.common.resume import DONE_PER_KEY, reference_values, stored_accessions
 from src.data_extract.utils.structure.votes.flatten import _marker_frame, _prepare_frame, _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map, _role_source
@@ -33,7 +33,7 @@ from src.data_store.schema import Table, Tables
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
-from src.utils.data_policy import source_read_window, window_policy
+from src.utils.data_policy import overlap_column, source_read_window, window_policy
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +95,18 @@ def _load_narratives(context: Context, tickers: list[str]) -> pd.DataFrame | Non
 
 
 def _plan_todo(context: Context, df_source: pd.DataFrame) -> pd.DataFrame:
-    """The narratives whose accession is not yet stored in `sec_8k_votes` (markers included)."""
-    seen = stored_values(
+    """Narratives whose configured completion reference is absent for their own ticker, markers included."""
+    column = overlap_column(context.config, Tables.sec_8k_votes)
+    seen = stored_accessions(
         context,
         Tables.sec_8k_votes,
-        "accession_number",
-        where={"ticker": df_source.ticker.unique().tolist(), "accession_number": df_source.accession_number.unique().tolist()},
+        df_source.ticker.unique().tolist(),
+        DONE_PER_KEY,
+        where={column: df_source[column].dropna().unique().tolist()},
     )
-    df_todo = df_source[~df_source["accession_number"].isin(seen)]
+    references = reference_values(df_source[column], Tables.sec_8k_votes, column)
+    completed = {(ticker, value) for ticker, values in seen.items() for value in values}
+    df_todo = df_source[~pd.MultiIndex.from_arrays([df_source.ticker.astype(str), references]).isin(completed)]
     context.log.info(
         "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",
         len(df_source),

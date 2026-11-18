@@ -17,7 +17,6 @@ import pandas as pd
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.utils.names import clean_person_name
-from src.utils.publication import roll_to_session
 from src.utils.string import pad_cik
 from src.utils.title_vocabulary import CHAIR, COUNSEL, GENERAL, SENIOR, VICE
 from src.utils.title_vocabulary import CHIEF as CHIEF_WORD
@@ -215,11 +214,6 @@ def insider_days(values: pd.Series) -> pd.Series:
     """Reject implausible/unsafe source dates before converting pandas' retained microseconds to nanoseconds."""
     days = pd.to_datetime(values, errors="coerce", format="mixed", utc=True).dt.tz_localize(None)
     return days.where(days.between(pd.Timestamp("1900-01-01"), pd.Timestamp.max)).dt.normalize().dt.as_unit("ns")
-
-
-def publication_day(days: pd.Series, lag_days: int, sessions: pd.DatetimeIndex) -> pd.Series:
-    """Apply the configured calendar buffer and require a retained real market session."""
-    return roll_to_session(days + pd.Timedelta(days=lag_days), sessions)
 
 
 def normalize_insider_dates(df_rows: pd.DataFrame) -> pd.DataFrame:

@@ -8,6 +8,7 @@ check. There is no budget, sample-size or preparation override.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -15,19 +16,30 @@ _PROCESS_STARTED = time.perf_counter()
 
 # These are module-level bootstrap imports: their cost belongs to this deadline.
 from src.validate.checks.window_sample import timing_sample_tables  # noqa: E402
-from tests import live_guard  # noqa: E402
+from tests import live_guard as _package_guard  # noqa: E402
 from tests.support.window_lineage import measure_window_lineage  # noqa: E402
+from tests.support.window_producers import measure_window_producer, producer_cases  # noqa: E402
 from tests.support.window_samples import assert_lineage_results, window_sample_session  # noqa: E402
+
+live_guard = sys.modules.get("live_guard", _package_guard)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window-baseline", required=True, type=Path)
     parser.add_argument("--window-out", required=True, type=Path)
+    parser.add_argument(
+        "--window-producer", choices=producer_cases(), help="Measure one native producer under the same configured deadline and immutable pins"
+    )
     args = parser.parse_args()
     live_guard.install()
     errors = []
     with window_sample_session(args.window_baseline, args.window_out, False, _PROCESS_STARTED) as run:
+        if args.window_producer is not None:
+            result = measure_window_producer(run, args.window_producer)
+            status = 1 if result.status == "fail" or live_guard.TRIPS else 3 if result.status == "abstain" else 0
+            print(f"SANITY: actual {args.window_producer} creation/rerun: {result.status}; tripwire attempts={len(live_guard.TRIPS)}; exit={status}.")
+            return status
         for table in timing_sample_tables():
             result = run.measure(table)
             inactive = run.manifest["tables"].get(table.name, {}).get("applicability") == "inactive"

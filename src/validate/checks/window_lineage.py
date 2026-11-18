@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import calendar as calendar_module
 from dataclasses import asdict, dataclass
 from typing import Any, cast
 
@@ -14,8 +13,8 @@ from pandas._libs.tslibs.nattype import NaTType
 from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.data_policy import publication_policy
 from src.validate.checks.window_sample import timing_sample_tables
+from src.validate.frame import archive_period_end
 from src.validate.result import CheckResult, Finding
 
 
@@ -33,7 +32,10 @@ class _State:
 
 
 def _day(value: Any) -> pd.Timestamp | NaTType:
-    stamp = pd.Timestamp(value)
+    try:
+        stamp = pd.Timestamp(value)
+    except (ValueError, TypeError, OverflowError):
+        return pd.NaT
     if pd.isna(stamp):
         return pd.NaT
     if stamp.tzinfo is not None:
@@ -41,34 +43,17 @@ def _day(value: Any) -> pd.Timestamp | NaTType:
     return stamp.normalize()
 
 
-def _period_end(value: str) -> pd.Timestamp:
-    year = int(value[:4])
-    month = int(value[4:6]) if value[-1] in "ab" else int(value[-2:]) if "_" in value else int(value[-1]) * 3
-    day = 15 if value[-1] == "a" else calendar_module.monthrange(year, month)[1]
-    return pd.Timestamp(year=year, month=month, day=day)
-
-
 def expected_publication(policy: dict[str, Any], row: pd.Series | dict[str, Any], sessions: pd.DatetimeIndex) -> pd.Timestamp | NaTType:
     """Independent policy oracle; deliberately does not call Window/publication arithmetic."""
-    if policy["mode"] == "direct" and int(policy["lag"]["value"]) < 1:
-        raise ValueError("Publication evidence must retain at least one calendar day; contradictory zero-lag policy")
-    if policy["mode"] == "notes_release" and int(policy["filing_lag"]["value"]) < 1:
-        raise ValueError("Notes filing evidence must retain at least one calendar day")
-    anchor = _day(row[str(policy["clock"])]) if policy["mode"] != "half_month_end" else _period_end(str(row[str(policy["clock"])]))
-    if policy["mode"] == "notes_release":
-        period = str(row["period"])
-        end = _period_end(period)
-        if "_" in period:
-            year, month = (end.year + 1, 1) if end.month == 12 else (end.year, end.month + 1)
-            release = pd.Timestamp(year=year, month=month, day=int(policy["monthly_release_day"]))
-        else:
-            release = end + pd.Timedelta(days=int(policy["quarterly_lag"]["value"]))
-        anchor = max(release, anchor + pd.Timedelta(days=int(policy["filing_lag"]["value"])))
-    for name in policy.get("later_clocks", []):
-        if name in row and pd.notna(row[name]):
-            anchor = max(anchor, _day(row[name]))
-    if policy["mode"] in {"direct", "half_month_end"}:
-        anchor += pd.Timedelta(days=int(policy["lag"]["value"]))
+    column, lag = str(policy["column"]), policy["lag_days"]
+    if isinstance(lag, bool) or not isinstance(lag, int) or lag < 0:
+        raise ValueError("Publication lag must be a nonnegative integer calendar-day amount")
+    value = row[column]
+    try:
+        anchor = archive_period_end(value) if column == "period" else _day(value)
+    except (ValueError, TypeError, OverflowError):
+        return pd.NaT
+    anchor += pd.Timedelta(days=lag)
     # Iteration is intentionally independent of production searchsorted/roll_to_session.
     if isinstance(anchor, NaTType):
         return pd.NaT
@@ -84,18 +69,23 @@ def _source_row(
     dates: dict[tuple[Any, ...], pd.Timestamp | NaTType],
 ) -> tuple[dict[str, Any], pd.Timestamp | NaTType]:
     policy = policies[state.table]
-    clock = str(policy["clock"])
+    clock = str(policy["column"])
     names = {*state.table.pk, "adsh", "accession_number", "quarter", "period"}
     for item in policies.values():
-        names.update([str(item["clock"]), *item.get("later_clocks", [])])
+        names.add(str(item["column"]))
     raw = {name: row.get(f"_source_{name}", row.get(name)) for name in names if name in row or f"_source_{name}" in row}
     ready = {}
     for source, item in policies.items():
-        clocks = [str(item["clock"]), *item.get("later_clocks", []), *(["period"] if item["mode"] == "notes_release" else [])]
-        key = (source, *(str(raw.get(name)) for name in clocks))
+        evidence = dict(raw)
+        if source == Tables.sec_fundamentals_history and "_sec_source_as_of" in row:
+            evidence["as_of"] = row["_sec_source_as_of"]
+        column = str(item["column"])
+        key = (source, str(evidence.get(column)))
         if key not in dates:
-            dates[key] = expected_publication(item, raw, sessions)
+            dates[key] = expected_publication(item, evidence, sessions)
         ready[source] = dates[key]
+        if source == state.table:
+            raw = evidence
     expected = ready[state.table]
     if "_projection_parent_asof" in row:
         expected = max(expected, _day(row["_projection_parent_asof"]))
@@ -127,7 +117,7 @@ def _boundaries(config: DictConfig, tickers: list[str], state: _State, sessions:
         if state.table in {Tables.sharadar_fundamentals_history, Tables.sec_fundamentals_history}
         else (state.table,)
     )
-    policies = {table: dict(cast(dict[str, Any], OmegaConf.to_container(publication_policy(config, table), resolve=True))) for table in tables}
+    policies = {table: dict(cast(dict[str, Any], OmegaConf.to_container(config.data.tables[table.name].pit, resolve=True))) for table in tables}
     dates: dict[tuple[Any, ...], pd.Timestamp | NaTType] = {}
     for ticker in tickers:
         observed, ticker_findings = _ticker_boundaries(state, ticker, sessions, policies, dates, year)

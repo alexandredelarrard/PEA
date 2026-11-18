@@ -44,8 +44,8 @@ def _first_visible(df_schedule: pd.DataFrame, column: str, **kwargs) -> pd.Times
 
 def test_the_lag_is_one_calendar_day() -> None:
     assert (
-        int(publication_policy(extract_config(), Tables.sec_13d).lag.value) == 1
-        and int(publication_policy(extract_config(), Tables.sec_13g).lag.value) == 1
+        int(publication_policy(extract_config(), Tables.sec_13d).lag_days) == 1
+        and int(publication_policy(extract_config(), Tables.sec_13g).lag_days) == 1
     )
     print("SANITY: the registered 13D and 13G availability buffers are 1 calendar day.")
 
@@ -108,7 +108,7 @@ def test_changed_configured_buffer_moves_actual_filing_features() -> None:
     filings = pd.DataFrame([{"ticker": "AAA", "filing_date": pd.Timestamp("2015-06-04"), "accession_number": "a1"}])
     sources = (ScheduleSource(Tables.sec_13d, filings),)
     first = build_ownership_feature_panel(frames, sources, config)
-    config.data.tables.sec_13d.pit.lag.value = 2
+    config.data.tables.sec_13d.pit.lag_days = 2
     second = build_ownership_feature_panel(frames, sources, config)
     first_positive = first.loc[first.ticker.eq("AAA") & first[D13].gt(0), "date"].min()
     second_positive = second.loc[second.ticker.eq("AAA") & second[D13].gt(0), "date"].min()

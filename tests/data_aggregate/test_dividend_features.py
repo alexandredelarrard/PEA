@@ -26,7 +26,6 @@ from src.data_aggregate.utils.fundamentals.dividend_features import (
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.utils.window import Offset, shift_date
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 from tests.support.config import fixture_config
 
@@ -339,10 +338,10 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
         FundamentalHistory(share_basis=known_no_share_events()),
     )
     policy = fixture_config().data.tables.cube_part_fundamentals
-    warmup = int(policy.warmup.grid.value)
+    warmup = int(policy.warmup.prices_dividends)
     last_pos = 7 * 252 - 40
-    refresh_from = dates[last_pos] - pd.Timedelta(days=int(policy.reprocess.overlap.value))
-    start = shift_date(refresh_from, Offset(warmup, str(policy.warmup.grid.unit)), dates)
+    refresh_from = dates[last_pos] - pd.Timedelta(days=int(policy.overlap.days))
+    start = refresh_from - pd.Timedelta(days=warmup)
     windowed = build_dividend_feature_panel(
         _published_cash(dividends),
         replace(cast(PriceFrames, legacy_capital_frames(None, close.loc[start:])), trading_index=dates[dates >= start], peers=peers),
@@ -362,7 +361,7 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
 
     print("\n=== SANITY CHECK: incremental dividend panel matches full tail ===")
     print(
-        f"  {warmup} warm-up sessions preserve the 1,825-day CAGR look-back plus its "
+        f"  {warmup} calendar days preserve the 1,825-day CAGR look-back plus its "
         f"365-day TTM base; {len(full_tail)} rewritten/appended rows match. Validated."
     )
 

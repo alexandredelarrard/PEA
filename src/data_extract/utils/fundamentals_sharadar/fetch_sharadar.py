@@ -30,6 +30,7 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     sharadar_get,
 )
 from src.data_store.schema import Table, Tables
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.polite_http import sleep_pace
 from src.utils.predecessor_series import load_predecessor_series
 from src.utils.window import Window
@@ -282,7 +283,11 @@ def fetch_sharadar_actions(context: Context) -> int:
 
 def fetch_sharadar_sp500(context: Context) -> None:
     """S&P 500 membership events; cold or `full` pulls from the table's source start."""
-    frontier = context.store.max_date(Tables.sharadar_sp500)
+    policy = window_policy(context.config, Tables.sharadar_sp500, context.run.as_of)
+    if policy is None:
+        return
+    column = overlap_column(context.config, Tables.sharadar_sp500)
+    frontier = context.store.max_date(Tables.sharadar_sp500, column, where={column: policy.requested})
     plan = source_plan(context, Tables.sharadar_sp500, frontier, (("source", ("sharadar",)),))
     if plan is None:
         return

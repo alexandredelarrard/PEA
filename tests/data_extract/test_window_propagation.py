@@ -32,17 +32,17 @@ from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, master_text, seed_index
 from tests.data_extract.prices.test_one_download import FakeYahoo, _recorded
+from tests.support.config import fixture_config as _config
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
-from tests.utils.test_data_policy import _config
 
 
 def _context(tmp_path: Path, store: DataStore) -> Any:
     context = fake_context(tmp_path, store, ["AAA", "BBB"])
     context.config = deepcopy(_config())
-    context.run = WindowRun("incremental", "scoped source check", pd.Timestamp("2026-11-16"))
+    context.run = WindowRun("incremental", "scoped source check", pd.Timestamp("2026-11-10"))
     item = context.config.data.tables.prices
-    item.start_date, item.end_date = "2026-10-01", "2026-11-10"
+    item.start_date = "2026-10-01"
     return context
 
 
@@ -57,11 +57,11 @@ def test_per_key_frontier_and_both_configured_bounds(tmp_path, sqlite_store) -> 
         "AAA": [Window(pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-10"))],
         "BBB": [Window(pd.Timestamp("2026-10-27"), pd.Timestamp("2026-11-10"))],
     }
-    context.config.data.tables.prices.reprocess.overlap = {"value": 1, "unit": "months"}
+    context.config.data.tables.prices.overlap.days = 31
     changed = series_windows(context, Tables.prices, request)
     assert changed.windows["AAA"][0].start == pd.Timestamp("2026-10-10")
     assert changed.windows["BBB"][0].start == pd.Timestamp("2026-10-03")
-    print("SANITY: each source key uses its own frontier; configured bounds and month units reach actual source windows.")
+    print("SANITY: each source key uses its own frontier; configured calendar-day overlap and one run ceiling reach actual source windows.")
 
 
 def test_initial_full_and_provider_ceiling_share_fixed_dates(tmp_path, sqlite_store) -> None:
@@ -85,12 +85,12 @@ def test_out_of_history_source_performs_no_store_reads(tmp_path, sqlite_store, m
 
 def test_price_provider_rows_obey_finite_configured_scope(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
     context = _context(tmp_path, sqlite_store)
-    context.run = WindowRun("full", "finite source replay", pd.Timestamp("2024-06-29"))
+    context.run = WindowRun("full", "finite source replay", pd.Timestamp("2024-06-07T23:00:00-04:00"))
     sqlite_store.drop(Tables.universe_tickers)
     context.universe = seed_universe(sqlite_store, ["AAPL", "MO", "NVDA"])
     context._identity_resolver = store_identity(sqlite_store)
     item = context.config.data.tables.prices
-    item.start_date, item.end_date = "2024-05-10", "2024-06-07"
+    item.start_date = "2024-05-10"
     fake = FakeYahoo(_recorded())
     monkeypatch.setattr(prices.yf, "download", lambda tickers, **kwargs: fake(tickers, start="1900-01-01", end="2100-01-01", actions=True))
     monkeypatch.setattr(prices.time, "sleep", lambda seconds: None)
@@ -118,7 +118,7 @@ def test_price_provider_rows_obey_finite_configured_scope(tmp_path, sqlite_store
 def test_surprise_candidates_use_configured_dates_and_revisit_recent_publications(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
     context = _context(tmp_path, sqlite_store)
     item = context.config.data.tables.earnings_surprises
-    item.start_date, item.end_date = "2020-01-01", "2026-11-10"
+    item.start_date = "2020-01-01"
     initial = pd.DataFrame(
         {
             "ticker": "AAA",
@@ -146,7 +146,7 @@ def test_surprise_candidates_use_configured_dates_and_revisit_recent_publication
     monkeypatch.setattr(surprises, "_download_one", download)
     monkeypatch.setattr(surprises.time, "sleep", lambda seconds: None)
     surprises.fetch_earnings_surprises(context, ["AAA"])
-    assert calls == [("AAA", Window(pd.Timestamp("2026-10-12"), pd.Timestamp("2026-11-10")))]
+    assert calls == [("AAA", Window(pd.Timestamp("2026-10-05"), pd.Timestamp("2026-11-10")))]
     rows = (
         sqlite_store.load(Tables.earnings_surprises)
         .assign(earnings_date=lambda frame: pd.to_datetime(frame["earnings_date"]))
@@ -162,7 +162,7 @@ def test_surprise_candidates_use_configured_dates_and_revisit_recent_publication
 def test_finra_day_units_follow_the_configured_window_without_half_month_rebuild(tmp_path, sqlite_store) -> None:
     context = _context(tmp_path, sqlite_store)
     item = context.config.data.tables.sec_short_volume_security
-    item.start_date, item.end_date = "2020-01-01", "2026-11-10"
+    item.start_date = "2020-01-01"
     raw = pd.DataFrame(
         {
             "date": [pd.Timestamp("2026-11-10")],
@@ -176,7 +176,7 @@ def test_finra_day_units_follow_the_configured_window_without_half_month_rebuild
     sqlite_store.save(Tables.sec_short_volume_security, raw)
     days = short._plan_days(context)
     assert days.equals(pd.bdate_range("2026-10-12", "2026-11-10"))
-    item.reprocess.overlap.value = 3
+    item.overlap.days = 3
     assert short._plan_days(context).equals(pd.bdate_range("2026-11-09", "2026-11-10"))
     print("SANITY: FINRA day-file units inherit30CD/3CD from config and retain the finite ceiling across the half-month boundary.")
 
@@ -184,7 +184,8 @@ def test_finra_day_units_follow_the_configured_window_without_half_month_rebuild
 def test_cached_edgar_index_is_filtered_at_both_configured_ends(tmp_path: Path, sqlite_store: DataStore) -> None:
     context = _context(tmp_path, sqlite_store)
     item = context.config.data.tables.sec_8k
-    item.start_date, item.end_date = "2026-01-02", "2026-07-05"
+    item.start_date = "2026-01-02"
+    context.run = WindowRun("incremental", "bounded cached filing index", pd.Timestamp("2026-07-05"))
     seed_index(
         context,
         [
@@ -208,7 +209,8 @@ def test_cached_edgar_index_is_filtered_at_both_configured_ends(tmp_path: Path, 
 def test_document_worklist_uses_config_bounds_and_the_context_mode(tmp_path: Path, sqlite_store: DataStore) -> None:
     context = _context(tmp_path, sqlite_store)
     item = context.config.data.tables.sec_8k
-    item.start_date, item.end_date = "2026-01-01", "2026-06-30"
+    item.start_date = "2026-01-01"
+    context.run = WindowRun("incremental", "bounded filing work", pd.Timestamp("2026-06-30"))
     seed_index(
         context,
         [
@@ -244,7 +246,8 @@ def test_edgar_index_refresh_enumerates_only_quarters_intersecting_configured_da
 ) -> None:
     context = _context(tmp_path, sqlite_store)
     item = context.config.data.tables.sec_8k
-    item.start_date, item.end_date = "2026-05-10", "2026-08-08"
+    item.start_date = "2026-05-10"
+    context.run = WindowRun("incremental", "bounded index refresh", pd.Timestamp("2026-08-08"))
     policy = window_policy(context.config, Tables.sec_8k, context.run.as_of)
     assert policy is not None
     asked = []
@@ -295,7 +298,7 @@ def test_ended_grace_uses_configured_actual_sessions_and_invalidates_its_cache(t
     dates = pd.bdate_range("2026-06-01", "2026-07-02").difference(pd.DatetimeIndex(["2026-06-19"]))
     sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "AAA", "date": dates, "close_split": 1.0}))
     assert planner_bounds(context)["AAA"][1] == pd.Timestamp("2026-06-26")
-    context.config.data.planning.ended_grace.value = 3
+    context.config.data_extract.listing_end_grace_sessions = 3
     assert planner_bounds(context)["AAA"][1] == pd.Timestamp("2026-06-16")
     print("SANITY: configured end grace counts actual sessions across Juneteenth; changing YAML policy invalidates the cached bounds.")
 
@@ -330,13 +333,13 @@ def test_notes_source_candidates_respect_both_tables_independent_dates(
 ) -> None:
     context = _context(tmp_path, sqlite_store)
     numeric, text = context.config.data.tables.notes_num, context.config.data.tables.notes_text
-    numeric.start_date, numeric.end_date = "2026-03-01", "2026-06-30"
-    text.start_date, text.end_date = "2026-09-01", "2026-09-30"
+    numeric.start_date, text.start_date = "2026-03-01", "2026-09-01"
+    context.run = WindowRun("incremental", "bounded sibling archive policies", pd.Timestamp("2026-09-30"))
     published = ["2025q4", "2026q1", "2026_04", "2026q2", "2026q3", "2026_10"]
     monkeypatch.setattr(notes, "_scrape_available_periods", lambda ctx: published)
     assert notes.notes_periods(context) == ["2026_04", "2026q1", "2026q2", "2026q3"]
-    numeric.end_date = "2026-05-31"
-    assert notes.notes_periods(context) == ["2026_04", "2026q1", "2026q3"]
+    numeric.start_date = "2026-05-01"
+    assert notes.notes_periods(context) == ["2026q2", "2026q3"]
     print("SANITY: each notes table's configured bounds reach published-unit selection, without widening the other table or sliding by years.")
 
 
@@ -345,9 +348,9 @@ def test_archive_completion_considers_only_the_tables_requiring_each_unit(
 ) -> None:
     context = _context(tmp_path, sqlite_store)
     numeric, text = context.config.data.tables.notes_num, context.config.data.tables.notes_text
-    numeric.start_date, numeric.end_date = "2026-01-01", "2026-06-30"
-    text.start_date, text.end_date = "2026-07-01", "2026-09-30"
-    held = {Tables.notes_num: frozenset({"2026q1"}), Tables.notes_text: frozenset({"2026q3"})}
+    numeric.start_date, text.start_date = "2026-01-01", "2026-07-01"
+    context.run = WindowRun("incremental", "bounded sibling archive completion", pd.Timestamp("2026-09-30"))
+    held = {Tables.notes_num: frozenset({"2026q1", "2026q3"}), Tables.notes_text: frozenset({"2026q3"})}
     monkeypatch.setattr(resume, "stored_values", lambda ctx, table, column: held[table])
     listed, completed = resume.archive_periods(context, (Tables.notes_num, Tables.notes_text), ["2025q4", "2026q1", "2026q2", "2026q3", "2026q4"])
     assert listed == ["2026q1", "2026q2", "2026q3"] and completed == frozenset({"2026q1", "2026q3"})
@@ -374,8 +377,8 @@ def test_vendor_history_recovery_protects_outside_dates_and_keys(tmp_path: Path,
     )
     sqlite_store.save(Tables.sharadar_fundamentals_facts, vendor)
     policy = context.config.data.tables.sharadar_fundamentals_history
-    policy.start_date, policy.end_date = "2026-05-01", "2026-08-01"
-    context.run = WindowRun("full", "finite vendor history recovery", context.run.instant)
+    policy.start_date = "2026-05-01"
+    context.run = WindowRun("full", "finite vendor history recovery", pd.Timestamp("2026-08-01"))
     monkeypatch.setattr(vendor_history, "load_field_map", lambda directory: None)
     monkeypatch.setattr(vendor_history, "with_predecessor_series", lambda context, vendor, names, splits, **kwargs: (vendor, splits))
     monkeypatch.setattr(vendor_history, "vendor_share_basis", lambda *args: SimpleNamespace(vendor=pd.DataFrame()))
@@ -401,8 +404,8 @@ def test_notes_identity_capture_uses_the_same_configured_archive_units(
 ) -> None:
     context = _context(tmp_path, sqlite_store)
     numeric, text = context.config.data.tables.notes_num, context.config.data.tables.notes_text
-    numeric.start_date, numeric.end_date = "2026-04-01", "2026-06-30"
-    text.start_date, text.end_date = "2026-09-01", "2026-09-30"
+    numeric.start_date, text.start_date = "2026-04-01", "2026-09-01"
+    context.run = WindowRun("incremental", "bounded identity evidence", pd.Timestamp("2026-09-30"))
     cached = ["2025q4", "2026q1", "2026_04", "2026q2", "2026q3", "2026q4"]
     monkeypatch.setattr(evidence, "cached_notes_periods", lambda cache: cached)
     monkeypatch.setattr(evidence, "captured_dei_periods", lambda context: {"2026_04"})
@@ -431,7 +434,8 @@ def test_direct_notes_subruns_filter_provided_units_before_io(
     context = _context(tmp_path, sqlite_store)
     for table in (Tables.notes_num, Tables.notes_text):
         item = context.config.data.tables[table.name]
-        item.start_date, item.end_date = "2026-01-01", "2026-06-30"
+        item.start_date = "2026-01-01"
+    context.run = WindowRun("incremental", "bounded direct notes work", pd.Timestamp("2026-06-30"))
     periods = ["2025q4", "2026q1", "2026q2", "2026q3"]
     visited: list[str] = []
     if operation == "download":
@@ -487,7 +491,8 @@ def test_completed_notes_units_stay_untouched_until_explicit_bounded_recovery(
         _cached_notes_unit(tmp_path, period)
     for table in (Tables.notes_num, Tables.notes_text):
         item = context.config.data.tables[table.name]
-        item.start_date, item.end_date = "2026-01-01", "2026-09-30"
+        item.start_date = "2026-01-01"
+        context.run = WindowRun("incremental", "bounded notes ingestion", pd.Timestamp("2026-09-30"))
         sqlite_store.save(
             table,
             pd.DataFrame(
@@ -524,8 +529,8 @@ def test_completed_notes_units_stay_untouched_until_explicit_bounded_recovery(
     before = {table: sqlite_store.load(table) for table in (Tables.notes_num, Tables.notes_text)}
     for table in before:
         item = context.config.data.tables[table.name]
-        item.start_date, item.end_date = "2026-04-01", "2026-06-30"
-    context.run = WindowRun("full", "explicit bounded notes recovery", context.run.instant)
+        item.start_date = "2026-04-01"
+    context.run = WindowRun("full", "explicit bounded notes recovery", pd.Timestamp("2026-06-30"))
     assert notes.ingest_financial_notes(context, tmp_path, ["AAPL"], periods) == 2 and parsed == ["2026q2"]
     for table, original in before.items():
         after = sqlite_store.load(table)

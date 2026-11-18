@@ -95,7 +95,7 @@ def test_an_unreadable_landing_page_downloads_nothing(tmp_path: Path, monkeypatc
 def test_download_uses_configured_filing_window_before_cache_effects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = _context(tmp_path)
     context.config.data.tables.sec13f_hr.start_date = "2026-07-01"
-    context.config.data.tables.sec13f_hr.end_date = "2026-08-31"
+    context.run = WindowRun(context.run.mode, "bounded13F archive candidates", pd.Timestamp("2026-08-31"))
     monkeypatch.setattr(f13ds, "sec_get", _landing(["2026q1", "01jun2026-31aug2026", "01sep2026-30nov2026"]))
     downloaded: list[str] = []
 

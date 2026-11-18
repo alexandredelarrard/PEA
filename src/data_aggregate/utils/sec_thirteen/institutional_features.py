@@ -106,7 +106,7 @@ def project_institutional_features(
 ) -> dict[str, pd.DataFrame]:
     """Project quarter features and the existing ownership/value denominators onto daily dates."""
     df_features = df_features.copy()
-    coverage = pd.Timestamp(config.data.tables.sec13f_hr.coverage_start)
+    coverage = pd.Timestamp(config.data.tables.sec13f_hr.start_date)
     # Coverage is a report-period condition. Eligibility already uses actual public filing dates.
     level_fields = [column for column in (*LEVEL_FEATURES, "inst_shares", "inst_value") if column in df_features]
     delta_fields = [column for column in DELTA_FEATURES if column in df_features]

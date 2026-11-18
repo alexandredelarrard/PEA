@@ -2,10 +2,9 @@
 `schema.Resume` contract and the run date. Nothing else is read or written.
 
 `series_windows` (dated per-key series): per key, its own last date minus the overlap through
-`until`; the full history for an absent table, `full`, or a new key whose stored history does not
-yet reach the floor, or its own first date in an optional `listing` table when later (a new key
-whose full pull is stored resumes like any other); the table-wide frontier minus
-the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
+`until`; the full history for an absent table, `full`, or a rowless key, from its own first date
+in an optional `listing` table when later; a rowless key otherwise starts at its own source floor;
+plus one window per run of calendar sessions missing inside the
 key's stored span. Every window is clamped to the key's planner bounds (`planner_bounds`: `[first_price_date, ended_on]`
 with the U-65 grace after the end; a ticker-keyed series has no row before its listing's first price); an ended key with
 stored rows gets none once the run date is past its grace end plus the table's overlap (`ended_keys`).
@@ -28,7 +27,7 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.publication import period_end
 from src.utils.tickers_universe.universe import Bounds
 from src.utils.window import Offset, Window, WindowPlan, WindowRun, resolve_window, shift_date
@@ -46,17 +45,13 @@ DONE_TABLE = "table"
 
 def recently_changed(context: Context, stamps: Mapping[str, pd.Timestamp | None]) -> list[str]:
     """Changed lineage keys inside the configured recheck offset, on the shared run anchor."""
-    section = context.config.data.planning.lineage_recheck
-    offset = Offset(section.value, section.unit)
-    calendar = trading_calendar(context) if offset.unit == "trading_sessions" else None
-    since = shift_date(context.run.as_of, offset, calendar)
+    since = context.run.as_of - pd.Timedelta(days=int(context.config.data_extract.identity_change_recheck_days))
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
 
 
 def planner_bounds(context: Context) -> Bounds:
     """Listing bounds plus configured end grace; unavailable future sessions never become weekdays."""
-    section = context.config.data.planning.ended_grace
-    offset = Offset(section.value, section.unit)
+    offset = Offset(int(context.config.data_extract.listing_end_grace_sessions), "trading_sessions")
     universe = context.universe
     cached = getattr(context, "_planner_bounds", None)
     if cached is not None and cached[0] is universe and cached[1] == offset and cached[2] is context.run:
@@ -95,29 +90,37 @@ def source_plan(context: Context, table: Table, frontier: pd.Timestamp | None, s
     run = context.run
     if frontier is None and run.mode == "incremental":
         run = WindowRun("initial", "missing configured source history", run.instant)
-    offsets = (policy.overlap, policy.warmup, policy.lookback, policy.lookahead)
+    offsets = (policy.overlap, policy.warmup, policy.lookahead)
     calendar = (
         trading_calendar(context) if any(offset is not None and offset.unit == "trading_sessions" for offset in offsets) else pd.DatetimeIndex([])
     )
-    if run.mode == "incremental" and policy.lookback is not None and shift_date(run.as_of, policy.lookback, calendar) > policy.requested.end:
-        return None
     return resolve_window(policy, run, frontier, calendar, scope)
 
 
+def reference_values(values: pd.Series, table: Table, column: str) -> pd.Series:
+    """Normalize dated completion references without changing opaque document or archive identities."""
+    if column in table.date_type_cols or column == table.date_col:
+        return pd.to_datetime(values, errors="coerce", format="mixed").dt.strftime("%Y-%m-%d").astype("string")
+    return values.astype("string")
+
+
 def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope: str, where: dict[str, object] | None = None) -> dict[str, set[str]]:
-    """Accessions already stored on the rows matching `where`, markers included: per key (`DONE_PER_KEY`,
-    one two-column read) or one table-wide set shared by every key (`DONE_TABLE`, one `SELECT DISTINCT`)."""
+    """Configured completion references already stored, markers included, grouped by the declared entity key."""
+    column = overlap_column(context.config, table)
+    if table == Tables.sec13f_hr and column != "accession_number":
+        raise ValueError("13F packet completion requires accession_number to preserve originals and amendments")
     if table == Tables.sec13f_hr and not {"accession_number", "parse_status"} <= set(context.store.columns(table)):
         return {key: set() for key in keys}
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
-    if scope == DONE_TABLE:
-        everywhere = set(stored_values(context, table, "accession_number", where=where))
+    if scope == DONE_TABLE and column not in table.date_type_cols and column != table.date_col:
+        raw = pd.Series(list(stored_values(context, table, column, where=where)), dtype="object")
+        everywhere = set(reference_values(raw, table, column).dropna())
         return {key: everywhere for key in keys}
-    df = context.store.load(table, columns=[key_col, "accession_number"], where={**(where or {}), key_col: list(keys)}, markers=True, optional=True)
+    df = context.store.load(table, columns=[key_col, column], where={**(where or {}), key_col: list(keys)}, markers=True, optional=True)
     done: dict[str, set[str]] = {key: set() for key in keys}
     if df is not None:
         for key, group in df.groupby(key_col, sort=False):
-            done.setdefault(str(key), set()).update(group["accession_number"].astype(str))
+            done.setdefault(str(key), set()).update(reference_values(group[column], table, column).dropna())
     return done
 
 
@@ -194,7 +197,7 @@ class SeriesRequest:
     calendar: pd.DatetimeIndex | None
     until: pd.Timestamp | None = None
     listing: Table | None = None
-    stored: tuple[pd.DataFrame, pd.Timestamp | None] | None = None
+    stored: pd.DataFrame | None = None
 
 
 def series_windows(context: Context, table: Table, request: SeriesRequest) -> SeriesWork:
@@ -204,19 +207,23 @@ def series_windows(context: Context, table: Table, request: SeriesRequest) -> Se
     policy = window_policy(context.config, table, context.run.as_of)
     if policy is None or (request.until is not None and request.until < policy.requested.start):
         return SeriesWork({key: [] for key in keys}, {})
-    if table.resume is None or table.resume.key is None or table.resume.frontier_col is None or policy.overlap is None:
+    if table.resume is None or table.resume.key is None or policy.overlap is None:
         raise ValueError(f"{table.name} requires a per-key resume contract and configured tail")
     if request.until is not None:
         policy = replace(policy, requested=Window(policy.requested.start, min(request.until, policy.requested.end)))
 
     # Load only resume observations and the listing floors needed by new keys.
-    key_col, date_col, floor = table.resume.key, table.resume.frontier_col, policy.requested.start
-    df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)}) if request.stored is None else request.stored[0]
+    key_col, date_col, floor = table.resume.key, overlap_column(context.config, table), policy.requested.start
+    df_stats = (
+        context.store.key_stats(table, key_col, date_col, where={key_col: list(keys), date_col: policy.requested})
+        if request.stored is None
+        else request.stored
+    )
     stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
-    table_max = context.store.max_date(table, date_col) if request.stored is None else request.stored[1]
     cutoff = shift_date(context.run.as_of, policy.overlap, calendar)
     new = {key for key, added in context.universe.added_on_dates(keys, context.run.as_of).items() if added >= cutoff}
-    reach = _listing_floors(context, request.listing, key_col, [key for key in keys if key in new], floor)
+    absent = request.stored is None and not context.store.exists(table)
+    reach = _listing_floors(context, request.listing, key_col, [key for key in keys if key not in stats], floor)
 
     # Compute the same shared Window plan independently at each stored frontier.
     windows: dict[str, list[Window]] = {}
@@ -224,16 +231,16 @@ def series_windows(context: Context, table: Table, request: SeriesRequest) -> Se
     holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     universe_keys = set(context.universe.tickers)
     for key in keys:
-        complete = key in stats and pd.Timestamp(stats[key][0]) <= shift_date(reach.get(key, floor), policy.overlap, calendar, direction=1)
-        initial = table_max is None or (key not in stats and key not in universe_keys) or (key in new and not complete)
-        key_class[key] = KEY_NEW if initial else KEY_ESTABLISHED if key in stats else KEY_ROWLESS
+        initial = key not in stats
+        key_class[key] = KEY_ESTABLISHED if not initial else KEY_NEW if absent or key in new or key not in universe_keys else KEY_ROWLESS
         run = (
             WindowRun("initial", "missing configured source history", context.run.instant)
             if initial and context.run.mode == "incremental"
             else context.run
         )
-        frontier = stats[key][1] if key in stats else table_max
-        plan = resolve_window(policy, run, frontier, pd.DatetimeIndex([]) if calendar is None else calendar, ((key_col, (key,)),))
+        frontier = stats[key][1] if key in stats else None
+        selected = replace(policy, requested=Window(reach[key], policy.requested.end)) if key in reach else policy
+        plan = resolve_window(selected, run, frontier, pd.DatetimeIndex([]) if calendar is None else calendar, ((key_col, (key,)),))
         windows[key] = [plan.write]
         if key_class[key] == KEY_ESTABLISHED and _has_holes(calendar, *stats[key]):
             holed[key] = (max(stats[key][0], floor), plan.write.start)
@@ -282,7 +289,10 @@ class ArchiveWork:
         yield from ((period, self.keys) for period in sorted(set(self.pending) | set(self.rescan)))
 
 
-def _period_column(table: Table) -> str:
+def _period_column(context: Context, table: Table) -> str:
+    if context.config.data.tables[table.name].get("overlap", {}).get("method") == "missing_zips":
+        return overlap_column(context.config, table)
+    # A document table's ZIP transport still groups its completed accessions by structural archive unit.
     if table.resume is None or table.resume.period_col is None:
         raise ValueError(f"{table.name} declares no archive period column")
     return table.resume.period_col
@@ -305,7 +315,7 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
     policies = {table: policy.requested for table in tables if (policy := window_policy(context.config, table, context.run.as_of)) is not None}
     if not policies:
         return [], frozenset()
-    values = {table: stored_values(context, table, _period_column(table)) for table in policies}
+    values = {table: stored_values(context, table, _period_column(context, table)) for table in policies}
     required = set(published)
     if tuple(tables) == (Tables.insider_transactions,):
         required.update(values.get(Tables.insider_transactions, ()))

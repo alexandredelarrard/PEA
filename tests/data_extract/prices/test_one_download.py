@@ -26,9 +26,9 @@ from src.data_extract.utils.prices import fetch_splits as fs
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.window import Window, WindowRun
+from tests.support.config import fixture_config as _config
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
-from tests.utils.test_data_policy import _config
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "yfinance" / "aapl_mo_nvda_2024-05_06_actions.csv"
 _TICKERS = ["AAPL", "MO", "NVDA"]

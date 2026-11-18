@@ -431,7 +431,8 @@ def test_lineage_restamp_stays_inside_requested_dates_and_tickers(sqlite_store: 
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame(rows))
     context = _context(sqlite_store, tmp_path)
     item = context.config.data.tables[Tables.insider_transactions.name]
-    item.start_date, item.end_date = "2026-06-01", "2026-09-30"
+    item.start_date = "2026-06-01"
+    context.run = WindowRun("incremental", "bounded insider lineage repair", pd.Timestamp("2026-09-30"))
     records = ins.restamp_insider_lineage(context, ["MRK"], identity=_identity())
     saved = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"]).set_index("accession_number")
     assert records == [] and saved.loc["inside", "lineage_role"] == "canonical_current"

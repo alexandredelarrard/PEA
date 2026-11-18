@@ -13,7 +13,7 @@ from src.context import Context
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.data_policy import source_read_window
+from src.utils.data_policy import source_column
 from src.utils.institutional_vintages import single_version_books
 from src.utils.string import pad_cik
 from src.utils.window import Window
@@ -54,7 +54,7 @@ _TEXT_COLUMNS = ("issuer_name", "title_of_class")
 
 
 def _filing_layout(
-    store: DataStore, window: Window, ciks: Sequence[str] | None, universe: Sequence[str] | None, cusips: Collection[str]
+    store: DataStore, window: Window | None, ciks: Sequence[str] | None, universe: Sequence[str] | None, cusips: Collection[str]
 ) -> dict[str, Any] | None:
     """Validate the source layout and build its projected public-prefix query: whole books, or with `universe`
     every completion marker OR'd with the positions stored under a universe ticker or on one of `cusips` (the universe
@@ -74,7 +74,14 @@ def _filing_layout(
         where = [markers, *positions]
     optional = (c for c in (*_OPTIONAL_MANIFEST_COLUMNS, *_TEXT_COLUMNS) if c in stored)
     columns = list(dict.fromkeys((*_MANIFEST_COLUMNS, *optional, *_POSITION_COLUMNS)))
-    return {"columns": columns, "where": where, "since": window.start, "until": window.end, "date_col": "filing_date", "markers": True}
+    return {
+        "columns": columns,
+        "where": where,
+        "since": None if window is None else window.start,
+        "until": None if window is None else window.end,
+        "date_col": "filing_date",
+        "markers": True,
+    }
 
 
 def _partition_packet(df_payload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -88,7 +95,7 @@ def _partition_packet(df_payload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
 
 def iter_filing_vintages(
     context: Context,
-    until: object,
+    window: Window | None,
     ciks: Sequence[str] | None = None,
     *,
     bond_lines: Mapping[str, Any],
@@ -99,13 +106,19 @@ def iter_filing_vintages(
     carries only its positions under a universe ticker or on one of `cusips` (the extraction writes positions and
     marker atomically, so it is complete) and an amended book carries all its positions, so the resolver's stored-row
     count check still holds. Bond lines (`bond_lines`, `data_aggregate.bond_lines`) leave every packet as the debt rows do."""
-    retained = source_read_window(context.config, Tables.sec13f_hr, min(context.run.as_of, pd.Timestamp(until)))
-    if retained is None:
-        return None
     store = context.store
-    query = _filing_layout(store, retained, ciks, universe, cusips)
+    query = _filing_layout(store, window, ciks, universe, cusips)
     if query is None:
         return None
+    query["until"] = context.run.as_of if window is None else min(context.run.as_of, window.end)
+    query["date_col"] = source_column(context.config, Tables.sec13f_hr)
+    logger.info(
+        "13F input read: window=%s; source clock=%s; through=%s; scope=%s",
+        window or "full stored history",
+        query["date_col"],
+        query["until"],
+        query["where"],
+    )
     return _iter_filing_packets(context, query, bond_lines, scoped=universe is not None)
 
 
@@ -143,7 +156,7 @@ def _complete_amended_books(store: DataStore, query: dict[str, Any], df_packet: 
         where=where,
         since=query["since"],
         until=query["until"],
-        date_col="filing_date",
+        date_col=query["date_col"],
         optional=True,
         markers=True,
     )

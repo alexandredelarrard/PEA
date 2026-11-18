@@ -12,7 +12,7 @@ from src.data_aggregate.utils.common.incremental import (
     plan_window,
     write_part,
 )
-from src.data_aggregate.utils.common.inputs import load_source
+from src.data_aggregate.utils.common.inputs import input_windows, load_source
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.pit import add_cube_time_growth
@@ -42,9 +42,9 @@ from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.basis import load_price_identity, load_quantity_basis
-from src.utils.publication import publication_dates, publication_rows
+from src.utils.publication import point_in_time
 from src.utils.step import Step
-from src.utils.window import Offset, Window, WindowPlan, shift_date
+from src.utils.window import Window, WindowPlan
 
 
 class StepCubeFundamentals(Step):
@@ -64,47 +64,43 @@ class StepCubeFundamentals(Step):
         window = plan_window(self._context, Tables.cube_part_fundamentals, trading_calendar)
         if window is None:
             return {}
+        windows = input_windows(self._context, Tables.cube_part_fundamentals, window.write)
         dividend_frames = load_price_frames(
-            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=trading_calendar, fields=self._FIELDS, window=window.read
+            self._context,
+            peers=load_peers_or_raise(self._context, self._config),
+            calendar=trading_calendar,
+            fields=self._FIELDS,
+            window=windows[Tables.cube_part_prices],
         )
         frames = dividend_frames
-        source_starts = {
-            name: None if window.is_full else shift_date(window.write.start, Offset(item.value, item.unit), trading_calendar)
-            for name, item in self._config.data.tables.cube_part_fundamentals.warmup.sources.items()
-            if name != "fundamentals_employees"
-        }
-        financial_start = source_starts["financial_history"]
-        employee_context = self._config.data.tables.cube_part_fundamentals.warmup.sources.fundamentals_employees
-        employee_start = (
-            None if financial_start is None else shift_date(financial_start, Offset(employee_context.value, employee_context.unit), trading_calendar)
-        )
         history_fields: dict[str, pd.DataFrame] | None = None
         output_since: pd.Timestamp | None = None
         if not window.is_full:
             if window.write.start is None:
                 raise RuntimeError("incremental fundamentals window requires an inclusive refresh boundary")
             output_since = window.write.start
-            history_fields = self._load_history_fields(dividend_frames.universe, since=window.read.start, until=output_since)
+            history = windows[Tables.cube_part_fundamentals]
+            history_fields = self._load_history_fields(dividend_frames.universe, since=None if history is None else history.start, until=output_since)
             frames = dividend_frames.on(dividend_frames.trading_index[dividend_frames.trading_index >= output_since])
 
         # Load each source once and preserve raw financial cash units.
-        df_fundamentals = self._load_fundamentals(frames.universe, trading_calendar, since=financial_start)
-        earnings_start = source_starts["earnings_surprises"]
-        earnings_window = None if earnings_start is None else Window(earnings_start, self._context.run.as_of)
-        df_earnings = load_source(self._context, Tables.earnings_surprises, frames.universe, window=earnings_window)
-        df_employees = self._load_employees(frames.universe, since=employee_start)
-        identity = load_price_identity(self._context, list(frames.universe))
-        basis = load_quantity_basis(self._context, frames.universe, self._bugfix, identity)
-        df_share_history = load_fundamental_share_observations(self._context, df_fundamentals, basis, identity[0])
+        df_fundamentals = self._load_fundamentals(frames.universe, trading_calendar, windows)
+        df_earnings = load_source(self._context, Tables.earnings_surprises, frames.universe, window=windows[Tables.earnings_surprises])
+        df_employees = self._load_employees(frames.universe, windows[Tables.fundamentals_employees])
+        identity = load_price_identity(self._context, list(frames.universe), windows)
+        basis = load_quantity_basis(self._context, frames.universe, self._bugfix, identity, windows)
+        df_share_history = load_fundamental_share_observations(
+            self._context, df_fundamentals, basis, identity[0], windows[Tables.sharadar_fundamentals_facts]
+        )
         histories = FundamentalHistory(df_fundamentals, df_share_history, basis)
-        df_notes = load_notes_num_scoped(self._context, trading_calendar, tickers=frames.universe, since=source_starts["notes_num"])
-        df_dividends = load_source(self._context, Tables.dividends, frames.universe)
+        df_notes = load_notes_num_scoped(self._context, trading_calendar, tickers=frames.universe, window=windows[Tables.notes_num])
+        df_dividends = load_source(self._context, Tables.dividends, frames.universe, window=windows[Tables.dividends])
         if df_earnings is not None:
-            df_earnings = publication_rows(self._config, Tables.earnings_surprises, df_earnings, trading_calendar, "as_of")
+            df_earnings = point_in_time(df_earnings, self._config, Tables.earnings_surprises, trading_calendar)
         if df_employees is not None:
-            df_employees = publication_rows(self._config, Tables.fundamentals_employees, df_employees, trading_calendar, "as_of")
+            df_employees = point_in_time(df_employees, self._config, Tables.fundamentals_employees, trading_calendar)
         if df_dividends is not None:
-            df_dividends = publication_rows(self._config, Tables.dividends, df_dividends, trading_calendar, "available_on")
+            df_dividends = point_in_time(df_dividends, self._config, Tables.dividends, trading_calendar).rename(columns={"as_of": "available_on"})
 
         # Compute families on the same saved price and source-unit basis.
         merger = PanelMerger()
@@ -176,6 +172,7 @@ class StepCubeFundamentals(Step):
             where={"ticker": list(universe)},
             since=since,
             until=pd.Timestamp(until) - pd.Timedelta(days=1),
+            optional=True,
         )
         if rows is None or rows.empty:
             return {}
@@ -191,26 +188,25 @@ class StepCubeFundamentals(Step):
         )
         return fields
 
-    def _load_fundamentals(self, universe: tuple[str, ...], calendar: pd.DatetimeIndex, since: pd.Timestamp | None = None) -> pd.DataFrame:
+    def _load_fundamentals(self, universe: tuple[str, ...], calendar: pd.DatetimeIndex, windows: dict[SchemaTable, Window | None]) -> pd.DataFrame:
         """`sharadar_fundamentals_history` + three `sec_` columns + GICS, loaded ONCE for five builders.
 
         The Sharadar history is the spine; `sec_fundamentals_history` joins on the exact
         `(ticker, as_of)` key and is optional. The GICS join happens HERE, after the load:
         `universe_tickers` is the authority for sector membership, and without it every sector
         KPI is gated off (`sector_gates.row_gate` fails closed on the absent column)."""
-        requested = None if since is None else Window(since, self._context.run.as_of)
         df = load_source(
             self._context,
             Tables.sharadar_fundamentals_history,
             universe,
-            window=requested,
+            window=windows[Tables.sharadar_fundamentals_history],
         )
         sec = load_source(
             self._context,
             Tables.sec_fundamentals_history,
             universe,
             columns=["ticker", "as_of", *SEC_CARRIED_COLUMNS],
-            window=requested,
+            window=windows[Tables.sec_fundamentals_history],
         )
         if df is None:
             raise Exception("No fundamentals history -> the fundamental, sector, workforce and dividend-payout features will be skipped.")
@@ -219,10 +215,16 @@ class StepCubeFundamentals(Step):
             Tables.sharadar_fundamentals_history,
             len(df),
             df["ticker"].nunique(),
-            f" since {pd.Timestamp(since).date()}" if since is not None else "",
+            f" with {windows[Tables.sharadar_fundamentals_history]}" if windows[Tables.sharadar_fundamentals_history] is not None else "",
         )
         if sec is None:
             self._log.warning("No %s -> the %s columns stay empty.", Tables.sec_fundamentals_history, ", ".join(SEC_CARRIED_COLUMNS))
+        # Prepare each root before joining the original exact source keys.
+        df = point_in_time(df, self._config, Tables.sharadar_fundamentals_history, calendar)
+        df = df.assign(_sharadar_as_of=df["as_of"], as_of=df["_source_as_of"])
+        if sec is not None:
+            sec = point_in_time(sec, self._config, Tables.sec_fundamentals_history, calendar)
+            sec = sec.assign(_sec_as_of=sec["as_of"], _sec_source_as_of=sec["_source_as_of"], as_of=sec["_source_as_of"])
         joined = join_sec_columns(df, sec)
         self._log.info(
             "Joined %s on exact (ticker, as_of): %s matched, %s Sharadar rows without SEC, %s SEC rows without Sharadar (not added)",
@@ -232,24 +234,23 @@ class StepCubeFundamentals(Step):
             joined.sec_unmatched,
         )
         # One eligibility clock covers every source field carried on the joined row.
-        frame = publication_rows(self._config, Tables.sharadar_fundamentals_history, joined.frame, calendar, "as_of")
+        frame = joined.frame
         carried = joined.frame[[f"sec_{field}" for field in SEC_CARRIED_COLUMNS]].notna().any(axis=1)
-        sec_dates = publication_dates(self._config, Tables.sec_fundamentals_history, joined.frame, calendar)
-        ready = pd.concat([frame["as_of"], sec_dates.reindex(frame.index).where(carried.reindex(frame.index))], axis=1).max(axis=1)
-        ready = ready.where(~carried.reindex(frame.index) | sec_dates.reindex(frame.index).notna())
+        sec_dates = frame.get("_sec_as_of", pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns]"))
+        ready = pd.concat([frame["_sharadar_as_of"], sec_dates.where(carried)], axis=1).max(axis=1)
+        ready = ready.where(~carried | sec_dates.notna())
         frame["as_of"] = ready
         frame = frame.loc[ready.notna()]
         return self._universe.attach_gics(add_cube_time_growth(frame))
 
-    def _load_employees(self, universe: tuple[str, ...], since: pd.Timestamp | None) -> pd.DataFrame | None:
+    def _load_employees(self, universe: tuple[str, ...], window: Window | None) -> pd.DataFrame | None:
         """Load projected employee history with its prior-year lookback."""
-        requested = None if since is None else Window(since, self._context.run.as_of)
         df_employees = load_source(
             self._context,
             Tables.fundamentals_employees,
             universe,
             columns=list(EMPLOYEE_COLUMNS),
-            window=requested,
+            window=window,
         )
         if df_employees is None:
             self._log.warning("No %s -> related features skipped (run %s).", "employee headcount", "sec-employees-llm")

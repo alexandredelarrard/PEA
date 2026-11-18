@@ -12,6 +12,7 @@ each, for the Airflow `data_aggregation` DAG:
     python -m src data_aggregate build-institutionals  # -> cube_part_institutionals
     python -m src data_aggregate build-governance      # -> cube_part_governance
     python -m src data_aggregate build-manager-profile # -> profile columns of sec_13f_manager_details (not a cube part)
+    python -m src data_aggregate build-cluster         # -> `cluster` label of sec_13f_manager_details (not a cube part)
     python -m src data_aggregate assemble-cube         # read the parts -> build + save `cube`
     python -m src data_aggregate cube-status           # JSON status of every part
     python -m src data_aggregate build-cube            # all eight in ONE process
@@ -161,7 +162,18 @@ def build_cube(config_path: str, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_manager_profile(config_path: str, full: bool) -> None:
-    _step(StepManagerProfile, config_path).run(full=full)
+    _step(StepManagerProfile, config_path).run_profile(full=full)
+
+
+@cli.command(
+    help="13F manager cluster label -> `cluster` of sec_13f_manager_details (not a cube part). Labels the rows whose quarter is old enough with the "
+    "saved centroids; with `cluster.fit: true` in configs/cluster.yml it first refits them. `--full` relabels every due row, no refit.",
+    help_priority=13,
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def build_cluster(config_path: str, full: bool) -> None:
+    _step(StepManagerProfile, config_path).run_clustering(full=full)
 
 
 @cli.command(

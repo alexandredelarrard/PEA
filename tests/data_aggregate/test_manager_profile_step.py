@@ -168,7 +168,7 @@ def test_the_table_is_declared_whole_so_the_profile_step_adds_no_column(store: A
     monkeypatch.setattr(store, "ensure_columns", lambda *a, **k: pytest.fail("the profile step alters no table"))
     monkeypatch.setattr(store, "save", lambda table, df, *a, **k: calls.append(("save", df)) or save(table, df, *a, **k))
 
-    changed = _step(store, cfg).run(full=False)
+    changed = _step(store, cfg).run_profile(full=False)
 
     assert [name for name, _ in calls] == ["save"], "one upsert, no ALTER first"
     assert set(calls[0][1].columns) == {"cik", "period", *PROFILE_COLUMNS}, "only the profile columns (and the key) are sent"
@@ -181,10 +181,10 @@ def test_the_table_is_declared_whole_so_the_profile_step_adds_no_column(store: A
 
 
 def test_profile_step_first_on_an_empty_database_writes_nothing_and_the_extract_then_creates_the_table(store: Any, cfg: DictConfig) -> None:
-    assert _step(store, cfg).run(full=False) == 0 and not store.exists(Tables.sec_13f_manager_details), "no table, no rows, no error"
+    assert _step(store, cfg).run_profile(full=False) == 0 and not store.exists(Tables.sec_13f_manager_details), "no table, no rows, no error"
     _add_quarter(store, 0)
     assert store.columns(Tables.sec_13f_manager_details) == [*EXTRACT_COLUMNS, *PROFILE_COLUMNS, "cluster"]
-    assert _step(store, cfg).run(full=False) == len(MANAGERS)
+    assert _step(store, cfg).run_profile(full=False) == len(MANAGERS)
     print("\n=== SANITY CHECK: profile step first ===")
     print("an empty database ends the profile run quietly; after the extract's write the next profile run fills 4 rows. Validated.")
 
@@ -196,10 +196,10 @@ def test_second_run_changes_nothing_reads_no_lines_and_leaves_the_extract_column
         _add_quarter(store, index)
     before = _table(store)[list(EXTRACT_COLUMNS)]
 
-    first = _step(store, cfg).run(full=False)
+    first = _step(store, cfg).run_profile(full=False)
     table = _table(store)
     reads = Reads(store, monkeypatch)
-    second = _step(store, cfg).run(full=False)
+    second = _step(store, cfg).run_profile(full=False)
 
     assert first == len(table) == len(PERIODS) * len(MANAGERS) and second == 0
     assert reads.periods == [] and Tables.sec13f_hr.name not in reads.tables, "a night without new or changed rows reads no line"
@@ -220,18 +220,18 @@ def test_a_snapped_row_is_profiled_from_the_lines_stored_under_its_source_period
     """A filing the extract placed in a quarter end is read under its own (mistyped) period and profiled as that quarter's row."""
     for index in range(len(PERIODS)):
         _add_quarter(store, index)
-    _step(store, cfg).run(full=False)
+    _step(store, cfg).run_profile(full=False)
     reference = _table(store)
 
     quarter, cik, typo = PERIODS[3], "0000000002", pd.Timestamp("2022-11-15")
     store.update(Tables.sec13f_hr, {"period": typo}, {"cik": cik, "period": _stamp(quarter)})  # the filer typed a mid-quarter period
     store.update(Tables.sec_13f_manager_details, {"source_period": typo}, {"cik": cik, "period": _stamp(quarter)})
     reads = Reads(store, monkeypatch)
-    changed = _step(store, cfg).run(full=True)
+    changed = _step(store, cfg).run_profile(full=True)
     full_reads = list(reads.periods)
     table = _table(store)
     reads = Reads(store, monkeypatch)
-    second = _step(store, cfg).run(full=False)
+    second = _step(store, cfg).run_profile(full=False)
 
     assert changed == 0, "the snapped row profiles exactly as when its lines were stored under the quarter end"
     pd.testing.assert_frame_equal(table.drop(columns="source_period"), reference.drop(columns="source_period"))
@@ -249,11 +249,11 @@ def test_new_quarter_recomputes_only_the_affected_quarters_and_equals_a_full_reb
 ) -> None:
     for index in range(len(PERIODS) - 1):
         _add_quarter(store, index)
-    _step(store, cfg).run(full=False)
+    _step(store, cfg).run_profile(full=False)
     _add_quarter(store, len(PERIODS) - 1)  # the nightly extract adds the new quarter's rows
     reads = Reads(store, monkeypatch)
 
-    changed = _step(store, cfg).run(full=False)
+    changed = _step(store, cfg).run_profile(full=False)
 
     window = int(cfg.build_cube.manager_profile.window_quarters)
     expected = [_stamp(p) for p in PERIODS[-window - 1 :]]
@@ -262,7 +262,7 @@ def test_new_quarter_recomputes_only_the_affected_quarters_and_equals_a_full_reb
     new_rows = len(MANAGERS)
     assert new_rows <= changed <= new_rows * 2, "the new quarter's rows and, at most, the preceding quarter's rewritten rows"
     incremental = _table(store)
-    assert _step(store, cfg).run(full=True) == 0, "a full rebuild reproduces the incremental table"
+    assert _step(store, cfg).run_profile(full=True) == 0, "a full rebuild reproduces the incremental table"
     pd.testing.assert_frame_equal(_table(store), incremental)
     print("\n=== SANITY CHECK: incremental equals full ===")
     print(f"new quarter {_stamp(PERIODS[-1])}: read quarters {read}; {changed} rows changed; full rebuild changes 0 rows.")
@@ -271,13 +271,13 @@ def test_new_quarter_recomputes_only_the_affected_quarters_and_equals_a_full_reb
 def test_a_changed_extract_row_triggers_a_recompute_of_its_quarters(store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch) -> None:
     for index in range(len(PERIODS)):
         _add_quarter(store, index)
-    _step(store, cfg).run(full=False)
+    _step(store, cfg).run_profile(full=False)
     stored = _table(store)
 
     renamed = _extract_rows(2, PERIODS[2]).iloc[[3]].assign(manager_name="J SMITH PENSION PLAN")  # the extract rewrote a name
     store.save(Tables.sec_13f_manager_details, renamed)
     reads = Reads(store, monkeypatch)
-    changed = _step(store, cfg).run(full=False)
+    changed = _step(store, cfg).run_profile(full=False)
 
     after = _table(store)
     row = after[(after["cik"] == "0000000004") & (after["period"] == PERIODS[2])].iloc[0]
@@ -286,7 +286,7 @@ def test_a_changed_extract_row_triggers_a_recompute_of_its_quarters(store: Any, 
     read = reads.quarters()
     assert _stamp(PERIODS[2]) in read and _stamp(PERIODS[-1]) not in read, "only the quarter's window is recomputed"
     assert (after["category"][after["cik"] != "0000000004"] == stored["category"][stored["cik"] != "0000000004"]).all()
-    assert _step(store, cfg).run(full=True) == 0
+    assert _step(store, cfg).run_profile(full=True) == 0
     print("\n=== SANITY CHECK: changed extract row ===")
     print(f"name change at {_stamp(PERIODS[2])}: category -> {row['category']}, {changed} rows rewritten, read quarters {read}.")
 
@@ -306,7 +306,7 @@ def test_real_sample_books_match_the_pure_pipeline(store: Any, cfg: DictConfig) 
     store.save(Tables.cusip_ticker_map, live.load(Tables.cusip_ticker_map))
     store.save(Tables.sharadar_tickers, live.load(Tables.sharadar_tickers))
 
-    changed = _step(store, cfg).run(full=True)
+    changed = _step(store, cfg).run_profile(full=True)
 
     table = _table(store)
     reference, prefixes = live_reference(live), live_prefixes(live)

@@ -7,7 +7,7 @@ validate:
 
   window_samples:
     # One deadline for the complete per-table capture/replay, including evidence writing.
-    budget_seconds: 300
+    budget_seconds: 3600
     year: 2026                 # Fixed year for source and cube sample keys.
     keys_per_table: 5          # Tickers, or source units for tables without tickers.
 

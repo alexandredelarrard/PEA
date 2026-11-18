@@ -29,20 +29,6 @@ def full_13f_report(value: Any) -> bool:
     return str(value) in {"13F HOLDINGS REPORT", SEC_13F_INFERRED_HOLDINGS_REPORT}
 
 
-def single_version_books(manifests: pd.DataFrame) -> pd.Series:
-    """Manifest rows that are their report quarter's only version, an original or a restatement."""
-    versions = manifests.groupby(["cik", "period"])["accession_number"].transform("size")
-    return versions.eq(1) & manifests["amendment_type"].isin(["original", "restatement"])
-
-
-def single_version_support(df_single: pd.DataFrame) -> dict[str, Any]:
-    """The resolver's support columns for lone complete originals/restatements, without a replay: known, and
-    zero/comparison eligible unless restricted or not a full holdings report."""
-    restricted = df_single["restricted"].astype(bool).to_numpy()
-    eligible = ~restricted & df_single["report_type"].map(full_13f_report).to_numpy(dtype=bool)
-    return {"book_known": True, "zero_eligible": eligible, "comparison_eligible": eligible, "restricted": restricted, "resolution_status": "resolved"}
-
-
 def reconcile_13f_source(
     source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None, *, source_accounted: bool = False
 ) -> float | None:

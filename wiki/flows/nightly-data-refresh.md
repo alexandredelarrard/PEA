@@ -10,7 +10,7 @@ tags:
 
 ## Summary
 
-The nightly path refreshes source tables, reports their freshness, and triggers the memory-bounded aggregation chain whatever the fetchers' outcome; only `modelling predict` refuses stale inputs. Extraction tasks are grouped by operational resource pools rather than application package, while cube tasks run sequentially and derive their commands from the part registry.
+The nightly path refreshes source tables, reports their freshness, and triggers the memory-bounded aggregation chain whatever the fetchers' outcome; only `modelling predict` refuses stale inputs. Extraction tasks are grouped by operational resource pools rather than application package, while cube tasks run sequentially and derive their commands from the part registry; the manager branch (`build_manager_profile`, `build_cluster`) is the one place that overlaps another task (`build_momentum`) and ends before the 13F cube part.
 
 ## Trigger
 

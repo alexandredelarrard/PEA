@@ -19,7 +19,7 @@ Extend the saved cross-sectional ensemble or change the independent portfolio ba
 
 1. Add one top-level model-family YAML under [configs/models](../../configs/models/lgbm_modelling.yml) with hyperparameters and its own feature columns.
 2. Add a `BaseModel` subclass under `src/modelling/transformers/` (see [base.py](../../src/modelling/transformers/base.py)): set `config_key` (its YAML block), implement `_fit`, `_predict` and `importance`, and set `supports_shap` / `supports_classification`. Persistence is inherited: every member pickles itself.
-3. Register its `model.ensemble` name in `MODEL_FAMILIES` ([transformers/__init__.py](../../src/modelling/transformers/__init__.py)) and add the file to `EXPECTED_TRANSFORMERS` in [test_architecture_guard.py](../../tests/modelling/test_architecture_guard.py). [StepLongShort](../../src/modelling/steps/step_long_short.py) then trains, diagnoses, saves, and loads it per horizon with no step change.
+3. Register its `model.ensemble` name in `MODEL_FAMILIES` ([families.py](../../src/modelling/transformers/families.py); `transformers/__init__.py` is docstring-only) and add the file to `EXPECTED_TRANSFORMERS` in [test_architecture_guard.py](../../tests/modelling/test_architecture_guard.py). [StepLongShort](../../src/modelling/steps/step_long_short.py) then trains, diagnoses, saves, and loads it per horizon with no step change.
 4. Preserve time-series cross-validation, embargo handling, validation-only diagnostics, and per-day prediction standardization.
 5. Add persistence, reproducibility, diagnostics, and ensemble-member tests under [tests/modelling](../../tests/modelling/test_assessment_cli.py).
 

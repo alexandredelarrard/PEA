@@ -22,7 +22,7 @@ from src.data_aggregate.utils.manager_profile.clustering import (
     read_mapping,
     write_centroids,
 )
-from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book
+from src.data_aggregate.utils.manager_profile.lines import clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book, quarter_stats
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
@@ -182,28 +182,15 @@ class StepManagerProfile(Step):
     def _read_quarter(self, period: pd.Timestamp, rows: pd.DataFrame) -> pd.DataFrame:
         """Markers and lines of the quarter for its managers (`cik`, `source_period`); a snapped row is read under its own period and labelled `period`."""
         snapped = rows["source_period"].ne(period)
-        raw = self._read_lines(rows.loc[~snapped, "cik"].tolist(), [period])
+        raw = read_lines(self._store, rows.loc[~snapped, "cik"].tolist(), [period])
         if not snapped.any():
             return raw
 
         # The snapped rows: one bounded read over their CIKs and periods, then only their exact (cik, period) pairs.
         pairs = rows.loc[snapped, ["cik", "source_period"]].rename(columns={"source_period": "period"})
-        extra = self._read_lines(pairs["cik"].tolist(), sorted(pairs["period"].unique()))
+        extra = read_lines(self._store, pairs["cik"].tolist(), sorted(pairs["period"].unique()))
         extra = extra.assign(period=pd.to_datetime(extra["period"])).merge(pairs, on=["cik", "period"]).assign(period=period)
         return pd.concat([raw, extra], ignore_index=True)
-
-    def _read_lines(self, ciks: list[str], periods: list[pd.Timestamp]) -> pd.DataFrame:
-        """Markers and lines of `ciks` over `periods`, read on the primary key in CIK chunks (the table has no period index)."""
-        # `iter_load` streams one scope; this read is one bounded load per CIK chunk, which it cannot express.
-        chunk = 1_000
-        stamps = [period.strftime("%Y-%m-%d") for period in periods]
-        frames = []
-        for start in range(0, len(ciks), chunk):
-            where = {"cik": ciks[start : start + chunk], "period": stamps}
-            frame = self._store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
-            if frame is not None:
-                frames.append(frame)
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(LINE_COLUMNS))
 
     def _save(self, df_changed: pd.DataFrame) -> int:
         """Upsert the key and the columns of `df_changed` only (the profile columns or the cluster label), returns the rows written."""

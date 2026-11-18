@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,8 @@ from omegaconf import DictConfig
 
 from src.data_aggregate.utils.sec_thirteen.bond_lines import bond_line_mask
 from src.data_aggregate.utils.sec_thirteen.value_basis import consensus_prices, repair_value_basis
-from src.data_store.schema import EMPTY_MARKER
+from src.data_store.schema import EMPTY_MARKER, Tables
+from src.data_store.store import DataStore
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,20 @@ _VALUE_COLUMN = {"common": "value_usd", "debt": "debt_value", "call": "call_valu
 _BOOK_KEYS = ["cik", "period", "filing_date", "accession_number"]
 #: Columns of the cleaned lines `clean_book` returns.
 _CLEAN_COLUMNS = ["cik", "period", "kind", "key", "ticker", "cusip", "issuer_name", "title_of_class", "filing_date", "shares", "value"]
+
+
+def read_lines(store: DataStore, ciks: Sequence[str], periods: Sequence[pd.Timestamp]) -> pd.DataFrame:
+    """Markers and lines of `ciks` over `periods`, read on the primary key in CIK chunks (the table has no period index)."""
+    # `iter_load` streams one scope; this read is one bounded load per CIK chunk, which it cannot express.
+    chunk = 1_000
+    stamps = [period.strftime("%Y-%m-%d") for period in periods]
+    frames = []
+    for start in range(0, len(ciks), chunk):
+        where = {"cik": list(ciks[start : start + chunk]), "period": stamps}
+        frame = store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
+        if frame is not None:
+            frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(LINE_COLUMNS))
 
 
 def _original_book(raw: pd.DataFrame, min_lines: int) -> pd.DataFrame:

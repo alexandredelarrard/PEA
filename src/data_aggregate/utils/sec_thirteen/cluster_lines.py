@@ -1,35 +1,18 @@
-"""One report quarter of 13F books as company-level lines: the raw read of the managers' lines and the cleaned book per (manager, company)."""
+"""One report quarter of 13F books as company-level lines: the cleaned book per (manager, company)."""
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection
 
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS
-from src.data_store.schema import Tables
-from src.data_store.store import DataStore
 from src.utils.identity_tables import CusipTags
 
 #: Columns of the company books: a manager's line per company and kind, its rank by value among all the manager's common
 #: companies, and the manager's whole common book value.
 BOOK_COLUMNS = ("cik", "kind", "ticker", "shares", "value", "rank", "book_total", "filing_date")
 _OPTIONS = ("call", "put")
-_CHUNK = 1_000
-
-
-def read_quarter_lines(store: DataStore, ciks: Sequence[str], period: pd.Timestamp) -> pd.DataFrame:
-    """Markers and lines of `ciks` for one report `period`, read on the primary key in CIK chunks (the table has no period index)."""
-    # `iter_load` streams one scope; this read is one bounded load per CIK chunk, which it cannot express.
-    stamp = period.strftime("%Y-%m-%d")
-    frames = []
-    for start in range(0, len(ciks), _CHUNK):
-        where = {"cik": list(ciks[start : start + _CHUNK]), "period": [stamp]}
-        frame = store.load(Tables.sec13f_hr, columns=list(LINE_COLUMNS), where=where, markers=True, optional=True)
-        if frame is not None:
-            frames.append(frame)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(LINE_COLUMNS))
 
 
 def company_books(classified: pd.DataFrame, tags: CusipTags, universe: Collection[str]) -> pd.DataFrame:

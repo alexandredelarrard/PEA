@@ -13,12 +13,12 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.manager_profile.lines import clean_book
+from src.data_aggregate.utils.manager_profile.lines import clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.cluster_config import COLUMN_PREFIX, ClusterSpec, cluster_specs, column_budget, column_names
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
-from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books, read_quarter_lines
+from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books
 from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, publication_dates
 from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags
@@ -187,7 +187,7 @@ class StepCubeSecThirteen(Step):
         for t in plan.compute:
             started = time.monotonic()
             for period in sorted({t - four, t - one, t} - books.keys()):
-                raw = read_quarter_lines(self._store, sorted(needs[period]), period)
+                raw = read_lines(self._store, sorted(needs[period]), [period])
                 classified = classify_securities(clean_book(raw, profile_cfg, res.prefixes), res.reference, profile_cfg)
                 books[period] = company_books(classified, res.tags, universe)
             quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res, t)

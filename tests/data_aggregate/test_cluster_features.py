@@ -16,11 +16,11 @@ import pytest
 from dotenv import find_dotenv, load_dotenv
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book
+from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
 from src.data_aggregate.utils.sec_thirteen.cluster_config import ClusterSpec, cluster_specs
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
-from src.data_aggregate.utils.sec_thirteen.cluster_lines import BOOK_COLUMNS, company_books, read_quarter_lines
+from src.data_aggregate.utils.sec_thirteen.cluster_lines import BOOK_COLUMNS, company_books
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
@@ -332,7 +332,7 @@ def test_real_quarter_mapped_lines_cover_at_least_the_symbol_match_and_features_
     books: dict[pd.Timestamp, pd.DataFrame] = {}
     symbol_cover = mapped_cover = 0.0
     for period in (PERIOD, before, prev4):
-        raw = read_quarter_lines(store, ciks, period)
+        raw = read_lines(store, ciks, [period])
         assert list(raw.columns) == list(LINE_COLUMNS)
         classified = classify_securities(clean_book(raw, cfg.build_cube.manager_profile, prefixes), reference, cfg.build_cube.manager_profile)
         books[period] = company_books(classified, tags, universe)

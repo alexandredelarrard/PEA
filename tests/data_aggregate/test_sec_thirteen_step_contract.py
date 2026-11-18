@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+from omegaconf.errors import ConfigKeyError
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
@@ -111,6 +112,40 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     assert result.f_ic_super_holders.dropna().eq(1.0).all()
     assert not result.duplicated(["date", "ticker"]).any()
     print("SANITY: SEC thirteen activates broad and elite 13F exactly once with a dedicated part owner.")
+
+
+@pytest.mark.parametrize("k", [1, 7, None])
+def test_sec_thirteen_uses_required_configured_topk(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, k: int | None) -> None:
+    seed_prices(sqlite_store)
+    ctx = context(sqlite_store, tmp_path)
+    selection = ctx.config.data_aggregate.sec_thirteen.superinvestor.selection
+    if k is None:
+        del selection["k"]
+    else:
+        selection.k = k
+    step = StepCubeSecThirteen(ctx, ctx.config)
+    roster = {f"{number:010d}" for number in range(1, 8)}
+    cohorts = Mock(return_value={"": frozenset(roster), "topk": frozenset(roster)})
+    broad, elite, write = Mock(return_value=None), Mock(return_value=None), Mock()
+    monkeypatch.setattr(step_module, "load_peers_or_raise", lambda context: {})
+    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda context, table: pd.DataFrame({"cik": sorted(roster)}))
+    monkeypatch.setattr(step_module, "filer_ciks", lambda ciks, config_dir: set(ciks))
+    monkeypatch.setattr(step_module, "load_manager_cohorts", cohorts)
+    monkeypatch.setattr(step, "_institutional_features", broad)
+    monkeypatch.setattr(step, "_superinvestor_history", elite)
+    monkeypatch.setattr(step_module, "write_part", write)
+
+    if k is None:
+        with pytest.raises(ConfigKeyError, match="selection.k"):
+            run_cube(step, full=True)
+        for operation in (cohorts, broad, elite, write):
+            operation.assert_not_called()
+        print("SANITY: absent required top-K refuses the public 13F run before cohort selection, feature work or persistence.")
+    else:
+        run_cube(step, full=True)
+        cohorts.assert_called_once_with(ctx.config_dir, roster, k)
+        assert broad.call_count == elite.call_count == write.call_count == 1
+        print(f"SANITY: the public 13F run forwards configured top-K={k} unchanged to the existing cohort selector.")
 
 
 def test_completed_accession_markers_and_positions_share_one_read() -> None:

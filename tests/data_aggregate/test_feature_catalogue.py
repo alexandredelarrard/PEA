@@ -24,6 +24,7 @@ table, so 85 governance entries in the fundamentals dict would read as dead cata
 
 from __future__ import annotations
 
+from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.utils.governance import director_comp as dc
 from src.data_aggregate.utils.governance import directors as dr
 from src.data_aggregate.utils.governance import panel as pn
@@ -35,7 +36,8 @@ from src.data_aggregate.utils.institutionals import (
     ownership_features,
     short_flow_features,
 )
-from src.data_aggregate.utils.sec_thirteen import institutional_features, superinvestor_features
+from src.data_aggregate.utils.sec_thirteen.cluster_config import cluster_specs, column_names
+from src.utils.config import read_config
 from tests.support.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
 from tests.support.cube_governance_catalogue import GOVERNANCE
 from tests.support.cube_institutionals_catalogue import INSTITUTIONALS
@@ -182,11 +184,11 @@ def test_the_institutionals_catalogue_matches_declared_characteristics_both_ways
 
 
 def test_sec_thirteen_catalogue_matches_declared_characteristics() -> None:
-    declared = set(institutional_features.EMISSION) | set(superinvestor_features.EMISSION)
+    declared = {name.removeprefix("f_") for name in column_names(cluster_specs(read_config(DEFAULT_CONFIG_DIR).cluster))}
     assert set(SEC_THIRTEEN) == declared
     assert CATALOGUES["cube_part_sec_thirteen"] is SEC_THIRTEEN
     assert set(SEC_THIRTEEN).isdisjoint(INSTITUTIONALS)
-    print("SANITY: every broad and elite 13F characteristic has exactly one catalogue owner.")
+    print(f"SANITY: all {len(declared)} cluster 13F characteristics of cluster.yml are catalogued, and none is claimed by another part.")
 
 
 def test_every_entry_is_a_complete_four_field_record():

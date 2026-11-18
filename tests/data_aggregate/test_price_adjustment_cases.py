@@ -15,10 +15,8 @@ from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
-from src.data_aggregate.utils.price.capitalization import project_security_shares
 from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
 from src.data_aggregate.utils.price.inputs import PRICE_COLS
-from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
 from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
@@ -177,24 +175,6 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
         price_step.StepCubePrices(isolated, context.config).run(full=True)
     assert not writes
     print(f"SANITY: actual StepCubePrices.run refuses changed {changed} evidence before any part write.")
-
-
-def test_carried_ownership_rebases_both_quantity_legs() -> None:
-    events = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-06-01"]), "value": [0.5]})
-    basis = ShareBasis(events, events, events, {"TEST": {}})
-    index = pd.DatetimeIndex(["2020-05-28", "2020-05-29", "2020-06-01", "2020-06-02"])
-    book = pd.DataFrame(
-        {"ticker": ["TEST"], "period": pd.to_datetime(["2020-03-31"]), "as_of": pd.to_datetime(["2020-05-29"]), "inst_shares": [10.0]}
-    )
-    filing = book[["ticker", "as_of"]].assign(sharesOutstandingPit=100.0)
-    owned = _daily_owned_shares(book, index, security_basis_frame(basis, pd.bdate_range("2020-03-31", index[-1]), pd.Index(["TEST"])))
-    observations = filing.assign(capitalization_factor=1.0)
-    outstanding, _ = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["TEST"])))
-    assert pd.isna(owned.iloc[0, 0])
-    assert owned["TEST"].iloc[1:].tolist() == [10.0, 5.0, 5.0]
-    assert (owned / outstanding)["TEST"].iloc[1:].tolist() == [0.1, 0.1, 0.1]
-    assert book["as_of"].iloc[0] == pd.Timestamp("2020-05-29")
-    print("SANITY: a configured reverse split halves both carried ownership legs; ownership stays10% and the book never appears before publication.")
 
 
 def test_level_diagnostic_counts_only_observed_quote_bars(monkeypatch: pytest.MonkeyPatch) -> None:

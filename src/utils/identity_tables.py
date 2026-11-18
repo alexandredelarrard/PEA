@@ -4,8 +4,8 @@
 `universe_cik_symbol`, `universe_cusip`, `symbol_tenure` or `cusip_ticker_map` (the static test
 `test_identity_reads_only.py` enforces it); the identity build and the `Identity` resolver own their own reads.
 
-`sec13f_hr` stores each book as filed, tagged by `cusip_ticker_map` alone (`tag_cusips` with no lines); the cube tags
-each filed row with the lines too (`sec_thirteen/holdings_clean.py`). `tag_cusips` is the two-layer 13F rule: a CUSIP of a
+`sec13f_hr` stores each book as filed, tagged by `cusip_ticker_map` alone (`tag_cusips` with no lines); the cube's cluster
+features tag each filed row with the lines too (`sec_thirteen/cluster_lines.py`). `tag_cusips` is the two-layer 13F rule: a CUSIP of a
 universe company is tagged by its dated `universe_cusip` line (canonical, predecessor or secondary class) with the
 company's universe ticker, so every share class of a company lands on one ticker; any other CUSIP keeps its
 market-wide `cusip_ticker_map` ticker, so a manager book keeps its holdings outside the universe.

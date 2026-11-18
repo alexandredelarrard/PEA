@@ -7,11 +7,9 @@ import logging
 import os
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import patch
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -20,11 +18,8 @@ from click.testing import CliRunner
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
-import src.data_aggregate.utils.sec_thirteen.institutional_features as features_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import get_config_context
-from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_extract.utils.institutionals import fetch_13f_vintages as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_hr_filing
 from src.data_extract.utils.institutionals.fetch_13f_vintages import pending_vintages
@@ -32,10 +27,8 @@ from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
-from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
-from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
 
 BOND_LINES = read_config(str(Path(__file__).resolve().parents[3] / "configs")).build_cube.bond_lines
@@ -603,17 +596,6 @@ def test_additions_preserve_contributing_evidence_until_restatement(shares_sourc
     print(
         f"SANITY: additive leg{uncertain_leg} retains shares={shares_source}, dollars={value_source} and repair flags; full restatement restores filed evidence."
     )
-
-
-def test_public_book_iteration_prepares_publication_clock_once() -> None:
-    original = packet("original", "2024-08-14", {"111111111": 100})
-    amendment = packet("amendment", "2024-10-17", {"111111111": 140}, kind="restatement")
-    manifests, holdings = combine(original, amendment)
-    with patch("src.utils.institutional_vintages.filing_public_dates", wraps=filing_public_dates) as clock:
-        snapshots = list(iter_public_books(manifests, holdings, GRID))
-    assert [books.iloc[0].shares for _, books, _ in snapshots] == [100, 140]
-    print(f"SANITY: {clock.call_count} publication-clock preparations for {len(snapshots)} public snapshots; exactly one is required.")
-    assert clock.call_count == 1
 
 
 def test_additions_unknown_evidence_dominates_estimates_per_security() -> None:
@@ -1378,286 +1360,6 @@ def test_cohort_identical_refiling_resets_observation_age() -> None:
     print("SANITY: identical current re-filing emits its reset clock; daily carried age equals direct snapshot; shares/flow unchanged.")
 
 
-def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    original = packet("old", "2024-08-14", {"111111111": 100, "222222222": 100})
-    new = packet("new", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
-    revised = packet("amend", "2024-12-01", {"111111111": 90, "222222222": 100}, kind="restatement")
-    cmap = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
-    for m, h in (original, new, revised):
-        save_hr_filing(filing_store, m, h, cmap)  # stored as filed, tagged by the market map
-    step = object.__new__(StepCubeSecThirteen)
-    step._store, step._log = filing_store, logging.getLogger(__name__)
-    step._cfg, step._availability = (
-        {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
-        None,
-    )
-    step._settle_days = 0
-    step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
-
-    monkeypatch.setattr(features_module, "MIN_PRIOR_HOLDERS", 0)
-    frames = PriceFrames(
-        GRID,
-        ("AAA", "BBB"),
-        {},
-        close_split=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"]),
-        close_pit=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"]),
-        level_factor=pd.DataFrame(1.0, index=GRID, columns=["AAA", "BBB"]),
-    )
-    broad, elite = normal_panels(step, frames)
-    before, after = (pd.Timestamp(d) for d in ("2024-11-21", "2024-12-02"))
-    assert broad.loc[(before, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(0.2)
-    assert broad.loc[(after, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(1 / 3)
-    assert elite.loc[(before, "AAA"), "f_ic_super_shares_chg"] == pytest.approx(0.2)
-    assert elite.loc[(after, "AAA"), "f_ic_super_shares_chg"] == pytest.approx(1 / 3)
-    assert elite.loc[(before, "AAA"), "f_ic_super_conviction_weight"] == elite.loc[(after, "AAA"), "f_ic_super_conviction_weight"]
-    assert set(completed(filing_store).accession_number) == {"old", "new", "amend"}
-    print(
-        "SANITY: both ordinary builders read accessions; prior amendment changes .2 to .3333 prospectively while current conviction stays unchanged."
-    )
-
-
-#: The market-wide map of the ordinary-step books (no company line): extraction tags with it, the cube re-tags with it.
-ORDINARY_CMAP = pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]})
-
-
-def ordinary_step(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-    packets: tuple[tuple[pd.DataFrame, pd.DataFrame], ...],
-) -> tuple[StepCubeSecThirteen, PriceFrames]:
-    for manifest, holdings in packets:
-        save_hr_filing(filing_store, manifest, holdings, ORDINARY_CMAP)  # stored as filed, tagged by the market map
-    step = object.__new__(StepCubeSecThirteen)
-    step._store, step._log = filing_store, logging.getLogger(__name__)
-    step._cfg, step._availability = (
-        {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
-        None,
-    )
-    step._settle_days = 0
-    step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
-
-    monkeypatch.setattr(features_module, "MIN_PRIOR_HOLDERS", 0)
-    frames = PriceFrames(
-        GRID,
-        ("AAA", "BBB", "CCC"),
-        {},
-        close_split=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB", "CCC"]),
-        close_pit=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB", "CCC"]),
-        level_factor=pd.DataFrame(1.0, index=GRID, columns=["AAA", "BBB", "CCC"]),
-    )
-    return step, frames
-
-
-def normal_resources(frames: PriceFrames) -> SecThirteenResources:
-    basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", GRID.max()), columns=list(frames.universe))
-    cohort = frozenset({"0000000001"})
-    capital = {"shares_outstanding_pit": basis.reindex(GRID) * 1e9, "mcap_pit": cast(pd.DataFrame, frames.close_pit) * 1e9}
-    tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), ORDINARY_CMAP)
-    return SecThirteenResources(replace(frames, security_basis=basis, **capital), {"": cohort, "topk": cohort}, tags, {})
-
-
-def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
-    resources = normal_resources(frames)
-    prepared = PreparedSecThirteen(step._institutional_features(resources), step._superinvestor_history(resources))
-    broad, elite = step._project_panels(resources, prepared, frames.trading_index)
-    assert broad is not None and elite is not None
-    return broad.set_index(["date", "ticker"]), elite.set_index(["date", "ticker"])
-
-
-def test_immutable_broad_stages_keep_verified_filing_arithmetic(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    prior = packet("prior", "2024-08-14", {"111111111": 100, "222222222": 100})
-    current = packet("current", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
-    step, frames = ordinary_step(filing_store, monkeypatch, (prior, current))
-    panel, _ = normal_panels(step, frames)
-    day = pd.Timestamp("2024-11-21")
-    assert panel.loc[(day, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(0.2)
-    assert panel.loc[(day, "BBB"), "f_ic_inst_shares_chg"] == 0
-    assert pd.isna(panel.loc[(pd.Timestamp("2024-08-21"), "AAA"), "f_ic_inst_shares_chg"])
-    print(
-        "SANITY: immutable broad preparation, computation and projection report +20%/0% on the known pair and leave the unsupported first-quarter change unknown."
-    )
-
-
-def test_normal_builders_tolerated_count_discrepancy_keeps_exits(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    prior = packet("prior-full", "2024-08-14", {"111111111": 100, "222222222": 100, **{f"{number:09d}": 100 for number in range(3, 8)}})
-    current = packet("current-six", "2024-11-14", {"222222222": 110, **{f"{number:09d}": 110 for number in range(3, 8)}}, period="2024-09-30")
-    current[0]["declared_row_count"] = 7
-    current[0]["declared_value_total"] = 7700.0
-    step, frames = ordinary_step(filing_store, monkeypatch, (prior, current))
-    broad, elite = normal_panels(step, frames)
-    day = pd.Timestamp("2024-11-21")
-    for panel, family in ((broad, "inst"), (elite, "super")):
-        assert panel.loc[(day, "AAA"), f"f_ic_{family}_shares_chg"] == -1
-        assert panel.loc[(day, "BBB"), f"f_ic_{family}_shares_chg"] == pytest.approx(0.1)
-    for prefix in ("f_ic_super_", "f_ic_super_topk_"):
-        assert elite.loc[(day, "AAA"), prefix + "breadth_chg"] == -1
-        assert elite.loc[(day, "AAA"), prefix + "trade_balance"] == -1
-    print("SANITY: actual broad and elite builders trust the accepted6/7-row book; absent stock exits and the retained stock grows10%.")
-
-
-@pytest.mark.parametrize("cohort", ["", "topk_"])
-@pytest.mark.parametrize("unknown_value", [False, True])
-def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-    cohort: str,
-    unknown_value: bool,
-) -> None:
-    sources = []
-    for period, filed in (
-        ("2023-09-30", "2023-11-14"),
-        ("2023-12-31", "2024-02-14"),
-        ("2024-03-31", "2024-05-14"),
-        ("2024-06-30", "2024-08-14"),
-        ("2024-09-30", "2024-11-14"),
-    ):
-        for cik in ("1", "2"):
-            manifest, holdings = packet(f"{cik}-{period}", filed, {"111111111": 100, "222222222": 100}, period=period)
-            manifest["cik"] = holdings["cik"] = cik.zfill(10)
-            if unknown_value and cik == "2" and period == "2024-09-30":
-                manifest["source_value_total"] = manifest["declared_value_total"] = 2000000.0
-                holdings["value_usd"] = holdings["raw_value_usd"] = 1000000.0
-            sources.append((manifest, holdings))
-    step, _ = ordinary_step(filing_store, monkeypatch, tuple(sources))
-    step._cfg["institutionals"]["value_basis"] = {}
-    grid = pd.bdate_range("2023-09-01", "2024-12-02")
-    close = pd.DataFrame(10.0, index=grid, columns=["AAA"])
-    frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]), close_pit=close)
-    resources = replace(
-        normal_resources(frames),
-        cohorts={"": frozenset({"0000000001", "0000000002"}), "topk": frozenset({"0000000002"})},
-    )
-    history = step._superinvestor_history(resources)
-    assert history is not None
-    _, panel = step._project_panels(resources, PreparedSecThirteen(None, history), grid)
-    assert panel is not None
-    elite = panel.set_index(["date", "ticker"])
-    row = cast("pd.Series[float]", elite.loc[(pd.Timestamp("2024-11-15"), "AAA")])
-    prefix = "f_ic_super_" + cohort
-    assert row[prefix + "holders"] == (1 if cohort else 2)
-    for name in ("shares_chg", "shares_chg_yoy", "breadth_chg", "holders_yoy"):
-        assert row[prefix + name] == 0
-    for name in ("conviction_weight", "max_conviction", "pooled_weight"):
-        value = row[prefix + name]
-        assert pd.isna(value) if unknown_value and cohort else value == 0.5
-    # The unquoted leg is priced at its prior implied price, so flat books compare at 0 even when current dollars are unknown.
-    for name in ("relative_position_chg", "pooled_weight_chg"):
-        assert row[prefix + name] == 0
-    assert pd.isna(row[prefix + "trade_balance"])
-    assert resources.cohorts is not None
-    empty_resources = replace(resources, cohorts={"": resources.cohorts[""], "topk": frozenset()})
-    empty_history = step._superinvestor_history(empty_resources)
-    assert empty_history is not None
-    _, empty_panel = step._project_panels(empty_resources, PreparedSecThirteen(None, empty_history), grid)
-    assert empty_panel is not None
-    empty_row = cast("pd.Series[float]", empty_panel.set_index(["date", "ticker"]).loc[(pd.Timestamp("2024-11-15"), "AAA")])
-    assert empty_row.filter(like="f_ic_super_topk_").isna().all()
-    assert empty_row.f_ic_super_holders == 2
-    print(
-        f"SANITY: fixed cohort={cohort or 'full'}, unknown dollars={unknown_value}; genuine quarterly/annual shares and the implied-price whole book stay flat, the empty trade pool and empty cohort stay unknown."
-    )
-
-
-@pytest.mark.parametrize("restricted", [False, True])
-def test_normal_removed_position_clears_carry_without_inventing_exit(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-    restricted: bool,
-) -> None:
-    prior = packet("prior", "2024-08-14", {"222222222": 100})
-    original = packet("original", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
-    revised = packet("revised", "2024-12-01", {"222222222": 100}, kind="restatement", period="2024-09-30", restricted=restricted)
-    step, frames = ordinary_step(filing_store, monkeypatch, (prior, original))
-    before = normal_panels(step, frames)
-    _save_book(filing_store, *revised)
-    after = normal_panels(step, frames)
-    for old, new, family in zip(before, after, ("inst", "super"), strict=True):
-        cutoff = pd.Timestamp("2024-12-01")
-        pd.testing.assert_frame_equal(old.loc[old.index.get_level_values("date") <= cutoff], new.loc[new.index.get_level_values("date") <= cutoff])
-        assert old.loc[(pd.Timestamp("2024-11-21"), "AAA"), f"f_ic_{family}_holders"] > 0
-        value = new.loc[(pd.Timestamp("2024-12-02"), "AAA"), f"f_ic_{family}_holders"]
-        assert pd.isna(value) if restricted else value == 0
-        if restricted:
-            assert pd.isna(new.loc[(pd.Timestamp("2024-12-02"), "AAA"), f"f_ic_{family}_shares_chg"])
-    print(
-        f"SANITY: actual builders clear removed name; restricted={restricted}; old prefix identical; absent original-quarter position never carried."
-    )
-
-
-@pytest.mark.parametrize("restricted", [False, True])
-def test_normal_empty_book_has_exit_only_with_complete_public_baseline(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-    restricted: bool,
-) -> None:
-    prior = packet("prior", "2024-08-14", {"111111111": 100})
-    current = packet("empty", "2024-11-14", {}, period="2024-09-30", restricted=restricted)
-    step, frames = ordinary_step(filing_store, monkeypatch, (prior, current))
-    broad, elite = normal_panels(step, frames)
-    day = pd.Timestamp("2024-11-21")
-    for panel, family in ((broad, "inst"), (elite, "super")):
-        change = panel.reindex(columns=[f"f_ic_{family}_shares_chg"]).loc[(day, "AAA"), f"f_ic_{family}_shares_chg"]
-        assert pd.isna(change) if restricted else change == -1
-    for prefix in ("f_ic_super_", "f_ic_super_topk_"):
-        for name in ("breadth_chg", "trade_balance"):
-            value = elite.loc[(day, "AAA"), prefix + name]
-            assert pd.isna(value) if restricted else value == -1
-        assert pd.isna(elite.loc[(day, "AAA"), prefix + "pooled_weight"])
-        assert pd.isna(elite.loc[(day, "AAA"), prefix + "pooled_weight_chg"])
-    print(
-        f"SANITY: actual empty-book comparison, restricted={restricted}; only a complete public pair proves an exit; zero pooled denominators stay unknown."
-    )
-
-
-def test_normal_copied_amendment_unknown_leg_cannot_create_exit(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    prior = packet("prior", "2024-05-14", {"111111111": 90, "222222222": 190, "333333333": 290}, period="2024-03-31")
-    original = packet("original", "2024-08-14", {"111111111": 100, "222222222": 200, "333333333": 300})
-    source = pd.DataFrame(
-        [
-            {"CUSIP": cusip, "TITLEOFCLASS": "COM", "SSHPRNAMT": shares, "SSHPRNAMTTYPE": "SH", "PUTCALL": option, "VALUE": shares * 10}
-            for cusip, shares, option in (("111111111", 100, ""), ("222222222", 200, ""), ("333333333", 20, "Call"))
-        ]
-    )
-    amendment = filing_vintage(
-        source,
-        cik="1",
-        accession_number="patch",
-        period="2024-06-30",
-        filing_date="2024-10-17",
-        amendment_type="additions",
-        source="known_truth",
-        declared_rows=3,
-        declared_value=3200,
-    )
-    step, frames = ordinary_step(filing_store, monkeypatch, (prior, original, amendment))
-    broad, elite = normal_panels(step, frames)
-    day = pd.Timestamp("2024-10-18")
-    for panel, family in ((broad, "inst"), (elite, "super")):
-        assert pd.isna(panel.loc[(day, "CCC"), f"f_ic_{family}_shares_chg"]), family
-        assert pd.isna(panel.loc[(day, "CCC"), f"f_ic_{family}_holders"]), family
-    for prefix in ("f_ic_super_", "f_ic_super_topk_"):
-        for name in ("shares_chg", "breadth_chg", "trade_balance"):
-            assert pd.isna(elite.loc[(day, "CCC"), prefix + name])
-    assert broad.loc[(day, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(100 / 90 - 1)
-    print(
-        "SANITY: inferred common-leg omission remains unknown in both normal consumers and both elite cohorts; supported sibling quantities still compare."
-    )
-
-
-def test_normal_elite_expiry_does_not_wait_for_another_filing(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    step, frames = ordinary_step(filing_store, monkeypatch, (packet("only", "2024-08-14", {"111111111": 100}),))
-    _, elite = normal_panels(step, frames)
-    assert elite.loc[(pd.Timestamp("2024-11-22"), "AAA"), "f_ic_super_holders"] == 1
-    assert pd.isna(elite.loc[(pd.Timestamp("2024-11-25"), "AAA"), "f_ic_super_holders"])
-    print("SANITY: the default 100-calendar-day source-book expiry clears the daily level without another filing.")
-
-
 def test_same_day_versions_follow_acceptance_time_before_accession_order() -> None:
     original = packet("original", "2024-08-14", {"111111111": 100})
     early = packet("zz-earlier", "2024-10-17", {"111111111": 120}, kind="restatement")
@@ -1672,47 +1374,6 @@ def test_same_day_versions_follow_acceptance_time_before_accession_order() -> No
     print("SANITY: same-day amendments follow verified acceptance time despite inverse accession order, without changing the prior public day.")
 
 
-def test_normal_broad_retains_option_only_names(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = pd.DataFrame(
-        [
-            {
-                "CUSIP": "111111111",
-                "NAMEOFISSUER": "AAA",
-                "TITLEOFCLASS": "COM",
-                "SSHPRNAMT": 100,
-                "SSHPRNAMTTYPE": "SH",
-                "PUTCALL": "Call",
-                "VALUE": 1000,
-            }
-        ]
-    )
-    option = filing_vintage(
-        source,
-        cik="1",
-        accession_number="option-only",
-        period="2024-06-30",
-        filing_date="2024-08-14",
-        amendment_type="original",
-        source="known_truth",
-        declared_rows=1,
-        declared_value=1000,
-    )
-    step, frames = ordinary_step(filing_store, monkeypatch, (option,))
-    resources = normal_resources(frames)
-    features = step._institutional_features(resources)
-    assert features is not None
-    broad = cast(pd.DataFrame, step._project_panels(resources, PreparedSecThirteen(features, None), frames.trading_index)[0]).set_index(
-        ["date", "ticker"]
-    )
-    row = cast("pd.Series[float]", broad.loc[(pd.Timestamp("2024-08-21"), "AAA")])
-    assert row.f_ic_inst_net_options_ratio == 1
-    assert row.f_ic_inst_holders == 0
-    print("SANITY: actual broad builder retains an observable call-only name, with net option ratio1 and no common-stock holder.")
-
-
 @pytest.mark.parametrize("clocked", ["original", "amendment"])
 def test_same_day_missing_acceptance_clock_preserves_amendment_fallback(clocked: str) -> None:
     original = packet("zz-original", "2024-08-14", {"111111111": 100})
@@ -1723,27 +1384,3 @@ def test_same_day_missing_acceptance_clock_preserves_amendment_fallback(clocked:
     resolved, _ = public_books(manifests, holdings, "2024-08-21", GRID)
     assert resolved.iloc[0].shares == 140
     print(f"SANITY: same-day incomplete acceptance clocks use amendment metadata; timestamp only on {clocked}; latest shares140.")
-
-
-def test_normal_elite_handles_colliding_expiry_sessions(
-    filing_store: DataStore,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    packets = (
-        packet("original", "2024-08-14", {"111111111": 100}),
-        packet("amendment", "2024-08-15", {"111111111": 120}, kind="restatement"),
-        packet("other-manager", "2024-08-15", {"111111111": 100}),
-    )
-    packets[-1][0]["cik"] = packets[-1][1]["cik"] = "0000000002"
-    step, frames = ordinary_step(filing_store, monkeypatch, packets)
-    step._cfg["institutionals"]["superinvestor"] = {"max_age_calendar_days": 365}
-    resources = replace(normal_resources(frames), cohorts=dict.fromkeys(("", "topk"), frozenset({"0000000001", "0000000002"})))
-    history = step._superinvestor_history(resources)
-    assert history is not None
-    _, panel = step._project_panels(resources, PreparedSecThirteen(None, history), frames.trading_index)
-    assert panel is not None
-    elite = panel.set_index(["date", "ticker"])
-    assert elite.index.is_unique
-    assert elite.loc[(pd.Timestamp("2025-08-15"), "AAA"), "f_ic_super_holders"] == 2
-    assert pd.isna(elite.loc[(pd.Timestamp("2025-08-18"), "AAA"), "f_ic_super_holders"])
-    print("SANITY: actual elite builder survives coincident expiry dates and clears stale holdings on time.")

@@ -1,4 +1,4 @@
-"""Share lines that are bond principal: the shared mask, the profile's bond path and the cube cleaning's drop.
+"""Share lines that are bond principal: the shared mask, and the profile's bond path.
 
 Known truth: the mask on hand-built positives (real convertible-note CUSIPs, titles and issuers from the 13F tables) and on the traps the
 measurement found (SEDOL-like codes, iShares iBond ETFs, placeholders, ADRs, a filer titling stock lines BOND, preferreds and warrants).
@@ -20,7 +20,6 @@ from src.data_aggregate.utils.manager_profile.lines import clean_book
 from src.data_aggregate.utils.manager_profile.quarter_stats import quarter_stats
 from src.data_aggregate.utils.manager_profile.reference import classify_securities
 from src.data_aggregate.utils.sec_thirteen.bond_lines import bond_line_mask
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings
 from src.data_store.schema import Tables
 from src.utils.config import read_config
 from tests.data_aggregate.test_manager_profile import NO_PREFIX, _frame, _raw, live_prefixes, live_reference, live_store, load_raw
@@ -146,39 +145,6 @@ def test_a_bond_line_takes_only_its_books_unit_factor(cfg: DictConfig) -> None:
     assert np.allclose(note.to_numpy(), 950_000.0), note.to_dict()
     print("\n=== SANITY CHECK: bond unit factor ===")
     print(f"Note values {note.to_dict()}: the thousands filer's 950 is rescaled by its book factor to 950,000.")
-
-
-def _cube_packet(bond_cfg: DictConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """One accession with a debt row, a flagged share line and two equity lines, run through the cube's `clean_filings`."""
-    base = {"cik": "0000000001", "period": "2024-03-31", "filing_date": "2024-05-10", "accession_number": "A1"}
-    filings = pd.DataFrame([{**base, "parsed_row_count": 4, "parse_status": "complete"}])
-    rows = [
-        ("037833100", "APPLE INC", "COM", "AAPL", "common", 10.0, 1_000.0, 0.0),
-        ("594918104", "MICROSOFT CORP", "COM", EMPTY, "common", 5.0, 500.0, 0.0),
-        ("021369AC7", "ALTAIR ENGINEERING INC", "CV", EMPTY, "common", 16_389_000.0, 23_876_000.0, 0.0),
-        ("D1", "A BOND", "NOTE", EMPTY, "debt", 0.0, 0.0, 700.0),
-    ]
-    holdings = pd.DataFrame(
-        [
-            {**base, "cusip": c, "issuer_name": n, "title_of_class": t, "ticker": k, "position_type": p, "shares": s, "value_usd": v, "debt_value": d}
-            for c, n, t, k, p, s, v, d in rows
-        ]
-    )
-    cleaned_filings, cleaned = clean_filings(filings.copy(), holdings.copy(), bond_cfg)
-    return filings, holdings, cleaned_filings, cleaned
-
-
-def test_the_cube_cleaning_drops_bond_share_lines_like_debt_rows(bond_cfg: DictConfig) -> None:
-    filings, holdings, cleaned_filings, cleaned = _cube_packet(bond_cfg)
-
-    assert cleaned["cusip"].tolist() == ["037833100", "594918104"], "the debt row and the note share line leave the book"
-    assert cleaned_filings["parsed_row_count"].tolist() == [2], "the stored row count drops with them"
-    assert {"issuer_name", "title_of_class"}.isdisjoint(cleaned.columns), "the mask's text columns are dropped"
-    assert (cleaned["debt_value"] == 0.0).all()
-    print("\n=== SANITY CHECK: cube clean_filings ===")
-    print(
-        f"{len(holdings)} rows in, {len(cleaned)} out; manifest row count {filings['parsed_row_count'].iloc[0]} -> {cleaned_filings['parsed_row_count'].iloc[0]}."
-    )
 
 
 def _lord_abbett_quarter(cfg: DictConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:

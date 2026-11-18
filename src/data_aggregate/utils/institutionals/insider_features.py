@@ -69,7 +69,7 @@ EMISSION: dict[str, str] = dict.fromkeys(
 PEER_RELATIVE = "ic_insider_purchase_pct_prior_120d"
 EMISSION[PEER_RELATIVE] = "raw+peers"
 
-#: No other `_vs_peers` leg in this family, for the same reason as `ic_super_*` (D25): an
+#: No other `_vs_peers` leg in this family, for the same reason as the retired superinvestor family (D25): an
 #: insider purchase is an event about ONE company, and expressing it relative to a peer
 #: basket that mostly has no event at all measures the basket's emptiness, not the signal.
 

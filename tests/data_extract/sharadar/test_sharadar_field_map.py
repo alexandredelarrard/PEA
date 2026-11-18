@@ -889,8 +889,8 @@ def test_a_ttm_window_straddling_a_split_stays_on_one_basis(field_map):
     stores every quarter on today's basis (200) and the split is 2-for-1, so
 
       * `sharesOutstandingPit` is 100 before the split and 200 after -- the count that really
-        existed on the day, which is what `ic_inst_ownership_pct` and the insider %-of-shares
-        leg divide an as-filed 13F / Form-4 count by;
+        existed on the day, which is what the insider %-of-shares
+        leg divides an as-filed 13F / Form-4 count by;
       * `dilutedShares` / `sharesOutstanding` are 200 THROUGHOUT, deliberately. That is the
         basis `close_split` is on, so the split factor cancels in every price x count
         product, and `shares(t)/shares(t-1)` reads 1 through the split instead of +100%.

@@ -7,9 +7,8 @@ not re-check a frame the entry already validated and nothing has mutated.
 ⚠ THIS FILE EXISTS BECAUSE A BLANKET `.empty` SWEEP PRODUCED A LIVE CRASH. The entry guard on
 `build_superinvestor_feature_panel` was removed as "redundant" while `attach_tickers` still
 opens with `holdings.copy()` — so an absent or cold roster-manager book table was an
-`AttributeError` two frames deep, on the one code path nothing in the suite covered. The immutable SEC13F step now owns missing-source protection and is exercised in
-test_sec_thirteen_step_contract and test_sec_thirteen_windows. A guard
-is only redundant when NOTHING between it and the previous check can have changed the frame;
+`AttributeError` two frames deep, on the one code path nothing in the suite covered. The cluster 13F step owns its missing-source protection (tests/data_aggregate/test_cluster_panel.py).
+A guard is only redundant when NOTHING between it and the previous check can have changed the frame;
 `ownership_features._level_state` checks `e.empty`, does a `dropna(subset=["_grid_date"])`,
 then checks again, and both of those are load-bearing.
 

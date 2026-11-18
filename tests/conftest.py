@@ -99,8 +99,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 # across tests/. Those fakes each re-implemented a slightly different subset of the store
 # API -- only ONE of them accepted `where=` -- so every change to the store surface broke
 # them one at a time, and four production modules still carry a whole second "no engine"
-# code path that exists PURELY to keep them working (see superinvestor_features.py's
-# `getattr(store, "engine", None)` branch).
+# code path that exists PURELY to keep them working.
 #
 # Deliberately NOT the Postgres fixture below: `_store()` SKIPS when the container is down,
 # which silently greens the suite on a machine with no DB. This one never skips, so a unit

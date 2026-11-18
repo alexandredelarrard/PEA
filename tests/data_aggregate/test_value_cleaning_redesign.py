@@ -3,18 +3,13 @@ unproven absence. Each case is a constructed filing whose right answer is arithm
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.sec_thirteen import superinvestor_metrics as metrics
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings
 from src.data_aggregate.utils.sec_thirteen.value_basis import BOOK_CEILING_USD, consensus_prices, repair_value_basis, unrealistic_lines
-from src.utils.config import read_config
-from tests.data_aggregate.test_superinvestor_features import _book, _compute, _snapshot, _value
 from tests.data_aggregate.test_value_basis import CLOSE, PERIOD, _close_split, _filing
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -120,33 +115,6 @@ def test_unit_is_voted_against_consensus_for_a_book_with_no_priced_lines() -> No
     print("SANITY: six unpriced securities all 1000x their consensus move the whole book by 1/1000.")
 
 
-def test_a_book_that_cannot_prove_absence_lists_holdings_but_leaves_the_rest_unknown() -> None:
-    """A confidential or combination filing is no longer dropped: what it lists is held, what it omits is unknown, never a known zero."""
-    complete = _book("1", "2024-06-30", {"AAA": (10.0, 100.0), "BBB": (10.0, 100.0)})
-    unproven = _book("2", "2024-06-30", {"AAA": (10.0, 100.0)})
-    unproven = replace(unproven, support=replace(unproven.support, zero_eligible=False, comparison_eligible=False))
-    history = _compute(_snapshot([complete, unproven]))
-    assert _value(history, "holders", "AAA") == 2
-    assert _value(history, "holders", "BBB") == 1, "the unproven book's omission of BBB is not a known non-holder"
-    only = _compute(_snapshot([unproven]))
-    assert np.isnan(_value(only, "holders", "BBB")), "with only the unproven book, BBB is unknown rather than zero"
-    print("SANITY: a combination/confidential book counts AAA as held and leaves BBB unknown; a complete book still proves BBB's absence.")
-
-
-def test_book_total_uses_the_known_lines_when_enough_are_valued() -> None:
-    universe = pd.Index(["AAA", "BBB", "CCC", "DDD", "EEE"], dtype=object)
-    full = _book("1", "2024-06-30", {t: (10.0, 100.0) for t in universe})
-    holey = _book("1", "2024-09-30", {t: (10.0, 100.0) for t in universe})
-    holey.df_positions.loc[0, "value_usd"] = np.nan
-    thin = _book("1", "2024-12-31", {t: (10.0, 100.0) for t in universe})
-    thin.df_positions.loc[:1, "value_usd"] = np.nan
-    table = metrics.summarize_books([full, holey, thin], universe, 0.8)
-    assert table.total.tolist()[:2] == [500.0, 400.0]
-    assert np.isnan(table.total[2])
-    assert table.coverage.tolist() == pytest.approx([1.0, 0.8, 0.6])
-    print("SANITY: 4 of 5 valued lines (80%) keep a $400 total; 3 of 5 (60%) leave the total unknown.")
-
-
 def test_one_ceiling_rule_excludes_unrealistic_lines_and_never_stops_the_build() -> None:
     index = pd.MultiIndex.from_tuples([(PERIOD, "AAA")], names=["period", "ticker"])
     quarter = pd.Series(1e9, index=index)
@@ -158,31 +126,3 @@ def test_one_ceiling_rule_excludes_unrealistic_lines_and_never_stops_the_build()
     gone = unrealistic_lines(huge, None)
     assert gone.sum() == 2 and huge.loc[~gone, "value_usd"].sum() <= BOOK_CEILING_USD, "a $19tn book loses lines until it fits"
     print("SANITY: a line above 110% of its cap or $5tn, and the lines that keep a book above $12tn, are excluded; nothing raises.")
-
-
-def test_filings_with_an_impossible_period_and_all_bond_lines_leave_the_book() -> None:
-    filings = pd.DataFrame(
-        {
-            "accession_number": ["ok", "typo", "early"],
-            "period": ["2024-06-30", "3006-09-30", "1987-03-31"],
-            "filing_date": ["2024-08-01"] * 3,
-            "parsed_row_count": [4, 1, 1],
-        }
-    )
-    holdings = pd.DataFrame(
-        {
-            "accession_number": ["ok", "ok", "ok", "ok", "typo", "early"],
-            "period": ["2024-06-30"] * 4 + ["3006-09-30", "1987-03-31"],
-            "filing_date": ["2024-08-01"] * 6,
-            "cusip": ["a", "b", "c", "021369AC7", "e", "f"],
-            "position_type": ["common", "debt", "common", "common", "common", "common"],
-            "debt_prn": [0.0, 5e6, 7.0, 0.0, 0.0, 0.0],
-            "debt_value": [0.0, 5e6, 7.0, 0.0, 0.0, 0.0],
-        }
-    )
-    got_filings, got_holdings = clean_filings(filings, holdings, read_config(str(ROOT / "configs")).build_cube.bond_lines)
-    assert got_filings["accession_number"].tolist() == ["ok"] and got_filings["parsed_row_count"].tolist() == [2]
-    assert got_holdings["cusip"].tolist() == ["a", "c"] and got_holdings["debt_prn"].eq(0.0).all() and len(got_holdings) == 2
-    print(
-        "SANITY: periods 3006 and 1987 drop their filings, the debt row and the convertible-note share line leave, the surviving manifest counts 2 stored rows and bond legs read 0."
-    )

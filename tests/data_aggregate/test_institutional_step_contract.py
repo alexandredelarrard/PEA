@@ -17,16 +17,13 @@ from omegaconf import OmegaConf
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context
 from src.data_aggregate.transformers import step_cube_institutionals as institutional_step
-from src.data_aggregate.transformers import step_cube_sec_thirteen as sec_thirteen_step
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.config import read_config
 from src.utils.security_series import trade_dates
 from tests.data_aggregate.insider_pit_reference import row
-from tests.support.sec_thirteen_panel import unsaved_panel
 
 INSTITUTIONAL_COLUMNS = (
     "f_ic_insider_buy_value_mcap_60d",
@@ -81,14 +78,6 @@ def context(store: Any, path: Path) -> Context:
             universe=SimpleNamespace(sector_map={}),
         ),
     )
-
-
-def fixed_sec_thirteen_projection(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch, panel: pd.DataFrame) -> Mock:
-    """The real SEC13F `run()` around a fixed projection: every call returns `panel` on the requested dates."""
-    monkeypatch.setattr(sec_thirteen_step, "load_peers_or_raise", lambda ctx: {})
-    project = Mock(side_effect=lambda resources, prepared, dates: (panel.loc[panel.date.isin(dates)].reset_index(drop=True), None))
-    monkeypatch.setattr(step, "_project_panels", project)
-    return project
 
 
 def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
@@ -372,30 +361,23 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
 
 
 @pytest.mark.parametrize("full", [False, True])
-@pytest.mark.parametrize(
-    "cls, table", [(StepCubeInstitutionals, Tables.cube_part_institutionals), (StepCubeSecThirteen, Tables.cube_part_sec_thirteen)]
-)
-def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
+def test_the_daily_part_honors_full_or_inclusive_tail_write_window(
     sqlite_store: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    cls: type,
-    table: Any,
     full: bool,
 ) -> None:
+    table = Tables.cube_part_institutionals
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
-    step = cls(ctx, ctx.config)
+    step = StepCubeInstitutionals(ctx, ctx.config)
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_test": pd.Series(range(len(days)), dtype="float32")})
     initial = expected.iloc[:31].copy()
     initial.loc[0, "f_test"] = -2.0
     cutoff = days[30 - 7]
     initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
     sqlite_store.replace(table, initial)
-    if cls is StepCubeSecThirteen:
-        fixed_sec_thirteen_projection(step, monkeypatch, expected)
-    else:
-        monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
+    monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
     expected_saved = expected.copy()
     if not full:
         expected_saved.loc[0, "f_test"] = -2.0
@@ -410,23 +392,20 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     pd.testing.assert_frame_equal(first, second)
     assert save.call_count == 2
     assert len(initial.loc[initial["date"] >= cutoff]) == 8
-    other = Tables.cube_part_sec_thirteen if table == Tables.cube_part_institutionals else Tables.cube_part_institutionals
-    assert not sqlite_store.exists(other)
+    assert not sqlite_store.exists(Tables.cube_part_sec_thirteen)
     mode = "replaces full history" if full else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
     print(f"SANITY: {table.name} {mode} with one save per run and an idempotent repeat.")
 
 
-@pytest.mark.parametrize("cls", [StepCubeInstitutionals, StepCubeSecThirteen])
 def test_builder_payload_reads_are_unique_with_optional_sources_absent(
     sqlite_store: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    cls: type,
 ) -> None:
     seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
-    step = cls(ctx, ctx.config)
-    monkeypatch.setattr(f"{cls.__module__}.load_peers_or_raise", lambda ctx: {})
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    monkeypatch.setattr(f"{StepCubeInstitutionals.__module__}.load_peers_or_raise", lambda ctx: {})
     reads: Counter[str] = Counter()
     for method in ("load", "iter_load"):
         original = getattr(sqlite_store, method)
@@ -436,14 +415,11 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
             return _original(table, *args, **kwargs)
 
         monkeypatch.setattr(sqlite_store, method, capture)
-    result = step.build_panel() if cls is StepCubeInstitutionals else unsaved_panel(step)
-    if cls is StepCubeInstitutionals:
-        assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
-        assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
-    else:
-        assert set(result.columns) == {"date", "ticker"}
+    result = step.build_panel()
+    assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
+    assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
     assert reads and max(reads.values()) == 1, reads
-    print(f"SANITY: {cls.__name__} reads each payload once, including absent optional sources.")
+    print("SANITY: StepCubeInstitutionals reads each payload once, including absent optional sources.")
 
 
 @pytest.mark.parametrize("start, checked", [("2024-01-15", False), ("2023-12-01", True)], ids=["unsupported-unknown", "supported-zero"])
@@ -705,15 +681,11 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     )
 
 
-@pytest.mark.parametrize(
-    "cls, table", [(StepCubeInstitutionals, Tables.cube_part_institutionals), (StepCubeSecThirteen, Tables.cube_part_sec_thirteen)]
-)
-def test_changed_columns_trigger_full_owned_part_replacement(
-    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cls: type, table: Any
-) -> None:
+def test_changed_columns_trigger_full_owned_part_replacement(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    table = Tables.cube_part_institutionals
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
-    step = cls(ctx, ctx.config)
+    step = StepCubeInstitutionals(ctx, ctx.config)
     sqlite_store.replace(table, pd.DataFrame({"date": days[:3], "ticker": "AAA", "f_old": 9.0}))
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_current": 1.0})
     builds: list[None] = []
@@ -722,21 +694,12 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         builds.append(None)
         return expected.copy()
 
-    if cls is StepCubeSecThirteen:
-        # Each broad preparation counts as one build; the fixed projection stands in for the families.
-        fixed_sec_thirteen_projection(step, monkeypatch, expected)
-        monkeypatch.setattr(step, "_institutional_features", lambda resources: builds.append(None))
-    else:
-        monkeypatch.setattr(step, "build_panel", build)
+    monkeypatch.setattr(step, "build_panel", build)
     method = "replace"
     replace = Mock(side_effect=getattr(type(sqlite_store), method))
     monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: replace(store, *args, **kwargs))
     step.run()
     assert len(builds) == 1
-    if cls is StepCubeSecThirteen:
-        # The window projection, then one whole-history reprojection for the new schema.
-        project = cast(Mock, step._project_panels)
-        assert project.call_count == 2 and len(project.call_args_list[-1].args[2]) == len(days)
     replace.assert_called_once()
     assert set(sqlite_store.columns(table)) == set(expected.columns)
     assert sqlite_store.row_count(table) == len(expected)

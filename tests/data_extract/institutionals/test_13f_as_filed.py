@@ -4,7 +4,7 @@ Known truth (hand-made books, BRK-A/BRK-B and GOOG/GOOGL as separate `cusip_tick
 - a walk save of 2 BRK-A + 100 BRK-B + 10 AVB stores 3 rows on their own CUSIPs with the filed shares, tickers from
   `cusip_ticker_map` only (BRK-A stays BRK-A), and a marker counting the 3 filed rows;
 - GOOG 10 + GOOGL 5 stay two rows, GOOG and GOOGL; a CUSIP the map does not know is stored on the sentinel.
-The company sum x ratio is the cube's job (`test_sec_thirteen_company_sum.py`).
+The company mapping is the cube's job (`test_cluster_features.py`).
 """
 
 from __future__ import annotations

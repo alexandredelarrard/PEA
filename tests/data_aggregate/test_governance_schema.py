@@ -43,17 +43,14 @@ def _owner(store: DataStore, monkeypatch: pytest.MonkeyPatch) -> tuple[StepCubeG
         ),
     )
     config = fixture_config()
-    context = cast(
-        Context,
-        SimpleNamespace(
-            store=store,
-            config=config,
-            config_dir=Path("configs"),
-            universe=universe_of(["AAA"]),
-            run=WindowRun("full", "known-truth schema support", days[-1]),
-        ),
+    context = SimpleNamespace(
+        store=store,
+        config=config,
+        config_dir=Path("configs"),
+        universe=universe_of(["AAA"]),
+        run=WindowRun("full", "known-truth schema support", days[-1]),
     )
-    step = StepCubeGovernance(context, config)
+    step = StepCubeGovernance(cast(Context, context), config)
     monkeypatch.setattr(module, "load_peers_or_raise", lambda *_args: {})
     monkeypatch.setattr(
         module,
@@ -110,7 +107,7 @@ def test_historical_only_column_survives_bounded_governance_write(filing_store: 
         "SANITY: native FULL emits f_pct_female_directors on 2019-01-02..2020-01-02; the 2021+ native panel omits it. "
         "The actual bounded writer retains that column as unknown, restores the current board cell, and preserves the historical rows."
     )
-    print(f"SANITY: exact FULL columns={sorted(expected_columns)}; bounded native columns={sorted(emitted[1])}.")
+    print(f"SANITY: exact FULL columns={sorted(map(str, expected_columns))}; bounded native columns={sorted(map(str, emitted[1]))}.")
 
 
 @pytest.mark.parametrize("drift", ["unknown", "removed", "new", "source-loss"])
@@ -136,7 +133,10 @@ def test_unproven_governance_schema_drift_preserves_saved_rows(filing_store: Dat
         sources[field] = value
         filing_store.save(Tables.def14a_llm, sources)
     before = filing_store.load(table)
+    assert before is not None
     with pytest.raises(ValueError, match="stored columns differ|column set changed|explicit.*rebuild"):
         step.run()
-    pd.testing.assert_frame_equal(filing_store.load(table), before)
+    after = filing_store.load(table)
+    assert after is not None
+    pd.testing.assert_frame_equal(after, before)
     print(f"SANITY: {drift} schema drift requires an explicit rebuild; the strict writer refuses and every saved row survives.")

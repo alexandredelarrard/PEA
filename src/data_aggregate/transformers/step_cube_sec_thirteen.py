@@ -28,42 +28,70 @@ _REBUILD = "run `data_aggregate build-sec-thirteen -F`"
 
 
 @dataclass(frozen=True)
-class Plan:
-    """What one run does: the configured clusters and columns, the saved part, the quarters to compute and the saved rows to carry."""
+class Quarters:
+    """The report quarters of one run: the publication day of each, those published after the saved part (`due`), those to compute and the newest saved one."""
 
-    specs: list[ClusterSpec]
-    columns: list[str]
-    saved_columns: list[str]
-    window: PartWindow
-    calendar: pd.DatetimeIndex
     publication: pd.Series
     due: list[pd.Timestamp]
     compute: list[pd.Timestamp]
     saved_quarter: pd.Timestamp | None
-    labels: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class Saved:
+    """The stored part: its column set and window, the refresh tail and the saved values of the newest day, carried onto the days after it."""
+
+    columns: list[str]
+    window: PartWindow
     tail: pd.DataFrame | None
     carried: pd.DataFrame | None
 
 
 @dataclass(frozen=True)
-class Resources:
-    """What the quarters read once: members by (label period, cluster), the references and the quarter-end market frames."""
+class Plan:
+    """What one run does: the configured clusters and columns, the trading calendar, the manager labels, the quarters and the saved part."""
 
-    members: dict[tuple[pd.Timestamp, int], list[str]]
-    labelled: dict[pd.Timestamp, frozenset[str]]
+    specs: list[ClusterSpec]
+    columns: list[str]
+    calendar: pd.DatetimeIndex
+    labels: pd.DataFrame
+    quarters: Quarters
+    saved: Saved
+
+
+@dataclass(frozen=True)
+class References:
+    """The identifier references of a line: CUSIP tags, the Sharadar reference and the CUSIP-prefix tickers."""
+
     tags: CusipTags
     reference: pd.DataFrame
     prefixes: pd.Series
-    universe: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Market:
+    """The quarter-end market frames (index date, columns ticker): market cap, shares outstanding and 250-day volatility."""
+
     mcap: pd.DataFrame
     shares: pd.DataFrame
     volatility: pd.DataFrame
 
 
-def _market_at(res: Resources, period: pd.Timestamp) -> pd.DataFrame:
+@dataclass(frozen=True)
+class Resources:
+    """What the quarters read once: members by (label period, cluster), the labelled managers by period, the universe, references and market."""
+
+    members: dict[tuple[pd.Timestamp, int], list[str]]
+    labelled: dict[pd.Timestamp, frozenset[str]]
+    universe: tuple[str, ...]
+    references: References
+    market: Market
+
+
+def _market_at(market: Market, period: pd.Timestamp) -> pd.DataFrame:
     """`MARKET_COLUMNS` per ticker at the quarter end `period` (market cap also a quarter back), the last observation on or before the day."""
     back = period - pd.offsets.QuarterEnd(1)
-    frames_days = ((res.mcap, period), (res.mcap, back), (res.shares, period), (res.volatility, period))
+    frames_days = ((market.mcap, period), (market.mcap, back), (market.shares, period), (market.volatility, period))
     values = [frame.reindex([day], method="ffill").iloc[0] for frame, day in frames_days]
     return pd.DataFrame(dict(zip(MARKET_COLUMNS, values, strict=True)))
 
@@ -82,7 +110,7 @@ class StepCubeSecThirteen(Step):
 
         # load and plan: the window, the labels and the saved tail, then the references and market of the quarters to compute
         plan = self._plan(full)
-        resources = self._load(plan) if plan.compute else None
+        resources = self._load(plan) if plan.quarters.compute else None
 
         # compute, check, merge and save
         computed = {} if resources is None else self._compute_quarters(plan, resources)
@@ -91,8 +119,8 @@ class StepCubeSecThirteen(Step):
         self._save(plan, rows)
         self._log.info(
             "sec thirteen clusters: %d quarters computed %s, %d rows written (%.1f s)",
-            len(plan.due),
-            [t.date().isoformat() for t in plan.due],
+            len(plan.quarters.due),
+            [t.date().isoformat() for t in plan.quarters.due],
             len(rows),
             time.monotonic() - started,
         )
@@ -139,7 +167,7 @@ class StepCubeSecThirteen(Step):
         if tail is not None:
             latest = tail[pd.to_datetime(tail["date"]) == window.last]
             carried = latest.set_index("ticker")[columns].astype("float32")
-        return Plan(specs, columns, saved_columns, window, calendar, published, due, compute, saved_quarter, labels, tail, carried)
+        return Plan(specs, columns, calendar, labels, Quarters(published, due, compute, saved_quarter), Saved(saved_columns, window, tail, carried))
 
     def _load(self, plan: Plan) -> Resources:
         """The references, the labels as member lists and the quarter-end market frames of the quarters to compute, each read once."""
@@ -149,8 +177,8 @@ class StepCubeSecThirteen(Step):
         columns = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
         df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=columns))
         tags = CusipTags.load(self._store)
-        oldest = min(plan.compute) - pd.offsets.QuarterEnd(1) - pd.Timedelta(days=lookback_days)
-        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=None if plan.window.is_full else oldest)
+        oldest = min(plan.quarters.compute) - pd.offsets.QuarterEnd(1) - pd.Timedelta(days=lookback_days)
+        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=None if plan.saved.window.is_full else oldest)
         frames.require(*self._FIELDS)
 
         # clean: the labelled managers by label period and by cluster
@@ -166,14 +194,14 @@ class StepCubeSecThirteen(Step):
         volatility = returns.rolling(vol_window, min_periods=min_periods).std()
         reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(tags.cmap)
         mcap, shares = cast(pd.DataFrame, frames.mcap_pit), cast(pd.DataFrame, frames.shares_outstanding_pit)
-        return Resources(members, by_period, tags, reference, prefixes, frames.universe, mcap, shares, volatility)
+        return Resources(members, by_period, frames.universe, References(tags, reference, prefixes), Market(mcap, shares, volatility))
 
     def _compute_quarters(self, plan: Plan, res: Resources) -> dict[pd.Timestamp, pd.DataFrame]:
         """The feature frame (index ticker, the configured float32 columns) of each quarter to compute, oldest first; each book is built once."""
         # clean: the managers each report period must provide, over every quarter that reads it (itself, the next one and four ahead)
         one, four = pd.offsets.QuarterEnd(1), pd.offsets.QuarterEnd(4)
         needs: dict[pd.Timestamp, frozenset[str]] = {}
-        for t in plan.compute:
+        for t in plan.quarters.compute:
             for period in (t, t - one, t - four):
                 needs[period] = needs.get(period, frozenset()) | res.labelled.get(t - one, frozenset())
 
@@ -181,13 +209,13 @@ class StepCubeSecThirteen(Step):
         profile_cfg, universe = self._config.build_cube.manager_profile, set(res.universe)
         books: dict[pd.Timestamp, pd.DataFrame] = {}
         computed: dict[pd.Timestamp, pd.DataFrame] = {}
-        for t in plan.compute:
+        for t in plan.quarters.compute:
             started = time.monotonic()
             for period in sorted({t - four, t - one, t} - books.keys()):
                 raw = read_lines(self._store, sorted(needs[period]), [period])
-                classified = classify_securities(clean_book(raw, profile_cfg, res.prefixes), res.reference, profile_cfg)
-                books[period] = company_books(classified, res.tags, universe)
-            quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res, t)
+                classified = classify_securities(clean_book(raw, profile_cfg, res.references.prefixes), res.references.reference, profile_cfg)
+                books[period] = company_books(classified, res.references.tags, universe)
+            quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res.market, t)
             frames = [
                 cluster_feature_frame(quarter, res.members.get((t - one, spec.cluster_id), []), market, spec).add_prefix(
                     f"{COLUMN_PREFIX}_{spec.cluster_id}_"
@@ -203,14 +231,14 @@ class StepCubeSecThirteen(Step):
         """Stop unless the newest saved quarter, recomputed, equals its saved values within the tolerance; log the column budget."""
         n_columns = column_budget(plan.specs, self._config.cluster)
         self._log.info("sec thirteen clusters: %d cube columns", n_columns)
-        saved = plan.saved_quarter
-        if saved is None or saved not in computed or plan.carried is None:
+        saved = plan.quarters.saved_quarter
+        if saved is None or saved not in computed or plan.saved.carried is None:
             return
 
         # compare: the recomputed quarter against the saved rows of the newest saved day, a missing row reads as null
         fresh = computed[saved]
-        index = fresh.index.union(plan.carried.index)
-        new, old = (frame.reindex(index=index, columns=plan.columns).to_numpy(dtype="float64") for frame in (fresh, plan.carried))
+        index = fresh.index.union(plan.saved.carried.index)
+        new, old = (frame.reindex(index=index, columns=plan.columns).to_numpy(dtype="float64") for frame in (fresh, plan.saved.carried))
         tolerance = float(self._config.cluster.consistency_tolerance)
         differs = ~((np.isnan(new) & np.isnan(old)) | (np.abs(new - old) <= tolerance))
         if differs.any():
@@ -226,23 +254,25 @@ class StepCubeSecThirteen(Step):
         """The rows to write: the saved tail as saved, then the trading days after it from the due quarters and the carried saved quarter."""
         # merge: the frames by publication day; the newest saved quarter is the saved rows of the newest day
         cfg = self._config.cluster
-        quarters = {plan.publication[t]: computed[t] for t in plan.due}
-        if plan.carried is not None and plan.saved_quarter is not None:
-            quarters[plan.publication[plan.saved_quarter]] = plan.carried
+        quarters = {plan.quarters.publication[t]: computed[t] for t in plan.quarters.due}
+        if plan.saved.carried is not None and plan.quarters.saved_quarter is not None:
+            quarters[plan.quarters.publication[plan.quarters.saved_quarter]] = plan.saved.carried
 
         # compute: the days to fill, from the history start or after the newest saved day
         calendar = plan.calendar
-        days = calendar[calendar >= pd.Timestamp(cfg.history_start)] if plan.window.last is None else calendar[calendar > plan.window.last]
+        days = (
+            calendar[calendar >= pd.Timestamp(cfg.history_start)] if plan.saved.window.last is None else calendar[calendar > plan.saved.window.last]
+        )
         daily = expand_daily(quarters, days, int(cfg.max_age_calendar_days))
-        if plan.tail is None:
+        if plan.saved.tail is None:
             return daily
 
         # post-process: the saved rows in the part's column order, then the new days
-        tail = plan.tail[["date", "ticker", *plan.columns]].assign(date=pd.to_datetime(plan.tail["date"]))
+        tail = plan.saved.tail[["date", "ticker", *plan.columns]].assign(date=pd.to_datetime(plan.saved.tail["date"]))
         return tail if daily.empty else pd.concat([tail.astype({column: "float32" for column in plan.columns}), daily], ignore_index=True)
 
     def _save(self, plan: Plan, rows: pd.DataFrame) -> None:
         """One replace (full) or one inclusive tail append of `rows`; rows with no feature value are dropped."""
-        written = write_part(self._store, self._part.table, rows, plan.window, drop_empty=True, existing_columns=plan.saved_columns)
+        written = write_part(self._store, self._part.table, rows, plan.saved.window, drop_empty=True, existing_columns=plan.saved.columns)
         if written == COLUMNS_CHANGED:
             raise RuntimeError(f"{self._part.table} column set changed during the run: {_REBUILD}")

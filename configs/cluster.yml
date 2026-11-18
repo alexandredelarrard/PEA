@@ -43,19 +43,19 @@ cluster:
   labels:                    # the name behind every stored `cluster` id; features: true = the cube builds feature columns for it (the `clusters` block); the code reads ids, tracked ids and rules, names are for people
     - {id: -2, name: not_computable, features: false}    # fund at or above the size floor with a required clustering feature null (turnover alone is optional)
     - {id: -1, name: below_size_floor, features: false}  # any row below fit_filters (positions or book), whatever its category
-    - {id: 0, name: fund_0, features: true}   # kept fund clusters 0..keep-1, numbered by descending fit size (names read off the centroids of the saved fit)
-    - {id: 1, name: fund_1, features: true}
-    - {id: 2, name: fund_2, features: true}
-    - {id: 3, name: fund_3, features: true}
-    - {id: 4, name: fund_4, features: true}
-    - {id: 5, name: fund_5, features: true}
-    - {id: 6, name: fund_6, features: true}
+    - {id: 0, name: fund_large_cap_low_turnover, features: true}  # kept fund clusters 0..keep-1 by descending fit size, named from the saved centroids; large caps 0.77, US 0.88, active share 0.80, small book (rank 0.32), turnover rank 0.24
+    - {id: 1, name: fund_mixed_cap_concentrated_high_turnover, features: true}  # small 0.27 / mid 0.29 / large 0.42, US 0.74, active share 0.95, small book (rank 0.32), hhi rank 0.70, turnover rank 0.80
+    - {id: 2, name: fund_large_cap_big_book, features: true}  # large caps 0.75, US 0.88, active share 0.89, big book (rank 0.76), hhi rank 0.58, turnover rank 0.53
+    - {id: 3, name: fund_large_cap_low_concentration, features: true}  # large caps 0.73, US 0.86, index-like active share 0.60, big book (rank 0.81), hhi rank 0.13
+    - {id: 4, name: fund_mixed_cap_diversified_high_turnover, features: true}  # small 0.32 / mid 0.35 / large 0.32, US 0.87, active share 0.89, big book (rank 0.72), hhi rank 0.20, turnover rank 0.70
+    - {id: 5, name: fund_small_cap, features: true}  # small caps 0.77, US 0.76, active share 0.99, hhi rank 0.69, turnover rank 0.56
+    - {id: 6, name: fund_mid_cap_concentrated, features: true}  # mid caps 0.52, US 0.86, active share 0.98, hhi rank 0.74, turnover rank 0.49
     - {id: 7, name: bank, features: true}             # feature categories: the id and the name are those of the `clusters` block
     - {id: 8, name: insurance, features: true}
     - {id: 9, name: broker_dealer, features: true}
     - {id: 10, name: pension, features: true}
-    - {id: 11, name: fund_etf_heavy, features: false, dropped_by: pct_etf}            # tracked only: the dropped fund cluster with the highest centroid pct_etf (the ids go by the centroid value of the rule, never by fit size)
-    - {id: 12, name: fund_etf_mixed, features: false, dropped_by: pct_etf}            # the next dropped cluster by pct_etf
-    - {id: 13, name: fund_foreign_heavy, features: false, dropped_by: pct_equity_foreign}  # dropped by the foreign rule (highest pct_equity_foreign first)
+    - {id: 11, name: fund_etf_heavy, features: false, dropped_by: pct_etf}            # tracked only: the dropped fund cluster with the highest centroid pct_etf (the ids go by the centroid value of the rule, never by fit size); saved fit: pct_etf 0.85, US 0.11
+    - {id: 12, name: fund_etf_mixed, features: false, dropped_by: pct_etf}            # the next dropped cluster by pct_etf; saved fit: pct_etf 0.51, US 0.43, large caps 0.55
+    - {id: 13, name: fund_foreign_heavy, features: false, dropped_by: pct_equity_foreign}  # dropped by the foreign rule (highest pct_equity_foreign first); saved fit: foreign 0.62, US 0.30
     - {id: 14, name: sovereign, features: false, category: sovereign}  # tracked only: manager category with no fund clustering and no features
     - {id: 15, name: other, features: false, category: other}

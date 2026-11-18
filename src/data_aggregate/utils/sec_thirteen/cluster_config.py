@@ -7,7 +7,9 @@ Columns are `f_ic_cluster_<id>_<feature>`, in cluster-id then feature order.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from omegaconf import DictConfig
 
@@ -42,14 +44,19 @@ class ClusterSpec:
     min_holders: int
 
 
+def feature_names(entries: Iterable[Any]) -> list[str]:
+    """The names of the clustering features: an entry is a plain name or a `{name, transform}` mapping."""
+    return [entry if isinstance(entry, str) else str(entry["name"]) for entry in entries]
+
+
 def validate_cluster_config(cluster: DictConfig) -> None:
     """Raise ValueError unless the block is usable.
 
     No return column or unknown manager column among the clustering features, known per-cluster features, `exclude` keys among the
     clustering features, `1 <= keep <= k`, positive `min_holders`, and distinct category ids outside the fund range.
     """
-    # Clustering features: names (plain or `{name, transform}`), no return column, only manager-details columns.
-    names = [entry if isinstance(entry, str) else str(entry.name) for entry in cluster.features]
+    # Clustering features: no return column, only manager-details columns.
+    names = feature_names(cluster.features)
     returns = [name for name in names if "return" in name.lower()]
     if returns:
         raise ValueError(f"cluster.features: a return column cannot be a clustering feature: {returns}")

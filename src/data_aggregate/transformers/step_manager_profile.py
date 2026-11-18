@@ -27,7 +27,7 @@ from src.data_aggregate.utils.manager_profile.profile import profile_rows
 from src.data_aggregate.utils.manager_profile.quarter_stats import compact_book, quarter_stats
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, quarter_aggregate, sharadar_reference
 from src.data_aggregate.utils.manager_profile.refresh import PROFILE_COLUMNS, changed_rows, plan_refresh, profile_frame, stored_details
-from src.data_aggregate.utils.sec_thirteen.cluster_config import FUND, validate_cluster_config
+from src.data_aggregate.utils.sec_thirteen.cluster_config import FUND, feature_names, validate_cluster_config
 from src.data_store.schema import Tables
 from src.modelling.transformers.cluster import ClusterTransformer
 from src.utils.step import Step
@@ -67,7 +67,7 @@ class StepManagerProfile(Step):
 
         # load: the manager rows once, only the columns the labels need
         features = OmegaConf.to_container(cfg.features)
-        names = [entry if isinstance(entry, str) else str(entry["name"]) for entry in cast(list, features)]
+        names = feature_names(cast(list, features))
         wanted = ["cik", "period", "category", "cluster", "n_positions", *dict.fromkeys(["book_value_usd", *names])]
         df_stored = self._store.load(Tables.sec_13f_manager_details, columns=wanted, optional=True)
         if df_stored is None:

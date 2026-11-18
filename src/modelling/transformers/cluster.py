@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 RANK = "rank"
 
 
-def _prepare(df: pd.DataFrame, features: list[str], ranked: list[str], group_by: str | None) -> pd.DataFrame:
-    """The float feature matrix of `df`, the `ranked` columns replaced by their percentile rank within each `group_by` group."""
+def _prepare(df: pd.DataFrame, features: list[str], ranked: list[str], group_by: str | None) -> tuple[pd.DataFrame, np.ndarray]:
+    """The float feature matrix of `df` with the `ranked` columns replaced by their percentile rank within each `group_by` group, and the group of each row."""
     # Columns the transform needs.
     needed = [*features, *([group_by] if group_by else [])]
     missing = [name for name in needed if name not in df.columns]
@@ -37,10 +37,10 @@ def _prepare(df: pd.DataFrame, features: list[str], ranked: list[str], group_by:
 
     # Percentile rank inside the group (the whole frame when there is no group).
     matrix = df[features].astype(float)
+    groups = df[group_by].to_numpy() if group_by else np.zeros(len(df), dtype=int)
     if ranked:
-        groups = df[group_by].to_numpy() if group_by else np.zeros(len(df), dtype=int)
         matrix[ranked] = matrix[ranked].groupby(groups).rank(pct=True).to_numpy()
-    return matrix
+    return matrix, groups
 
 
 def _digest(specs: list[dict[str, str | None]], group_by: str | None, centroids: list[list[float]], mean: list[float], std: list[float]) -> str:
@@ -84,9 +84,8 @@ class ClusterTransformer:
     def fit(self, df: pd.DataFrame) -> Self:
         """Fit k-means on the standardised sample of `df`; returns self."""
         # Complete rows only, then at most `max_rows_per_group` of them per group (seeded draw, order of `df` fixed).
-        matrix = _prepare(df, self.features, self.ranked, self.group_by)
+        matrix, groups = _prepare(df, self.features, self.ranked, self.group_by)
         complete = matrix.notna().all(axis=1).to_numpy()
-        groups = df[self.group_by].to_numpy() if self.group_by else np.zeros(len(df), dtype=int)
         draw = pd.Series(np.random.default_rng(self.seed).random(len(df))[complete])
         within_group = draw.groupby(groups[complete]).rank(method="first").to_numpy()
         sample = matrix.to_numpy()[complete][within_group <= self.max_rows_per_group]
@@ -123,8 +122,8 @@ class ClusterTransformer:
             raise RuntimeError("the cluster transformer is not fitted: call fit or load first")
 
         # Standardise with the stored parameters; rows with a null feature get no label.
-        matrix = _prepare(df, self.features, self.ranked, self.group_by).to_numpy()
-        z = (matrix - np.array(self.mean)) / np.array(self.std)
+        matrix, _ = _prepare(df, self.features, self.ranked, self.group_by)
+        z = (matrix.to_numpy() - np.array(self.mean)) / np.array(self.std)
         null_row = np.asarray(np.isnan(z).any(axis=1), dtype=bool)
         valid = ~null_row
 
@@ -151,12 +150,12 @@ class ClusterTransformer:
             "centroids": self.centroids,
             "sizes": self.sizes,
         }
-        Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     @classmethod
     def load(cls, path: Path) -> Self:
         """A fitted transformer read from the JSON `save` wrote; refuses a file whose content no longer matches its version."""
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
         block = {key: payload[key] for key in ("features", "group_by", "k", "seed", "n_init", "max_rows_per_group")}
         transformer = cls(OmegaConf.create(block))
         digest = _digest(payload["features"], payload["group_by"], payload["centroids"], payload["mean"], payload["std"])

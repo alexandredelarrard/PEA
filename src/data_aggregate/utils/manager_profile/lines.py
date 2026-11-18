@@ -38,7 +38,7 @@ _NUMERIC_COLUMNS = ["shares", "value_usd", "call_value", "put_value", "debt_valu
 _VALUE_COLUMN = {"common": "value_usd", "debt": "debt_value", "call": "call_value", "put": "put_value"}
 _BOOK_KEYS = ["cik", "period", "filing_date", "accession_number"]
 #: Columns of the cleaned lines `clean_book` returns.
-_CLEAN_COLUMNS = ["cik", "period", "kind", "key", "ticker", "issuer_name", "title_of_class", "filing_date", "shares", "value"]
+_CLEAN_COLUMNS = ["cik", "period", "kind", "key", "ticker", "cusip", "issuer_name", "title_of_class", "filing_date", "shares", "value"]
 
 
 def _original_book(raw: pd.DataFrame, min_lines: int) -> pd.DataFrame:
@@ -127,6 +127,7 @@ def _clean_lines(book: pd.DataFrame, value: pd.Series, ticker: pd.Series) -> pd.
     grouped = lines.groupby(keys, sort=False)
     out = grouped.agg(
         ticker=("ticker", "first"),
+        cusip=("cusip", "first"),
         issuer_name=("issuer_name", "first"),
         title_of_class=("title_of_class", "first"),
         filing_date=("filing_date", "first"),
@@ -137,7 +138,7 @@ def _clean_lines(book: pd.DataFrame, value: pd.Series, ticker: pd.Series) -> pd.
 
 
 def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.DataFrame:
-    """Cleaned lines (kind, key, ticker, issuer_name, title_of_class, filing_date, shares, value) of every manager's original accession in `raw`.
+    """Cleaned lines (kind, key, ticker, cusip, issuer_name, title_of_class, filing_date, shares, value) of every manager's original accession in `raw`.
 
     `prefixes` (`reference.prefix_tickers`) names the ticker of a CUSIP carried without one. Equity values take the cube's two-pass
     book-unit repair; lines it re-values above their whole filed book (a garbage `shares` column) are dropped. Share lines that are bond

@@ -134,6 +134,7 @@ class StepCubeTarget(Step):
         df_rows = load_source(self._context, Tables.prices_macro, series, columns=["date", "ticker", "close"])
         if df_rows is None:
             raise RuntimeError(f"{Tables.prices_macro.name}: configured macro history is unavailable")
+        df_rows["date"] = pd.to_datetime(df_rows["date"], format="%Y-%m-%d")
         return df_rows.pivot_table(index="date", columns="ticker", values="close", aggfunc="last").sort_index()
 
     # ---- factor panel ---- #

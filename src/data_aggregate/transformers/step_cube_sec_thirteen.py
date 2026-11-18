@@ -184,8 +184,8 @@ class StepCubeSecThirteen(Step):
         frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=None if plan.saved.window.is_full else oldest)
         frames.require(*self._FIELDS)
 
-        # clean: the labelled managers by label period and by cluster
-        labelled = plan.labels[plan.labels["cluster"].ge(0)]
+        # clean: the managers of the clusters that have features (not the tracked-only ids or the sentinels), by label period and by cluster
+        labelled = plan.labels[plan.labels["cluster"].isin([spec.cluster_id for spec in plan.specs])]
         members = {
             (cast(pd.Timestamp, period), int(cast(float, cluster))): group["cik"].tolist()
             for (period, cluster), group in labelled.groupby(["period", "cluster"])

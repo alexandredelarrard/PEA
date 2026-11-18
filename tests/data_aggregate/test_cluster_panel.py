@@ -171,6 +171,7 @@ class World:
         self.store, self.cfg = store, cfg
         self.set_prices(last_price_day)
         self.reads: list[list[str]] = []
+        self.read_ciks: list[str] = []
         self.writes: list[tuple[str, pd.DataFrame]] = []
         self._spy()
 
@@ -180,6 +181,7 @@ class World:
         def _load(table: Any, *args: Any, **kwargs: Any) -> Any:
             if getattr(table, "name", table) == Tables.sec13f_hr.name:
                 self.reads.append(list(kwargs["where"]["period"]))
+                self.read_ciks.extend(kwargs["where"]["cik"])
             return load(table, *args, **kwargs)
 
         def _replace(table: Any, df: pd.DataFrame, *args: Any, **kwargs: Any) -> int:
@@ -239,6 +241,25 @@ def test_full_build_carries_the_80_columns_by_publication_with_membership_from_t
     assert part[part["ticker"].eq("Z")][FLOW].isna().all() and part["f_ic_cluster_3_net_breadth"].isna().all()
     print(
         f"SANITY: {len(part)} rows, 80 float32 columns; X flow 0.01 until 2024-05-21 then 0.009 once the 2023-12-31 label moves the mover out; Z has no row."
+    )
+
+
+def test_managers_of_tracked_only_clusters_and_the_sentinels_are_neither_read_nor_members(world: Any) -> None:
+    w = world("2025-03-31")
+    w.step().run(full=True)
+    first = w.part()
+    extra = [("9000000011", 11), ("9000000012", 12), ("9000000013", 13), ("9000000015", 15), ("9000000090", -1), ("9000000091", -2)]
+    rows = [(cik, period, cluster) for period in PERIODS for cik, cluster in extra]
+    w.store.save(Tables.sec_13f_manager_details, pd.DataFrame(rows, columns=["cik", "period", "cluster"]))
+    w.reads.clear()
+    w.read_ciks.clear()
+
+    w.step().run(full=True)
+
+    assert w.read_ciks and not set(w.read_ciks) & {cik for cik, _ in extra}, "no line of a tracked-only or sentinel manager is read"
+    pd.testing.assert_frame_equal(w.part(), first)
+    print(
+        f"SANITY: {len(extra)} managers labelled 11, 12, 13, 15, -1 and -2 in every quarter: {len(set(w.read_ciks))} CIKs read (the clusters with features only) and the 80 columns equal the build without them."
     )
 
 

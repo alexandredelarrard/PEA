@@ -41,8 +41,8 @@ def _split_factors(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.Series:
     pairs = held[0].merge(held[1], on=["cik", "ticker"], suffixes=("", "_p"))
     ratio = pairs["shares"] / pairs["shares_p"]
     median = ratio.groupby(pairs["ticker"]).median()
-    near = ((ratio / pairs["ticker"].map(median) - 1).abs() < _SPLIT_TOLERANCE).groupby(pairs["ticker"]).mean()
-    is_split = (median.map(np.log).abs() > _SPLIT_MIN_LOG) & (near >= _SPLIT_AGREEMENT)
+    near = ((ratio / pairs["ticker"].map(median) - 1).abs() < _SPLIT_TOLERANCE).astype(float).groupby(pairs["ticker"]).mean()
+    is_split = (median.map(np.log).abs() > _SPLIT_MIN_LOG) & near.ge(_SPLIT_AGREEMENT)
     return median.where(is_split, 1.0)
 
 

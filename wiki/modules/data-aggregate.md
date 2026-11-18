@@ -5,10 +5,10 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
 integration_parents:
-  - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
-  - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 # Cube aggregation
 

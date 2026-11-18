@@ -1,11 +1,14 @@
 ---
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
 title: Portfolio
 description: Independent model long/short, S&P 500 and cash backtest and offline HTML.
 type: module
 tags:
   - wiki
   - module
+integration_parents:
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 # Portfolio
 

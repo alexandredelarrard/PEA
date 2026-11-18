@@ -12,7 +12,7 @@ from src.utils.identity_tables import CusipTags
 #: Columns of the company books: a manager's line per company and kind, its rank by value among all the manager's common
 #: companies, and the manager's whole common book value.
 BOOK_COLUMNS = ("cik", "kind", "ticker", "shares", "value", "rank", "book_total", "filing_date")
-_OPTIONS = ("call", "put")
+OPTION_KINDS = ("call", "put")
 
 
 def company_books(classified: pd.DataFrame, tags: CusipTags, universe: Collection[str]) -> pd.DataFrame:
@@ -44,7 +44,7 @@ def company_books(classified: pd.DataFrame, tags: CusipTags, universe: Collectio
     equity = book[book["us"] & book["ticker"].isin(members)]
 
     # compute: the option lines of universe companies
-    options = keyed[keyed["kind"].isin(_OPTIONS) & keyed["ticker"].isin(members)]
+    options = keyed[keyed["kind"].isin(OPTION_KINDS) & keyed["ticker"].isin(members)]
     option_book = options.groupby([*keys, "kind"], as_index=False, sort=False).agg(
         value=("value", "sum"), filing_date=("filing_date", "first"), shares=("shares", "sum")
     )

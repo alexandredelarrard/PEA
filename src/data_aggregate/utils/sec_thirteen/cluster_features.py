@@ -1,4 +1,4 @@
-"""Per-cluster 13F features of one report quarter, from the company books of the cluster's managers (REQ-011, REQ-012).
+"""Per-cluster 13F features of one report quarter, from the company books of the cluster's managers.
 
 `cluster_feature_frame` serves every cluster: it keeps the managers of the member list that filed a common book in both quarters and
 turns their lines into the cluster's configured features per ticker. Each helper is flat (pandas and numpy only).
@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.cluster_config import ClusterSpec
+from src.data_aggregate.utils.sec_thirteen.cluster_lines import OPTION_KINDS
 
 #: Columns of the market frame (index ticker): quarter-end market cap now and one quarter back, shares outstanding, 250-day volatility.
 MARKET_COLUMNS = ("market_cap", "market_cap_prev", "shares_outstanding", "volatility")
@@ -23,7 +24,6 @@ _SPLIT_TOLERANCE = 0.05
 #: A line is near its cap at 4% of its manager's common book; a top-10 line is one of the manager's ten largest common companies.
 _NEAR_CAP_WEIGHT = 0.04
 _TOP_RANK = 10
-_OPTION_KINDS = ["call", "put"]
 
 
 @dataclass(frozen=True)
@@ -122,9 +122,9 @@ def _rank_gap(flows: pd.DataFrame, books: QuarterBooks, ciks: list[str], market:
 
 def _slot(flows: pd.DataFrame, books: QuarterBooks, ciks: list[str], market: pd.DataFrame) -> pd.DataFrame:
     """The cluster-type features: `cap_proximity`, `option_intensity` and `flow_x_vol` (flow times volatility rank minus one half)."""
-    options = books.cur[books.cur["kind"].isin(_OPTION_KINDS) & books.cur["cik"].isin(set(ciks))]
+    options = books.cur[books.cur["kind"].isin(OPTION_KINDS) & books.cur["cik"].isin(set(ciks))]
     by_kind = options.pivot_table(index="ticker", columns="kind", values="value", aggfunc="sum")
-    option_value = by_kind.reindex(index=flows.index, columns=_OPTION_KINDS).fillna(0.0).sum(axis=1)
+    option_value = by_kind.reindex(index=flows.index, columns=list(OPTION_KINDS)).fillna(0.0).sum(axis=1)
     volatility_rank = market["volatility"].reindex(flows.index).rank(pct=True)
     return pd.DataFrame(
         {

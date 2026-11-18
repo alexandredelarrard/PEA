@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.modelling.transformers.cluster import ClusterTransformer
 
-NO_CLUSTER = -1
+_NO_CLUSTER = -1
 
 
 def _passes_size(df: pd.DataFrame, filters: Mapping[str, Any]) -> pd.Series:
@@ -54,12 +54,9 @@ def keep_clusters(transformer: ClusterTransformer, exclude: Mapping[str, Any], k
 
 
 def write_centroids(transformer: ClusterTransformer, mapping: dict[int, int], path: Path) -> None:
-    """Save the fit to `path` and add each fitted cluster's `kept` flag and kept `number` (null when dropped); the fit's own keys and hash are unchanged."""
-    transformer.save(path)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["kept"] = [index in mapping for index in range(transformer.k)]
-    payload["number"] = [mapping.get(index) for index in range(transformer.k)]
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    """Save the fit to `path` with each fitted cluster's `kept` flag and kept `number` (null when dropped); the fit's own keys and hash are unchanged."""
+    kept = {"kept": [index in mapping for index in range(transformer.k)], "number": [mapping.get(index) for index in range(transformer.k)]}
+    transformer.save(path, kept)
 
 
 def read_mapping(path: Path) -> dict[int, int]:
@@ -92,5 +89,5 @@ def assemble_labels(
     # Category rows take their id; funds win on the fitted category; the size filters apply to both.
     by_category = due["category"].map(categories).astype(float)
     label = fund.where(due["category"].eq(filters["category"]), by_category)
-    label = label.where(_passes_size(due, filters)).fillna(NO_CLUSTER)
+    label = label.where(_passes_size(due, filters)).fillna(_NO_CLUSTER)
     return due[["cik", "period"]].assign(cluster=label.astype(int))

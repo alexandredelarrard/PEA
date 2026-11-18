@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 FUND = "fund"
 COLUMN_PREFIX = "f_ic_cluster"
 #: Feature names the cluster feature function can compute.
-CLUSTER_FEATURES = (
+_CLUSTER_FEATURES = (
     "net_breadth",
     "new_position_rate",
     "net_share_flow",
@@ -73,9 +73,9 @@ def validate_cluster_config(cluster: DictConfig) -> None:
     blocks = dict(cluster.clusters)
     if FUND not in blocks:
         raise ValueError(f"cluster.clusters needs a {FUND!r} block")
-    bad_features = [f"{kind}: {name}" for kind, block in blocks.items() for name in block.features if name not in CLUSTER_FEATURES]
+    bad_features = [f"{kind}: {name}" for kind, block in blocks.items() for name in block.features if name not in _CLUSTER_FEATURES]
     if bad_features:
-        raise ValueError(f"cluster.clusters: unknown cluster features {bad_features}; expected names from {list(CLUSTER_FEATURES)}")
+        raise ValueError(f"cluster.clusters: unknown cluster features {bad_features}; expected names from {list(_CLUSTER_FEATURES)}")
     low = [kind for kind, block in blocks.items() if int(block.min_holders) < 1]
     if low:
         raise ValueError(f"cluster.clusters: min_holders must be at least 1 for {low}")

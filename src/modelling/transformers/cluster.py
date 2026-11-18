@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self, cast
 
@@ -133,8 +134,8 @@ class ClusterTransformer:
         nearest[valid] = np.argmin((centroids**2).sum(axis=1) - 2.0 * z[valid] @ centroids.T, axis=1)
         return pd.Series(pd.arrays.IntegerArray(nearest, null_row), index=df.index)
 
-    def save(self, path: Path) -> None:
-        """Write the fit to `path` as JSON."""
+    def save(self, path: Path, extra: Mapping[str, Any] | None = None) -> None:
+        """Write the fit to `path` as JSON, then the `extra` keys (outside the version hash)."""
         if self.version is None:
             raise RuntimeError("the cluster transformer is not fitted: nothing to save")
         payload: dict[str, Any] = {
@@ -149,6 +150,7 @@ class ClusterTransformer:
             "std": self.std,
             "centroids": self.centroids,
             "sizes": self.sizes,
+            **(extra or {}),
         }
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 

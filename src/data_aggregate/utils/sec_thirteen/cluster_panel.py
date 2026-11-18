@@ -1,4 +1,4 @@
-"""The publication clock of the quarterly cluster features and their expansion onto trading days (REQ-014).
+"""The publication clock of the quarterly cluster features and their expansion onto trading days.
 
 A quarter is published once, on the first trading day on or after its 45-day filing deadline snapped to a trading day plus the buffer. From then
 until the next quarter is published, and at most `max_age_days` calendar days, its frame is the value of every ticker it holds a row for.

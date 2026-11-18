@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from time import perf_counter
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -42,7 +43,7 @@ _INCREMENTAL_WARNING = (
 class StepCubeGovernance(Step):
     _FIELDS = _PRICE_FIELDS
 
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
 
         self._cfg = config.data_aggregate
@@ -55,7 +56,8 @@ class StepCubeGovernance(Step):
             return {}
         frames = self._load_frames(window.read, calendar)
 
-        merger = PanelMerger(anchor=frames.skeleton())
+        output_frames = frames.on(frames.trading_index[frames.trading_index >= window.read.start], "close_split", "close_total")
+        merger = PanelMerger(anchor=output_frames.skeleton())
         merger.add(
             self._governance_panel(frames, window),
             "governance",
@@ -89,14 +91,13 @@ class StepCubeGovernance(Step):
 
     # ---- inputs ---- #
     def _load_frames(self, window: Window, calendar: pd.DatetimeIndex) -> PriceFrames:
-        """Retain full count lineage while bounding the daily feature/return grid."""
+        """Load retained prices once for count lineage and conditional schema-support probes."""
         retained = source_read_window(self._config, Tables.cube_part_prices, window.end)
         if retained is None:
             raise ValueError("No configured price lineage is available")
-        frames = load_price_frames(
+        return load_price_frames(
             self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=_PRICE_FIELDS, window=retained
         )
-        return frames.on(frames.trading_index[frames.trading_index >= window.start], "close_split", "close_total")
 
     def _load_def14a(self, window: Window | None) -> pd.DataFrame | None:
         """Load usable scalar observations, excluding archives and retry-only parents."""
@@ -158,6 +159,7 @@ class StepCubeGovernance(Step):
     # ---- panels ---- #
     def _governance_panel(self, frames: PriceFrames, window: WindowPlan) -> pd.DataFrame | None:
         """Load the raw governance frames, clean them once, then build the features."""
+        existing_columns = self._store.columns(Tables.cube_part_governance)
         windows = {
             table: source_read_window(self._config, table, window.read.end)
             for table in (Tables.def14a_llm, Tables.sec_8k_votes, Tables.sharadar_fundamentals_history)
@@ -177,6 +179,8 @@ class StepCubeGovernance(Step):
             ownership=self._load_proxy_child(Tables.def14a_ownership, df, _OWNERSHIP_COLUMNS),
         )
         fundamentals = self._load_fundamentals(windows[Tables.sharadar_fundamentals_history])
+        retained = frames
+        frames = frames.on(frames.trading_index[frames.trading_index >= window.read.start], "close_split", "close_total")
         inputs, stats = clean_governance_inputs(raw, frames)
         lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
         for key, value in stats.items():
@@ -203,6 +207,33 @@ class StepCubeGovernance(Step):
         if fundamentals is not None:
             fundamentals = publication_rows(self._config, Tables.sharadar_fundamentals_history, fundamentals, calendar, "as_of")
 
+        panel = self._project_panel(inputs, fundamentals, frames)
+
+        # Only native historical emissions justify retaining an all-unknown bounded column.
+        missing = set() if window.is_full else set(existing_columns) - set(panel.columns)
+        end = int(retained.trading_index.searchsorted(frames.trading_index[0]))
+        span = len(frames.trading_index)
+        warmup = int(frames.trading_index.searchsorted(window.write.start))
+        advance = max(1, span - warmup)
+        if missing:
+            self._log.info("Governance bounded schema lacks retained columns: %s", sorted(missing))
+        while missing and end:
+            start = max(0, end - span)
+            historical = self._project_panel(inputs, fundamentals, retained.on(retained.trading_index[start:end], "close_split", "close_total"))
+            if set(historical.columns) - set(existing_columns):
+                raise ValueError("Governance feature columns changed; an explicit full rebuild is required")
+            proven = missing.intersection(historical.columns)
+            for column in sorted(proven):
+                support = historical.loc[historical[column].notna() & ~historical[column].isin([float("inf"), float("-inf")]), "date"]
+                self._log.info("Governance historical schema support %s: %s finite cells, %s..%s", column, len(support), support.min(), support.max())
+            panel = panel.assign(**{column: pd.Series(index=panel.index, dtype="float32") for column in proven})
+            missing.difference_update(proven)
+            end = max(0, end - advance)
+        return panel
+
+    def _project_panel(self, inputs: GovernanceInputs, fundamentals: pd.DataFrame | None, frames: PriceFrames) -> pd.DataFrame:
+        """Project the unchanged governance calculations and report their support and cost."""
+        started = perf_counter()
         panel, tally = build_governance_feature_panel(
             inputs.def14a,
             frames.peers,
@@ -214,6 +245,14 @@ class StepCubeGovernance(Step):
             director_comp=inputs.director_comp,
             close_total=frames.close_total,
             availability=frames.availability,
+        )
+        self._log.info(
+            "Governance projection %s..%s: %s sessions, %s feature columns, %.3fs",
+            frames.trading_index.min(),
+            frames.trading_index.max(),
+            len(frames.trading_index),
+            len(panel.columns) - 2,
+            perf_counter() - started,
         )
 
         # Per-family row counts, the [0,1] rejects and the CEO-ballot split, one line each.

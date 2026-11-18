@@ -71,7 +71,8 @@ def test_dag_is_sequential_except_the_manager_profile_beside_momentum():
     tasks = dag.tasks
     assert tasks["build_manager_profile"].upstream == {"build_fundamentals"}
     assert tasks["build_momentum"].upstream == {"build_fundamentals"}
-    assert tasks["build_text"].upstream == {"build_momentum", "build_manager_profile"}
+    assert tasks["build_cluster"].upstream == {"build_manager_profile"}
+    assert tasks["build_text"].upstream == {"build_momentum", "build_cluster"}
     assert tasks["build_institutionals"].upstream == {"build_text"}, "the profile task is finished before the 13F parts start"
     assert tasks["build_prices"].upstream == {"deduce_peers"} and tasks["assemble_cube"].upstream == {"build_governance"}
     others = set(tasks) - {"build_manager_profile"}
@@ -79,6 +80,10 @@ def test_dag_is_sequential_except_the_manager_profile_beside_momentum():
         name for name in others if name not in _descendants(dag, "build_manager_profile") and "build_manager_profile" not in _descendants(dag, name)
     }
     assert parallel == {"build_momentum"}, "the profile task overlaps build_momentum only"
+    cluster_parallel = {
+        name for name in set(tasks) - {"build_cluster"} if name not in _descendants(dag, "build_cluster") and "build_cluster" not in _descendants(dag, name)
+    }
+    assert cluster_parallel == {"build_momentum"}, "the cluster task overlaps build_momentum only"
     # the memory-driven serialization the old DAG needed is gone
     for gone in ("institutional_task", "superinvestor_task", "fundamental_task", "features -g"):
         assert gone not in src, f"'{gone}' should have been removed with the sub-step split"
@@ -93,11 +98,11 @@ def test_dag_is_sequential_except_the_manager_profile_beside_momentum():
 def test_every_step_and_the_prediction_trigger_run_all_done():
     dag = load_dag(DAG_FILE)
     steps = [command.replace("-", "_") for command in PART_COMMANDS]
-    gated = [*steps, "build_manager_profile", "assemble_cube", "cube_status", "trigger_strat_prediction"]
+    gated = [*steps, "build_manager_profile", "build_cluster", "assemble_cube", "cube_status", "trigger_strat_prediction"]
     assert {task_id: dag.tasks[task_id].trigger_rule for task_id in gated} == dict.fromkeys(gated, ALL_DONE)
     assert dag.tasks["trigger_strat_prediction"].upstream == {"cube_status"}
 
-    for failed in ([steps[0]], ["build_text", "assemble_cube"], ["cube_status"], ["build_manager_profile"]):
+    for failed in ([steps[0]], ["build_text", "assemble_cube"], ["cube_status"], ["build_manager_profile"], ["build_cluster"]):
         states = replay(dag, failed)
         assert states["trigger_strat_prediction"] == "success", (failed, states)
         assert all(states[task_id] in ("success", "failed") for task_id in gated), "no step is skipped as upstream_failed"

@@ -7,9 +7,9 @@ Triggered by the extraction DAG once every source task has finished, failed or n
 
     deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─┬─▶ build_momentum ────────────┐
                          │                                              │                              ▼
-                         │  (normalizes `prices` ONCE into cube_part_   └─▶ build_manager_profile ─▶ build_text
-                         │   prices; every later step reads that part      (profile columns of                │
-                         │   back, projected to the fields it needs)        sec_13f_manager_details)           ▼
+                         │  (normalizes `prices` ONCE into cube_part_   └─▶ build_manager_profile ─▶ build_cluster ─▶ build_text
+                         │   prices; every later step reads that part      (profile columns of        (cluster labels of            │
+                         │   back, projected to the fields it needs)        sec_13f_manager_details)   the same table)              ▼
                          │                                                                        build_institutionals
                          │                                                                                     │
                          │                                                                                     ▼
@@ -31,7 +31,7 @@ score when its inputs are stale or the cube ends before `prices`.
 
 Each step is `/opt/pipeline/bin/python -m src data_aggregate <cmd>` (the pipeline's isolated venv).
 Sequential on purpose: peak memory is the largest single step rather than the sum of parallel pool slots, and each step keeps
-its heavy frames local so they are freed when it returns. The one exception is `build_manager_profile` (not a cube part), which
+its heavy frames local so they are freed when it returns. The exception is the manager branch `build_manager_profile` -> `build_cluster` (not cube parts), which
 runs beside the light `build_momentum` (`max_active_tasks=2`) and finishes before the 13F cube parts start.
 `assemble_cube` merges the parts (+ betas + peers + targets) into the cube. Peers are
 computed once up front and cached; `build_prices` folds them into a persisted sector-return column.
@@ -111,6 +111,8 @@ steps = {cmd: run(cmd, pool="default_pool", task_id=cmd.replace("-", "_")) for c
 
 # 2b) the 13F manager profile: not a cube part, a parallel branch beside the light `build_momentum`
 manager_profile = run("build-manager-profile", pool="default_pool", task_id="build_manager_profile")
+# 2c) the manager cluster labels (cluster column of the same table), after the profile it reads, still beside `build_momentum`
+manager_cluster = run("build-cluster", pool="default_pool", task_id="build_cluster")
 
 # 3) assemble the cube from the persisted parts
 assemble_cube = run("assemble-cube", pool="default_pool", task_id="assemble_cube")
@@ -160,6 +162,6 @@ trigger_strat_prediction = TriggerDagRunOperator(
 chain(deduce_peers, steps["build-prices"], steps["build-target"], steps["build-fundamentals"])
 steps["build-fundamentals"] >> [steps["build-momentum"], manager_profile]
 steps["build-momentum"] >> steps["build-text"]
-manager_profile >> steps["build-text"]
+manager_profile >> manager_cluster >> steps["build-text"]
 chain(steps["build-text"], steps["build-institutionals"], steps["build-sec-thirteen"], steps["build-governance"])
 chain(steps["build-governance"], assemble_cube, cube_status, trigger_strat_prediction)

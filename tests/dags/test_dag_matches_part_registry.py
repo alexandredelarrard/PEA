@@ -81,7 +81,9 @@ def test_dag_is_sequential_except_the_manager_profile_beside_momentum():
     }
     assert parallel == {"build_momentum"}, "the profile task overlaps build_momentum only"
     cluster_parallel = {
-        name for name in set(tasks) - {"build_cluster"} if name not in _descendants(dag, "build_cluster") and "build_cluster" not in _descendants(dag, name)
+        name
+        for name in set(tasks) - {"build_cluster"}
+        if name not in _descendants(dag, "build_cluster") and "build_cluster" not in _descendants(dag, name)
     }
     assert cluster_parallel == {"build_momentum"}, "the cluster task overlaps build_momentum only"
     # the memory-driven serialization the old DAG needed is gone

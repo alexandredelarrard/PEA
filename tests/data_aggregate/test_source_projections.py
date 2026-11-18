@@ -112,3 +112,108 @@ def test_source_projection_preserves_scoped_raw_payload(sqlite_store: DataStore,
     print(
         f"SANITY: {table.name} {legacy=}: streamed raw cells/keys/clocks/nulls/markers match scoped load; extra payload excluded; strict guard retained."
     )
+
+
+@pytest.mark.parametrize(
+    ("end_date", "as_of", "read_window", "expected_end"),
+    [
+        ("2026-01-18", "2026-01-20", None, "2026-01-18"),
+        ("2026-01-20", "2026-01-18", None, "2026-01-18"),
+        ("2026-01-20", "2026-01-20", Window(pd.Timestamp("2026-01-14"), pd.Timestamp("2026-01-16")), "2026-01-16"),
+    ],
+    ids=["configured-end", "run-as-of", "requested-window"],
+)
+def test_dated_snapshot_uses_declared_date(sqlite_store: DataStore, end_date: str, as_of: str, read_window: Window | None, expected_end: str) -> None:
+    """A snapshot resume contract without a frontier still retains its declared date scope."""
+    # Seed the registered snapshot payload across both sides of the source bounds.
+    table = Tables.superinvestor_roster
+    config = fixture_config()
+    item = config.data.tables[table.name]
+    item.start_date, item.source_start, item.end_date = "2026-01-15", None, end_date
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store, config=config, universe=universe_of(["AAPL"]), run=WindowRun("full", "dated snapshot contract", pd.Timestamp(as_of))
+        ),
+    )
+    df_rows = pd.DataFrame(
+        {
+            "snapshot_date": pd.date_range("2026-01-14", "2026-01-21"),
+            "dataroma_code": "BRK",
+            "manager_name": "Berkshire Hathaway",
+            "cik": "0001067983",
+            "resolution": "override",
+            "source_url": "https://www.dataroma.com/",
+            "unused_payload": "must not be streamed",
+        }
+    )
+    df_rows.loc[2, "manager_name"] = None
+    context.store.save(table, df_rows)
+
+    # Check exact retained keys and raw nulls through the real projected stream.
+    df_actual = load_source(context, table, window=read_window)
+    expected_dates = pd.date_range("2026-01-15", expected_end)
+    assert table.resume is not None and table.resume.frontier_col is None and table.date_col == "snapshot_date"
+    assert df_actual is not None and set(df_actual.columns) == set(table.read_columns)
+    assert pd.DatetimeIndex(df_actual.snapshot_date).sort_values().equals(expected_dates)
+    assert df_actual.manager_name.isna().sum() == 1
+    print(
+        f"SANITY: dated roster snapshots retain their declared date, inclusive hard bounds, as-of cap and requested intersection through {expected_end}."
+    )
+
+
+def test_explicit_source_frontier_precedes_table_date(sqlite_store: DataStore) -> None:
+    """A filing frontier keeps late-reported periods inside the source interval."""
+    # Seed old economic periods whose filing dates bracket the configured interval.
+    table = Tables.sec13f_hr
+    config = fixture_config()
+    item = config.data.tables[table.name]
+    item.start_date, item.source_start, item.end_date = "2026-01-15", None, "2026-01-18"
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store,
+            config=config,
+            universe=universe_of(["AAPL"]),
+            run=WindowRun("full", "filing frontier contract", pd.Timestamp("2026-01-20")),
+        ),
+    )
+    df_rows = pd.DataFrame(
+        {
+            "cik": "0001067983",
+            "period": pd.Timestamp("2025-12-31"),
+            "accession_number": [f"a-{i}" for i in range(4)],
+            "ticker": "AAPL",
+            "cusip": "037833100",
+            "filing_date": pd.to_datetime(["2026-01-14", "2026-01-15", "2026-01-18", "2026-01-19"]),
+        }
+    )
+    context.store.save(table, df_rows)
+
+    # An explicit filing clock wins over the earlier economic period.
+    df_actual = load_source(context, table, columns=list(df_rows.columns))
+    assert df_actual is not None and set(df_actual.accession_number) == {"a-1", "a-2"}
+    assert set(pd.to_datetime(df_actual.period)) == {pd.Timestamp("2025-12-31")}
+    print("SANITY: explicit filing_date frontier retains the in-bounds filings even when their economic period precedes the source floor.")
+
+
+def test_undated_source_requires_parent_keys(sqlite_store: DataStore) -> None:
+    """A child without either intrinsic date cannot silently become an unbounded read."""
+    # Seed a real registered child whose date eligibility belongs to its parent.
+    table = Tables.insider_footnotes
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store,
+            config=fixture_config(),
+            universe=universe_of(["AAPL"]),
+            run=WindowRun("full", "undated child refusal", pd.Timestamp("2026-01-20")),
+        ),
+    )
+    context.store.save(table, pd.DataFrame({"accession_number": ["a-1"], "footnote_id": ["F1"], "footnote_text": ["Known source text"]}))
+
+    # Parent-key inheritance remains mandatory for a genuinely undated source.
+    assert table.date_col is None and table.resume is None
+    with pytest.raises(ValueError, match="undated source rows require inherited parent keys"):
+        load_source(context, table)
+    print("SANITY: genuinely undated source children still require inherited parent keys before streaming.")

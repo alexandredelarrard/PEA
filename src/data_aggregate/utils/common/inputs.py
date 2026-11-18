@@ -31,9 +31,9 @@ def load_source(
         logger.warning("%s is absent -> its features are unavailable.", table.name)
         return None
     selected = universe if universe is not None else context.universe.tickers
-    filters = {table.ticker_col: sorted(set(selected))} if table.ticker_col else {}
+    filters: dict[str, object] = {table.ticker_col: sorted(set(selected))} if table.ticker_col else {}
     retained = source_read_window(context.config, table, context.run.as_of)
-    clock = table.resume.frontier_col if table.resume is not None else table.date_col
+    clock = (table.resume.frontier_col or table.date_col) if table.resume is not None else table.date_col
     if item.status == "active":
         retained = retained.intersection(window) if retained is not None and window is not None else retained
         if retained is None:

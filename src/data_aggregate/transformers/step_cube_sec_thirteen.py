@@ -217,9 +217,12 @@ class StepCubeSecThirteen(Step):
         tolerance = float(self._config.cluster.consistency_tolerance)
         differs = ~((np.isnan(new) & np.isnan(old)) | (np.abs(new - old) <= tolerance))
         if differs.any():
+            gaps = np.abs(new - old)[differs]
+            finite = gaps[np.isfinite(gaps)]
+            largest = f"{finite.max():.3g}" if finite.size else "none, only a null against a value"
             raise RuntimeError(
                 f"the saved quarter {saved.date()} no longer reproduces ({int(differs.sum())} of {differs.size} cells differ, "
-                f"largest {np.nanmax(np.abs(new - old)):.3g}): the labels or centroids changed; {_REBUILD}"
+                f"largest {largest}): the labels or centroids changed; {_REBUILD}"
             )
 
     def _expand(self, plan: Plan, computed: dict[pd.Timestamp, pd.DataFrame]) -> pd.DataFrame:

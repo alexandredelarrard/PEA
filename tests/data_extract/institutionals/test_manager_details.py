@@ -568,7 +568,7 @@ def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
 
 
 def test_first_extract_write_creates_the_table_whole_without_any_alter(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """On an empty database the extract creates all 40 declared columns (the 30 profile ones empty) and never alters the table."""
+    """On an empty database the extract creates all 42 declared columns (the 32 profile and cluster ones empty) and never alters the table."""
     create_canonical(sqlite_store.engine, [Tables.sec13f_hr])
     monkeypatch.setattr(sec_io, "download", lambda *a, **k: pytest.fail("SEC request"))
     ctx = fake_context(tmp_path, sqlite_store, [])
@@ -582,8 +582,10 @@ def test_first_extract_write_creates_the_table_whole_without_any_alter(tmp_path:
 
     declared = [line.split('"')[1] for line in ddl.declared_statements("sec_13f_manager_details")[0].splitlines() if line.startswith('    "')]
     assert changed == 1 and alters == []
-    assert sqlite_store.columns(Tables.sec_13f_manager_details) == declared and len(declared) == 40
+    assert sqlite_store.columns(Tables.sec_13f_manager_details) == declared and len(declared) == 42
     df = _rows(sqlite_store)
     assert df[[c for c in declared if c not in EXTRACT_COLUMNS]].isna().all().all(), "the profile columns exist and stay empty"
     print("\n=== SANITY CHECK: table declared whole at creation ===")
-    print(f"  first extract write: {len(declared)} columns created, 30 profile columns empty, no ensure_columns / ALTER issued. Validated.")
+    print(
+        f"  first extract write: {len(declared)} columns created, 32 profile and cluster columns empty, no ensure_columns / ALTER issued. Validated."
+    )

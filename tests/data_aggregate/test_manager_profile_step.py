@@ -161,8 +161,8 @@ def _stamp(period: pd.Timestamp) -> str:
 
 def test_the_table_is_declared_whole_so_the_profile_step_adds_no_column(store: Any, cfg: DictConfig, monkeypatch: pytest.MonkeyPatch) -> None:
     _add_quarter(store, 0)  # a single quarter: no turnover, cap or active-share evidence, so those float columns are all null
-    declared = list(EXTRACT_COLUMNS) + list(PROFILE_COLUMNS)
-    assert store.columns(Tables.sec_13f_manager_details) == declared, "the extract's table already holds all 40 columns, profile ones empty"
+    declared = [*EXTRACT_COLUMNS, *PROFILE_COLUMNS, "cluster"]
+    assert store.columns(Tables.sec_13f_manager_details) == declared, "the extract's table already holds all 42 columns, profile ones empty"
     calls: list[tuple[str, pd.DataFrame]] = []
     save = store.save
     monkeypatch.setattr(store, "ensure_columns", lambda *a, **k: pytest.fail("the profile step alters no table"))
@@ -177,13 +177,13 @@ def test_the_table_is_declared_whole_so_the_profile_step_adds_no_column(store: A
     assert changed == len(MANAGERS) and df["turnover"].isna().all() and df["active_share"].isna().all()
     assert df["category"].notna().all() and df["n_quarters_used"].eq(1).all()
     print("\n=== SANITY CHECK: table declared whole ===")
-    print(f"{len(df)} rows; 40 columns from the extract's creation, profile upserted with no ALTER. Validated.")
+    print(f"{len(df)} rows; 42 columns from the extract's creation, profile upserted with no ALTER. Validated.")
 
 
 def test_profile_step_first_on_an_empty_database_writes_nothing_and_the_extract_then_creates_the_table(store: Any, cfg: DictConfig) -> None:
     assert _step(store, cfg).run(full=False) == 0 and not store.exists(Tables.sec_13f_manager_details), "no table, no rows, no error"
     _add_quarter(store, 0)
-    assert store.columns(Tables.sec_13f_manager_details) == list(EXTRACT_COLUMNS) + list(PROFILE_COLUMNS)
+    assert store.columns(Tables.sec_13f_manager_details) == [*EXTRACT_COLUMNS, *PROFILE_COLUMNS, "cluster"]
     assert _step(store, cfg).run(full=False) == len(MANAGERS)
     print("\n=== SANITY CHECK: profile step first ===")
     print("an empty database ends the profile run quietly; after the extract's write the next profile run fills 4 rows. Validated.")

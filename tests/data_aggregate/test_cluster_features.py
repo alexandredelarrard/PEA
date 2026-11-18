@@ -19,7 +19,7 @@ from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_b
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
 from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.cluster_config import ClusterSpec, cluster_specs
-from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
+from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, _split_factors, cluster_feature_frame
 from src.data_aggregate.utils.sec_thirteen.cluster_lines import BOOK_COLUMNS, company_books
 from src.data_aggregate.utils.sec_thirteen.cluster_panel import filing_deadlines
 from src.data_store.schema import Tables
@@ -34,6 +34,8 @@ PERIOD = pd.Timestamp("2024-12-31")
 FILED = PERIOD + pd.Timedelta(days=40)
 EIGHT = ("net_breadth", "new_position_rate", "net_share_flow", "top10_chg", "rank_gap", "rank_gap_chg", "stickiness", "cap_proximity")
 FOUR = EIGHT[:4]
+#: The ticker splits of the quarter 2024-10..2024-12 (ex-dates inside it) held by enough managers of the real sample.
+REAL_SPLITS = {"ANET": 4.0, "ETR": 2.0, "LRCX": 10.0, "PANW": 2.0, "TSCO": 5.0}
 
 
 def _line(cik: str, ticker: str, shares: float, value: float, rank: float = 20.0, total: float = 1000.0, kind: str = "common") -> dict:
@@ -119,6 +121,75 @@ def test_a_two_for_one_split_is_not_a_flow_and_disagreeing_holders_are_not_a_spl
     print("\n=== SANITY CHECK: split factor ===")
     print(out.round(4).to_string())
     print(f"The 2-for-1 ticker reads a flow of 5.0% instead of the naive {naive_s:.0%}; the other two tickers keep their unscaled flows.")
+
+
+def _holders(ticker: str, ratios: list[float]) -> tuple[list[dict], list[dict]]:
+    """One holder per ratio: 1,000 + 100 x its index shares a quarter back, `ratio` times that now (prev lines, cur lines)."""
+    prev = [_line(f"h{i}", ticker, 1000.0 + 100.0 * i, 10.0) for i in range(len(ratios))]
+    cur = [_line(f"h{i}", ticker, (1000.0 + 100.0 * i) * ratio, 10.0) for i, ratio in enumerate(ratios)]
+    return prev, cur
+
+
+def test_real_holder_populations_a_split_is_found_from_the_minority_that_did_not_trade_and_a_trading_ticker_is_not_a_split() -> None:
+    # 40 holders of a 10-for-1 split: 17 (42.5%) kept their shares, so sit exactly at 10x; the other 23 traded on both sides of it.
+    traders = [3.1, 4.4, 5.2, 6.0, 6.9, 7.7, 8.1, 8.8, 9.3, 9.7, 10.6, 11.2, 12.5, 13.4, 14.9, 16.0, 17.5, 20.0, 25.0, 1.0, 1.0, 0.6, 2.2]
+    split_ratios = [10.0] * 17 + traders
+    # a 1-for-10 reverse split with 45% of the holders unchanged, and a ticker nobody split: 8 flat, 3 doubled, the rest anywhere
+    reverse_ratios = [0.1] * 18 + [
+        0.03,
+        0.05,
+        0.07,
+        0.08,
+        0.09,
+        0.11,
+        0.12,
+        0.14,
+        0.2,
+        0.3,
+        0.5,
+        1.0,
+        1.0,
+        0.06,
+        0.04,
+        0.16,
+        0.25,
+        0.02,
+        0.13,
+        0.095,
+        0.105,
+        0.15,
+    ]
+    plain_ratios = (
+        [1.0] * 8
+        + [2.0] * 3
+        + [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.2, 2.5, 3.0, 0.3, 0.35, 0.55, 0.85, 1.05, 1.15, 1.45, 1.7, 0.65]
+    )
+    prev_lines, cur_lines = [], []
+    # a ticker every holder moved by a dispersed 1.0-2.4x (median 1.7, 11% within 5% of it) and one with only four holders, all at 2x
+    moved_ratios = [1.0 + 0.04 * i for i in range(36)]
+    few_ratios = [2.0] * 4
+    for ticker, ratios in (("S", split_ratios), ("R", reverse_ratios), ("P", plain_ratios), ("M", moved_ratios), ("Q", few_ratios)):
+        prev, cur = _holders(ticker, ratios)
+        prev_lines, cur_lines = prev_lines + prev, cur_lines + cur
+    ciks = [f"h{i}" for i in range(40)]
+    market = _market({t: (1e9, 1e9, 1e6, 0.3) for t in "SRPMQ"})
+    out = cluster_feature_frame(QuarterBooks(_book(cur_lines), _book(prev_lines), _book([])), ciks, market, _spec(("net_share_flow",)))
+
+    def flow(ratios: list[float], factor: float) -> float:
+        return sum((1000.0 + 100.0 * i) * (ratio - factor) for i, ratio in enumerate(ratios)) / 1e6
+
+    assert out.loc["S", "net_share_flow"] == pytest.approx(flow(split_ratios, 10.0))
+    assert out.loc["R", "net_share_flow"] == pytest.approx(flow(reverse_ratios, 0.1))
+    assert out.loc["P", "net_share_flow"] == pytest.approx(flow(plain_ratios, 1.0))
+    assert out.loc["M", "net_share_flow"] == pytest.approx(flow(moved_ratios, 1.0)), "a median beyond 1.3x that few holders share is not a split"
+    assert out.loc["Q", "net_share_flow"] == pytest.approx(flow(few_ratios, 1.0)), "four holders are too few to call a split"
+    print("\n=== SANITY CHECK: split factor on realistic populations ===")
+    print(out.round(4).to_string())
+    print(
+        f"The 10:1 split (42.5% of holders at the ratio) reads {out.loc['S', 'net_share_flow']:.3f} against {flow(split_ratios, 1.0):.3f} unscaled, the 1:10 reverse split "
+        f"{out.loc['R', 'net_share_flow']:.3f} against {flow(reverse_ratios, 1.0):.3f}, the ticker with 3 doublers and 8 flat holders keeps its unscaled {out.loc['P', 'net_share_flow']:.3f}, "
+        f"and the dispersed mover ({out.loc['M', 'net_share_flow']:.3f}) and the four-holder ticker ({out.loc['Q', 'net_share_flow']:.3f}) are not scaled."
+    )
 
 
 def test_a_manager_absent_a_quarter_enters_neither_the_holders_nor_the_denominators() -> None:
@@ -363,6 +434,8 @@ def test_real_quarter_mapped_lines_cover_at_least_the_symbol_match_and_features_
             mapped_cover = books[period].query("kind == 'common'")["value"].sum() / total
 
     quarter = QuarterBooks(books[PERIOD], books[before], books[prev4])
+    detected = _split_factors(quarter.cur, quarter.prev)
+    detected = detected[detected != 1.0]
     bounded = {
         "net_breadth": 1.0,
         "new_position_rate": 1.0,
@@ -381,11 +454,17 @@ def test_real_quarter_mapped_lines_cover_at_least_the_symbol_match_and_features_
         lines.append(
             f"cluster {spec.cluster_id:>2} ({spec.kind:<13}) {len(members.get(spec.cluster_id, [])):>2} CIKs {len(out):>4} tickers {out.notna().mean().min() if len(out) else 0.0:.2f} min column fill"
         )
+    assert set(detected.index) == set(REAL_SPLITS) and all(abs(detected[t] / f - 1) < 0.03 for t, f in REAL_SPLITS.items()), detected.to_dict()
     assert mapped_cover >= symbol_cover - 0.02, (
         f"mapped coverage {mapped_cover:.3f} is worse than the symbol match {symbol_cover:.3f} by more than 2 points"
     )
     print(f"\n=== SANITY CHECK: real quarter {PERIOD.date()} ({len(ciks)} CIKs) ===")
     print("\n".join(lines))
+    print(
+        f"Split factors found on the real holders of {PERIOD.date()}: "
+        + ", ".join(f"{t} {f:.3f}" for t, f in detected.items())
+        + f" (real splits {REAL_SPLITS})."
+    )
     print(
         f"Universe-line value coverage: mapped (CusipTags, company level) {mapped_cover:.4f} vs symbol match {symbol_cover:.4f}; features inside their bounds."
     )

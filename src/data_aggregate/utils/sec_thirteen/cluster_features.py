@@ -17,10 +17,11 @@ from src.data_aggregate.utils.sec_thirteen.cluster_lines import OPTION_KINDS
 
 #: Columns of the market frame (index ticker): quarter-end market cap now and one quarter back, shares outstanding, 250-day volatility.
 MARKET_COLUMNS = ("market_cap", "market_cap_prev", "shares_outstanding", "volatility")
-#: A share count moved by a split when holders' ratios have a median beyond 1.3x (up or down) and 60% of them lie within 5% of it.
+#: A share count moved by a split when the holders' ratios have a median beyond 1.3x (up or down) and at least 5 holders and 20% of them lie within 5% of it.
 _SPLIT_MIN_LOG = float(np.log(1.3))
-_SPLIT_AGREEMENT = 0.6
+_SPLIT_AGREEMENT = 0.2
 _SPLIT_TOLERANCE = 0.05
+_SPLIT_MIN_HOLDERS = 5
 #: A line is near its cap at 4% of its manager's common book; a top-10 line is one of the manager's ten largest common companies.
 _NEAR_CAP_WEIGHT = 0.04
 _TOP_RANK = 10
@@ -41,8 +42,8 @@ def _split_factors(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.Series:
     pairs = held[0].merge(held[1], on=["cik", "ticker"], suffixes=("", "_p"))
     ratio = pairs["shares"] / pairs["shares_p"]
     median = ratio.groupby(pairs["ticker"]).median()
-    near = ((ratio / pairs["ticker"].map(median) - 1).abs() < _SPLIT_TOLERANCE).astype(float).groupby(pairs["ticker"]).mean()
-    is_split = (median.map(np.log).abs() > _SPLIT_MIN_LOG) & near.ge(_SPLIT_AGREEMENT)
+    near = ((ratio / pairs["ticker"].map(median) - 1).abs() < _SPLIT_TOLERANCE).groupby(pairs["ticker"]).agg(["sum", "mean"])
+    is_split = (median.map(np.log).abs() > _SPLIT_MIN_LOG) & near["mean"].ge(_SPLIT_AGREEMENT) & near["sum"].ge(_SPLIT_MIN_HOLDERS)
     return median.where(is_split, 1.0)
 
 

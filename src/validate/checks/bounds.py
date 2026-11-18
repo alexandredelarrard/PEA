@@ -4,10 +4,9 @@ bounds.py  (src/validate/checks/bounds.py)
 The one check that asserts on MEANING, and therefore the one that cannot have a default.
 
 A percent of a share class cannot exceed 100. A share of a board cannot exceed 1. Nothing in
-the data says which of those two a column called `..._pct` is -- measured on
-`cube_part_institutionals`, `f_ic_act_percent_of_class` runs 0 -> 99.99 (a percent) while
-`f_ic_inst_ownership_pct` runs 5.2e-08 -> 1.97 (a fraction, despite the name, and one that
-exceeds 1.0). A built-in rule for `_pct` would pass the first and fail the second for the
+the data says which of those two a column called `..._pct` is -- measured on the cube,
+`f_ic_act_percent_of_class` runs 0 -> 99.99 (a percent) while `f_insider_ownership_pct` runs
+1.7e-05 -> 0.91 (a fraction, despite the name). A built-in rule for `_pct` would pass the first and fail the second for the
 wrong reason.
 
 So bounds are DECLARED per leg in `configs/validate.yml`, and a table that declares none makes

@@ -225,8 +225,8 @@ is a leak. Also hunt forward shifts, centred windows, joins selecting future row
 > **`validate redundancy`** has already done EVERY pair — 30,876 of them on
 > `cube_part_fundamentals` — in one streaming pass, exact pairwise-complete Pearson plus an exact
 > **equality count**, which is the stronger claim. Do not hand-pick pairs: measured on
-> `cube_part_institutionals`, a 249-pair curated candidate list missed
-> `f_ic_super_exit_after_top10 ~ f_ic_super_full_exits` at r = 0.9965 entirely. Use the SQL below
+> `cube_part_institutionals`, a 249-pair curated candidate list missed a pair of legs of one
+> family at r = 0.9965 entirely. Use the SQL below
 > only to re-confirm a single pair by hand.
 
 ```sql

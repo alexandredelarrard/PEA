@@ -198,7 +198,7 @@ def test_feature_parts_cover_every_group_exactly_once():
             owners.setdefault(group, []).append(part.name)
     dupes = {g: p for g, p in owners.items() if len(p) > 1}
     assert not dupes, f"feature group(s) claimed by more than one part: {dupes}"
-    assert len(owners) == 14, f"expected 14 feature groups, got {len(owners)}: {sorted(owners)}"
+    assert len(owners) == 13, f"expected 13 feature groups, got {len(owners)}: {sorted(owners)}"
 
     print("\n=== SANITY CHECK: feature groups -> parts ===")
     for part in FEATURE_PARTS:

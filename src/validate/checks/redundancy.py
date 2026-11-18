@@ -6,8 +6,8 @@ count, which is the stronger claim and comes out of the same pass.
 
 WHY ALL PAIRS AND NOT A CURATED LIST. The research screen carried `PRIOR_G3`, thirteen pairs
 chosen by family prefix. Measured against the full cross, that list is strictly less complete:
-the all-pairs screen found pairs it does not contain, including
-`f_ic_super_exit_after_top10 ~ f_ic_super_full_exits` at r=0.9965. A curated list can only
+the all-pairs screen found pairs it does not contain, among them two legs of
+one family at r=0.9965 that nobody had listed. A curated list can only
 find the redundancy somebody already suspected, which is the redundancy least likely to be
 there. 249 legs is 30,876 pairs and the accumulator below does them all for the price of one
 read.

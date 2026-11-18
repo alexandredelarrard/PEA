@@ -28,7 +28,7 @@ def test_config_inherits_table_dates_and_applies_field_and_derived_overrides() -
     assert rules.source_date(Tables.insider_transactions) == pd.Timestamp("2006-01-03")
     assert rules.source_date(Tables.insider_transactions, "filing_date") == pd.Timestamp("2006-01-03")
     assert rules.derived_date("ic_shortvol_high_x_weak_price", []) == pd.Timestamp("2019-02-14")
-    assert "ic_inst_flow_to_mcap" not in rules.derived_features
+    assert set(rules.derived_features) == {"ic_shortvol_high_x_weak_price"}
 
     print("\n=== SANITY CHECK: compact availability inheritance ===")
     print("  Active derived features resolve their boundaries and retired features have no stale availability entry. Validated.")

@@ -251,8 +251,7 @@ def test_per_part_warmup_covers_binding_lookback():
         "governance",
         "employee",
         "dividend",
-        "institutional",
-        "superinvestor",
+        "cluster",
         "insider",
         "short_flow",
         "ownership",
@@ -270,7 +269,7 @@ def test_per_part_warmup_covers_binding_lookback():
         members = ", ".join(f"{g}({n})" for g, n in part.binding_lookbacks) or "-"
         print(f"  {part.name:<26} warm-up={part.warmup_trading_days:>5}  members: {members}")
     print(
-        f"  CONCLUSION: all 14 feature groups are owned by {len(heavy)} heavy part(s) reading "
+        f"  CONCLUSION: all 13 feature groups are owned by {len(heavy)} heavy part(s) reading "
         f"~5y and {len(light)} light part(s) reading <=400d. Each part reads only as far back "
         "as its longest member needs. Validated."
     )

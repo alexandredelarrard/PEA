@@ -14,11 +14,6 @@ from src.data_store.schema import Table, Tables
 
 _DERIVED_FEATURES = frozenset(
     {
-        "ic_inst_breadth_chg",
-        "ic_inst_shares_chg",
-        "ic_inst_new_buyer_ratio",
-        "ic_inst_exit_ratio",
-        "ic_inst_cluster_buying",
         "ic_shortvol_high_x_weak_price",
     }
 )

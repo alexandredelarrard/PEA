@@ -130,111 +130,92 @@ validate:
         - 30.0
     cube_part_sec_thirteen:
       cadence: quarterly
+      # 80 columns `f_ic_cluster_<id>_<feature>`: one publication per report quarter, carried until the next one (at most 100 days),
+      # so every value is a share, a rate or a difference of two shares/percentile ranks and the ranges below follow from the definitions.
+      # No `daily_legs` and no `ffill_horizon_days`, DELIBERATELY: no leg is rebuilt every session and none has been measured, so the
+      # FROZEN sub-check abstains. net_share_flow is divided by shares outstanding, so a cluster holding more than the whole float
+      # (a share-class or stale-share-count glitch) would breach [-1, 1] and is worth looking at, not widening away.
       bounds:
-        f_ic_inst_holders:
-        - 0.0
-        - 1.0
-        f_ic_inst_breadth_chg:
-        - -1.0
-        - 1.0
-        f_ic_inst_new_buyer_ratio:
-        - 0.0
-        - 1.0
-        f_ic_inst_exit_ratio:
-        - 0.0
-        - 1.0
-        f_ic_inst_cluster_buying:
-        - -1.0
-        - 1.0
-        f_ic_inst_concentration:
-        - 0.0
-        - 1.0
-        f_ic_inst_net_options_ratio:
-        - -1.0
-        - 1.0
-        f_ic_inst_ownership_pct:
-        - 0.0
-        - 2.0
-        f_ic_super_holders:
-        - 0.0
-        - .inf
-        f_ic_super_holders_yoy:
-        - -1.0
-        - 1.0
-        f_ic_super_conviction_weight:
-        - 0.0
-        - 1.0
-        f_ic_super_max_conviction:
-        - 0.0
-        - 1.0
-        f_ic_super_top10_holders:
-        - 0.0
-        - .inf
-        f_ic_super_breadth_chg:
-        - -1.0
-        - 1.0
-        f_ic_super_shares_chg:
-        - -1.0
-        - .inf
-        f_ic_super_shares_chg_yoy:
-        - -1.0
-        - .inf
-        f_ic_super_quarters_held:
-        - 1.0
-        - .inf
-        f_ic_super_trade_balance:
-        - -1.0
-        - 1.0
-        f_ic_super_relative_position_chg:
-        - -.inf
-        - .inf
-        f_ic_super_pooled_weight:
-        - 0.0
-        - 1.0
-        f_ic_super_pooled_weight_chg:
-        - -1.0
-        - 1.0
-        f_ic_super_topk_holders:
-        - 0.0
-        - .inf
-        f_ic_super_topk_holders_yoy:
-        - -1.0
-        - 1.0
-        f_ic_super_topk_conviction_weight:
-        - 0.0
-        - 1.0
-        f_ic_super_topk_max_conviction:
-        - 0.0
-        - 1.0
-        f_ic_super_topk_top10_holders:
-        - 0.0
-        - .inf
-        f_ic_super_topk_breadth_chg:
-        - -1.0
-        - 1.0
-        f_ic_super_topk_shares_chg:
-        - -1.0
-        - .inf
-        f_ic_super_topk_shares_chg_yoy:
-        - -1.0
-        - .inf
-        f_ic_super_topk_quarters_held:
-        - 1.0
-        - .inf
-        f_ic_super_topk_trade_balance:
-        - -1.0
-        - 1.0
-        f_ic_super_topk_relative_position_chg:
-        - -.inf
-        - .inf
-        f_ic_super_topk_pooled_weight:
-        - 0.0
-        - 1.0
-        f_ic_super_topk_pooled_weight_chg:
-        - -1.0
-        - 1.0
-      daily_legs:
-      - _to_mcap
+        f_ic_cluster_0_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_0_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_0_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_0_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_0_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_0_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_0_stickiness:         [0.0, 1.0]
+        f_ic_cluster_0_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_1_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_1_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_1_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_1_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_1_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_1_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_1_stickiness:         [0.0, 1.0]
+        f_ic_cluster_1_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_2_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_2_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_2_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_2_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_2_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_2_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_2_stickiness:         [0.0, 1.0]
+        f_ic_cluster_2_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_3_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_3_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_3_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_3_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_3_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_3_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_3_stickiness:         [0.0, 1.0]
+        f_ic_cluster_3_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_4_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_4_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_4_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_4_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_4_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_4_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_4_stickiness:         [0.0, 1.0]
+        f_ic_cluster_4_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_5_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_5_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_5_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_5_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_5_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_5_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_5_stickiness:         [0.0, 1.0]
+        f_ic_cluster_5_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_6_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_6_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_6_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_6_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_6_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_6_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_6_stickiness:         [0.0, 1.0]
+        f_ic_cluster_6_cap_proximity:      [0.0, 1.0]
+        f_ic_cluster_7_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_7_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_7_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_7_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_7_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_7_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_7_stickiness:         [0.0, 1.0]
+        f_ic_cluster_7_option_intensity:   [0.0, 1.0]
+        f_ic_cluster_8_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_8_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_8_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_8_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_8_rank_gap:           [-1.0, 1.0]
+        f_ic_cluster_8_rank_gap_chg:       [-2.0, 2.0]
+        f_ic_cluster_8_stickiness:         [0.0, 1.0]
+        f_ic_cluster_8_flow_x_vol:         [-0.5, 0.5]
+        f_ic_cluster_9_net_breadth:        [-1.0, 1.0]
+        f_ic_cluster_9_new_position_rate:  [0.0, 1.0]
+        f_ic_cluster_9_net_share_flow:     [-1.0, 1.0]
+        f_ic_cluster_9_top10_chg:          [-1.0, 1.0]
+        f_ic_cluster_10_net_breadth:       [-1.0, 1.0]
+        f_ic_cluster_10_new_position_rate: [0.0, 1.0]
+        f_ic_cluster_10_net_share_flow:    [-1.0, 1.0]
+        f_ic_cluster_10_top10_chg:         [-1.0, 1.0]
 
     # 105 columns, 3,045,028 rows. Peer-z views only -- there is no `_xs` leg in this part, so
     # declaring one would make `clip` measure tie mass over an empty set and call it a pass.

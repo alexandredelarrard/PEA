@@ -119,7 +119,7 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     ),  # QoQ embedding drift
     # Capital-disclosure parts compute on full history; 390 is nominal lifecycle metadata.
     CubePart(Tables.cube_part_institutionals, "build-institutionals", "features", 390, (("short_flow", 322), ("ownership", 126), ("insider", 0))),
-    CubePart(Tables.cube_part_sec_thirteen, "build-sec-thirteen", "features", 390, (("institutional", 0), ("superinvestor", 0))),
+    CubePart(Tables.cube_part_sec_thirteen, "build-sec-thirteen", "features", 390, (("cluster", 0),)),
     # Governance sources are all FILING-space (annual proxies, 8-K vote records), so every YoY
     # delta needs no grid warm-up at all. TWO legs bind on the daily grid, and the longer one
     # decides:

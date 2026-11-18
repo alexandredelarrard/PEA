@@ -275,14 +275,14 @@ def test_column_set_mismatch_stops_before_any_work_and_full_rebuilds(world: Any,
     w = world("2025-02-18")
     w.step().run(full=True)
     saved = w.store.load(Tables.cube_part_sec_thirteen)
-    stale = saved.assign(f_ic_inst_old=1.0)
+    stale = saved.assign(f_stale_column=1.0)
     w.store.replace(Tables.cube_part_sec_thirteen, stale)
     w.reads.clear()
     w.writes.clear()
     with pytest.raises(RuntimeError, match="build-sec-thirteen -F"):
         w.step().run()
     assert w.reads == [] and w.writes == []
-    assert "f_ic_inst_old" in w.store.columns(Tables.cube_part_sec_thirteen)
+    assert "f_stale_column" in w.store.columns(Tables.cube_part_sec_thirteen)
     w.step().run(full=True)
     assert set(w.store.columns(Tables.cube_part_sec_thirteen)) == {"date", "ticker", *column_names(cluster_specs(cfg.cluster))}
     print("SANITY: a stored column set that differs from the 80 configured stops the incremental run before any read or write; -F restores the 80.")

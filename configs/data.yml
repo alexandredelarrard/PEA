@@ -26,11 +26,6 @@ data_availability:
       __all__: "2009-07-01"  # Start of the SEC-published FTD series.
 
     derived_features:
-      ic_inst_breadth_chg: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_shares_chg: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_new_buyer_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_exit_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_cluster_buying: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
       ic_shortvol_high_x_weak_price: "2019-02-14"  # RegSHO plus z252 minimum history.
 
 # defeatbeta earnings-call transcript extraction (`extract-earnings-calls`).

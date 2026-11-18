@@ -322,7 +322,7 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         stages.append("clean")
         columns = ["ticker", "owner_cik", "accession_number", "filing_date"]
         actual = df_insider[columns].sort_values(columns[:3]).reset_index(drop=True)
-        expected = history.loc[pd.to_datetime(history.filing_date).ge("2006-01-03"), columns].sort_values(columns[:3]).reset_index(drop=True)
+        expected = history[columns].sort_values(columns[:3]).reset_index(drop=True)
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
         expected["filing_date"] = days[0]  # both known historical publication dates precede this retained toy clock
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
@@ -373,12 +373,12 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     insider_reads = [kwargs for table, kwargs in reads if table is Tables.insider_transactions]
     assert len(price_reads) == len(insider_reads) == 5
     assert all(kwargs["columns"] == ["date", "ticker", *step._FIELDS] and kwargs["where"] == {"ticker": list(names)} and kwargs["until"] == days[-1] for kwargs in price_reads)
-    assert all(kwargs["where"]["ticker"] == list(names) and isinstance(kwargs["where"]["filing_date"], Window) and kwargs["markers"] for kwargs in insider_reads)
+    assert all(kwargs["where"] == {"ticker": list(names)} and kwargs["since"] is None and kwargs["until"] == ctx.run.as_of and kwargs["date_col"] == "filing_date" and kwargs["markers"] for kwargs in insider_reads)
     assert all({"issuer_cik", "lineage_role"}.issubset(kwargs["columns"]) for kwargs in insider_reads)
     for table in (Tables.sec_13d, Tables.sec_13g):
         projected = [kwargs for source, kwargs in reads if source is table]
-        assert len(projected) == 5 and all(kwargs["where"]["ticker"] == list(names) and isinstance(kwargs["where"]["filing_date"], Window) and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
-    print("SANITY: 491 calculation names/491 in-range owner-history rows (491 pre-source-floor rows excluded) reach five public builds; 15 deliveries match exactly across batches/order, NULLs and counts.")
+        assert len(projected) == 5 and all(kwargs["where"] == {"ticker": list(names)} and kwargs["since"] == days[0] - pd.Timedelta(days=750) and kwargs["until"] == ctx.run.as_of and kwargs["date_col"] == "filing_date" and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
+    print("SANITY: 491 calculation names/982 retained owner-history rows reach five public builds; insider reads are full and schedules use750CD; 15 deliveries match exactly across batches/order, NULLs and counts.")
 # fmt: on
 
 
@@ -625,7 +625,7 @@ def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-14])]))
     run_cube(StepCubeInstitutionals(ctx, ctx.config), full=True)
     before = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
-    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-late", days[-1])]))
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-late", days[-2])]))
     run_cube(StepCubeInstitutionals(ctx, ctx.config), full=False)
     after = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
     assert before.reindex(days[-12:]).isna().all() and after.reindex(days[-12:]).eq(0).all()

@@ -16,7 +16,9 @@ Point-in-time data answers what the system could have known on a given date, not
 
 Using a fiscal period end, a later amendment, or an exact-match shortcut can leak future information or drop valid observations. The SEC facts table keeps original 10-K and 10-Q filings by accession (amendments are not read, as in Sharadar), the SEC replay emits a complete snapshot at each filing date, and the cube joins three SEC columns to the Sharadar history on the exact `(ticker, as_of)` key, never across dates. These contracts are described in [table catalog](../reference/table-catalog.md).
 
-Cube utilities forward values only from past observations. Targets are forward-looking by definition but remain separate label columns and are excluded from latest-date prediction inputs.
+Every independently consumed dated source passes through [point_in_time](../../src/utils/publication.py): its exact configured raw column plus calendar lag, rolled forward to an observed market session. Original clocks remain evidence. Invalid dates are reported and excluded; missing configured columns fail the contract; future availability never rolls backward. The mixed fundamentals join retains its original exact raw keys, then uses the later prepared source eligibility for values requiring both roots.
+
+Cube utilities forward values only from eligible observations. Targets remain separate forward outcome columns. The approved governance later-filing fills and pooled13F unit/value repairs retain retrospective evidence; the shared publication path does not certify those attributes or revised vendor history as strictly causal.
 
 ## Where it lives
 

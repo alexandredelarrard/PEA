@@ -10,7 +10,7 @@ tags:
 
 ## Summary
 
-The nightly path refreshes source tables, reports their freshness, and triggers the memory-bounded aggregation chain whatever the fetchers' outcome; only `modelling predict` refuses stale inputs. Extraction tasks are grouped by operational resource pools rather than application package, while cube tasks run sequentially and derive their commands from the part registry.
+The nightly path refreshes source tables and triggers the memory-bounded aggregation chain whatever the fetchers' outcome. Extraction tasks are grouped by resource pools; cube tasks run sequentially and derive commands from the part registry. Operational freshness reporting and the prediction freshness guard are removed; source publication, completeness and economic age rules remain.
 
 ## Trigger
 
@@ -36,9 +36,6 @@ sequenceDiagram
   Airflow->>Extract: fundamentals check after both histories
   Airflow->>Extract: EDGAR text walks, then their LLM passes
   Extract->>Store: incremental upserts
-  Airflow->>Extract: run schema-driven freshness report
-  Extract->>Store: read each declared table frontier
-  Extract-->>Airflow: per-table report, exit 0
   Airflow->>Peers: deduce peers
   Peers-->>Airflow: persist peer dictionary
   Airflow->>Cube: run registered parts sequentially
@@ -54,13 +51,13 @@ sequenceDiagram
 3. Run the two fundamentals producers independently: `sec_fundamentals_history` replays the facts the `sec_fundamentals_facts` walk stored, offline; `fundamentals_sharadar` waits only for `identity` and builds `sharadar_fundamentals_history` from Sharadar alone. `fundamentals_check` logs where the two histories disagree once both have finished (ALL_DONE) and writes nothing. Each LLM pass runs in `default_pool` after the walk storing its text: `sec_employees_text >> sec_employees_llm` and `[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes`; the LLM passes read no SEC document. The cube reads headcount from `fundamentals_employees`, which no fundamentals producer waits for. Each task can be repaired and rerun without replaying another. `StepExtractAllData` runs both text walks and the DEF 14A pass, not the employees pass (`sec-employees-llm`).
 4. Run `extract-earnings-calls` as one task in the default pool. It reads the transcripts file's footer, then only the row groups whose latest call reaches the stored frontier minus the table's overlap (a new ticker's at any date), and the transcripts of new or re-issued calls only. The split, sentiment and embeddings run later in `build-text`.
 5. Each fetcher saves what it read, re-reads failed SEC documents in up to three in-task rounds and exits 0; Airflow retries only a task that raises, up to three times. Per-ticker SEC API walks consume the whole SEC pool so their process-local rate limiters cannot exceed the shared request budget.
-6. Run `extraction-status`. Its table inventory, cadence, and publication date column come from `freshness_tables()` in [schema.py](../../src/data_store/schema.py); cadence tolerances come from [constants.py](../../src/constants/constants.py). A table is RED when its newest date is older than its cadence tolerance, or, for the three prediction inputs (`prices`, `sharadar_fundamentals_facts`, `sharadar_fundamentals_history`), when the share of universe tickers whose own latest date is fresh falls below `prediction_fresh_share`. It logs one WARNING per RED table and exits 0. `earnings_call_sections` declares quarterly freshness on `as_of`. Google Trends is not scheduled and declares no freshness; there is no Wikipedia pageviews task.
+6. Preserve each task's captured execution cutoff across retries and downstream aggregation. The retired extraction freshness report has no replacement task.
 7. Trigger [peer deduction](../modules/data-peers.md), then the [cube-build flow](./cube-build.md). Every aggregation task runs on `ALL_DONE`, so a failed part does not stop the later parts or the assembly.
-8. Run the cube part-status report, then trigger [model prediction](./model-training-and-prediction.md). A red status fails its own task visibly; the insider source is red when the newest stored insider `filing_date` (markers included) is more than `source_freshness.insider_max_lag_days` (4) days behind the reference price date. On a night the insider walk did not run, quiet insider windows after that date stay NaN and the next build rewrites them. `modelling predict` raises `StaleInputsError` and scores nothing when a prediction input's per-ticker fresh share is below `prediction_fresh_share` or the cube ends before `prices`. The prediction DAG's own 06:00 schedule repeats the same guarded run.
+8. Run the cube part-status report, then trigger [model prediction](./model-training-and-prediction.md). Part status reports missing or lagging selected outputs and fails visibly on broken alignment. Source completeness retains unknown insider windows after the last confirmed filing frontier. Daily prediction retains feature/schema and production-generation checks; the operational source-age freshness guard is removed.
 
 ## Failure modes
 
-A source that fails does not stop the night: its fetcher keeps what it read and exits 0, and the next run lists the rest again, because every work list is derived from the stored rows. A filing that was read and holds no data for its key is stored once as an empty-filing marker, so it is not listed again; consumer reads never see markers. A failed `edgar_index` holds the eight EDGAR walks; a failed `zips_download` still lets `identity` run on the cached evidence. `extraction-status` reports stale tables and blocks nothing. The `predict` guard is the only hard stop: stale prices, Sharadar fundamentals or the Sharadar fundamentals history, or a cube that ends before `prices`. Aggregation remains sequential because the largest part determines peak memory; parallelizing part builds would add their working sets.
+A source that fails does not stop the night: its fetcher keeps what it read and exits 0, and the next run lists the rest again, because every work list is derived from the stored rows. A filing that was read and holds no data for its key is stored once as an empty-filing marker, so it is not listed again; consumer reads never see markers. A failed `edgar_index` holds the eight EDGAR walks; a failed `zips_download` still lets `identity` run on the cached evidence. Aggregation remains sequential because the largest part determines peak memory; parallelizing part builds would add their working sets.
 
 ## Related
 

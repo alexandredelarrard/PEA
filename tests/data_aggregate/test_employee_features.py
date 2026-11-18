@@ -245,6 +245,10 @@ def test_step_loads_projected_employee_history_with_its_declared_budget() -> Non
 
     class _Store:
         @staticmethod
+        def exists(table: object) -> bool:
+            return True
+
+        @staticmethod
         def columns(table: object) -> list[str]:
             return list(EMPLOYEE_COLUMNS)
 

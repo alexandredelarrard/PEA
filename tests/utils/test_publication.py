@@ -35,6 +35,17 @@ def test_notes_all_period_types_use_twelve_days_and_keep_original_metadata() -> 
     print("SANITY: monthly and quarterly period ends both add12CD; filed/observed evidence remains unchanged.")
 
 
+def test_aware_instants_use_market_days_without_losing_duplicate_index_rows() -> None:
+    config = read_config("configs")
+    sessions = pd.DatetimeIndex(["2026-11-06", "2026-11-09", "2026-11-10"])
+    rows = pd.DataFrame({"filing_date": ["2026-11-07T00:30:00Z", "2026-11-09T23:30:00-05:00"], "value": [7.0, 9.0]}, index=[4, 4])
+    ready = point_in_time(rows, config, Tables.sec_8k, sessions)
+    assert ready.as_of.tolist() == list(pd.to_datetime(["2026-11-09", "2026-11-10"]))
+    assert ready.index.tolist() == [4, 4]
+    pd.testing.assert_frame_equal(ready[rows.columns], rows)
+    print("SANITY: UTC Saturday shortly after midnight is Friday in New York; both duplicate-index source rows retain their own eligibility.")
+
+
 def test_invalid_dates_and_unavailable_future_sessions_are_excluded(caplog: pytest.LogCaptureFixture) -> None:
     config = read_config("configs")
     sessions = pd.DatetimeIndex(["2026-11-06", "2026-11-09", "2026-11-10"])

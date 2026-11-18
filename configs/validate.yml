@@ -277,8 +277,8 @@ validate:
     cube_part_momentum:
       cadence: daily
 
-    # Earnings-call values are event observations, held for exactly 66 trading sessions
-    # after the configured two-calendar-day publication lag. Missing calls remain NaN; no absence-as-zero
+    # Earnings-call values are event observations, held for the configured signal horizon
+    # after the data.yml publication buffer. Missing calls remain NaN; no absence-as-zero
     # policy applies to this part, and no peer/cross-sectional suffix is emitted.
     cube_part_text:
       cadence: quarterly

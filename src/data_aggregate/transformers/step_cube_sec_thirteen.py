@@ -24,11 +24,6 @@ from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
 
-#: Volatility is the standard deviation of the last 250 daily returns (at least 120 observed), read at the quarter end.
-_VOLATILITY_WINDOW = 250
-_VOLATILITY_MIN_PERIODS = 120
-#: Calendar days of prices read before the oldest quarter to compute, enough for the volatility window.
-_PRICE_LOOKBACK_DAYS = 400
 _REBUILD = "run `data_aggregate build-sec-thirteen -F`"
 
 
@@ -149,10 +144,12 @@ class StepCubeSecThirteen(Step):
     def _load(self, plan: Plan) -> Resources:
         """The references, the labels as member lists and the quarter-end market frames of the quarters to compute, each read once."""
         # load: the reference tables and the price fields over the span the quarters need
+        # (volatility: std of the last 250 daily returns, at least 120 observed; prices start 400 calendar days before the oldest quarter)
+        vol_window, min_periods, lookback_days = 250, 120, 400
         columns = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
         df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=columns))
         tags = CusipTags.load(self._store)
-        oldest = min(plan.compute) - pd.offsets.QuarterEnd(1) - pd.Timedelta(days=_PRICE_LOOKBACK_DAYS)
+        oldest = min(plan.compute) - pd.offsets.QuarterEnd(1) - pd.Timedelta(days=lookback_days)
         frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=None if plan.window.is_full else oldest)
         frames.require(*self._FIELDS)
 
@@ -166,7 +163,7 @@ class StepCubeSecThirteen(Step):
 
         # compute: the volatility frame
         returns = cast(pd.DataFrame, frames.ret)
-        volatility = returns.rolling(_VOLATILITY_WINDOW, min_periods=_VOLATILITY_MIN_PERIODS).std()
+        volatility = returns.rolling(vol_window, min_periods=min_periods).std()
         reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(tags.cmap)
         mcap, shares = cast(pd.DataFrame, frames.mcap_pit), cast(pd.DataFrame, frames.shares_outstanding_pit)
         return Resources(members, by_period, tags, reference, prefixes, frames.universe, mcap, shares, volatility)

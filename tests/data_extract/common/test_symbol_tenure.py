@@ -36,6 +36,7 @@ from src.data_extract.utils.identity.symbol_tenure import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window
 from tests.canonical_schema import create_canonical
 
 #: The real cache. Absent on a fresh clone, so the real-data tests skip rather than fail.
@@ -99,7 +100,7 @@ def test_two_quarter_cache_derives_the_expected_three_tenures(tmp_path):
             ("b2", "333", "STEADY CORP", "BBB", "2020-06-30"),
         ],
     )
-    out = derive_symbol_tenure(scan_form345_cache(tmp_path))
+    out = derive_symbol_tenure(scan_form345_cache(tmp_path, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31"))))
 
     assert len(out) == 3
     assert set(out["symbol"]) == {"AAA", "BBB"}
@@ -149,7 +150,7 @@ def test_overlapping_tenures_survive_as_two_rows(tmp_path):
             ("y2", "555", "CORESITE REALTY CORP", "ZZZ", "02-JUN-2011"),
         ],
     )
-    out = derive_symbol_tenure(scan_form345_cache(tmp_path))
+    out = derive_symbol_tenure(scan_form345_cache(tmp_path, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31"))))
     assert len(out) == 2 and out["issuer_cik"].nunique() == 2
 
     first, second = out.sort_values("valid_from").itertuples()
@@ -180,7 +181,7 @@ def test_every_drop_reason_is_counted(tmp_path):
         ],
     )
     assert path.exists()
-    scan = scan_form345_cache(tmp_path)
+    scan = scan_form345_cache(tmp_path, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31")))
     drops: Counter = scan.drops
     assert len(scan.tenure_parts) == 1
     agg = scan.tenure_parts[0]
@@ -368,7 +369,7 @@ def test_junk_symbol_fields_derive_clean_tenures(tmp_path):
             ("x1", "1000", "SOME FILER", "DC18*POL", "13-NOV-2019"),
         ],
     )
-    scan = scan_form345_cache(tmp_path)
+    scan = scan_form345_cache(tmp_path, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31")))
     out = derive_symbol_tenure(scan)
     by_symbol = out.set_index("symbol")
 
@@ -388,7 +389,7 @@ def test_a_corrupt_zip_is_skipped_not_raised(tmp_path):
     """The research run hit a corrupt quarter; one bad zip must not lose the other 80."""
     _write_zip(tmp_path, "2020q1", [("a1", "111", "OLDCO INC", "AAA", "05-JAN-2020")])
     (tmp_path / "2020q2.zip").write_bytes(b"this is not a zip file")
-    out = derive_symbol_tenure(scan_form345_cache(tmp_path))
+    out = derive_symbol_tenure(scan_form345_cache(tmp_path, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31"))))
 
     assert len(out) == 1 and out.iloc[0]["symbol"] == "AAA"
     # 2020q2 is still the most recent quarter NAME, so AAA's tenure reads as closed
@@ -958,7 +959,7 @@ def test_repository_rejections_cover_the_2026_10_08_review():
 def real_tenure() -> pd.DataFrame:
     if not CACHE.exists() or len(list(CACHE.glob("*.zip"))) < 4:
         pytest.skip(f"no cached Form 345 quarters under {CACHE}")
-    return derive_symbol_tenure(scan_form345_cache(CACHE))
+    return derive_symbol_tenure(scan_form345_cache(CACHE, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31"))))
 
 
 def test_real_cache_reproduces_the_measured_reuse_cases(real_tenure):
@@ -995,10 +996,21 @@ def test_real_cache_scale_and_determinism(real_tenure):
     assert 0.05 < share < 0.15
     assert real_tenure["valid_to"].isna().sum() > 0  # some tenures are still open
     # deterministic: the same cache must give the same table, or the build is not rebuildable
-    assert real_tenure.equals(derive_symbol_tenure(scan_form345_cache(CACHE)))
+    assert real_tenure.equals(derive_symbol_tenure(scan_form345_cache(CACHE, Window(pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31")))))
 
     print("\n=== SANITY CHECK: real cache scale ===")
     print(f"  rows={len(real_tenure)}  symbols={len(per_symbol)}  multi-CIK symbols={multi} ({share:.1%})")
     print(f"  open tenures={int(real_tenure['valid_to'].isna().sum())}")
     print("  OK: Re-deriving the same cache reproduces the table exactly")
     print("  -> ~1 symbol in 11 has had more than one issuer; reuse is not a long tail.")
+
+
+def test_identity_cache_scan_uses_an_explicit_read_window(tmp_path: Path) -> None:
+    _write_zip(tmp_path, "2025q4", [("old", "1", "Old Co", "OLD", "2025-12-01")])
+    _write_zip(tmp_path, "2026q1", [("one", "2", "First Co", "AAA", "2026-02-02")])
+    _write_zip(tmp_path, "2026q2", [("two", "3", "Second Co", "BBB", "2026-05-01"), ("late", "4", "Later Co", "LATE", "2026-09-01")])
+    _write_zip(tmp_path, "2026q3", [("future", "5", "Future Co", "FUT", "2026-09-01")])
+    scan = scan_form345_cache(tmp_path, Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-08-31")))
+    assert [str(quarter) for quarter in scan.quarters] == ["2026Q1", "2026Q2"]
+    assert set(derive_symbol_tenure(scan).symbol) == {"AAA", "BBB"}
+    print("SANITY: the explicit identity read Window controls opened quarter packets and excludes later filings within a retained packet.")

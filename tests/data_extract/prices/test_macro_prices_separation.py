@@ -32,6 +32,7 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
+from src.utils.window import Window
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
@@ -169,11 +170,9 @@ def test_actions_and_basis_are_explicit_per_caller():
     try:
         mod._download_price_chunk = _spy_chunk
         since, until = pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05")
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, auto_adjust=False, actions=False)  # a bars-only pull
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading prices", auto_adjust=False, actions=True)  # the equity path
-        mod.download_ohlcv(
-            list(MACRO_PRICE_SERIES), since, until, pause=0.0, desc="Downloading macro/market prices", auto_adjust=True, actions=False
-        )  # the macro path
+        mod.download_ohlcv(["AAPL"], Window(since, until), pause=0.0, auto_adjust=False, actions=False)  # a bars-only pull
+        mod.download_ohlcv(["AAPL"], Window(since, until), pause=0.0, auto_adjust=False, actions=True)  # the equity path
+        mod.download_ohlcv(list(MACRO_PRICE_SERIES), Window(since, until), pause=0.0, auto_adjust=True, actions=False)  # the macro path
     finally:
         mod._download_price_chunk = original
 

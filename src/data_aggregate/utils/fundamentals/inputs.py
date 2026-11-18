@@ -33,7 +33,5 @@ class FundamentalFeatureSettings:
 
     history_window: int = HIST_WINDOW
     history_min_periods: int = HIST_MIN_PERIODS
-    earnings_lags: int = 8
     earnings_scale_quarters: int = 8
-    persistence_quarters: int = 8
     intrinsic_cfg: dict | None = None

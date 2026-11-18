@@ -17,20 +17,25 @@ import numpy as np
 import pandas as pd
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
-from src.data_aggregate.utils.common.parts import PART_BY_NAME
 from src.data_aggregate.utils.fundamentals.dividend_features import (
-    _calendar_prior,
     _cagr,
+    _calendar_prior,
     _dividend_fields,
     _ttm_dividends,
     build_dividend_feature_panel,
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.utils.window import Offset, shift_date
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
+from tests.support.config import fixture_config
 
 _YOY = 252
+
+
+def _published_cash(history: pd.DataFrame) -> pd.DataFrame:
+    """These math fixtures are already public; consumer buffer checks use the actual step."""
+    return history.assign(available_on=history["date"])
 
 
 def _synth():
@@ -64,7 +69,9 @@ def _synth():
 
 def test_dividend_fields_economics_and_pit():
     dates, tickers, close, div_hist, fund = _synth()
-    F = _dividend_fields(div_hist, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
+    F = _dividend_fields(
+        _published_cash(div_hist), legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events())
+    )
     for k in ("dividend_yield", "dividend_growth", "dividend_payer", "shareholder_yield"):
         assert k in F, f"missing {k}"
 
@@ -84,7 +91,9 @@ def test_dividend_fields_economics_and_pit():
     # point-in-time: perturb everything AFTER t -> value at t unchanged
     div2 = pd.concat([div_hist, pd.DataFrame([{"date": dates[-1], "ticker": "P0", "dividends": 99.0}])], ignore_index=True)
     tm = dates[len(dates) // 2]
-    F2 = _dividend_fields(div2, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
+    F2 = _dividend_fields(
+        _published_cash(div2), legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events())
+    )
     assert np.isclose(F["dividend_yield"].loc[tm, "P0"], F2["dividend_yield"].loc[tm, "P0"])
 
     print("\n=== SANITY CHECK: dividend economics + point-in-time ===")
@@ -119,7 +128,9 @@ def _synth_reconcile():
 
 def test_reconcile_sources_5y_growth_payout_coverage():
     dates, close, div_hist, fund = _synth_reconcile()
-    F = _dividend_fields(div_hist, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
+    F = _dividend_fields(
+        _published_cash(div_hist), legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events())
+    )
     t = dates[-1]
     for k in ("dividend_growth_5y", "dividend_payout_ratio", "dividend_coverage"):
         assert k in F, f"missing {k}"
@@ -173,7 +184,9 @@ def test_zero_fill_is_scoped_to_the_listed_window():
     div_hist = pd.DataFrame([{"date": d, "ticker": "PAYER", "dividends": 0.5} for d in dates[::63]])
     fund = pd.DataFrame([{"ticker": t, "as_of": aso, "sharesOutstanding": 1e9} for aso in dates[::63] for t in ("OLD", "NEW", "PAYER")])
 
-    F = _dividend_fields(div_hist, legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()))
+    F = _dividend_fields(
+        _published_cash(div_hist), legacy_capital_frames(fund, close), FundamentalHistory(raw_history=fund, share_basis=known_no_share_events())
+    )
     before, after = dates[10], dates[-1]
     for k in ("dividend_yield", "dividend_payer", "shareholder_yield"):
         assert pd.isna(F[k].loc[before, "NEW"]), f"{k} fabricated on a pre-listing row"
@@ -199,7 +212,7 @@ def test_panel_exposes_f_columns():
     # give each ticker enough peers for the _vs_peers column to populate
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
     panel = build_dividend_feature_panel(
-        div_hist,
+        _published_cash(div_hist),
         replace(cast(PriceFrames, legacy_capital_frames(fund, close)), trading_index=dates, peers=peers),
         FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
     )
@@ -238,12 +251,14 @@ def test_ttm_window_drops_a_payment_exactly_365_days_old_and_not_a_day_earlier()
     idx = pd.bdate_range("2021-01-04", "2022-12-30")
     paid = pd.Timestamp("2021-06-01")
     hist = pd.DataFrame([{"date": paid, "ticker": "P", "dividends": 3.0}])
-    calendar = _ttm_dividends(hist, idx, ["P"], "365D")["P"]
-    sessions = _ttm_dividends(hist, idx, ["P"])["P"]
+    calendar = _ttm_dividends(_published_cash(hist), idx, ["P"], "365D")["P"]
+    sessions = _ttm_dividends(_published_cash(hist), idx, ["P"])["P"]
     day_before, edge = pd.Timestamp("2022-05-31"), pd.Timestamp("2022-06-01")
     assert calendar[day_before] == 3.0 and calendar[edge] == 0.0, "right-closed: day 364 holds the payment, day 365 does not"
     assert sessions[day_before] == 0.0, "the 252-session window (levels) already dropped it: it is a different clock"
-    print(f"SANITY: a 3.0 payment on {paid.date()} is in the calendar TTM on {day_before.date()} and out on {edge.date()}; the 252-session TTM drops it earlier.")
+    print(
+        f"SANITY: a 3.0 payment on {paid.date()} is in the calendar TTM on {day_before.date()} and out on {edge.date()}; the 252-session TTM drops it earlier."
+    )
 
 
 def test_calendar_growth_matches_a_brute_force_year_over_year_and_first_year_is_undefined() -> None:
@@ -251,7 +266,7 @@ def test_calendar_growth_matches_a_brute_force_year_over_year_and_first_year_is_
     pay = {_first_session_of(idx, y, m): (1.0 if y < 2021 else 1.5) for y in range(2019, 2023) for m in (3, 6, 9, 12)}
     hist = pd.DataFrame([{"date": d, "ticker": "P", "dividends": v} for d, v in pay.items()])
     close = pd.DataFrame(100.0, index=idx, columns=["P"])
-    growth = _dividend_fields(hist, legacy_capital_frames(None, close))["dividend_growth"]["P"]
+    growth = _dividend_fields(_published_cash(hist), legacy_capital_frames(None, close))["dividend_growth"]["P"]
     checked = 0
     for day in idx[idx >= idx[0] + pd.Timedelta(days=365)][::7]:
         prior_day = idx[idx <= day - pd.Timedelta(days=365)][-1]
@@ -260,7 +275,9 @@ def test_calendar_growth_matches_a_brute_force_year_over_year_and_first_year_is_
         assert np.isclose(growth[day], want, equal_nan=True), f"{day.date()}: {growth[day]} != {want}"
         checked += 1
     assert growth[idx < idx[0] + pd.Timedelta(days=365)].isna().all(), "no comparable year yet -> undefined, never a partial-window ratio"
-    print(f"SANITY: {checked} dates equal TTM(d)/TTM(last session <= d-365) - 1 by brute force; the first 365 days are NaN; 2021-12-31 growth {growth[pd.Timestamp('2021-12-31')]:.3f}.")
+    print(
+        f"SANITY: {checked} dates equal TTM(d)/TTM(last session <= d-365) - 1 by brute force; the first 365 days are NaN; 2021-12-31 growth {growth[pd.Timestamp('2021-12-31')]:.3f}."
+    )
 
 
 def test_cash_paid_fallback_uses_the_same_365_day_prior() -> None:
@@ -268,17 +285,22 @@ def test_cash_paid_fallback_uses_the_same_365_day_prior() -> None:
     close = pd.DataFrame(100.0, index=idx, columns=["A", "B"])
     hist = pd.DataFrame([{"date": idx[10], "ticker": "A", "dividends": 1.0}])  # B has no ex-dates: source B only
     step = _first_session_of(idx, 2021, 4)
-    rows = [{"ticker": t, "as_of": d, "sharesOutstanding": 1e3, "dividendsPaid": (1500.0 if d >= step else 1000.0) * (1 if t == "B" else 0)}
-            for t in ("A", "B") for d in [_first_session_of(idx, y, m) for y in range(2020, 2024) for m in (1, 4, 7, 10)]]
+    rows = [
+        {"ticker": t, "as_of": d, "sharesOutstanding": 1e3, "dividendsPaid": (1500.0 if d >= step else 1000.0) * (1 if t == "B" else 0)}
+        for t in ("A", "B")
+        for d in [_first_session_of(idx, y, m) for y in range(2020, 2024) for m in (1, 4, 7, 10)]
+    ]
     fund = pd.DataFrame(rows)
     history = FundamentalHistory(raw_history=fund, share_basis=known_no_share_events())
-    growth = _dividend_fields(hist, legacy_capital_frames(fund, close), history)["dividend_growth"]["B"]
+    growth = _dividend_fields(_published_cash(hist), legacy_capital_frames(fund, close), history)["dividend_growth"]["B"]
     edge = step + pd.Timedelta(days=365)
     last_before = idx[idx < edge][-1]
     first_on = idx[idx >= edge][0]
     assert np.isclose(growth[last_before], 0.5), f"prior (day-365) still holds the 1000 level: {growth[last_before]}"
     assert np.isclose(growth[first_on], 0.0), f"prior is the 1500 level from the step session: {growth[first_on]}"
-    print(f"SANITY: cash paid steps 1000 -> 1500 on {step.date()}: growth is 0.5 on {last_before.date()} and 0.0 from {first_on.date()} (365 days later).")
+    print(
+        f"SANITY: cash paid steps 1000 -> 1500 on {step.date()}: growth is 0.5 on {last_before.date()} and 0.0 from {first_on.date()} (365 days later)."
+    )
 
 
 def test_cagr_is_five_calendar_years_with_a_known_step() -> None:
@@ -312,16 +334,17 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
     peers = {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
 
     full = build_dividend_feature_panel(
-        dividends,
+        _published_cash(dividends),
         replace(cast(PriceFrames, legacy_capital_frames(None, close)), trading_index=dates, peers=peers),
         FundamentalHistory(share_basis=known_no_share_events()),
     )
-    warmup = PART_BY_NAME["cube_part_fundamentals"].warmup_trading_days
+    policy = fixture_config().data.tables.cube_part_fundamentals
+    warmup = int(policy.warmup.grid.value)
     last_pos = 7 * 252 - 40
-    refresh_from = dates[last_pos - PART_REFRESH_TRADING_DAYS]
-    start = dates[last_pos - PART_REFRESH_TRADING_DAYS - warmup]
+    refresh_from = dates[last_pos] - pd.Timedelta(days=int(policy.reprocess.overlap.value))
+    start = shift_date(refresh_from, Offset(warmup, str(policy.warmup.grid.unit)), dates)
     windowed = build_dividend_feature_panel(
-        dividends,
+        _published_cash(dividends),
         replace(cast(PriceFrames, legacy_capital_frames(None, close.loc[start:])), trading_index=dates[dates >= start], peers=peers),
         FundamentalHistory(share_basis=known_no_share_events()),
     )

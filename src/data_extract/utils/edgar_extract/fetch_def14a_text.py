@@ -160,9 +160,9 @@ def _def14a_rows(context: Context, ticker: str, stamp: FilingStamp) -> list[dict
 
 
 @contextmanager
-def _def14a_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
+def _def14a_run_scope(context: Context, tickers: Sequence[str]) -> Iterator[EdgarFetch]:
     """Bind the run's `Context`: the submissions listing and the document reads go through `sec_get(context, ...)`."""
-    del tickers, as_of
+    del tickers
     yield replace(
         DEF14A_TEXT_FETCH,
         parse=partial(parse_filing_rows, table=Tables.sec_def14a_text, row_fn=partial(_def14a_rows, context)),

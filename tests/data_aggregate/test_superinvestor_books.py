@@ -15,6 +15,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_books import (
 )
 from src.utils.institutional_vintages import prepare_book_vintages
 from tests.data_aggregate import sec_thirteen_legacy_reference as institutional_vintages
+from tests.support.config import fixture_config
 
 
 def _packet(
@@ -47,7 +48,7 @@ def _history(packets: list[tuple[pd.DataFrame, pd.DataFrame]], grid: pd.Datetime
     grid = pd.bdate_range("2023-01-02", "2026-03-31") if grid is None else grid
     df_filings = pd.concat([packet[0] for packet in packets], ignore_index=True)
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
-    history = prepare_superinvestor_book_history(((df_filings, df_holdings) for _ in range(1)), grid, 90)
+    history = prepare_superinvestor_book_history(((df_filings, df_holdings) for _ in range(1)), grid, 90, fixture_config())
     assert history is not None
     return history
 
@@ -71,7 +72,7 @@ def test_many_book_batches_keep_the_whole_table_revision_history() -> None:
     batches = [
         tuple(pd.concat([packet[index] for packet in selected], ignore_index=True) for index in (0, 1)) for selected in (packets[:2], packets[2:])
     ]
-    actual = prepare_superinvestor_book_history(((batch[0], batch[1]) for batch in batches), grid, 90)
+    actual = prepare_superinvestor_book_history(((batch[0], batch[1]) for batch in batches), grid, 90, fixture_config())
     assert actual is not None and [state.day for state in actual] == [state.day for state in expected]
     for old, new in zip(expected, actual, strict=True):
         assert old.common_period == new.common_period
@@ -88,11 +89,11 @@ def test_many_book_batches_keep_the_whole_table_revision_history() -> None:
 def test_first_public_day90_is_included_and_day91_expires_without_a_filing() -> None:
     history = _history([_packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 100})])
 
-    origin = _on(history, "2024-05-16").level_books["0000000001"].first_public_at
-    assert origin == pd.Timestamp("2024-05-16")
-    assert "0000000001" in _on(history, "2024-08-14").level_books
-    expired = _on(history, "2024-08-15")
-    assert expired.day == pd.Timestamp("2024-08-15")
+    origin = _on(history, "2024-05-17").level_books["0000000001"].first_public_at
+    assert origin == pd.Timestamp("2024-05-17")
+    assert "0000000001" in _on(history, "2024-08-15").level_books
+    expired = _on(history, "2024-08-16")
+    assert expired.day == pd.Timestamp("2024-08-16")
     assert not expired.level_books
     assert expired.common_period == pd.Timestamp("2024-03-31")
     assert expired.archive[("0000000001", pd.Timestamp("2024-03-31"))].support.book_known
@@ -119,11 +120,11 @@ def test_amendments_keep_the_original_age_and_cannot_resurrect_an_expired_book()
         ]
     )
 
-    revised = _on(history, "2024-07-02").level_books["0000000001"]
+    revised = _on(history, "2024-07-03").level_books["0000000001"]
     assert revised.df_positions.shares.sum() == 150
-    assert revised.first_public_at == pd.Timestamp("2024-05-16")
-    assert not _on(history, "2024-08-15").level_books
-    later = _on(history, "2024-12-03")
+    assert revised.first_public_at == pd.Timestamp("2024-05-17")
+    assert not _on(history, "2024-08-16").level_books
+    later = _on(history, "2024-12-04")
     assert not later.level_books
     assert later.archive[("0000000001", pd.Timestamp("2024-03-31"))].df_positions.shares.sum() == 200
     print("SANITY: amendments update their public archive prospectively but neither restart freshness nor revive an expired current contribution.")
@@ -139,13 +140,13 @@ def test_newer_unusable_books_are_barriers_and_old_backfills_do_not_replace_them
         ]
     )
 
-    current = _on(history, "2024-08-21")
+    current = _on(history, "2024-08-22")
     book = current.level_books["0000000001"]
     assert book.period == pd.Timestamp("2024-06-30")
     assert not book.support.zero_eligible and not book.support.comparison_eligible
     assert current.common_period == pd.Timestamp("2024-06-30")
-    assert not _on(history, "2024-11-13").level_books
-    assert _on(history, "2024-11-13").common_period == pd.Timestamp("2024-06-30")
+    assert not _on(history, "2024-11-14").level_books
+    assert _on(history, "2024-11-14").common_period == pd.Timestamp("2024-06-30")
     print(f"SANITY: the latest {scope} quarter remains the support barrier; an older late original cannot replace or refresh it.")
 
 
@@ -159,13 +160,13 @@ def test_orphan_additions_do_not_activate_q_and_first_resolved_replacement_start
         ]
     )
 
-    orphan_state = _on(history, "2024-11-15")
+    orphan_state = _on(history, "2024-11-18")
     orphan = orphan_state.archive[("0000000001", pd.Timestamp("2024-09-30"))]
     assert not orphan.support.book_known and orphan.first_public_at is None
     assert orphan_state.common_period == pd.Timestamp("2024-06-30")
-    replacement = _on(history, "2024-11-21")
+    replacement = _on(history, "2024-11-22")
     assert replacement.common_period == pd.Timestamp("2024-09-30")
-    assert replacement.level_books["0000000001"].first_public_at == pd.Timestamp("2024-11-21")
+    assert replacement.level_books["0000000001"].first_public_at == pd.Timestamp("2024-11-22")
     print("SANITY: an orphan addition has no level or common-quarter authority; the later resolved restatement establishes the one age origin.")
 
 
@@ -178,7 +179,7 @@ def test_carried_levels_and_common_q_are_separate_from_genuine_archival_pairs() 
         ]
     )
 
-    current = _on(history, "2024-08-15")
+    current = _on(history, "2024-08-16")
     assert current.common_period == pd.Timestamp("2024-06-30")
     assert current.common_period is not None
     assert current.level_books["0000000001"].period == pd.Timestamp("2024-03-31")
@@ -200,7 +201,7 @@ def test_complete_empty_missing_failed_and_orphan_are_distinct() -> None:
         ]
     )
 
-    current = _on(history, "2024-08-15")
+    current = _on(history, "2024-08-16")
     empty = current.level_books["0000000001"]
     assert empty.df_positions.empty and empty.support.book_known and empty.support.zero_eligible
     assert empty.support.comparison_eligible
@@ -220,7 +221,7 @@ def test_archives_keep_exact_annual_baselines_and_report_quarter_gaps() -> None:
         ]
     )
 
-    current = _on(history, "2024-11-15")
+    current = _on(history, "2024-11-18")
     assert current.common_period == pd.Timestamp("2024-09-30")
     assert current.archive[("0000000001", pd.Timestamp("2023-09-30"))].df_positions.shares.sum() == 10
     assert current.archive.get(("0000000001", pd.Timestamp("2024-06-30"))) is None
@@ -258,13 +259,13 @@ def test_unchanged_books_share_resolver_objects_and_replay_only_amended_quarters
         ]
     )
 
-    earlier = _on(history, "2024-05-16").level_books["0000000001"]
-    later = _on(history, "2024-06-04").level_books["0000000001"]
+    earlier = _on(history, "2024-05-17").level_books["0000000001"]
+    later = _on(history, "2024-06-05").level_books["0000000001"]
     assert earlier is later
     assert earlier.df_positions is later.df_positions
     assert len(resolver.call_args_list) == 2
     assert [set(call.args[0].cik) for call in resolver.call_args_list] == [{"0000000002"}, {"0000000002"}]
-    assert [_on(history, day).level_books["0000000002"].df_positions.shares.sum() for day in ("2024-05-21", "2024-06-04")] == [200, 250]
+    assert [_on(history, day).level_books["0000000002"].df_positions.shares.sum() for day in ("2024-05-22", "2024-06-05")] == [200, 250]
     assert earlier.df_positions.shares_provenance.eq("filed").all()
     assert earlier.df_positions.value_provenance.eq("filed").all()
     print("SANITY: the single filing is resolved without a replay; the amended quarter replays once per public day; positions/provenance are shared.")
@@ -285,7 +286,7 @@ def test_amended_quarters_replay_once_per_public_day_rank(monkeypatch: pytest.Mo
     original_manifest, original_holdings = df_manifest.copy(deep=True), df_holdings.copy(deep=True)
     resolver = Mock(wraps=superinvestor_books.resolve_prepared_books)
     monkeypatch.setattr(superinvestor_books, "resolve_prepared_books", resolver)
-    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90)
+    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90, fixture_config())
     assert history is not None
 
     # Two amended quarters with two public days each: one resolver call per day rank, each cut to its own day.
@@ -322,7 +323,10 @@ def test_bounded_cache_uses_known_watermark_and_keeps_event_order(monkeypatch: p
     ]
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
     df_manifest = prepare_book_vintages(
-        pd.concat([packet[0] for packet in packets], ignore_index=True), df_holdings, pd.bdate_range("2024-01-01", "2024-12-31"), settle_days=0
+        pd.concat([packet[0] for packet in packets], ignore_index=True),
+        df_holdings,
+        pd.bdate_range("2024-01-01", "2024-12-31"),
+        config=fixture_config(),
     )
     resolver = Mock(wraps=institutional_vintages.resolve_prepared_books)
     monkeypatch.setattr(institutional_vintages, "resolve_prepared_books", resolver)
@@ -339,12 +343,12 @@ def test_bounded_cache_uses_known_watermark_and_keeps_event_order(monkeypatch: p
     ]
     events = [(day, list(cache), list(changed)) for day, cache, changed in institutional_vintages._iter_public_book_cache(df_manifest, df_holdings)]
     assert events == [
-        (pd.Timestamp("2024-05-16"), [first, second], [first, second]),
-        (pd.Timestamp("2024-08-15"), [first, second, current], [current]),
-        (pd.Timestamp("2024-11-15"), [first, second, current, orphan], [orphan]),
-        (pd.Timestamp("2024-11-20"), [first, second, current, orphan, late], [late]),
-        (pd.Timestamp("2024-11-22"), [current, orphan, latest], [latest]),
-        (pd.Timestamp("2024-12-03"), [current, orphan, latest], []),
+        (pd.Timestamp("2024-05-17"), [first, second], [first, second]),
+        (pd.Timestamp("2024-08-16"), [first, second, current], [current]),
+        (pd.Timestamp("2024-11-18"), [first, second, current, orphan], [orphan]),
+        (pd.Timestamp("2024-11-21"), [first, second, current, orphan, late], [late]),
+        (pd.Timestamp("2024-11-25"), [current, orphan, latest], [latest]),
+        (pd.Timestamp("2024-12-04"), [current, orphan, latest], []),
     ]
     assert resolver.call_count == 6
     print(

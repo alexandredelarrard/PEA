@@ -7,7 +7,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SIGNAL_SESSIONS
+from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_preparation import SENTIMENT_TAGS, quarter_number
@@ -151,9 +151,9 @@ def attach_issuer_identity(
 
 
 def _daily_frame(
-    per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex, availability_lag_days: int, since: pd.Timestamp | None = None
+    per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex, availability_lag_days: int, signal_sessions: int, since: pd.Timestamp | None = None
 ) -> pd.DataFrame:
-    """Emit only output sessions, preserving each call's original 66-session interval."""
+    """Emit only output sessions, preserving each call's configured signal interval."""
     # Allocate the requested output tail on the original trading calendar.
     calendar = pd.DatetimeIndex(idx).normalize()
     first = 0 if since is None else int(calendar.searchsorted(since))
@@ -169,13 +169,15 @@ def _daily_frame(
             continue
         eligible = cast(pd.Timestamp, row.as_of).normalize() + pd.Timedelta(days=availability_lag_days)
         start = int(calendar.searchsorted(eligible, side="left"))
-        stop = min(start + EARNINGS_CALL_SIGNAL_SESSIONS, len(calendar))
+        stop = min(start + signal_sessions, len(calendar))
         if stop > first and start < len(calendar):
             frame.loc[calendar[max(start, first) : stop], str(row.ticker)] = getattr(row, value_col)
     return frame
 
 
-def feature_history_scope(calls: pd.DataFrame, calendar: pd.DatetimeIndex, since: pd.Timestamp | None, lag_days: int) -> pd.DataFrame:
+def feature_history_scope(
+    calls: pd.DataFrame, calendar: pd.DatetimeIndex, since: pd.Timestamp | None, lag_days: int, signal_sessions: int
+) -> pd.DataFrame:
     """Select active emitters and their actual immediately preceding fiscal calls."""
     if calls.empty:
         return calls.copy()
@@ -184,7 +186,7 @@ def feature_history_scope(calls: pd.DataFrame, calendar: pd.DatetimeIndex, since
     first = 0 if since is None else int(calendar.searchsorted(since))
     eligible = pd.to_datetime(ordered["as_of"]).dt.normalize() + pd.Timedelta(days=lag_days)
     starts = calendar.searchsorted(eligible)
-    active = (starts < len(calendar)) & (starts + EARNINGS_CALL_SIGNAL_SESSIONS > first)
+    active = (starts < len(calendar)) & (starts + signal_sessions > first)
     emitters = ordered.loc[active]
     if emitters.empty:
         return ordered.iloc[0:0]
@@ -204,6 +206,7 @@ def build_earnings_call_feature_panel(
     availability: pd.DataFrame | None = None,
     *,
     availability_lag_days: int,
+    signal_sessions: int,
     since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Build the exact ten daily sentiment and embedding features from per-call KPIs."""
@@ -218,7 +221,7 @@ def build_earnings_call_feature_panel(
         observations = per_call[["as_of", "ticker", feature]]
         if not observations[feature].notna().any():
             continue
-        daily = _daily_frame(observations, feature, trading_index, availability_lag_days, since)
+        daily = _daily_frame(observations, feature, trading_index, availability_lag_days, signal_sessions, since)
         if daily.notna().any().any():
             fields[feature] = daily
     if not fields:

@@ -1,6 +1,6 @@
 """
 THE table registry: every table described exactly once -- name, pk, incremental date column,
-freshness cadence, SQL date columns, vector column, default read projection.
+SQL date columns, vector column, default read projection. Configured source timing lives in data.yml.
 
 Replaces five drifted declaration sites: `schema_registry.py`, the `*_TABLE` literals in
 constants.py, `DATA_FRESHNESS_SOURCES` (whose date_col duplicated TableSpec's),
@@ -55,19 +55,12 @@ class Resume:
     mode: str
     # Entity column ("ticker", "cik"); None = one market-wide frontier.
     key: str | None
-    # Publication date the overlap is measured on.
+    # Source publication/frontier column; date and overlap policies live in data.yml.
     frontier_col: str | None
-    overlap_days: int = 0
     # Documents: EDGAR forms diffed against the local filing index.
     forms: tuple[str, ...] = ()
     # Archive: the source period column.
     period_col: str | None = None
-    # Earliest date the source serves (ISO); the work list never starts before it.
-    source_start: str | None = None
-    # First period with broad coverage; earlier, sparse source history can still exist.
-    coverage_start: str | None = None
-    # Archive periods ending on/after this date use an observed availability clock, earlier ones an estimate.
-    observed_from: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,14 +89,6 @@ class Table:
     # DROP-and-recreate over DELETE in `replace` (see the warning on `is_unmanaged` below).
     # The cube parts and the four fundamentals tables.
     managed: bool = True
-
-    # Freshness cadence key (see constants.DATA_FRESHNESS_MAX_AGE_DAYS). None -> the table
-    # is not freshness-checked.
-    freshness: str | None = None
-    # The column freshness measures, when it differs from `date_col`. Four tables publish
-    # on a different clock than the period they describe -- for those, freshness must watch
-    # WHEN the fact was filed, not the quarter it covers.
-    freshness_date_col: str | None = None
 
     # Default projection for `load(project=True)`. A memory control: `sec13f_hr` is ~21.7M
     # rows and reading it unprojected OOM-killed the aggregation task. A consumer needing a
@@ -137,10 +122,6 @@ class Table:
         """True -> `replace` must DROP and recreate, not DELETE (see DataStore.replace)."""
         return not self.managed
 
-    @property
-    def freshness_col(self) -> str | None:
-        return self.freshness_date_col or self.date_col
-
 
 class Tables:
     """Every table, grouped by kind. Attribute name == table name throughout."""
@@ -161,7 +142,7 @@ class Tables:
         date_col="snapshot_date",
         ticker_col=None,
         date_type_cols=("snapshot_date",),
-        resume=Resume(RESUME_SNAPSHOT, None, None, source_start="2012-01-01"),
+        resume=Resume(RESUME_SNAPSHOT, None, None),
         read_columns=("snapshot_date", "dataroma_code", "manager_name", "cik", "resolution", "source_url"),
     )
 
@@ -283,15 +264,21 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
-    prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
-    dividends = Table("prices_dividends", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
+    prices = Table("prices", ("ticker", "date"), date_col="date", resume=Resume(RESUME_SERIES, "ticker", "date"))
+    dividends = Table(
+        "prices_dividends",
+        ("ticker", "date"),
+        date_col="date",
+        read_columns=("date", "ticker", "dividends"),
+        resume=Resume(RESUME_SERIES, "ticker", "date"),
+    )
     # Share-split ex-dates, yfinance-sourced and unioned with `sharadar_actions` (which has
     # nine known holes -- GOOGL 2022, NVDA 2021, TSLA 2022, AVGO/CMG/ANET 2024, BKNG/MNST/AMCR
     # 2026 -- and at least one false positive, SJM's 0.945 merger factor).
     # Sparse like `dividends`, not daily: only non-zero events are stored, so it resumes from
     # its own frontier rather than the price one.
     # NOT a market-cap input -- see the table comment in sql/schema.sql.
-    prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
+    prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date", resume=Resume(RESUME_SERIES, "ticker", "date"))
     # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line as filed (no summing),
     # keyed on the CUSIP the file reports, source columns only. `zips-ingest --only ftd` stores
     # the lines of the universe companies' lineage symbols and CUSIP-6 prefixes and resumes on the
@@ -306,8 +293,7 @@ class Tables:
         ticker_col=None,
         date_col="date",
         date_type_cols=("date", "trade_date"),
-        freshness="biweekly",
-        resume=Resume(RESUME_ARCHIVE, None, "date", 31, period_col="period", source_start="2009-07-01"),
+        resume=Resume(RESUME_ARCHIVE, None, "date", period_col="period"),
         read_columns=(
             "date",
             "trade_date",
@@ -332,8 +318,7 @@ class Tables:
         ticker_col=None,
         date_col="date",
         date_type_cols=("date",),
-        freshness="daily",
-        resume=Resume(RESUME_SERIES, None, "date", 7, source_start="2018-08-01"),
+        resume=Resume(RESUME_SERIES, None, "date"),
         read_columns=("date", "source_symbol", "market", "short_volume", "short_exempt_volume", "total_volume"),
     )
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two
@@ -351,9 +336,8 @@ class Tables:
         ("ticker", "date"),
         date_col="date",
         date_type_cols=("date",),
-        freshness="daily",
         read_columns=("date", "ticker", "close"),
-        resume=Resume(RESUME_SERIES, "ticker", "date", 7),
+        resume=Resume(RESUME_SERIES, "ticker", "date"),
     )
     cusip_ticker_map = Table("cusip_ticker_map", ("cusip",), ticker_col="ticker")
 
@@ -373,7 +357,6 @@ class Tables:
         ("ticker", "as_of"),
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
-        freshness="quarterly",
         managed=False,
     )
     # The Sharadar producer's output, built from Sharadar's own inputs only (no SEC table).
@@ -391,7 +374,6 @@ class Tables:
         ("ticker", "as_of"),
         date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
-        freshness="quarterly",
         managed=False,
         read_columns=(
             "ticker",
@@ -493,8 +475,7 @@ class Tables:
         ("ticker", "as_of"),
         date_col="as_of",
         date_type_cols=("as_of",),
-        freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", forms=_ANNUAL_REPORT_FORMS),
     )
     # Accession-grain fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
@@ -528,9 +509,8 @@ class Tables:
         ("ticker", "accession_number", "field", "duration_type", "period_end"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
-        freshness="quarterly",
         managed=False,
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-Q"), source_start="2009-04-15"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=("10-K", "10-Q")),
         empty_marker=("field", EMPTY_MARKER),
         desc="fundamentals (linkbase)",
         retrieval_columns=(
@@ -565,8 +545,9 @@ class Tables:
         "earnings_surprises",
         ("ticker", "earnings_date"),
         date_col="earnings_date",
-        freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 35, source_start="2002-10-01"),
+        read_columns=("ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_pct"),
+        optional_columns=frozenset({"eps_estimate", "eps_actual", "surprise_pct"}),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date"),
     )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,
@@ -577,9 +558,7 @@ class Tables:
         ("adsh", "tag", "ddate", "qtrs"),
         date_col="ddate",
         date_type_cols=("ddate", "filed", "available_at"),
-        freshness="monthly",
-        freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01", observed_from="2026-09-01"),
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", period_col="period"),
     )
     # SEC notes NARRATIVE TEXT blocks (high-signal notes only), stored raw for later
     # embedding / sentiment. Same grain as notes_num; `value` is the text.
@@ -588,9 +567,7 @@ class Tables:
         ("adsh", "tag", "ddate", "qtrs"),
         date_col="ddate",
         date_type_cols=("ddate", "filed", "available_at"),
-        freshness="monthly",
-        freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01", observed_from="2026-09-01"),
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", period_col="period"),
     )
     # NOTE: `employees_history` was RETIRED, and so was the `sec_fundamentals_history."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
@@ -625,7 +602,6 @@ class Tables:
         ("ticker", "dimension", "date", "reportperiod"),
         date_col="date",
         date_type_cols=("date", "reportperiod", "calendardate", "lastupdated"),
-        freshness="quarterly",
         managed=False,
         read_columns=(
             "ticker",
@@ -704,7 +680,7 @@ class Tables:
             "ncf",
             "fcf",
         ),
-        resume=Resume(RESUME_SERIES, "ticker", "date", 95),
+        resume=Resume(RESUME_SERIES, "ticker", "date"),
     )
     # Sharadar's own ticker dimension, filtered to `table=fundamentals` (17,826 rows
     # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `universe_tickers`: this one
@@ -762,7 +738,6 @@ class Tables:
         ("date", "ticker", "action", "contraticker"),
         date_col="date",
         date_type_cols=("date",),
-        freshness="daily",
         read_columns=("date", "action", "ticker", "name", "value", "contraticker", "contraname"),
         # replaced whole by each `universe --only sharadar-actions` run: `ticker` is in the PK, so a re-pull cannot upsert
         resume=Resume(RESUME_SNAPSHOT, None, "date"),
@@ -775,9 +750,8 @@ class Tables:
         ("date", "ticker", "action"),
         date_col="date",
         date_type_cols=("date",),
-        freshness="daily",
         read_columns=("date", "action", "ticker", "name", "contraticker", "contraname", "note"),
-        resume=Resume(RESUME_SERIES, None, "date", 7, source_start="1990-01-01"),
+        resume=Resume(RESUME_SERIES, None, "date"),
     )
 
     # ----------------------------------------------------------------- #
@@ -796,7 +770,6 @@ class Tables:
         ("cik", "period", "accession_number", "ticker", "cusip"),
         date_col="period",
         date_type_cols=("period", "filing_date"),
-        freshness="quarterly",
         # institutional_features + superinvestor_features. THE reason projections exist:
         # ~21.7M rows.
         read_columns=(
@@ -811,12 +784,13 @@ class Tables:
             "put_shares",
             "put_value",
             "filing_date",
+            "accepted_at",
         ),
         # Option quantities are optional for older sources; never synthesize them.
-        optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
+        optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date", "accepted_at"}),
         # Market-wide nightly walk; `zips-ingest --only 13f` then stores every 13F-HR(/A) accession of
         # the cached SEC 13F data sets that is not stored yet, through the walk's writer.
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="1999-06-30"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", forms=("13F-HR", "13F-HR/A")),
         # One marker per accession, cusip and ticker '_empty': parse_status 'complete' for a stored
         # book, 'invalid' (reason in value_unit_evidence) for a data-set packet that failed
         # validation; the ZIP ingest skips both, the walk reads 'complete' only.
@@ -836,7 +810,7 @@ class Tables:
     # `edgar_index`: where the name came from); `source_period` (the period the filing is stored under in `sec13f_hr`: equal to
     # `period`, except for a snapped filing, where it is the filing's own non-quarter-end period). 13F-NT notice filers are not stored.
     #
-    # Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `build_cube.manager_profile`) over the
+    # Profile columns, written by `data_aggregate` (`build-manager-profile`; knobs under `data_aggregate.manager_profile`) over the
     # trailing `window_quarters` quarters including `period` (at least `min_quarters` usable quarters, else null; null means
     # unknown, never zero), from books filed on or before `first_filed_date`:
     # `category` (pension | insurance | bank | broker_dealer | sovereign | fund | other, from the cleaned `manager_name` by
@@ -863,9 +837,7 @@ class Tables:
         date_col="period",
         ticker_col=None,
         date_type_cols=("period", "first_filed_date", "source_period"),
-        freshness="quarterly",
-        freshness_date_col="first_filed_date",
-        resume=Resume(RESUME_MARKET, "cik", "first_filed_date", 92, source_start="1999-07-01"),
+        resume=Resume(RESUME_MARKET, "cik", "first_filed_date"),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
     # that table). One table for both sources: EDGAR daily rows are authoritative
@@ -895,8 +867,6 @@ class Tables:
             "original_submission_date",
             "economic_date",
         ),
-        freshness="daily",
-        freshness_date_col="filing_date",
         # What insider_quality and insider_features read.
         read_columns=(
             "accession_number",
@@ -928,9 +898,7 @@ class Tables:
         # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
         # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
         # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
-        resume=Resume(
-            RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("3", "4", "5", "3/A", "4/A", "5/A"), period_col="quarter", source_start="2006-01-01"
-        ),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=("3", "4", "5", "3/A", "4/A", "5/A"), period_col="quarter"),
         empty_marker=("security_type", EMPTY_MARKER),
         desc="insider Forms 3/4/5 (EDGAR)",
         retrieval_columns=(
@@ -1030,10 +998,7 @@ class Tables:
             "reporting_person_name",
             "item4_purpose_of_transaction",
         ),
-        freshness="daily",
-        resume=Resume(
-            RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"), source_start="1993-01-01"
-        ),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A")),
         # rp_seq counts from 0, so the sentinel is negative
         empty_marker=("rp_seq", -1),
         desc="SC 13D (edgartools)",
@@ -1128,10 +1093,7 @@ class Tables:
         # ownership_features, same shape as `sec_13d` minus the two 13D-only
         # columns above.
         read_columns=("ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik", "reporting_person_name"),
-        freshness="daily",
-        resume=Resume(
-            RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"), source_start="1993-01-01"
-        ),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A")),
         empty_marker=("rp_seq", -1),
         desc="SC 13G (edgartools)",
         retrieval_columns=(
@@ -1287,8 +1249,7 @@ class Tables:
                 "auditor_name",
             )
         ),
-        freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", forms=_PROXY_FORMS),
         empty_marker=("def14a_json", EMPTY_MARKER),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
@@ -1306,7 +1267,6 @@ class Tables:
         ("ticker", "accession_number", "name"),
         date_col="as_of",
         date_type_cols=("as_of",),
-        freshness="yearly",
         resume=def14a_llm.resume,
         empty_marker=("name", EMPTY_MARKER),
         # StepCubeGovernance. 134,490 rows is a real read beside the 21.7M-row 13F table in
@@ -1324,7 +1284,6 @@ class Tables:
         ("ticker", "accession_number", "name", "fiscal_year"),
         date_col="as_of",
         date_type_cols=("as_of",),
-        freshness="yearly",
         resume=def14a_llm.resume,
         empty_marker=("name", EMPTY_MARKER),
         marker_key_fill=(("fiscal_year", -1),),
@@ -1335,7 +1294,6 @@ class Tables:
         ("ticker", "accession_number", "name"),
         date_col="as_of",
         date_type_cols=("as_of",),
-        freshness="yearly",
         resume=def14a_llm.resume,
         empty_marker=("name", EMPTY_MARKER),
         # StepCubeGovernance, 80,252 rows. ⚠ SIX components, and the first is `fees_earned` --
@@ -1360,7 +1318,6 @@ class Tables:
         ("ticker", "accession_number", "holder_name", "holder_type"),
         date_col="as_of",
         date_type_cols=("as_of",),
-        freshness="yearly",
         resume=def14a_llm.resume,
         empty_marker=("holder_name", EMPTY_MARKER),
     )
@@ -1369,8 +1326,7 @@ class Tables:
         ("ticker", "accession_number", "item"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report"),
-        freshness="daily",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=("8-K", "8-K/A")),
         empty_marker=("item", EMPTY_MARKER),
         desc="8-K (edgartools)",
         retrieval_columns=(
@@ -1395,9 +1351,104 @@ class Tables:
         ("ticker", "accession_number", "proposal_seq"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report", "meeting_date"),
-        freshness="daily",
+        read_columns=(
+            "ticker",
+            "accession_number",
+            "proposal_seq",
+            "cik",
+            "form",
+            "filing_date",
+            "period_of_report",
+            "meeting_date",
+            "is_amendment",
+            "mentions_preliminary",
+            "is_preliminary_stated",
+            "proposal_number",
+            "proposal_type",
+            "description",
+            "vote_standard",
+            "votes_for",
+            "votes_against",
+            "votes_abstain",
+            "votes_broker_non_votes",
+            "nominee_sum_matches",
+            "nominee_votes_json",
+            "n_nominees_ceo",
+            "n_nominees_exec_officer",
+            "n_nominees_non_employee",
+            "n_nominees_unmatched",
+            "votes_for_ceo",
+            "votes_against_ceo",
+            "votes_abstain_ceo",
+            "votes_broker_non_votes_ceo",
+            "votes_for_exec_officer",
+            "votes_against_exec_officer",
+            "votes_abstain_exec_officer",
+            "votes_broker_non_votes_exec_officer",
+            "votes_for_non_employee",
+            "votes_against_non_employee",
+            "votes_abstain_non_employee",
+            "votes_broker_non_votes_non_employee",
+            "votes_for_unmatched",
+            "votes_against_unmatched",
+            "votes_abstain_unmatched",
+            "votes_broker_non_votes_unmatched",
+            "exec_officer_titles",
+            "n_nominees",
+            "min_support_pct",
+            "min_support_name",
+            "n_nominees_below_70pct",
+            "source",
+        ),
+        optional_columns=frozenset(
+            {
+                "cik",
+                "form",
+                "period_of_report",
+                "meeting_date",
+                "is_amendment",
+                "mentions_preliminary",
+                "is_preliminary_stated",
+                "proposal_number",
+                "proposal_type",
+                "description",
+                "vote_standard",
+                "votes_for",
+                "votes_against",
+                "votes_abstain",
+                "votes_broker_non_votes",
+                "nominee_sum_matches",
+                "nominee_votes_json",
+                "n_nominees_ceo",
+                "n_nominees_exec_officer",
+                "n_nominees_non_employee",
+                "n_nominees_unmatched",
+                "votes_for_ceo",
+                "votes_against_ceo",
+                "votes_abstain_ceo",
+                "votes_broker_non_votes_ceo",
+                "votes_for_exec_officer",
+                "votes_against_exec_officer",
+                "votes_abstain_exec_officer",
+                "votes_broker_non_votes_exec_officer",
+                "votes_for_non_employee",
+                "votes_against_non_employee",
+                "votes_abstain_non_employee",
+                "votes_broker_non_votes_non_employee",
+                "votes_for_unmatched",
+                "votes_against_unmatched",
+                "votes_abstain_unmatched",
+                "votes_broker_non_votes_unmatched",
+                "exec_officer_titles",
+                "n_nominees",
+                "min_support_pct",
+                "min_support_name",
+                "n_nominees_below_70pct",
+                "source",
+            }
+        ),
         # Units are the stored Item 5.07 rows of `sec_8k`, not an index listing.
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date"),
         empty_marker=("proposal_seq", 0.0),
     )
     # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per
@@ -1407,8 +1458,7 @@ class Tables:
         ("ticker", "accession_number", "section"),
         date_col="filed",
         date_type_cols=("filed", "period_of_report"),
-        freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q"), source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", forms=("10-K", "10-Q")),
         empty_marker=("section", EMPTY_MARKER),
         desc="10-K/10-Q text (edgartools)",
         retrieval_columns=(
@@ -1432,8 +1482,7 @@ class Tables:
         ("ticker", "accession_number"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report"),
-        freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_ANNUAL_REPORT_FORMS, source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=_ANNUAL_REPORT_FORMS),
         empty_marker=("source_document", EMPTY_MARKER),
         desc="10-K employees text (EDGAR)",
         retrieval_columns=(
@@ -1458,8 +1507,7 @@ class Tables:
         ("ticker", "accession_number", "section"),
         date_col="filing_date",
         date_type_cols=("filing_date",),
-        freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_PROXY_FORMS, source_start="1993-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=_PROXY_FORMS),
         empty_marker=("section", EMPTY_MARKER),
         desc="DEF 14A text (EDGAR)",
         retrieval_columns=(
@@ -1483,8 +1531,7 @@ class Tables:
         ("ticker", "quarter", "paragraph"),
         date_col="as_of",
         date_type_cols=("as_of",),
-        freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, source_start="2005-01-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of"),
     )
     earnings_call_sentiment = Table("earnings_call_sentiment", ("ticker", "quarter", "tag"), date_col="as_of", date_type_cols=("as_of",))
     earning_calls_embedding = Table(
@@ -1570,11 +1617,6 @@ def name_of(table: Table | str) -> str:
     being deleted would be backwards.
     """
     return table.name if isinstance(table, Table) else str(table)
-
-
-def freshness_tables() -> tuple[Table, ...]:
-    """The tables checked by the extraction freshness gate, in registry order."""
-    return tuple(t for t in ALL if t.freshness is not None)
 
 
 def resume_tables() -> tuple[Table, ...]:

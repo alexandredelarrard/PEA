@@ -2,7 +2,7 @@
 `earnings_call_sections`, one row per source paragraph; the speaker-turn split runs at aggregate time.
 
 A run reads the parquet footer once, keeps the row groups whose `symbol` statistics meet the lineage scope,
-maps their complete historical index to canonical tickers and verifies raw recovery gaps and
+maps their scoped index to canonical tickers and verifies raw recovery gaps and
 null-ID payload equality before diffing against stored calls. Projected payloads are read once
 for verification and again only for new or re-issued calls. Only `-F` also
 deletes stored calls absent from the source; a re-issued or removed call has its derivatives
@@ -16,7 +16,7 @@ import threading
 import time
 from bisect import bisect_left
 from collections import deque
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import IO, Any, SupportsInt, cast
@@ -27,7 +27,6 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, HfFileSystem
-from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
@@ -35,11 +34,13 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
 )
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, Identity, load_identity
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import planner_bounds
+from src.data_extract.utils.common.resume import planner_bounds, source_plan
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore, Where
+from src.utils.data_policy import window_policy
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
-from src.utils.tickers_universe.universe import before_end
+from src.utils.window import Window
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
 DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"
@@ -226,7 +227,7 @@ def _other_share_class(symbol: str, ticker: str) -> bool:
     return bool(separator and len(share_class) == 1 and symbol != ticker and squash(symbol).startswith(stem) and len(squash(symbol)) == len(stem) + 1)
 
 
-def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+def calls_from_index(index: pd.DataFrame, windows: Mapping[str, Window], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, int]:
     """One row per scoped call: ticker, quarter, as_of, transcript_id and its row-group position.
 
     Resolve ownership before narrowing to the requested destination. A (ticker, quarter)
@@ -236,7 +237,10 @@ def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -
     calls["ticker"] = [decision.ticker or decision.recovery_ticker for decision in decisions]
     calls["recovery"] = pd.Series([decision.ticker is None for decision in decisions], index=calls.index, dtype=bool)
     rejected = int(calls["recovery"].sum())
-    calls = calls[calls["ticker"].isin(scope)]
+    # Filter both source bounds before a future or out-of-scope revision can shadow an eligible call.
+    starts = calls["ticker"].map({key: window.start for key, window in windows.items()})
+    ends = calls["ticker"].map({key: window.end for key, window in windows.items()})
+    calls = calls[calls["as_of"].between(starts, ends)]
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
         transcript_id=calls["transcripts_id"].astype("Int64"),
@@ -397,22 +401,67 @@ def _ordered_parallel[T](groups: list[int], work: Callable[[int], T], workers: i
             yield group, result
 
 
-def _stored_calls(context: Context, calls: pd.DataFrame, scope: set[str], full: bool) -> pd.DataFrame | None:
-    """Stored (ticker, quarter, transcript_id, as_of), one row per call: every stored call of
-    `scope` on a reconcile, else only the candidates' keys.
+def _call_windows(context: Context, scope: set[str]) -> dict[str, Window]:
+    """Resolve each key's configured candidate check; a missing key uses its fixed initial scope."""
+    # Load each scoped frontier once, then retain the universe's declared end/grace.
+    stats = context.store.key_stats(_TABLE, "ticker", "as_of", where={"ticker": sorted(scope)})
+    if context.run.mode == "incremental" and not stats.empty and stats["last"].isna().any():
+        raise ValueError("Stored call clocks are unknown; use explicit bounded historical recovery")
+    frontiers = dict(zip(stats["key"], pd.to_datetime(stats["last"]), strict=True)) if not stats.empty else {}
+    bounds = planner_bounds(context)
 
-    Keyed on the candidates' quarters rather than on a date window: a re-issue can move a
-    call's date out of any window, and its old paragraphs must still be found."""
+    # The shared resolver owns candidate lookback and both hard bounds.
+    windows: dict[str, Window] = {}
+    for ticker in sorted(scope):
+        plan = source_plan(context, _TABLE, frontiers.get(ticker), (("ticker", (ticker,)),))
+        if plan is None:
+            continue
+        end = bounds.get(ticker, (None, None))[1]
+        until = min(plan.write.end, end) if end is not None else plan.write.end
+        if plan.write.start <= until:
+            windows[ticker] = Window(plan.write.start, until)
+    return windows
+
+
+def _stored_calls(context: Context, calls: pd.DataFrame, windows: Mapping[str, Window]) -> pd.DataFrame | None:
+    """Read bounded reconciliation rows and exact candidate keys together, including old-date collisions."""
+    full = context.run.mode in {"full", "recovery"}
+    scopes: Where = []
     if full:
-        where: dict[str, object] = {"ticker": list(scope), "paragraph": FIRST_PARAGRAPH}
-    elif calls.empty:
+        scopes.extend({"ticker": key, "paragraph": FIRST_PARAGRAPH, "as_of": span} for key, span in windows.items())
+    scopes.extend(
+        {"ticker": str(key), "paragraph": FIRST_PARAGRAPH, "quarter": sorted(group["quarter"].unique())}
+        for key, group in calls.groupby("ticker", sort=False)
+    )
+    if not scopes:
         return None
-    else:
-        where = {"ticker": sorted(calls["ticker"].unique()), "paragraph": FIRST_PARAGRAPH, "quarter": sorted(calls["quarter"].unique())}
-    stored = context.store.load(_TABLE, ["ticker", "quarter", "transcript_id", "as_of"], where=where, optional=True)
-    if stored is None or full:
-        return stored
-    return stored.merge(calls[_KEY].drop_duplicates(), on=_KEY, how="inner")
+    return context.store.load(_TABLE, [*_KEY, "transcript_id", "as_of"], where=scopes, optional=True)
+
+
+def _require_call_scope(context: Context, calls: pd.DataFrame, windows: Mapping[str, Window]) -> None:
+    """Refuse a moved call whose old paragraphs lie outside the authorized write window."""
+    if calls.empty:
+        return
+    starts = calls["ticker"].map({key: span.start for key, span in windows.items()})
+    ends = calls["ticker"].map({key: span.end for key, span in windows.items()})
+    allowed = pd.to_datetime(calls["as_of"]).between(starts, ends)
+    if "old_as_of" in calls:
+        old_dates = pd.to_datetime(calls["old_as_of"])
+        prior_allowed = old_dates.between(starts, ends)
+        if context.run.mode in {"full", "recovery"}:
+            prior_allowed |= old_dates.isna()
+        allowed &= prior_allowed
+    if not allowed.all():
+        raise ValueError("Earnings-call replacement crosses its configured Window; run an explicit bounded historical recovery")
+
+    # A replacement also invalidates cached source outputs; their own dates must authorize that work.
+    for table in (Tables.earnings_call_sentiment, Tables.earning_calls_embedding):
+        policy = window_policy(context.config, table, context.run.as_of)
+        if policy is None:
+            raise ValueError(f"{table.name}: call invalidation requires an active configured Window")
+        dates = calls["old_as_of"] if "old_as_of" in calls else calls["as_of"]
+        if not (policy.requested.mask(dates) | pd.to_datetime(dates).isna()).all():
+            raise ValueError(f"{table.name}: call invalidation crosses its configured Window")
 
 
 def _paragraph_signature(rows: pd.DataFrame) -> tuple[tuple[object, ...], ...]:
@@ -428,7 +477,6 @@ def _verify_calls(
     normal: pd.DataFrame,
     candidates: pd.DataFrame,
     stored: pd.DataFrame | None,
-    rejected: int,
     workers: int,
 ) -> pd.DataFrame:
     """Verify raw gaps and null-ID equality before any store mutation; normal winners are immutable."""
@@ -482,111 +530,102 @@ def _verify_calls(
         selected[["row_group", "row"]].itertuples(index=False, name=None)
     )
     context.log.info(
-        "Earnings calls raw recovery: %d initially rejected source rows; %d hard/unlinked/out-of-scope, %d occupied quarter/date, %d intro rejected, %d name-matched rows, %d selected recovery calls; %d payload groups verified, 0 pending read failures.",
-        rejected,
-        rejected - len(candidates),
+        "Earnings calls raw recovery: %d candidates, %d occupied quarter/date, %d intro rejected, %d selected; %d payload groups verified.",
+        len(candidates),
         len(candidates) - len(unoccupied),
         len(unoccupied) - len(matched),
-        len(matched),
         int(selected["recovery"].sum()),
         len(by_group),
     )
     return selected
 
 
-def _remove_calls(context: Context, calls: pd.DataFrame) -> None:
+def _remove_calls(store: DataStore, calls: pd.DataFrame) -> None:
     """Invalidate derived outputs before replacing or deleting source paragraphs."""
-    invalidate_earnings_call_derivatives(context, calls)
+    invalidate_earnings_call_derivatives(store, calls)
     for ticker, group in calls.groupby("ticker", sort=False):
-        context.store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
+        store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
 
 
 def _write_batch(context: Context, paragraphs: pd.DataFrame, reissued: pd.DataFrame) -> int:
     """Preserve invalidation and the earliest refresh date before replacing old paragraphs."""
-    if not reissued.empty:
-        _remove_calls(context, reissued)
-    return context.store.save(_TABLE, paragraphs) if not paragraphs.empty else 0
+    if paragraphs.empty:
+        return 0
+    replacements = reissued.merge(paragraphs[_KEY].drop_duplicates(), on=_KEY, how="inner")
+    with context.store.transaction() as bound:
+        if not replacements.empty:
+            _remove_calls(bound, replacements)
+        return bound.save(_TABLE, paragraphs)
+
+
+def _remove_gone_calls(store: DataStore, calls: pd.DataFrame) -> None:
+    """Reconcile absent source calls and their derivatives in one transaction."""
+    if calls.empty:
+        return
+    with store.transaction() as bound:
+        _remove_calls(bound, calls)
 
 
 def extract_earnings_calls(
     context: Context,
-    cfg: DictConfig,
     *,
-    full: bool = False,
     tickers: list[str] | None = None,
     source: TranscriptSource | None = None,
 ) -> ExtractSummary:
-    """Bring `earnings_call_sections` up to the current defeatbeta revision.
-
-    `cfg` is the `earnings_calls` config block (`read_workers`). `tickers` narrows the scope
-    (default: the analysis universe). Every run checks complete scoped metadata and fetches
-    missing/reissued payloads dated on or before the ticker's `ended_on` plus the U-65 grace (`planner_bounds`); stored calls are never
-    removed for falling after it. `full` additionally reconciles source-absent calls, retaining
-    tickers that vanished entirely. `source` replaces the HuggingFace file (tests)."""
-    log = context.log
+    """Check configured source Windows and replace only new/reissued calls; full mode reconciles that bounded scope."""
+    # Load resume and identity context once; a disabled or exhausted scope never opens the provider.
     started = time.monotonic()
     scope = set(context.universe.tickers if tickers is None else tickers)
+    windows = _call_windows(context, scope)
+    full = context.run.mode in {"full", "recovery"}
+    if not windows:
+        return ExtractSummary(full, "", 0, 0, 0, 0)
     identity = load_identity(context)
-    bounds = planner_bounds(context)
-    symbols = identity.universe_symbols(scope)
+    symbols = identity.universe_symbols(set(windows))
+    workers = int(context.config.data_extract.earnings_calls.read_workers)
+    if workers < 1:
+        raise ValueError("data_extract.earnings_calls.read_workers must be positive")
     src = source if source is not None else resolve_hf_source()
-
     with src.opener() as handle:
         footer = pq.ParquetFile(handle)
         metadata = footer.metadata
         check_source_schema(footer.schema_arrow)
     groups = select_row_groups(metadata, symbols)
-    log.info(
-        "Earnings calls: revision %s, %s run over %d tickers, %d/%d row groups, complete scoped metadata.",
+    context.log.info(
+        "Earnings calls: revision %s, %d tickers, %d/%d row groups; windows %s",
         src.revision[:12],
-        "full" if full else "incremental",
-        len(scope),
+        len(windows),
         len(groups),
         metadata.num_row_groups,
+        windows,
     )
-
-    workers = max(1, int(cfg.read_workers))
     readers = _Readers(src, metadata)
     rows_written = 0
     try:
+        # Clean the metadata inside each resolved Window before choosing fiscal/date winners.
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
         df_index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
         df_index = df_index[df_index["symbol"].map(yahoo_symbol).isin(symbols)]
-        df_normal, df_candidates, rejected = calls_from_index(df_index, scope, identity)
-        df_stored = _stored_calls(context, pd.concat([df_normal, df_candidates], ignore_index=True), scope, full)
-        try:
-            df_calls = _verify_calls(context, readers, df_normal, df_candidates, df_stored, rejected, workers)
-        except Exception:
-            log.exception(
-                "Earnings calls: source verification/comparison failed; recovery decisions pending, reconciliation aborted before deletion."
-            )
-            raise
-        df_new, df_reissued = diff_calls(df_calls, df_stored)
-        df_new, df_reissued = (df[before_end(df["ticker"], df["as_of"], bounds)] for df in (df_new, df_reissued))
-        df_gone, vanished = stale_calls(df_calls, df_stored if full else None)
-        if vanished:
-            log.warning("Earnings calls: %d stored ticker(s) have no call left in the source, kept as stored: %s", len(vanished), vanished[:20])
-        log.info(
-            "Earnings calls: %d source calls in scope, %d new, %d re-issued, %d removed from the source.",
-            len(df_calls),
-            len(df_new),
-            len(df_reissued),
-            len(df_gone),
+        df_normal, df_candidates, rejected = calls_from_index(df_index, windows, identity)
+        df_stored = _stored_calls(context, pd.concat([df_normal, df_candidates], ignore_index=True), windows)
+        context.log.info(
+            "Earnings calls: %d initially unlinked source rows; %d recovery candidates inside configured scope", rejected, len(df_candidates)
         )
-        recovered = int(df_calls["recovery"].sum())
-        recovered_new, recovered_reissued = int(df_new["recovery"].sum()), int(df_reissued["recovery"].sum())
-        log.info(
-            "Earnings calls raw recovery selected: %d new, %d re-issued, %d already stored.",
-            recovered_new,
-            recovered_reissued,
-            recovered - recovered_new - recovered_reissued,
-        )
-        if not df_gone.empty:
-            log.warning(
-                "Earnings calls: deleting %d stored call(s) absent from the source: %s", len(df_gone), df_gone[_KEY].head(10).to_dict("records")
-            )
-            _remove_calls(context, df_gone)
 
+        # Verify recovery and content equality before any deletion or invalidation.
+        df_calls = _verify_calls(context, readers, df_normal, df_candidates, df_stored, workers)
+        df_new, df_reissued = diff_calls(df_calls, df_stored)
+        _require_call_scope(context, df_reissued, windows)
+        df_gone, vanished = stale_calls(df_calls, df_stored if full else None)
+        _require_call_scope(context, df_gone, windows)
+        if vanished:
+            context.log.warning("Earnings calls: source-absent tickers kept as stored: %s", vanished[:20])
+        context.log.info(
+            "Earnings calls: %d source calls, %d new, %d re-issued, %d removed", len(df_calls), len(df_new), len(df_reissued), len(df_gone)
+        )
+
+        # A complete bounded reconciliation may remove absent calls; ordinary runs only replace candidates.
+        _remove_gone_calls(context.store, df_gone)
         df_needed = pd.concat(
             [
                 df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]"), is_reissued=False),
@@ -602,17 +641,8 @@ def extract_earnings_calls(
             empty_calls += len(df_part) - df_paragraphs[_KEY].drop_duplicates().shape[0]
             rows_written += _write_batch(context, df_paragraphs, df_part[df_part["is_reissued"]])
         if empty_calls:
-            log.warning("Earnings calls: %d call(s) carry no paragraph in the source.", empty_calls)
+            context.log.warning("Earnings calls: %d calls have no source paragraph", empty_calls)
     finally:
         readers.close()
-
-    log.info("Earnings calls: +%d paragraph rows in %.1fs.", rows_written, time.monotonic() - started)
-    return ExtractSummary(
-        full=full,
-        revision=src.revision,
-        row_groups=len(groups),
-        calls_new=len(df_new),
-        calls_reissued=len(df_reissued),
-        rows_written=rows_written,
-        calls_removed=len(df_gone),
-    )
+    context.log.info("Earnings calls: +%d paragraph rows in %.1fs", rows_written, time.monotonic() - started)
+    return ExtractSummary(full, src.revision, len(groups), len(df_new), len(df_reissued), rows_written, len(df_gone))

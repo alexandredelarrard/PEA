@@ -446,7 +446,7 @@ def test_the_walk_callbacks_are_the_declared_ones() -> None:
     """D-16: the statically enumerated callback roots are exactly the in-scope functions the two text walks run,
     the `run_scope`-bound DEF 14A parse and listing included."""
     declared = {fetch_employees_text.EMPLOYEES_TEXT_FETCH, fetch_def14a_text.DEF14A_TEXT_FETCH}
-    with fetch_def14a_text.DEF14A_TEXT_FETCH.run_scope(None, [], None) as bound:  # binds partials only, reads nothing
+    with fetch_def14a_text.DEF14A_TEXT_FETCH.run_scope(None, []) as bound:  # binds partials only, reads nothing
         declared.add(bound)
     attributes: list[Callable | None] = [getattr(fetch, key) for fetch in declared for key in sorted(_CALLBACK_KEYS)]
     run_time = {name for value in attributes for name in _bound_callbacks(value) if _matches(name.rsplit(".", 1)[0], EDGAR_TEXT.scope)}

@@ -11,12 +11,15 @@ from src.data_extract.utils.common.resume import (
     KEY_ESTABLISHED,
     KEY_NEW,
     KEY_ROWLESS,
-    ZipScope,
+    SeriesRequest,
     archive_worklist,
+    series_windows,
+    trading_calendar,
 )
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 from tests.support.universe import seed_universe
 
@@ -38,8 +41,10 @@ def _universe(ctx, tickers: dict[str, str], added_on: dict[str, str] | None = No
 
 
 def _plan(ctx, cik_map: pd.DataFrame, as_of: pd.Timestamp = _AS_OF, table=Tables.sec_8k, **kwargs):
-    defaults = {"forms": _FORMS, "identity": None, "years_history": 5}
-    request = WorklistRequest(keys=cik_map, as_of=as_of, **(defaults | kwargs))
+    ctx.run = WindowRun("full" if kwargs.pop("full", False) else "incremental", "document fixture", as_of)
+    ctx.config.data.tables[table.name].start_date = "2021-09-30"
+    defaults = {"forms": _FORMS, "identity": None}
+    request = WorklistRequest(keys=cik_map, **(defaults | kwargs))
     return document_worklist(ctx, table, request)
 
 
@@ -76,7 +81,7 @@ def test_a_new_key_gets_its_full_history_and_other_keys_are_unchanged(tmp_path, 
 
     assert _units(work, "NEW") == ["n-000", "n-001", "n-002"]
     assert _units(work, "AAA") == ["a-001"]
-    assert work.counts == {KEY_NEW: 3, "forward": 1, "gap": 0}
+    assert work.counts == {KEY_ROWLESS: 3, "forward": 1, "gap": 0}
     print("\n=== SANITY CHECK: M2 new key ===")
     print(f"  NEW (added 2026-09-29) lists its whole history {_units(work, 'NEW')}; AAA only its missing 8-K; counts {work.counts}.")
 
@@ -203,9 +208,11 @@ def _bars(ticker: str, dates) -> pd.DataFrame:
 
 
 def _series(ctx, keys: list[str], *, as_of: pd.Timestamp = _AS_OF, full: bool = False, table=Tables.prices):
-    from src.data_extract.utils.common.resume import series_windows, trading_calendar
-
-    return series_windows(ctx, table, keys, as_of, until=_UNTIL, years_history=5, full=full, calendar=trading_calendar(ctx))
+    ctx.run = WindowRun("full" if full else "incremental", "series fixture", as_of)
+    item = ctx.config.data.tables[table.name]
+    item.start_date = "2021-09-30"
+    item.end_date = None
+    return series_windows(ctx, table, SeriesRequest(keys, trading_calendar(ctx), until=_UNTIL))
 
 
 def _spans(work, key: str) -> list[tuple[str, str]]:
@@ -296,7 +303,7 @@ def test_m1_a_three_session_hole_becomes_a_three_session_window(tmp_path, sqlite
 
     assert _spans(work, "BBB") == [("2026-08-17", "2026-08-19"), ("2026-09-23", "2026-09-30")]
     assert _spans(work, "AAA") == [("2026-09-23", "2026-09-30")]
-    groups = [(str(a.date()), str(b.date()), keys) for a, b, keys in work.groups()]
+    groups = [(str(span.start.date()), str(span.end.date()), keys) for span, keys in work.groups()]
     assert groups == [("2026-08-17", "2026-08-19", ["BBB"]), ("2026-09-23", "2026-09-30", ["AAA", "BBB"])]
     print("\n=== SANITY CHECK: M1 hole ===")
     print(f"  BBB misses 3 sessions {list(hole.strftime('%m-%d'))} -> one extra 3-session window; groups {groups}.")
@@ -372,8 +379,9 @@ def _save_notes(store, table, ticker: str, periods: list[str]) -> None:
     store.save(table, pd.DataFrame(rows))
 
 
-def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, full: bool = False, lineage=None):
-    return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, ZipScope(keys, _AS_OF, full), lineage)
+def _archive(ctx, tables, published: list[str], keys: list[str], full: bool = False):
+    ctx.run = WindowRun("full" if full else "incremental", "archive fixture", _AS_OF)
+    return archive_worklist(ctx, tables, published, keys)
 
 
 def test_notes_period_counts_only_when_in_both_tables(tmp_path, sqlite_store):
@@ -398,108 +406,6 @@ def test_m3_absent_tables_list_every_published_period_from_the_source_start(tmp_
     assert notes.pending == ["2026_07", "2026_08"] and not ftd.scoped
     print("\n=== SANITY CHECK: M3 absent tables ===")
     print(f"  FTD -> {ftd.pending} (200906b clamped by source_start); notes -> {notes.pending}.")
-
-
-def _lineage(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
-    """The `rescan_lineage` rows of the published lineage: (ticker, cik, role, scope_changed_at), window CIKs only."""
-    frame = pd.DataFrame(rows, columns=["canonical_ticker", "cik", "role", "scope_changed_at"])
-    frame = frame[frame["role"].eq("cik_window")]
-    return frame.assign(scope_changed_at=pd.to_datetime(frame["scope_changed_at"]))[["canonical_ticker", "cik", "scope_changed_at"]]
-
-
-def _save_filer_notes(store, ticker: str, cik: str, periods: list[str]) -> None:
-    rows = [
-        {"adsh": f"{ticker}-{cik}-{p}", "tag": "t", "ddate": pd.Timestamp("2026-06-30"), "qtrs": 0, "ticker": ticker, "cik": cik, "period": p}
-        for p in periods
-    ]
-    store.save(Tables.notes_num, pd.DataFrame(rows))
-
-
-def test_m3_a_rowless_new_cik_is_rescanned_for_that_cik_once_on_a_new_period_run(tmp_path, sqlite_store, caplog):
-    """Q2 (the FTD 1 + 3 rule): AAA gained window CIK 77 on 2026-07-05, after 2026q2 (the newest stored period) ended, and
-    no row of it is stored: the run that stores the new 2026q3 rescans the cached stored quarters for AAA's CIK 77 only.
-    BBB's CIK 88 changed on 2026-06-01, before that boundary: never rescanned. Once 2026q3 is stored, a run with no new
-    period rescans nothing, although CIK 77 is still rowless (a CIK that never files stops being re-read)."""
-    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "BBB"])
-    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
-    _save_filer_notes(sqlite_store, "BBB", "0000000002", ["2026q1", "2026q2"])
-    lineage = _lineage(
-        [
-            ("AAA", "0000000001", "cik_window", "2026-07-05"),
-            ("AAA", "0000000077", "cik_window", "2026-07-05"),
-            ("BBB", "0000000002", "cik_window", "2026-06-01"),
-            ("BBB", "0000000088", "cik_window", "2026-06-01"),
-            ("BBB", "0000000099", "cik_event", "2026-07-05"),
-        ],
-    )
-    published = ["2026q1", "2026q2", "2026q3"]
-
-    with caplog.at_level("INFO"):
-        night1 = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"], lineage=lineage)
-    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q3"])
-    night2 = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"], lineage=lineage)
-    found = pd.DataFrame({"ticker": ["AAA", "AAA", "BBB"], "cik": ["0000000077", "0000000001", "0000000077"], "value": [1, 2, 3]})
-
-    assert night1.pending == ["2026q3"] and night1.rescan == ["2026q1", "2026q2"], (night1.pending, night1.rescan)
-    assert night1.rescan_ciks == {"AAA": frozenset({"0000000077"})}, night1.rescan_ciks
-    assert dict(night1.units()) == {"2026q1": ["AAA"], "2026q2": ["AAA"], "2026q3": ["AAA", "BBB"]}
-    assert night1.rescan_rows(found, "cik")["value"].tolist() == [1], "a rescanned period keeps the pair's CIK rows only"
-    assert night2.pending == [] and night2.rescan == [] and night2.rescan_ciks == {}, (night2.rescan, night2.rescan_ciks)
-    assert "rescanning" in caplog.text and "0000000077" in caplog.text
-    print("\n=== SANITY CHECK: M3 (ticker, new CIK) rescan, once on a new-period run (Q2) ===")
-    print(f"  night 1 stores 2026q3 and rescans {night1.rescan} for {night1.rescan_ciks} (BBB's 88 changed before 2026q2 ended: not read);")
-    print("  night 2 stores no period and rescans nothing, although CIK 77 is still rowless: no nightly re-read.")
-
-
-def _partial_warnings(caplog) -> list[str]:
-    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING" and "rescan is needed" in record.getMessage()]
-
-
-def test_m3_a_changed_pair_with_rows_warns_with_the_full_rescan_command_on_every_run(tmp_path, sqlite_store, caplog):
-    """AAA's window CIK 1 is stamped 2026-07-05, after 2026q2 (the newest stored period) ended, and already has rows: it is
-    not rescanned, so each run, with or without a new period, warns once with `zips-ingest --only notes -F -t AAA` and
-    says it repeats until the next archive period is stored."""
-    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
-    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
-    lineage = _lineage([("AAA", "0000000001", "cik_window", "2026-07-05")])
-
-    with caplog.at_level("INFO"):
-        new_period = _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2", "2026q3"], ["AAA"], lineage=lineage)
-        same_day = _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2"], ["AAA"], lineage=lineage)
-    warnings = _partial_warnings(caplog)
-
-    print(f"\nSANITY (partial pair warning): {len(warnings)} warning(s), one per run; first: {warnings[0] if warnings else None}")
-    assert len(warnings) == 2, "one warning per run, on the new-period run and on the run with no new period"
-    assert all("zips-ingest --only notes -F -t AAA`" in text and "AAA 0000000001" in text for text in warnings), "the scoped command"
-    assert all("repeats on every run until the next archive period is stored" in text for text in warnings), "says it persists"
-    assert new_period.rescan_ciks == {} and same_day.rescan == [], "the warning does not change what is rescanned"
-
-
-def test_m3_a_rowless_changed_pair_does_not_warn(tmp_path, sqlite_store, caplog):
-    """AAA's CIK 77 is stamped after the boundary with no row: it is rescanned automatically, so no warning."""
-    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
-    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
-    lineage = _lineage([("AAA", "0000000001", "cik_window", "2020-01-01"), ("AAA", "0000000077", "cik_window", "2026-07-05")])
-
-    with caplog.at_level("INFO"):
-        work = _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2", "2026q3"], ["AAA"], lineage=lineage)
-
-    print(f"\nSANITY (rowless pair): rescan {work.rescan_ciks}, warnings {_partial_warnings(caplog)} (expected none)")
-    assert work.rescan_ciks == {"AAA": frozenset({"0000000077"})}
-    assert _partial_warnings(caplog) == []
-
-
-def test_m3_an_old_stamp_does_not_warn(tmp_path, sqlite_store, caplog):
-    """AAA's CIK 1 has rows and was stamped before 2026q2 ended: nothing is owed, no warning."""
-    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
-    _save_filer_notes(sqlite_store, "AAA", "0000000001", ["2026q1", "2026q2"])
-    lineage = _lineage([("AAA", "0000000001", "cik_window", "2026-06-01")])
-
-    with caplog.at_level("INFO"):
-        _archive(ctx, (Tables.notes_num,), ["2026q1", "2026q2", "2026q3"], ["AAA"], lineage=lineage)
-
-    print(f"\nSANITY (old stamp): warnings {_partial_warnings(caplog)} (expected none)")
-    assert _partial_warnings(caplog) == []
 
 
 def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlite_store):
@@ -528,7 +434,7 @@ def test_m3_a_ticker_run_then_a_full_run_re_parses_nothing(tmp_path, sqlite_stor
     scoped = _archive(ctx, (Tables.notes_num,), published, ["AAA"])
     everyone = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"])
     scoped_full = _archive(ctx, (Tables.notes_num,), published, ["AAA"], full=True)
-    full = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"], full=True, cached=set())
+    full = _archive(ctx, (Tables.notes_num,), published, ["AAA", "BBB"], full=True)
 
     assert scoped.scoped and list(scoped.units()) == [] and scoped.held == ["2026q2"]
     assert not everyone.scoped and dict(everyone.units()) == {"2026q2": ["AAA", "BBB"]}

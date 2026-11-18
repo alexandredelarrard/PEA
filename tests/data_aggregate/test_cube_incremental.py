@@ -1,25 +1,16 @@
-"""
-Incremental cube-part builds (src/data_aggregate/step_build_cube.py).
+"""Configured incremental parity and registry projection contracts.
 
-The exploded DAG rebuilds each cube_part_<group> INCREMENTALLY: read the latest date, recompute only
-a warm-up-padded trailing window, then REWRITE the trailing `PART_REFRESH_TRADING_DAYS` and append
-everything after them. This is only correct if a trailing-window build reproduces the FULL build's
-tail exactly — which holds because the price/rolling features are backward-looking (window <=
-warm-up) and the cross-sectional standardization is per-day (independent across dates). This test
-proves that equivalence on the price feature builder over the INCLUSIVE span, and checks the
-idempotent tail-append helper.
-
-The rewrite is not hygiene. A part's last stored date is the one most likely to be wrong: it was
-built from the newest, least settled prices, and the fetcher re-pulls that same tail (a settled
-close superseding a mid-session bar, a refilled hole). Appending strictly after it left the live
-`cube_part_momentum` stopping ON a date whose features were ranked over 45 of 491 tickers, with no
-incremental run able to replace that row.
+Window arithmetic and bounded/atomic persistence are exercised through the shared resolver,
+real writer and actual producer tests; retired hard-coded refresh APIs have no compatibility layer.
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any, cast
+import json
+from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -27,37 +18,27 @@ import pytest
 from click.testing import CliRunner
 
 from src.data_aggregate import cli as aggregate_cli
-from src.data_aggregate.transformers import step_cube_institutionals
-from src.data_aggregate.transformers.step_cube_governance import REFRESH_TRADING_DAYS as GOVERNANCE_REFRESH
-from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.utils.common import inputs as capital_inputs
-from src.data_aggregate.utils.common.incremental import (
-    PART_REFRESH_TRADING_DAYS,
-    PartWindow,
-    plan_window,
-    window_start,
-    write_part,
-)
-from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.momentum.features import build_feature_panel
-from src.data_aggregate.utils.price.frames import ALL_FIELDS, PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import (
     ALL,
-    Resume,
     Tables,
-    name_of,
     projection,
     projection_report,
     resolve,
 )
 from src.data_store.store import DataStore
-from tests.conftest import make_frames
-from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+from src.utils.window import Offset, Window, WindowRun, shift_date
+from tests.data_aggregate.test_price_pit_contract import seed_prices
+from tests.support.config import fixture_config
+from tests.support.universe import universe_of
 
 
-def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
+def _synthetic_prices(
+    n_days: int = 2000, n_tickers: int = 8, seed: int = 0
+) -> tuple[pd.DatetimeIndex, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     dates = pd.bdate_range("2019-01-01", periods=n_days)
     tk = [f"T{i}" for i in range(n_tickers)]
     rng = np.random.default_rng(seed)
@@ -70,11 +51,11 @@ def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
     return dates, close, open_, sector, high, low, volume
 
 
-def test_windowed_build_reproduces_full_tail():
+def test_windowed_build_reproduces_full_tail() -> None:
     """The equivalence the whole incremental design rests on, over the INCLUSIVE window.
 
     The compared span is `date >= refresh_from`, not `date > cutoff`: a backward-looking part
-    now REWRITES its trailing `PART_REFRESH_TRADING_DAYS` as well as appending after them, so
+    now REWRITES its trailing configured correction Window as well as appending after them, so
     those dates have to be reproduced by the windowed build too -- they are deleted from the
     table before the append and there is no second chance at them.
 
@@ -105,12 +86,13 @@ def test_windowed_build_reproduces_full_tail():
     # simulate an incremental run with the ACTUAL configured price-group warm-up: recompute only
     # [refresh_from - warmup, end]. This must cover the longest daily look-back (the 5-year =
     # 1260-day seasonality feature) -> the test fails if the map value is ever set too low.
-    warmup = PART_BY_NAME["cube_part_momentum"].warmup_trading_days
-    refresh = PART_REFRESH_TRADING_DAYS
+    policy = fixture_config().data.tables.cube_part_momentum
+    warmup = int(policy.warmup.grid.value)
     cutoff_pos = 1900
     last = dates[cutoff_pos]
-    refresh_from = dates[cutoff_pos - refresh]
-    start = dates[cutoff_pos - refresh - warmup]
+    refresh_from = last - pd.Timedelta(days=int(policy.reprocess.overlap.value))
+    start = shift_date(refresh_from, Offset(warmup, str(policy.warmup.grid.unit)), dates)
+    refresh = int(((dates >= refresh_from) & (dates <= last)).sum()) - 1
     win = build_feature_panel(
         PriceFrames(
             trading_index=(close.loc[start:]).index,
@@ -165,424 +147,7 @@ def test_windowed_build_reproduces_full_tail():
     )
 
 
-def test_incremental_horizon_arithmetic():
-    """The target refresh window must reach back >= max_horizon so matured (NaN->value) labels
-    are recomputed. That is much wider than the backward-looking parts' own trailing rewrite
-    (`PART_REFRESH_TRADING_DAYS`), which is why `write_part` gives an explicit `refresh_from`
-    precedence over `window.refresh_from`."""
-    # emulate _window_start on a business-day calendar
-    idx = pd.bdate_range("2019-01-01", periods=800)
-    last = idx[750]
-
-    def window_start(last, n_back):
-        pos = int(idx.searchsorted(pd.Timestamp(last)))
-        return idx[max(0, pos - n_back)]
-
-    max_h = 90
-    feat_start = window_start(last, 1400)  # warm-up only (features)
-    tgt_start = window_start(last, 1400 + max_h)  # warm-up + horizon (targets compute)
-    refresh_from = window_start(last, max_h)  # matured-label overwrite window
-
-    assert feat_start < last and tgt_start <= feat_start
-    # the refresh window covers exactly the dates whose forward labels could have matured
-    assert (idx.searchsorted(last) - idx.searchsorted(refresh_from)) == max_h
-    print("\n=== SANITY CHECK: incremental window arithmetic ===")
-    print(
-        f"  last stored date {last.date()} | feature warm-up start {feat_start.date()} | "
-        f"target compute start {tgt_start.date()} | matured-label refresh from {refresh_from.date()}"
-    )
-    print(
-        f"  targets overwrite the trailing max_horizon window ({max_h} days, matured labels); "
-        f"betas/features rewrite only {PART_REFRESH_TRADING_DAYS}, so the wider explicit "
-        "window wins. Validated."
-    )
-
-
-def test_per_part_warmup_covers_binding_lookback():
-    """Each part's warm-up must cover the LONGEST daily-grid look-back of EVERY feature group
-    merged into it, else the incremental tail would be silently wrong.
-
-    The binding look-backs now live on the registry entry (`CubePart.binding_lookbacks`)
-    rather than being a literal duplicated here, so the contract cannot drift out of sync
-    with the code that enforces it. Groups whose look-back is in FILING or QUARTER space read
-    the full source table, so their grid look-back is 0 and a ~6-month floor is plenty."""
-    covered: dict[str, int] = {}
-    for part in CUBE_PARTS:
-        for group, need in part.binding_lookbacks:
-            assert part.warmup_trading_days >= need, (
-                f"{part.name}: warm-up {part.warmup_trading_days} < binding daily look-back {need} of member group '{group}'"
-            )
-            covered[group] = part.warmup_trading_days
-
-    # the feature groups the old exploded DAG ran as separate tasks are all still owned.
-    # `attention` is absent because that panel was DELETED (dead code: defined, never called
-    # from `run()`) with the `extras` -> `institutionals` rename -- not because a group lost
-    # its owner, which is what this assertion exists to catch.
-    #
-    # `short_interest` -> `short_flow` is a RENAME, not a loss: the panel now builds from RegSHO
-    # daily short VOLUME and fails-to-deliver, and `ic_shortvol_days_to_cover` went with the old
-    # name because days-to-cover needs FINRA short-INTEREST positions this repo does not fetch.
-    # look-back (the 252-day excursion window is one of the two that bind this part's warm-up).
-    #
-    # `ownership` was ADDED to the set on 2026-09-12 and that is a DECLARATION, not a new panel:
-    # `cube_part_institutionals` had been merging SEVEN panels while declaring six, so the
-    # beneficial-ownership family (`ic_bo_*` / `ic_act_*`) had no entry and nothing here could
-    # check its warm-up. Its `HOLDER_ACTIVE_DAYS = 378` is in fact the longest bounded look-back
-    # in the part, covered by the 390-day warm-up with 12 days to spare -- which was luck, and
-    # `f_ic_bo_new_holder` was the single worst column in the 2026-09-12 L7 run, wrong on 490 of
-    # 491 tickers on the newest date.
-    #
-    # ⚠ THIS ASSERTION IS STILL WEAKER THAN IT LOOKS. A group's declared number is its longest
-    # BOUNDED look-back, and several families here are UNBOUNDED: an age-since-last-event, a
-    # distinct-actor count to date, an expanding-window owner surprise, a price path measured
-    # from an anchor fifteen years back. `parts.py`'s premise -- source tables are read in full,
-    # so filing-space builders need no grid warm-up -- holds for a rolling window and fails for
-    # these, because the events are all read but are projected onto a grid that starts at
-    # `window.since`. No value of `warmup_trading_days` fixes that. `cube_part_institutionals`
-    # answers it structurally instead (`_load_frames` takes no `since`; it computes over the
-    # full calendar and lets `write_part` slice the tail), so for THAT part the warm-up is now
-    # belt-and-braces. For every other part this test passing is still not evidence that an
-    # incremental build is correct -- L7 in `validate institutionals` is.
-    assert set(covered) == {
-        "price",
-        "fundamental",
-        "sector",
-        "earnings",
-        "governance",
-        "employee",
-        "dividend",
-        "institutional",
-        "superinvestor",
-        "insider",
-        "short_flow",
-        "ownership",
-        "earnings_call_sentiment",
-        "earnings_call_embedding",
-    }, f"feature groups lost/added: {sorted(covered)}"
-
-    # heavy parts read ~5y; every other part stays light (this is where the memory win is)
-    heavy = {p.name for p in CUBE_PARTS if p.warmup_trading_days >= 1260}
-    light = [p for p in CUBE_PARTS if p.kind == "features" and p.name not in heavy]
-    assert all(p.warmup_trading_days <= 400 for p in light), "light parts should stay light"
-
-    print("\n=== SANITY CHECK: per-part warm-up vs binding look-back ===")
-    for part in CUBE_PARTS:
-        members = ", ".join(f"{g}({n})" for g, n in part.binding_lookbacks) or "-"
-        print(f"  {part.name:<26} warm-up={part.warmup_trading_days:>5}  members: {members}")
-    print(
-        f"  CONCLUSION: all 14 feature groups are owned by {len(heavy)} heavy part(s) reading "
-        f"~5y and {len(light)} light part(s) reading <=400d. Each part reads only as far back "
-        "as its longest member needs. Validated."
-    )
-
-
-# --------------------------------------------------------------------------- #
-# the inclusive trailing refresh                                               #
-# --------------------------------------------------------------------------- #
-# long enough that momentum's real 1,320-day warm-up plus the refresh still lands inside it;
-# `window_start` clamps at index 0, which would silently hide the arithmetic under test.
-CAL = pd.bdate_range("2011-01-03", periods=2000)
-LAST_POS = 1900
-LAST = CAL[LAST_POS]
-
-
-class _RefreshStore:
-    """Minimal DataStore stand-in: records what `write_part` asked for."""
-
-    def __init__(self, columns=None, last=LAST):
-        self._columns, self._last = columns, last
-        self.appended: tuple | None = None
-        self.replaced: pd.DataFrame | None = None
-
-    def max_date(self, part):
-        return self._last
-
-    def columns(self, part):
-        return self._columns or []
-
-    def replace(self, part, rows):
-        self.replaced = rows
-        return len(rows)
-
-    def append_tail(self, part, tail, cutoff, *, inclusive):
-        self.appended = (tail, pd.Timestamp(cutoff), inclusive)
-        return len(tail)
-
-
-def _rows(dates=CAL[LAST_POS - 10 : LAST_POS + 6]):
-    return pd.DataFrame({"date": dates, "ticker": "T0", "f": 1.0})
-
-
-def test_plan_window_refresh_arithmetic():
-    """`since` reaches `warmup + refresh` back, `refresh_from` exactly `refresh` back.
-
-    The `+ refresh` in `since` is the point: the warm-up has to be measured from the oldest
-    REWRITTEN date, not from `last`, or that date is computed with less look-back than a full
-    rebuild would give it."""
-    warmup, refresh = 1320, PART_REFRESH_TRADING_DAYS
-    w = plan_window(_RefreshStore(), "p", warmup=warmup, full=False, trading_index=CAL, refresh=refresh)
-
-    assert w.last == LAST
-    assert w.refresh_from == CAL[LAST_POS - refresh]
-    assert w.since == CAL[LAST_POS - refresh - warmup]
-    assert w.refresh_from is not None and w.since is not None and w.last is not None
-    # the oldest rewritten date still gets the FULL warm-up behind it
-    assert CAL.searchsorted(w.refresh_from) - CAL.searchsorted(w.since) == warmup
-    print(f"\n=== SANITY CHECK: plan_window(refresh={refresh}) ===")
-    print(f"  last={w.last.date()}  refresh_from={w.refresh_from.date()}  since={w.since.date()}")
-    print(
-        f"  warm-up behind the OLDEST rewritten date = {warmup} trading days (not "
-        f"{warmup - refresh}), so it is computed exactly as a full rebuild would. Validated."
-    )
-
-
-def test_plan_window_without_refresh_is_unchanged():
-    """The parts that opt out (fundamentals / text / extras) keep their exact old window."""
-    w = plan_window(cast(DataStore, _RefreshStore()), Tables.cube_part_fundamentals, warmup=130, full=False, trading_index=CAL)
-    assert w.refresh_from is None
-    assert w.since == CAL[LAST_POS - 130]
-    assert plan_window(cast(DataStore, _RefreshStore()), Tables.cube_part_fundamentals, warmup=130, full=True).refresh_from is None
-
-
-def test_plan_window_refresh_stacks_with_extra_back():
-    """Targets take both: `extra_back` for the maturing-label compute window and `refresh`."""
-    w = plan_window(_RefreshStore(), "p", warmup=390, full=False, trading_index=CAL, extra_back=90, refresh=PART_REFRESH_TRADING_DAYS)
-    assert w.since == CAL[LAST_POS - 390 - 90 - PART_REFRESH_TRADING_DAYS]
-
-
-def test_write_part_rewrites_inclusively_from_refresh_from():
-    """The defect this closes: `cube_part_momentum` stopped ON a bad date, and a strictly-after
-    append could never replace that row -- only a `--full` rebuild would."""
-    store = _RefreshStore(columns=["date", "ticker", "f"])
-    window = PartWindow(LAST, CAL[LAST_POS - 1320], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
-    n = write_part(cast(DataStore, store), Tables.cube_part_fundamentals, _rows(), window)
-
-    assert store.appended is not None
-    tail, cutoff, inclusive = store.appended
-    assert inclusive is True
-    assert cutoff == window.refresh_from
-    assert tail["date"].min() == window.refresh_from
-    assert LAST in set(tail["date"]), "the previously-final row IS rewritten"
-    print("\n=== SANITY CHECK: write_part rewrites its own tail ===")
-    print(
-        f"  stored max {LAST.date()} -> DELETE >= {cutoff.date()} then append {n} rows ({tail['date'].min().date()} .. {tail['date'].max().date()})"
-    )
-    print("  the stored max date's own row is REPLACED, not skipped. Validated.")
-
-
-def test_write_part_strict_append_when_no_refresh():
-    """No opt-in -> bit-identical to the pre-refresh behaviour."""
-    store = _RefreshStore(columns=["date", "ticker", "f"])
-    write_part(cast(DataStore, store), Tables.cube_part_fundamentals, _rows(), PartWindow(LAST, CAL[LAST_POS - 130]))
-    assert store.appended is not None
-    tail, cutoff, inclusive = store.appended
-    assert inclusive is False and cutoff == LAST
-    assert tail["date"].min() > LAST
-
-
-INSIDER_CAL = pd.bdate_range("2015-01-01", "2015-12-31")
-
-
-def _purchase(accession: str, ticker: str, owner: str, filed: pd.Timestamp) -> dict:
-    """One open-market purchase row with the columns the insider builder reads."""
-    return {
-        "accession_number": accession,
-        "ticker": ticker,
-        "owner_cik": owner,
-        "issuer_cik": "0000000100",
-        "owner_name": f"Owner {owner}",
-        "filing_date": filed,
-        "transaction_date": filed - pd.Timedelta(days=1),
-        "transaction_code": "P",
-        "shares": 1_000.0,
-        "price_per_share": 100.0,
-        "value_usd": 100_000.0,
-        "shares_owned_after": 11_000.0,
-        "security_type": "nonderiv",
-        "security_title": "Common Stock",
-        "direct_indirect": "D",
-        "officer_title": "",
-        "is_director": 1.0,
-        "is_officer": 0.0,
-        "is_ten_pct_owner": 0.0,
-        "is_10b5_1": np.nan,
-    }
-
-
-def _run_institutionals(monkeypatch: pytest.MonkeyPatch, store: DataStore, calendar: pd.DatetimeIndex, insider: pd.DataFrame, *, full: bool) -> None:
-    """Exercise the real part lifecycle with the retained insider feature builder."""
-    tickers = ["AAA", "BBB"]
-    close = pd.DataFrame(100.0, index=calendar, columns=tickers)
-    shares = pd.DataFrame(
-        [{"ticker": t, "as_of": pd.Timestamp("2014-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in tickers]
-    )
-    frames = make_frames(calendar, {t: {p: 1.0 for p in tickers if p != t} for t in tickers}, close_split=close)
-    monkeypatch.setattr(step_cube_institutionals, "load_trading_calendar", lambda _store: calendar)
-    step = cast(Any, object.__new__(StepCubeInstitutionals))
-    step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
-    step._part = PART_BY_NAME["cube_part_institutionals"]
-    step.build_panel = lambda: build_insider_feature_panel(frames, insider, shares_out_history=shares)
-    step.run(full=full)
-
-
-def _sorted(rows: pd.DataFrame) -> pd.DataFrame:
-    return rows.sort_values(["date", "ticker"]).reset_index(drop=True)
-
-
-def test_institutionals_rewrites_its_last_7_sessions(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    """AC-014: a filing dated D-3 that arrives one night late is in the cube after the next run.
-
-    Night 1 builds through D-1 without the filing; night 2 sees it and an incremental run must
-    rewrite D-3..D so the part equals a full rebuild on every date."""
-    day = INSIDER_CAL[-1]
-    late = _purchase("late", "AAA", "0009", INSIDER_CAL[-4])
-    early = [_purchase(f"e{i}", t, f"000{i}", INSIDER_CAL[20 * i + 10]) for i in range(1, 8) for t in ("AAA", "BBB")]
-    night_1 = pd.DataFrame(early)
-    night_2 = pd.DataFrame([*early, late])
-
-    store = sqlite_store
-    _run_institutionals(monkeypatch, store, INSIDER_CAL[:-1], night_1, full=False)
-    before = _sorted(cast(pd.DataFrame, store.load(Tables.cube_part_institutionals)))
-    _run_institutionals(monkeypatch, store, INSIDER_CAL, night_2, full=False)
-    got = _sorted(cast(pd.DataFrame, store.load(Tables.cube_part_institutionals)))
-
-    _run_institutionals(monkeypatch, store, INSIDER_CAL, night_2, full=True)
-    want = _sorted(cast(pd.DataFrame, store.load(Tables.cube_part_institutionals)))
-
-    refreshed = INSIDER_CAL[-1 - 1 - PART_REFRESH_TRADING_DAYS]
-    tail = want["date"] >= INSIDER_CAL[-4]
-    stale = before[before["date"] >= INSIDER_CAL[-4]].set_index(["date", "ticker"])
-    fresh = want.set_index(["date", "ticker"]).reindex(stale.index)[stale.columns]
-    n_stale = int((stale.ne(fresh) & ~(stale.isna() & fresh.isna())).to_numpy().sum())
-    assert n_stale > 0, "the late filing must move cells night 1 already stored"
-    pd.testing.assert_frame_equal(got, want)
-    assert got.duplicated(["date", "ticker"]).sum() == 0
-    assert PART_REFRESH_TRADING_DAYS == 7
-    print("\n=== SANITY CHECK: institutionals rewrites its last 7 sessions (AC-014) ===")
-    print(f"  night 1 stored through {INSIDER_CAL[-2].date()} without the {INSIDER_CAL[-4].date()} filing; {n_stale} of its cells were stale")
-    print(f"  night 2 ({day.date()}) rewrote from {refreshed.date()}: {int(tail.sum())} rows on {INSIDER_CAL[-4].date()}..{day.date()}")
-    print("  CONCLUSION: the incremental part equals a full rebuild on every date, the late filing included. Validated.")
-
-
-def test_explicit_refresh_from_wins_over_the_part_default():
-    """The target step's maturing-label window (~90 trading days) is much wider than the
-    shared 5 and must not be narrowed by it."""
-    store = _RefreshStore(columns=["date", "ticker", "f"])
-    wide = window_start(CAL, LAST, 90)
-    window = PartWindow(LAST, CAL[LAST_POS - 500], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
-    write_part(store, "p", _rows(CAL[LAST_POS - 150 : LAST_POS + 6]), window, refresh_from=wide)
-    _, cutoff, inclusive = store.appended
-    assert inclusive is True and cutoff == wide
-    assert cutoff < window.refresh_from
-
-
-def test_refresh_never_narrows_the_written_span():
-    """A guard on the constant: the part must rewrite at least as far back as the price
-    fetcher can still change its inputs, or a corrected price leaves a stale feature behind.
-    The fetcher re-pulls each key's last 7 calendar days (the `prices` resume contract)."""
-    overlap_days = cast(Resume, Tables.prices.resume).overlap_days
-
-    fetcher_span = pd.Timestamp("2026-09-04") - pd.Timedelta(days=overlap_days)
-    part_span = window_start(pd.bdate_range("2026-01-01", "2026-09-04"), pd.Timestamp("2026-09-04"), PART_REFRESH_TRADING_DAYS)
-    print(f"\n  fetcher re-pulls from {fetcher_span.date()}; part rewrites from {part_span.date()}")
-    assert part_span <= fetcher_span + pd.Timedelta(days=2), (
-        f"part refresh ({PART_REFRESH_TRADING_DAYS} sessions) must cover the fetcher's {overlap_days}-day re-pull overlap"
-    )
-
-
-class _StatefulGovernanceStore:
-    """Small in-memory model of the replace-tail contract."""
-
-    def __init__(self, rows: pd.DataFrame):
-        self.rows = rows.copy()
-
-    def max_date(self, _part):
-        return self.rows["date"].max() if not self.rows.empty else None
-
-    def columns(self, _part):
-        return list(self.rows.columns)
-
-    def load(self, table: object, *, columns: list[str], where: dict[str, Any], optional: bool) -> pd.DataFrame:
-        assert table is Tables.sharadar_actions and optional
-        assert set(where["ticker"]) == {"AAA", "BBB"}
-        assert where["action"] == ["split", "spinoff"]
-        return pd.DataFrame(columns=columns)
-
-    def distinct(self, _part, column):
-        return self.rows[column].drop_duplicates().tolist()
-
-    def replace(self, _part, rows):
-        self.rows = rows.copy()
-        return len(rows)
-
-    def append_tail(self, _part, tail, cutoff, *, inclusive):
-        keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
-        self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
-        return len(tail)
-
-
-def test_governance_increment_covers_price_frontier_and_is_idempotent():
-    """A governance run rewrites its frontier and reaches every new price session."""
-    calendar = pd.bdate_range("2026-08-03", periods=25)
-    old_end, new_end = calendar[19], calendar[-1]
-    stored = pd.DataFrame({"date": calendar[:20], "ticker": "T0", "f": 0.0})
-    stored.loc[stored["date"] == old_end, "f"] = 999.0
-    store = _StatefulGovernanceStore(stored)
-
-    window = plan_window(
-        store,
-        Tables.cube_part_governance,
-        warmup=5,
-        full=False,
-        trading_index=calendar,
-        refresh=PART_REFRESH_TRADING_DAYS,
-    )
-    rebuilt = pd.DataFrame({"date": calendar[calendar >= window.refresh_from], "ticker": "T0", "f": 1.0})
-    write_part(store, Tables.cube_part_governance, rebuilt, window)
-
-    step = object.__new__(StepCubeGovernance)
-    step._store = store
-    step._log = logging.getLogger("test")
-    step._assert_current(calendar, window.last)
-
-    dates = pd.DatetimeIndex(store.rows["date"].unique())
-    assert store.rows.loc[store.rows["date"] == old_end, "f"].item() == 1.0
-    assert calendar[calendar > old_end].difference(dates).empty
-    assert dates.max() == new_end
-
-    first = store.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
-    repeat = plan_window(
-        store,
-        Tables.cube_part_governance,
-        warmup=5,
-        full=False,
-        trading_index=calendar,
-        refresh=PART_REFRESH_TRADING_DAYS,
-    )
-    write_part(store, Tables.cube_part_governance, rebuilt, repeat)
-    pd.testing.assert_frame_equal(first, store.rows.sort_values(["date", "ticker"]).reset_index(drop=True))
-
-    print("\n=== SANITY: governance incremental frontier ===")
-    print(f"  prior max {old_end.date()} was rewritten; new max is {new_end.date()}")
-    print("  every new price session is present and a same-day rerun is idempotent. Validated.")
-
-
-def test_governance_refresh_covers_three_years_of_restated_pay():
-    """A governance run rewrites three years, the reach of a new proxy's pay table, not a week."""
-    calendar = pd.bdate_range("2020-01-01", "2026-09-30")
-    store = _StatefulGovernanceStore(pd.DataFrame({"date": calendar[:-10], "ticker": "T0", "f": 0.0}))
-    window = plan_window(store, Tables.cube_part_governance, warmup=5, full=False, trading_index=calendar, refresh=GOVERNANCE_REFRESH)
-    years = (window.last - window.refresh_from).days / 365.25
-    assert GOVERNANCE_REFRESH > PART_REFRESH_TRADING_DAYS
-    assert years >= 2.85, f"governance rewrites only {years:.2f} years"  # bdate calendar: ~261 sessions/yr, real ~252
-
-    print("\n=== SANITY: governance refresh window ===")
-    print(
-        f"  rewrites {GOVERNANCE_REFRESH} sessions = {years:.2f} years back from {window.last.date()} (other parts: {PART_REFRESH_TRADING_DAYS}). Validated."
-    )
-
-
-def test_read_projection_covers_builder_needs():
+def test_read_projection_covers_builder_needs() -> None:
     """Each tall-table source load is projected to only the columns its builder reads (the
     memory fix for the OOM), and the projection MUST cover every column the builder requires.
 
@@ -646,41 +211,7 @@ def test_read_projection_covers_builder_needs():
     print("  sec13f_hr (~21.7M rows) drops the cusip-era bloat; a table declaring no read_columns loads in full. Validated.")
 
 
-def test_step_forwards_the_registry_projection_to_the_store() -> None:
-    calls = []
-
-    class Store:
-        def iter_load(self, table, **kwargs):
-            calls.append((table, kwargs))
-            return iter([pd.DataFrame({"ticker": ["AAPL"]})])
-
-    capital_inputs.load_source(Store(), Tables.sec_13d)
-    assert calls == [(Tables.sec_13d, {"project": True, "columns": None, "where": None, "markers": False})]
-    print("SANITY: shared source reader forwards the registry projection through one payload stream.")
-
-
-def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) -> None:
-    sqlite_store.save(
-        Tables.sec_13d,
-        pd.DataFrame(
-            {"ticker": ["AAPL", "OUTSIDE"], "accession_number": ["a-1", "o-1"], "rp_seq": 1, "filing_date": pd.to_datetime(["2024-01-02"] * 2)}
-        ),
-    )
-    calls = []
-    original = sqlite_store.iter_load
-
-    def capture(table, **kwargs):
-        calls.append(kwargs)
-        return original(table, **kwargs)
-
-    monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = capital_inputs.load_source(sqlite_store, Tables.sec_13d, ["AAPL"])
-    assert result is not None and set(result["ticker"]) == {"AAPL"}
-    assert calls == [{"project": True, "columns": None, "where": {"ticker": ["AAPL"]}, "markers": False}]
-    print("SANITY: source universe filter reaches the store once; outside names never enter the panel.")
-
-
-def test_every_projected_table_resolves_to_a_registered_physical_table():
+def test_every_projected_table_resolves_to_a_registered_physical_table() -> None:
     """A projection must hang off a REGISTERED table, and the registry key trap is real.
 
     Registry entries can carry an attribute name that is not their table name -- the one
@@ -711,7 +242,7 @@ def test_every_projected_table_resolves_to_a_registered_physical_table():
         print(f"      Tables.{attr:22} -> {real}")
 
 
-def test_projection_tolerates_an_absent_optional_column():
+def test_projection_tolerates_an_absent_optional_column() -> None:
     """A column the BUILDER treats as optional must not make the READ fail, and a missing
     REQUIRED one must be REPORTED rather than swallowed.
 
@@ -751,151 +282,107 @@ def test_projection_tolerates_an_absent_optional_column():
     )
 
 
-if __name__ == "__main__":
-    test_windowed_build_reproduces_full_tail()
-    test_incremental_horizon_arithmetic()
-    test_per_part_warmup_covers_binding_lookback()
-    test_read_projection_covers_builder_needs()
-    test_projection_tolerates_an_absent_optional_column()
+def test_step_forwards_the_registry_projection_and_configured_bounds() -> None:
+    calls = []
 
+    class Store:
+        def exists(self, table: Any) -> bool:
+            return True
 
-@pytest.mark.parametrize("original_known", [False, True])
-def test_institutionals_cap_unknown_correction_clears_saved_tail(
-    monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore, original_known: bool
-) -> None:
-    calendar = INSIDER_CAL
-    old = _purchase("old-history", "AAA", "0010", calendar[20])
-    original = _purchase("current-original", "AAA", "0001", calendar[-5])
-    original["price_per_share"] = 100.0 if original_known else np.nan
-    amended = {
-        **original,
-        "accession_number": "current-amendment",
-        "filing_date": calendar[-3],
-        "document_type": "4/A",
-        "original_submission_date": original["filing_date"],
-        "price_per_share": np.nan if original_known else 100.0,
-    }
-    before_rows = pd.DataFrame([old, original])
-    after_rows = pd.DataFrame([old, original, amended])
-    store = sqlite_store
-    _run_institutionals(monkeypatch, store, calendar[:-1], before_rows, full=False)
-    feature = "f_ic_insider_buy_value_mcap_60d"
-    prior = (
-        store.load(Tables.cube_part_institutionals)
-        .set_index(["date", "ticker"])[feature]
-        .reindex(pd.MultiIndex.from_tuples([(calendar[-2], "AAA")], names=["date", "ticker"]))
-        .iloc[0]
+        def iter_load(self, table: Any, **kwargs: Any) -> Iterator[pd.DataFrame]:
+            calls.append((table, kwargs))
+            return iter([pd.DataFrame({"ticker": ["AAPL"]})])
+
+    config = fixture_config()
+    context = SimpleNamespace(
+        store=Store(),
+        config=config,
+        universe=universe_of(["AAPL"]),
+        run=WindowRun("incremental", "projected source contract", pd.Timestamp("2026-11-16")),
     )
-    assert (prior == pytest.approx(0.001)) if original_known else pd.isna(prior)
-
-    _run_institutionals(monkeypatch, store, calendar, after_rows, full=False)
-    incremental = store.load(Tables.cube_part_institutionals)
-    _run_institutionals(monkeypatch, store, calendar, after_rows, full=True)
-    pd.testing.assert_frame_equal(_sorted(incremental), _sorted(store.load(Tables.cube_part_institutionals)))
-    tail = incremental.set_index(["date", "ticker"])[feature].reindex(pd.MultiIndex.from_product([calendar[-3:], ["AAA"]], names=["date", "ticker"]))
-    assert tail.isna().all() if original_known else np.isclose(tail, 0.001).all()
-    assert feature in store.columns(Tables.cube_part_institutionals)
-    print("SANITY: corrected known/unknown cap windows replace saved cells, preserve historical schema and match a full build.")
+    capital_inputs.load_source(context, Tables.sec_13d)
+    assert len(calls) == 1
+    table, query = calls[0]
+    assert table == Tables.sec_13d and query["project"] and query["columns"] is None
+    assert query["where"]["ticker"] == ["AAPL"]
+    assert query["where"]["filing_date"] == Window(pd.Timestamp(config.data.tables.sec_13d.source_start), context.run.as_of)
+    print("SANITY: one projected source stream carries the configured filing interval and universe scope.")
 
 
-# --------------------------------------------------------------------------- #
-# price part: per-ticker delete-and-rebuild (D-13)                            #
-# --------------------------------------------------------------------------- #
-PRICE_CAL = pd.bdate_range("2024-01-02", periods=40)
+def test_universe_scope_is_pushed_down_to_the_read(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    sqlite_store.save(
+        Tables.sec_13d,
+        pd.DataFrame(
+            {"ticker": ["AAPL", "OUTSIDE"], "accession_number": ["a-1", "o-1"], "rp_seq": 1, "filing_date": pd.to_datetime(["2024-01-02"] * 2)}
+        ),
+    )
+    config = fixture_config()
+    context = SimpleNamespace(
+        store=sqlite_store,
+        config=config,
+        universe=universe_of(["AAPL"]),
+        run=WindowRun("incremental", "physical source scope", pd.Timestamp("2026-11-16")),
+    )
+    calls = []
+    original = sqlite_store.iter_load
+
+    def capture(table: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return original(table, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    result = capital_inputs.load_source(context, Tables.sec_13d)
+    assert result is not None and set(result.ticker) == {"AAPL"}
+    assert len(calls) == 1 and calls[0]["where"]["ticker"] == ["AAPL"]
+    assert isinstance(calls[0]["where"]["filing_date"], Window)
+    print("SANITY: source predicates reach the real store once; outside symbols never enter cleaning.")
 
 
-def _price_rows(seed: int = 0) -> pd.DataFrame:
-    """A complete price candidate (every saved field) for three tickers."""
-    keys = pd.MultiIndex.from_product([PRICE_CAL, ["AAA", "BBB", "CCC"]], names=["date", "ticker"]).to_frame(index=False)
-    rng = np.random.default_rng(seed)
-    return keys.assign(**{field: rng.uniform(1.0, 2.0, len(keys)) for field in ALL_FIELDS})
+def test_institutional_empty_correction_clears_only_configured_tail(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    days = pd.bdate_range("2026-01-02", periods=80)
+    config = fixture_config()
+    context = SimpleNamespace(
+        store=sqlite_store,
+        config=config,
+        config_dir=tmp_path,
+        universe=universe_of(["AAPL"]),
+        run=WindowRun("incremental", "known empty institutional correction", days[-1]),
+    )
+    sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"date": days, "ticker": "AAPL", "close_split": 100.0}))
+    original = pd.DataFrame({"date": days, "ticker": "AAPL", "f_demo": 1.0})
+    sqlite_store.replace(Tables.cube_part_institutionals, original)
+    step = StepCubeInstitutionals(context, config)
+    empty = original.iloc[:0].copy()
+    monkeypatch.setattr(step, "build_panel", lambda window, calendar: empty)
+    written = step.run()[Tables.cube_part_institutionals]
+    expected_start = days[-1] - pd.Timedelta(days=30)
+    assert written.write.start == expected_start
+    actual = sqlite_store.load(Tables.cube_part_institutionals)
+    pd.testing.assert_frame_equal(actual.reset_index(drop=True), original.loc[original.date < expected_start].reset_index(drop=True))
+    print("SANITY: the actual institutional writer clears a valid empty30-calendar-day correction and preserves its older physical prefix.")
 
 
-def _publish(
-    monkeypatch: pytest.MonkeyPatch, store: DataStore, rows: pd.DataFrame, *, full: bool = False, tickers: tuple[str, ...] = ()
-) -> set[tuple[str, bool]]:
-    """Run the price step's publication on `rows`; return the (ticker, before-window) pairs it wrote."""
-    written: set[tuple[str, bool]] = set()
-    refresh_from = PRICE_CAL[-1 - PART_REFRESH_TRADING_DAYS]
-    for name in ("insert", "append_tail", "replace"):
-        method = getattr(DataStore, name)
+def test_build_prices_cli_passes_one_root_mode_and_emits_actual_receipt(
+    sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = seed_prices(sqlite_store, tmp_path)
+    calls = []
 
-        def spy(self: DataStore, table: Any, df: pd.DataFrame, *args: Any, _method: Any = method, **kwargs: Any) -> int:
-            if name_of(table) == Tables.cube_part_prices.name and df is not None:
-                written.update(zip(df["ticker"], pd.to_datetime(df["date"]) < refresh_from, strict=True))
-            return _method(self, table, df, *args, **kwargs)
+    def load(config_path: str, **kwargs: Any) -> tuple[Any, Any]:
+        calls.append(kwargs)
+        context.run = WindowRun("full" if kwargs["full"] else "incremental", "real CLI fixture", pd.Timestamp(kwargs["as_of"]))
+        return context.config, context
 
-        monkeypatch.setattr(DataStore, name, spy)
-    step = cast(Any, object.__new__(StepCubePrices))
-    step._store, step._log, step._part = store, logging.getLogger("test"), PART_BY_NAME["cube_part_prices"]
-    step._write_candidate(rows, step._plan_window(full and not tickers), list(tickers))
-    monkeypatch.undo()
-    return written
-
-
-def _saved_prices(store: DataStore) -> pd.DataFrame:
-    df = cast(pd.DataFrame, store.load(Tables.cube_part_prices))
-    return df.assign(date=pd.to_datetime(df["date"])).sort_values(["date", "ticker"]).reset_index(drop=True)[list(_price_rows().columns)]
-
-
-def test_old_history_change_rebuilds_only_that_ticker(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    """A split edit on BBB and a peer sector_ret change on CCC dated before the refresh window rewrite BBB and CCC only."""
-    saved = _price_rows()
-    sqlite_store.replace(Tables.cube_part_prices, saved)
-    candidate = saved.copy()
-    old = candidate["date"] < PRICE_CAL[10]
-    candidate.loc[old & candidate["ticker"].eq("BBB"), ["close_pit", "security_basis"]] *= 2.0
-    candidate.loc[old & candidate["ticker"].eq("CCC"), "sector_ret"] += 1e-12
-    candidate.loc[candidate["date"] >= PRICE_CAL[-3], "close_split"] += 1.0
-    written = _publish(monkeypatch, sqlite_store, candidate)
-    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), candidate, check_exact=True)
-    assert {ticker for ticker, before in written if before} == {"BBB", "CCC"}
-    assert {ticker for ticker, _ in written} == {"AAA", "BBB", "CCC"}
-    print("\n=== SANITY CHECK: automatic per-ticker rebuild (D-13) ===")
-    print("  BBB split edit + CCC peer sector_ret change before the window -> only BBB and CCC old rows rewritten; AAA gets the tail refresh")
-    print("  CONCLUSION: the part equals the candidate (= a full build) and AAA's old rows were never deleted. Validated.")
-
-
-def test_change_inside_the_window_keeps_the_tail_refresh(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    saved = _price_rows()
-    sqlite_store.replace(Tables.cube_part_prices, saved)
-    candidate = saved.copy()
-    candidate.loc[candidate["date"] >= PRICE_CAL[-1 - PART_REFRESH_TRADING_DAYS], "close_pit"] *= 3.0
-    written = _publish(monkeypatch, sqlite_store, candidate)
-    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), candidate, check_exact=True)
-    assert not {ticker for ticker, before in written if before}
-    print("\n=== SANITY CHECK: in-window change ===")
-    print(f"  every ticker changed only from the refresh start -> no old row rewritten, {len(written)} tail ticker writes")
-    print("  CONCLUSION: the normal tail refresh is unchanged. Validated.")
-
-
-def test_manual_ticker_rebuild_and_full_rebuild(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    """`-t AAA -F` deletes and rewrites AAA only (BBB's old change waits); `-F` alone equals a full build."""
-    saved = _price_rows()
-    sqlite_store.replace(Tables.cube_part_prices, saved)
-    candidate = _price_rows(seed=1)
-    written = _publish(monkeypatch, sqlite_store, candidate, full=True, tickers=("AAA",))
-    expected = pd.concat([candidate[candidate["ticker"].eq("AAA")], saved[~saved["ticker"].eq("AAA")]]).sort_values(["date", "ticker"])
-    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), expected.reset_index(drop=True), check_exact=True)
-    assert {ticker for ticker, _ in written} == {"AAA"}
-    _publish(monkeypatch, sqlite_store, candidate, full=True)
-    pd.testing.assert_frame_equal(_saved_prices(sqlite_store), candidate, check_exact=True)
-    print("\n=== SANITY CHECK: manual -t AAA -F, then -F ===")
-    print("  -t AAA -F: AAA equals its new full history, BBB/CCC rows are the saved ones untouched")
-    print("  -F alone: the part equals the full candidate")
-    print("  CONCLUSION: manual per-ticker and full rebuilds publish exactly what they should. Validated.")
-
-
-def test_build_prices_cli_ticker_option(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[dict[str, Any]] = []
-    fake = type("FakeStep", (), {"run": lambda self, **kwargs: calls.append(kwargs)})
-    monkeypatch.setattr(aggregate_cli, "_step", lambda cls, config_path: fake())
+    monkeypatch.setattr(aggregate_cli, "get_config_context", load)
     runner = CliRunner()
     refused = runner.invoke(aggregate_cli.cli, ["build-prices", "-t", "AAA"])
     assert refused.exit_code == 2 and not calls
-    assert runner.invoke(aggregate_cli.cli, ["build-prices", "-t", "AAA,BBB", "-F"]).exit_code == 0
-    assert runner.invoke(aggregate_cli.cli, ["build-prices", "-F"]).exit_code == 0
-    assert calls == [{"full": True, "tickers": ["AAA", "BBB"]}, {"full": True, "tickers": []}]
-    print("\n=== SANITY CHECK: build-prices -t ===")
-    print(f"  -t without -F refused (exit {refused.exit_code}); -t AAA,BBB -F and -F reach run as {calls}")
-    print("  CONCLUSION: the CLI exposes exactly the three D-13 forms. Validated.")
+    result = runner.invoke(aggregate_cli.cli, ["build-prices", "-F", "--as-of", "2022-11-30"])
+    assert result.exit_code == 0, result.output
+    record = json.loads(result.output.strip().splitlines()[-1])
+    assert calls[0]["full"] and record["mode"] == "full"
+    assert record["parts"][Tables.cube_part_prices.name]["tickers"] == ["AAA", "BBB"]
+    assert record["as_of"] == pd.Timestamp("2022-11-30").isoformat()
+    print(
+        "SANITY: the actual CLI fixes mode/as_of once, rejects an undeclared ticker rebuild and emits its committed component window as the final JSON line."
+    )

@@ -60,7 +60,7 @@ UNLISTED = [
 
 @pytest.fixture(scope="module")
 def cfg() -> DictConfig:
-    return read_config(str(ROOT / "configs")).build_cube.manager_profile
+    return read_config(str(ROOT / "configs")).data_aggregate.manager_profile
 
 
 @pytest.fixture(scope="module")

@@ -40,7 +40,9 @@ from src.data_store.schema import (
     resume_tables,
 )
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import identity_for
+from tests.data_extract.fake_context import extract_config
 from tests.support.fundamentals_frames import sec_facts_frame, sharadar_facts_frame
 from tests.support.universe import seed_universe
 
@@ -88,14 +90,15 @@ def test_every_extract_table_resumes_or_is_a_side_table() -> None:
     assert not uncovered, f"extract tables with neither a Resume contract nor a side-table entry: {sorted(uncovered)}"
     assert not stale_side, f"side tables that now declare a contract: {sorted(stale_side)}"
     assert all(t.resume is not None and t.resume.mode in _MODES for t in resume_tables())
-    assert all(t.resume is not None and t.resume.overlap_days >= 0 for t in resume_tables())
+    assert all(not hasattr(t.resume, "overlap_days") and not hasattr(t.resume, "source_start") for t in resume_tables())
 
     print("\n=== SANITY CHECK: resume contract coverage ===")
     print(f"  {len(extract)} extract tables = {len(with_contract)} with a contract + {len(extract - with_contract)} side tables. Validated.")
 
 
 def test_every_resumed_extract_table_has_a_cadence() -> None:
-    missing = sorted(t.name for t in resume_tables() if t.kind == KIND_EXTRACT and t.freshness is None)
+    config = extract_config()
+    missing = sorted(t.name for t in resume_tables() if t.kind == KIND_EXTRACT and config.data.tables[t.name].freshness is None)
     assert not missing, f"resumed tables with no freshness cadence: {missing}"
     for table in (
         Tables.dividends,
@@ -107,9 +110,9 @@ def test_every_resumed_extract_table_has_a_cadence() -> None:
         Tables.sec_8k,
         Tables.sec_8k_votes,
     ):
-        assert table.freshness == "daily", table.name
-    assert Tables.filing_risk_text.freshness == "quarterly"
-    assert Tables.sec_def14a_text.freshness == "yearly"
+        assert config.data.tables[table.name].freshness.cadence == "daily", table.name
+    assert config.data.tables[Tables.filing_risk_text.name].freshness.cadence == "quarterly"
+    assert config.data.tables.sec_def14a_text.freshness.cadence == "yearly"
 
     print("\n=== SANITY CHECK: cadences ===")
     print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")
@@ -183,7 +186,9 @@ def test_edgar_text_tables_declare_their_layout_markers_and_ddl(monkeypatch: pyt
 
 
 def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"])))
+    context = cast(
+        Context, SimpleNamespace(config_dir="configs", config=extract_config(), store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"]))
+    )
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
     fetched = (
         SEC_8K_FETCH,
@@ -204,10 +209,18 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
     column_types = _column_types(monkeypatch)
     for fetch in fetched:
         keys = cik_map.assign(cik="1")
+        context.run = WindowRun("incremental", "offline explicit filing scope", pd.Timestamp("2026-10-13"))
         plan_fetch(
             context,
             fetch,
-            EdgarRun(list(keys["ticker"]), keys, identity_for(dict(zip(keys["ticker"], keys["cik"], strict=True))), pd.Timestamp("2026-10-13"), 10),
+            EdgarRun(
+                list(keys["ticker"]),
+                keys,
+                identity_for(dict(zip(keys["ticker"], keys["cik"], strict=True))),
+                context.run,
+                None,
+                edgar_driver.RetryRounds.from_config(context.config),
+            ),
         )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms

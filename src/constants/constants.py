@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
-from src.data_store.schema import Tables
-
 # --------------------------------------------------------------------------- #
 # Date formats                                                                #
 # --------------------------------------------------------------------------- #
@@ -56,10 +54,8 @@ SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 # become knowable ~45 days later. Both 13F feature builders stamp
 # `as_of = quarter_end + this` to stay leak-free; it was duplicated as a private
 # `_FILING_LAG_DAYS = 45` in each of them.
-SEC_13F_FILING_LAG_DAYS = 45
 
 # The 13F AVAILABILITY DATE, in TRADING days past the snapped deadline.
-F13_SETTLE_TRADING_DAYS = 3
 
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
@@ -439,7 +435,6 @@ SHARADAR_COLLAPSE_KEY: tuple[str, ...] = ("ticker", "as_of")
 SHARADAR_COLLAPSE_ORDER = "fiscal_end"
 
 # Earnings-call output contract shared by the builder and read-only validator.
-EARNINGS_CALL_SIGNAL_SESSIONS = 66
 EARNINGS_CALL_FEATURES = (
     "ec_prep_tone",
     "ec_prep_tone_delta",
@@ -469,46 +464,8 @@ PREDICTION_MODEL_BLENDED = "blended"  # the IR-weighted blend ACROSS horizons
 MODEL_GENERATION_ARTIFACT_FORMAT = "transformer-pickle-generation-v2"
 
 # --------------------------------------------------------------------------- #
-# Data-freshness cadence THRESHOLDS (read by `src/utils/freshness.py`)         #
-# --------------------------------------------------------------------------- #
-# WHICH tables carry a cadence, and on which date column, comes from
-# `schema.freshness_tables()` (`Table.freshness` / `Table.freshness_col`).
-DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
-    "daily": 4,
-    "weekly": 10,
-    "biweekly": 20,
-    "monthly": 45,
-    "quarterly": 140,
-    "yearly": 460,
-}
-
-# --------------------------------------------------------------------------- #
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
 # --------------------------------------------------------------------------- #
-
-# Fundamentals can change when monthly notes metadata arrives after its filing date, so its
-# incremental build rewrites a wider bounded tail than the shared five-session price repair.
-FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
-
-# Calendar days added to a source table's `as_of` before its rows reach the daily cube, keyed
-# by table name. A filing dated d may be accepted after the close, so it is read the following
-# night: usable from d + buffer, rolled forward to the first session on or after that date.
-SOURCE_AVAILABILITY_BUFFER_DAYS: dict[str, int] = {
-    Tables.sharadar_fundamentals_history.name: 1,
-    Tables.sec_fundamentals_history.name: 1,
-    # A Form 4 accepted on its filing day, often after the close, is usable from the next session.
-    Tables.insider_transactions.name: 1,
-    # A Schedule 13D/13G is accepted until 22:00 ET and stamped with that day: usable from the next session.
-    Tables.sec_13d.name: 1,
-    Tables.sec_13g.name: 1,
-    # The provider gives the call date without a first-available timestamp: an estimate.
-    Tables.earnings_call_sections.name: 2,
-    # FINRA RegSHO daily short-sale volume of day t is public on t+1.
-    Tables.sec_short_volume_security.name: 1,
-    # A fails-to-deliver ZIP is published as a whole 21 calendar days after its half-month end (estimated policy).
-    Tables.sec_fails_to_deliver_security.name: 21,
-}
-
 
 # The cube + the ad-hoc intermediate `cube_part_*` tables the sub-steps hand to each other are
 # declared in src/data_store/schema.py (`Tables.cube`, `Tables.cube_part_*`), the parts with

@@ -7,7 +7,7 @@ days); acceleration is the spot 5-day ratio minus the 60- or 120-day ratio. The 
 denominator of `ic_ftd_to_adv20` sums the issuer's secondary share classes, as the class-summed
 numerator does (`secondary_class_volume`). Point-in-time:
 every `ic_shortvol_*` leg is published at its source session plus the short-volume table's
-`SOURCE_AVAILABILITY_BUFFER_DAYS`, rolled to the first session on or after it; an FTD ZIP becomes
+the source policy in data.yml, rolled to the first session on or after it; an FTD ZIP becomes
 knowable as a whole at half-month end plus the FTD table's buffer (estimated_policy_21d),
 moved to the next actual session and held until the next ZIP. This is an estimated policy,
 not an observed historical SEC release timestamp. Verified issuer absence on a covered,
@@ -23,15 +23,16 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 
-from src.constants.constants import CANONICAL_ROLES, SOURCE_AVAILABILITY_BUFFER_DAYS
+from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import self_history_z
-from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
+from src.utils.publication import publication_dates
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,14 @@ class FtdPublication:
 
     coverage: pd.DataFrame
     available_by_period: dict[str, pd.Timestamp]
+
+
+@dataclass(frozen=True)
+class FtdSource:
+    """FTD settlement quantities with the publication evidence of the same ZIPs."""
+
+    settlement: FtdSettlement
+    publication: FtdPublication
 
 
 def _min_periods(window: int) -> int:
@@ -359,6 +368,7 @@ def _shortvol_fields(
     idx: pd.DatetimeIndex,
     shares_out: pd.DataFrame | None,
     close_total: pd.DataFrame | None,
+    config: DictConfig,
     tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """RegSHO ratio, acceleration, turnover and price-interaction legs, each published after the table's availability buffer."""
@@ -372,7 +382,7 @@ def _shortvol_fields(
     df_observed = df_short.notna() & df_total.notna()
 
     # Compute weighted window ratios and reuse the base-window sum for turnover.
-    ratios, df_turnover = _shortvol_window_fields(df_short, df_total, df_observed, idx, shares_out)
+    ratios, df_turnover = _shortvol_window_fields(df_short, df_total, df_observed, idx, shares_out, config)
     fields = {f"ic_shortvol_ratio_{window}d": ratios[window] for window in RATIO_WINDOWS}
     for window in ACCELERATION_WINDOWS:
         fields[f"ic_shortvol_acceleration_{window}d"] = ratios[SPOT_WINDOW] - ratios[window]
@@ -400,12 +410,17 @@ def _publish_shortvol(df_source: pd.DataFrame, published: pd.Series) -> pd.DataF
 
 
 def _shortvol_window_fields(
-    df_short: pd.DataFrame, df_total: pd.DataFrame, df_observed: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None
+    df_short: pd.DataFrame,
+    df_total: pd.DataFrame,
+    df_observed: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    shares_out: pd.DataFrame | None,
+    config: DictConfig,
 ) -> tuple[dict[int, pd.DataFrame], pd.DataFrame | None]:
     """Normalize window short-sale totals by total volume and optional PIT shares."""
     ratios: dict[int, pd.DataFrame] = {}
     df_turnover = None
-    published = publication_day(pd.Series(idx, index=idx), SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name], idx)
+    published = publication_dates(config, Tables.sec_short_volume_security, pd.DataFrame({"date": idx}, index=idx), idx)
     df_shares = shares_out.reindex(index=idx).reindex(columns=df_short.columns) if shares_out is not None and not shares_out.empty else None
 
     # Calculate each numerator once; the base sum also supplies share turnover.
@@ -513,13 +528,13 @@ def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd
 def build_short_flow_feature_panel(
     frames: PriceFrames,
     short_history: pd.DataFrame | None,
-    settlement: FtdSettlement | None,
+    fails: FtdSource | None,
     capital: ShortFlowCapital,
-    publication: FtdPublication | None,
+    config: DictConfig,
     tenure_mask: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Compute the short/FTD families from prepared common-basis quantities and public ZIP metadata."""
-    if _absent(short_history) and settlement is None:
+    if _absent(short_history) and fails is None:
         return _empty_panel()
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if capital.tape is not None:
@@ -530,9 +545,9 @@ def build_short_flow_feature_panel(
         capital = ShortFlowCapital(capital.shares_out, capital.tape, df_supported)
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
-        fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, tenure_mask))
-    if settlement is not None and publication is not None:
-        fields.update(_fails_fields(settlement, capital, publication, tenure_mask))
+        fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, config, tenure_mask))
+    if fails is not None:
+        fields.update(_fails_fields(fails.settlement, capital, fails.publication, tenure_mask))
 
     # Preserve data-dependent field omission and the existing raw float32 emitter.
     for name in list(fields):

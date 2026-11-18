@@ -22,13 +22,13 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.resume import ZipScope
 from src.data_extract.utils.edgar_extract.insider_common import screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_notes as fn
 from src.data_extract.utils.zips import zip_archive
 from src.data_store.schema import Tables
-from src.utils.string import run_date
+from src.utils.window import WindowRun
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import seed_universe
 
 #: GOOGL (Google Inc -> Alphabet, 2015-10-02), VTRS (Mylan -> Viatris, 2020-11-07), APA (Apache -> APA Corp, 2021-03-01).
@@ -86,7 +86,8 @@ def _context(store: Any, tmp_path) -> SimpleNamespace:
     return SimpleNamespace(
         store=store,
         config_dir=str(tmp_path / "no_register"),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
+        config=extract_config(),
+        run=WindowRun("incremental", "known-truth identity resolution", pd.Timestamp("2026-11-16")),
         universe=seed_universe(store, UNIVERSE),
     )
 
@@ -108,8 +109,7 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     monkeypatch.setattr(fn, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
     monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
 
-    scope = ZipScope(tickers=UNIVERSE, run_date=run_date(None), full=False)
-    fn.ingest_financial_notes(_context(sqlite_store, tmp_path), tmp_path, scope, [period])
+    fn.ingest_financial_notes(_context(sqlite_store, tmp_path), tmp_path, UNIVERSE, [period])
 
     stored = sqlite_store.load(Tables.notes_num, columns=["adsh", "ticker"])
     got = dict(zip(stored["adsh"], stored["ticker"], strict=True))

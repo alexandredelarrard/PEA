@@ -24,6 +24,7 @@ from src.data_store.store import DataStore
 from src.utils import security_series as series
 from src.utils.price.adjustments import load_bugfix
 from tests.canonical_schema import create_canonical
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.support.universe import as_roster
 
 REPO = Path(__file__).resolve().parents[3]
@@ -311,7 +312,9 @@ def _rebuild(store: DataStore, lines: dict[str, list[str]] = REAL_LINES, master:
 def _series(store: DataStore) -> pd.DataFrame:
     """The cube's FTD series of every master company, built by the institutionals loader."""
     master = store.load(Tables.universe_cusip)
-    fails, _ = load_fails(store, sorted(set(master["canonical_company"].dropna())), master, load_bugfix(str(REPO / "configs")))
+    fails, _ = load_fails(
+        source_context(store, Path(".")), sorted(set(master["canonical_company"].dropna())), master, load_bugfix(str(REPO / "configs"))
+    )
     assert fails is not None
     return fails
 

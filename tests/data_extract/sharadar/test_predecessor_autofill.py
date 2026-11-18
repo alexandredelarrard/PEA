@@ -17,7 +17,9 @@ import pytest
 from src.data_extract.transformers import step_extract_fundamentals_sharadar as step_module
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, sharadar_history
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.conftest import FakeStore
+from tests.data_extract.fake_context import extract_config
 
 LOGGER = "test.predecessor_autofill"
 REPO_CONFIGS = Path(__file__).resolve().parents[3] / "configs"
@@ -91,7 +93,13 @@ def _empties() -> dict[Any, pd.DataFrame]:
 
 
 def _context(store: FakeStore) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config_dir=str(REPO_CONFIGS))
+    return SimpleNamespace(
+        store=store,
+        log=logging.getLogger(LOGGER),
+        config_dir=str(REPO_CONFIGS),
+        config=extract_config(),
+        run=WindowRun("incremental", "offline vendor history", pd.Timestamp("2026-11-16")),
+    )
 
 
 def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:
@@ -107,21 +115,21 @@ def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:
 
 
 def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[list[str], bool]] = []
+    calls: list[tuple[list[str], str]] = []
     for name in ("fetch_sharadar_sp500", "build_sharadar_history"):
         monkeypatch.setattr(step_module, name, lambda *a, **k: None)
-    monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers, **k: calls.append((list(tickers), k["full"])))
+    monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers: calls.append((list(tickers), context.run.mode)))
     monkeypatch.setattr(step_module, "predecessor_vendor_tickers", lambda context, tickers: ["STE1"])
-    step = step_module.StepExtractFundamentalsSharadar.__new__(step_module.StepExtractFundamentalsSharadar)
-    step._context = SimpleNamespace(log=logging.getLogger(LOGGER))
-    step._log = logging.getLogger(LOGGER)
-    step._config = SimpleNamespace(data_extract=SimpleNamespace(sharadar_years_history=30))
-    step._config_dir = "./configs"
+    context = _context(FakeStore({}))
+    step = step_module.StepExtractFundamentalsSharadar(context, context.config)
     step.run(["PLD", "STE"])
     print("\n=== SANITY CHECK: Sharadar fetch list ===")
     print(f"  {calls}")
-    assert calls == [(["PLD", "STE"], False), (["STE1"], True)]
-    print("  OK: the universe resumes; the delisted predecessor series are read over the whole window (a rowless key's resume window is recent).")
+    assert calls == [(["PLD", "STE", "STE1"], "incremental")]
+    context.run = WindowRun("recovery", "explicit predecessor repair", context.run.as_of)
+    step.run(["PLD", "STE"])
+    assert calls[-1] == (["PLD", "STE", "STE1"], "recovery")
+    print("  OK: source and predecessor keys share the root run policy; a predecessor is never forced to full behind the configured plan.")
 
 
 def test_the_build_replaces_inside_the_window_before_ttm(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:

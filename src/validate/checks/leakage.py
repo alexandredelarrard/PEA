@@ -61,6 +61,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
+from src.utils.data_policy import publication_policy
 from src.utils.identity_tables import read_identity
 from src.utils.security_series import finra_key
 from src.utils.string import squash
@@ -142,7 +143,7 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     Returns `(series, clock)` where `clock` names the column used, so the result can show
     which clock each family was judged against rather than asking the reader to trust it."""
     spec = resolve(source)
-    clock = spec.freshness_col
+    clock = publication_policy(context.config, spec).get("clock")
     security = _SECURITY_KEYS.get(spec.name)
     key_col = security[0] if security is not None else spec.ticker_col
     if clock is None or key_col is None:

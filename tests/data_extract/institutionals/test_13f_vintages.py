@@ -21,7 +21,6 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
 import src.data_aggregate.utils.sec_thirteen.institutional_features as features_module
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.price.frames import PriceFrames
@@ -35,10 +34,11 @@ from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
+from tests.data_aggregate.sec_thirteen_legacy_reference import LEGACY_F13_SETTLE_TRADING_DAYS as F13_SETTLE_TRADING_DAYS
 from tests.data_aggregate.sec_thirteen_legacy_reference import iter_public_books
 from tests.support.store_identity import store_identity
 
-BOND_LINES = read_config(str(Path(__file__).resolve().parents[3] / "configs")).build_cube.bond_lines
+BOND_LINES = read_config(str(Path(__file__).resolve().parents[3] / "configs")).data_aggregate.bond_lines
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
 
@@ -1388,7 +1388,7 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(f
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = (
-        {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
+        {"sec_thirteen": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
         None,
     )
     step._settle_days = 0
@@ -1430,7 +1430,7 @@ def ordinary_step(
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = (
-        {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
+        {"sec_thirteen": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}, "bond_lines": BOND_LINES},
         None,
     )
     step._settle_days = 0

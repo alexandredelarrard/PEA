@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.transformers import step_extract_universe as step_module
+from src.utils.window import WindowRun
 
 _AS_OF = pd.Timestamp("2026-11-04")
 
@@ -18,8 +19,10 @@ def _step(tmp_path: Path) -> step_module.StepExtractUniverse:
     config = SimpleNamespace(
         data_extract=SimpleNamespace(sharadar_years_history=31), local=SimpleNamespace(paths=SimpleNamespace(sec_submissions="sec_submissions"))
     )
-    context = SimpleNamespace(config_dir="configs", paths={"DATA_STORE": tmp_path}, store=None)
-    return step_module.StepExtractUniverse(context, config, _AS_OF)  # type: ignore[arg-type]
+    context = SimpleNamespace(
+        config_dir="configs", paths={"DATA_STORE": tmp_path}, store=None, run=WindowRun("incremental", "universe fixture", _AS_OF)
+    )
+    return step_module.StepExtractUniverse(context=context, config=config)  # type: ignore[arg-type]
 
 
 def test_run_lands_both_ticker_lists_and_the_evidence_before_the_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

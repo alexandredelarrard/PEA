@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.incremental import PartWindow
+from src.utils.window import WindowPlan
 
 SENTIMENT_TAGS = ("prepared_remarks", "questions", "answers")
 
@@ -16,7 +16,7 @@ SENTIMENT_TAGS = ("prepared_remarks", "questions", "answers")
 class TextPlan:
     """Source/cache work sets and the independent feature rewrite window."""
 
-    window: PartWindow
+    window: WindowPlan
     source: pd.DataFrame
     sentiment: pd.DataFrame
     embedding_keys: pd.DataFrame

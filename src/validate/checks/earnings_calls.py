@@ -14,7 +14,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SIGNAL_SESSIONS
+from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.string import pad_cik_series
@@ -521,18 +521,18 @@ def _feature_sample(context: Context, table: Table, columns: list[str], recent_s
     return sample, latest
 
 
-def _schema_findings(expected: list[str], live: set[str], settings: Any) -> list[Finding]:
+def _schema_findings(expected: list[str], live: set[str], settings: Any, runtime_sessions: int) -> list[Finding]:
     """Signal-lifetime agreement and the exact earnings-call column set."""
     missing = sorted(set(expected) - live)
     legacy = sorted(column for column in live if column.startswith("f_ec_") and column not in expected)
     findings: list[Finding] = []
-    configured_sessions = int(settings.signal_sessions)
-    if configured_sessions != EARNINGS_CALL_SIGNAL_SESSIONS:
+    configured_sessions = int(settings.expected_signal_sessions)
+    if configured_sessions != runtime_sessions:
         findings.append(
             Finding.at(
                 9,
-                f"runtime={EARNINGS_CALL_SIGNAL_SESSIONS}; validation config={configured_sessions}",
-                "one shared 66-session signal lifetime",
+                f"runtime={runtime_sessions}; validation config={configured_sessions}",
+                "configured signal lifetime agrees with the independent scientific expectation",
             )
         )
     if missing or legacy:
@@ -682,7 +682,7 @@ def check_earnings_calls(
     expected = [f"f_{name}" for name in EARNINGS_CALL_FEATURES]
     live = set(context.store.columns(spec))
     settings = _settings(config)
-    findings = _schema_findings(expected, live, settings)
+    findings = _schema_findings(expected, live, settings, int(config.data_aggregate.earnings_calls.signal_sessions))
     coverage, ratios, valid_dates = _coverage(context)
     findings.extend(_source_findings(coverage, settings))
     available = [column for column in expected if column in live]
@@ -709,7 +709,7 @@ def check_earnings_calls(
         "train_vs_recent": drift,
         "train_end": str(config.train.end_date),
         "latest_sessions": latest_metrics,
-        "signal_sessions": EARNINGS_CALL_SIGNAL_SESSIONS,
+        "signal_sessions": int(config.data_aggregate.earnings_calls.signal_sessions),
         "sample_rows": int(len(sample)),
     }
     scope = {

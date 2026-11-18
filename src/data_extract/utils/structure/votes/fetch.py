@@ -33,6 +33,7 @@ from src.data_store.schema import Table, Tables
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
+from src.utils.data_policy import source_read_window, window_policy
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,19 @@ def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
 
 def _load_narratives(context: Context, tickers: list[str]) -> pd.DataFrame | None:
     """The stored Item 5.07 narratives of `tickers` (a projection of `sec_8k`), or None when there are none."""
-    df_source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)}, optional=True)
+    policy = window_policy(context.config, Tables.sec_8k_votes, context.run.as_of)
+    source = source_read_window(context.config, Tables.sec_8k, context.run.as_of)
+    window = policy.requested.intersection(source) if policy is not None and source is not None else None
+    if window is None:
+        return None
+    df_source = context.store.load(
+        Tables.sec_8k,
+        columns=list(_SOURCE_COLS),
+        where={"item": _ITEM, "ticker": tickers},
+        since=window.start,
+        until=window.end,
+        optional=True,
+    )
     if df_source is None or df_source.empty:
         context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
         return None
@@ -83,7 +96,12 @@ def _load_narratives(context: Context, tickers: list[str]) -> pd.DataFrame | Non
 
 def _plan_todo(context: Context, df_source: pd.DataFrame) -> pd.DataFrame:
     """The narratives whose accession is not yet stored in `sec_8k_votes` (markers included)."""
-    seen = stored_values(context, Tables.sec_8k_votes, "accession_number")
+    seen = stored_values(
+        context,
+        Tables.sec_8k_votes,
+        "accession_number",
+        where={"ticker": df_source.ticker.unique().tolist(), "accession_number": df_source.accession_number.unique().tolist()},
+    )
     df_todo = df_source[~df_source["accession_number"].isin(seen)]
     context.log.info(
         "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",

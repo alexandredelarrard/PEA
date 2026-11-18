@@ -19,12 +19,13 @@ from pathlib import Path
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.bulk_cache import ZipRead, quarter_periods, read_zip_tables
 from src.data_extract.utils.common.identity_contract import DEI_SOURCE
 from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik_series
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,6 @@ _SYMBOL_SHAPE = re.compile(r"(?=[A-Z0-9-]*[A-Z])[A-Z0-9]+(?:-[A-Z0-9]+)*")
 _MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
 
 #: Fewer cached quarters than this warns (not raises) that the derivation is a partial history.
-MIN_EXPECTED_QUARTERS = 80
 
 #: The `symbol_tenure` partitions `build_symbol_tenure` owns; every other source keeps its rows.
 BUILD_SOURCES = ("form345", "manual")
@@ -137,21 +137,28 @@ def parse_symbol_field(value: object) -> tuple[str, ...] | None:
 
 
 # Form 3/4/5 scan
-def scan_form345_cache(cache: Path) -> Form345Scan:
-    """Read every cached Form 345 quarter zip once for both identity tables (a corrupt zip is skipped and kept)."""
+def scan_form345_cache(cache: Path, window: Window) -> Form345Scan:
+    """Read permitted cached source quarters once, with filings bounded by the explicit causal context Window."""
     # the cached quarter zips; too few warns that the history is partial
-    zips = sorted(p for p in cache.glob("*.zip") if _quarter_of(p) is not None)
+    zips = sorted(
+        path
+        for path in cache.glob("*.zip")
+        if (quarter := _quarter_of(path)) is not None
+        and window.start.to_period("Q") <= quarter <= window.end.to_period("Q")
+        and window.start <= quarter.end_time.normalize() <= window.end
+    )
     if not zips:
         raise FileNotFoundError(
             f"symbol_tenure: no Form 345 quarter zips under {cache}. The derivation is offline and reads only the cache; run the `insider` extract first."
         )
-    if len(zips) < MIN_EXPECTED_QUARTERS:
+    expected = len(quarter_periods(window))
+    if len(zips) < expected:
         logger.warning(
             "symbol_tenure: only %d cached quarter zip(s) under %s (expected >= %d). The derived table will be a PARTIAL history "
             "that LOOKS complete -- every tenure ending inside an absent quarter is wrong.",
             len(zips),
             cache,
-            MIN_EXPECTED_QUARTERS,
+            expected,
         )
 
     # one read per quarter: the issuer-owner pairs, then the per-(symbol, CIK) aggregate
@@ -167,8 +174,11 @@ def scan_form345_cache(cache: Path) -> Form345Scan:
         submission = tables[SUBMISSION_MEMBER]
         if "ISSUERCIK" in submission.columns:
             submission["ISSUERCIK"] = pad_cik_series(submission["ISSUERCIK"])
-        fields = submission["ISSUERTRADINGSYMBOL"].astype("string").dropna().unique() if "ISSUERTRADINGSYMBOL" in submission else []
         filed = _parse_filing_dates(submission["FILING_DATE"]) if "FILING_DATE" in submission else None
+        if filed is not None:
+            keep = filed.isna() | window.mask(filed)
+            submission, filed = submission.loc[keep], filed.loc[keep]
+        fields = submission["ISSUERTRADINGSYMBOL"].astype("string").dropna().unique() if "ISSUERTRADINGSYMBOL" in submission else []
         tenure_parts.append(_aggregate_submission(submission, {field: parse_symbol_field(field) for field in fields}, filed, path.name, drops))
         owner_parts.append(_owner_pairs(submission, tables[OWNER_MEMBER]))
 

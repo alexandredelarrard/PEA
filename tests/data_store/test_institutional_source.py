@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -9,10 +10,12 @@ import pytest
 from sqlalchemy import event
 
 from src.data_extract.utils.common.identity import load_source_identity
-from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, replace_insider_source
+from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, replace_insider_source, save_insider_source
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.data_extract.fake_context import extract_config
 
 
 def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table, pd.DataFrame]]:
@@ -37,6 +40,7 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
             "issuer_cik": ["0000000001"] * 2,
             "shares": [2.0, 3.0],
             "transaction_date": pd.to_datetime(["2026-07-01"] * 2),
+            "filing_date": pd.to_datetime(["2026-07-01"] * 2),
             "fetched_at": pd.to_datetime(["2026-07-02"] * 2),
         }
     )
@@ -125,18 +129,59 @@ def test_legacy_projection_does_not_add_proof_columns(sqlite_store: DataStore) -
     print("SANITY: the projection of an as-filed source table preserves explicit observations and performs no DDL.")
 
 
+def test_insider_source_pair_refuses_an_outside_companion_window(sqlite_store: DataStore) -> None:
+    transactions, notes, _ = _inventory(sqlite_store)
+    context = SimpleNamespace(
+        store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "paired source dates", pd.Timestamp("2026-11-16"))
+    )
+    context.config.data.tables[Tables.insider_footnotes.name].start_date = "2026-08-01"
+    incoming = transactions.assign(filing_date=pd.Timestamp("2026-07-01"), shares=999.0)
+
+    with pytest.raises(ValueError, match="insider_footnotes.*Window"):
+        save_insider_source(context, incoming, notes)
+
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.insider_transactions, markers=True), transactions)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.insider_footnotes), notes)
+    print("SANITY: an insider source pair refuses a companion outside configured dates before either table changes.")
+
+
+def test_insider_source_pair_clips_actual_filings_to_its_window(sqlite_store: DataStore) -> None:
+    transactions, notes, _ = _inventory(sqlite_store)
+    transactions.loc[transactions.accession_number.eq("b"), "filing_date"] = pd.Timestamp("2026-05-01")
+    sqlite_store.save(Tables.insider_transactions, transactions)
+    context = SimpleNamespace(
+        store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "actual filing write scope", pd.Timestamp("2026-11-16"))
+    )
+    item = context.config.data.tables[Tables.insider_transactions.name]
+    item.start_date, item.end_date = "2026-06-01", "2026-09-30"
+
+    counts = save_insider_source(context, transactions.assign(shares=999.0), notes)
+
+    saved = sqlite_store.load(Tables.insider_transactions).set_index("accession_number")
+    assert saved.loc["a", "shares"] == 999.0 and saved.loc["b", "shares"] == 3.0
+    assert counts[Tables.insider_transactions] == 1
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.insider_footnotes), notes)
+    print("SANITY: paired insider writing clips actual filing dates to config and retains the earlier filing and its economics.")
+
+
 def test_partial_patch_and_deleted_accession_keep_full_payload_atomic(sqlite_store: DataStore) -> None:
     transactions, notes, _ = _inventory(sqlite_store)
+    context = SimpleNamespace(
+        store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "scoped insider patch", pd.Timestamp("2026-11-16"))
+    )
     patch = transactions.iloc[:1][list(Tables.insider_transactions.pk)].assign(quarter="2026q2")
-    assert patch_insider_source(sqlite_store, patch, []) == 1
+    assert patch_insider_source(context, patch, []) == 1
     actual = sqlite_store.load(Tables.insider_transactions, markers=True)
-    assert actual is not None and actual["shares"].tolist() == [3.0, 2.0]
+    assert actual is not None
+    keys = list(Tables.insider_transactions.pk)
+    pd.testing.assert_series_equal(actual.set_index(keys)["shares"].sort_index(), transactions.set_index(keys)["shares"].sort_index())
+    assert actual.set_index(keys).loc[tuple(patch.iloc[0][keys]), "quarter"] == "2026q2"
     stored_frame = sqlite_store.load(Tables.insider_footnotes)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, notes)
-    assert patch_insider_source(sqlite_store, pd.DataFrame(), ["a"]) == 1
+    assert patch_insider_source(context, pd.DataFrame(), ["a"]) == 1
     assert sqlite_store.load(Tables.insider_footnotes, optional=True) is None
-    assert patch_insider_source(sqlite_store, pd.DataFrame(), ["b"]) == 1
+    assert patch_insider_source(context, pd.DataFrame(), ["b"]) == 1
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     print(
         "SANITY: a quarter-only patch preserves complete economics/notes; deletion removes notes and the last actual accession leaves the issuer unknown."

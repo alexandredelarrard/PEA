@@ -9,7 +9,6 @@ from typing import Any, cast
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 from sqlalchemy import create_engine
 
 from src.context import Context
@@ -21,7 +20,7 @@ from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.config import read_config
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.support.universe import universe_of
@@ -46,9 +45,8 @@ def daily(tmp_path, monkeypatch):
         store=DataStore(create_engine(f"sqlite:///{tmp_path / 'retry.db'}")),
         log=logging.getLogger("test.def14a.retry"),
         config_dir="configs",
-        config=extract_config(
-            data_extract={"years_history": 31, "llm_text_budget": OmegaConf.to_container(read_config("configs").data_extract.llm_text_budget)}
-        ),
+        config=extract_config(),
+        run=WindowRun("incremental", "proxy source fixture", pd.Timestamp("2026-11-16")),
         universe=universe_of(["ZZ"]),
     )
     create_canonical(
@@ -62,7 +60,7 @@ def daily(tmp_path, monkeypatch):
             Tables.sec_def14a_text,
         ],
     )
-    filed = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    filed = pd.Timestamp("2026-11-13")
     filing = pd.DataFrame(
         [
             dict(
@@ -468,3 +466,19 @@ def test_delayed_ceo_identity_refreshes_saved_pay_and_ownership_without_new_call
     raw = json.loads(after.def14a_json)["_def14a_split"]["responses"]
     assert raw["executive_pay"][0]["response"]["compensation"][0]["name"] == "Alice Adams"
     print("SANITY: delayed core identity refreshes saved CEO pay/ownership immediately; no extra reads/calls/counters.")
+
+
+@pytest.mark.parametrize("section", [section for section in SECTIONS if section.table != Tables.def14a_llm], ids=lambda section: section.key)
+def test_each_child_table_policy_gates_its_calls_and_writes(daily: Any, section: Any) -> None:
+    context, calls, answers, filing = daily
+    answers.update(_complete_answers())
+    _walk(context, filing, PAYLOADS)
+    context.config.data.tables[section.table.name].end_date = "2026-01-01"
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
+    called = [name for name, _, _ in calls]
+    assert section.schema.__name__ not in called, f"{section.key} outside its own Window still called its provider"
+    assert len(called) == len(SECTIONS) - 1
+    assert context.store.row_count(section.table) == 0
+    print(
+        f"SANITY: {section.table.name}'s own configured end excludes its source call, retry counters and writes while the other proxy domains still run."
+    )

@@ -7,15 +7,13 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS, SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED,
     plan_window,
     write_part,
 )
+from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.pit import add_cube_time_growth
 from src.data_aggregate.utils.fundamentals.disclosure_features import disclosure_return_fields
@@ -44,11 +42,9 @@ from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.basis import load_price_identity, load_quantity_basis
+from src.utils.publication import publication_dates, publication_rows
 from src.utils.step import Step
-
-_INCREMENTAL_SOURCE_YEARS = 6
-# Employee rows reach back this far before the history window, so its first growth has a prior year.
-_EMPLOYEE_LOOKBACK_YEARS = 2
+from src.utils.window import Offset, Window, WindowPlan, shift_date
 
 
 class StepCubeFundamentals(Step):
@@ -58,47 +54,57 @@ class StepCubeFundamentals(Step):
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
-        self._cfg = config.build_cube
-        self._part = part_for(Tables.cube_part_fundamentals)
+        self._cfg = config.data_aggregate
         self._store = context.store
         self._bugfix = load_bugfix(context.config_dir)
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[SchemaTable, WindowPlan]:
         # Plan the public calculation and refresh clocks.
-        trading_calendar = load_trading_calendar(self._store)
-        window = plan_window(
-            self._store,
-            Tables.cube_part_fundamentals,
-            full=full,
-            warmup=self._warmup(),
-            trading_index=trading_calendar,
-            refresh=FUNDAMENTALS_REFRESH_TRADING_DAYS,
+        trading_calendar = load_trading_calendar(self._context)
+        window = plan_window(self._context, Tables.cube_part_fundamentals, trading_calendar)
+        if window is None:
+            return {}
+        dividend_frames = load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=trading_calendar, fields=self._FIELDS, window=window.read
         )
-        dividend_frames = self._load_frames(window.since)
         frames = dividend_frames
-        source_since: pd.Timestamp | None = None
+        source_starts = {
+            name: None if window.is_full else shift_date(window.write.start, Offset(item.value, item.unit), trading_calendar)
+            for name, item in self._config.data.tables.cube_part_fundamentals.warmup.sources.items()
+            if name != "fundamentals_employees"
+        }
+        financial_start = source_starts["financial_history"]
+        employee_context = self._config.data.tables.cube_part_fundamentals.warmup.sources.fundamentals_employees
+        employee_start = (
+            None if financial_start is None else shift_date(financial_start, Offset(employee_context.value, employee_context.unit), trading_calendar)
+        )
         history_fields: dict[str, pd.DataFrame] | None = None
         output_since: pd.Timestamp | None = None
         if not window.is_full:
-            if window.refresh_from is None:
+            if window.write.start is None:
                 raise RuntimeError("incremental fundamentals window requires an inclusive refresh boundary")
-            output_since = window.refresh_from
-            source_since = pd.Timestamp(dividend_frames.trading_index.max()).normalize() - pd.DateOffset(years=_INCREMENTAL_SOURCE_YEARS)
-            history_fields = self._load_history_fields(dividend_frames.universe, since=window.since, until=output_since)
+            output_since = window.write.start
+            history_fields = self._load_history_fields(dividend_frames.universe, since=window.read.start, until=output_since)
             frames = dividend_frames.on(dividend_frames.trading_index[dividend_frames.trading_index >= output_since])
 
         # Load each source once and preserve raw financial cash units.
-        df_fundamentals = self._load_fundamentals(frames.universe, since=source_since)
-        df_earnings = self._load_optional(
-            Tables.earnings_surprises, "earnings-surprise history", "fetch_earnings_surprises", frames.universe, since=source_since
-        )
-        df_employees = self._load_employees(frames.universe, since=source_since)
+        df_fundamentals = self._load_fundamentals(frames.universe, trading_calendar, since=financial_start)
+        earnings_start = source_starts["earnings_surprises"]
+        earnings_window = None if earnings_start is None else Window(earnings_start, self._context.run.as_of)
+        df_earnings = load_source(self._context, Tables.earnings_surprises, frames.universe, window=earnings_window)
+        df_employees = self._load_employees(frames.universe, since=employee_start)
         identity = load_price_identity(self._context, list(frames.universe))
         basis = load_quantity_basis(self._context, frames.universe, self._bugfix, identity)
         df_share_history = load_fundamental_share_observations(self._context, df_fundamentals, basis, identity[0])
         histories = FundamentalHistory(df_fundamentals, df_share_history, basis)
-        df_notes = load_notes_num_scoped(self._context, tickers=frames.universe, since=source_since)
-        df_dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_dividends -> StepExtractPrices", frames.universe)
+        df_notes = load_notes_num_scoped(self._context, trading_calendar, tickers=frames.universe, since=source_starts["notes_num"])
+        df_dividends = load_source(self._context, Tables.dividends, frames.universe)
+        if df_earnings is not None:
+            df_earnings = publication_rows(self._config, Tables.earnings_surprises, df_earnings, trading_calendar, "as_of")
+        if df_employees is not None:
+            df_employees = publication_rows(self._config, Tables.fundamentals_employees, df_employees, trading_calendar, "as_of")
+        if df_dividends is not None:
+            df_dividends = publication_rows(self._config, Tables.dividends, df_dividends, trading_calendar, "available_on")
 
         # Compute families on the same saved price and source-unit basis.
         merger = PanelMerger()
@@ -137,31 +143,21 @@ class StepCubeFundamentals(Step):
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         panel = self._restrict_to_skeleton(panel, frames.skeleton()).reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
         del frames, dividend_frames, histories, df_fundamentals, df_share_history, df_earnings, df_employees, df_dividends, basis
-        n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
+        write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
+        return {Tables.cube_part_fundamentals: window}
 
     def _feature_settings(self) -> FundamentalFeatureSettings:
         """Read the existing financial history and intrinsic-model controls."""
-        hist = self._cfg.get("hist", {})
-        features = self._cfg.get("fundamentals_features", {})
+        hist = self._cfg.hist
+        features = self._cfg.fundamentals_features
         return FundamentalFeatureSettings(
-            history_window=int(hist.get("window", 1260)),
-            history_min_periods=int(hist.get("min_periods", 252)),
-            earnings_lags=int(features.get("earnings_lags", 8)),
-            earnings_scale_quarters=int(features.get("earnings_scale_quarters", 8)),
-            persistence_quarters=int(features.get("persistence_quarters", 8)),
-            intrinsic_cfg=self._cfg.get("intrinsic", {}),
+            history_window=int(hist.window),
+            history_min_periods=int(hist.min_periods),
+            earnings_scale_quarters=int(features.earnings_scale_quarters),
+            intrinsic_cfg=self._cfg.intrinsic,
         )
 
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
     # ---- inputs ---- #
-    def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
-
     def _load_history_fields(
         self,
         universe: tuple[str, ...],
@@ -195,26 +191,26 @@ class StepCubeFundamentals(Step):
         )
         return fields
 
-    def _load_fundamentals(self, universe: tuple[str, ...], since: pd.Timestamp | None = None) -> pd.DataFrame:
+    def _load_fundamentals(self, universe: tuple[str, ...], calendar: pd.DatetimeIndex, since: pd.Timestamp | None = None) -> pd.DataFrame:
         """`sharadar_fundamentals_history` + three `sec_` columns + GICS, loaded ONCE for five builders.
 
         The Sharadar history is the spine; `sec_fundamentals_history` joins on the exact
         `(ticker, as_of)` key and is optional. The GICS join happens HERE, after the load:
         `universe_tickers` is the authority for sector membership, and without it every sector
         KPI is gated off (`sector_gates.row_gate` fails closed on the absent column)."""
-        df = self._context.store.load(
+        requested = None if since is None else Window(since, self._context.run.as_of)
+        df = load_source(
+            self._context,
             Tables.sharadar_fundamentals_history,
-            optional=True,
-            project=True,
-            where={"ticker": list(universe)},
-            since=since,
+            universe,
+            window=requested,
         )
-        sec = self._context.store.load(
+        sec = load_source(
+            self._context,
             Tables.sec_fundamentals_history,
+            universe,
             columns=["ticker", "as_of", *SEC_CARRIED_COLUMNS],
-            optional=True,
-            where={"ticker": list(universe)},
-            since=since,
+            window=requested,
         )
         if df is None:
             raise Exception("No fundamentals history -> the fundamental, sector, workforce and dividend-payout features will be skipped.")
@@ -235,39 +231,25 @@ class StepCubeFundamentals(Step):
             joined.sharadar_unmatched,
             joined.sec_unmatched,
         )
-        frame = joined.frame.assign(
-            as_of=pd.to_datetime(joined.frame["as_of"])
-            + pd.Timedelta(days=SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sharadar_fundamentals_history.name])
-        )
+        # One eligibility clock covers every source field carried on the joined row.
+        frame = publication_rows(self._config, Tables.sharadar_fundamentals_history, joined.frame, calendar, "as_of")
+        carried = joined.frame[[f"sec_{field}" for field in SEC_CARRIED_COLUMNS]].notna().any(axis=1)
+        sec_dates = publication_dates(self._config, Tables.sec_fundamentals_history, joined.frame, calendar)
+        ready = pd.concat([frame["as_of"], sec_dates.reindex(frame.index).where(carried.reindex(frame.index))], axis=1).max(axis=1)
+        ready = ready.where(~carried.reindex(frame.index) | sec_dates.reindex(frame.index).notna())
+        frame["as_of"] = ready
+        frame = frame.loc[ready.notna()]
         return self._universe.attach_gics(add_cube_time_growth(frame))
-
-    def _load_optional(
-        self,
-        table: SchemaTable | str,
-        what: str,
-        fetcher: str,
-        universe: tuple[str, ...],
-        since: pd.Timestamp | None = None,
-    ) -> pd.DataFrame | None:
-        df = self._context.store.load(
-            table,
-            optional=True,
-            where={"ticker": list(universe)},
-            since=since,
-        )
-        if df is None:
-            self._log.warning("No %s -> related features skipped (run %s).", what, fetcher)
-            return None
-        return df
 
     def _load_employees(self, universe: tuple[str, ...], since: pd.Timestamp | None) -> pd.DataFrame | None:
         """Load projected employee history with its prior-year lookback."""
-        df_employees = self._store.load(
+        requested = None if since is None else Window(since, self._context.run.as_of)
+        df_employees = load_source(
+            self._context,
             Tables.fundamentals_employees,
+            universe,
             columns=list(EMPLOYEE_COLUMNS),
-            optional=True,
-            where={"ticker": list(universe)},
-            since=None if since is None else pd.Timestamp(since) - pd.DateOffset(years=_EMPLOYEE_LOOKBACK_YEARS),
+            window=requested,
         )
         if df_employees is None:
             self._log.warning("No %s -> related features skipped (run %s).", "employee headcount", "sec-employees-llm")
@@ -324,7 +306,6 @@ class StepCubeFundamentals(Step):
             earnings,
             frames.ret,
             frames.sector_ret,
-            reaction_sessions=int(self._cfg.get("fundamentals_features", {}).get("reaction_sessions", 3)),
         )
         return build_fundamental_views(fields, frames.peers, output_since=output_since)
 

@@ -1253,3 +1253,59 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 
 - Coverage: `sec_13f_manager_details` gains `book_return` (31 profile columns): the price return of the previous quarter's US equity positions held fixed in shares, averaged over the profile window; split names and price outliers are left out (`build_cube.manager_profile.return_price_band`, `split_share_move`, `split_value_tolerance`). The live table needs one `ALTER TABLE ... ADD COLUMN book_return DOUBLE PRECISION` before the next profile run. `n_positions` and `book_value_usd` become BIGINT (the window mean of the position count and the median book value, rounded to whole numbers; the live columns need `ALTER TABLE sec_13f_manager_details ALTER COLUMN n_positions TYPE BIGINT USING round(n_positions), ALTER COLUMN book_value_usd TYPE BIGINT USING round(book_value_usd)`). The manager profile also casts raw 13F numeric columns to float (a Decimal-typed quarter broke the next quarter's turnover).
 - Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-16: refresh (configuration ownership, implementation P2)
+
+- Profile: internal/standard
+- source_commit: c82132b6 (was39b261e8; P2 working-tree changes documented alongside implementation)
+- Coverage: deterministic config loading, stage filenames, preserved path/model/JSON ownership, fixed repair thresholds and financial schemas, operative earnings-call lifetime with independent validation expectation. Operational date/PIT policy migration remains in subsequent phases.
+- Pages: [Configuration](./reference/configuration.md), [Constants and configuration](./modules/constants-and-configuration.md), and affected stage/guide links.
+
+## 2026-11-17 — Central table timing policies and extraction windows
+
+The configuration refactor moves source dates, reprocessing amounts, publication buffers and freshness rules into [data.yml](../configs/data.yml). The [structural table registry](../src/data_store/schema.py) retains table identity, columns and Resume contracts. Extraction uses one Context run anchor and shared [Window policies](../src/utils/data_policy.py), including finite ends for source/index/archive work and causal prefixes for histories and identity evidence. Unknown or contradictory timing fields fail configuration validation before source effects.
+
+Focused policy checks pass44 cases; the specified planner suite passes50 with9 live-data skips. Added direct notes sub-run checks prove excluded source units never reach download or clock I/O; bounded employee validation also passes. These checks cover extraction timing plumbing. Archive completion/paid-cache behavior, all cube PIT/write integration and independent final acceptance/refactor remain in the active harness plan; this entry is not a completed pipeline certificate. The approved latest merged pipeline includes64 registered table policies and18 manual JSON files. Models and artifacts are outside this refactor's validation scope.
+
+## 2026-11-17 — Cube timing integration and calculation-preservation decisions
+
+Cube builders now share the configured [Window planner](../src/data_aggregate/utils/common/incremental.py), root execution mode and finite write bounds; assembly consumes actual selected component write boundaries. The [configuration guide](./reference/configuration.md#cube-timing-and-recovery) describes overlap, warm-up, publication and explicit historical recovery. Text retains its market-clock/call-history calculation with a bounded dense price-availability grid. [Coding standards](./guides/coding-standards.md) assigns configurable table timing to data.yml rather than schema.py.
+
+The user explicitly retains governance fills from later filings and the existing pooled13F unit/value repair. Their algorithms remain unchanged. These retrospective attributes/repair evidence are declared exceptions to strict contributing-evidence PIT; destination filing buffers and scoped writes still apply. Implementation P5 and independent final validation remain in progress. Models and artifacts are excluded from validation; no production data rebuild has run.
+
+## 2026-11-17: refresh — extraction runbook correction (F-002)
+
+- Profile: internal/standard
+- source_commit: pending integrated F-003/F-002 candidate (base bd4014f4; subset compatibility follows approved 10135865 behavior).
+- Coverage: fixed configured source bounds, missing/failed indexed 13F accessions with nightly ZIP fallback, 30-calendar-day short-volume correction overlap, and current extraction CLI flags. Documentation checks only; no production fetch or backfill ran.
+- Pages: [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — FTD and employee reuse guidance (F-002 follow-up)
+
+- Profile: internal/standard
+- source_commit: 133b75c6 (FTD and employee source unchanged from bd4014f4).
+- Coverage: FTD catch-up within selected missing/incomplete archive units, explicit bounded replay of completed units, and employee filing-date decision reuse in every mode with failed-call retry. Documentation checks only; no recovery or LLM call ran.
+- Pages: [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — explicit bounded timing replay
+
+- Profile: internal/standard
+- source_commit: af9cda4c7daa2c94e7c5c09675d8452174252b02.
+- Coverage: [permanent direct runner](../tests/support/run_window_samples.py), shared scalar/session setup, explicit selected-source replay, independent publication/plan checks and disposable writes. The lightweight pytest fixture no longer imports every producer. FTD evidence retains actual publication periods and the true prior ZIP seed, including null barriers; economic histories remain intact.
+- Evidence:19 focused protocol/known-truth controls passed with zero external tripwire attempts. The complete final per-table run and independent final review remain pending. No production data rebuild, inference or predictive-model validation ran.
+- Pages: [Testing and validation](./guides/testing.md).
+
+## 2026-11-17: refresh — exact execution cutoff in assembly receipts
+
+- Profile: internal/standard
+- source_commit: 35161d2e8590b0fca321cb61697144b68bfdd2d6.
+- Coverage: [configuration guidance](./reference/configuration.md#cube-timing-and-recovery) now requires the same original execution instant across separate part and assembly tasks. Older day-only receipts must be regenerated; legitimate cold-component initial mode within an incremental root run remains supported.
+- Evidence: five baseline failures reproduced the cutoff/legacy issues; all15 focused checks passed after correction, with zero external tripwire attempts. No production receipt migration, data rebuild or model validation ran. Integrated independent validation remains pending.
+
+## 2026-11-18: refresh — configuration timing and bounded-write guidance
+
+- Profile: internal/standard
+- source_commit: 84fa2c322adfaa4124eb5123bea38750f7ea3d7a (previous overview anchor c82132b6add9ac3fe3b44fb7320e02579e4b82dd).
+- Coverage: complete the refactor's timing/configuration guidance: shared Context/Window API, data.yml ownership, configured warm-up versus registry validation, explicit historical/schema recovery, atomic bounded writes,100-day13F and30-day institutional rewrites,7-day text features,180-day call acquisition and separate cached NLP work. Manager-details eligibility uses its configured filing+2-day market-session rule; the raw filing date is preserved. The archive downloader's file inventory is distinguished from database ingestion progress. Retrospective governance fills and pooled13F repair remain the user's preserved exceptions.
+- Pages: [Overview](./OVERVIEW.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [Data aggregate](./modules/data-aggregate.md), [Cube build](./flows/cube-build.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md).
+- Evidence: the reviewed source integration includes14 focused snapshot/projection controls and16 strict13F-config/cohort controls, with zero live-guard attempts and clean source/new-test type checks. Seven native sample parts have accepted evidence with actual execution attribution. Fresh13F/fundamentals, native assembly and the final combined read-only sample are still pending at this checkpoint. No production backfill, provider call, inference or predictive-model validation ran.

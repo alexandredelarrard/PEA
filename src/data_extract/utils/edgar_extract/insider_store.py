@@ -10,20 +10,35 @@ import pandas as pd
 from src.context import Context
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+from src.utils.data_policy import window_policy
 
 
-def _source_pair(store: DataStore, transactions: pd.DataFrame, notes: pd.DataFrame) -> dict[Table, int]:
+def save_insider_source(context: Context, transactions: pd.DataFrame, notes: pd.DataFrame) -> dict[Table, int]:
+    """Commit configured filing dates and paired notes without widening either destination."""
+    policy = window_policy(context.config, Tables.insider_transactions, context.run.as_of)
+    if policy is None or transactions.empty:
+        return {Tables.insider_transactions: 0, Tables.insider_footnotes: 0}
+    transactions = transactions.loc[policy.requested.mask(transactions["filing_date"])].copy()
+    if transactions.empty:
+        return {Tables.insider_transactions: 0, Tables.insider_footnotes: 0}
     accessions = sorted(set(transactions["accession_number"].astype(str)))
+    notes = notes.loc[notes["accession_number"].isin(accessions)].copy() if not notes.empty else notes
+
+    # The shared accession replacement can touch existing notes even when the new filing has none.
+    _require_source_window(context, transactions, (Tables.insider_transactions, Tables.insider_footnotes))
     return replace_insider_source(
-        store,
+        context.store,
         {Tables.insider_transactions: transactions, Tables.insider_footnotes: notes},
         {Tables.insider_transactions: {"accession_number": accessions}, Tables.insider_footnotes: {"accession_number": accessions}},
     )
 
 
-def save_insider_source(context: Context, transactions: pd.DataFrame, notes: pd.DataFrame) -> dict[Table, int]:
-    """EDGAR authority and the payload/notes pair share the store's guarded transaction."""
-    return _source_pair(context.store, transactions, notes)
+def _require_source_window(context: Context, rows: pd.DataFrame, tables: Sequence[Table]) -> None:
+    """Check a filing's dates against every destination, including undated same-accession notes."""
+    for table in tables:
+        policy = window_policy(context.config, table, context.run.as_of)
+        if policy is None or not policy.requested.mask(rows["filing_date"]).all():
+            raise ValueError(f"{table.name}: insider write outside its configured Window")
 
 
 def _reconciled_payload(
@@ -137,8 +152,9 @@ def replace_insider_source(
         return counts
 
 
-def patch_insider_source(store: DataStore, patch: pd.DataFrame, removed: Sequence[str] | pd.DataFrame) -> int:
+def patch_insider_source(context: Context, patch: pd.DataFrame, removed: Sequence[str] | pd.DataFrame) -> int:
     """Apply actual quarter/lineage patches and keyed removals in one transaction."""
+    store = context.store
     table = Tables.insider_transactions
     if set(patch.columns) - {*table.pk, "quarter", "economic_date", "lineage_role"}:
         raise ValueError("An insider patch carries only existing quarter/lineage fields")
@@ -161,9 +177,20 @@ def patch_insider_source(store: DataStore, patch: pd.DataFrame, removed: Sequenc
         df_payload = df_payload.loc[~_insider_removal_mask(df_payload, removed)]
         orphaned = set(accessions) - set(df_payload["accession_number"])
 
+        # Check the actual changed rows and any orphaned notes before the first write.
+        affected = _insider_removal_mask(df_stored, removed)
+        if not patch.empty:
+            affected |= pd.MultiIndex.from_frame(df_stored[list(table.pk)]).isin(pd.MultiIndex.from_frame(patch[list(table.pk)]))
+        _require_source_window(context, df_stored.loc[affected], (table,))
+        if not df_notes.empty and orphaned:
+            _require_source_window(context, df_stored.loc[df_stored["accession_number"].isin(orphaned)], (Tables.insider_footnotes,))
+
         # Preserve unrelated issuer rows and remove only genuinely orphaned notes.
-        bound.delete(table, {"accession_number": accessions})
+        deleted = df_stored.loc[_insider_removal_mask(df_stored, removed), list(table.pk)]
+        if not deleted.empty:
+            bound.delete(table, deleted)
         if not df_notes.empty and orphaned:
             bound.delete(Tables.insider_footnotes, {"accession_number": sorted(orphaned)})
-        bound.save(table, df_payload, ignore_all_conflicts=True)
+        if not patch.empty:
+            bound.save(table, patch)
         return len(df_stored) - len(df_payload) if len(removed) else len(patch)

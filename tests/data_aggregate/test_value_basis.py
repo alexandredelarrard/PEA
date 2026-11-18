@@ -261,21 +261,21 @@ def test_unit_changing_factor_requires_distinct_securities() -> None:
 
 
 def test_filing_dates_in_one_quarter_do_not_share_a_unit_factor() -> None:
-    early = _filing("0000861177", CLOSE * 1000.0, rows=3).assign(ticker=["MSFT", "AAPL", "GOOG"], filing_date=pd.Timestamp("2022-02-14"))
-    late = _filing("0000861177", CLOSE / 1000.0, rows=3).assign(ticker=["MSFT", "AAPL", "GOOG"], filing_date=pd.Timestamp("2022-03-01"))
+    early = _filing("0000861177", CLOSE * 1000.0).assign(filing_date=pd.Timestamp("2022-02-14"))
+    late = _filing("0000861177", CLOSE / 1000.0).assign(filing_date=pd.Timestamp("2022-03-01"))
     close = _close_split().assign(GOOG=CLOSE)
-    got, register = repair_value_basis(pd.concat([early, late], ignore_index=True), close, {"min_securities": 3})
-    assert got.loc[:2, "value_basis_repaired"].eq(DIVIDED).all()
-    assert got.loc[3:, "value_basis_repaired"].eq(MULTIPLIED).all()
+    got, register = repair_value_basis(pd.concat([early, late], ignore_index=True), close)
+    assert got.loc[:14, "value_basis_repaired"].eq(DIVIDED).all()
+    assert got.loc[15:, "value_basis_repaired"].eq(MULTIPLIED).all()
     assert len(register) == 2
     print("SANITY: the same manager and quarter can carry separate filing-unit decisions.")
 
 
 def test_share_value_swap_is_reconstructed_after_scaling() -> None:
-    h = _filing("0000861177", CLOSE * 1000.0, rows=5).assign(ticker=["MSFT", "AAPL", "GOOG", "AMZN", "NVDA"])
-    h.loc[4, "value_usd"] = h.loc[4, "shares"]
+    h = _filing("0000861177", CLOSE * 1000.0, rows=16)
+    h.loc[15, "value_usd"] = h.loc[15, "shares"]
     close = _close_split().assign(GOOG=CLOSE, AMZN=CLOSE, NVDA=CLOSE)
-    got, _ = repair_value_basis(h, close, {"min_securities": 3})
+    got, _ = repair_value_basis(h, close)
     assert got["value_usd"].eq(h["shares"] * CLOSE).all()
     assert got["shares"].equals(h["shares"])
     print("SANITY: a swapped value is excluded from evidence and is not scaled twice.")
@@ -293,8 +293,8 @@ def test_mixed_units_are_not_hidden_by_the_median() -> None:
 def test_repair_is_idempotent_and_input_is_unchanged() -> None:
     h = _filing("0000861177", CLOSE * 1000.0, rows=3).assign(ticker=["MSFT", "AAPL", "GOOG"])
     original = h.copy(deep=True)
-    once, _ = repair_value_basis(h, _close_split().assign(GOOG=CLOSE), {"min_securities": 3})
-    twice, _ = repair_value_basis(once, _close_split().assign(GOOG=CLOSE), {"min_securities": 3})
+    once, _ = repair_value_basis(h, _close_split().assign(GOOG=CLOSE))
+    twice, _ = repair_value_basis(once, _close_split().assign(GOOG=CLOSE))
     pd.testing.assert_frame_equal(once, twice)
     pd.testing.assert_frame_equal(h, original)
     print("SANITY: input source evidence is untouched and repeat normalization changes nothing.")
@@ -330,8 +330,8 @@ def test_future_basis_change_does_not_change_the_historical_reference() -> None:
 
 
 def test_old_quote_does_not_supply_unit_evidence() -> None:
-    close = _close_split().loc[: pd.Timestamp("2021-12-29")]
-    got, register = repair_value_basis(_filing("0000861177", CLOSE * 1000), close, {"max_price_age_days": 1})
+    close = _close_split().iloc[:1].set_axis(pd.to_datetime(["2021-12-23"]))
+    got, register = repair_value_basis(_filing("0000861177", CLOSE * 1000), close)
     assert register["status"].eq("source_only_no_price").all()
     assert got["value_basis_repaired"].eq(KEPT).all()
     print("SANITY: a stale price cannot authorize a unit change; its source-only status is explicit.")
@@ -390,7 +390,7 @@ def test_missing_values_estimate_only_with_valid_common_quantity_and_period_quot
     assert got["value_basis_value_source"].iloc[0] == "market_estimated"
     assert got["value_usd"].iloc[1:].isna().all()
     assert not got["value_basis_reconstructed"].iloc[1:].any()
-    stale, _ = repair_value_basis(h, close.loc[:"2021-12-28"], {"max_price_age_days": 1})
+    stale, _ = repair_value_basis(h, close.iloc[:1].set_axis(pd.to_datetime(["2021-12-23"])))
     assert stale["value_usd"].isna().all()
     future, _ = repair_value_basis(h, close.loc["2022-01-01":])
     assert future["value_usd"].isna().all()
@@ -452,8 +452,8 @@ def test_option_estimates_reject_invalid_quantities_and_ineligible_quotes() -> N
     for column in ("call_value", "put_value"):
         assert got[column].iloc[0] == 2 * CLOSE
         assert got[column].iloc[1:].isna().all()
-    for prices, policy in ((close.loc[:"2021-12-28"], {"max_price_age_days": 1}), (close.loc["2022-01-01":], {})):
-        rejected, _ = repair_value_basis(h, prices, policy)
+    for prices in (close.iloc[:1].set_axis(pd.to_datetime(["2021-12-23"])), close.loc["2022-01-01":]):
+        rejected, _ = repair_value_basis(h, prices)
         assert rejected[["call_value", "put_value"]].isna().all().all()
     close.loc[close.index > PERIOD] *= 1000
     later, _ = repair_value_basis(h, close)

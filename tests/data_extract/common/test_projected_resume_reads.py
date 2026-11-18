@@ -19,6 +19,9 @@ from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ti
 from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
+from src.utils.window import Window
+from tests.data_extract.edgar_fixtures import fake_context
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import as_roster, seed_universe, universe_config
 
 CUSIP_TICKER_OVERRIDES = dict(load_security_manual().cusip_ticker_overrides)
@@ -33,7 +36,7 @@ class _Context:
         self.store = store
         self.log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
         self.config_dir = CONFIG_DIR
-        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15))
+        self.config = extract_config()
 
     @property
     def universe(self) -> Universe:
@@ -59,40 +62,20 @@ def _spy_loads(monkeypatch: Any, store: Any, table_name: str) -> list[dict[str, 
     return calls
 
 
-def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store: Any, monkeypatch: Any) -> None:
-    today = pd.Timestamp.today().normalize()
-    df_stored = pd.DataFrame(
-        {
-            "ticker": ["FRESH", "FRESH", "STALE", "NOACTUAL", "DUE", "DUE"],
-            "earnings_date": [today - pd.Timedelta(days=d) for d in (10, 100, 200, -20, 90, 2)],
-            "eps_estimate": [1.0, 1.0, 1.0, 2.0, 1.0, 1.2],
-            "eps_actual": [1.1, 1.0, 0.9, None, 1.0, None],
-            "surprise_pct": [10.0, 0.0, -10.0, None, 0.0, None],
-        }
-    )
-    df_stored["earnings_date"] = df_stored["earnings_date"].dt.strftime("%Y-%m-%d")
+def test_earnings_surprise_candidates_use_scoped_metadata_without_reading_history(tmp_path: Any, sqlite_store: Any, monkeypatch: Any) -> None:
+    context = fake_context(tmp_path, sqlite_store, ["AAA", "NEW"])
+    df_stored = pd.DataFrame({"ticker": ["AAA", "OUTSIDE"], "earnings_date": pd.to_datetime(["2026-09-15", "2026-09-16"]), "eps_actual": 1.0})
     sqlite_store.save(Tables.earnings_surprises, df_stored)
-    tickers = ["FRESH", "STALE", "NOACTUAL", "DUE", "NEW"]
-    seed_universe(sqlite_store, tickers)
-
-    # The plan the full-table read used to give: the latest reported date and the latest stored date per ticker.
-    df_full = sqlite_store.load(Tables.earnings_surprises)
-    df_full["earnings_date"] = pd.to_datetime(df_full["earnings_date"], format="%Y-%m-%d")
-    reported = df_full.dropna(subset=["eps_actual"]).groupby("ticker")["earnings_date"].max().to_dict()
-    expected = surprises._plan_fetch(tickers, reported, df_full.groupby("ticker")["earnings_date"].max().to_dict(), 64, 95)
-
-    plans: list[list[tuple[str, int]]] = []
-    plan_fetch = surprises._plan_fetch
-    monkeypatch.setattr(surprises, "_plan_fetch", lambda *a: plans.append(plan_fetch(*a)) or plans[-1])
-    monkeypatch.setattr(surprises, "_download_one", lambda ticker, limit: None)
+    windows = []
+    monkeypatch.setattr(surprises, "_download_one", lambda ticker, window: windows.append((ticker, window)))
     loads = _spy_loads(monkeypatch, sqlite_store, Tables.earnings_surprises.name)
-    surprises.fetch_earnings_surprises(_context(sqlite_store), tickers, years_history=15, pause=0.0)
-
-    assert loads == [], "the plan must come from key_stats, never a table read"
-    assert plans == [expected]
-    print("\n=== SANITY CHECK: earnings-surprise resume read ===")
-    print(f"  two key_stats GROUP BY reads -> plan {plans[0]}; full read -> {expected}")
-    print("  OK: identical fetch plan with no table read")
+    surprises.fetch_earnings_surprises(context, ["AAA", "NEW"])
+    assert loads == []
+    assert windows == [
+        ("AAA", Window(pd.Timestamp("2026-08-26"), pd.Timestamp("2026-09-30"))),
+        ("NEW", Window(pd.Timestamp("2002-10-01"), pd.Timestamp("2026-09-30"))),
+    ]
+    print("SANITY: scoped source metadata distinguishes35CD candidates from cold-key history without loading the earnings table.")
 
 
 def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any, monkeypatch: Any) -> None:

@@ -17,6 +17,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.utils.names import clean_person_name
+from src.utils.publication import roll_to_session
 from src.utils.string import pad_cik
 from src.utils.title_vocabulary import CHAIR, COUNSEL, GENERAL, SENIOR, VICE
 from src.utils.title_vocabulary import CHIEF as CHIEF_WORD
@@ -217,11 +218,8 @@ def insider_days(values: pd.Series) -> pd.Series:
 
 
 def publication_day(days: pd.Series, lag_days: int, sessions: pd.DatetimeIndex) -> pd.Series:
-    """`days` + `lag_days` rolled forward to the first session on or after it; outside the session span the shifted day itself, NaT stays NaT."""
-    shifted = days + pd.Timedelta(days=lag_days)
-    position = sessions.searchsorted(pd.DatetimeIndex(shifted), side="left")
-    rolled = pd.Series(sessions.take(np.minimum(position, len(sessions) - 1)).astype(shifted.dtype), index=days.index)
-    return rolled.where(shifted.notna() & (position < len(sessions)) & (shifted >= sessions[0]), shifted)
+    """Apply the configured calendar buffer and require a retained real market session."""
+    return roll_to_session(days + pd.Timedelta(days=lag_days), sessions)
 
 
 def normalize_insider_dates(df_rows: pd.DataFrame) -> pd.DataFrame:

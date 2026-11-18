@@ -8,6 +8,7 @@ from typing import Any
 from src.data_store import ddl
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import reflect_columns
+from tests.data_extract.fake_context import extract_config
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,8 +68,11 @@ def test_registry_lists_the_manager_details_table() -> None:
     assert table.kind == "extract" and table.managed
     assert table.date_col == "period" and table.ticker_col is None
     assert table.date_type_cols == ("period", "first_filed_date", "source_period")
-    assert table.freshness == "quarterly" and table.freshness_col == "first_filed_date"
-    assert table.resume == Resume("market", "cik", "first_filed_date", 92, source_start="1999-07-01")
+    config = extract_config()
+    assert config.data.tables[table.name].freshness.clock == "first_filed_date"
+    assert config.data.tables[table.name].freshness.cadence == "quarterly"
+    assert config.data.tables[table.name].reprocess.overlap.value == 92
+    assert table.resume == Resume("market", "cik", "first_filed_date")
     print("\n=== SANITY CHECK: registry entry ===")
     print("  sec_13f_manager_details: pk (cik, period), extract, quarterly freshness on first_filed_date, market resume. Validated.")
 

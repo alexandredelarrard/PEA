@@ -19,7 +19,6 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from functools import cached_property, partial
 from operator import attrgetter
 from typing import Any, Protocol, cast
@@ -39,7 +38,8 @@ from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_frame
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
 from src.data_store.schema import Resume, Table
-from src.utils.string import pad_cik, run_date
+from src.utils.string import pad_cik
+from src.utils.window import Window, WindowRun
 
 logger = logging.getLogger(__name__)
 
@@ -165,12 +165,11 @@ class EdgarFetch:
     stamp, identity)` rejects a filing on which the key is only a filer or owner. `done_table` (default
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
     key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
-    df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
-    floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
+    df_units)` may supply richer `Filing` objects by accession. `run_scope` prepares a run-local descriptor and
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
-    `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
-    `save` replaces the per-table key save. `source_history` lists filings, and refreshes the index, from the done
-    table's source start rather than the run's window (gap filings). `fill_cold` lists a key with no stored row in
+    `done_accessions(context, keys)` replaces that stored-set read with the fetch's own rule.
+    `save` replaces the per-table key save. Each table's configured dates bound index discovery.
+    `fill_cold` lists a key with no stored row in
     full, outside the per-run cap. `rewrite_on_full` (a single-table walk keyed on `ticker`) makes a `-F` run
     replace the key's stored rows of each re-read filing, so rows the parser no longer emits disappear. The done
     table owns the description, forms and marker stamps.
@@ -183,10 +182,8 @@ class EdgarFetch:
     done_scope: str = DONE_TABLE
     filings: FilingsFn | None = None
     done_where: dict[str, object] | None = None
-    runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
-    run_scope: Callable[[Context, Sequence[str], pd.Timestamp], AbstractContextManager[EdgarFetch]] | None = None
+    run_scope: Callable[[Context, Sequence[str]], AbstractContextManager[EdgarFetch]] | None = None
     save: SaveFn | None = None
-    source_history: bool = False
     done_accessions: DoneFn | None = None
     fill_cold: bool = False
     rewrite_on_full: bool = False
@@ -200,19 +197,17 @@ class EdgarFetch:
 @dataclass(frozen=True)
 class RetryRounds:
     """In-task retry rounds for keys reading below `threshold` with at least `min_failed` failed
-    documents; `waits[i]` seconds before round i+1. Defaults mirror `data_extract.retry_rounds`."""
+    documents; `waits[i]` seconds before round i+1. Read only from `data_extract.retry_rounds`."""
 
-    rounds: int = 3
-    waits: tuple[float, ...] = (60.0, 120.0, 240.0)
-    threshold: float = 0.985
-    min_failed: int = 2
+    rounds: int
+    waits: tuple[float, ...]
+    threshold: float
+    min_failed: int
 
     @classmethod
     def from_config(cls, config: Any) -> RetryRounds:
-        """The rounds declared under `data_extract.retry_rounds`, else the defaults."""
-        section = getattr(getattr(config, "data_extract", None), "retry_rounds", None)
-        if section is None:
-            return cls()
+        """The required rounds declared under `data_extract.retry_rounds`."""
+        section = config.data_extract.retry_rounds
         return cls(int(section.rounds), tuple(float(w) for w in section.waits), float(section.threshold), int(section.min_failed))
 
     def due(self, listed: int, failed: int) -> bool:
@@ -222,42 +217,33 @@ class RetryRounds:
 
 @dataclass(frozen=True, eq=False)
 class EdgarRun:
-    """What every walk of one EDGAR run shares, declared once: the requested `tickers`, their `cik_map`, the
-    run's `identity`, the `run_date`, the `years_history` window, `full` re-read,
-    the document `cap` (None: uncapped) and the `retry` policy."""
+    """Shared source identity, the Context's immutable execution scope and configured transport limits."""
 
     tickers: list[str]
     cik_map: pd.DataFrame
     identity: Identity
-    run_date: pd.Timestamp
-    years_history: int
-    full: bool = False
-    cap: int | None = None
-    retry: RetryRounds = field(default_factory=RetryRounds)
+    execution: WindowRun
+    cap: int | None
+    retry: RetryRounds
+
+    @property
+    def run_date(self) -> pd.Timestamp:
+        return self.execution.as_of
+
+    @property
+    def full(self) -> bool:
+        return self.execution.mode in {"full", "recovery"}
 
     @classmethod
-    def load(
-        cls,
-        context: Context,
-        tickers: list[str],
-        years_history: int | None = None,
-        *,
-        as_of: datetime | None = None,
-        full: bool = False,
-        no_cap: bool = False,
-    ) -> EdgarRun:
-        """Read the run's state once: CIK mapping, identity, cap and retry policy; `years_history` None reads the configured window."""
-        config = getattr(context, "config", None)
-        day = run_date(as_of)
+    def load(cls, context: Context, tickers: list[str], *, no_cap: bool = False) -> EdgarRun:
+        """Read source state once; date and mode are the same immutable run used by every sub-step."""
         return cls(
             tickers=tickers,
             cik_map=universe_rows(context, tickers),
             identity=load_identity(context),
-            run_date=day,
-            years_history=int(years_history if years_history is not None else context.config.data_extract.years_history),
-            full=full,
+            execution=context.run,
             cap=_document_cap(context, no_cap),
-            retry=RetryRounds.from_config(config),
+            retry=RetryRounds.from_config(context.config),
         )
 
 
@@ -542,48 +528,30 @@ def universe_rows(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
 
 
 def _document_cap(context: Context, no_cap: bool) -> int | None:
-    """The configured `max_documents_per_run`, or None when `no_cap` or none is configured."""
-    value = getattr(getattr(getattr(context, "config", None), "data_extract", None), "max_documents_per_run", None)
-    return None if no_cap or value is None else int(value)
+    """The required configured cap, lifted only by the explicit backlog option."""
+    return None if no_cap else int(context.config.data_extract.max_documents_per_run)
 
 
 def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWork:
     """`fetch`'s work list for `run`'s keys on its run date (read-only; the index cache as it stands)."""
     request = WorklistRequest(
         keys=run.cik_map[["ticker", "cik"]],
-        as_of=run.run_date,
         forms=cast(Resume, fetch.done.resume).forms,
         identity=run.identity,
-        years_history=run.years_history,
-        runtime_floor=fetch.runtime_floor(context, run.run_date) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
         done_where=fetch.done_where,
-        full=run.full,
         cap=run.cap,
-        listing_floor=_source_start(fetch) if fetch.source_history else None,
         done_accessions=fetch.done_accessions,
         fill_cold=fetch.fill_cold,
     )
     return document_worklist(context, fetch.done, request)
 
 
-def _source_start(fetch: EdgarFetch) -> pd.Timestamp:
-    """The done table's declared `source_start`."""
-    return pd.Timestamp(cast(str, cast(Resume, fetch.done.resume).source_start))
-
-
-def index_years(fetch: EdgarFetch, years_history: int, run_date: pd.Timestamp) -> int:
-    """The index window `fetch` needs on `run_date`: `years_history`, widened to the table's source start for a source-history fetch."""
-    if not fetch.source_history:
-        return years_history
-    return max(years_history, run_date.year - _source_start(fetch).year + 1)
-
-
-def refresh_index(context: Context, run: EdgarRun, years_history: int) -> None:
-    """Bring the local EDGAR index up to `run`'s date over `years_history` (SEC identity and retry policy set first)."""
+def refresh_index(context: Context, window: Window) -> None:
+    """Bring the local EDGAR index into the caller's configured filing window."""
     context.ensure_edgar_identity()
     configure(context)
-    edgar_index.refresh(context, run.run_date, years_history)
+    edgar_index.refresh(context, window)
 
 
 def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_workers: int | None = None) -> FetchSummary:
@@ -593,8 +561,7 @@ def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_w
     filing's stored rows for a `rewrite_on_full` fetch. Never raises for a source failure: what could not be read is
     logged and listed again on the next run.
     """
-    start_date = run.run_date
-    with fetch.run_scope(context, run.tickers, start_date) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
+    with fetch.run_scope(context, run.tickers) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
         if prepared.parse is None:
             raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
         if run.full and prepared.rewrite_on_full:

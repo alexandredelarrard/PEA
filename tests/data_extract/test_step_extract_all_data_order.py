@@ -17,6 +17,7 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
 from src.data_extract.transformers import step_extract_universe as universe_module
 from src.data_extract.transformers import step_extract_zips as zips_module
+from src.utils.window import WindowRun
 from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe
 
@@ -138,7 +139,13 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         ),
     )
     step = cast(Any, object.__new__(StepExtractAllData))
-    step._context = SimpleNamespace(config=config, config_dir="./configs", store=store, universe=seed_universe(store, ["AAA", "BBB"]))
+    step._context = SimpleNamespace(
+        config=config,
+        config_dir="./configs",
+        store=store,
+        universe=seed_universe(store, ["AAA", "BBB"]),
+        run=WindowRun("incremental", "pipeline fixture", pd.Timestamp.today().normalize()),
+    )
     step._config = config
     step._log = logging.getLogger("test_step_extract_all_data_order")
     for name in STEP_ATTRIBUTES:

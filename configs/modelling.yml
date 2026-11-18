@@ -1,4 +1,4 @@
-# modellling.yml -- GENERIC / shared model config only.
+# modelling.yml -- GENERIC / shared model config only.
 # Per-model hyperparameters AND feature sets now live in their own files (merged in by
 # read_config via distinct top-level keys):
 #   * linear_modelling.yml  -> `linear:`  (elastic-net: hyperparams + its columns)

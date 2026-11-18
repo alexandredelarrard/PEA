@@ -38,7 +38,9 @@ _HISTORY_MODULES = (
 
 def _step(context: Any) -> StepExtractFundamentals:
     limits = {"gap_pct": 0.03, "field_share": 0.05, "top_tickers": 3}
-    return StepExtractFundamentals(context, OmegaConf.create({"data_extract": {"years_history": 15, "fundamentals_check": limits}}))
+    return StepExtractFundamentals(
+        context, OmegaConf.create({"data_extract": {"years_history": 15}, "validate": {"fundamentals_comparison": limits}})
+    )
 
 
 def _imports(path: str) -> set[str]:

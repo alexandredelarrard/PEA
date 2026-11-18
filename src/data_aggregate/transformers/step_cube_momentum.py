@@ -21,8 +21,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
-from src.data_aggregate.utils.common.parts import part_for
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_aggregate.utils.price.checks import measure_quote_seams, measure_seams
@@ -31,9 +30,10 @@ from src.data_aggregate.utils.price.frames import (
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
+from src.utils.window import WindowPlan
 
 
 class StepCubeMomentum(Step):
@@ -46,41 +46,26 @@ class StepCubeMomentum(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
-        self._cfg = config.build_cube
-        self._part = part_for(Tables.cube_part_momentum)
+        self._cfg = config.data_aggregate
         self._store = context.store
         # the `null_ret` entries reach this step as MASKS, not as repairs: `StepCubePrices`
         # already nulled the one `ret` cell, but it left both price legs as published, so
         # `close_total` is still on two bases here. See level_basis's module docstring.
         self._bugfix = load_bugfix(context.config_dir)
 
-    def run(self, full: bool = False) -> None:
-        # `refresh` rewrites the trailing week INCLUSIVELY instead of appending strictly after
-        # the stored max. That last stored date is the one most likely to be wrong -- it was
-        # built from the newest, least settled prices -- and a strictly-after append can never
-        # revisit it. The live table stopped ON a date whose features were ranked over 45 of
-        # 491 tickers, and only a `--full` rebuild would have cleared it.
-        window = plan_window(
-            self._store,
-            Tables.cube_part_momentum,
-            full=full,
-            warmup=self._warmup(),
-            trading_index=load_trading_calendar(self._store),
-            refresh=PART_REFRESH_TRADING_DAYS,
+    def run(self) -> dict[Table, WindowPlan]:
+        # Plan configured read and write windows on the retained source calendar.
+        calendar = load_trading_calendar(self._context)
+        window = plan_window(self._context, Tables.cube_part_momentum, calendar)
+        if window is None:
+            return {}
+        frames = load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=self._FIELDS, window=window.read
         )
-        frames = self._load_frames(window.since)
         panel = self._price_panel(frames)
         del frames
-        n = write_part(self._store, Tables.cube_part_momentum, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
-
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
-    def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
+        write_part(self._store, Tables.cube_part_momentum, panel, window, drop_empty=True)
+        return {Tables.cube_part_momentum: window}
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
         frames.require("close_split", "close_total", "open", "sector_ret", "ret")

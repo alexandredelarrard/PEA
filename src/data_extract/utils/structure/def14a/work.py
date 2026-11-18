@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
@@ -17,6 +17,8 @@ from src.data_store.schema import Table, Tables
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.utils.data_policy import source_read_window, window_policy
+from src.utils.window import Window
 
 
 @dataclass
@@ -62,12 +64,14 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
     return all(column not in rows or rows[column].isna().all() for column in keys)
 
 
-def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
+def load_work(context: Context, ticker: str, filings: pd.DataFrame) -> list[FilingWork]:
     """Read each scoped fact table once, without the large paid JSON archive."""
     # load: each section table's rows of the ticker in the window, markers included
     if filings.empty:
         return []
+    dates = Window(filings.filing_date.min(), filings.filing_date.max())
     frames: dict[Table, pd.DataFrame] = {}
+    policies = {section.table: window_policy(context.config, section.table, context.run.as_of) for section in SECTIONS}
     for section in SECTIONS:
         table = section.table
         available = context.store.columns(table)
@@ -77,7 +81,13 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
             else available
         )
         columns = [column for column in wanted if column in available and column != "def14a_json"]
-        loaded = context.store.load(table, columns=columns, where={"ticker": ticker}, since=floor, markers=True, optional=True)
+        source = source_read_window(context.config, table, context.run.as_of)
+        window = dates.intersection(source) if source is not None else None
+        loaded = (
+            context.store.load(table, columns=columns, where={"ticker": ticker}, since=window.start, until=window.end, markers=True, optional=True)
+            if window is not None
+            else None
+        )
         frames[table] = loaded if loaded is not None else pd.DataFrame(columns=columns)
 
     # Keep the walked proxy's entity and filing date separate from its fiscal-year rows.
@@ -101,7 +111,13 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
             "company_name": filing.get("company_name"),
         }
         work = FilingWork(stamp, saved, parent, attempts)
-        work.pending = {section.key for section in SECTIONS if has_gaps(section, saved[section.table], parent)}
+        work.pending = {
+            section.key
+            for section in SECTIONS
+            if (policy := policies[section.table]) is not None
+            and policy.requested.start <= stamp["as_of"] <= policy.requested.end
+            and has_gaps(section, saved[section.table], parent)
+        }
         works.append(work)
     return works
 
@@ -144,11 +160,11 @@ def open_sections(work: FilingWork) -> list[Section]:
     return [section for section in SECTIONS if section.key in work.pending and work.attempts[section.key] < 2]
 
 
-def ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
+def ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame) -> list[FilingWork]:
     """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those with an open
     section."""
     # load: the saved facts and archives, then the payloads of the proxies that need them
-    works = load_work(context, ticker, df_filings, floor)
+    works = load_work(context, ticker, df_filings)
     load_archives(context, works)
     wanted = [work.stamp["accession_number"] for work in works if open_sections(work)]
     if not wanted:
@@ -222,6 +238,7 @@ def call_sections(
 
 def reserve(context: Context, work: FilingWork, section: Section, attempt: int) -> None:
     """Write the owned counter before submission, retaining partial facts and monotonic attempts."""
+    _require_writes(context, work, (section.table, Tables.def14a_llm))
     frame = reservation_frame(section.table, work.stamp, work.saved[section.table], attempt)
     context.store.save(section.table, frame)
     work.attempts[section.key] = int(frame.retry.max())
@@ -233,12 +250,14 @@ def reserve(context: Context, work: FilingWork, section: Section, attempt: int) 
 
 def save_archive(context: Context, work: FilingWork) -> None:
     """Save raw paid output independently of any later postprocessing failure."""
+    _require_writes(context, work, (Tables.def14a_llm,))
     row = {column: work.stamp[column] for column in (*Tables.def14a_llm.pk, "as_of")}
     context.store.save(Tables.def14a_llm, pd.DataFrame([{**row, "def14a_json": work.raw}]))
 
 
 def save_section(context: Context, work: FilingWork, processed: ProcessedSection) -> None:
     """Save survivors before deleting exact obsolete holder keys or hidden placeholders."""
+    _require_writes(context, work, processed.frames)
     for table, frame in processed.frames.items():
         context.store.save(table, frame)
         if table is Tables.def14a_llm:
@@ -253,7 +272,15 @@ def save_section(context: Context, work: FilingWork, processed: ProcessedSection
             context.store.delete(
                 table, where={"ticker": work.stamp["ticker"], "accession_number": work.stamp["accession_number"], marker_column: marker}
             )
-    work.pending = {section.key for section in SECTIONS if has_gaps(section, work.saved[section.table], work.parent)}
+    work.pending &= {section.key for section in SECTIONS if has_gaps(section, work.saved[section.table], work.parent)}
+
+
+def _require_writes(context: Context, work: FilingWork, tables: Iterable[Table]) -> None:
+    """Check every destination before reserving or saving a filing's facts."""
+    for table in set(tables):
+        policy = window_policy(context.config, table, context.run.as_of)
+        if policy is None or not policy.requested.start <= work.stamp["as_of"] <= policy.requested.end:
+            raise ValueError(f"{table.name}: proxy write outside its configured Window")
 
 
 def _delete_obsolete_holders(context: Context, df_saved: pd.DataFrame, frame: pd.DataFrame) -> None:

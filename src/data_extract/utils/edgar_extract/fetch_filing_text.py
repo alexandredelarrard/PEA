@@ -192,7 +192,7 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
     ]
 
 
-def filing_text_done(context: Context, keys: Sequence[str], runtime_floor: pd.Timestamp | None) -> dict[str, set[str]]:
+def filing_text_done(context: Context, keys: Sequence[str]) -> dict[str, set[str]]:
     """Accessions holding a row, text or empty, for every section their form expects (`expected_sections`; an
     accession is a 10-K when any of its rows says so). An empty-filing marker is no section, so its filing is read
     once more."""

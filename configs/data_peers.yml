@@ -1,4 +1,4 @@
-# build_cube.yml -> replace the existing `peers:` block with this
+# Peer basket construction; model-family controls remain in modelling.yml.
 peers:
   top_k: 7
   weighting: corr            # corr | equal  (weights the COMBINED similarity)

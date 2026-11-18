@@ -357,10 +357,10 @@ def test_list_filings_raises_when_an_older_page_fails(monkeypatch: pytest.Monkey
 
 
 def test_policy_defaults_match_the_config() -> None:
-    config = OmegaConf.load(_REPO / "configs" / "configs.yml")
+    config = OmegaConf.load(_REPO / "configs" / "config.yml")
     assert RetryPolicy.from_config(config) == RetryPolicy(attempts=3, waits=(5.0, 20.0), retry_after_cap=120.0)
     assert RetryPolicy.from_config(SimpleNamespace()) == RetryPolicy()
-    print("\n=== SANITY CHECK: configs.yml data_extract.sec_retry ===")
+    print("\n=== SANITY CHECK: config.yml data_extract.sec_retry ===")
     print("  3 attempts, waits 5 s then 20 s, Retry-After cap 120 s; a config without the section uses the same defaults.")
 
 

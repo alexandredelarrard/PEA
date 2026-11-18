@@ -41,7 +41,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     load_dotenv(find_dotenv(usecwd=True))
     config = read_config("configs")
     source = _store()
-    compulsory = list(config.build_cube.assembly.compulsory_parts)
+    compulsory = list(config.data_aggregate.assembly.compulsory_parts)
     missing = [name for name in compulsory if not source.exists(name) or source.max_date(name) is None]
     if missing:
         _record(tmp_path, {"status": "abstain", "reason": "missing compulsory sources", "parts": missing, "metadata": _metadata(source)})
@@ -50,7 +50,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     universe = set(live_universe.tickers)
     tickers = [ticker for ticker in ("AAPL", "MSFT", "JPM") if ticker in universe]
     assert len(tickers) == 3, "named source-backed sample must be available"
-    horizon = max(config.build_cube.targets.horizons)
+    horizon = max(config.data_aggregate.targets.horizons)
     sessions = source.distinct(Tables.cube_part_prices, "date", where={"ticker": tickers}, order="desc", limit=horizon + 21)
     assert sessions
     since, until = min(sessions), max(sessions)
@@ -87,7 +87,9 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     sqlite_store.replace(Tables.prices, snapshot[Tables.cube_part_prices.name][["date", "ticker"]])
     context = cast(
         Context,
-        SimpleNamespace(store=sqlite_store, config=config, log=logging.getLogger(__name__), config_dir=Path("configs").resolve(), universe=replay_universe),
+        SimpleNamespace(
+            store=sqlite_store, config=config, log=logging.getLogger(__name__), config_dir=Path("configs").resolve(), universe=replay_universe
+        ),
     )
     StepAssembleCube(context, config).run()
     cube = sqlite_store.load(Tables.cube, columns=sqlite_store.columns(Tables.cube))
@@ -97,7 +99,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     prices = snapshot[Tables.cube_part_prices.name].assign(date=lambda d: pd.to_datetime(d["date"])).set_index(keys).sort_index()
     assert actual.index.equals(prices.index)
     checked = 0
-    assembled = [*config.build_cube.assembly.compulsory_parts, *config.build_cube.assembly.optional_parts]
+    assembled = [*config.data_aggregate.assembly.compulsory_parts, *config.data_aggregate.assembly.optional_parts]
     for part in (p for p in CUBE_PARTS if p.name in assembled):
         frame = snapshot.get(part.name)
         if frame is None or frame.empty:
@@ -123,7 +125,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
         payload = [str(col) for col in sqlite_store.columns(table) if col not in keys]
         if payload:
             selected[table.name] = payload[:1]
-    config.build_cube.assembly.columns = selected
+    config.data_aggregate.assembly.columns = selected
     StepAssembleCube(context, config).run()
     narrowed = sqlite_store.load(Tables.cube, columns=sqlite_store.columns(Tables.cube))
     assert narrowed is not None

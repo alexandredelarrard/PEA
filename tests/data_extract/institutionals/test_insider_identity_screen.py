@@ -18,11 +18,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, cast
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.edgar_extract.insider_common import (
@@ -39,8 +37,6 @@ from src.data_extract.utils.edgar_extract.insider_common import (
 )
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_extract.utils.zips.fetch_insider_transactions import _footnote_strings
-from src.data_store.schema import Tables
-from src.data_store.store import DataStore
 from tests.support.universe import as_roster
 
 # --------------------------------------------------------------------------- #
@@ -305,115 +301,6 @@ def test_footnotes_follow_the_kept_accessions_only(identity):
     assert "a1" in set(rejected["accession_number"])
     print("\n=== footnotes ===")
     print("  the rejected accession's footnote is not stored, so no new orphan appears.")
-
-
-# --------------------------------------------------------------------------- #
-# the stored-row sweep -- the only code that DELETEs                            #
-# --------------------------------------------------------------------------- #
-
-
-def _sweep_context(store: Any) -> Any:
-    ctx = cast(Any, type("_Ctx", (), {})())
-    ctx.store = store
-    return ctx
-
-
-def test_the_sweep_deletes_the_stored_rejects_and_warns(tmp_path, identity, caplog):
-    """THE PARSE SCREEN CANNOT DO THIS: `store.save` upserts, so a `--reparse` never removes a
-    rejected row, and a SHRINKING universe is reconciled only here. Delete-only: nothing is kept
-    elsewhere, the WARNING is the record."""
-    caplog.set_level(logging.INFO)
-    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'sweep.db'}"))
-    stored = _rows(
-        [
-            ("DD", DUPONT_EI),  # keep
-            ("COR", CORESITE),  # reject: entity_mismatch
-            ("IR", TRANE),  # keep, relabelled to TT
-            ("ZZZZ", CORESITE),  # reject: the claimed ticker is not in the universe
-        ]
-    )
-    store.save(Tables.insider_transactions, stored)
-
-    deleted = ins._screen_stored_rows(_sweep_context(store), UNIVERSE, identity)
-
-    left = store.load(Tables.insider_transactions)
-    assert left is not None
-    assert deleted == 2
-    assert sorted(left["accession_number"]) == ["a0", "a2"], "only the two keepers remain"
-    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert "insider stored-row sweep: excluded 2 filing(s), 2 row(s), 2 P/S row(s)" in warnings[0]
-    assert "entity_mismatch 1, entity_not_in_universe 1" in warnings[0] and "top claimed: COR 1, ZZZZ 1" in warnings[0]
-    print("\n=== SANITY: the stored-row sweep ===")
-    print(f"  {len(stored)} stored -> {len(left)} kept, {deleted} deleted; one WARNING: {warnings[0]}")
-
-
-def test_the_sweep_is_idempotent_and_a_clean_table_is_a_no_op(tmp_path, identity, caplog):
-    """A second run must not re-delete or raise, and logs only the INFO no-exclusion line."""
-    caplog.set_level(logging.INFO)
-    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'idem.db'}"))
-    store.save(Tables.insider_transactions, _rows([("DD", DUPONT_EI), ("COR", CORESITE)]))
-    ctx = _sweep_context(store)
-
-    first = ins._screen_stored_rows(ctx, UNIVERSE, identity)
-    caplog.clear()
-    second = ins._screen_stored_rows(ctx, UNIVERSE, identity)
-
-    assert first == 1
-    assert second == 0, "a clean table must be a no-op, not a second delete"
-    assert [record.levelno for record in caplog.records if record.levelno >= logging.WARNING] == []
-    remaining = store.load(Tables.insider_transactions)
-    assert remaining is not None and len(remaining) == 1
-    print("\n=== SANITY: sweep idempotence ===")
-    print(f"  first pass deleted {first}, second pass {second} with no WARNING. Re-running is safe.")
-
-
-class _SpyStore:
-    """A store proxy counting the rows every `load` returns and recording its `where`."""
-
-    def __init__(self, store: Any) -> None:
-        self.store = store
-        self.loaded_rows = 0
-        self.load_wheres: list[Any] = []
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.store, name)
-
-    def load(self, table: Any, *args: Any, **kwargs: Any) -> Any:
-        df = self.store.load(table, *args, **kwargs)
-        self.load_wheres.append(kwargs.get("where"))
-        self.loaded_rows += 0 if df is None else len(df)
-        return df
-
-
-def test_the_sweep_scores_distinct_ciks_and_loads_only_rejected_rows(tmp_path, identity, caplog):
-    """The sweep scores each distinct `issuer_cik` once and loads only the accessions of rejected
-    CIKs: a kept CIK stays, a rejected CIK and a NULL CIK are deleted, and a mixed accession is
-    deleted whole while only its rejected row is counted in the warning (the delete keys on
-    `accession_number`)."""
-    caplog.set_level(logging.INFO)
-    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'distinct.db'}"))
-    single = _rows([("DD", DUPONT_EI), ("COR", CORESITE), ("IR", TRANE), ("DD", None)])
-    mixed = _rows([("DD", DUPONT_EI), ("COR", CORESITE)]).assign(accession_number="m0")
-    stored = pd.concat([single, mixed], ignore_index=True)
-    store.save(Tables.insider_transactions, stored)
-    ctx = _sweep_context(_SpyStore(store))
-
-    deleted = ins._screen_stored_rows(ctx, UNIVERSE, identity)
-
-    left = store.load(Tables.insider_transactions)
-    assert left is not None
-    assert deleted == 4
-    assert sorted(left["accession_number"]) == ["a0", "a2"]
-    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "excluded 3 filing(s), 3 row(s)" in warnings[0] and "entity_mismatch 2, no_issuer_cik 1" in warnings[0]
-    assert all(where and set(where) == {"accession_number"} for where in ctx.store.load_wheres), "no whole-table load"
-    assert ctx.store.loaded_rows == 4, "only the rows of a1, a3 and m0 are read"
-    print("\n=== SANITY: distinct-CIK sweep ===")
-    print(
-        f"  {len(stored)} stored rows over 4 distinct CIKs (one NULL); read {ctx.store.loaded_rows} rows of the 3 rejected accessions; "
-        f"deleted {deleted}, kept a0/a2; warning: {warnings[0]}"
-    )
 
 
 @pytest.mark.skipif(

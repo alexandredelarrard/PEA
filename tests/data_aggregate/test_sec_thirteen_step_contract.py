@@ -9,24 +9,26 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+from omegaconf.errors import ConfigKeyError
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
-from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.institutional_vintages import prepare_book_vintages
+from src.utils.window import Window
 from tests.data_aggregate.test_institutional_step_contract import context, fixed_sec_thirteen_projection, seed_prices
 from tests.data_aggregate.test_superinvestor_books import _packet
+from tests.support.config import fixture_config
 from tests.support.sec_thirteen_panel import unsaved_panel
+from tests.support.windows import run_cube
 
-BOND_LINES = read_config(str(Path(__file__).resolve().parents[2] / "configs")).build_cube.bond_lines
+BOND_LINES = fixture_config().data_aggregate.bond_lines
 
 
 def _manager_batch_owner(
@@ -62,11 +64,11 @@ def _manager_batch_owner(
         finally:
             closed.append(True)
 
-    monkeypatch.setattr(step, "_load_resources", lambda: resources)
+    monkeypatch.setattr(step, "_load_resources", lambda *_args: resources)
     monkeypatch.setattr(step, "_institutional_features", lambda resources: None)
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", source)
     monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: grid)
-    monkeypatch.setattr(step_module, "plan_window", lambda *args, **kwargs: PartWindow(None, None))
+    store.max_date.return_value = None
     save = Mock()
     monkeypatch.setattr(step_module, "write_part", save)
     return step, grid, closed, save
@@ -80,8 +82,8 @@ def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest
     packets = [first, (second[0].iloc[:0], second[1])]
     before = [tuple(df_rows.copy(deep=True) for df_rows in packet) for packet in packets]
     step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
-    prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
-    step.run(full=True)
+    prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, config=fixture_config())
+    run_cube(step, full=True)
     assert closed == [True, True] and save.call_count == 1
     for old, actual in zip(before, packets, strict=True):
         for expected, df_rows in zip(old, actual, strict=True):
@@ -103,13 +105,47 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     monkeypatch.setattr(step, "_institutional_features", broad)
     monkeypatch.setattr(step, "_superinvestor_history", elite)
     result = unsaved_panel(step)
-    assert step._store is sqlite_store and step._part.table == Tables.cube_part_sec_thirteen
+    assert step._store is sqlite_store
     assert broad.call_count == elite.call_count == 1
     assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration"} | {"f_" + name for name in EMISSION}
     assert result.f_ic_inst_concentration.dropna().eq(pd.Series([0.4], dtype="float32").iloc[0]).all()
     assert result.f_ic_super_holders.dropna().eq(1.0).all()
     assert not result.duplicated(["date", "ticker"]).any()
     print("SANITY: SEC thirteen activates broad and elite 13F exactly once with a dedicated part owner.")
+
+
+@pytest.mark.parametrize("k", [1, 7, None])
+def test_sec_thirteen_uses_required_configured_topk(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, k: int | None) -> None:
+    seed_prices(sqlite_store)
+    ctx = context(sqlite_store, tmp_path)
+    selection = ctx.config.data_aggregate.sec_thirteen.superinvestor.selection
+    if k is None:
+        del selection["k"]
+    else:
+        selection.k = k
+    step = StepCubeSecThirteen(ctx, ctx.config)
+    roster = {f"{number:010d}" for number in range(1, 8)}
+    cohorts = Mock(return_value={"": frozenset(roster), "topk": frozenset(roster)})
+    broad, elite, write = Mock(return_value=None), Mock(return_value=None), Mock()
+    monkeypatch.setattr(step_module, "load_peers_or_raise", lambda context: {})
+    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda context, table: pd.DataFrame({"cik": sorted(roster)}))
+    monkeypatch.setattr(step_module, "filer_ciks", lambda ciks, config_dir: set(ciks))
+    monkeypatch.setattr(step_module, "load_manager_cohorts", cohorts)
+    monkeypatch.setattr(step, "_institutional_features", broad)
+    monkeypatch.setattr(step, "_superinvestor_history", elite)
+    monkeypatch.setattr(step_module, "write_part", write)
+
+    if k is None:
+        with pytest.raises(ConfigKeyError, match="selection.k"):
+            run_cube(step, full=True)
+        for operation in (cohorts, broad, elite, write):
+            operation.assert_not_called()
+        print("SANITY: absent required top-K refuses the public 13F run before cohort selection, feature work or persistence.")
+    else:
+        run_cube(step, full=True)
+        cohorts.assert_called_once_with(ctx.config_dir, roster, k)
+        assert broad.call_count == elite.call_count == write.call_count == 1
+        print(f"SANITY: the public 13F run forwards configured top-K={k} unchanged to the existing cohort selector.")
 
 
 def test_completed_accession_markers_and_positions_share_one_read() -> None:
@@ -149,7 +185,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
         def load(self, *args: Any, **kwargs: Any) -> Any:
             raise AssertionError("Whole roster books use bounded source iteration")
 
-    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
+    result = iter_filing_vintages(context(Store(), Path(".")), pd.Timestamp("2024-02-20"), ["1"], bond_lines=BOND_LINES)
     assert result is not None
     [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0
@@ -162,7 +198,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
     )
 
 
-def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_schema_change_requires_explicit_full_rebuild(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeSecThirteen(ctx, ctx.config)
@@ -171,13 +207,16 @@ def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch:
     panel = previous.drop(columns="f_previous").assign(f_current=2.0)
     project = fixed_sec_thirteen_projection(step, monkeypatch, panel)
     monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: days)
-    step.run()
-    # The incremental window projection, then one whole-history reprojection reused by the schema fallback.
-    assert project.call_count == 2 and len(project.call_args_list[-1].args[2]) == len(days)
+    with pytest.raises(ValueError, match="explicit full rebuild"):
+        step.run()
+    assert project.call_count == 1
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube_part_sec_thirteen), previous, check_dtype=False)
+    run_cube(step, full=True)
+    assert project.call_count == 2 and len(project.call_args.args[2]) == len(days)
     persisted = sqlite_store.load(Tables.cube_part_sec_thirteen)
     assert persisted is not None
     pd.testing.assert_frame_equal(persisted.sort_values(["date", "ticker"]).reset_index(drop=True), panel.reset_index(drop=True), check_dtype=False)
-    print("SANITY: a changed feature schema replaces the part once using the already computed full-history panel.")
+    print("SANITY: normal schema drift preserves rows; only an explicit full rebuild replaces the computed schema.")
 
 
 def _hr_book(cik: str, period: str, filed: str, rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
@@ -223,7 +262,6 @@ def _roster_history(
     store.save(Tables.sec13f_hr, pd.concat(books, ignore_index=True))
     store.save(Tables.cusip_ticker_map, _hr_tags(books).cmap)
     ctx = context(store, tmp_path)
-    ctx.config.build_cube.institutionals.value_basis = {"min_securities": 1}
     grid = pd.bdate_range("2024-01-02", "2024-12-31")
     close = pd.DataFrame([quotes] * len(grid), index=grid)
     basis = pd.DataFrame(1.0, index=pd.bdate_range("2023-01-02", "2024-12-31"), columns=list(quotes))
@@ -241,11 +279,11 @@ def _roster_history(
     ciks = sorted({str(cik) for book in books for cik in book.cik})
     monkeypatch.setattr(step_module, "load_price_frames", lambda *args, **kwargs: frames)
     monkeypatch.setattr(step_module, "load_peers_or_raise", lambda context: {})
-    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda store, table: pd.DataFrame({"cik": ciks}))
+    monkeypatch.setattr(step_module.capital_inputs, "load_source", lambda context, table, **kwargs: pd.DataFrame({"cik": ciks}))
     monkeypatch.setattr(step_module, "filer_ciks", lambda ciks, config_dir: set(ciks))
     monkeypatch.setattr(step_module, "load_manager_cohorts", lambda config_dir, roster, k: {"": frozenset(roster), "topk": frozenset(roster)})
     step = StepCubeSecThirteen(ctx, ctx.config)
-    history = step._superinvestor_history(step._load_resources())
+    history = step._superinvestor_history(step._load_resources(Window(grid[0], grid[-1]), grid))
     assert history is not None, "the roster books stored in sec13f_hr produce no superinvestor history"
     return history
 
@@ -281,8 +319,9 @@ def test_unmapped_rows_stay_in_the_whole_book_without_a_ticker(sqlite_store: Any
     q2 = _hr_book(
         "0000000001", "2024-06-30", "2024-08-12", [("AAA000001", "AAA", 12_000.0, 1_200_000.0), (*second, 1_400_000.0), (*third, 1_400_000.0)]
     )
-    packets = iter([(pd.DataFrame(), q1.loc[q1.parse_status.eq("position")])])
-    assert next(clean_public_batches(packets, _hr_tags([q1]), None, None, None))[1]["ticker"].tolist() == ["AAA", None, None]
+    packets = (packet for packet in [(pd.DataFrame(), q1.loc[q1.parse_status.eq("position")])])
+    [(_, cleaned)] = list(clean_public_batches(packets, _hr_tags([q1]), None, None))
+    assert cleaned["ticker"].tolist() == ["AAA", None, None]
     history = _roster_history(sqlite_store, monkeypatch, tmp_path, {"AAA": 100.0}, [q1, q2])
     assert _on(history, "ic_super_conviction_weight", "2024-06-28")["AAA"] == pytest.approx(0.25)
     assert _on(history, "ic_super_conviction_weight", "2024-08-20")["AAA"] == pytest.approx(0.3)

@@ -18,7 +18,8 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.structure.def14a.gender import person_key
 from src.data_extract.utils.structure.def14a.validate import clean_text
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Tables
+from src.utils.data_policy import source_read_window
 from src.utils.filer_tables import def14a_evidence_mask
 
 
@@ -34,17 +35,25 @@ def _role_source(context: Context, ticker: str) -> dict[str, pd.DataFrame]:
     `def14a_json` blob along with it.
     """
 
-    def _read(table: Table, columns: list[str]) -> pd.DataFrame:
-        df = context.store.load(table, columns=columns, where={"ticker": ticker}, optional=True)
-        return df if df is not None else pd.DataFrame(columns=columns)
+    frames: dict[str, pd.DataFrame] = {}
+    for key, table, columns in (
+        ("ceo", Tables.def14a_llm, list(Tables.def14a_llm.read_columns)),
+        ("exec", Tables.def14a_executive_comp, ["ticker", "as_of", "name", "title", "fiscal_year"]),
+        ("director", Tables.def14a_director_comp, ["ticker", "as_of", "name"]),
+    ):
+        window = source_read_window(context.config, table, context.run.as_of)
+        df_rows = (
+            context.store.load(table, columns=columns, where={"ticker": ticker}, since=window.start, until=window.end, optional=True)
+            if window is not None
+            else None
+        )
+        frames[key] = df_rows if df_rows is not None else pd.DataFrame()
 
-    parent = context.store.load(Tables.def14a_llm, project=True, where={"ticker": ticker}, optional=True)
-    usable = parent.loc[def14a_evidence_mask(parent)] if parent is not None else pd.DataFrame(columns=["ticker", "as_of", "ceo_name_proxy"])
-    return {
-        "ceo": usable.reindex(columns=["ticker", "as_of", "ceo_name_proxy"]),
-        "exec": _read(Tables.def14a_executive_comp, ["ticker", "as_of", "name", "title", "fiscal_year"]),
-        "director": _read(Tables.def14a_director_comp, ["ticker", "as_of", "name"]),
-    }
+    # Parent retries alone do not establish an eligible proxy identity.
+    parent = frames["ceo"]
+    usable = parent.loc[def14a_evidence_mask(parent)] if not parent.empty else parent
+    frames["ceo"] = usable.reindex(columns=["ticker", "as_of", "ceo_name_proxy"])
+    return frames
 
 
 def _latest_before(df: pd.DataFrame, meeting_date: object) -> pd.DataFrame:

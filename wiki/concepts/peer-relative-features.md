@@ -24,7 +24,7 @@ Peer-relative values remain point-in-time only if both the underlying feature an
 - Basket construction: [sector_peers.py](../../src/data_peers/utils/sector_peers.py)
 - Embedding cache: [data_peers/utils/embeddings.py](../../src/data_peers/utils/embeddings.py)
 - Panel construction: [data_aggregate/utils/common/panel.py](../../src/data_aggregate/utils/common/panel.py)
-- Configuration: [configs/peers.yml](../../configs/peers.yml)
+- Configuration: [configs/data_peers.yml](../../configs/data_peers.yml)
 
 ## Related
 

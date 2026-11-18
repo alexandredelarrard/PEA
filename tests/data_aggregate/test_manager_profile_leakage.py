@@ -21,7 +21,7 @@ PERIODS = ["2008-12-31", "2024-06-30"]
 
 @pytest.mark.parametrize("cut", PERIODS)
 def test_rows_up_to_a_period_are_identical_without_later_periods(cut: str) -> None:
-    cfg: DictConfig = read_config(str(ROOT / "configs")).build_cube.manager_profile
+    cfg: DictConfig = read_config(str(ROOT / "configs")).data_aggregate.manager_profile
     store = live_store()
     end = pd.Timestamp(cut)
     quarters = [(end + pd.offsets.QuarterEnd(k)).strftime("%Y-%m-%d") for k in range(-4, 3)]

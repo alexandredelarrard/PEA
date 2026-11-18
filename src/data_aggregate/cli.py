@@ -29,11 +29,21 @@ split replaces.
 """
 
 import json
+from datetime import datetime
 
 import click
 
-from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, FULL_ARGS, FULL_KWARGS, TICKERS_ARGS, TICKERS_KWARGS
-from src.context import get_config_context
+from src.constants.command_line_interface import (
+    AS_OF_ARGS,
+    AS_OF_KWARGS,
+    CONFIG_ARGS,
+    CONFIG_KWARGS,
+    FULL_ARGS,
+    FULL_KWARGS,
+    TICKERS_ARGS,
+    TICKERS_KWARGS,
+)
+from src.context import Context, get_config_context
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
@@ -45,7 +55,9 @@ from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecTh
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.transformers.step_manager_profile import StepManagerProfile
+from src.data_aggregate.utils.common.assembly import read_receipts, write_receipt
 from src.utils.cli_helper import SpecialHelpOrder
+from src.utils.step import Step
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -53,9 +65,9 @@ def cli() -> None:
     """DATA AGGREGATION — the cube build as eight sequential steps."""
 
 
-def _step(cls, config_path: str):
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    return cls(context=context, config=config)
+def _step[S: Step](cls: type[S], config_path: str, full: bool, as_of: datetime | None) -> tuple[S, Context]:
+    config, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    return cls(context=context, config=config), context
 
 
 @cli.command(
@@ -67,10 +79,12 @@ def _step(cls, config_path: str):
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_prices(config_path: str, tickers: str | None, full: bool) -> None:
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_prices(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     if tickers and not full:
         raise click.UsageError("-t/--tickers rebuilds those tickers from scratch and needs -F/--full")
-    _step(StepCubePrices, config_path).run(full=full, tickers=tickers.split(",") if tickers else [])
+    step, context = _step(StepCubePrices, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run(tickers=tickers.split(",") if tickers else [])))
 
 
 @cli.command(
@@ -79,15 +93,19 @@ def build_prices(config_path: str, tickers: str | None, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_target(config_path: str, full: bool) -> None:
-    _step(StepCubeTarget, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_target(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeTarget, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(help="SEC-filing features (fundamental, sector KPI, earnings, workforce, dividend) -> cube_part_fundamentals.", help_priority=3)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_fundamentals(config_path: str, full: bool) -> None:
-    _step(StepCubeFundamentals, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_fundamentals(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeFundamentals, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(
@@ -96,29 +114,37 @@ def build_fundamentals(config_path: str, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_momentum(config_path: str, full: bool) -> None:
-    _step(StepCubeMomentum, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_momentum(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeMomentum, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(help="Earnings-call text features (FinBERT role sentiment + embedding coherence & drift) -> cube_part_text.", help_priority=5)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_text(config_path: str, full: bool) -> None:
-    _step(StepCubeText, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_text(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeText, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(help="Insider, beneficial ownership and short-flow features -> cube_part_institutionals.", help_priority=6)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_institutionals(config_path: str, full: bool) -> None:
-    _step(StepCubeInstitutionals, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_institutionals(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeInstitutionals, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(help="Broad institutional and elite-manager 13F features -> cube_part_sec_thirteen.", help_priority=7)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_sec_thirteen(config_path: str, full: bool) -> None:
-    _step(StepCubeSecThirteen, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_sec_thirteen(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeSecThirteen, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(
@@ -127,8 +153,10 @@ def build_sec_thirteen(config_path: str, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_governance(config_path: str, full: bool) -> None:
-    _step(StepCubeGovernance, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_governance(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepCubeGovernance, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(
@@ -137,8 +165,12 @@ def build_governance(config_path: str, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def assemble_cube(config_path: str, full: bool) -> None:
-    _step(StepAssembleCube, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option("--component-windows", envvar="CUBE_COMPONENT_WINDOWS", help="Successful upstream write receipts supplied by the DAG.")
+def assemble_cube(config_path: str, full: bool, as_of: datetime | None, component_windows: str | None) -> None:
+    step, context = _step(StepAssembleCube, config_path, full, as_of)
+    written = read_receipts(context, component_windows) if component_windows is not None else None
+    click.echo(write_receipt(context, step.run(written)))
 
 
 @cli.command(
@@ -149,8 +181,10 @@ def assemble_cube(config_path: str, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_cube(config_path: str, full: bool) -> None:
-    _step(StepBuildCube, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_cube(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, context = _step(StepBuildCube, config_path, full, as_of)
+    click.echo(write_receipt(context, step.run()))
 
 
 @cli.command(
@@ -160,8 +194,10 @@ def build_cube(config_path: str, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def build_manager_profile(config_path: str, full: bool) -> None:
-    _step(StepManagerProfile, config_path).run(full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def build_manager_profile(config_path: str, full: bool, as_of: datetime | None) -> None:
+    step, _ = _step(StepManagerProfile, config_path, full, as_of)
+    step.run()
 
 
 @cli.command(
@@ -171,8 +207,10 @@ def build_manager_profile(config_path: str, full: bool) -> None:
     help_priority=11,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def cube_status(config_path: str) -> None:
-    report = _step(StepBuildCube, config_path).cube_parts_status()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def cube_status(config_path: str, as_of: datetime | None) -> None:
+    step, _ = _step(StepBuildCube, config_path, False, as_of)
+    report = step.cube_parts_status()
     click.echo(json.dumps(report, separators=(",", ":")))
     if not report["ok"]:
         raise SystemExit(2)

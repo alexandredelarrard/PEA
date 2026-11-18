@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Sequence
 
 import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Tables
+from src.utils.data_policy import source_read_window, window_policy
 
 # `person_key` lives in `src/utils/names.py` so the governance cube buckets the same people without importing this
 # package; `votes/roles.py` and `votes/flatten.py` import it from here. Do not change it there: `sec_8k_votes`'
@@ -174,12 +176,28 @@ def log_consensus(stats: dict[str, int], before: dict[str, int], after: dict[str
         )
 
 
-def finalise_gender(context: Context) -> None:
-    """Cross-ticker gender consensus over `def14a_directors`, run once after the per-ticker loop: a director recurs
-    across companies, so it needs every ticker's rows. Rewrites the directors' gender columns and the parent's gender
-    ratios only when something changed."""
-    # load: every ticker's directors
-    directors = context.store.load(Tables.def14a_directors, columns=_DIRECTOR_COLUMNS, optional=True)
+def finalise_gender(context: Context, tickers: Sequence[str]) -> None:
+    """Use cross-company evidence while atomically updating only authorized directors and matching parent rows."""
+    # Load causal evidence and the requested parent keys inside their configured source ceilings.
+    policy = window_policy(context.config, Tables.def14a_directors, context.run.as_of)
+    source = source_read_window(context.config, Tables.def14a_directors, context.run.as_of)
+    parent_policy = window_policy(context.config, Tables.def14a_llm, context.run.as_of)
+    parent_source = source_read_window(context.config, Tables.def14a_llm, context.run.as_of)
+    if policy is None or source is None or not tickers:
+        return
+    directors = context.store.load(Tables.def14a_directors, columns=_DIRECTOR_COLUMNS, since=source.start, until=source.end, optional=True)
+    parents = (
+        context.store.load(
+            Tables.def14a_llm,
+            columns=[*Tables.def14a_llm.pk, "as_of"],
+            where={"ticker": list(tickers)},
+            since=parent_source.start,
+            until=parent_source.end,
+            optional=True,
+        )
+        if parent_source is not None
+        else None
+    )
     if directors is None or directors.empty:
         return
 
@@ -188,14 +206,22 @@ def finalise_gender(context: Context) -> None:
     resolved, stats = consensus(directors)
     after = basis_distribution(resolved)
     log_consensus(stats, before, after)
-    if not (stats["filled"] or stats["overturned"]):
+    same_gender = resolved.gender.eq(directors.gender).fillna(False) | (resolved.gender.isna() & directors.gender.isna())
+    same_basis = resolved.gender_basis.eq(directors.gender_basis).fillna(False) | (resolved.gender_basis.isna() & directors.gender_basis.isna())
+    authorized = resolved.ticker.isin(tickers) & policy.requested.mask(resolved.as_of)
+    changed = resolved.loc[authorized & ~(same_gender & same_basis), _DIRECTOR_COLUMNS]
+    if changed.empty:
         return
-
-    # save: the changed gender columns
-    context.store.save(Tables.def14a_directors, resolved[_DIRECTOR_COLUMNS], pk=["ticker", "accession_number", "name"])
-
-    # save: the parent's fallback ratio (the filing's stated `n_women_directors` still wins)
-    parent = recompute_parent_gender(resolved)
-    if not parent.empty:
-        context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])
-        logger.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
+    keys = list(Tables.def14a_llm.pk)
+    affected = changed[keys].drop_duplicates()
+    metadata = parents if parents is not None else pd.DataFrame(columns=[*keys, "as_of"])
+    paired = affected.merge(metadata, on=keys, how="left", validate="one_to_one")
+    if parent_policy is None or not parent_policy.requested.mask(paired.as_of).all():
+        raise ValueError("parent repair missing or outside its configured Window; use aligned explicit recovery")
+    parent = recompute_parent_gender(resolved).merge(affected, on=keys, how="inner", validate="one_to_one")
+    if len(parent) != len(affected):
+        raise ValueError("parent repair lacks a complete director ratio inside its configured Window")
+    with context.store.transaction() as bound:
+        bound.save(Tables.def14a_directors, changed, pk=list(Tables.def14a_directors.pk))
+        bound.save(Tables.def14a_llm, parent, pk=keys)
+    logger.info("gender consensus: updated %d authorized director rows and %d parent ratios", len(changed), len(parent))

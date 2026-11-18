@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: aa9ac35ff94b6992ac43106230f63e3d50082cab
+source_commit: af9cda4c7daa2c94e7c5c09675d8452174252b02
 integration_parents:
   - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
   - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
@@ -363,3 +363,31 @@ The final independent construction gate accepts this pre-wiki product. Scientifi
 - Data readiness is **conditional**. Generic quality/profile/timeseries/redundancy checks retain FAIL and leakage retains ABSTAIN where applicable. In the bounded 37-event sample, complete whole-book reference support is 29/2,257 full-cohort book-event pairs, all one raw filer, and 0/399 top-K pairs. The top-K relative-position and pooled-weight-change fields are entirely missing. No filling, clipping or denominator reduction conceals that result.
 
 The local ignored audit `reports/validate/2026-10-24-sec13f-feature-science/` contains the final report, frozen input/source seals, original/final sample means, B/C parity, distributions, support reasons, continuity-over-time tables and measured timing/memory qualifications. Repeated daily carries are not independent quarterly observations. The original sample emits no finite elite output, so its means remain unavailable rather than fabricated zeros. This is construction and data-quality evidence, not an alpha claim or full-population capacity certification. See the [follow-up backlog](../TODO.md#sec-13f-feature-science-follow-ups-2026-10-25) and [full-adoption commands](./run-the-pipeline.md).
+
+## Scoped timing samples
+
+`validate window-capture -T <registered table> -o <run> -c configs` pins complete primary keys and current source cells without changing source tables. `validate.window_samples` owns the fixed output year, required key count and complete-run budget. Ticker tables need five distinct scoped tickers; undated companions use the configured parent publication clock, and macro tables use their declared series keys. Missing tables or insufficient same-year groups explicitly abstain; they cannot pass with older rows or fewer groups. Inactive tables remain identified separately. Prediction and portfolio output tables are excluded before any schema, payload or artifact access.
+
+The immutable selection can be inspected with `validate window-sample --manifest <pin> -T <table> -o <run>`. Run the complete timing sample from the candidate checkout with `rtk "<PY>" -u -X utf8 -m tests.support.run_window_samples --window-baseline <baseline directory> --window-out <new output>`. The [permanent worker](../../tests/support/run_window_samples.py) shares its read-only session, unchanged manifest, configured deadline and assertions with the [pytest fixture](../../tests/support/window_samples.py). It executes every scoped scalar check, then the [explicit producer replay](../../tests/support/window_lineage.py) and all cube-part/assembly planner checks. Keep the original requested groups and sufficient histories, identity populations and complete filing books. The timed harness launcher includes interpreter/import startup; no preparation or per-table budget reset is hidden. Focused pytest controls run separately.
+
+Exact cells, nulls and clocks establish source identity. The producer replay separately records actual selected source IDs and publication clocks through daily state selection, actual assembly projection and disposable finite writes. Its [independent verifier](../../src/validate/checks/window_lineage.py) checks eligibility against the retained market calendar; [planner verification](../../src/validate/checks/window_plan.py) checks actual configured read/write footprints. Diagnostic finite writes alone do not prove configured overlap. This is bounded timing and transport evidence, not saved economic-feature, peer-rank or whole-cube numerical parity. Governance later-filing imputations and pooled13F repair donors remain accepted retrospective exceptions; destination filing buffers still apply.
+
+`validate window-lineage --replay <lineage-replay.json> --manifest <baseline/manifest.json> -o <run>` only verifies a captured replay; it does not rerun producers. Fresh acceptance uses the combined worker above and records each FAIL, missing/changed-source ABSTAIN and inactive table explicitly. The globally loaded scalar fixture does not import the heavy producer driver. No inference, provider calls, production rebuild or predictive-model validation belongs to this timing sample run.
+
+## Configuration and table-timing integration — 2026-11-18
+
+The user accepted the refactor and stopped further data rechecks before integration into `dev`. [Configuration](../reference/configuration.md) maps the stage owners; [data.yml](../../configs/data.yml) owns per-table source dates, rerun modes/overlaps, PIT rules, freshness and cube warm-up. The shared [Window policy](../../src/utils/data_policy.py) separates necessary reads from authorized writes.
+
+Evidence on refactor candidate `5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1`, before the later `dev` merge:
+
+- The fresh combined [sample worker](../../tests/support/run_window_samples.py) completed all59 scoped tables:54 PASS and5 explicit ABSTAINs. All16 required real-source PIT routes and all10 independent part/assembly planners passed, with no failures or blocked live operations. Original source/config/manifest/runtime/peer identities remained unchanged. The complete adapter took451.707seconds.
+- Seven native part comparisons passed creation, bounded rerun, keyed schema/null/value comparison and actual finite-write checks:prices, momentum, text, targets, betas, institutionals and governance. Their original execution revisions remain recorded with an independently reviewed source-continuity bridge.
+- Native assembly passed its qualified modular contract:1080 rows and425 physical columns, exact independent joins/casts/metadata,18 Window checks and restoration of a deliberately altered saved value. It used real persisted fundamentals/13F snapshots alongside the seven verified part outputs. This certifies assembly, while cached producer economics and causal PIT remain unverified.
+- Complete fundamentals and13F producer comparisons remain UNPROVEN. Earlier attempts and timing/Modern Standby records are preserved; the latest13F attempt was stopped at the user's request. The independent acceptance result remains NOT READY. User acceptance authorizes integration with these limits and does not change those measurements.
+- The five source qualifications are absent `price_owner_windows` and `ticker_descriptions`, changed pinned `sec_13f_manager_details` cells, only1of5 original groups for `sec_13d_transactions`, and inactive `notes_embedding`. No replacement groups or baseline changes turn them into passes.
+
+The independent connected-source correctness/standards review is CLEAR on the refactor candidate; existing unrelated typing debt is documented separately. Governance later-filing fills and pooled13F repair retain their accepted retrospective donor behavior. Destination publication buffers still apply; donor-level causality is not newly certified.
+
+Predictive models, saved artifacts, predictions, training and portfolio checks were excluded. This refactor run performed no provider calls, inference, production-table writes or production backfill. Integration preserves `dev`'s newer manager-profile `book_return`, Decimal handling and whole-number statistics; no further data recheck was requested after merging them.
+
+Detailed local, git-ignored evidence is retained under `reports/validate/2026-11-16-configuration-simplification/`, including the independent matrix, source review, actual executions and report. These are bounded sample results, not a production-scale throughput or whole-database certificate.

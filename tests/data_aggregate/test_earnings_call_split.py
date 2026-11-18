@@ -17,7 +17,7 @@ def test_embedding_kpis_are_part_of_the_unified_contract() -> None:
     assert retained_embedding_kpis <= set(EARNINGS_CALL_FEATURES)
     assert len(EARNINGS_CALL_FEATURES) == 10
     calls = pd.DataFrame({"ticker": ["A"], "quarter": ["2024Q1"], "as_of": ["2024-05-01"], "ec_prep_tone": [0.1]})
-    panel = ec.build_earnings_call_feature_panel(calls, pd.bdate_range("2024-05-01", "2024-08-31"), availability_lag_days=2)
+    panel = ec.build_earnings_call_feature_panel(calls, pd.bdate_range("2024-05-01", "2024-08-31"), availability_lag_days=2, signal_sessions=66)
     assert set(panel.columns) == {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
     assert not any(name.endswith(("_xs", "_vs_peers")) for name in EARNINGS_CALL_FEATURES)
     print("\n=== SANITY CHECK: unified earnings-call contract ===")

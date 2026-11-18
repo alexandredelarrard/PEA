@@ -24,6 +24,7 @@ from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price.basis import load_share_basis
 from src.utils.price.levels import apply_level_bugfix, level_factor
+from src.utils.window import WindowRun
 from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
 from tests.support.universe import universe_of
 
@@ -170,11 +171,12 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
         log=context.log,
         paths={"SECTOR_PEERS_PATH": peer_path},
         universe=universe_of(["IVZ"]),
+        run=WindowRun("full", "explicit source-anchor refusal", pd.Timestamp("2026-11-16")),
     )
     writes: list[object] = []
     monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))
     with pytest.raises(ValueError, match="changed sharadar|share anchor"):
-        price_step.StepCubePrices(isolated, context.config).run(full=True)
+        price_step.StepCubePrices(isolated, context.config).run()
     assert not writes
     print(f"SANITY: actual StepCubePrices.run refuses changed {changed} evidence before any part write.")
 
@@ -189,7 +191,9 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     filing = book[["ticker", "as_of"]].assign(sharesOutstandingPit=100.0)
     owned = _daily_owned_shares(book, index, security_basis_frame(basis, pd.bdate_range("2020-03-31", index[-1]), pd.Index(["TEST"])))
     observations = filing.assign(capitalization_factor=1.0)
-    outstanding, _ = project_security_shares(observations, basis, security_basis_frame(basis, index, pd.Index(["TEST"])))
+    outstanding, _ = project_security_shares(
+        observations.assign(_available_on=observations["as_of"]), basis, security_basis_frame(basis, index, pd.Index(["TEST"]))
+    )
     assert pd.isna(owned.iloc[0, 0])
     assert owned["TEST"].iloc[1:].tolist() == [10.0, 5.0, 5.0]
     assert (owned / outstanding)["TEST"].iloc[1:].tolist() == [0.1, 0.1, 0.1]

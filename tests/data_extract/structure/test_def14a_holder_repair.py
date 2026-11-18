@@ -17,6 +17,8 @@ from src.data_extract.utils.structure.def14a.postprocess import append_answer, p
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_extract.utils.structure.def14a.work import load_work, save_section
 from src.data_store.store import DataStore
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 
 
 @pytest.fixture
@@ -36,9 +38,14 @@ def test_recorded_ge_repair_reconciles_four_aliases_before_persisting(sqlite_sto
     section = next(item for item in SECTIONS if item.key == "ownership")
     stamp = _stamp(ge_holders)
     sqlite_store.save(section.table, ge_holders)
-    context = cast(Context, SimpleNamespace(store=sqlite_store))
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "stored holder repair", pd.Timestamp("2026-11-16"))
+        ),
+    )
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
-    work = load_work(context, "GE", filings, pd.Timestamp("2025-01-01"))[0]
+    work = load_work(context, "GE", filings)[0]
     raw = Def14AExtract.model_validate(
         {"ownership_holders": ge_holders.to_dict("records"), "governance": {"n_five_percent_holders": 99}}
     ).model_dump_json()
@@ -108,8 +115,13 @@ def test_survivor_save_failure_does_not_delete_saved_holder_aliases(
     section = next(item for item in SECTIONS if item.key == "ownership")
     stamp = _stamp(ge_holders)
     sqlite_store.save(section.table, ge_holders)
-    context = cast(Context, SimpleNamespace(store=sqlite_store))
-    work = load_work(context, "GE", pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}]), pd.Timestamp("2025-01-01"))[0]
+    context = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store, config=extract_config(), run=WindowRun("incremental", "stored holder repair", pd.Timestamp("2026-11-16"))
+        ),
+    )
+    work = load_work(context, "GE", pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}]))[0]
     result = postprocess_section(section, OwnershipExtract(percent_unit="fraction", shares_scale="units"), stamp, work.saved, work.parent)
     original_save = sqlite_store.save
 

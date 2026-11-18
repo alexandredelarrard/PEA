@@ -41,7 +41,7 @@ The [CLI](../../src/modelling/cli.py) exposes train, assess, full-train and pred
 
 ## Dated artifacts and production models
 
-[modellling.yml](../../configs/modellling.yml) owns target/horizon/CV/diagnostic controls; `configs/models/` owns family features and fitting parameters. Paths resolve under DATA_STORE unless absolute. Tree categorical inputs remain selected in ordinary columns lists; lgbm.categoricals only assigns types. The shared monotonic map applies to retained inputs.
+[modelling.yml](../../configs/modelling.yml) owns target/horizon/CV/diagnostic controls; `configs/models/` owns family features and fitting parameters. Paths resolve under DATA_STORE unless absolute. Tree categorical inputs remain selected in ordinary columns lists; lgbm.categoricals only assigns types. The shared monotonic map applies to retained inputs.
 
 Under `model.assessment.output_dir` (normally output/modelling_backtest), each fresh run contains:
 
@@ -81,7 +81,7 @@ Fold-test curves concatenate only each original fold's configured test dates. Th
 
 Signed tree plots retain sampled cutoff scatter and binned-mean curves for every declared original fold plus cutoff. Tree importance is date-balanced mean absolute sampled SHAP. Linear importance is absolute saved standardized beta. Signed linear contributions use each member's saved training scaler; hover retains raw input and signed beta. Missing inputs contribute zero and have no observed x/bin; the intercept is explicit. Zero/all-missing retained features remain selectable. PDP is cutoff-only and varies one input while holding the sampled background fixed; it is not a causal estimate.
 
-Diagnostics settings control assessment only: shap_sample limits explanation rows, dependence_sample limits scatter, pdp_grid is the maximum continuous quantile-grid size, pdp_background limits rows averaged per PDP point, and rolling_window controls smoothing. Current budgets live in [modellling.yml](../../configs/modellling.yml). These budgets never limit IC scoring.
+Diagnostics settings control assessment only: shap_sample limits explanation rows, dependence_sample limits scatter, pdp_grid is the maximum continuous quantile-grid size, pdp_background limits rows averaged per PDP point, and rolling_window controls smoothing. Current budgets live in [modelling.yml](../../configs/modelling.yml). These budgets never limit IC scoring.
 
 Daily Spearman IC uses finite prediction/label pairs after normalization over all finite predictions. IC-IR is mean daily IC / population standard deviation × sqrt(252 / horizon), distinct from portfolio-return IR. Rolling statistics require the full configured observed-session support; unsupported and constant values stay missing.
 

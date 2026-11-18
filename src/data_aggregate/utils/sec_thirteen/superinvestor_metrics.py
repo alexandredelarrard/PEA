@@ -18,7 +18,7 @@ type BookPair = tuple[str, PublicBook, PublicBook]
 @dataclass(frozen=True)
 class BehaviorMarket:
     """Saved as-traded quotes (`close_pit`), authoritative sessions, the forward quantity basis F (`security_basis`) and the share of a
-    book's lines that must carry a usable value for the book to be valued (`build_cube.institutionals.value_basis.min_row_coverage`)."""
+    book's lines that must carry a usable value for the book to be valued (`data_aggregate.institutionals.value_basis.min_row_coverage`)."""
 
     trading_index: pd.DatetimeIndex
     close_pit: pd.DataFrame

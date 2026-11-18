@@ -12,7 +12,7 @@ from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.validate.checks.earnings_calls import _coverage, _identity, _linked, check_earnings_calls
+from src.validate.checks.earnings_calls import _coverage, _identity, _linked, _schema_findings, check_earnings_calls
 from tests.fixtures.earnings_call_rows import synthetic_call
 from tests.support.universe import seed_universe, universe_in
 
@@ -37,7 +37,11 @@ def _short_call(ticker: str, quarter: str, as_of: str) -> pd.DataFrame:
 
 
 def _config() -> object:
-    return OmegaConf.merge(OmegaConf.load("configs/validate.yml"), OmegaConf.create({"train": {"end_date": "2022-01-01"}}))
+    return OmegaConf.merge(
+        OmegaConf.load("configs/validate.yml"),
+        OmegaConf.load("configs/data_aggregate.yml"),
+        OmegaConf.create({"train": {"end_date": "2022-01-01"}}),
+    )
 
 
 def _cube(tickers: list[str]) -> pd.DataFrame:
@@ -92,9 +96,7 @@ def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqli
         Tables.earnings_call_sections,
         pd.concat([_valid_call("ECHO", quarter, date) for quarter, date in zip(["2008Q1", "2026Q2"], dates, strict=True)], ignore_index=True),
     )
-    summary, _, valid = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
-    )
+    summary, _, valid = _coverage(cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store))))
     assert valid["ECHO"] == list(pd.to_datetime(dates))
     assert summary["valid_calls"] == 2
     print("SANITY: validator retains canonical ECHO history before the market rename; raw alias release dates remain dated.")
@@ -118,9 +120,7 @@ def test_coverage_excludes_canonical_calls_outside_consolidating_windows(sqlite_
         Tables.earnings_call_sections,
         pd.concat([_valid_call("CEG", quarter, date) for quarter, date in zip(["2007Q4", "2024Q1"], dates, strict=True)], ignore_index=True),
     )
-    summary, _, valid = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
-    )
+    summary, _, valid = _coverage(cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store))))
     assert valid["CEG"] == [pd.Timestamp(dates[1])]
     assert [row["quarter"] for row in summary["coverage_by_calendar_quarter"]] == ["2024Q2"]
     print("SANITY: validator excludes stored canonical CEG from2008 before its consolidating window;2024 call remains usable.")
@@ -360,9 +360,7 @@ def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store:
         ),
     )
 
-    summary, ratios, valid_dates = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
-    )
+    summary, ratios, valid_dates = _coverage(cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store))))
 
     assert summary["roster_tickers"] == 2
     assert summary["tickers_measured"] == 2
@@ -418,9 +416,7 @@ def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sq
         pd.concat([_valid_call(ticker, quarter, date) for ticker, date, quarter in events], ignore_index=True),
     )
 
-    summary, ratios, valid_dates = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
-    )
+    summary, ratios, valid_dates = _coverage(cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store))))
 
     assert summary["tickers_measured"] == 1
     assert ratios["NEW"] == 1.0
@@ -430,3 +426,12 @@ def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sq
         "  five lineage rows over two CIKs read as two (cik, entity) pairs; a dei NEW row under a foreign CIK is "
         "not read, so NEW keeps its entity and its OLD history (2 valid calls, coverage 1.0). Validated."
     )
+
+
+def test_signal_lifetime_validator_retains_independent_expectation() -> None:
+    settings = OmegaConf.load("configs/validate.yml").validate.earnings_calls
+    assert _schema_findings([], set(), settings, 66) == []
+    findings = _schema_findings([], set(), settings, 20)
+    assert len(findings) == 1 and findings[0].score == 9
+    assert "runtime=20" in findings[0].observed and "66" in findings[0].observed
+    print("SANITY: a changed operative lifetime does not change the independent66-session validation expectation.")

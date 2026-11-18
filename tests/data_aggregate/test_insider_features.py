@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -35,8 +36,11 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     security_class,
 )
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
+from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 TRADING_INDEX = pd.bdate_range("2015-01-01", "2016-12-31")
 
@@ -277,7 +281,9 @@ def test_role_uncertainty_distinguishes_unresolved_and_explicit_exclusions(title
         pytest.param("123", "See Remarks", True, id="remarks-with-public-proxy-proof"),
     ],
 )
-def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_cik: str, current_title: str, recovered: bool) -> None:
+def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(
+    sqlite_store: DataStore, issuer_cik: str, current_title: str, recovered: bool
+) -> None:
     rows = [
         _txn(
             accession_number="identity",
@@ -292,24 +298,24 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
         ),
     ]
 
-    class Store:
-        def load(self, table: object, **kwargs: object) -> pd.DataFrame:
-            assert table is Tables.def14a_executive_comp
-            assert kwargs["where"] == {"ticker": ["AAA"]}
-            return pd.DataFrame(
-                [
-                    {
-                        "ticker": "AAA",
-                        "cik": issuer_cik,
-                        "as_of": "2023-02-01",
-                        "name": "Jane Doe",
-                        "title": "Chief Executive Officer",
-                        "fiscal_year": 2022,
-                    }
-                ]
-            )
-
-    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
+    create_canonical(sqlite_store.engine, [Tables.def14a_executive_comp])
+    sqlite_store.save(
+        Tables.def14a_executive_comp,
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA",
+                    "accession_number": "proxy",
+                    "cik": issuer_cik,
+                    "as_of": pd.Timestamp("2023-02-01"),
+                    "name": "Jane Doe",
+                    "title": "Chief Executive Officer",
+                    "fiscal_year": 2022,
+                }
+            ]
+        ),
+    )
+    evidence = load_insider_role_evidence(source_context(sqlite_store, Path(".")), _frame(rows), ["AAA"], pd.bdate_range("2023-01-01", "2024-06-01"))
     cleaned, _ = clean_transactions(_frame(rows), df_roles=evidence)
     actual = cleaned.set_index("accession_number").loc["current-role"]
     assert actual["role"] == ("CEO" if recovered else "other_named_officer")
@@ -317,7 +323,7 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
     assert actual["is_director"] == 0
     assert actual["role_source"] == ("explicit_proxy_title" if recovered else "filed")
     if recovered:
-        assert actual["role_as_of"] == pd.Timestamp("2023-02-01")
+        assert actual["role_as_of"] == pd.Timestamp("2023-02-02")
     print(f"SANITY: proxy recovery={recovered} requires known issuer/person and a public explicit title; See Remarks supplies no title itself.")
 
 
@@ -353,7 +359,7 @@ def test_dated_share_claim_masks_tail_and_retires_prospectively() -> None:
         (["Chief Financial Officer", "Chief Operating Officer"], "other_named_officer"),
     ],
 )
-def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[str], blank_role: str) -> None:
+def test_proxy_role_barriers_prevent_stale_management_fill(sqlite_store: DataStore, later_titles: list[str], blank_role: str) -> None:
     rows = [
         _txn(accession_number="identity", issuer_cik="123", filing_date="2024-01-01", transaction_code="A", is_officer=1),
         _txn(accession_number="blank", issuer_cik="123", filing_date="2024-05-01", is_officer=1),
@@ -363,12 +369,11 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
         for title, day in [("Chief Executive Officer", "2024-02-01"), *[(title, "2024-04-01") for title in later_titles]]
     ]
 
-    class Store:
-        def load(self, table: object, **kwargs: object) -> pd.DataFrame:
-            assert table is Tables.def14a_executive_comp
-            return pd.DataFrame(proxies)
-
-    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
+    create_canonical(sqlite_store.engine, [Tables.def14a_executive_comp])
+    source = pd.DataFrame(proxies)
+    source["accession_number"] = [f"proxy-{number}" for number in range(len(source))]
+    sqlite_store.save(Tables.def14a_executive_comp, source)
+    evidence = load_insider_role_evidence(source_context(sqlite_store, Path(".")), _frame(rows), ["AAA"], pd.bdate_range("2023-01-01", "2024-06-01"))
     clean, _ = clean_transactions(_frame(rows), df_roles=evidence)
     assert clean["role"].tolist() == [blank_role]
     assert clean["population"].tolist() == [POP_C_SUITE if blank_role == "PRESIDENT" else POP_OTHER]

@@ -17,6 +17,7 @@ from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     cached_periods,
     ensure_zip,
+    is_cached,
     read_zip_tables,
     stored_period_clock,
 )
@@ -68,7 +69,7 @@ def test_zip_fallback_warns_only_when_every_url_fails(
         if status == "transient":
             raise TransientReadError("transport failure")
         if status == 200:
-            target.write_bytes(b"source archive")
+            _zip(target, {"source.tsv": "id\n1\n"})
         return int(status)
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
@@ -77,7 +78,7 @@ def test_zip_fallback_warns_only_when_every_url_fails(
     assert calls == list(urls)
     warnings = [record.getMessage() for record in caplog.records if record.name == LOG.name and record.levelno >= logging.WARNING]
     if second == 200:
-        assert result == path and path.read_bytes() == b"source archive"
+        assert result == path and is_cached(path)
         assert not warnings
         assert ensure_zip(SimpleNamespace(), path, urls, label="13F source") == path
         assert calls == list(urls)
@@ -148,10 +149,43 @@ def test_cached_periods_lists_non_empty_archives_by_their_tag(tmp_path: Path) ->
         "readme.txt": b"{}",
     }.items():
         (tmp_path / name).write_bytes(payload)
+    _zip(tmp_path / "cnsfails202401a.zip", {"source.tsv": "id\n1\n"})
+    _zip(tmp_path / "2026_08_notes.zip", {"source.tsv": "id\n1\n"})
     assert cached_periods(tmp_path, prefix="cnsfails") == {"202401a"}  # the empty 202401b is not an archive
     assert cached_periods(tmp_path, suffix="_notes.zip") == {"2026_08"}
     print("\n=== SANITY CHECK: cached archive listing ===")
     print("  tags come from the archive names; an empty file and a non-zip file are not listed. Validated.")
+
+
+@pytest.mark.parametrize("existing", [b"", b"not an archive", b"PK\x03\x04 truncated archive"])
+def test_invalid_cache_is_downloaded_again_and_a_valid_zip_is_reused(existing: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "source.zip"
+    path.write_bytes(existing)
+    calls: list[str] = []
+
+    def download(context: Any, url: str, target: Path, **kwargs: Any) -> int:
+        calls.append(url)
+        _zip(target, {"source.tsv": "id\n1\n"})
+        return 200
+
+    monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
+    assert not is_cached(path)
+    assert ensure_zip(SimpleNamespace(), path, "https://example.test/source.zip", label="source") == path
+    assert is_cached(path) and len(calls) == 1
+    assert ensure_zip(SimpleNamespace(), path, "https://example.test/source.zip", label="source") == path and len(calls) == 1
+    print("SANITY: an empty or malformed ZIP is retried once; the valid cached container is then reused without a download.")
+
+
+def test_http_success_with_non_zip_content_never_completes_the_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def download(context: Any, url: str, target: Path, **kwargs: Any) -> int:
+        target.write_bytes(b"<html>temporary source failure</html>")
+        return 200
+
+    monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
+    path = tmp_path / "source.zip"
+    assert ensure_zip(SimpleNamespace(), path, "https://example.test/source.zip", label="source") is None
+    assert not is_cached(path)
+    print("SANITY: an HTTP200 error page is not treated as a completed cached archive.")
 
 
 def test_period_end_covers_quarterly_monthly_and_semi_monthly_tags() -> None:

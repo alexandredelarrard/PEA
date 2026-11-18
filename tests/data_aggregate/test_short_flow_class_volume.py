@@ -10,16 +10,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
-from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS
@@ -27,9 +24,12 @@ from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlo
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
+from src.utils.window import Window
 from tests.conftest import make_frames
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.data_aggregate.test_institutional_step_contract import ftd_lines, lineage_rows, short_lines
 from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel
+from tests.support.universe import universe_of
 
 
 def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
@@ -38,7 +38,7 @@ def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -
     )
     if lines is None:
         return None
-    return lines, apply_volume_scale(institutional_inputs.load_class_bars(store, lines), bugfix or {})
+    return lines, apply_volume_scale(institutional_inputs.load_class_bars(source_context(store, Path(".")), lines), bugfix or {})
 
 
 OPEN = pd.NaT
@@ -192,13 +192,8 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         Tables.sec_fails_to_deliver_security,
         ftd_lines([(f"{bad_day:%Y-%m-%d}", cusip, ticker, 300.0, "202401a") for ticker, cusip in (("LEN", "526057104"), ("MRK", "589331107"))]),
     )
-    config = OmegaConf.create({"build_cube": {"institutionals": {}}})
-    ctx = cast(
-        Context,
-        SimpleNamespace(
-            store=sqlite_store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": tmp_path}
-        ),
-    )
+    ctx = source_context(sqlite_store, tmp_path)
+    ctx.universe = universe_of(list(volume))
     step = StepCubeInstitutionals(ctx, ctx.config)
     monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.load_price_frames", lambda *args, **kwargs: frames)
     monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.load_peers_or_raise", lambda ctx: {})
@@ -206,7 +201,7 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: None)
 
-    panel = step.build_panel().set_index(["date", "ticker"])
+    panel = step.build_panel(Window(idx[0], idx[-1]), idx).set_index(["date", "ticker"])
 
     assert -1.0 + 500.0 == 499.0
     assert pd.isna(panel.loc[(pd.Timestamp("2024-02-05"), "LEN"), "f_ic_ftd_to_adv20"])

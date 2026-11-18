@@ -25,13 +25,15 @@ from tqdm import tqdm
 from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.resume import Bounds, SeriesWork, bounded_span, document_floor, planner_bounds, series_windows, trading_calendar
+from src.data_extract.utils.common.resume import Bounds, SeriesRequest, SeriesWork, bounded_span, planner_bounds, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Table, Tables
-from src.utils.string import run_date, yahoo_symbol
+from src.utils.data_policy import window_policy
+from src.utils.string import yahoo_symbol
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -224,11 +226,9 @@ def _download_price_chunk(
 
 def download_ohlcv(
     tickers: list[str],
-    since: pd.Timestamp,
-    until: pd.Timestamp,
+    window: Window,
     chunk_size: int = 50,
     pause: float = 2.0,
-    desc: str = "Downloading prices",
     *,
     auto_adjust: bool,
     actions: bool = True,
@@ -242,15 +242,16 @@ def download_ohlcv(
     `Adj Close`, total return); `fetch_macro._fetch_price_leg` passes True, because its `SPY` leg
     is stored as `equity_tr` and feeds the L/S benchmark, `beta_market` and every label's `fwd_market`."""
     frames: list[pd.DataFrame] = []
-    for i in tqdm(range(0, len(tickers), chunk_size), desc=desc):
+    for i in tqdm(range(0, len(tickers), chunk_size), desc="Downloading prices"):
         chunk = tickers[i : i + chunk_size]
-        frames.extend(_download_price_chunk(chunk, since, until, pause, actions, auto_adjust))
+        frames.extend(_download_price_chunk(chunk, window.start, window.end, pause, actions, auto_adjust))
         time.sleep(pause)
 
     if not frames:
         return pd.DataFrame()
 
-    return _normalize_prices(pd.concat(frames, ignore_index=True), auto_adjust)
+    rows = _normalize_prices(pd.concat(frames, ignore_index=True), auto_adjust)
+    return rows.loc[window.mask(rows["date"]) & rows["ticker"].isin(tickers)].reset_index(drop=True)
 
 
 class YahooSession:
@@ -268,18 +269,17 @@ class YahooSession:
     def _download(self, keys: list[str], since: pd.Timestamp, until: pd.Timestamp, label: str, *, actions: bool) -> pd.DataFrame:
         """`download_ohlcv` of `keys` under their trading symbols, rows relabelled to the keys."""
         requested = [self.symbols.get(key, key) for key in keys]
-        df_new = download_ohlcv(
-            requested, since, until, self.chunk_size, self.pause, desc=f"Downloading prices ({label})", auto_adjust=False, actions=actions
-        )
+        df_new = download_ohlcv(requested, Window(since, until), self.chunk_size, self.pause, auto_adjust=False, actions=actions)
         if df_new.empty:
             return df_new
         back = {symbol: key for key, symbol in zip(keys, requested, strict=True)}
         return df_new.assign(ticker=df_new["ticker"].map(back).fillna(df_new["ticker"]))
 
-    def pull(self, groups: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]], label: str) -> pd.DataFrame:
+    def pull(self, groups: list[tuple[Window, list[str]]], label: str) -> pd.DataFrame:
         """`actions=True` rows over each `(since, until, keys)` group; duplicate `(ticker, date)` rows keep the last."""
         frames = []
-        for since, until, keys in groups:
+        for window, keys in groups:
+            since, until = window
             todo = [key for key in keys if (key, since, until) not in self._responses]
             if todo:
                 logger.info("Downloading prices and actions for %d ticker(s) over %s .. %s (%s)", len(todo), since.date(), until.date(), label)
@@ -287,7 +287,9 @@ class YahooSession:
                 by_key = {str(key): rows for key, rows in df_new.groupby("ticker")} if not df_new.empty else {}
                 for key in todo:
                     self._responses[(key, since, until)] = by_key.get(key, df_new.iloc[0:0])
-            frames.extend(self._responses[(key, since, until)] for key in keys)
+            frames.extend(
+                rows.loc[window.mask(rows["date"])] if not rows.empty else rows for key in keys for rows in [self._responses[(key, since, until)]]
+            )
         frames = [df for df in frames if not df.empty]
         if not frames:
             return pd.DataFrame()
@@ -338,10 +340,12 @@ def _restating_events(df_raw: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([_extract_splits(df_raw)[["ticker", "date"]], df_dividends[["ticker", "date"]]], ignore_index=True)
 
 
-def _repull_start(context: Context, floor: pd.Timestamp) -> pd.Timestamp:
-    """The re-pull start: the floor, or the first stored bar when an older, longer window stored history before it."""
-    first, _ = context.store.bounds(Tables.prices)
-    return min(floor, pd.Timestamp(first).normalize()) if first is not None else floor
+def _require_repair_scope(context: Context, keys: list[str], window: Window) -> None:
+    """Refuse a basis repair that would leave retained bars outside its configured scope."""
+    stats = context.store.key_stats(Tables.prices, "ticker", where={"ticker": keys})
+    outside = stats.loc[(stats["first"] < window.start) | (stats["last"] > window.end), "key"].astype(str).tolist()
+    if outside:
+        raise ValueError(f"Price basis repair needs an explicit configured scope covering all retained bars: {outside}")
 
 
 def _price_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -371,20 +375,26 @@ def _warn_shorter_history(context: Context, rows: pd.DataFrame, keys: list[str])
             )
 
 
-def _plan(
-    context: Context, table: Table, keys: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None
-) -> tuple[SeriesWork, pd.Timestamp, pd.Timestamp]:
-    """The `table`'s fetch windows over `keys`, the history floor and the last completed session."""
-    until = last_completed_session(as_of)
-    work = series_windows(
-        context, table, keys, run_date(as_of), until=until, years_history=years_history, full=full, calendar=trading_calendar(context)
-    )
-    return work, document_floor(table, run_date(as_of), years_history), until
+def _plan(context: Context, table: Table, keys: list[str]) -> tuple[SeriesWork, Window] | None:
+    """The configured source interval capped at the entry instant's completed session."""
+    policy = window_policy(context.config, table, context.run.as_of)
+    if policy is None:
+        return None
+    until = min(policy.requested.end, last_completed_session(context.run.instant))
+    if until < policy.requested.start:
+        return None
+
+    # Split events share the dense price frontier, while retaining their own policy.
+    stored = None
+    if table == Tables.prices_splits:
+        stored = (context.store.key_stats(Tables.prices, "ticker", where={"ticker": keys}), context.store.max_date(Tables.prices))
+    request = SeriesRequest(keys, trading_calendar(context), until=until, stored=stored)
+    return series_windows(context, table, request), Window(policy.requested.start, until)
 
 
 def _full_keys(work: SeriesWork, floor: pd.Timestamp, bounds: Bounds) -> set[str]:
     """Keys whose first window already reaches the floor, or their `first_price_date` when later: their whole history is in the pull."""
-    return {key for key, spans in work.windows.items() if spans and spans[0][0] <= max(floor, bounds.get(key, (None, None))[0] or floor)}
+    return {key for key, spans in work.windows.items() if spans and spans[0].start <= max(floor, bounds.get(key, (None, None))[0] or floor)}
 
 
 def _initial_pull(session: YahooSession, work: SeriesWork, full_keys: set[str]) -> tuple[pd.DataFrame, list[str]]:
@@ -405,7 +415,8 @@ def _apply_repull(
     planner bounds (`bounded_span`); a key with nothing left in its bounds keeps its rows."""
     if not repull:
         return df_raw
-    bounds, start = planner_bounds(context), _repull_start(context, floor)
+    _require_repair_scope(context, repull, Window(floor, until))
+    bounds, start = planner_bounds(context), floor
 
     # compute: each key's clamped window, keys sharing a window pulled together
     windows = {key: [span] for key in repull if (span := bounded_span(bounds, key, start, until)) is not None}
@@ -430,18 +441,17 @@ def _report_pull(table: Table, work: SeriesWork, df_raw: pd.DataFrame, n_rows: i
         logger.warning("No bars returned for %d ticker(s) with a window; they are re-listed next run: %s", len(missing), ", ".join(missing))
 
 
-def _pull_actions(
-    context: Context, session: YahooSession, table: Table, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None
-) -> tuple[pd.DataFrame, SeriesWork]:
-    """The `actions=True` rows of the universe over `table`'s windows, restated keys re-pulled whole."""
-    work, floor, until = _plan(context, table, tickers, years_history, full, as_of)
-    df_raw, repull = _initial_pull(session, work, _full_keys(work, floor, context.universe.bounds))
-    return _apply_repull(context, session, df_raw, repull, floor, until), work
+def _pull_actions(context: Context, session: YahooSession, table: Table, tickers: list[str]) -> tuple[pd.DataFrame, SeriesWork]:
+    """Pull actions using their own policy and preserve coordinated basis repairs."""
+    planned = _plan(context, table, tickers)
+    if planned is None:
+        return pd.DataFrame(), SeriesWork({}, {})
+    work, window = planned
+    df_raw, repull = _initial_pull(session, work, _full_keys(work, window.start, context.universe.bounds))
+    return _apply_repull(context, session, df_raw, repull, window.start, window.end), work
 
 
-def fetch_prices(
-    context: Context, session: YahooSession, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None
-) -> None:
+def fetch_prices(context: Context, session: YahooSession, tickers: list[str]) -> None:
     """`prices` (bars on both bases) of the universe and its current secondary classes.
 
     Windows come from `series_windows` over `prices` and end at the last completed session; a secondary class
@@ -451,15 +461,19 @@ def fetch_prices(
     owners = secondary_class_symbols(load_identity(context), tickers)
     if owners:
         logger.info("%d current secondary class(es) fetched with their companies: %s", len(owners), ", ".join(owners))
-    work, floor, until = _plan(context, Tables.prices, [*tickers, *owners], years_history, full, as_of)
+    planned = _plan(context, Tables.prices, [*tickers, *owners])
+    if planned is None:
+        return
+    work, window = planned
+    floor, until = window
     for symbol in owners:
         if symbol not in work.last:
-            work.windows[symbol] = [(floor, until)]
+            work.windows[symbol] = [Window(floor, until)]
 
     # Download: resume windows, then the keys restated by an event or a moved anchor
     full_keys = _full_keys(work, floor, context.universe.bounds)
     df_raw, repull = _initial_pull(session, work, full_keys)
-    if not full:
+    if context.run.mode == "incremental":
         checked = [key for key in work.last if work.windows.get(key) and key not in full_keys and key not in repull]
         repull = sorted({*repull, *anchor_restated_keys(context, checked, until, session.bars)})
     df_raw = _apply_repull(context, session, df_raw, repull, floor, until)
@@ -471,25 +485,21 @@ def fetch_prices(
     _report_pull(Tables.prices, work, df_raw, context.store.save(Tables.prices, df_bars))
 
 
-def fetch_dividends(
-    context: Context, session: YahooSession, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None
-) -> None:
+def fetch_dividends(context: Context, session: YahooSession, tickers: list[str]) -> None:
     """`prices_dividends` (cash dividends on the ex-date, 0 when none) of the universe.
 
     Windows come from `series_windows` over `prices_dividends`; a key with a split or dividend after its last
     stored row is re-pulled over the whole window."""
-    df_raw, work = _pull_actions(context, session, Tables.dividends, tickers, years_history, full, as_of)
+    df_raw, work = _pull_actions(context, session, Tables.dividends, tickers)
     df_dividends = _extract_dividends(df_raw)
     _report_pull(Tables.dividends, work, df_raw, context.store.save(Tables.dividends, df_dividends) if not df_dividends.empty else 0)
 
 
-def fetch_price_actions(
-    context: Context, session: YahooSession, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None
-) -> None:
+def fetch_price_actions(context: Context, session: YahooSession, tickers: list[str]) -> None:
     """`prices_splits` (non-zero share-split ex-dates) of the universe.
 
     The table is sparse, so its windows are planned from the dense `prices` frontier: run it BEFORE `fetch_prices`
     saves, or the window is empty. A key with a split or dividend after its last stored bar is re-pulled whole."""
-    df_raw, work = _pull_actions(context, session, Tables.prices, tickers, years_history, full, as_of)
+    df_raw, work = _pull_actions(context, session, Tables.prices_splits, tickers)
     df_splits = _extract_splits(df_raw)
     _report_pull(Tables.prices_splits, work, df_raw, context.store.save(Tables.prices_splits, df_splits) if not df_splits.empty else 0)

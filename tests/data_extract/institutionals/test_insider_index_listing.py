@@ -4,7 +4,7 @@ The defect it replaces: JPM's owner-inclusive Atom search 503'd at offset 5,100 
 returned a truncated list. Here JPM's 5,200 indexed Form 4s are all in the work list, with no
 network listing call, and each stays listed until it is stored. A Form 4 the key only reported as
 an owner becomes one marker under that key and never hides the filing from its issuer. Only rows
-stored from EDGAR count as read; the listing starts after the last stored zip quarter."""
+completed for the actual key count as read, including valid ZIP packets; configured filing dates bound the index."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, plan_fetch, run_edgar_fetch
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
 
@@ -73,14 +74,18 @@ def test_every_indexed_form_4_is_listed_until_stored(ctx, sqlite_store):
     scope = edgar_driver.load_identity(ctx)
     fetch = module.INSIDER_EDGAR_FETCH
 
-    night1 = plan_fetch(ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF, 15))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    night1 = plan_fetch(
+        ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config))
+    )
     stored = [r[4] for r in rows[:5_100]]
     sqlite_store.save(Tables.insider_transactions, _stored(stored, "edgar"))
     sqlite_store.save(Tables.insider_transactions, _stored([r[4] for r in rows[5_100:]], "zip"))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF + pd.Timedelta(days=1))
     night2 = plan_fetch(
         ctx,
         fetch,
-        EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF + pd.Timedelta(days=1), 15),
+        EdgarRun(list(cik_map["ticker"]), cik_map, scope, ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
     )
 
     assert night1.size == 5_200
@@ -89,7 +94,7 @@ def test_every_indexed_form_4_is_listed_until_stored(ctx, sqlite_store):
     print(
         f"  5,200 JPM Form 4s indexed -> work list {night1.size} with no SEC listing call; after 5,100 stored from EDGAR -> {night2.size} still listed"
     )
-    print("  (the other 100 are stored from the zip, which never makes a filing look read by EDGAR).")
+    print("  (the other100 are complete ZIP packets and are reused).")
 
 
 def _zip_book(book: list[tuple], ticker: str, quarter: str) -> pd.DataFrame:
@@ -106,17 +111,14 @@ def _zip_book(book: list[tuple], ticker: str, quarter: str) -> pd.DataFrame:
     return pd.DataFrame(frame)
 
 
-def test_a_stored_zip_row_counts_as_read_only_before_the_edgar_window(ctx, sqlite_store):
+def test_completed_zip_accessions_are_reused_without_a_private_edgar_tail(ctx: Any, sqlite_store: Any) -> None:
     rows = _jpm_book(10)
     seed_index(ctx, rows)
     sqlite_store.save(Tables.insider_transactions, _zip_book(rows, "JPM", "2026q2"))
-    cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
-    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), _AS_OF, 15))
-
-    listed = work.units["JPM"]["filed"]
-    expected = sum(pd.Timestamp(r[3]) >= pd.Timestamp("2026-07-01") for r in rows)
-    assert len(listed) == expected and (listed >= pd.Timestamp("2026-07-01")).all()
-    print(f"\nSANITY: zip quarter 2026q2 stored for all 10 indexed Form 4s -> only the {len(listed)} filed from 2026-07-01 on are listed for EDGAR.")
+    ctx.run = WindowRun("incremental", "completed source reuse", _AS_OF)
+    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["JPM"]))
+    assert work.size == 0
+    print("SANITY: completed ZIP accessions are reused; EDGAR promotion requires explicit bounded recovery.")
 
 
 def _daily_book(cik: int, company: str) -> list[tuple]:
@@ -124,37 +126,16 @@ def _daily_book(cik: int, company: str) -> list[tuple]:
     return [(cik, company, "4", day.date().isoformat(), f"{cik:010d}-26-{i:06d}") for i, day in enumerate(days)]
 
 
-@pytest.mark.parametrize(
-    ("quarter", "as_of", "start"),
-    [
-        ("2026q3", "2026-10-04", "2026-09-27"),  # zip floor 2026-10-01 is 3 days back -> as_of - 7 days
-        ("2026q2", "2026-08-30", "2026-07-01"),  # zip floor 2026-07-01 is 60 days back -> the floor
-    ],
-)
-def test_zip_rows_count_as_read_before_the_earlier_of_the_zip_floor_and_seven_days_back(ctx, sqlite_store, quarter, as_of, start):
-    """Stored zip rows filed before MIN(day after the last zip quarter, as_of - 7 days) are read; later filings are listed again,
-    for the universe and a `-t` run alike."""
+@pytest.mark.parametrize(("quarter", "as_of"), [("2026q3", "2026-10-04"), ("2026q2", "2026-08-30")])
+def test_completed_source_work_is_the_same_for_universe_and_subset(ctx: Any, sqlite_store: Any, quarter: str, as_of: str) -> None:
     jpm, oxy = _daily_book(19617, "JPMORGAN CHASE & CO"), _daily_book(797468, "OCCIDENTAL PETROLEUM")
     seed_index(ctx, jpm + oxy)
     sqlite_store.save(Tables.insider_transactions, pd.concat([_zip_book(jpm, "JPM", quarter), _zip_book(oxy, "OXY", quarter)], ignore_index=True))
-    roster = pd.DataFrame({"ticker": ["JPM", "OXY"], "cik": ["0000019617", "0000797468"]})
-    scope = edgar_driver.load_identity(ctx)
-
-    universe = plan_fetch(
-        ctx,
-        module.INSIDER_EDGAR_FETCH,
-        EdgarRun(list(roster["ticker"]), roster, scope, pd.Timestamp(as_of), 15),
-    )
-    subset = plan_fetch(
-        ctx,
-        module.INSIDER_EDGAR_FETCH,
-        EdgarRun(list(roster.iloc[:1]["ticker"]), roster.iloc[:1], scope, pd.Timestamp(as_of), 15),
-    )
-
-    first = {key: df["filed"].min() for key, df in universe.units.items()}
-    assert first == {"JPM": pd.Timestamp(start), "OXY": pd.Timestamp(start)}
-    assert subset.units["JPM"]["filed"].min() == pd.Timestamp(start), "a -t run keeps the same window"
-    print(f"\nSANITY: zip quarter {quarter}, run {as_of} -> the first filing listed for EDGAR is {start} for the universe and for -t JPM.")
+    ctx.run = WindowRun("incremental", "bounded completed source check", pd.Timestamp(as_of))
+    whole = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["JPM", "OXY"]))
+    subset = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["JPM"]))
+    assert whole.size == subset.size == 0
+    print("SANITY: universe and subset reuse the same completed accessions, independent of ZIP quarter or a hidden recent-day cutoff.")
 
 
 def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx, sqlite_store, monkeypatch):
@@ -165,7 +146,8 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     # the tables exist with their full column set, as their DDL makes them on Postgres
     create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
 
-    first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER)), max_workers=1)
 
     shown = sqlite_store.load(Tables.insider_transactions, markers=True, where={"ticker": list(_ROSTER)}).sort_values("ticker")
     assert shown[["ticker", "security_type", "row_sequence", "source"]].to_dict("records") == [
@@ -177,10 +159,11 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     assert first.outcomes["BRK-B"].markers == 1 and first.outcomes["OXY"].markers == 0
 
     sqlite_store.delete(Tables.insider_transactions, {"ticker": "OXY"})
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF + pd.Timedelta(days=1))
     again = run_edgar_fetch(
         ctx,
         module.INSIDER_EDGAR_FETCH,
-        EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF + pd.Timedelta(days=1)),
+        EdgarRun.load(ctx, list(_ROSTER)),
         max_workers=1,
     )
     assert list(again.work.units) == ["OXY"]
@@ -196,11 +179,31 @@ def test_an_unread_filing_is_stored_nowhere_and_listed_again(ctx, sqlite_store, 
     filing.xml = lambda: (_ for _ in ()).throw(module.TransientReadError("HTTP 503"))
     patch_index_filings(monkeypatch, {accession: filing})
 
-    summary = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["OXY"], 15, as_of=_AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    summary = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["OXY"]), max_workers=1)
 
     assert summary.missing == {"OXY": [accession]}
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     cik_map = pd.DataFrame({"ticker": ["OXY"], "cik": ["0000797468"]})
-    again = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), _AS_OF, 15))
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    again = plan_fetch(
+        ctx,
+        module.INSIDER_EDGAR_FETCH,
+        EdgarRun(list(cik_map["ticker"]), cik_map, identity_for(_ROSTER), ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config)),
+    )
     assert again.units["OXY"]["accession"].tolist() == [accession]
     print("\nSANITY: a Form 4 that 503'd is stored nowhere (no row, no marker) and is listed again on the next night.")
+
+
+def test_missing_older_insider_filing_is_not_hidden_by_a_completed_zip_quarter(ctx: Any, sqlite_store: Any) -> None:
+    rows = [
+        (19617, "JPMORGAN CHASE & CO", "4", "2026-01-05", "0000019617-26-000001"),
+        (19617, "JPMORGAN CHASE & CO", "4", "2026-01-06", "0000019617-26-000002"),
+    ]
+    seed_index(ctx, rows)
+    sqlite_store.save(Tables.insider_transactions, _zip_book(rows[:1], "JPM", "2026q2"))
+    ctx.run = WindowRun("incremental", "configured insider accession scope", pd.Timestamp("2026-09-30"))
+    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["JPM"]))
+    found = set(work.units.get("JPM", pd.DataFrame(columns=["accession"]))["accession"])
+    assert found == {"0000019617-26-000002"}
+    print("SANITY: the shared filing Window finds the older missing accession, reuses the completed ZIP packet, and has no private seven-day floor.")

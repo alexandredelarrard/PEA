@@ -1,70 +1,67 @@
-"""
-`prices_macro` up-to-date check (src/data_extract/utils/prices/fetch_macro.py).
-
-The sources publish the raw LEVEL series (market close, Treasury yields, cash, VIX) with a
-~1 business-day lag. Keying "up to date" on the table's OVERALL max date let ANY one fast
-series mask a still-stale level block, so the refresh that would fill the levels was skipped
-(the observed "1-day gap": levels stuck a day behind what the source already had). Both old
-wide fetchers hit this and patched it separately; the gate must key on the CORE LEVEL block
-reaching the previous business day.
-
-Long-format twist that did not exist before: a core series can now be entirely ABSENT (zero
-rows) rather than present-but-NaN, because the melt drops NaN. That must read as "not fresh"
-too, otherwise a series that never downloaded would never be retried.
-"""
+"""Real macro levels retain their cumulative origin through a bounded source rewrite."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
-from src.constants.constants_price import MACRO_CORE_LEVEL_SERIES
 from src.data_extract.utils.prices import fetch_macro as fm
-from src.data_store.schema import Tables
-from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
+from src.data_store.schema import Table, Tables
+from src.data_store.store import WriteCounts
+from src.utils.window import Window, WindowRun
+from tests.data_extract.edgar_fixtures import fake_context
+
+_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "macro" / "retained_yield_and_market.parquet"
 
 
-def _ctx(df) -> Any:
-    return SimpleNamespace(store=FakeStore({Tables.prices_macro: df}))
+def test_macro_rewrites_its_configured_tail_without_restarting_bond_levels(tmp_path, sqlite_store, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = pd.read_parquet(_FIXTURE)
+    rows["date"] = pd.to_datetime(rows["date"])
+    wide = rows.pivot(index="date", columns="ticker", values="close").sort_index()
+    context = fake_context(tmp_path, sqlite_store, ["AAPL"])
+    context.run = WindowRun("incremental", "real macro replay", pd.Timestamp("2026-11-16"))
+    item = context.config.data.tables.prices_macro
+    item.start_date, item.end_date = "1995-11-13", "2026-11-10"
+    future = rows.groupby("ticker").tail(1).assign(date=pd.Timestamp("2026-11-12"), close=137.0)
+    sqlite_store.save(Tables.prices_macro, pd.concat([rows, future], ignore_index=True))
+    before = sqlite_store.load(Tables.prices_macro).sort_values(["ticker", "date"]).reset_index(drop=True)
 
+    monkeypatch.setenv("FRED_API_KEY", "offline-fixture")
+    monkeypatch.setattr(fm, "_fetch_price_leg", lambda context, since, until: wide.loc[since:until, ["equity_tr"]].dropna())
+    monkeypatch.setattr(fm, "_fetch_fred_leg", lambda window: wide.loc[window.start : window.end, ["yield_10y"]].dropna())
+    writes = []
+    original = sqlite_store.replace_window
 
-def _long(core_last: pd.Timestamp, other_last: pd.Timestamp, drop_series: str | None = None) -> pd.DataFrame:
-    """Long `prices_macro` rows where the core level series stop at `core_last` and the rest
-    run to `other_last`. `drop_series` omits one core series entirely (zero rows)."""
-    prev = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
-    dates = pd.bdate_range(prev - pd.Timedelta(days=16), prev)
-    rows = []
-    for name in MACRO_CORE_LEVEL_SERIES:
-        if name == drop_series:
-            continue
-        rows += [{"date": d, "ticker": name, "close": 1.0} for d in dates if d <= core_last]
-    for name in ("yield_curve_10y2y", "breakeven_10y", "bond_10y_tr"):
-        rows += [{"date": d, "ticker": name, "close": 1.0} for d in dates if d <= other_last]
-    return pd.DataFrame(rows, columns=["date", "ticker", "close"])
+    def replace_window(table: Table, frame: pd.DataFrame, window: Window, where: dict[str, list[str]], **kwargs: Any) -> WriteCounts:
+        writes.append((window, set(where["ticker"])))
+        return original(table, frame, window, where, **kwargs)
 
+    monkeypatch.setattr(sqlite_store, "replace_window", replace_window)
+    fm.fetch_macro(context)
+    after = sqlite_store.load(Tables.prices_macro).sort_values(["ticker", "date"]).reset_index(drop=True)
+    expected_window = Window(pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-10"))
+    assert writes and all(window == expected_window for window, keys in writes)
+    outside = ~expected_window.mask(before["date"])
+    pd.testing.assert_frame_equal(after.loc[outside].reset_index(drop=True), before.loc[outside].reset_index(drop=True))
+    after["date"] = pd.to_datetime(after["date"])
+    bond = after.loc[after["ticker"].eq("bond_10y_tr")].set_index("date")["close"]
+    expected = wide["bond_10y_tr"].dropna()
+    pd.testing.assert_series_equal(bond.loc["2026-11-02":"2026-11-10"], expected.loc["2026-11-02":"2026-11-10"], check_names=False)
+    pd.testing.assert_series_equal(
+        bond.loc["2026-11-02":"2026-11-10"].pct_change(), expected.loc["2026-11-02":"2026-11-10"].pct_change(), check_names=False
+    )
 
-def test_up_to_date_keys_on_core_level_block():
-    prev = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
-    prev2 = prev - pd.tseries.offsets.BDay(1)
-
-    # derived/fast series current but the CORE LEVEL block a day behind -> NOT up to date, so
-    # the refresh that fills the levels runs (the bug was: it skipped)
-    assert fm._is_up_to_date(_ctx(_long(core_last=prev2, other_last=prev))) is False
-    # core block reaches the previous business day -> up to date (skip; no perpetual re-pull)
-    assert fm._is_up_to_date(_ctx(_long(core_last=prev, other_last=prev))) is True
-    # a core series MISSING ENTIRELY must not read as fresh just because the others are
-    assert fm._is_up_to_date(_ctx(_long(core_last=prev, other_last=prev, drop_series="vix"))) is False
-    # empty / unseeded -> not up to date
-    assert fm._is_up_to_date(_ctx(pd.DataFrame(columns=["date", "ticker", "close"]))) is False
-
-    print("\n=== SANITY CHECK: prices_macro freshness keys on the core level block ===")
-    print(f"  core series {list(MACRO_CORE_LEVEL_SERIES)}")
-    print("  stale levels behind current derived series -> refresh (not skipped);")
-    print("  core block at prev business day -> up to date;")
-    print("  one core series with ZERO rows -> not fresh (long-format case). Validated.")
-
-
-if __name__ == "__main__":
-    test_up_to_date_keys_on_core_level_block()
+    fm.fetch_macro(context)
+    repeated = sqlite_store.load(Tables.prices_macro).sort_values(["ticker", "date"]).reset_index(drop=True)
+    repeated["date"] = pd.to_datetime(repeated["date"])
+    pd.testing.assert_frame_equal(repeated, after)
+    item.reprocess.overlap.value = 3
+    writes.clear()
+    fm.fetch_macro(context)
+    assert writes and all(window.start == pd.Timestamp("2026-11-07") for window, keys in writes)
+    print(
+        "SANITY: real31-year yield context preserves exact bond levels and boundary returns;7CD/3CD writes obey config, protect both ends and repeat idempotently."
+    )

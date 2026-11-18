@@ -2,37 +2,38 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
+from time import perf_counter
+
 import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED,
-    PartWindow,
     plan_window,
     write_part,
 )
+from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.def14a_impute import EXEC_COMPONENTS
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.price.frames import (
     PriceFrames,
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
+from src.utils.data_policy import publication_policy, source_read_window
 from src.utils.filer_tables import def14a_evidence_mask
+from src.utils.publication import publication_rows
 from src.utils.step import Step
+from src.utils.window import Window, WindowPlan
 
 _PRICE_FIELDS = ("close_split", "close_total", "shares_outstanding_pit")
 _OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
-#: the cleaning stage reads later proxies (stint constants, the historical pay backfill), so an
-#: incremental run cannot restate the rows it does not rewrite
-# A new proxy restates up to three fiscal years of CEO pay on older rows (the later-SCT
-# backfill and the <= 2-proxy interpolation), so every run rewrites three years, not a week.
-REFRESH_TRADING_DAYS = 756
 _INCREMENTAL_WARNING = (
     "Incremental governance build rewrites from %s only: a new proxy can still restate older rows through "
     "the CEO stint constants and the ever-dual / ceiling refusals -> run build-governance -F once a year after the proxy season."
@@ -42,21 +43,21 @@ _INCREMENTAL_WARNING = (
 class StepCubeGovernance(Step):
     _FIELDS = _PRICE_FIELDS
 
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
 
-        self._cfg = config.build_cube
-        self._part = part_for(Tables.cube_part_governance)
+        self._cfg = config.data_aggregate
         self._store = context.store
 
-    def run(self, full: bool = False) -> None:
-        calendar = load_trading_calendar(self._store)
-        window = plan_window(
-            self._store, Tables.cube_part_governance, full=full, warmup=self._warmup(), trading_index=calendar, refresh=REFRESH_TRADING_DAYS
-        )
-        frames = self._load_frames(window.since)
+    def run(self) -> dict[Table, WindowPlan]:
+        calendar = load_trading_calendar(self._context)
+        window = plan_window(self._context, Tables.cube_part_governance, calendar)
+        if window is None:
+            return {}
+        frames = self._load_frames(window.read, calendar)
 
-        merger = PanelMerger(anchor=frames.skeleton())
+        output_frames = frames.on(frames.trading_index[frames.trading_index >= window.read.start], "close_split", "close_total")
+        merger = PanelMerger(anchor=output_frames.skeleton())
         merger.add(
             self._governance_panel(frames, window),
             "governance",
@@ -65,20 +66,22 @@ class StepCubeGovernance(Step):
 
         panel = merger.to_long()
         del frames
-        n = write_part(self._store, Tables.cube_part_governance, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
-        self._assert_current(calendar, window.last)
+        write_part(self._store, Tables.cube_part_governance, panel, window, drop_empty=True)
+        self._assert_current(calendar, window)
+        return {Tables.cube_part_governance: window}
 
     def _assert_current(
         self,
         calendar: pd.DatetimeIndex,
-        previous_max: pd.Timestamp | None,
+        window: WindowPlan,
     ) -> None:
-        actual = pd.DatetimeIndex(pd.to_datetime(self._store.distinct(Tables.cube_part_governance, "date"))).normalize()
-        expected_end = calendar.max().normalize()
+        actual = pd.DatetimeIndex(
+            pd.to_datetime(self._store.distinct(Tables.cube_part_governance, "date", where={**dict(window.scope), "date": window.write}))
+        ).normalize()
+        expected = calendar[(calendar >= window.write.start) & (calendar <= window.write.end)]
+        expected_end = expected.max().normalize()
         actual_end = actual.max().normalize() if len(actual) else None
-        new_dates = calendar[:0] if previous_max is None else calendar[calendar > previous_max]
+        new_dates = expected[:0] if window.frontier is None else expected[expected > window.frontier]
         missing = new_dates.difference(actual)
         if actual_end != expected_end or len(missing):
             raise RuntimeError(
@@ -86,21 +89,21 @@ class StepCubeGovernance(Step):
             )
         self._log.info("Governance frontier current: %s (missing new dates=0)", expected_end.date())
 
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
     # ---- inputs ---- #
-    def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        """Retain full count lineage while bounding the daily feature/return grid."""
-        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=None)
-        if since is None:
-            return frames
-        return frames.on(frames.trading_index[frames.trading_index >= since], "close_split", "close_total")
+    def _load_frames(self, window: Window, calendar: pd.DatetimeIndex) -> PriceFrames:
+        """Load retained prices once for count lineage and conditional schema-support probes."""
+        retained = source_read_window(self._config, Tables.cube_part_prices, window.end)
+        if retained is None:
+            raise ValueError("No configured price lineage is available")
+        return load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context, self._config), calendar=calendar, fields=_PRICE_FIELDS, window=retained
+        )
 
-    def _load_def14a(self) -> pd.DataFrame | None:
+    def _load_def14a(self, window: Window | None) -> pd.DataFrame | None:
         """Load usable scalar observations, excluding archives and retry-only parents."""
-        df = self._store.load(Tables.def14a_llm, project=True, optional=True)
+        if window is None:
+            return None
+        df = load_source(self._context, Tables.def14a_llm, window=window)
         if df is not None:
             df = df.loc[def14a_evidence_mask(df)]
         if df is None or df.empty:
@@ -108,79 +111,63 @@ class StepCubeGovernance(Step):
         self._log.info("Loaded %s: %s rows x %s cols", Tables.def14a_llm.name, len(df), len(df.columns))
         return df
 
-    def _load_votes(self) -> pd.DataFrame | None:
+    def _load_votes(self, window: Window | None) -> pd.DataFrame | None:
         """Load optional Item 5.07 vote records."""
-        df = self._store.load(Tables.sec_8k_votes, optional=True)
+        if window is None:
+            return None
+        df = load_source(self._context, Tables.sec_8k_votes, window=window)
         if df is None or df.empty:
             self._log.warning("No %s -> the four shareholder-dissent families are skipped.", Tables.sec_8k_votes.name)
             return None
         self._log.info("Loaded %s: %s rows x %s cols", Tables.sec_8k_votes.name, len(df), len(df.columns))
         return df
 
-    def _load_exec_comp(self) -> pd.DataFrame | None:
-        """Load optional executive-compensation rows."""
-        df = self._store.load(Tables.def14a_executive_comp, optional=True)
-        if df is None or df.empty:
-            self._log.warning("No %s -> the exact CEO Pay Slice family is skipped.", Tables.def14a_executive_comp.name)
-            return None
-        return df
+    def _load_proxy_child(self, table: Table, columns: Sequence[str] | None = None) -> pd.DataFrame | None:
+        """Read configured child history, including donors without a usable scalar parent."""
+        clock = str(publication_policy(self._config, table).clock)
+        if table == Tables.def14a_executive_comp and columns is None:
+            columns = [*table.pk, clock, "total", "reconciles", *EXEC_COMPONENTS]
+        if columns is not None:
+            columns = list(dict.fromkeys([*columns, *Tables.def14a_llm.pk, clock]))
+        return load_source(self._context, table, columns=columns)
 
-    def _load_directors(self) -> pd.DataFrame | None:
-        """Load projected director rows."""
-        table = Tables.def14a_directors
-        if not self._store.exists(table):
-            self._log.warning("No %s -> the board averages stay on the parent scalar and the board-quality family is skipped.", table.name)
-            return None
-        df = self._store.load(table, project=True, optional=True)
-        if df is None or df.empty:
-            return None
-        return df
-
-    def _load_director_comp(self) -> pd.DataFrame | None:
-        """Load optional Item 402(k) director compensation."""
-        table = Tables.def14a_director_comp
-        if not self._store.exists(table):
-            self._log.warning("No %s -> the four director-pay features are skipped.", table.name)
-            return None
-        df = self._store.load(table, project=True, optional=True)
-        if df is None or df.empty:
-            return None
-        return df
-
-    def _load_ownership(self) -> pd.DataFrame | None:
-        """Load the per-holder beneficial-ownership rows the insider-ownership estimate sums."""
-        df = self._store.load(Tables.def14a_ownership, columns=_OWNERSHIP_COLUMNS, optional=True)
-        if df is None or df.empty:
-            self._log.warning("No %s -> insider ownership is not estimated from the holder rows.", Tables.def14a_ownership.name)
-            return None
-        return df
-
-    def _load_fundamentals(self) -> pd.DataFrame | None:
+    def _load_fundamentals(self, window: Window | None) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
-        df = self._store.load(Tables.sharadar_fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], optional=True)
+        if window is None:
+            return None
+        df = load_source(
+            self._context, Tables.sharadar_fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], window=window
+        )
         if df is None or df.empty:
             self._log.warning("No fundamentals history -> the pay-vs-revenue-growth misalignment feature is skipped.")
             return None
         return df
 
     # ---- panels ---- #
-    def _governance_panel(self, frames: PriceFrames, window: PartWindow) -> pd.DataFrame | None:
+    def _governance_panel(self, frames: PriceFrames, window: WindowPlan) -> pd.DataFrame | None:
         """Load the raw governance frames, clean them once, then build the features."""
-        df = self._load_def14a()
+        existing_columns = self._store.columns(Tables.cube_part_governance)
+        windows = {
+            table: source_read_window(self._config, table, window.read.end)
+            for table in (Tables.def14a_llm, Tables.sec_8k_votes, Tables.sharadar_fundamentals_history)
+        }
+        df = self._load_def14a(windows[Tables.def14a_llm])
         if df is None:
             return None
         if not window.is_full:
-            self._log.warning(_INCREMENTAL_WARNING, pd.Timestamp(window.refresh_from or window.last).date())
+            self._log.warning(_INCREMENTAL_WARNING, pd.Timestamp(window.write.start or window.frontier).date())
 
         raw = GovernanceInputs(
             def14a=df,
-            exec_comp=self._load_exec_comp(),
-            directors=self._load_directors(),
-            director_comp=self._load_director_comp(),
-            votes=self._load_votes(),
-            ownership=self._load_ownership(),
+            exec_comp=self._load_proxy_child(Tables.def14a_executive_comp),
+            directors=self._load_proxy_child(Tables.def14a_directors),
+            director_comp=self._load_proxy_child(Tables.def14a_director_comp),
+            votes=self._load_votes(windows[Tables.sec_8k_votes]),
+            ownership=self._load_proxy_child(Tables.def14a_ownership, _OWNERSHIP_COLUMNS),
         )
-        fundamentals = self._load_fundamentals()
+        fundamentals = self._load_fundamentals(windows[Tables.sharadar_fundamentals_history])
+        retained = frames
+        frames = frames.on(frames.trading_index[frames.trading_index >= window.read.start], "close_split", "close_total")
         inputs, stats = clean_governance_inputs(raw, frames)
         lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
         for key, value in stats.items():
@@ -189,6 +176,51 @@ class StepCubeGovernance(Step):
         if lookahead:
             self._log.warning(PAY_BACKFILL_WARNING, "; ".join(f"{k}: {v:,}" for k, v in lookahead.items()))
 
+        # Apply each source's configured eligibility once, using the retained lineage calendar.
+        calendar = pd.DatetimeIndex(frames.shares_outstanding_pit.index) if frames.shares_outstanding_pit is not None else frames.trading_index
+        timed = {}
+        for field, table in (
+            ("def14a", Tables.def14a_llm),
+            ("exec_comp", Tables.def14a_executive_comp),
+            ("directors", Tables.def14a_directors),
+            ("director_comp", Tables.def14a_director_comp),
+            ("votes", Tables.sec_8k_votes),
+        ):
+            source = getattr(inputs, field)
+            if source is not None:
+                clock = str(publication_policy(self._config, table).clock)
+                timed[field] = publication_rows(self._config, table, source, calendar, clock)
+        inputs = replace(inputs, **timed)
+        if fundamentals is not None:
+            fundamentals = publication_rows(self._config, Tables.sharadar_fundamentals_history, fundamentals, calendar, "as_of")
+
+        panel = self._project_panel(inputs, fundamentals, frames)
+
+        # Only native historical emissions justify retaining an all-unknown bounded column.
+        missing = set() if window.is_full else set(existing_columns) - set(panel.columns)
+        end = int(retained.trading_index.searchsorted(frames.trading_index[0]))
+        span = len(frames.trading_index)
+        warmup = int(frames.trading_index.searchsorted(window.write.start))
+        advance = max(1, span - warmup)
+        if missing:
+            self._log.info("Governance bounded schema lacks retained columns: %s", sorted(missing))
+        while missing and end:
+            start = max(0, end - span)
+            historical = self._project_panel(inputs, fundamentals, retained.on(retained.trading_index[start:end], "close_split", "close_total"))
+            if set(historical.columns) - set(existing_columns):
+                raise ValueError("Governance feature columns changed; an explicit full rebuild is required")
+            proven = missing.intersection(historical.columns)
+            for column in sorted(proven):
+                support = historical.loc[historical[column].notna() & ~historical[column].isin([float("inf"), float("-inf")]), "date"]
+                self._log.info("Governance historical schema support %s: %s finite cells, %s..%s", column, len(support), support.min(), support.max())
+            panel = panel.assign(**{column: pd.Series(index=panel.index, dtype="float32") for column in proven})
+            missing.difference_update(proven)
+            end = max(0, end - advance)
+        return panel
+
+    def _project_panel(self, inputs: GovernanceInputs, fundamentals: pd.DataFrame | None, frames: PriceFrames) -> pd.DataFrame:
+        """Project the unchanged governance calculations and report their support and cost."""
+        started = perf_counter()
         panel, tally = build_governance_feature_panel(
             inputs.def14a,
             frames.peers,
@@ -200,6 +232,14 @@ class StepCubeGovernance(Step):
             director_comp=inputs.director_comp,
             close_total=frames.close_total,
             availability=frames.availability,
+        )
+        self._log.info(
+            "Governance projection %s..%s: %s sessions, %s feature columns, %.3fs",
+            frames.trading_index.min(),
+            frames.trading_index.max(),
+            len(frames.trading_index),
+            len(panel.columns) - 2,
+            perf_counter() - started,
         )
 
         # Per-family row counts, the [0,1] rejects and the CEO-ballot split, one line each.

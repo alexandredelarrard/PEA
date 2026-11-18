@@ -1,5 +1,7 @@
 """Independent sentiment stage completion and retry checks on real transcripts."""
 
+from __future__ import annotations
+
 from unittest.mock import patch
 
 import numpy as np
@@ -11,6 +13,7 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.data_aggregate.test_step_cube_text import configure_models, prepare_step, seeded_case
 from tests.fixtures.earnings_call_rows import FIXTURE_PATHS
+from tests.support.windows import run_cube
 
 
 def test_scoring_reads_each_table_once(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -24,7 +27,7 @@ def test_scoring_reads_each_table_once(sqlite_store: DataStore, monkeypatch: pyt
     assert sum("content" in call.kwargs["columns"] for call in source) == 1
     scores = store.load(Tables.earnings_call_sentiment)
     assert scores is not None and len(scores) == 3 * len(FIXTURE_PATHS)
-    factory.assert_called_once_with(config.build_cube.earnings_calls.sentiment_model)
+    factory.assert_called_once_with(config.data_aggregate.earnings_calls.sentiment_model)
     engine.reset_mock()
     factory.reset_mock()
     step, plan, prepared = prepare_step(context, config)
@@ -81,7 +84,7 @@ def test_invalid_outputs_do_not_establish_completion(sqlite_store: DataStore, mo
 def test_legacy_answers_are_reused_and_only_questions_inferred(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     factory, engine, embedding = configure_models(monkeypatch)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     original = store.load(Tables.earnings_call_sentiment)
     assert original is not None
     legacy = original[original["tag"].ne("questions")].replace({"tag": {"answers": "qa"}}).assign(uncertainty_ratio=0.123456)
@@ -89,7 +92,7 @@ def test_legacy_answers_are_reused_and_only_questions_inferred(sqlite_store: Dat
     store.replace(Tables.earnings_call_sentiment, legacy)
     engine.reset_mock()
     embedding.reset_mock()
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     assert engine.score_texts.call_count == 1 and len(engine.score_texts.call_args.args[0]) == 1
     assert not embedding.called
     migrated = store.load(Tables.earnings_call_sentiment)
@@ -114,19 +117,19 @@ def test_legacy_answers_are_reused_and_only_questions_inferred(sqlite_store: Dat
 def test_pending_questions_preserve_other_role_features(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
     factory, _, embedding = configure_models(monkeypatch)
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     store.delete(Tables.earnings_call_sentiment, {"ticker": "ADP", "tag": "questions"})
     before = store.load(Tables.earnings_call_sentiment)
     factory.return_value = None
     embedding.reset_mock()
-    StepCubeText(context, config).run(full=True)
+    run_cube(StepCubeText(context, config), full=True)
     after = store.load(Tables.earnings_call_sentiment)
     assert before is not None and after is not None
     pd.testing.assert_frame_equal(before, after, check_exact=True)
     panel = store.load(Tables.cube_part_text)
     assert panel is not None and panel[["f_ec_prep_tone", "f_ec_answers_tone", "f_ec_qa_coherence_mean"]].notna().all().all()
     assert panel["f_ec_questions_tone"].isna().all() and not embedding.called
-    plan = StepCubeText(context, config).plan_window(pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
+    plan = StepCubeText(context, config).plan_window(pd.bdate_range("2020-01-01", "2027-03-01"))
     assert plan.sentiment_work == {("ADP", "2026Q3")}
     print(
         "SANITY: missing question inference remains retryable; valid stored management/prepared scores and independent embeddings still produce their features."
@@ -141,6 +144,6 @@ def test_stale_model_and_legacy_markers_do_not_complete_calls(sqlite_store: Data
     scores = store.load(Tables.earnings_call_sentiment)
     assert scores is not None
     store.save(Tables.earnings_call_sentiment, scores.assign(model=step._sentiment_cache + ":invalid-pending"))
-    retry = StepCubeText(context, config).plan_window(pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
+    retry = StepCubeText(context, config).plan_window(pd.bdate_range("2020-01-01", "2027-03-01"))
     assert retry.sentiment_work == {("ADP", "2026Q3")} and not retry.eligible
     print("SANITY: legacy repair rows are excluded as scores and completion; normal key comparison retries without acknowledgement state.")

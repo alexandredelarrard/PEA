@@ -139,7 +139,7 @@ def check_institutionals(
     )
     if broken:
         findings.append(Finding.at(9, f"{broken} unreconciled complete accessions", "Manifest and actual source books reconcile"))
-    dates = filing_public_dates(m, trading_index)
+    dates = filing_public_dates(m, trading_index, context.config)
     prefix_checks = 0
     try:
         for day in dates.dropna().drop_duplicates().sort_values():
@@ -149,12 +149,12 @@ def check_institutionals(
             cutoff = prior_sessions[-1]
             prefix = m.loc[dates.le(cutoff)]
             hp = h.loc[h.accession_number.isin(prefix.accession_number)]
-            a, sa = public_books(prefix, hp, cutoff, trading_index)
-            b, sb = public_books(m, h, cutoff, trading_index)
+            a, sa = public_books(prefix, hp, cutoff, trading_index, context.config)
+            b, sb = public_books(m, h, cutoff, trading_index, context.config)
             pd.testing.assert_frame_equal(a, b)
             pd.testing.assert_frame_equal(sa, sb)
             prefix_checks += 1
-        _, states = public_books(m, h, filed_through, trading_index)
+        _, states = public_books(m, h, filed_through, trading_index, context.config)
     except (AssertionError, ValueError) as exc:
         findings.append(Finding.at(9, str(exc), "Future filings cannot change any historical publication"))
         states = pd.DataFrame()

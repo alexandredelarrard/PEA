@@ -7,13 +7,12 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import SECONDARY_CLASS, SOURCE_AVAILABILITY_BUFFER_DAYS
+from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.quotes import terminal_basis_factor, terminal_rows
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
@@ -33,11 +32,13 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
 )
 from src.data_aggregate.utils.institutionals.ownership_features import (
     SUBJECT_COLUMNS,
+    ScheduleSource,
     SubjectIdentity,
     build_ownership_feature_panel,
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     FtdPublication,
+    FtdSource,
     ShortFlowCapital,
     build_short_flow_feature_panel,
     prepare_fails_quantities,
@@ -46,10 +47,12 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 )
 from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
+from src.utils.data_policy import publication_policy
 from src.utils.identity_tables import read_identity
 from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
+from src.utils.window import Window, WindowPlan
 
 
 class StepCubeInstitutionals(Step):
@@ -58,29 +61,23 @@ class StepCubeInstitutionals(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
-        self._part = part_for(Tables.cube_part_institutionals)
+        self._cfg = config.data_aggregate
         self._bugfix = load_bugfix(context.config_dir)
-        self._insider_lag = SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name]
-        cfg = config.get("data_availability")
-        self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
+        self._insider_lag = int(publication_policy(config, Tables.insider_transactions).lag.value)
+        self._availability = InstitutionalAvailability.from_config(config)
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[Table, WindowPlan]:
         # Plan the saved tail before loading the full feature dependencies.
-        trading_index = load_trading_calendar(self._store)
-        window = plan_window(
-            self._store,
-            Tables.cube_part_institutionals,
-            full=full,
-            warmup=self._warmup(),
-            trading_index=trading_index,
-            refresh=PART_REFRESH_TRADING_DAYS,
-        )
+        trading_index = load_trading_calendar(self._context)
+        window = plan_window(self._context, Tables.cube_part_institutionals, trading_index)
+        if window is None:
+            return {}
 
         # Compute once; history-dependent features need the complete calendar.
-        df_panel = self.build_panel()
+        df_panel = self.build_panel(window.read, trading_index)
 
         self._write_panel(df_panel, window)
+        return {Tables.cube_part_institutionals: window}
 
     @staticmethod
     def _output_keys(rows: pd.DataFrame) -> pd.MultiIndex:
@@ -99,20 +96,13 @@ class StepCubeInstitutionals(Step):
             raise ValueError("Institutional output has repeated date/ticker keys")
         return index
 
-    def _write_panel(self, rows: pd.DataFrame, window: PartWindow) -> None:
-        """Write the ordinary refresh tail in one transaction; a schema change rebuilds the part."""
+    def _write_panel(self, rows: pd.DataFrame, window: WindowPlan) -> None:
+        """Publish the resolved dates/keys; a schema change requires an explicit rebuild."""
         self._output_keys(rows)
         part = Tables.cube_part_institutionals
         rows = rows.astype(dict.fromkeys([column for column in rows if column not in part.pk], "float64"))
-        with self._store.transaction() as store:
-            count = write_part(store, part, rows, window, drop_empty=True)
-            if count == COLUMNS_CHANGED:
-                count = write_part(store, part, rows, PartWindow(None, None), drop_empty=True)
-        self._log.info("Institutional output: refresh from %s; wrote %s rows", window.refresh_from, count)
-
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
+        count = write_part(self._store, part, rows, window, drop_empty=True)
+        self._log.info("Institutional output: refresh from %s; wrote %s rows", window.write.start, count)
 
     def _fill_unknown_units(self, df_factor: pd.DataFrame) -> pd.DataFrame:
         """A ticker with no basis on any date (units unverified) converts at `unknown_unit_factor`, with a warning.
@@ -121,7 +111,7 @@ class StepCubeInstitutionals(Step):
         `ic_ftd_to_adv20`) is off by the quote-unit ratio for an ADR."""
         unknown = df_factor.columns[df_factor.isna().all()]
         if len(unknown):
-            factor = float(self._cfg.institutionals.unknown_unit_factor)
+            factor = float(self._cfg.sec_thirteen.unknown_unit_factor)
             self._log.warning(
                 "units unknown for %d ticker(s) %s: terminal-unit factor %s used, values may be off by the quote-unit ratio",
                 len(unknown),
@@ -132,11 +122,11 @@ class StepCubeInstitutionals(Step):
             df_factor[unknown] = factor
         return df_factor
 
-    def build_panel(self) -> pd.DataFrame:
+    def build_panel(self, window: Window, calendar: pd.DatetimeIndex) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
 
         # Load shared price and class inputs once.
-        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
+        frames = load_price_frames(self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=window)
         df_lines = institutional_inputs.load_ftd_lines(self._store)
         df_lineage = read_identity(self._store, Tables.universe_cik_symbol, columns=list(institutional_inputs.LINEAGE_COLUMNS), optional=True)
         df_factor = terminal_basis_factor(cast(pd.DataFrame, frames.security_basis))
@@ -156,7 +146,7 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(self, frames: PriceFrames, identity_intervals: pd.DataFrame | None, df_factor: pd.DataFrame) -> pd.DataFrame | None:
 
         # Load transactions and their completeness/title evidence before cleaning.
-        source = institutional_inputs.load_insider_transactions(self._store, frames.universe, identity_intervals)
+        source = institutional_inputs.load_insider_transactions(self._context, frames.universe, identity_intervals)
         if source is None or source.transactions.empty:
             return None
         source = institutional_inputs.lag_insider_source(
@@ -164,7 +154,7 @@ class StepCubeInstitutionals(Step):
         )
 
         # load and clean roles per person
-        df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)
+        df_roles = institutional_inputs.load_insider_role_evidence(self._context, source.transactions, frames.universe, frames.trading_index)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
@@ -193,9 +183,9 @@ class StepCubeInstitutionals(Step):
         df_classes = (
             lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)] if lines is not None else None
         )
-        df_short, df_finra = institutional_inputs.load_short_volume(self._store, frames.universe, lines, lineage)
-        df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe, lines, self._bugfix)
-        df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._store, df_classes), self._bugfix)
+        df_short, df_finra = institutional_inputs.load_short_volume(self._context, frames.universe, lines, lineage)
+        df_fails, df_coverage = institutional_inputs.load_fails(self._context, frames.universe, lines, self._bugfix)
+        df_bars = apply_volume_scale(institutional_inputs.load_class_bars(self._context, df_classes), self._bugfix)
 
         # Put FINRA, FTD and outstanding quantities in each ticker's last saved security units (`q * F_T / F_d`).
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
@@ -220,29 +210,30 @@ class StepCubeInstitutionals(Step):
             df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
             df_source = terminal_rows(df_source, ("fails_quantity",), df_factor)
             settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure)
-            available = short_flow._ftd_available_dates(df_coverage, SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_fails_to_deliver_security.name])
+            available = short_flow._ftd_available_dates(
+                df_coverage, int(publication_policy(self._config, Tables.sec_fails_to_deliver_security).lag.value)
+            )
             publication = FtdPublication(df_coverage, available)
-        return build_short_flow_feature_panel(frames, df_short, settlement, capital, publication, df_tenure)
+        fails = FtdSource(settlement, publication) if settlement is not None and publication is not None else None
+        return build_short_flow_feature_panel(frames, df_short, fails, capital, self._config, df_tenure)
 
     def _ownership_panel(self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
 
         # Load the two schedules and independent global completeness frontiers.
-        df_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
-        df_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        df_13d = capital_inputs.load_source(self._context, Tables.sec_13d, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
+        df_13g = capital_inputs.load_source(self._context, Tables.sec_13g, frames.universe, markers=True, columns=SUBJECT_COLUMNS)
         identity = SubjectIdentity.from_tables(lineage, lines) if lineage is not None and lines is not None else None
         if identity is None:
             self._log.warning("lineage or CUSIP lines absent -> 13D/13G filings are counted without the subject-side identity filter")
-        complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
-        complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
+        complete_through_13d = institutional_frontiers.schedule_complete_through(self._context, Tables.sec_13d, last_session)
+        complete_through_13g = institutional_frontiers.schedule_complete_through(self._context, Tables.sec_13g, last_session)
 
         # Count filings per schedule and apply each schedule's coverage mask in the builder.
         return build_ownership_feature_panel(
             frames,
-            df_13d,
-            df_13g,
+            (ScheduleSource(Tables.sec_13d, df_13d, complete_through_13d), ScheduleSource(Tables.sec_13g, df_13g, complete_through_13g)),
+            self._config,
             availability=self._availability,
             identity=identity,
-            complete_through_13d=complete_through_13d,
-            complete_through_13g=complete_through_13g,
         )

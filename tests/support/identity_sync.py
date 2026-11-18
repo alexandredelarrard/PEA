@@ -14,18 +14,15 @@ import pandas as pd
 import pytest
 
 from src.data_extract.transformers import step_extract_identity as step_module
-from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.identity.identity_sync import SyncResult
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import universe_of
 
 #: an empty published lineage, as the stubbed resolver inputs carry
 _NO_LINEAGE = pd.DataFrame(columns=["canonical_ticker", "cik", "role", "valid_from"])
-
-
-def _config() -> SimpleNamespace:
-    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes")
-    return SimpleNamespace(local=SimpleNamespace(paths=paths), data_extract=SimpleNamespace(years_history=15))
 
 
 def stub_sync(monkeypatch: pytest.MonkeyPatch, module: Any = step_module) -> dict[str, list[Any]]:
@@ -40,7 +37,7 @@ def stub_sync(monkeypatch: pytest.MonkeyPatch, module: Any = step_module) -> dic
     monkeypatch.setattr(
         module,
         "recheck_tickers",
-        lambda scopes, as_of, every: calls["recheck"].append({"tickers": sorted(scopes), "as_of": as_of, "every": every}) or [],
+        lambda context, scopes, every: calls["recheck"].append({"tickers": sorted(scopes), "as_of": context.run.as_of, "every": every}) or [],
     )
     monkeypatch.setattr(module, "owned_scopes", lambda identity: ({}, {}))
     monkeypatch.setattr(module, "sync_filer_rows", lambda *args, **kwargs: ([], []))
@@ -62,4 +59,9 @@ def run_sync(
         context.universe = universe_of(sorted(identity.roster_cik))
     if getattr(context, "config_dir", None) is None:
         context.config_dir = "configs"
-    return StepExtractIdentity(context, _config(), IdentityOptions(full=full, as_of=as_of)).run_sync()  # type: ignore[arg-type]
+    if getattr(getattr(context, "config", None), "data", None) is None:
+        context.config = extract_config()
+    current = getattr(context, "run", None)
+    anchor = as_of if as_of is not None else current.instant if current is not None else pd.Timestamp("2026-11-16")
+    context.run = WindowRun("full" if full else "incremental", "identity sync fixture", anchor)
+    return StepExtractIdentity(context, context.config).run_sync()  # type: ignore[arg-type]

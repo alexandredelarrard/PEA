@@ -19,8 +19,9 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
+from src.data_extract.utils.common.incremental import matches_stored
+from src.data_extract.utils.common.resume import source_plan
 from src.data_extract.utils.common.security_lines import load_security_manual
-from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     FieldMap,
@@ -30,6 +31,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
 )
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, apply_predecessor_series, rebase_split_events
+from src.utils.data_policy import source_read_window
 from src.utils.predecessor_series import load_level_actions, load_predecessor_series
 from src.utils.price.adjustments import ShareBasis, forward_split_factor, load_bugfix, split_events
 from src.utils.price.basis import load_share_basis
@@ -144,11 +146,10 @@ def share_basis_factors(
     return out
 
 
-def with_predecessor_series(
-    context: Context, vendor: pd.DataFrame, names: list[str], splits: pd.DataFrame, *, config_dir: str = DEFAULT_CONFIG_DIR
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def with_predecessor_series(context: Context, vendor: pd.DataFrame, names: list[str], splits: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """`(vendor, splits)` with each predecessor window's canonical ARQ rows replaced by the window owner's own on the
     ticker's share basis, and the split events rebased so the window's PIT count is the owner's; logged per quarter."""
+    config_dir = str(context.config_dir)
     series = load_predecessor_series(context, names, config_dir)
     if not series:
         return vendor, splits
@@ -217,23 +218,36 @@ def vendor_share_basis(
     names: list[str],
     yf_splits: pd.DataFrame | None,
     splits: pd.DataFrame,
-    config_dir: str,
 ) -> ShareBasis:
     """Resolve on the selected owner actions and the same repaired anchors as prices."""
+    config_dir = str(context.config_dir)
     bugfix = load_bugfix(config_dir)
     selected = load_level_actions(context, names, config_dir=config_dir)
     return load_share_basis(context, names, bugfix, selected, yf_splits, shares=vendor, base_events=splits)
 
 
-def build_sharadar_history(context: Context, tickers: list[str], *, full: bool = False, config_dir: str = DEFAULT_CONFIG_DIR) -> None:
-    """Build `sharadar_fundamentals_history` from `sharadar_fundamentals_facts` for `tickers`.
-
-    Inputs are read-only. Default upserts; `full=True` first deletes these tickers' rows so vanished keys go too.
-    """
-    field_map = load_field_map(config_dir)
+def build_sharadar_history(context: Context, tickers: list[str]) -> None:
+    """Rebuild changed vendor-derived events with causal source reads and configured bounded writes."""
     names = sorted(set(tickers))
-
-    vendor = context.store.load(Tables.sharadar_fundamentals_facts, project=True, where={"ticker": names, "dimension": ARQ}, optional=True)
+    if not names:
+        return
+    plan = source_plan(context, Tables.sharadar_fundamentals_history, None, (("ticker", tuple(names)),))
+    source = source_read_window(context.config, Tables.sharadar_fundamentals_facts, context.run.as_of)
+    if plan is None or source is None:
+        return
+    vendor = context.store.load(
+        Tables.sharadar_fundamentals_facts,
+        project=True,
+        where={"ticker": names, "dimension": ARQ},
+        since=source.start,
+        until=min(source.end, plan.read.end),
+        optional=True,
+    )
+    stored = context.store.load(
+        Tables.sharadar_fundamentals_history, where={"ticker": names}, since=plan.write.start, until=plan.write.end, optional=True
+    )
+    config_dir = str(context.config_dir)
+    field_map = load_field_map(config_dir)
     if vendor is None or vendor.empty:
         context.log.warning("Sharadar history: no ARQ rows for %d requested ticker(s) -- run `fundamentals-sharadar` first", len(names))
         return
@@ -245,21 +259,25 @@ def build_sharadar_history(context: Context, tickers: list[str], *, full: bool =
     # second split source; `split_events` unions it with `sharadar_actions` under a corroboration rule
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     report = TranslationReport()
-    vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits, report=report), config_dir=config_dir)
-    basis = vendor_share_basis(context, vendor, names, yf_splits, splits, config_dir)
+    vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits, report=report))
+    vendor = vendor.loc[pd.to_datetime(vendor["date"]).between(source.start, min(source.end, plan.read.end))]
+    basis = vendor_share_basis(context, vendor, names, yf_splits, splits)
     splits = basis.vendor
 
     frame = build_frame(vendor, actions, field_map, yf_splits=yf_splits, report=report, splits=splits)
+    if not frame.empty:
+        frame = frame.loc[plan.write.mask(frame["as_of"])]
     if frame.empty:
         context.log.warning("Sharadar history: the transform produced 0 rows")
         return
 
-    if full:
-        # one `IN` delete rather than a round-trip per ticker
-        deleted = context.store.delete(Tables.sharadar_fundamentals_history, {"ticker": names})
-        context.log.warning("Sharadar history: --full deleted %d existing row(s) before the rebuild (scope: %d ticker(s))", deleted, len(names))
-
-    written = context.store.save(Tables.sharadar_fundamentals_history, frame)
+    if matches_stored(stored, frame, Tables.sharadar_fundamentals_history):
+        context.log.info("Sharadar history: configured events unchanged; no write")
+        return
+    if context.run.mode in {"full", "recovery"}:
+        written = context.store.replace_window(Tables.sharadar_fundamentals_history, frame, plan.write, {"ticker": names}).inserted
+    else:
+        written = context.store.save(Tables.sharadar_fundamentals_history, frame)
     context.log.info(
         "Sharadar history: %d row(s) over %d ticker(s), %s..%s\n%s",
         written,

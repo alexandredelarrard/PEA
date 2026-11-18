@@ -86,16 +86,16 @@ def test_required_sources_are_scheduled_without_retired_attention_sources():
     print("  OK: the retired Google Trends source is absent and the final gate is present")
 
 
-def test_freshness_inventory_comes_only_from_schema():
+def test_freshness_inventory_comes_from_table_configuration():
     root = DAG_FILE.parents[2]
     cli_source = _source(root / "src/data_extract/cli.py")
-    assert "freshness_tables()" in cli_source
+    assert "freshness_tables(context.config)" in cli_source
     assert "SOURCE_TABLES" not in cli_source
     assert not (root / "src/data_extract/freshness.py").exists()
 
     print("\n=== SANITY CHECK: one freshness inventory ===")
-    print("  extraction-status consumes schema.freshness_tables(); no parallel registry exists")
-    print("  OK: schema.py is the sole table/cadence/date-column source of truth")
+    print("  extraction-status consumes freshness_tables(context.config); no parallel inventory exists")
+    print("  OK: data.yml owns cadence; schema.py retains table and column identity")
 
 
 #: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, FTD, SEC current tickers),
@@ -655,8 +655,21 @@ def test_identity_reads_no_input_written_later_in_the_night():
     reads = {"universe_tickers"}  # `context.universe`
     for path in IDENTITY_BUILD_FILES:
         tree = ast.parse(_source(root / path))
+        policy_references = {
+            id(reference)
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in {"source_read_window", "window_policy", "archive_scopes"}
+            for reference in ast.walk(call)
+        }
         reads |= {
-            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "Tables"
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "Tables"
+            and id(node) not in policy_references
         }
     ancestors: set[str] = set()
     pending = list(dag.tasks["identity"].upstream)
@@ -677,3 +690,40 @@ def test_identity_reads_no_input_written_later_in_the_night():
     print("\n=== SANITY CHECK: identity inputs land before identity (AC-020) ===")
     print(f"  build reads {sorted(reads)}")
     print(f"  {len(ancestors)} upstream tasks; one-night lag only for {sorted(reads & ONE_NIGHT_LAG)}; nothing else written later. Validated.")
+
+
+def test_pipeline_tasks_share_the_extraction_run_cutoff() -> None:
+    extraction = load_dag(DAG_FILE)
+    aggregate = load_dag(AGG_DAG_FILE)
+    source_commands = [task.kwargs["bash_command"] for task in extraction.tasks.values() if "data_extract " in task.kwargs.get("bash_command", "")]
+    assert source_commands and all('--as-of "' in command for command in source_commands)
+    cutoff = extraction.tasks["trigger_data_aggregation"].kwargs["conf"]["as_of"]
+    assert "dag_run.start_date" in cutoff and "as_of" in cutoff
+    assert all(cutoff in command for command in source_commands)
+    cube_commands = [task.kwargs["bash_command"] for task in aggregate.tasks.values() if "data_aggregate " in task.kwargs.get("bash_command", "")]
+    assert cube_commands and all(cutoff in command for command in cube_commands)
+    print("SANITY: every extraction and cube task receives one frozen run cutoff, relayed across the DAG trigger and reused on retries.")
+
+
+def test_run_cutoff_template_and_actual_cli_parser_preserve_the_market_day() -> None:
+    from datetime import datetime
+
+    import pandas as pd
+    from jinja2 import Environment
+
+    from src.utils.window import WindowRun
+
+    dag = load_dag(DAG_FILE)
+    template = dag.tasks["trigger_data_aggregation"].kwargs["conf"]["as_of"]
+    origin = datetime.fromisoformat("2026-11-17T00:30:00.123456+00:00")
+    rendered = (
+        Environment().from_string(template).render(dag_run=SimpleNamespace(conf={}, start_date=origin), macros=SimpleNamespace(datetime=datetime))
+    )
+    option = next(param for param in extraction_cli.cli.commands["sec-fundamentals-history"].params if param.name == "as_of")
+    parsed = option.type.convert(rendered, option, None)
+    run = WindowRun("incremental", "DAG cutoff parser check", pd.Timestamp(parsed))
+    assert run.instant == pd.Timestamp(origin)
+    assert run.as_of == pd.Timestamp("2026-11-16")
+    for command in REQUIRED_COMMANDS:
+        assert any(param.name == "as_of" for param in extraction_cli.cli.commands[command].params), command
+    print("SANITY: the actual source CLI preserves the precise UTC run cutoff and resolves its prior New York market date for every DAG route.")

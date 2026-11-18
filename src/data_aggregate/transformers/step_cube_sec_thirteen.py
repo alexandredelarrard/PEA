@@ -10,14 +10,12 @@ from typing import cast
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames, load_price_frames, load_trading_calendar
@@ -31,11 +29,12 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSIO
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
-from src.data_aggregate.utils.sec_thirteen.value_basis import prepare_public_value_quotes
-from src.data_store.schema import Tables
+from src.data_aggregate.utils.sec_thirteen.value_basis import MIN_ROW_COVERAGE, prepare_public_value_quotes
+from src.data_store.schema import Table, Tables
 from src.utils.identity_tables import CusipTags, universe_cusips
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
+from src.utils.window import Window, WindowPlan
 
 
 @dataclass(frozen=True)
@@ -62,43 +61,37 @@ class StepCubeSecThirteen(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
-        self._part = part_for(Tables.cube_part_sec_thirteen)
-        self._settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
-        cfg = config.get("data_availability")
-        self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
+        self._cfg = config.data_aggregate
+        self._availability = InstitutionalAvailability.from_config(config)
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[Table, WindowPlan]:
         """Plan the effective window, prepare both families once, project them on the window and save it."""
         # Plan the actual rewrite footprint before loading dependency payloads.
-        calendar = load_trading_calendar(self._store)
+        calendar = load_trading_calendar(self._context)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
-        saved_dates = pd.DatetimeIndex(self._store.distinct(Tables.cube_part_sec_thirteen, "date"))
-        window = plan_window(
-            self._store,
-            Tables.cube_part_sec_thirteen,
-            full=full,
-            warmup=self._warmup(),
-            trading_index=calendar,
-            refresh=PART_REFRESH_TRADING_DAYS,
+        window = plan_window(self._context, Tables.cube_part_sec_thirteen, calendar)
+        if window is None:
+            return {}
+        saved_dates = pd.DatetimeIndex(
+            self._store.distinct(Tables.cube_part_sec_thirteen, "date", where={**dict(window.scope), "date": window.write})
         )
-        self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
+        self._require_saved_calendar(saved_dates, calendar, window.write.start)
 
         # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
-        resources = self._load_resources()
+        resources = self._load_resources(Window(calendar[0], window.read.end), calendar)
         prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
         self._require_saved_families(prepared, existing_columns)
 
         # Project the output window; a full window is the whole history.
         dates = resources.frames.trading_index
-        output_dates = dates if window.since is None else dates[dates >= window.since]
+        output_dates = dates[(dates >= window.read.start) & (dates <= window.read.end)]
         panels = self._project_panels(resources, prepared, output_dates)
         supported = self._feature_columns(panels)
 
         # Probe older windows, newest first, for columns the output window cannot show.
         unresolved = set() if window.is_full else self._possible_columns(resources, prepared) - supported
         end = int(dates.searchsorted(output_dates[0])) if len(output_dates) else len(dates)
-        span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
+        span = max(1, len(output_dates))
         while unresolved and end:
             start = max(0, end - span)
             broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
@@ -107,11 +100,11 @@ class StepCubeSecThirteen(Step):
             unresolved.difference_update(supported)
             end = start
 
-        # A schema change reprojects the whole history; otherwise the window keeps the saved columns and their order.
+        # Full rebuilds adopt the projected schema; incremental writes require the retained columns.
         if window.is_full:
             df_panel = self._merge_panels(resources.frames, panels)
         elif supported != set(existing_columns) - {"date", "ticker"}:
-            df_panel = self._merge_panels(resources.frames, self._project_panels(resources, prepared, dates))
+            raise ValueError("SEC13F feature columns changed; request an explicit full rebuild")
         else:
             output_frames = resources.frames.on(output_dates, *self._OUTPUT_FIELDS)
             df_panel = self._merge_panels(output_frames, panels)
@@ -119,11 +112,8 @@ class StepCubeSecThirteen(Step):
             df_panel = df_panel.assign(**{column: pd.Series(index=df_panel.index, dtype="float32") for column in supported - set(df_panel.columns)})
             df_panel = df_panel.reindex(columns=existing_columns)
 
-        # Schema fallback reuses the prepared full-history panel and performs one save.
-        result = write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
-        if result == COLUMNS_CHANGED:
-            self._require_saved_calendar(saved_dates, calendar, None)
-            write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, PartWindow(None, None), drop_empty=True)
+        write_part(self._store, Tables.cube_part_sec_thirteen, df_panel, window, drop_empty=True, existing_columns=existing_columns)
+        return {Tables.cube_part_sec_thirteen: window}
 
     @staticmethod
     def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
@@ -131,29 +121,24 @@ class StepCubeSecThirteen(Step):
         if not rewrite_dates.difference(calendar).empty:
             raise RuntimeError("SEC13F price calendar ends before the saved output frontier or omits a saved rewrite date; no rows may be replaced.")
 
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
-
-    def _load_resources(self) -> SecThirteenResources:
+    def _load_resources(self, window: Window, calendar: pd.DatetimeIndex) -> SecThirteenResources:
         # Read the shared dependencies once before any cleaning or feature work.
-        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context), fields=self._FIELDS, since=None)
+        frames = load_price_frames(self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=window)
         frames.require(*self._FIELDS)
-        history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
+        history = capital_inputs.load_source(self._context, Tables.superinvestor_roster)
         tags = CusipTags.load(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
         if history is not None:
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
-            cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
-            cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
+            cfg = self._cfg["sec_thirteen"]["superinvestor"]
+            cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg["selection"]["k"])
 
         # Issuer caps per quarter end bound every cleaned line: no position may exceed its issuer.
-        policy = self._cfg.get("institutionals", {}).get("value_basis")
         limits = {
-            "mcap": prepare_public_value_quotes(frames.mcap_pit, policy),
-            "shares_out": prepare_public_value_quotes(frames.shares_outstanding_pit, policy),
+            "mcap": prepare_public_value_quotes(frames.mcap_pit),
+            "shares_out": prepare_public_value_quotes(frames.shares_outstanding_pit),
         }
         return SecThirteenResources(frames, cohorts, tags, {name: series for name, series in limits.items() if series is not None})
 
@@ -161,18 +146,15 @@ class StepCubeSecThirteen(Step):
         # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
         universe, until = resources.frames.universe, resources.frames.trading_index.max()
         packets = thirteen_inputs.iter_filing_vintages(
-            self._store, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
+            self._context, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
         )
-        cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
 
         # Each filed row tagged and in canonical-class shares before the value repair; amended books arrive whole and the
         # compact rows sum each company per manager-quarter after the resolver.
-        with closing(
-            clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit, cfg.get("value_basis"), limits=resources.limits)
-        ) as batches:
-            history = prepare_institutional_book_history(batches, resources.frames.trading_index, settle_days=self._settle_days)
+        with closing(clean_public_batches(packets, resources.tags, universe, resources.frames.close_pit, limits=resources.limits)) as batches:
+            history = prepare_institutional_book_history(batches, resources.frames.trading_index, config=self._config)
         if history is None:
             return None
         compact, states = history
@@ -190,29 +172,29 @@ class StepCubeSecThirteen(Step):
 
         # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
         until, ciks = resources.frames.trading_index.max(), sorted(resources.cohorts[""])
-        packets = thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"])
+        packets = thirteen_inputs.iter_filing_vintages(self._context, until, ciks, bond_lines=self._cfg["bond_lines"])
         if packets is None:
             return None
 
         # Clean whole books once, retaining off-universe and unmapped positions and provenance. Securities the price cube does not cover
         # are priced by one consensus per (quarter, CUSIP), built in a first pass over the same books.
-        cfg = self._cfg.get("institutionals", {})
-        age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 100))
-        policy = cfg.get("value_basis")
+        cfg = self._cfg["sec_thirteen"]
+        age_days = int(cfg["superinvestor"]["max_age_calendar_days"])
         consensus = build_consensus_quotes(
-            lambda: thirteen_inputs.iter_filing_vintages(self._store, until, ciks, bond_lines=self._cfg["bond_lines"]),
+            lambda: thirteen_inputs.iter_filing_vintages(self._context, until, ciks, bond_lines=self._cfg["bond_lines"]),
             resources.tags,
             resources.frames.close_pit,
-            policy,
             resources.limits,
         )
         with closing(
-            clean_public_batches(packets, resources.tags, None, resources.frames.close_pit, policy, consensus=consensus, limits=resources.limits)
+            clean_public_batches(packets, resources.tags, None, resources.frames.close_pit, consensus=consensus, limits=resources.limits)
         ) as batches:
-            books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days)
+            books = prepare_superinvestor_book_history(batches, resources.frames.trading_index, age_days, self._config)
         if books is None:
             return None
-        min_coverage = float((policy or {}).get("min_row_coverage", 0.8))
+        min_coverage = MIN_ROW_COVERAGE
+        if resources.frames.close_pit is None or resources.frames.security_basis is None:
+            raise ValueError("SEC13F superinvestor behavior requires close_pit and security_basis price fields")
         market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis, min_coverage)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
@@ -231,9 +213,7 @@ class StepCubeSecThirteen(Step):
         frames = resources.frames.on(dates, *self._OUTPUT_FIELDS)
         broad = None if prepared.institutional is None else pd.DataFrame(columns=["date", "ticker"])
         if prepared.institutional is not None and not prepared.institutional.empty:
-            fields = project_institutional_features(
-                prepared.institutional, frames, self._settle_days, trading_calendar=resources.frames.trading_index
-            )
+            fields = project_institutional_features(prepared.institutional, frames, self._config)
             emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
             broad = build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 

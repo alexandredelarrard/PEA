@@ -47,7 +47,6 @@ class TableSpec:
     table: str
     # -- table-agnostic thresholds (always present, from `validate.defaults`) --------- #
     redundancy_r: float
-    exact_equal_tol: float
     clip_limit_share: float
     tie_limit_share: float
     jump_z: float
@@ -56,7 +55,6 @@ class TableSpec:
     hole_min_days: int
     frozen_min_days: int
     min_tickers_xs: int
-    universe_expected: int
     coverage_min_share: float
     edge_days: int
     recent_sessions: int
@@ -151,7 +149,6 @@ def load_spec(config: DictConfig, table: Any, **overrides: Any) -> TableSpec:
     return TableSpec(
         table=name,
         redundancy_r=float(merged["redundancy_r"]),
-        exact_equal_tol=float(merged["exact_equal_tol"]),
         clip_limit_share=float(merged["clip_limit_share"]),
         tie_limit_share=float(merged["tie_limit_share"]),
         jump_z=float(merged["jump_z"]),
@@ -160,7 +157,6 @@ def load_spec(config: DictConfig, table: Any, **overrides: Any) -> TableSpec:
         hole_min_days=int(merged["hole_min_days"]),
         frozen_min_days=int(merged["frozen_min_days"]),
         min_tickers_xs=int(merged["min_tickers_xs"]),
-        universe_expected=int(merged["universe_expected"]),
         coverage_min_share=float(merged["coverage_min_share"]),
         edge_days=int(merged["edge_days"]),
         recent_sessions=int(merged["recent_sessions"]),

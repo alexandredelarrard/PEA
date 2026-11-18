@@ -3,26 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 
-from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
-from src.data_store.schema import Resume, Tables
-from src.utils.institutional_vintages import availability_date
 from src.utils.price.levels import convert_quantities
 
 logger = logging.getLogger(__name__)
-
-#: The first 13F period in the source.
-INST_LEVEL_FLOOR_PERIOD = pd.Timestamp(cast(str, cast(Resume, Tables.sec13f_hr.resume).coverage_start))
-
-#: The first period whose PREDECESSOR is also post-break, so a QoQ delta is meaningful.
-INST_DELTA_FLOOR_PERIOD = INST_LEVEL_FLOOR_PERIOD + pd.offsets.QuarterEnd(1)
 
 #: Prior-quarter holders below which every `DELTA_FEATURES` value is nulled: a newly covered stock's jump from a
 #: handful of holders to hundreds describes coverage onset, not activity. Levels stay valid.
@@ -108,28 +99,19 @@ def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFr
     return (df_value / df_positive_cap).replace([np.inf, -np.inf], np.nan)
 
 
-def _mask_daily_institutional_fields(fields: dict[str, pd.DataFrame], floors: pd.Series) -> dict[str, pd.DataFrame]:
-    """Apply the publication-dated level and delta floors (the filing deadline before the calendar starts) to every
-    daily field; drop empty fields."""
-    level_floor, delta_floor = (
-        pd.Timestamp(floor) if pd.notna(floor) else period + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-        for period, floor in zip(pd.DatetimeIndex(floors.index), floors, strict=True)
-    )
-    masked = {
-        name: df_field.where(pd.Series(df_field.index >= (delta_floor if name in DELTA_FEATURES else level_floor), index=df_field.index), axis=0)
-        for name, df_field in fields.items()
-    }
-    return {name: df_field for name, df_field in masked.items() if df_field.notna().any().any()}
-
-
 def project_institutional_features(
     df_features: pd.DataFrame,
     frames: PriceFrames,
-    settle_trading_days: int,
-    *,
-    trading_calendar: pd.DatetimeIndex,
+    config: DictConfig,
 ) -> dict[str, pd.DataFrame]:
     """Project quarter features and the existing ownership/value denominators onto daily dates."""
+    df_features = df_features.copy()
+    coverage = pd.Timestamp(config.data.tables.sec13f_hr.coverage_start)
+    # Coverage is a report-period condition. Eligibility already uses actual public filing dates.
+    level_fields = [column for column in (*LEVEL_FEATURES, "inst_shares", "inst_value") if column in df_features]
+    delta_fields = [column for column in DELTA_FEATURES if column in df_features]
+    df_features.loc[df_features["period"].lt(coverage), level_fields] = np.nan
+    df_features.loc[df_features["period"].lt(coverage + pd.offsets.QuarterEnd(1)), delta_fields] = np.nan
     features = [column for column in EMISSION if column in df_features.columns]
     fields = {feature: nullable_value_to_daily(df_features, feature, frames.trading_index) for feature in features}
     if "inst_shares" in df_features:
@@ -140,11 +122,7 @@ def project_institutional_features(
     if "inst_value" in df_features:
         fields["ic_inst_value_to_mcap"] = _daily_institutional_value_weight(df_features, frames)
 
-    # Level and delta floors at their publication dates.
-    floors = availability_date(
-        pd.DatetimeIndex([INST_LEVEL_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD]), trading_calendar, settle_trading_days=settle_trading_days
-    )
-    return _mask_daily_institutional_fields(fields, floors)
+    return {name: field for name, field in fields.items() if field.notna().any().any()}
 
 
 def _book_versions(df_states: pd.DataFrame) -> tuple[pd.DataFrame, pd.DatetimeIndex, list[tuple[pd.Timestamp, int, int]]]:

@@ -8,13 +8,15 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner
-from omegaconf import OmegaConf
 
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_prices as mod
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import universe_of
 
 ORDER = ["price_actions", "dividends", "prices", "macro", "earnings_surprises"]
@@ -34,8 +36,14 @@ def _step(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, dict[str, Any]
     monkeypatch.setattr(mod, "fetch_prices", recorder("prices"))
     monkeypatch.setattr(mod, "fetch_macro", recorder("macro"))
     monkeypatch.setattr(mod, "fetch_earnings_surprises", recorder("earnings_surprises"))
-    config = OmegaConf.create({"data_extract": {"years_history": 15, "macro_years_history": 30}})
-    context = SimpleNamespace(config=config, log=logging.getLogger("test"), config_dir="configs", universe=universe_of(["AAPL"]))
+    config = extract_config()
+    context = SimpleNamespace(
+        config=config,
+        run=WindowRun("incremental", "price route fixture", pd.Timestamp("2026-11-16")),
+        log=logging.getLogger("test"),
+        config_dir="configs",
+        universe=universe_of(["AAPL"]),
+    )
     return StepExtractPrices(context=context, config=config)
 
 
@@ -44,16 +52,16 @@ def test_run_ends_with_earnings_surprises(monkeypatch: pytest.MonkeyPatch) -> No
     _step(monkeypatch, calls).run(tickers=["AAPL"])
 
     assert [label for label, _ in calls] == ORDER
-    assert calls[4][1] == {"tickers": ["AAPL"], "years_history": 15, "full": False}
+    assert calls[4][1] == {"tickers": ["AAPL"]}
     print("\n=== SANITY CHECK: StepExtractPrices order ===")
-    print(f"  {' -> '.join(ORDER)}; earnings surprises get the equity window 15 (not the macro 30). Validated.")
+    print(f"  {' -> '.join(ORDER)}; each source reads its own configured dates from the same Context. Validated.")
 
 
 def test_run_earnings_surprises_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     _step(monkeypatch, calls).run_earnings_surprises(["MSFT"])
 
-    assert calls == [("earnings_surprises", {"tickers": ["MSFT"], "years_history": 15, "full": False})]
+    assert calls == [("earnings_surprises", {"tickers": ["MSFT"]})]
     print("\n=== SANITY CHECK: run_earnings_surprises alone ===\n  one fetcher call, no price or macro download. Validated.")
 
 
@@ -71,11 +79,11 @@ def test_a_failing_source_aborts_the_rest(monkeypatch: pytest.MonkeyPatch) -> No
 def test_the_cli_command_calls_the_prices_step(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     step = _step(monkeypatch, calls)
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (step.config, step._context))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (step._config, step._context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
 
     result = CliRunner().invoke(cli_mod.cli, ["earnings-surprises", "-t", "aaa"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("earnings_surprises", {"tickers": ["AAA"], "years_history": 15, "full": False})]
+    assert calls == [("earnings_surprises", {"tickers": ["AAA"]})]
     print("\n=== SANITY CHECK: earnings-surprises command ===\n  calls StepExtractPrices.run_earnings_surprises once. Validated.")

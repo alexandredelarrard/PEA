@@ -221,9 +221,9 @@ def test_growth_is_nan_across_a_basis_change_and_computed_within_one():
 # the part-time weight comes from config                                       #
 # --------------------------------------------------------------------------- #
 def test_part_time_weight_is_read_from_build_cube_config_and_range_checked():
-    cfg = OmegaConf.load(CONFIG_DIR / "build_cube.yml")
-    alpha = part_time_weight(cfg.build_cube)
-    assert alpha == float(cfg.build_cube.workforce.part_time_weight)
+    cfg = OmegaConf.load(CONFIG_DIR / "data_aggregate.yml")
+    alpha = part_time_weight(cfg.data_aggregate)
+    assert alpha == float(cfg.data_aggregate.workforce.part_time_weight)
     assert 0.5 <= alpha <= 1.0
     for bad in (0.3, 1.2):
         with pytest.raises(ValueError, match="part_time_weight"):
@@ -231,7 +231,7 @@ def test_part_time_weight_is_read_from_build_cube_config_and_range_checked():
     with pytest.raises(ValueError, match="part_time_weight"):
         headcount_proxy(_employees([{"ticker": "AAA", "as_of": "2020-01-01", "employees_total": 1, "basis": "total"}]), 0.4)
     print("\n=== SANITY CHECK: part-time weight ===")
-    print(f"  configs/build_cube.yml build_cube.workforce.part_time_weight = {alpha}; 0.3, 0.4 and 1.2 raise. Validated.")
+    print(f"  configs/data_aggregate.yml data_aggregate.workforce.part_time_weight = {alpha}; 0.3, 0.4 and 1.2 raise. Validated.")
 
 
 def test_step_loads_the_projected_employee_table_with_two_years_of_lookback():

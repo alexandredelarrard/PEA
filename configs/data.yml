@@ -1,38 +1,1018 @@
-# Source-to-part freshness gates. Tunable here because they are operational tolerances, not
-# facts about the SEC formats.
-source_freshness:
-  insider_max_lag_days: 4
-
-# Point-in-time source availability. Keep this compact: table defaults apply to every field;
-# only fields or derived features with a later usable start belong below them.
-data_availability:
-  institutionals:
-    sec13f_hr:
-      __all__: "1999-06-30"  # First 13F period in the source; cube features start here.
-
-    insider_transactions:
-      __all__: "2006-01-03"  # First SEC insider bulk-data quarter, on filing date.
-
-    sec_13d:
-      __all__: "1995-09-06"  # First usable historical Schedule 13D event.
-
-    sec_13g:
-      __all__: "1996-01-26"  # First usable historical Schedule 13G event.
-
-    sec_short_volume_security:
-      __all__: "2018-08-01"  # First continuously retrievable FINRA RegSHO history.
-
+# Per-table dates, source work, PIT eligibility and freshness. Dates frozen at the approved 2026-11-16 migration.
+data:
+  planning:
+    ended_grace:
+      value: 10
+      unit: trading_sessions
+    lineage_recheck:
+      value: 7
+      unit: calendar_days
+  freshness:
+    max_age_days:
+      daily: 4
+      weekly: 10
+      biweekly: 20
+      monthly: 45
+      quarterly: 140
+      yearly: 460
+    prediction_min_fresh_share: 0.95
+    insider_max_lag_days: 4
+  derived_feature_starts:
+    ic_inst_breadth_chg: '2013-09-30'
+    ic_inst_shares_chg: '2013-09-30'
+    ic_inst_new_buyer_ratio: '2013-09-30'
+    ic_inst_exit_ratio: '2013-09-30'
+    ic_inst_cluster_buying: '2013-09-30'
+    ic_shortvol_high_x_weak_price: '2019-02-14'
+  tables:
+    universe_tickers:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    superinvestor_roster:
+      status: active
+      start_date: '2012-01-01'
+      end_date: null
+      source_start: '2012-01-01'
+      coverage_start: null
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: dated_snapshot
+        clock: snapshot_date
+        roll: market_session
+      freshness: null
+    symbol_tenure:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    universe_cik_symbol:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    universe_cusip:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    price_owner_windows:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    sec_company_tickers:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    sec_cik_profile:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    prices:
+      status: active
+      start_date: '1995-10-09'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 7
+          unit: calendar_days
+      pit:
+        mode: completed_session
+        clock: date
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
+    prices_dividends:
+      status: active
+      start_date: '1995-10-09'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 7
+          unit: calendar_days
+      pit:
+        mode: direct
+        clock: date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
+    prices_splits:
+      status: active
+      start_date: '1995-10-09'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 7
+          unit: calendar_days
+      pit:
+        mode: completed_session
+        clock: date
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
     sec_fails_to_deliver_security:
-      __all__: "2009-07-01"  # Start of the SEC-published FTD series.
-
-    derived_features:
-      ic_inst_breadth_chg: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_shares_chg: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_new_buyer_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_exit_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_cluster_buying: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_shortvol_high_x_weak_price: "2019-02-14"  # RegSHO plus z252 minimum history.
-
-# defeatbeta earnings-call transcript extraction (`extract-earnings-calls`).
-earnings_calls:
-  read_workers: 4  # parallel HuggingFace row-group reads; writes stay on one thread
+      status: active
+      start_date: '2009-07-01'
+      end_date: null
+      source_start: '2009-07-01'
+      coverage_start: '2009-07-01'
+      reprocess:
+        mode: missing_units
+      pit:
+        mode: half_month_end
+        clock: period
+        lag:
+          value: 21
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: biweekly
+    sec_short_volume_security:
+      status: active
+      start_date: '2018-08-01'
+      end_date: null
+      source_start: '2018-08-01'
+      coverage_start: '2018-08-01'
+      reprocess:
+        mode: tail
+        overlap:
+          value: 30
+          unit: calendar_days
+      pit:
+        mode: direct
+        clock: date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
+    prices_macro:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 7
+          unit: calendar_days
+      pit:
+        mode: completed_session
+        clock: date
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
+    cusip_ticker_map:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    sec_fundamentals_history:
+      status: active
+      start_date: '2009-04-15'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: sec_fundamentals_facts
+      pit:
+        mode: inherit
+        source: sec_fundamentals_facts
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: quarterly
+    sharadar_fundamentals_history:
+      status: active
+      start_date: '1995-11-09'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: sharadar_fundamentals_facts
+      pit:
+        mode: inherit
+        source: sharadar_fundamentals_facts
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: quarterly
+    fundamentals_employees:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: sec_employees_text
+      pit:
+        mode: inherit
+        source: sec_employees_text
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: quarterly
+    sec_fundamentals_facts:
+      status: active
+      start_date: '2009-04-15'
+      end_date: null
+      source_start: '2009-04-15'
+      coverage_start: null
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: quarterly
+    earnings_surprises:
+      status: active
+      start_date: '2002-10-01'
+      end_date: null
+      source_start: '2002-10-01'
+      coverage_start: null
+      reprocess:
+        mode: candidate_window
+        lookback:
+          value: 35
+          unit: calendar_days
+      pit:
+        mode: direct
+        clock: earnings_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: earnings_date
+        cadence: quarterly
+    notes_num:
+      status: active
+      start_date: '2009-01-01'
+      end_date: null
+      source_start: '2009-01-01'
+      coverage_start: null
+      reprocess:
+        mode: missing_units
+      pit:
+        mode: notes_release
+        clock: filed
+        filing_lag: {value: 1, unit: calendar_days}
+        later_clocks: [available_at]
+        monthly_release_day: 12
+        quarterly_lag:
+          value: 21
+          unit: calendar_days
+        observed_from: '2026-09-01'
+        roll: market_session
+      freshness:
+        clock: available_at
+        cadence: monthly
+    notes_text:
+      status: active
+      start_date: '2009-01-01'
+      end_date: null
+      source_start: '2009-01-01'
+      coverage_start: null
+      reprocess:
+        mode: missing_units
+      pit:
+        mode: inherit
+        source: notes_num
+        clock: filed
+      freshness:
+        clock: available_at
+        cadence: monthly
+    sharadar_fundamentals_facts:
+      status: active
+      start_date: '1995-11-09'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 100
+          unit: calendar_days
+      pit:
+        mode: direct
+        clock: date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: quarterly
+    sharadar_tickers:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    sharadar_actions:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: completed_session
+        clock: date
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
+    sharadar_sp500:
+      status: active
+      start_date: '1990-01-01'
+      end_date: null
+      source_start: '1990-01-01'
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 7
+          unit: calendar_days
+      pit:
+        mode: completed_session
+        clock: date
+        roll: market_session
+      freshness:
+        clock: date
+        cadence: daily
+    sec13f_hr:
+      status: active
+      start_date: '1999-07-01'
+      end_date: null
+      source_start: '1999-07-01'
+      coverage_start: '1999-06-30'
+      reprocess:
+        mode: missing_documents
+        archive_fallback: missing_units
+      pit:
+        mode: direct
+        clock: filing_date
+        later_clocks: [accepted_at]
+        lag:
+          value: 2
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: period
+        cadence: quarterly
+    sec_13f_manager_details:
+      status: active
+      start_date: '1999-07-01'
+      end_date: null
+      source_start: '1999-07-01'
+      coverage_start: '1999-06-30'
+      reprocess:
+        mode: tail
+        overlap:
+          value: 92
+          unit: calendar_days
+        cover_recovery:
+          cached_units: 2 # Pending SEC cover metadata in these latest cached filing units; bounded by start/end.
+      pit:
+        mode: direct
+        clock: first_filed_date
+        lag:
+          value: 2
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: first_filed_date
+        cadence: quarterly
+    insider_transactions:
+      status: active
+      start_date: '2006-01-01'
+      end_date: null
+      source_start: '2006-01-01'
+      coverage_start: '2006-01-03'
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: daily
+    insider_footnotes:
+      status: active
+      start_date: '2006-01-01'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: insider_transactions
+      pit:
+        mode: inherit
+        source: insider_transactions
+        clock: null
+      freshness: null
+    sec_13d:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: '1995-09-06'
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: daily
+    sec_13d_transactions:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: sec_13d
+      pit:
+        mode: inherit
+        source: sec_13d
+        clock: filing_date
+      freshness: null
+    sec_13g:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: '1996-01-26'
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: daily
+    def14a_llm:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: sec_def14a_text
+      pit:
+        mode: inherit
+        source: sec_def14a_text
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: yearly
+    def14a_directors:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: def14a_llm
+      pit:
+        mode: inherit
+        source: def14a_llm
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: yearly
+    def14a_executive_comp:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: def14a_llm
+      pit:
+        mode: inherit
+        source: def14a_llm
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: yearly
+    def14a_director_comp:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: def14a_llm
+      pit:
+        mode: inherit
+        source: def14a_llm
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: yearly
+    def14a_ownership:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: def14a_llm
+      pit:
+        mode: inherit
+        source: def14a_llm
+        clock: as_of
+      freshness:
+        clock: as_of
+        cadence: yearly
+    sec_8k:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: daily
+    sec_8k_votes:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: sec_8k
+      pit:
+        mode: inherit
+        source: sec_8k
+        clock: filing_date
+      freshness:
+        clock: filing_date
+        cadence: daily
+    sec_filing_text:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filed
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filed
+        cadence: quarterly
+    sec_employees_text:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: quarterly
+    sec_def14a_text:
+      status: active
+      start_date: '1995-11-16'
+      end_date: null
+      source_start: '1993-01-01'
+      coverage_start: null
+      reprocess:
+        mode: missing_documents
+      pit:
+        mode: direct
+        clock: filing_date
+        lag:
+          value: 1
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: filing_date
+        cadence: yearly
+    earnings_call_sections:
+      status: active
+      start_date: '2005-01-01'
+      end_date: null
+      source_start: '2005-01-01'
+      coverage_start: null
+      reprocess:
+        mode: candidate_window
+        lookback:
+          value: 180
+          unit: calendar_days
+      pit:
+        mode: direct
+        clock: as_of
+        lag:
+          value: 3
+          unit: calendar_days
+        roll: market_session
+      freshness:
+        clock: as_of
+        cadence: quarterly
+    earnings_call_sentiment:
+      status: active
+      start_date: '2005-01-01'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: earnings_call_sections
+      pit:
+        mode: inherit
+        source: earnings_call_sections
+        clock: as_of
+      freshness: null
+    earning_calls_embedding:
+      status: active
+      start_date: '2005-01-01'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: source_changes
+        source: earnings_call_sections
+      pit:
+        mode: inherit
+        source: earnings_call_sections
+        clock: as_of
+      freshness: null
+    notes_embedding:
+      status: inactive
+      reprocess:
+        mode: not_applicable
+      pit:
+        mode: not_applicable
+        reason: No active producer in the current pipeline.
+    ticker_descriptions:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    ticker_embeddings:
+      status: snapshot
+      reprocess:
+        mode: snapshot
+      pit:
+        mode: not_applicable
+        reason: Current snapshot, cache or validity metadata; no historical-public
+          vintage.
+    cube:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: inherited_max
+      pit:
+        mode: derived
+        reason: Assembles already eligible component features.
+      freshness: null
+    cube_signal:
+      status: inactive
+      reprocess:
+        mode: not_applicable
+      pit:
+        mode: not_applicable
+        reason: No active producer in the current pipeline.
+    predictions:
+      status: inactive
+      reprocess:
+        mode: not_applicable
+      pit:
+        mode: not_applicable
+        reason: No active producer in the current pipeline.
+    predictions_latest:
+      status: model_owned
+      reprocess:
+        mode: stage_owned
+      pit:
+        mode: derived
+        reason: Stage dates and output semantics remain with the owning stage.
+    trend_asset_returns:
+      status: inactive
+      reprocess:
+        mode: not_applicable
+      pit:
+        mode: not_applicable
+        reason: No active producer in the current pipeline.
+    strategy:
+      status: portfolio_owned
+      reprocess:
+        mode: stage_owned
+      pit:
+        mode: derived
+        reason: Stage dates and output semantics remain with the owning stage.
+    cube_part_prices:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 30
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: full_history
+    cube_part_targets:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 90
+          unit: trading_sessions
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: offset
+          value: 390
+          unit: trading_sessions
+      lookahead:
+        mode: target_horizons
+    cube_part_betas:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 30
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: offset
+          value: 390
+          unit: trading_sessions
+    cube_part_fundamentals:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 100
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: offset
+          value: 1560
+          unit: trading_sessions
+        sources:
+          financial_history:
+            value: 72
+            unit: months
+          earnings_surprises:
+            value: 72
+            unit: months
+          notes_num:
+            value: 72
+            unit: months
+          fundamentals_employees:
+            value: 24
+            unit: months
+    cube_part_momentum:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 30
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: offset
+          value: 1320
+          unit: trading_sessions
+    cube_part_text:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 7
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          # Call signal/prior-call context is selected on the retained market clock.
+          # The dense price-availability grid only needs the output interval.
+          mode: offset
+          value: 0
+          unit: trading_sessions
+    cube_part_institutionals:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 30
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: full_history
+    cube_part_sec_thirteen:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 100
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: offset
+          value: 390
+          unit: trading_sessions
+    cube_part_governance:
+      status: active
+      start_date: '1995-11-13'
+      end_date: null
+      source_start: null
+      coverage_start: null
+      reprocess:
+        mode: tail
+        overlap:
+          value: 380
+          unit: calendar_days
+      pit:
+        mode: derived
+        reason: Maximum eligibility of required sources; never add a second source
+          lag.
+      freshness: null
+      warmup:
+        grid:
+          mode: offset
+          value: 1260
+          unit: trading_sessions

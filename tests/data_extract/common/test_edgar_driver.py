@@ -23,6 +23,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_store import schema
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
+from src.utils.window import WindowRun
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, roster_run, seed_index
 
@@ -30,12 +31,19 @@ _T_DOC = Table(
     "driver_doc",
     ("ticker", "accession_number", "item"),
     date_col="filing_date",
-    resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K",)),
+    resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", forms=("8-K",)),
     empty_marker=("item", "_empty"),
     desc="driver test",
 )
 _T_CHILD = Table("driver_child", ("ticker", "accession_number"), date_col="filing_date")
 _AS_OF = pd.Timestamp("2026-09-30")
+
+
+def _context(tmp_path: Path, store: Any, tickers: list[str], **kwargs: Any) -> Any:
+    """Give the synthetic driver table an explicit filing-index policy."""
+    context = fake_context(tmp_path, store, tickers, **kwargs)
+    context.config.data.tables[_T_DOC.name] = context.config.data.tables[Tables.sec_8k.name]
+    return context
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +114,7 @@ def _stored(store, table: Table = _T_DOC) -> set[str]:
 
 @pytest.mark.parametrize("stage", ["empty", "success", "setup", "parse", "enter"])
 def test_run_scope_covers_setup_execution_and_empty_work(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, stage: str) -> None:
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 0 if stage == "empty" else 1)
     source = _Source()
     events: list[str] = []
@@ -114,8 +122,8 @@ def test_run_scope_covers_setup_execution_and_empty_work(tmp_path: Path, sqlite_
         source.kinds[accessions[0]] = "bug"
 
     @contextmanager
-    def run_scope(context: Any, tickers: Sequence[str], as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
-        assert context is ctx and list(tickers) == ["AAA"] and as_of == _AS_OF
+    def run_scope(context: Any, tickers: Sequence[str]) -> Iterator[EdgarFetch]:
+        assert context is ctx and list(tickers) == ["AAA"] and context.run.as_of == _AS_OF
         events.append("enter")
         if stage == "enter":
             raise RuntimeError("scope failed")
@@ -146,7 +154,7 @@ def test_run_scope_covers_setup_execution_and_empty_work(tmp_path: Path, sqlite_
 
 
 def test_an_unprepared_parser_is_rejected_before_setup(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
 
     def unexpected_setup() -> None:
         pytest.fail("an invalid descriptor must fail before identity setup or storage")
@@ -192,7 +200,7 @@ def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():
 # --------------------------------------------------------------------------- #
 def test_failed_documents_are_saved_partially_and_exit_zero(tmp_path, sqlite_store, waits):
     """AC-011 check 4, second half: 200 listed, 70 keep failing -> 130 saved, no raise, the 70 named."""
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 200)
     source = _Source()
     failing = accessions[::2][:70]
@@ -212,7 +220,7 @@ def test_failed_documents_are_saved_partially_and_exit_zero(tmp_path, sqlite_sto
 
 def test_failing_documents_recover_inside_the_retry_rounds(tmp_path, sqlite_store, waits):
     """AC-011 check 4, first half: 70 of 200 fail on the first pass, then succeed -> 200 stored after one round."""
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 200)
     source = _Source()
     source.fail_reads = dict.fromkeys(accessions[:70], 1)
@@ -228,7 +236,7 @@ def test_failing_documents_recover_inside_the_retry_rounds(tmp_path, sqlite_stor
 
 def test_gradual_recovery_lists_only_what_is_missing_each_night(tmp_path, sqlite_store, waits):
     """AC-012 gradual: night 1 saves 130 of 200, night 2's work list is 70 and saves 60, night 3's is 10."""
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 200)
     source = _Source()
     failing = accessions[:70]
@@ -248,7 +256,7 @@ def test_gradual_recovery_lists_only_what_is_missing_each_night(tmp_path, sqlite
 
 def test_a_long_outage_heals_on_the_first_good_night(tmp_path, sqlite_store, waits):
     """AC-012 long outage: 10 nights of 503 (past the 7-day overlap), then night 11 reads every filing."""
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 40, start="2026-08-01")
     source = _Source()
     for night in range(10):
@@ -265,7 +273,7 @@ def test_a_long_outage_heals_on_the_first_good_night(tmp_path, sqlite_store, wai
 
 
 def test_an_empty_filing_is_one_marker_and_an_unparseable_one_is_listed_again(tmp_path, sqlite_store, waits, caplog):
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 3)
     source = _Source()
     source.kinds = {accessions[0]: "empty", accessions[1]: "parse"}
@@ -286,7 +294,7 @@ def test_an_empty_filing_is_one_marker_and_an_unparseable_one_is_listed_again(tm
 
 
 def test_done_table_is_saved_last_so_a_failed_save_leaves_the_filing_listed(tmp_path, sqlite_store, waits, monkeypatch):
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 2)
     order: list[str] = []
     crash = [True]
@@ -313,7 +321,7 @@ def test_done_table_is_saved_last_so_a_failed_save_leaves_the_filing_listed(tmp_
 
 
 def test_a_programming_error_fails_the_run(tmp_path, sqlite_store, waits):
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 2)
     source = _Source()
     source.kinds = {accessions[0]: "bug"}
@@ -325,7 +333,7 @@ def test_a_programming_error_fails_the_run(tmp_path, sqlite_store, waits):
 
 
 def test_the_document_cap_reads_the_newest_first_and_logs_the_uncapped_size(tmp_path, sqlite_store, waits, caplog):
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"], max_documents_per_run=5)
+    ctx = _context(tmp_path, sqlite_store, ["AAA"], max_documents_per_run=5)
     accessions = _seed(ctx, 12)
 
     with caplog.at_level("ERROR"):
@@ -341,7 +349,7 @@ def test_the_document_cap_reads_the_newest_first_and_logs_the_uncapped_size(tmp_
 
 
 def test_full_rereads_stored_documents(tmp_path, sqlite_store, waits):
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     _seed(ctx, 4)
     source = _Source()
     _run(ctx, source, ["AAA"])
@@ -356,7 +364,7 @@ def test_full_rereads_stored_documents(tmp_path, sqlite_store, waits):
 def test_a_lineage_expansion_lists_the_new_cik_on_the_next_run_with_no_run_state(tmp_path, sqlite_store, waits, monkeypatch):
     """AC-030: once the lineage gives AAA a predecessor CIK, the next run lists that CIK's filings. The work list is
     the index over the ticker's scope minus the stored accessions, so no record of a previous run is read."""
-    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
     seed_index(ctx, [(1, "AAA Inc", "8-K", "2026-03-02", _accession(1)), (9999991, "Old AAA", "8-K", "2019-03-01", "0009999991-19-000001")])
     before = dated_identity([("AAA", "0000000001", "cik_window", SENTINEL, None)], {"AAA": "0000000001"})
     after = dated_identity(
@@ -365,10 +373,12 @@ def test_a_lineage_expansion_lists_the_new_cik_on_the_next_run_with_no_run_state
     )
     fetch = _fetch(_Source())
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: before)
-    plain = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"], 15, as_of=_AS_OF), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF)
+    plain = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"]), max_workers=1)
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: after)
 
-    expanded = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"], 15, as_of=_AS_OF + pd.Timedelta(days=1)), max_workers=1)
+    ctx.run = WindowRun("incremental", "offline explicit filing scope", _AS_OF + pd.Timedelta(days=1))
+    expanded = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"]), max_workers=1)
 
     assert plain.work.units["AAA"]["accession"].tolist() == [_accession(1)]
     assert expanded.work.units["AAA"]["accession"].tolist() == ["0009999991-19-000001"]

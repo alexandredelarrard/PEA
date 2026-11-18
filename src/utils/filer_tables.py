@@ -12,19 +12,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import RESUME_ARCHIVE, Table, Tables
 from src.data_store.store import DataStore
+from src.utils.data_policy import window_policy
+from src.utils.publication import period_end
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
+
+if TYPE_CHECKING:
+    from src.context import Context
 
 #: One row per (table, ticker, filer CIK) a sync removes.
 REMOVAL_COLUMNS = ("table", "ticker", "cik", "first_filed", "last_filed", "keys", "rows")
 #: One row per (table, ticker, filer CIK, new ticker) a sync moves; `kept` rows already stood under the new key.
 MOVE_COLUMNS = ("table", "ticker", "cik", "new_ticker", "first_filed", "last_filed", "rows", "kept")
-#: Tickers read per scoped load, and keys per targeted delete.
-_TICKER_CHUNK = 50
+#: Keys per targeted delete.
 _KEY_CHUNK = 500
 #: One CIK's seam-widened window over a ticker: (cik, listed_from, listed_to); a None bound is open.
 ListedWindow = tuple[str, pd.Timestamp | None, pd.Timestamp | None]
@@ -160,7 +165,7 @@ def foreign_mask(
 
 
 def foreign_filer_rows(
-    store: DataStore,
+    context: Context,
     spec: FilerTable,
     tickers: Sequence[str],
     own_ciks: Mapping[str, frozenset[str]],
@@ -169,14 +174,28 @@ def foreign_filer_rows(
     """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity, for a dated table whose CIK
     has no window admitting the row's date, and for a windowed table whose CIK holds no window of the ticker (a CIK with
     no digit is never judged)."""
-    columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
-    if spec.table == Tables.insider_transactions:
-        columns = list(dict.fromkeys([*columns, *Tables.insider_transactions.pk]))
+    columns = list(dict.fromkeys(["ticker", spec.cik_col, spec.date_col, spec.key_col, *spec.table.pk]))
+    policy = window_policy(context.config, spec.table, context.run.as_of)
+    if policy is None or not tickers or not context.store.exists(spec.table):
+        return pd.DataFrame(columns=columns)
+    window = policy.requested
+    resume = spec.table.resume
+    period = resume.period_col if resume is not None and resume.mode == RESUME_ARCHIVE else None
+    if period is not None:
+        columns = list(dict.fromkeys([*columns, period]))
     frames: list[pd.DataFrame] = []
-    for start in range(0, len(tickers), _TICKER_CHUNK):
-        rows = store.load(spec.table, columns=columns, where={"ticker": list(tickers[start : start + _TICKER_CHUNK])}, optional=True)
-        if rows is None or rows.empty:
-            continue
+    for rows in context.store.iter_load(
+        spec.table,
+        columns=columns,
+        where={"ticker": list(tickers)},
+        since=None if period else window.start,
+        until=None if period else window.end,
+        date_col=spec.date_col,
+    ):
+        if period is not None:
+            rows = rows.loc[rows[period].notna()].copy()
+            ends = {tag: period_end(str(tag)) for tag in rows[period].unique()}
+            rows = rows.loc[window.mask(pd.to_datetime(rows[period].map(ends)))]
         rows = rows[judged_cik_mask(rows[spec.cik_col])]
         frames.append(rows[foreign_mask(spec, rows, own_ciks, own_windows)])
     found = [frame for frame in frames if not frame.empty]
@@ -201,11 +220,8 @@ def move_filer_rows(store: DataStore, spec: FilerTable, moved: pd.DataFrame) -> 
     primary key is already stored is dropped and the stored row kept. One `MOVE_COLUMNS` record per moved group."""
     records: list[dict] = []
     for (ticker, cik, new), group in moved.groupby(["ticker", spec.cik_col, "new_ticker"], sort=True):
-        keys = sorted(group[spec.key_col].astype(str).unique())
-        counts = [
-            _move_chunk(store, spec, {"ticker": ticker, spec.cik_col: cik}, new, keys[start : start + _KEY_CHUNK])
-            for start in range(0, len(keys), _KEY_CHUNK)
-        ]
+        keys = group[list(spec.table.pk)].drop_duplicates()
+        counts = [_move_chunk(store, spec, str(new), keys.iloc[start : start + _KEY_CHUNK]) for start in range(0, len(keys), _KEY_CHUNK)]
         rows, kept = sum(count[0] for count in counts), sum(count[1] for count in counts)
         first, last = filing_window(group[spec.date_col])
         records.append(
@@ -215,15 +231,16 @@ def move_filer_rows(store: DataStore, spec: FilerTable, moved: pd.DataFrame) -> 
     return records
 
 
-def _move_chunk(store: DataStore, spec: FilerTable, filer: dict[str, object], new: str, chunk: list[str]) -> tuple[int, int]:
+def _move_chunk(store: DataStore, spec: FilerTable, new: str, keys: pd.DataFrame) -> tuple[int, int]:
     """Re-ticker one key chunk of a `filer` (`ticker`, CIK) to `new` in one transaction; returns (rows read, rows dropped
     because their new primary key is already stored)."""
     with store.transaction() as bound:
-        where = {**filer, spec.key_col: chunk}
-        df_rows = bound.load(spec.table, where=where, optional=True)
-        df_held = bound.load(spec.table, columns=list(spec.table.pk), where={"ticker": new, spec.key_col: chunk}, optional=True)
+        destinations = keys.assign(ticker=new) if "ticker" in spec.table.pk else keys
+        df_related = bound.load(spec.table, where=[keys, destinations])
+        df_rows = df_related.loc[df_related.ticker.ne(new)] if "ticker" in spec.table.pk else df_related
+        df_held = df_related.loc[df_related.ticker.eq(new)] if "ticker" in spec.table.pk else None
         df_new = _new_keys(df_rows.assign(ticker=new) if df_rows is not None else pd.DataFrame(), df_held, spec.table.pk)
-        bound.delete(spec.table, where)
+        bound.delete(spec.table, keys)
         bound.insert(spec.table, df_new)
     read = 0 if df_rows is None else len(df_rows)
     return read, read - len(df_new)
@@ -240,11 +257,10 @@ def _new_keys(rows: pd.DataFrame, held: pd.DataFrame | None, pk: Sequence[str]) 
 
 
 def delete_filer_rows(store: DataStore, spec: FilerTable, foreign: pd.DataFrame) -> None:
-    """Delete `foreign` rows of `spec` by (ticker, filer CIK, keys), a bounded key list per statement."""
-    for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
-        keys = sorted(group[spec.key_col].astype(str).unique())
-        for start in range(0, len(keys), _KEY_CHUNK):
-            store.delete(spec.table, where={"ticker": ticker, spec.cik_col: cik, spec.key_col: keys[start : start + _KEY_CHUNK]})
+    """Delete only the selected complete primary keys, including mixed-period filings."""
+    keys = foreign[list(spec.table.pk)].drop_duplicates()
+    for start in range(0, len(keys), _KEY_CHUNK):
+        store.delete(spec.table, where=keys.iloc[start : start + _KEY_CHUNK])
 
 
 def def14a_evidence_mask(frame: pd.DataFrame) -> pd.Series:

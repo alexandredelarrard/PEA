@@ -32,7 +32,7 @@ def reported_events(hist: pd.DataFrame, trading_index: pd.DatetimeIndex) -> pd.D
         df_reports[field] = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan)
     df_reports = df_reports.dropna(subset=["ticker", "earnings_date", "eps_actual"])
     df_reports = df_reports.sort_values(["ticker", "earnings_date"], kind="stable").drop_duplicates(["ticker", "earnings_date"], keep="last")
-    positions = trading_index.searchsorted(df_reports["earnings_date"], side="right")
+    positions = trading_index.searchsorted(pd.to_datetime(df_reports["as_of"]), side="left")
     df_reports = df_reports.loc[positions < len(trading_index)].copy()
     df_reports["as_of"] = trading_index.take(positions[positions < len(trading_index)])
     return df_reports.reset_index(drop=True)
@@ -48,12 +48,13 @@ def _report_state_to_daily(
     """Select entire report states, preserving invalid cells rather than reviving older values."""
     fields = {field: pd.DataFrame(index=idx, columns=df_reports["ticker"].unique(), dtype="float64") for field in value_fields}
     for ticker, df_ticker in df_reports.groupby("ticker", sort=False):
-        reports = df_ticker["earnings_date"].to_numpy(dtype="datetime64[ns]")
-        positions = reports.searchsorted(idx.to_numpy(), side="left") - 1
+        reports = df_ticker["as_of"].to_numpy(dtype="datetime64[ns]")
+        positions = reports.searchsorted(idx.to_numpy(), side="right") - 1
         selected = positions.clip(min=0)
         valid = positions >= 0
         if max_age_days is not None:
-            valid &= (idx.to_numpy() - reports[selected]) <= pd.Timedelta(days=max_age_days)
+            published = df_ticker["earnings_date"].to_numpy(dtype="datetime64[ns]")
+            valid &= (idx.to_numpy() - published[selected]) <= pd.Timedelta(days=max_age_days)
         for field in value_fields:
             fields[field][ticker] = np.where(valid, df_ticker[field].to_numpy(dtype="float64")[selected], np.nan)
     return fields

@@ -5,19 +5,20 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.constants.constants import SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_store.schema import Tables
+from src.utils.data_policy import publication_policy
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.test_insider_features import _frame, _peers, _txn
+from tests.data_extract.fake_context import extract_config
 
 SESSIONS = pd.bdate_range("2015-06-01", "2015-07-31").drop(pd.Timestamp("2015-06-15"))  # Monday 06-15 is a holiday here
 
 
 def test_the_lag_is_one_calendar_day() -> None:
-    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name] == 1
+    assert int(publication_policy(extract_config(), Tables.insider_transactions).lag.value) == 1
     print("SANITY: the registered insider availability buffer is 1 calendar day.")
 
 

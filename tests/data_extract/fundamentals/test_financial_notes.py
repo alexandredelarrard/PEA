@@ -4,7 +4,7 @@
 Covers, with NO network:
   * the pure parse/join (num + text) incl. the dimn==0 / coreg / universe filters,
   * the full zip IO path via an in-memory synthetic notes zip,
-  * the rolling quarterly<->monthly period logic + year window.
+  * fixed quarterly/monthly source-unit dates and configured publication clocks.
 A separate script (scripts-style) exercises a REAL quarterly zip end-to-end.
 """
 
@@ -16,7 +16,7 @@ import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -24,13 +24,26 @@ import pytest
 import src.data_extract.utils.zips.fetch_financial_notes as fn
 import src.data_extract.utils.zips.zip_archive as zip_archive
 from src.constants.constants import MARKET_TIMEZONE, SEC_NET_PENSION_LIABILITY_TAGS
-from src.data_extract.utils.common import bulk_cache, resume
-from src.data_extract.utils.common.resume import ArchiveWork, ZipScope
-from src.data_store.schema import Resume, Tables
-from src.utils.string import run_date
+from src.data_extract.utils.common import bulk_cache
+from src.data_extract.utils.common.resume import ArchiveWork
+from src.data_store.schema import Tables
+from src.utils.data_policy import publication_policy
+from src.utils.window import Window, WindowRun
+from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+from tests.data_extract.fake_context import extract_config
 
-AAPL_SCOPE = ZipScope(tickers=["AAPL"], run_date=run_date(None), full=False)
+AAPL_TICKERS = ["AAPL"]
+
+
+def _notes_context(store: Any = None, *, start: str = "2009-01-01", as_of: str = "2026-11-16") -> Any:
+    config = extract_config()
+    for table in (Tables.notes_num, Tables.notes_text):
+        config.data.tables[table.name].start_date = start
+    return SimpleNamespace(
+        store=store, config=config, config_dir="configs", run=WindowRun("incremental", "fixed notes source fixture", pd.Timestamp(as_of))
+    )
+
 
 # --------------------------------------------------------------------------- #
 # Synthetic in-memory notes zip                                                  #
@@ -296,17 +309,19 @@ def test_join_num_drops_nan_value():
 # --------------------------------------------------------------------------- #
 def test_generate_periods_has_quarterly_and_recent_monthly():
     today = pd.Timestamp("2026-07-19")
-    periods = fn._generate_periods(years_history=15, today=today)
+    periods = fn._generate_periods(Window(pd.Timestamp("2011-01-01"), today))
     assert "2024q1" in periods and "2012q3" in periods  # quarterly era
     assert "2026_06" in periods and "2025_07" in periods  # recent monthly
-    assert all(fn._period_year(p) >= 2011 for p in periods)  # year window respected
+    assert all(int(period[:4]) >= 2011 for period in periods)
+    print("SANITY: quarterly and monthly archive candidates use a fixed 2011 source floor.")
 
 
 def test_notes_periods_uses_scrape_when_available(monkeypatch):
     fake = ["2009q1", "2020q3", "2025_07", "2026_06"]
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: fake)
-    got = fn.notes_periods(cast(Any, None), years_history=3, today=pd.Timestamp("2026-07-19"))
-    assert got == ["2025_07", "2026_06"]  # 2009/2020 outside 3y window
+    got = fn.notes_periods(_notes_context(start="2023-01-01", as_of="2026-07-19"))
+    assert got == ["2025_07", "2026_06"]  # 2009/2020 precede the fixed source start
+    print("SANITY: published notes units are filtered by configured source dates.")
 
 
 #: Landing-page links as the SEC serves them: the republished 2010q1-q3 files carry a `_N` suffix.
@@ -324,15 +339,16 @@ def test_a_missing_republished_period_is_listed_and_downloaded(monkeypatch, tmp_
     def fake_zip(context: Any, path: Path, url: str, **kwargs: Any) -> Path:
         if not bulk_cache.is_cached(path):  # the real `ensure_zip` contract: download only what the cache lacks
             requested.append(url)
-            path.write_bytes(b"zip")
+            path.write_bytes(_synthetic_zip().getvalue())
         return path
 
     monkeypatch.setattr(fn, "ensure_zip", fake_zip)
     for cached in ("2009q4", "2010q3", "2010q4"):
-        (tmp_path / f"{cached}_notes.zip").write_bytes(b"zip")
+        (tmp_path / f"{cached}_notes.zip").write_bytes(_synthetic_zip().getvalue())
 
-    periods = fn.notes_periods(cast(Any, None), years_history=20, today=pd.Timestamp("2026-11-11"))
-    available = fn.download_notes_periods(cast(Any, None), tmp_path, periods)
+    context = _notes_context(as_of="2026-11-11")
+    periods = fn.notes_periods(context)
+    available = fn.download_notes_periods(context, tmp_path, periods)
 
     assert periods == ["2009q4", "2010q1", "2010q2", "2010q3", "2010q4"], periods
     assert requested == [fn.SEC_FINNOTES_URL_TEMPLATE.format(period=p) for p in ("2010q1", "2010q2")], requested
@@ -346,31 +362,19 @@ def test_a_missing_republished_period_is_listed_and_downloaded(monkeypatch, tmp_
 
 def test_notes_periods_falls_back_to_generator(monkeypatch):
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: None)
-    got = fn.notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))
-    assert got and all(fn._period_year(p) >= 2024 for p in got)
+    got = fn.notes_periods(_notes_context(start="2024-01-01", as_of="2026-07-19"))
+    assert got and all(int(period[:4]) >= 2024 for period in got)
+    print("SANITY: unavailable landing-page metadata uses bounded source-unit candidates, with no moving-year fallback.")
 
 
 @pytest.mark.parametrize(
     ("period", "expected"),
-    [
-        ("2021_08", date(2021, 9, 13)),  # September 12 was Sunday.
-        ("2013q4", date(2014, 1, 13)),  # January 12 was Sunday.
-        ("2025_08", date(2025, 9, 12)),
-        ("2026_08", date(2026, 9, 14)),  # September 12 is Saturday.
-    ],
+    [("2021_08", date(2021, 9, 12)), ("2013q4", date(2014, 1, 21)), ("2025_08", date(2025, 9, 12)), ("2026_08", date(2026, 9, 12))],
 )
-def test_historical_archive_available_at_is_next_month_twelfth_or_monday(period: str, expected: date, tmp_path: Path) -> None:
-    assert (
-        bulk_cache.archive_available_at(
-            resume.period_end(period),
-            tmp_path / f"{period}_notes.zip",
-            observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
-            downloaded=False,
-        )
-        == expected
-    )
-    print("\n=== SANITY CHECK: estimated historical notes availability ===")
-    print(f"  {period} becomes available on {expected}; weekend twelfths move to Monday. Validated.")
+def test_archive_release_clock_uses_monthly_day_or_quarterly_lag(period: str, expected: date, tmp_path: Path) -> None:
+    policy = publication_policy(extract_config(), Tables.notes_num)
+    assert bulk_cache.archive_available_at(period, tmp_path / f"{period}_notes.zip", policy=policy, downloaded=False) == expected
+    print(f"SANITY: raw {period} release clock is {expected}; final market-session eligibility is resolved by the shared publication policy.")
 
 
 def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> None:
@@ -380,16 +384,16 @@ def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> 
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
     assert bulk_cache.archive_available_at(
-        resume.period_end("2026_09"),
+        "2026_09",
         path,
-        observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+        policy=publication_policy(extract_config(), Tables.notes_num),
         downloaded=False,
     ) == date(2026, 10, 15)
     assert (
         bulk_cache.archive_available_at(
-            resume.period_end("2026_09"),
+            "2026_09",
             tmp_path / "missing.zip",
-            observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+            policy=publication_policy(extract_config(), Tables.notes_num),
             downloaded=False,
         )
         is None
@@ -410,7 +414,7 @@ def test_historical_availability_repair_writes_only_primary_keys_and_clock():
         @staticmethod
         def load(table, *, columns, where, optional):
             assert columns == [*table.pk, "period"]
-            assert where == {"period": "2026_08"}
+            assert where == {"period": "2026_08", "ticker": AAPL_TICKERS}
             assert optional is True
             return pd.DataFrame(
                 {
@@ -427,7 +431,7 @@ def test_historical_availability_repair_writes_only_primary_keys_and_clock():
             return len(frame)
 
     store = Store()
-    repaired = fn._repair_period_available_at(SimpleNamespace(store=store), "2026_08", date(2026, 9, 14))
+    repaired = fn._repair_period_available_at(_notes_context(store), "2026_08", date(2026, 9, 14), AAPL_TICKERS)
 
     assert repaired == 2
     assert [table for table, _ in store.saved] == [fn.Tables.notes_num, fn.Tables.notes_text]
@@ -450,7 +454,7 @@ def test_historical_availability_repair_replaces_wrong_nonnull_clock() -> None:
         @staticmethod
         def load(table, *, columns, where, optional):
             assert columns == [*table.pk, "period"]
-            assert where == {"period": "2021_08"}
+            assert where == {"period": "2021_08", "ticker": AAPL_TICKERS}
             return pd.DataFrame(
                 {
                     "adsh": [AAPL],
@@ -466,7 +470,7 @@ def test_historical_availability_repair_replaces_wrong_nonnull_clock() -> None:
             saved.append(frame.copy())
             return len(frame)
 
-    assert fn._repair_period_available_at(SimpleNamespace(store=Store()), "2021_08", date(2021, 9, 13), overwrite=True) == 2
+    assert fn._repair_period_available_at(_notes_context(Store()), "2021_08", date(2021, 9, 13), AAPL_TICKERS) == 2
     assert len(saved) == 2
     assert all(list(frame.columns) == [*fn.Tables.notes_num.pk, "available_at"] for frame in saved)
     assert all(frame["available_at"].eq(date(2021, 9, 13)).all() for frame in saved)
@@ -476,60 +480,69 @@ def test_historical_availability_repair_replaces_wrong_nonnull_clock() -> None:
 
 def _work(pending: list[str]) -> ArchiveWork:
     """A notes work list parsing `pending` for AAPL."""
-    return ArchiveWork(listed=pending, pending=pending, rescan=[], keys=["AAPL"], rescan_keys=[], screen=["AAPL"], scoped=False)
+    return ArchiveWork(listed=pending, pending=pending, rescan=[], keys=["AAPL"], screen=["AAPL"], scoped=False)
+
+
+@pytest.mark.parametrize(("period", "later"), [("2026_08", "2026-09-16"), ("2026q1", "2026-04-30")])
+def test_explicit_release_repair_preserves_later_recorded_availability(sqlite_store: Any, tmp_path: Path, period: str, later: str) -> None:
+    create_canonical(sqlite_store.engine, [Tables.notes_num, Tables.notes_text])
+    for table in (Tables.notes_num, Tables.notes_text):
+        value = 1.0 if table is Tables.notes_num else "recorded text"
+        row = {
+            "ticker": "AAPL",
+            "adsh": AAPL,
+            "tag": "T",
+            "ddate": pd.Timestamp("2025-12-31"),
+            "qtrs": 0,
+            "period": period,
+            "available_at": pd.Timestamp(later),
+            "value": value,
+        }
+        sqlite_store.save(table, pd.DataFrame([row]))
+    context = _notes_context(sqlite_store)
+
+    fn.repair_notes_availability(context, tmp_path, AAPL_TICKERS)
+
+    for table in (Tables.notes_num, Tables.notes_text):
+        saved = sqlite_store.load(table, columns=["available_at", "value"])
+        assert pd.Timestamp(saved.available_at.iloc[0]) == pd.Timestamp(later)
+        assert saved.value.iloc[0] == (1.0 if table is Tables.notes_num else "recorded text")
+    print(f"SANITY: explicit {period} release repair preserves the later {later} clock and both payloads.")
 
 
 def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     period = "2021_08"
-    repaired: list[tuple[str, date, bool]] = []
-    context = SimpleNamespace(
-        config_dir="configs",
-        store=SimpleNamespace(),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
-    )
+    repaired: list[tuple[str, date]] = []
+    context = _notes_context(SimpleNamespace())
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
-    monkeypatch.setattr(fn, "stored_values", lambda context, tables, column: frozenset({period}))
-    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(fn, "stored_values", lambda context, tables, column, **kwargs: frozenset({period}))
+    monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(
-        fn, "_repair_period_available_at", lambda context, period, available_at, *, overwrite: repaired.append((period, available_at, overwrite)) or 1
+        fn, "_repair_period_available_at", lambda context, period, available_at, tickers: repaired.append((period, available_at)) or 1
     )
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: pytest.fail("metadata repair must not enter extraction"))
 
-    assert fn.repair_notes_availability(context, tmp_path) == 0
-    assert repaired == [(period, date(2021, 9, 13), True)]
+    assert fn.repair_notes_availability(context, tmp_path, AAPL_TICKERS) == 0
+    assert repaired == [(period, date(2021, 9, 12))]
     print("\n=== SANITY CHECK: converged notes metadata repair ===")
-    print("  an already-ingested August 2021 period is relabelled September 13 without a ZIP reparse. Validated.")
+    print("  an already-ingested August 2021 period is relabelled with the configured September 12 raw estimate without a ZIP reparse. Validated.")
 
 
-def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monkeypatch):
+def test_completed_period_is_skipped_before_identity_payload_or_clock_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     period = "2026_08"
-    context = SimpleNamespace(
-        config_dir="configs",
-        store=SimpleNamespace(),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
-    )
-
-    monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
+    context = _notes_context()
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: _work([]))
-    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(
-        fn,
-        "stored_period_clock",
-        lambda context, tables, period: (_ for _ in ()).throw(ValueError("conflicting stored available_at values")),
-    )
-
-    with pytest.raises(ValueError, match="conflicting stored available_at values"):
-        fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period])
-
-    print("\n=== SANITY CHECK: converged notes archive clock ===")
-    print("  a fully ingested period still validates its immutable stored archive clock before the fast-path skip. Validated.")
+    monkeypatch.setattr(fn, "load_identity", lambda *_: pytest.fail("completed unit read identity"))
+    monkeypatch.setattr(fn, "stored_period_clock", lambda *_: pytest.fail("completed unit re-read clocks"))
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_TICKERS, [period]) == 0
+    print("SANITY: a completed notes unit needs no identity, payload or clock read on a normal run.")
 
 
 def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monkeypatch):
     period = "2026_08"
-    archive_date = date(2026, 9, 14)
+    archive_date = date(2026, 9, 12)
     path = tmp_path / f"{period}_notes.zip"
-    path.write_bytes(b"fixture")
+    path.write_bytes(_synthetic_zip().getvalue())
     saved: list[tuple[object, pd.DataFrame]] = []
 
     class Store:
@@ -538,11 +551,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
             saved.append((table, frame.copy()))
             return len(frame)
 
-    context = SimpleNamespace(
-        config_dir="configs",
-        store=Store(),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
-    )
+    context = _notes_context(Store())
     num = pd.DataFrame(
         [
             {
@@ -573,13 +582,12 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
     )
 
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, scope, lineage: _work(list(periods)))
-    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, keys: _work(list(periods)))
     monkeypatch.setattr(zip_archive, "ensure_zip", lambda *args, **kwargs: path)
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), txt.copy()))
 
-    assert fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period]) == 2
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_TICKERS, [period]) == 2
     assert [table for table, _ in saved] == [fn.Tables.notes_num, fn.Tables.notes_text]
     assert all(frame["available_at"].eq(archive_date).all() for _, frame in saved)
 
@@ -605,7 +613,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
             return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
 
     def download(*args, **kwargs) -> Path:
-        path.write_bytes(b"fixture")
+        path.write_bytes(_synthetic_zip().getvalue())
         stale = datetime(2026, 10, 1, tzinfo=UTC).timestamp()
         os.utime(path, (stale, stale))
         return path
@@ -623,18 +631,15 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
             }
         ]
     )
-    context = SimpleNamespace(
-        store=Store(), config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused")))
-    )
+    context = _notes_context(Store())
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, scope, lineage: _work(list(periods)))
-    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, keys: _work(list(periods)))
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(zip_archive, "ensure_zip", download)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), pd.DataFrame()))
 
-    assert fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period]) == 1
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_TICKERS, [period]) == 1
     assert saved[0]["available_at"].iloc[0] == date(2026, 10, 15)
     print("\n=== SANITY CHECK: newly downloaded notes ZIP ===")
     print("  the completed download day in New York wins over the ZIP cache's older file timestamp. Validated.")

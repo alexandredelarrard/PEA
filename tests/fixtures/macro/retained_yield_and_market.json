@@ -1,0 +1,21 @@
+{
+  "source": "local read-only prices_macro",
+  "captured": "2026-11-16",
+  "source_clock": "date",
+  "source_range": [
+    "1995-11-13",
+    "2026-11-10"
+  ],
+  "full_context": [
+    "yield_10y",
+    "bond_10y_tr"
+  ],
+  "sample_range": {
+    "equity_tr": [
+      "2026-10-01",
+      "2026-11-10"
+    ]
+  },
+  "rows": 16200,
+  "sha256": "c776e46e005ad479af815087f1f9960927c39195f331581bc4ffeb3fc4850d1d"
+}

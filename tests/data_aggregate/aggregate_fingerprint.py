@@ -15,11 +15,11 @@ gap: it is SELF-CONTAINED after its first run.
       through the cube's own `join_sec_columns`. Real filings are used deliberately: all 11
       GICS sectors is what makes the sector gates (banks / REITs / insurance / energy) fire,
       and no synthetic frame reproduces that.
-    * everything else (prices, dividends, earnings, proxies, 13F, insider, attention,
+    * everything else (prices, dividends, earnings, proxies, insider, attention,
       short interest, fails) is a SEEDED synthetic source shaped like the real table.
 
 COVERAGE. `pipeline_fingerprint` hashes 8 aggregation outputs and leaves 9 of the 13
-panel builders unguarded, plus `build_peer_relative_panel`, both 13F quarter builders,
+panel builders unguarded, plus `build_peer_relative_panel`,
 the commodity/currency twins and every ratio/standardize helper. Those are exactly the
 functions the dedup sweep merges, so they are all fingerprinted here.
 
@@ -28,7 +28,7 @@ TWO KINDS OF KEY, on purpose:
     internally, sensitive only to what comes out.
   * `prim.*` -- the PRIMITIVES that are about to be deduplicated (momentum, trailing
     vol, forward windows, the 5 cross-sectional standardizers, the ratio helpers, the
-    two identical commodity/currency functions, both 13F quarter scaffolds). These are
+    two identical commodity/currency functions). These are
     pinned BEFORE the merge; afterwards the same key is recomputed through the new
     unified helper and the hash must not move. The key survives the refactor; only the
     import behind it changes.
@@ -67,8 +67,6 @@ SEC_CACHE = Path(__file__).with_name("aggregate_fingerprint_sec.parquet")
 SEED = 20260805
 START, END = "2019-01-02", "2026-06-30"
 TICKERS_PER_SECTOR = 2  # 11 GICS sectors -> 22 names; >= min_peers(3) by a wide margin
-N_MANAGERS = 8  # 13F filers in the synthetic holdings
-FILING_LAG = 45
 
 
 # --------------------------------------------------------------------------- #
@@ -665,79 +663,6 @@ def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.
     )
 
 
-def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
-    """Manager-grain 13F: one row per (manager, ticker, quarter). Managers enter and exit
-    so ic_inst_new_buyers / ic_inst_exiters / breadth_chg are non-degenerate. Half the CIKs form the
-    'superinvestor' roster."""
-    periods = pd.date_range(idx[0], idx[-1], freq="QE")
-    ciks = [f"{1000000 + 7919 * i:010d}" for i in range(N_MANAGERS)]
-    rows = []
-    for p in periods:
-        for i, cik in enumerate(ciks):
-            for t in tickers:
-                if rng.random() < 0.25:  # manager not holding this quarter
-                    continue
-                shares = float(rng.lognormal(11.0, 0.8))
-                rows.append(
-                    {
-                        "cik": cik,
-                        "period": p,
-                        "ticker": t,
-                        "shares": round(shares, 0),
-                        "value_usd": round(shares * float(rng.uniform(20, 400)), 2),
-                        "call_value": round(shares * float(rng.uniform(0, 12)), 2),
-                        "put_value": round(shares * float(rng.uniform(0, 9)), 2),
-                        "filing_date": p + pd.Timedelta(days=FILING_LAG - 5 + i),
-                    }
-                )
-    holdings = pd.DataFrame(rows)
-    implied = holdings["value_usd"] / holdings["shares"]
-    for leg in ("call", "put"):
-        holdings[f"{leg}_shares"] = (holdings[f"{leg}_value"] / implied).round()
-    roster = {c: f"Manager {k}" for k, c in enumerate(ciks[: N_MANAGERS // 2])}
-    return holdings, roster
-
-
-def synthetic_manager_book(holdings: pd.DataFrame, tickers: list[str], rng: np.random.Generator) -> pd.DataFrame:
-    """`sec13f_hr` rows of the roster managers: each manager's WHOLE book, as superinvestors read it.
-
-    ⚠ A SEPARATE FIXTURE FROM `synthetic_13f`. Extraction stores whole books in `sec13f_hr` (one
-    row per universe company, other CUSIPs as filed, unmapped ones on the `_empty` ticker); the
-    all-filer panel reads only the universe rows, while the elite panel reads every row so that
-    `portfolio_weight` divides by the manager's real total. Feeding the universe slice to both
-    would fingerprint a denominator the production code never sees.
-
-    ⚠ IT ALSO DRAWS FROM ITS OWN RNG STREAM AND LEAVES `holdings` UNTOUCHED, so
-    `panel.institutional` stays byte-identical. Off-universe positions are appended, never
-    interleaved, for the same reason -- an order-coupled draw is how this fixture previously
-    faked drift in seven outputs.
-    """
-    by_ticker = {ticker: f"{i:08d}C" for i, ticker in enumerate(sorted(tickers))}
-    book = holdings.assign(cusip=holdings["ticker"].map(by_ticker), position_type="common")
-    book = book.drop(columns=[c for c in ("call_value", "put_value", "call_shares", "put_shares") if c in book.columns])
-
-    # the rest of each manager's book: unmapped names outside the analysis universe, which carry
-    # a median ~40-50% of real book value and are exactly what the slice denominator missed.
-    keys = holdings[["cik", "period", "filing_date"]].drop_duplicates()
-    extra = []
-    for cik, period, filed in keys.itertuples(index=False):
-        for j in range(int(rng.integers(2, 7))):
-            shares = float(rng.lognormal(11.0, 0.9))
-            extra.append(
-                {
-                    "cik": cik,
-                    "period": period,
-                    "filing_date": filed,
-                    "cusip": f"OTC{j:05d}X",
-                    "ticker": "_empty",
-                    "position_type": "common",
-                    "shares": round(shares, 0),
-                    "value_usd": round(shares * float(rng.uniform(20, 400)), 2),
-                }
-            )
-    return pd.concat([book, pd.DataFrame(extra)], ignore_index=True)
-
-
 def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
     """The edge cases where the to-be-merged primitives differ from each other: a
     zero-dispersion row, an all-NaN row, a single-name row, an inf, a -100% return, a
@@ -842,7 +767,7 @@ def compute() -> dict:
         compute_raw_features,
     )
     from src.data_aggregate.utils.price.capitalization import project_security_shares
-    from src.data_aggregate.utils.price.features import as_traded_close, security_basis_frame
+    from src.data_aggregate.utils.price.features import security_basis_frame
     from src.data_aggregate.utils.price.returns import (
         forward_compound,
         forward_cumchange,
@@ -850,23 +775,16 @@ def compute() -> dict:
         momentum_characteristic,
         trailing_vol,
     )
-    from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
-    from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
-    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
-    from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.targets import (
         build_targets_multi,
         cross_sectional_rank,
         cross_sectional_zscore,
     )
-    from src.utils.identity_tables import LINE_COLUMNS, CusipTags
-    from src.utils.price.adjustments import ShareBasis, resolve_share_events
-    from src.utils.string import pad_cik
+    from src.utils.price.adjustments import resolve_share_events
     from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
     from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
-    from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features, build_institutional_feature_panel
 
     frozen = fundamentals()
     fund = join_sec_columns(frozen.sharadar, frozen.sec).frame
@@ -890,28 +808,6 @@ def compute() -> dict:
     class_volume, _ = secondary_class_volume(*synthetic_share_classes(tickers, idx, rng_for("share_classes")), idx)
     sec_13d, sec_13g = synthetic_ownership(tickers, idx, rng_for("ownership"))
     insider = synthetic_insider(tickers, idx, rng_for("insider"))
-    holdings, roster = synthetic_13f(tickers, idx, rng_for("13f"))
-    book = synthetic_manager_book(holdings, tickers, rng_for("13f_manager_book"))
-    # Public builders need the same as-traded reference and typed quantities as the step.
-    # Keep the older raw primitive inputs and RNG streams unchanged.
-    valuation_close = as_traded_close(close, close * 0 + 1, splits.rename(columns={"ratio": "value"}))
-    period_prices = (
-        valuation_close.reindex(valuation_close.index.union(pd.DatetimeIndex(holdings["period"].unique()))).ffill().stack(future_stack=True)
-    )
-    quote = period_prices.reindex(pd.MultiIndex.from_frame(holdings[["period", "ticker"]])).to_numpy()
-    priced_holdings = holdings.assign(
-        value_usd=holdings["shares"] * quote, call_value=holdings["call_shares"] * quote, put_value=holdings["put_shares"] * quote
-    )
-    priced_book = book.copy()
-    book_tickers = book["ticker"].where(book["ticker"].ne("_empty"))
-    book_quotes = period_prices.reindex(pd.MultiIndex.from_arrays([book["period"], book_tickers])).to_numpy()
-    priced_book.loc[book_tickers.notna(), "value_usd"] = (book["shares"] * book_quotes).loc[book_tickers.notna()]
-    # One wrong VALUE per book must fall back without losing a holder or changing shares.
-    corrupt = priced_holdings.groupby(["cik", "period"], sort=False).head(1)
-    priced_holdings.loc[corrupt.index, "value_usd"] *= 1000
-    corrupt_keys = pd.MultiIndex.from_frame(corrupt[["cik", "period", "ticker"]])
-    book_keys = pd.MultiIndex.from_arrays([book["cik"], book["period"], book_tickers])
-    priced_book.loc[book_keys.isin(corrupt_keys), "value_usd"] *= 1000
     fx = primitive_fixtures(rng_for("primitives"))
 
     out: dict[str, dict] = {}
@@ -997,9 +893,6 @@ def compute() -> dict:
     observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0)
     saved_shares, _ = project_security_shares(observations, share_events, df_basis)
     df_terminal = terminal_basis_factor(df_basis)
-    price_frames = make_frames(
-        idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
-    )
     short_capital = ShortFlowCapital(saved_shares * df_terminal, with_class_volume(px["volume"], class_volume))
     ftd_coverage = ftd[["date", "period"]]
     ftd_settlement = prepare_fails_quantities(terminal_rows(ftd, ("fails_quantity",), df_terminal), ftd_coverage, idx, None, None)
@@ -1013,59 +906,6 @@ def compute() -> dict:
     )
     assert df_short_flow["f_ic_ftd_persistence_30d"].nunique() > 1, "Do not freeze unavailable FTD persistence"
     out["panel.short_flow"] = frame_digest(df_short_flow)
-    # ⚠ `min_prior_holders=0` HERE AND AT `prim.quarter_features`, AND THE GATE DEPENDS ON IT.
-    # The production floor is 100 filers (`MIN_PRIOR_HOLDERS`) and `N_MANAGERS` is 8, so the
-    # per-ticker coverage-onset guard would null EVERY QoQ delta in this fixture. The digest
-    # would still be stable -- stably hashing a frame of NaN, with the whole delta half of the
-    # 13F arithmetic no longer protected against drift. That is the same shape of failure this
-    # file already records twice (the empty superinvestor panel it digested for months, the
-    # say-on-pay hole), so the guard is turned OFF here and covered instead by
-    # test_institutional_features.py::test_per_ticker_coverage_onset_guard.
-    institutional = build_institutional_feature_panel(
-        price_frames,
-        priced_holdings,
-        splits=splits,
-        share_basis=share_events,
-        min_prior_holders=0,
-        valuation_close=valuation_close,
-    )
-    assert institutional["f_ic_inst_net_options_ratio"].nunique() > 1, "Do not freeze an unavailable options feature"
-    out["panel.institutional"] = frame_digest(institutional)
-    # Exercise the production immutable-book interface; whole books precede ticker projection.
-    df_books = priced_book.copy()
-    df_books["cik"] = df_books.cik.map(pad_cik)
-    df_books["period"] = pd.to_datetime(df_books.period)
-    df_books["accession_number"] = df_books.cik + "-" + df_books.period.dt.strftime("%Y%m%d")
-    df_books["class_evidence"] = '["common"]'
-    df_filings = (
-        df_books.groupby(["cik", "period", "accession_number"], as_index=False)
-        .agg(filing_date=("filing_date", "max"), parsed_row_count=("cusip", "size"))
-        .assign(
-            amendment_type="original",
-            amendment_number=0,
-            report_type="13F HOLDINGS REPORT",
-            restricted=False,
-            parse_status="complete",
-            accepted_at=pd.NaT,
-        )
-    )
-    # The fixture's own tags: no company line, its stored (cusip, ticker) pairs as the market-wide map.
-    fixture_tags = CusipTags(pd.DataFrame(columns=LINE_COLUMNS), df_books.loc[df_books.ticker.ne("_empty"), ["cusip", "ticker"]])
-    df_books = next(clean_public_batches(((df_filings, df_books) for _ in range(1)), fixture_tags, None, valuation_close, None))[1]
-    book_history = prepare_superinvestor_book_history(((df_filings, df_books) for _ in range(1)), idx, 90)
-    assert book_history is not None
-    actual = splits.rename(columns={"ratio": "value"})
-    basis_grid = idx.union(pd.DatetimeIndex(df_books["period"].unique()))
-    market = BehaviorMarket(
-        idx, valuation_close, security_basis_frame(ShareBasis(actual, actual, actual, {}), basis_grid, valuation_close.columns), 0.8
-    )
-    cohort = frozenset(pad_cik(cik) for cik in roster)
-    super_history = compute_superinvestor_feature_history(book_history, {"": cohort, "topk": cohort}, tuple(tickers), market)
-    superinvestor = project_superinvestor_features(
-        super_history, make_frames(idx, peers, close_split=close, universe=tickers), pd.Timestamp("2013-06-30")
-    )
-    assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
-    out["panel.superinvestor"] = frame_digest(superinvestor)
     df_insider = build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=share_events)
     for column in ("f_ic_insider_purchase_pct_prior_60d", "f_ic_insider_purchase_pct_prior_120d", "f_ic_insider_conviction_60d"):
         assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
@@ -1192,11 +1032,6 @@ def compute() -> dict:
     _macro_close = fx["other_close"].rename(columns={"SPY": "equity_tr", "CL=F": "oil", "GC=F": "gold", "USDEUR=X": "fx_usdeur"})
     out["prim.macro_factor_returns"] = frame_digest(_macro_close[["oil", "gold", "fx_usdeur"]].pct_change())
 
-    out["prim.quarter_features"] = frame_digest(
-        _quarter_features(holdings, min_prior_holders=0)  # see `panel.institutional`
-        .sort_values(["ticker", "as_of"])
-        .reset_index(drop=True)
-    )
     # Retired dynamic-selector primitives have no production consumers.
     # Their two owned baseline keys are deliberately removed, not kept as dead math.
 

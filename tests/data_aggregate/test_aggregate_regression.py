@@ -285,6 +285,9 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # superinvestor and cross-source entries. The old implementation reproduces all 37
 # old digests; the repaired fixture supplies typed options and as-traded prices,
 # checks non-degenerate dollar features, and preserves all 34 unrelated digests.
+# 2026-11-18: the cluster 13F features replace the inst/super families. `panel.institutional`, `panel.superinvestor` and
+# `prim.quarter_features` are REMOVED with their code and fixtures (each fixture has its own RNG stream, so the other 30 outputs are
+# untouched); the new part has no synthetic fixture here, its known-truth tests are tests/data_aggregate/test_cluster_*.py.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 
@@ -457,8 +460,6 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
         "panel.dividend",
         "panel.governance",
         "panel.short_flow",
-        "panel.institutional",
-        "panel.superinvestor",
         "panel.insider",
         "panel.ownership",
         "panel.betas",
@@ -482,7 +483,6 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
         "prim.ratio_helpers",
         "prim.safe_div",
         "prim.macro_factor_returns",
-        "prim.quarter_features",
         "prim.pit",
         "prim.peer_relative_panel",
     ):
@@ -502,8 +502,8 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # `prim.super_quarter_features` vanishing. The floor now equals the `must` tuple's length.
     #
     # 13 -> 16 on the Phase 2.5-2.7 regeneration: `panel.ownership` (a builder that was live
-    assert len(panels) >= 14, f"panel coverage regressed: {panels}"
-    assert len(prims) >= 12, f"primitive coverage regressed: {prims}"
+    assert len(panels) >= 12, f"panel coverage regressed: {panels}"
+    assert len(prims) >= 11, f"primitive coverage regressed: {prims}"
     assert len(labels) >= 6, f"only {len(labels)} target variants fingerprinted"
     # the frozen input must be pinned too: a silent DB change would otherwise look like a
     # code regression spread across every fundamentals-derived panel

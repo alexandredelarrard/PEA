@@ -15,7 +15,6 @@ cluster:
     - pct_equity_us          # share in US equities
     - pct_equity_foreign     # share in foreign equities
     - pct_etf                # share in ETFs and funds
-    - pct_bond               # share in bonds
     - active_share           # distance to the aggregate 13F weights (0 = index-like)
     - {name: book_value_usd, transform: rank}  # size of the book, ranked within the quarter
     - {name: hhi, transform: rank}             # concentration, ranked within the quarter

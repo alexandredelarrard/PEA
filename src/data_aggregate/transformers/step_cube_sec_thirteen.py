@@ -132,8 +132,8 @@ class StepCubeSecThirteen(Step):
         cohorts = None
         if history is not None:
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
-            cfg = self._cfg.get("sec_thirteen", {}).get("superinvestor", {})
-            cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
+            cfg = self._cfg["sec_thirteen"]["superinvestor"]
+            cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg["selection"]["k"])
 
         # Issuer caps per quarter end bound every cleaned line: no position may exceed its issuer.
         limits = {
@@ -193,6 +193,8 @@ class StepCubeSecThirteen(Step):
         if books is None:
             return None
         min_coverage = MIN_ROW_COVERAGE
+        if resources.frames.close_pit is None or resources.frames.security_basis is None:
+            raise ValueError("SEC13F superinvestor behavior requires close_pit and security_basis price fields")
         market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.frames.security_basis, min_coverage)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 

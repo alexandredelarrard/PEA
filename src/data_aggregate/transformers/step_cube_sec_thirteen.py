@@ -127,22 +127,25 @@ class StepCubeSecThirteen(Step):
 
     def _plan(self, full: bool) -> Plan:
         """The window, the quarters to compute and the saved rows to carry; raises before any quarter is read when the part cannot be extended."""
-        # load: the calendar, the saved column set and window, and the manager labels
+        # config: the clusters and their cube columns; the column budget warns above its limits
         cfg = self._config.cluster
         specs = cluster_specs(cfg)
         columns = column_names(specs)
+        self._log.info("sec thirteen clusters: %d cube columns", column_budget(specs, cfg))
+
+        # load: the calendar, the saved column set and window, the manager labels and the saved tail
         calendar = load_trading_calendar(self._store)
         saved_columns = self._store.columns(self._part.table)
         window = plan_window(self._store, self._part.table, full=full, warmup=0, trading_index=calendar, refresh=PART_REFRESH_TRADING_DAYS)
+        df_labels = self._store.load(Tables.sec_13f_manager_details, columns=["cik", "period", "cluster"], optional=True)
+        tail = None if window.is_full else self._store.load(self._part.table, since=window.refresh_from, optional=True)
 
-        # check: a stored column set other than the configured one needs the full rebuild, never a hidden one
+        # check: a stored column set other than the configured one needs the full rebuild, never a hidden one; the labels exist
         if not window.is_full and saved_columns and set(saved_columns) != {"date", "ticker", *columns}:
             raise RuntimeError(f"{self._part.table} has {len(saved_columns) - 2} feature columns, the config {len(columns)}: {_REBUILD}")
-        df_labels = self._store.load(Tables.sec_13f_manager_details, columns=["cik", "period", "cluster"], optional=True)
         if df_labels is None or df_labels["cluster"].isna().all():
             raise RuntimeError("no cluster labels in sec_13f_manager_details: run `data_aggregate build-cluster` first")
         labels = df_labels.assign(period=pd.to_datetime(df_labels["period"]).dt.normalize())
-        tail = None if window.is_full else self._store.load(self._part.table, since=window.refresh_from, optional=True)
 
         # plan: the publication day of every quarter with a previous label, the saved quarter and the quarters to compute
         one, age = pd.offsets.QuarterEnd(1), pd.Timedelta(days=int(cfg.max_age_calendar_days))
@@ -228,9 +231,7 @@ class StepCubeSecThirteen(Step):
         return computed
 
     def _check(self, plan: Plan, computed: dict[pd.Timestamp, pd.DataFrame]) -> None:
-        """Stop unless the newest saved quarter, recomputed, equals its saved values within the tolerance; log the column budget."""
-        n_columns = column_budget(plan.specs, self._config.cluster)
-        self._log.info("sec thirteen clusters: %d cube columns", n_columns)
+        """Stop unless the newest saved quarter, recomputed, equals its saved values within the tolerance."""
         saved = plan.quarters.saved_quarter
         if saved is None or saved not in computed or plan.saved.carried is None:
             return

@@ -711,6 +711,30 @@ def test_pipeline_tasks_share_the_extraction_run_cutoff() -> None:
     print("SANITY: every extraction and cube task receives one frozen run cutoff, relayed across the DAG trigger and reused on retries.")
 
 
+def test_cleared_cube_run_keeps_one_cutoff_across_its_tasks() -> None:
+    from datetime import datetime
+
+    from jinja2 import Environment
+
+    tasks = load_dag(AGG_DAG_FILE).tasks
+    cube_tasks = [tasks[name.replace("-", "_")] for name in ("build-prices", "build-target", "build-governance", "assemble-cube")]
+    templates = {re.search(r'--as-of "([^"]*)"', task.kwargs["bash_command"]).group(1) for task in cube_tasks}
+    assert len(templates) == 1
+    logical = datetime.fromisoformat("2026-11-19T16:12:00.123456+00:00")
+
+    def cutoff(start_date: datetime) -> str:
+        run = SimpleNamespace(conf={}, start_date=start_date, logical_date=logical)
+        return Environment().from_string(templates.pop()).render(dag_run=run, macros=SimpleNamespace(datetime=datetime))
+
+    before_clear = cutoff(logical)
+    templates.add(re.search(r'--as-of "([^"]*)"', cube_tasks[0].kwargs["bash_command"]).group(1))
+    after_clear = cutoff(datetime.fromisoformat("2026-11-19T21:30:00+00:00"))
+
+    assert before_clear == after_clear == logical.isoformat()
+    assert all("env" not in task.kwargs and not task.kwargs["do_xcom_push"] for task in cube_tasks)
+    print("SANITY: a re-run cube task (DagRun.start_date 5 hours later) renders the cutoff of its siblings; no receipt env or XCom is passed.")
+
+
 def test_run_cutoff_template_and_actual_cli_parser_preserve_the_market_day() -> None:
     from datetime import datetime
 

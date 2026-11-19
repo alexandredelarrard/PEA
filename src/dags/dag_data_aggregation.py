@@ -96,15 +96,11 @@ dag = DAG(
 
 def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None = None) -> BashOperator:
     cutoff = f' --as-of "{RUN_AS_OF}" {RUN_MODE}' if base == AGG else ""
-    task_ids = [name.replace("-", "_") for name in CHAIN]
-    env = {"CUBE_COMPONENT_WINDOWS": f"{{{{ ti.xcom_pull(task_ids={task_ids!r}) | list | tojson }}}}"} if cmd == "assemble-cube" else None
     return BashOperator(
         task_id=task_id or cmd.split()[0].replace("-", "_"),
         bash_command=f"{base} {cmd} -c {CONFIGS}{cutoff}",
         cwd=PROJECT,
-        env=env,
-        append_env=True,
-        do_xcom_push=cmd in CHAIN,
+        do_xcom_push=False,
         pool=pool,
         trigger_rule=TriggerRule.ALL_DONE,
         dag=dag,

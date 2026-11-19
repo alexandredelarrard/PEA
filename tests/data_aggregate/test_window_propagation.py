@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,13 +13,12 @@ from src.context import Context
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
-from src.data_aggregate.utils.common.assembly import read_receipts, write_receipt
 from src.data_aggregate.utils.common.incremental import plan_window
 from src.data_aggregate.utils.common.parts import CUBE_PARTS
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_store.schema import Table, Tables
-from src.utils.window import Window, WindowPlan, WindowRun
+from src.utils.window import Window, WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_aggregate.test_price_pit_contract import seed_prices
 from tests.support.config import fixture_config
@@ -205,133 +203,6 @@ def test_proxy_companion_scope_preserves_pay_inputs(sqlite_store: Any) -> None:
     print("SANITY: proxy companion reads retain their finite source bounds, Universe scope and the pay inputs required by governance.")
 
 
-def test_upstream_receipts_refuse_changed_pipeline_configuration(sqlite_store: Any) -> None:
-    config = fixture_config()
-    context = cast(
-        Context,
-        SimpleNamespace(
-            store=sqlite_store,
-            config=config,
-            universe=universe_of(["AAPL"]),
-            run=WindowRun("incremental", "same-run write receipt", pd.Timestamp("2026-11-16")),
-        ),
-    )
-    sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2026-11-13"]), "close_split": 100.0}))
-    plan = plan_window(context, Tables.cube_part_prices, load_trading_calendar(context))
-    assert plan is not None
-    payload = json.dumps([write_receipt(context, {Tables.cube_part_prices: plan})])
-    assert read_receipts(context, payload) == {Tables.cube_part_prices: plan.write}
-
-    config.data.tables.cube_part_prices.overlap.days += 1
-    with pytest.raises(ValueError, match="configuration"):
-        read_receipts(context, payload)
-    print(
-        "SANITY: upstream write footprints use the same run and data pipeline configuration; a mid-run policy change cannot mix silently into assembly."
-    )
-
-
-@pytest.fixture
-def receipt_context_and_plan(sqlite_store: Any) -> tuple[Context, WindowPlan]:
-    interval = Window(pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-10"))
-    sqlite_store.save(
-        Tables.cube_part_prices,
-        pd.DataFrame({"ticker": "AAPL", "date": pd.bdate_range(interval.start, interval.end), "close": 100.0}),
-    )
-    context = cast(
-        Context,
-        SimpleNamespace(
-            config=fixture_config(),
-            store=sqlite_store,
-            universe=universe_of(["AAPL"]),
-            run=WindowRun("incremental", "exact receipt cutoff", pd.Timestamp("2026-11-10T15:00:00Z")),
-        ),
-    )
-    plan = WindowPlan(interval, interval, interval, context.run, None, (("ticker", ("AAPL",)),))
-    return context, plan
-
-
-@pytest.mark.parametrize("operation", ["read", "write"])
-def test_receipts_reject_a_different_same_day_instant(receipt_context_and_plan: tuple[Context, WindowPlan], operation: str) -> None:
-    context, plan = receipt_context_and_plan
-    payload = json.dumps([write_receipt(context, {Tables.cube_part_prices: plan})])
-    context.run = WindowRun("incremental", "same day after market close", pd.Timestamp("2026-11-10T22:00:00Z"))
-    assert context.run.as_of == plan.run.as_of and context.run.instant != plan.run.instant
-
-    with pytest.raises(ValueError, match="run"):
-        if operation == "read":
-            read_receipts(context, payload)
-        else:
-            write_receipt(context, {Tables.cube_part_prices: plan})
-    print(f"SANITY: receipt {operation} rejects a different original execution instant on the same New York market day.")
-
-
-@pytest.mark.parametrize("as_of", ["2026-11-10T15:00:00Z", "2026-11-10T10:00:00-05:00"])
-def test_receipts_round_trip_equivalent_aware_instants(receipt_context_and_plan: tuple[Context, WindowPlan], as_of: str) -> None:
-    context, plan = receipt_context_and_plan
-    record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
-    context.run = WindowRun("incremental", "equivalent root cutoff", pd.Timestamp(as_of))
-
-    assert pd.Timestamp(record["instant"]) == plan.run.instant
-    assert read_receipts(context, json.dumps([record])) == {Tables.cube_part_prices: plan.write}
-    assert pd.Timestamp(json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))["instant"]) == plan.run.instant
-    print("SANITY: matching and timezone-equivalent original cutoffs retain their full instant through receipt production and consumption.")
-
-
-def test_receipts_reject_legacy_day_only_identity(receipt_context_and_plan: tuple[Context, WindowPlan]) -> None:
-    context, plan = receipt_context_and_plan
-    record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
-    record.pop("instant", None)
-
-    with pytest.raises(ValueError, match="run"):
-        read_receipts(context, json.dumps([record]))
-    print("SANITY: a legacy day-only receipt cannot certify an exact original execution cutoff.")
-
-
-def test_receipts_allow_cold_component_promotion(sqlite_store: Any) -> None:
-    context = cast(
-        Context,
-        SimpleNamespace(
-            store=sqlite_store,
-            config=fixture_config(),
-            universe=universe_of(["AAPL"]),
-            run=WindowRun("incremental", "cold root component", pd.Timestamp("2026-11-10T15:00:00Z")),
-        ),
-    )
-    plan = plan_window(context, Tables.cube_part_prices, pd.bdate_range("2010-01-01", "2026-11-10"))
-
-    assert plan is not None and plan.run.mode == "initial" and context.run.mode == "incremental"
-    assert plan.run.instant == context.run.instant
-    record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
-    assert record["mode"] == "incremental"
-    # A successful cold price receipt follows persistence of its actual observed grid.
-    dates = pd.bdate_range(plan.write.start, plan.write.end)
-    sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": "AAPL", "date": dates, "close_split": 100.0}))
-    assert read_receipts(context, json.dumps([record])) == {Tables.cube_part_prices: plan.write}
-    print("SANITY: a cold component may promote to initial mode while preserving its incremental root's exact cutoff and receipt mode.")
-
-
-@pytest.mark.parametrize("mutation", ["start", "end", "part", "duplicate", "day"])
-def test_receipts_preserve_component_guards(receipt_context_and_plan: tuple[Context, WindowPlan], mutation: str) -> None:
-    context, plan = receipt_context_and_plan
-    record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
-    item = record["parts"][Tables.cube_part_prices.name]
-    records = [record]
-    if mutation == "start":
-        item["start"] = "1900-01-01"
-    elif mutation == "end":
-        item["end"] = "2026-11-11"
-    elif mutation == "part":
-        record["parts"] = {"unknown_part": item}
-    elif mutation == "duplicate":
-        records.append(record)
-    else:
-        record["as_of"] = "2026-11-09"
-
-    with pytest.raises(ValueError):
-        read_receipts(context, json.dumps(records))
-    print(f"SANITY: exact-cutoff receipts retain the existing {mutation} guard.")
-
-
 @pytest.mark.parametrize("lag", [1, 4])
 def test_price_counts_respect_filing_buffer(sqlite_store: Any, tmp_path: Path, lag: int) -> None:
     context = seed_prices(sqlite_store, tmp_path)
@@ -367,51 +238,6 @@ def test_assembly_respects_each_component_configured_dates(sqlite_store: Any) ->
     panel = StepAssembleCube(context, config)._read_part(Tables.cube_part_momentum, None, Window(dates[1], dates[2]), optional=False)
     assert panel is not None and pd.to_datetime(panel.date).tolist() == list(dates[1:3])
     print("SANITY: assembly cannot revive component values stored outside that component's configured start and end dates.")
-
-
-@pytest.mark.parametrize("tickers", [[], ["AAPL"]])
-def test_receipts_reject_partial_scope(sqlite_store: Any, tickers: list[str]) -> None:
-    config = fixture_config()
-    context = cast(
-        Context,
-        SimpleNamespace(
-            store=sqlite_store,
-            config=config,
-            universe=universe_of(["AAPL", "MSFT"]),
-            run=WindowRun("incremental", "complete receipt scope", pd.Timestamp("2026-11-16")),
-        ),
-    )
-    sqlite_store.replace(
-        Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAPL", "MSFT"], "date": pd.to_datetime(["2026-11-13"] * 2), "close_split": 100.0})
-    )
-    plan = plan_window(context, Tables.cube_part_prices, load_trading_calendar(context))
-    assert plan is not None
-    record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
-    record["parts"][Tables.cube_part_prices.name]["tickers"] = tickers
-    with pytest.raises(ValueError, match="scope|ticker"):
-        read_receipts(context, json.dumps([record]))
-    print("SANITY: empty or partial ticker receipts cannot certify assembly for a larger requested universe.")
-
-
-def test_receipts_reject_a_different_root_mode(sqlite_store: Any) -> None:
-    config = fixture_config()
-    context = cast(
-        Context,
-        SimpleNamespace(
-            store=sqlite_store,
-            config=config,
-            universe=universe_of(["AAPL"]),
-            run=WindowRun("incremental", "incremental receipt", pd.Timestamp("2026-11-16")),
-        ),
-    )
-    sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2026-11-13"]), "close_split": 100.0}))
-    plan = plan_window(context, Tables.cube_part_prices, load_trading_calendar(context))
-    assert plan is not None
-    payload = json.dumps([write_receipt(context, {Tables.cube_part_prices: plan})])
-    context.run = WindowRun("full", "different root mode", context.run.instant)
-    with pytest.raises(ValueError, match="mode|run"):
-        read_receipts(context, payload)
-    print("SANITY: assembly refuses an upstream result produced with a different root execution mode.")
 
 
 def test_incremental_price_refuses_undeclared_historical_recovery(sqlite_store: Any, tmp_path: Path) -> None:

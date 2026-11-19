@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import re
 import sys
 import textwrap
 import types
@@ -686,6 +687,10 @@ def test_identity_reads_no_input_written_later_in_the_night():
 
 
 def test_pipeline_tasks_share_the_extraction_run_cutoff() -> None:
+    from datetime import datetime
+
+    from jinja2 import Environment
+
     extraction = load_dag(DAG_FILE)
     aggregate = load_dag(AGG_DAG_FILE)
     source_commands = [task.kwargs["bash_command"] for task in extraction.tasks.values() if "data_extract " in task.kwargs.get("bash_command", "")]
@@ -694,7 +699,15 @@ def test_pipeline_tasks_share_the_extraction_run_cutoff() -> None:
     assert "dag_run.start_date" in cutoff and "as_of" in cutoff
     assert all(cutoff in command for command in source_commands)
     cube_commands = [task.kwargs["bash_command"] for task in aggregate.tasks.values() if "data_aggregate " in task.kwargs.get("bash_command", "")]
-    assert cube_commands and all(cutoff in command for command in cube_commands)
+    assert cube_commands and len({re.search(r'--as-of "([^"]*)"', command).group(1) for command in cube_commands}) == 1
+    relayed = {"as_of": "2026-11-19T16:12:00.123456+00:00"}
+    renders = {
+        Environment()
+        .from_string(template)
+        .render(dag_run=SimpleNamespace(conf=relayed, start_date=None, logical_date=None), macros=SimpleNamespace(datetime=datetime))
+        for template in (cutoff, re.search(r'--as-of "([^"]*)"', cube_commands[0]).group(1))
+    }
+    assert renders == {relayed["as_of"]}
     print("SANITY: every extraction and cube task receives one frozen run cutoff, relayed across the DAG trigger and reused on retries.")
 
 

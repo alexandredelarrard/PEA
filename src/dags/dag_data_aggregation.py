@@ -56,7 +56,9 @@ PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
 RUN_MODE = "{{ '-F' if dag_run.conf.get('full', False) else '' }}"
-RUN_AS_OF = "{{ macros.datetime.fromisoformat(dag_run.conf.get('as_of') or dag_run.start_date.isoformat()).isoformat() }}"
+# The trigger's `conf.as_of` (relayed by the extraction DAG) else the run's logical date: unlike `start_date`, which Airflow resets
+# when a task is cleared, it never changes, so a re-run assemble_cube keeps the cutoff its part receipts were written with.
+RUN_AS_OF = "{{ macros.datetime.fromisoformat(dag_run.conf.get('as_of') or dag_run.logical_date.isoformat()).isoformat() }}"
 
 # The ordered cube sub-steps, `parts.PART_COMMANDS` written out: the DAG processor parses this
 # folder without the project on sys.path, so importing `src` here breaks the DAG.
@@ -131,7 +133,7 @@ def _cube_status(**context) -> None:
     visible; RED when a part is missing or more than one build behind the cube. XCom is pushed
     BEFORE raising, so the per-part status is available even on a red run."""
     run = context["dag_run"]
-    cutoff = run.conf.get("as_of") or run.start_date.isoformat()
+    cutoff = run.conf.get("as_of") or run.logical_date.isoformat()
     proc = subprocess.run(
         [PIPE_PY, "-m", "src", "data_aggregate", "cube-status", "-c", CONFIGS, "--as-of", cutoff],
         cwd=PROJECT,

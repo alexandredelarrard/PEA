@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -49,26 +50,35 @@ def _rendered_argument(xcom: dict[str, str]) -> str:
     return Environment().from_string(template).render(ti=SimpleNamespace(xcom_pull=pull))
 
 
-def test_failed_part_tasks_leave_no_null_in_the_assembly_argument(sqlite_store: Any) -> None:
+def test_cleared_run_keeps_the_cutoff_its_receipts_were_written_with() -> None:
+    from datetime import datetime
+
+    tasks = load_dag(DAG_FILE).tasks
+    template = re.search(r'--as-of "([^"]*)"', tasks["assemble_cube"].kwargs["bash_command"]).group(1)
+    logical = datetime.fromisoformat("2026-11-19T16:12:00.123456+00:00")
+
+    def cutoff(start_date: datetime) -> str:
+        run = SimpleNamespace(conf={}, start_date=start_date, logical_date=logical)
+        return Environment().from_string(template).render(dag_run=run, macros=SimpleNamespace(datetime=datetime))
+
+    first, after_clear = cutoff(logical), cutoff(datetime.fromisoformat("2026-11-19T21:30:00+00:00"))
+
+    assert first == after_clear == logical.isoformat()
+    parts = [tasks[name.replace("-", "_")] for name in ("build-prices", "build-target", "build-governance")]
+    assert all(re.search(r'--as-of "([^"]*)"', task.kwargs["bash_command"]).group(1) == template for task in parts)
+    print("SANITY: a re-run assemble_cube (new DagRun.start_date, 5 hours later) renders the same cutoff as the part tasks that wrote the receipts.")
+
+
+def test_a_part_task_that_pushed_nothing_is_named_in_the_refusal(sqlite_store: Any) -> None:
     context = _context(sqlite_store)
     xcom = {task: _receipt(context, table) for task, table in PARTS.items()}
 
     argument = _rendered_argument(xcom)
 
-    assert None not in json.loads(argument) and len(json.loads(argument)) == len(PARTS)
-    assert set(read_receipts(context, argument)) == set(PARTS.values())
-    print("SANITY: the 6 part tasks that failed or pushed nothing are dropped from the argument; the 2 successful receipts pass assembly validation.")
-
-
-def test_every_part_task_failing_names_the_empty_list(sqlite_store: Any) -> None:
-    context = _context(sqlite_store)
-
-    argument = _rendered_argument({})
-
-    assert json.loads(argument) == []
-    with pytest.raises(ValueError, match="nonempty list"):
+    assert len(json.loads(argument)) == 8 and json.loads(argument).count(None) == 6
+    with pytest.raises(ValueError, match=r"root run or mode: receipt 1 is not a receipt object: None"):
         read_receipts(context, argument)
-    print("SANITY: with no successful upstream part the argument is an empty list and the refusal says so, not 'receipt missing'.")
+    print("SANITY: the 6 part tasks that failed or pushed nothing arrive as null and the refusal names the first one by position.")
 
 
 @pytest.mark.parametrize(

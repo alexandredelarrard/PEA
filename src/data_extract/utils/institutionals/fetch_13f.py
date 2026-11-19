@@ -26,7 +26,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
-from edgar import Filing, Filings
+from edgar import Filing
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
@@ -360,12 +360,22 @@ def _resolve_window(context: Context, requested: Window | None, scoped: bool) ->
 
 
 def _listing(context: Context, window: Window) -> list[Filing]:
-    """All manager filing units from the shared bounded cache, oldest first, amendments last."""
+    """Pending manager filing units, filtered before object construction, oldest first and amendments last."""
     if not edgar_index.refreshed_today(context, window):
         edgar_index.refresh(context, window)
-    rows = edgar_index.entries(context, None, cast(Resume, Tables.sec13f_hr.resume).forms, window)
-    rows = rows.assign(amended=rows["form"].str.upper().str.endswith("/A")).sort_values(["filed", "amended", "accession"], kind="stable")
-    return [edgar_index.index_filing(row.cik, row.company, row.form, row.filed, row.accession) for row in rows.itertuples(index=False)]
+    df_listed = edgar_index.entries(context, None, cast(Resume, Tables.sec13f_hr.resume).forms, window)
+    df_pending = _pending_filings(context, df_listed)
+    logger.info(
+        "13F: %d listed filing units in %s; %d already complete; %d pending",
+        len(df_listed),
+        window,
+        len(df_listed) - len(df_pending),
+        len(df_pending),
+    )
+    df_pending = df_pending.assign(amended=df_pending["form"].str.upper().str.endswith("/A")).sort_values(
+        ["filed", "amended", "accession"], kind="stable"
+    )
+    return [edgar_index.index_filing(row.cik, row.company, row.form, row.filed, row.accession) for row in df_pending.itertuples(index=False)]
 
 
 @dataclass
@@ -532,29 +542,28 @@ def completed_accessions(context: Context, statuses: list[str]) -> frozenset[str
     return frozenset(stored_accessions(context, Tables.sec13f_hr, [""], DONE_TABLE, where={"parse_status": statuses})[""])
 
 
-def _done_in(context: Context, joint_ciks: set[str]) -> Callable[[FilingStamp], bool]:
-    """Whether a listed filing is complete in `sec13f_hr` (markers count): one table-wide read, plus one
-    per-CIK read for the filers of an accession listed under several CIKs, stored once per filer."""
-    where = {"parse_status": "complete"}
+def _pending_filings(context: Context, df_listed: pd.DataFrame) -> pd.DataFrame:
+    """Subtract complete accessions from index metadata, preserving per-filer completion for joint accessions."""
+    if df_listed.empty or context.run.mode in {"full", "recovery"}:
+        return df_listed
+    df_filers = df_listed[["cik", "accession"]].drop_duplicates()
+    joint_ciks = sorted(set(df_filers.loc[df_filers["accession"].duplicated(keep=False), "cik"]))
     everywhere = completed_accessions(context, ["complete"])
-    per_cik = stored_accessions(context, Tables.sec13f_hr, sorted(joint_ciks), DONE_PER_KEY, where=where) if joint_ciks else {}
-    return lambda stamp: stamp.accession_number in per_cik.get(stamp.cik, everywhere)
+    per_cik = stored_accessions(context, Tables.sec13f_hr, joint_ciks, DONE_PER_KEY, where={"parse_status": "complete"}) if joint_ciks else {}
+
+    complete = df_listed["accession"].isin(everywhere)
+    if per_cik:
+        joint = df_listed["cik"].isin(joint_ciks)
+        keys = pd.MultiIndex.from_frame(df_listed.loc[joint, ["cik", "accession"]])
+        complete.loc[joint] = keys.isin([(cik, accession) for cik, accessions in per_cik.items() for accession in accessions])
+    return df_listed.loc[~complete]
 
 
-def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
-    """Save successful filings in batches and return only failed reads for retry.
-    Skip accessions complete in `sec13f_hr`."""
+def _first_pass(filings: list[Filing], saver: _Saver) -> list[_Read]:
+    """Read only planned pending filings, save successes in batches and return failed reads for retry."""
     failed: list[_Read] = []
-    filers: dict[str, set[str]] = {}
-    for filing in filings:
-        stamp = FilingStamp.of(filing, "")
-        filers.setdefault(stamp.accession_number, set()).add(stamp.cik)
-    joint = {cik for ciks in filers.values() if len(ciks) > 1 for cik in ciks}
-    done = (lambda stamp: False) if saver.context.run.mode in {"full", "recovery"} else _done_in(saver.context, joint)
     for filing in tqdm(filings, total=len(filings), desc="13F-HR"):
         stamp = FilingStamp.of(filing, "")
-        if done(stamp):
-            continue
         read = _Read(stamp, read_filing_vintage(stamp))
         if isinstance(read.result, ReadFailure):
             failed.append(read)
@@ -609,7 +618,6 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, filing_window:
     configure(context)
     filings = _listing(context, window)
     total = len(filings)
-    logger.info("13F: %d listed filing units in %s", total, window)
     if not total:
         return 0
     saver = _Saver(context, save_every)

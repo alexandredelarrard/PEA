@@ -377,8 +377,8 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     assert all({"issuer_cik", "lineage_role"}.issubset(kwargs["columns"]) for kwargs in insider_reads)
     for table in (Tables.sec_13d, Tables.sec_13g):
         projected = [kwargs for source, kwargs in reads if source is table]
-        assert len(projected) == 5 and all(kwargs["where"] == {"ticker": list(names)} and kwargs["since"] == days[0] - pd.Timedelta(days=750) and kwargs["until"] == ctx.run.as_of and kwargs["date_col"] == "filing_date" and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
-    print("SANITY: 491 calculation names/982 retained owner-history rows reach five public builds; insider reads are full and schedules use750CD; 15 deliveries match exactly across batches/order, NULLs and counts.")
+        assert len(projected) == 5 and all(kwargs["where"] == {"ticker": list(names)} and kwargs["since"] is None and kwargs["until"] == ctx.run.as_of and kwargs["date_col"] == "filing_date" and kwargs["markers"] and "rp_seq" in kwargs["columns"] for kwargs in projected)
+    print("SANITY: 491 calculation names/982 retained owner-history rows reach five public builds; insider and schedule reads retain full history; 15 deliveries match exactly across batches/order, NULLs and counts.")
 # fmt: on
 
 

@@ -88,13 +88,17 @@ def validate_cluster_config(cluster: DictConfig) -> None:
         raise ValueError(f"cluster.clusters: min_holders must be at least 1 for {low}")
 
     # Ids: the fund range 0..keep-1 is reserved, every category id is its own.
-    category_ids = [int(block.get("id", -1)) for kind, block in blocks.items() if kind != FUND]
-    taken = [*range(int(cluster.keep)), *category_ids]
-    if min(category_ids, default=int(cluster.keep)) < int(cluster.keep) or len(set(taken)) != len(taken):
-        raise ValueError(
-            f"cluster.clusters: category id values {category_ids} must be distinct and at least keep={cluster.keep} (fund ids 0..keep-1)"
-        )
-    _validate_labels(cluster, {str(kind): int(block.id) for kind, block in blocks.items() if kind != FUND})
+    categories = _feature_categories(cluster)
+    ids = list(categories.values())
+    taken = [*range(int(cluster.keep)), *ids]
+    if min(ids, default=int(cluster.keep)) < int(cluster.keep) or len(set(taken)) != len(taken):
+        raise ValueError(f"cluster.clusters: category id values {ids} must be distinct and at least keep={cluster.keep} (fund ids 0..keep-1)")
+    _validate_labels(cluster, categories)
+
+
+def _feature_categories(cluster: DictConfig) -> dict[str, int]:
+    """Kind -> stored id of the non-fund blocks of `cluster.clusters` (-1 for a block without an `id`)."""
+    return {str(kind): int(block.get("id", -1)) for kind, block in cluster.clusters.items() if kind != FUND}
 
 
 def _validate_labels(cluster: DictConfig, feature_categories: dict[str, int]) -> None:
@@ -104,6 +108,7 @@ def _validate_labels(cluster: DictConfig, feature_categories: dict[str, int]) ->
     tracked only: a fund cluster `dropped_by` an `exclude` key (`k - keep` of them) or a `category` that has no block in `cluster.clusters`.
     `features` is true exactly for the ids that build cube features.
     """
+    # Entries: present, each id and each name once.
     entries = [dict(entry) for entry in cluster.get("labels") or []]
     if not entries:
         raise ValueError("cluster.labels is missing: name every stored cluster id there")
@@ -160,13 +165,11 @@ def fund_tracked_ids(cluster: DictConfig) -> dict[int, str]:
 
 def category_ids(cluster: DictConfig) -> dict[str, int]:
     """Category -> stored id: the feature categories of `cluster.clusters` and the tracked-only categories of `cluster.labels`."""
-    ids = {str(kind): int(block.id) for kind, block in cluster.clusters.items() if kind != FUND}
-    return ids | {str(entry.category): int(entry.id) for entry in cluster.labels if entry.get("category")}
+    return _feature_categories(cluster) | {str(entry.category): int(entry.id) for entry in cluster.labels if entry.get("category")}
 
 
 def cluster_specs(cluster: DictConfig) -> list[ClusterSpec]:
-    """The validated block as specs ordered by cluster id: `keep` fund clusters, then each category cluster."""
-    validate_cluster_config(cluster)
+    """The block as specs ordered by cluster id: `keep` fund clusters, then each category cluster. The caller validates the block first."""
     specs: list[ClusterSpec] = []
     for kind, block in cluster.clusters.items():
         ids = range(int(cluster.keep)) if kind == FUND else [int(block.id)]

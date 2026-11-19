@@ -8,6 +8,7 @@ known values. No DAG, cube build, PostgreSQL or configs/ write is made.
 
 from __future__ import annotations
 
+import copy
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -378,3 +379,14 @@ def test_the_step_cuts_every_book_at_the_deadline_the_publication_clock_uses(wor
     print(
         f"SANITY: the step cut the {len(periods)} books it read at the publication clock's own deadlines; each is at least 7 days before its publication."
     )
+
+
+def test_the_step_validates_the_cluster_block_before_any_read(world: Any, cfg: DictConfig) -> None:
+    w = world("2025-03-31")
+    bad = copy.deepcopy(cfg)
+    bad.cluster.clusters.bank.id = bad.cluster.clusters.insurance.id
+    w.cfg = bad
+    with pytest.raises(ValueError, match="distinct"):
+        w.step().run(full=True)
+    assert w.reads == [] and w.writes == []
+    print("SANITY: two categories sharing an id stop the step in the plan, before any line is read or any row written.")

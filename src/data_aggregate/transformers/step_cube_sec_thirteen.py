@@ -16,15 +16,20 @@ from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.manager_profile.lines import clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
-from src.data_aggregate.utils.sec_thirteen.cluster_config import COLUMN_PREFIX, ClusterSpec, cluster_specs, column_budget, column_names
+from src.data_aggregate.utils.sec_thirteen.cluster_config import (
+    COLUMN_PREFIX,
+    ClusterSpec,
+    cluster_specs,
+    column_budget,
+    column_names,
+    validate_cluster_config,
+)
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
 from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books
 from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, filing_deadlines, publication_dates
 from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
-
-_REBUILD = "run `data_aggregate build-sec-thirteen -F`"
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,7 @@ def _market_at(market: Market, period: pd.Timestamp) -> pd.DataFrame:
 
 class StepCubeSecThirteen(Step):
     _FIELDS = ("mcap_pit", "shares_outstanding_pit", "ret")
+    _REBUILD = "run `data_aggregate build-sec-thirteen -F`"
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
@@ -127,8 +133,9 @@ class StepCubeSecThirteen(Step):
 
     def _plan(self, full: bool) -> Plan:
         """The window, the quarters to compute and the saved rows to carry; raises before any quarter is read when the part cannot be extended."""
-        # config: the clusters and their cube columns; the column budget warns above its limits
+        # config: the validated clusters and their cube columns; the column budget warns above its limits
         cfg = self._config.cluster
+        validate_cluster_config(cfg)
         specs = cluster_specs(cfg)
         columns = column_names(specs)
         self._log.info("sec thirteen clusters: %d cube columns", column_budget(specs, cfg))
@@ -142,7 +149,7 @@ class StepCubeSecThirteen(Step):
 
         # check: a stored column set other than the configured one needs the full rebuild, never a hidden one; the labels exist
         if not window.is_full and saved_columns and set(saved_columns) != {"date", "ticker", *columns}:
-            raise RuntimeError(f"{self._part.table} has {len(saved_columns) - 2} feature columns, the config {len(columns)}: {_REBUILD}")
+            raise RuntimeError(f"{self._part.table} has {len(saved_columns) - 2} feature columns, the config {len(columns)}: {self._REBUILD}")
         if df_labels is None or df_labels["cluster"].isna().all():
             raise RuntimeError("no cluster labels in sec_13f_manager_details: run `data_aggregate build-cluster` first")
         labels = df_labels.assign(period=pd.to_datetime(df_labels["period"]).dt.normalize())
@@ -249,7 +256,7 @@ class StepCubeSecThirteen(Step):
             largest = f"{finite.max():.3g}" if finite.size else "none, only a null against a value"
             raise RuntimeError(
                 f"the saved quarter {saved.date()} no longer reproduces ({int(differs.sum())} of {differs.size} cells differ, "
-                f"largest {largest}): the labels or centroids changed; {_REBUILD}"
+                f"largest {largest}): the labels or centroids changed; {self._REBUILD}"
             )
 
     def _expand(self, plan: Plan, computed: dict[pd.Timestamp, pd.DataFrame]) -> pd.DataFrame:
@@ -277,4 +284,4 @@ class StepCubeSecThirteen(Step):
         """One replace (full) or one inclusive tail append of `rows`; rows with no feature value are dropped."""
         written = write_part(self._store, self._part.table, rows, plan.saved.window, drop_empty=True, existing_columns=plan.saved.columns)
         if written == COLUMNS_CHANGED:
-            raise RuntimeError(f"{self._part.table} column set changed during the run: {_REBUILD}")
+            raise RuntimeError(f"{self._part.table} column set changed during the run: {self._REBUILD}")

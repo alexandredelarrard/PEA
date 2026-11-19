@@ -451,6 +451,111 @@ def test_low_split_and_kr_combined_total():
     )
 
 
+@pytest.mark.parametrize(
+    "count,label",
+    [
+        (26441, "full-time, part-time and temporary employees"),
+        (3695, "full-time, part-time, and temporary employees"),
+        (57000, "full-time, part-time and temporary workers"),
+        (19100, "full-time, part-time and temporary employees"),
+    ],
+)
+def test_mixed_worker_list_keeps_total_instead_of_full_time(count: int, label: str) -> None:
+    text = f"As of December 31, 2025, we had {count:,} {label}."
+    decision = decide(text, total=count, includes_contractors=True)
+    assert components(decision) == (count, None, None, "total_incl_contractors", "found")
+    assert decide(text, full_time=count).status == "unsupported"
+    print(f"\nSANITY: the {count:,} mixed full-/part-time and temporary workforce remains an inclusive total, never a full-time count.")
+
+
+def test_including_part_time_does_not_make_the_whole_total_part_time() -> None:
+    text = "As of December 31, 2025, we employed 9,400, including part-time and temporary employees."
+    assert components(decide(text, total=9400, includes_contractors=True)) == (9400, None, None, "total_incl_contractors", "found")
+    assert decide(text, part_time=9400).status == "unsupported"
+    assert decide(text, total=9400).status == "unsupported"
+    print("\nSANITY: Generac's 9,400 mixed employees are an inclusive total; 'including part-time' is not an exclusive shift label.")
+
+
+def test_equivalent_of_full_time_employees_is_fte_instead_of_full_time() -> None:
+    text = (
+        "Schwab had full-time, part-time, and temporary employees, and persons employed on a contract basis, "
+        "that represented the equivalent of approximately 33,000 full-time employees."
+    )
+    assert components(decide(text, total=33000, is_fte=True, includes_contractors=True)) == (33000, None, None, "total_incl_contractors", "found")
+    assert decide(text, total=33000).status == "unsupported"
+    assert decide("Our workforce represented the equivalent of approximately 33,000 full-time employees.", total=33000).basis == "fte"
+    assert decide("Full-time equivalent employees 33,000", total=33000).basis == "fte"
+    assert decide("Full-time equivalent employees 33,000", full_time=33000).status == "unsupported"
+    assert decide(text, full_time=33000).status == "unsupported"
+    print("\nSANITY: Schwab's equivalent of 33,000 full-time employees stays a total with its qualified basis, not full-time headcount.")
+
+
+def test_five_disjoint_country_counts_are_supported_without_the_union_subset() -> None:
+    text = (
+        "As of January 1, 2026, we employed 11,172 people in the United States. Of these employees, 1,057 are represented by labor unions. "
+        "Also, as of that date, we employed 280 people in Mexico, 32 people in Honduras, 63 people in Canada, and 1 person in the Bahamas."
+    )
+    assert supported(11548, text) == 11548
+    assert supported(11549, text) is None
+    assert supported(11548, text, quote="we employed 11,172 people in the United States.") is None
+    print("\nSANITY: VMC's five disjoint countries sum to 11,548; the 1,057 union subset is excluded and unsupported arithmetic still rejects.")
+
+
+def test_complementary_service_centers_do_not_flag_employee_total_as_contractors() -> None:
+    text = "We maintain over 50 complementary service and repair centers across six continents and over 21,000 employees worldwide."
+    assert components(decide(text, total=21000, quote="over 21,000 employees worldwide")) == (21500, None, None, "total", "found")
+    mixed = "We had over 21,000 employees and complementary workers worldwide."
+    assert decide(mixed, total=21000).status == "unsupported"
+    assert decide(mixed, total=21000, includes_contractors=True).basis == "total_incl_contractors"
+    print("\nSANITY: IR's complementary service centers are not workers; actual complementary workers still require the inclusive flag.")
+
+
+def test_table_quote_must_mark_skipped_intervening_rows() -> None:
+    heading = "The number of associates we employed as of January 31, 2026 is as follows: Total"
+    full_row = "Full-time Associates 33,755 1,426 35,181"
+    part_row = "Part-time Associates 117,851 — 117,851"
+    total_row = "Total 151,606 1,426 153,032"
+    text = f"{heading} {full_row} {part_row} {total_row}"
+    bad_quote = f"{heading} {part_row}"
+    decision = guard.decide_employee_answer(
+        answer(153032, total_row, full_time=35181, full_time_quote=full_row, part_time=117851, part_time_quote=bad_quote), text
+    )
+    assert components(decision) == (153032, 35181, None, "full_part", "found")
+    assert decision.rejected == ("part_time: not_located",)
+    for quote in (part_row, f"{heading} ... {part_row}"):
+        accepted = guard.decide_employee_answer(
+            answer(153032, total_row, full_time=35181, full_time_quote=full_row, part_time=117851, part_time_quote=quote), text
+        )
+        assert components(accepted) == (153032, 35181, 117851, "full_part", "found")
+    print("\nSANITY: DLTR keeps 153,032 total / 35,181 FT / 117,851 PT with real row quotes; silently omitted rows still reject.")
+
+
+def test_quoted_table_units_apply_to_later_fragments_of_the_same_table() -> None:
+    header = "Employees (in thousands) For the year ended December 31: 2025"
+    first = "IBM/wholly owned subsidiaries 264.3"
+    second = "Less-than-wholly owned subsidiaries 8.7"
+    source = f"{header} {first} Prior years 259.9 270.3 Employee categories and additional comparative columns {second}"
+    quote = f"{header} {first} ... {second}"
+    assert supported(273000, source, quote=quote) == 273000
+    assert supported(273001, source, quote=quote) is None
+    assert supported(273000, source, quote=f"{first} ... {second}") is None
+    print("\nSANITY: IBM's quoted thousands header scales both disjoint fragments: 264.3k + 8.7k = 273,000; missing units still reject.")
+
+
+def test_flattened_employment_total_keeps_its_same_line_units_header() -> None:
+    header = "The approximate number of individuals employed by us and entities that we consolidated was as follows (in thousands):"
+    columns = "2024 2025 United States 87 87 Rest of World 78 76 Company excluding Ford Credit 165 163 Ford Credit 6 6"
+    row = "Total Company 171 169"
+    source = f"Employment Data\n{header} {columns} {row}\nOther information"
+    assert supported(169000, source, quote=row) == 169000
+    assert supported(169001, source, quote=row) is None
+    assert supported(169000, f"Financial assets (in thousands): {columns} {row}", quote=row) is None
+    assert supported(169000, f"{header}\n{columns} {row}", quote=row) is None
+    print(
+        "\nSANITY: Ford's flattened employment table keeps its thousands units beyond 80 characters; unrelated financial tables do not supply units."
+    )
+
+
 # VTRS (Mylan) FY2016 10-K 0001623613-17-000007; AAPL FY2001 10-K405 0000912057-01-544436.
 VTRS_2017 = (
     "Employees As of December 31, 2016 , Mylan �s global workforce included more than 35,000 employees and external contractors. Certain production"

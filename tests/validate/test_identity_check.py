@@ -14,7 +14,9 @@ import pandas as pd
 
 from src.data_store.schema import Tables
 from src.utils.identity_flags import cik_activity, identity_flag_block, identity_flags
+from src.utils.window import WindowRun
 from src.validate.checks.identity import check_identity, pending_removals
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import seed_universe, universe_in
 
 SENTINEL = "1900-01-01"
@@ -204,7 +206,13 @@ def _store_lineage() -> pd.DataFrame:
 
 
 def _context(store: Any) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), universe=universe_in(store))
+    return SimpleNamespace(
+        store=store,
+        log=logging.getLogger(LOGGER),
+        universe=universe_in(store),
+        config=extract_config(),
+        run=WindowRun("incremental", "read-only identity policy check", pd.Timestamp("2026-11-16")),
+    )
 
 
 def _seed_store(store: Any, lineage: pd.DataFrame) -> None:

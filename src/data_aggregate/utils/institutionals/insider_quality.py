@@ -216,14 +216,6 @@ def insider_days(values: pd.Series) -> pd.Series:
     return days.where(days.between(pd.Timestamp("1900-01-01"), pd.Timestamp.max)).dt.normalize().dt.as_unit("ns")
 
 
-def publication_day(days: pd.Series, lag_days: int, sessions: pd.DatetimeIndex) -> pd.Series:
-    """`days` + `lag_days` rolled forward to the first session on or after it; outside the session span the shifted day itself, NaT stays NaT."""
-    shifted = days + pd.Timedelta(days=lag_days)
-    position = sessions.searchsorted(pd.DatetimeIndex(shifted), side="left")
-    rolled = pd.Series(sessions.take(np.minimum(position, len(sessions) - 1)).astype(shifted.dtype), index=days.index)
-    return rolled.where(shifted.notna() & (position < len(sessions)) & (shifted >= sessions[0]), shifted)
-
-
 def normalize_insider_dates(df_rows: pd.DataFrame) -> pd.DataFrame:
     """Normalize an owned source frame; execution evidence stays separate from filing-backed quote references."""
     for column in ("filing_date", "transaction_date", "original_submission_date"):

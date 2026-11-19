@@ -117,7 +117,7 @@ def _setup(
             "diagnostics": {"enabled": True, "top_n_features": 2, "shap_sample": 200, "pdp_grid": 6},
             "backtest": {"n_quantiles": 5},
         },
-        "build_cube": {"output": {"save_cv_results": True, "save_signal": True}},
+        "data_aggregate": {"output": {"save_cv_results": True, "save_signal": True}},
         "train": {"start_date": str(pd.Timestamp(dates[0]).date()), "end_date": str(pd.Timestamp(dates[-40]).date())},
         "data_extract": {"prediction_fresh_share": 0.95},
     }
@@ -129,7 +129,9 @@ def _setup(
         "MODELS_DIR": tmp_path / "models",
         "CUBE_CV_RESULTS_PATH": tmp_path / "cv.parquet",
     }
-    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe)
+    context: Any = SimpleNamespace(
+        store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe
+    )
     return StepLongShort(context=context, config=cfg), spy, cfg  # type: ignore[arg-type]
 
 
@@ -274,8 +276,6 @@ def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_st
     write_json(initial.run_dir / "assessment/metadata.json", {"run_id": initial.run_id, "complete": True})
     (initial.run_dir / "report.html").write_text("assessed", encoding="utf-8")
     step.run_train(full_history=True)
-    # the synthetic cube is dated in the past, so the input guard (test_predict_freshness.py) is stubbed out
-    monkeypatch.setattr("src.modelling.steps.step_long_short.check_prediction_inputs", lambda *args, **kwargs: {})
     spy.loads.clear()
     out = step.run_predict(n_dates=2)
 

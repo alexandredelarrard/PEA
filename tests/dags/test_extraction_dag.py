@@ -58,7 +58,6 @@ REQUIRED_COMMANDS = {
     "sec-employees-text",
     "sec-def14a-text",
     "extract-earnings-calls",
-    "extraction-status",
 }
 
 
@@ -86,16 +85,16 @@ def test_required_sources_are_scheduled_without_retired_attention_sources():
     print("  OK: the retired Google Trends source is absent and the final gate is present")
 
 
-def test_freshness_inventory_comes_only_from_schema():
+def test_removed_freshness_report_is_not_a_cli_or_dag_task():
     root = DAG_FILE.parents[2]
     cli_source = _source(root / "src/data_extract/cli.py")
-    assert "freshness_tables()" in cli_source
-    assert "SOURCE_TABLES" not in cli_source
-    assert not (root / "src/data_extract/freshness.py").exists()
+    assert "freshness_tables" not in cli_source
+    assert "extraction-status" not in extraction_cli.cli.commands
+    assert "extraction_status" not in _source(DAG_FILE)
 
     print("\n=== SANITY CHECK: one freshness inventory ===")
-    print("  extraction-status consumes schema.freshness_tables(); no parallel registry exists")
-    print("  OK: schema.py is the sole table/cadence/date-column source of truth")
+    print("  source-age reporting has no CLI command, source reader or scheduled task")
+    print("  OK: the identity check remains the final aggregation gate")
 
 
 #: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, FTD, SEC current tickers),
@@ -239,11 +238,11 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert "fundamentals >> fundamentals_sharadar" not in source  # the two producers are independent (AC-009)
     assert "sec_employees_llm] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
     assert "[sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes" in source
-    assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
+    assert "all_fetchers >> identity_check >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
     print("  three retries per task, sec_api tasks take both pool slots, the 13F ZIP ingest follows the 13F walk")
-    print("  OK: every fetcher -> extraction_status -> identity_check -> trigger_aggregation")
+    print("  OK: every fetcher -> identity_check -> trigger_aggregation")
 
 
 def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypatch):
@@ -256,7 +255,7 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     # zip downloads -> identity (captures, build, sync) -> every consumer, the two zip ingests included
     for download in IDENTITY_DOWNLOADS:
         assert "identity" in graph[download], f"{download} must feed identity"
-    assert graph["identity"] == IDENTITY_CONSUMERS | {"edgar_index", "extraction_status", "price_history", "earnings_surprises"}, sorted(
+    assert graph["identity"] == IDENTITY_CONSUMERS | {"edgar_index", "identity_check", "price_history", "earnings_surprises"}, sorted(
         graph["identity"]
     )
     for derived, parents in DERIVED_PARENTS.items():
@@ -270,13 +269,11 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     assert "insider_edgar" in graph["zips_ingest_insider"] and "insider_edgar" not in graph["zips_ingest_datasets"], "D-16a"
 
     # every fetcher upstream of the report; the report and the check run ALL_DONE (no source blocks the night)
-    upstream_of_status = {task for task in graph if "extraction_status" in _descendants(graph, task)}
-    assert upstream_of_status == set(graph) - {"extraction_status", "identity_check", "trigger_data_aggregation"}
-    assert params["extraction_status"]["trigger_rule"] == "all_done"
-    assert graph["extraction_status"] == {"identity_check"}
+    upstream_of_check = {task for task in graph if "identity_check" in _descendants(graph, task)}
+    assert upstream_of_check == set(graph) - {"identity_check", "trigger_data_aggregation"}
     # AC-039 / P37: the identity validator runs after the report and is the hard gate on aggregation
-    fetchers = set(graph) - {"identity_check", "extraction_status", "trigger_data_aggregation", *UNIVERSE_TASKS}
-    assert all("extraction_status" in graph[task] for task in fetchers), sorted(t for t in fetchers if "extraction_status" not in graph[t])
+    fetchers = set(graph) - {"identity_check", "trigger_data_aggregation", *UNIVERSE_TASKS}
+    assert all("identity_check" in graph[task] for task in fetchers), sorted(t for t in fetchers if "identity_check" not in graph[t])
     assert graph["identity_check"] == {"trigger_data_aggregation"} and params["identity_check"]["trigger_rule"] == "all_done"
     assert params["trigger_data_aggregation"]["trigger_rule"] == "all_success"
     assert " -m src validate identity -o " in str(params["identity_check"]["bash_command"])
@@ -286,7 +283,7 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     print("\n=== SANITY CHECK: identity stage order (AC-011, AC-037-039) ===")
     print(f"  {len(graph)} tasks, acyclic; {sorted(IDENTITY_DOWNLOADS)} -> identity -> {len(IDENTITY_CONSUMERS)} consumers")
     print(f"  zip ingests {sorted(ZIP_INGESTS)} in sec_bulk; only the insider one feeds insider_edgar (D-16a)")
-    print(f"  first identity task at topological position {position['zips_download']}, gate at {position['extraction_status']}")
+    print(f"  first identity task at topological position {position['zips_download']}, gate at {position['identity_check']}")
     print(
         f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed identity run leaves its consumers unrun, the check still runs"
     )
@@ -298,7 +295,7 @@ def test_the_edgar_index_refreshes_once_before_the_seven_edgar_walks(monkeypatch
     task = params["edgar_index"]
     assert task["pool"] == "sec_api" and task["pool_slots"] == 2 and " edgar-index -c " in str(task["bash_command"])
     assert "edgar_index" in graph["identity"]
-    assert graph["edgar_index"] == EDGAR_WALKS | {"thirteen_f_managers", "extraction_status"}, sorted(graph["edgar_index"])
+    assert graph["edgar_index"] == EDGAR_WALKS | {"thirteen_f_managers", "identity_check"}, sorted(graph["edgar_index"])
     assert all(params[walk]["pool"] == "sec_api" for walk in EDGAR_WALKS)
     print("\n=== SANITY CHECK: one nightly EDGAR index refresh (P7b) ===")
     print(f"  identity -> edgar_index (sec_api, 2 slots) -> {sorted(EDGAR_WALKS)}")
@@ -317,11 +314,11 @@ def test_sec_and_sharadar_fundamentals_are_independent_producers(monkeypatch):
     assert params["sec_fundamentals_facts"]["pool"] == "sec_api" and params["sec_fundamentals_history"]["pool"] == "default_pool"
     check_parents = {task for task in graph if "fundamentals_check" in graph[task]}
     assert check_parents == {"universe_sync", "sec_fundamentals_history", "fundamentals_sharadar"}, sorted(check_parents)
-    assert params["fundamentals_check"]["trigger_rule"] == "all_done" and graph["fundamentals_check"] == {"extraction_status"}
+    assert params["fundamentals_check"]["trigger_rule"] == "all_done" and graph["fundamentals_check"] == {"identity_check"}
     assert " fundamentals-check -c " in str(params["fundamentals_check"]["bash_command"])
     assert " sec-fundamentals-history -c " in str(params["sec_fundamentals_history"]["bash_command"])
     assert not {"fundamentals_sharadar", *SEC_FUNDAMENTALS} & _descendants(graph, "sec_employees_llm"), "a producer waits for headcount"
-    assert graph["sec_employees_llm"] == {"extraction_status"}
+    assert graph["sec_employees_llm"] == {"identity_check"}
 
     dag = load_dag(DAG_FILE)
     sec_down, sharadar_down = replay(dag, ["sec_fundamentals_facts"]), replay(dag, ["fundamentals_sharadar"])
@@ -345,9 +342,9 @@ def test_the_llm_passes_run_in_the_default_pool_after_the_walk_storing_their_tex
     for task, parents in LLM_TEXT_TASKS.items():
         assert params[task]["pool"] == "default_pool" and params[task]["pool_slots"] == 1, params[task]
         assert upstream[task] == {"universe_sync", "identity", *parents}, sorted(upstream[task])
-    assert graph["sec_employees_text"] == {"sec_employees_llm", "extraction_status"}
-    assert graph["sec_def14a_text"] == {"sec_def14a_llm", "extraction_status"}
-    assert graph["sec_def14a_llm"] == {"sec_8k_votes", "extraction_status"} and upstream["sec_8k_votes"] == {"universe_sync", "sec_def14a_llm"}
+    assert graph["sec_employees_text"] == {"sec_employees_llm", "identity_check"}
+    assert graph["sec_def14a_text"] == {"sec_def14a_llm", "identity_check"}
+    assert graph["sec_def14a_llm"] == {"sec_8k_votes", "identity_check"} and upstream["sec_8k_votes"] == {"universe_sync", "sec_def14a_llm"}
     assert params["sec_8k_votes"]["pool"] == "default_pool" and params["sec_8k_votes"]["pool_slots"] == 1, params["sec_8k_votes"]
     assert {str(kwargs.get("pool")) for kwargs in params.values() if "pool" in kwargs} == {"default_pool", "sec_api", "sec_bulk"}, "no new pool"
     print("\n=== SANITY CHECK: text walks -> LLM passes (D-05, M4) ===")
@@ -373,7 +370,7 @@ def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(mon
     assert bulk["pool"] == "sec_bulk" and " zips-ingest --only insider -c " in str(bulk["bash_command"])
     assert walk["pool"] == "sec_api" and walk["pool_slots"] == 2 and " insider-edgar -c " in str(walk["bash_command"])
     assert "insider_edgar" in graph["zips_ingest_insider"], "the live tail resumes from the bulk table's latest quarter"
-    assert "insider_edgar" in _descendants(graph, "identity") and "extraction_status" in graph["insider_edgar"]
+    assert "insider_edgar" in _descendants(graph, "identity") and "identity_check" in graph["insider_edgar"]
     edgar_in_bulk = [task for task, kwargs in params.items() if kwargs.get("pool") == "sec_bulk" and "edgar" in str(kwargs.get("bash_command"))]
     assert not edgar_in_bulk, edgar_in_bulk
 
@@ -398,23 +395,21 @@ def test_one_price_task_and_no_alias_commands():
 def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_does():
     """AC-015 for sources, P37 for identity: the report and the check run ALL_DONE; the trigger needs the check's success."""
     dag = load_dag(DAG_FILE)
-    gate, trigger, check = dag.tasks["extraction_status"], dag.tasks["trigger_data_aggregation"], dag.tasks["identity_check"]
-    assert gate.trigger_rule == ALL_DONE and check.trigger_rule == ALL_DONE and trigger.trigger_rule == ALL_SUCCESS
-    assert trigger.upstream == {"identity_check"} and check.upstream == {"extraction_status"}
-    fetchers = {
-        task_id for task_id in dag.tasks if task_id not in {*UNIVERSE_TASKS, "identity_check", "extraction_status", "trigger_data_aggregation"}
-    }
-    assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
+    trigger, check = dag.tasks["trigger_data_aggregation"], dag.tasks["identity_check"]
+    assert check.trigger_rule == ALL_DONE and trigger.trigger_rule == ALL_SUCCESS
+    assert trigger.upstream == {"identity_check"}
+    fetchers = {task_id for task_id in dag.tasks if task_id not in {*UNIVERSE_TASKS, "identity_check", "trigger_data_aggregation"}}
+    assert check.upstream == fetchers, "the identity check waits for every fetcher"
     lenient = {"identity", "price_history", "earnings_surprises", "fundamentals_check", "zips_ingest_13f", "thirteen_f_managers"}
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
-    for failed in (["price_history"], ["identity"], ["thirteen_f", "zips_ingest_insider", "extraction_status"], ["edgar_index"]):
+    for failed in (["price_history"], ["identity"], ["thirteen_f", "zips_ingest_insider"], ["edgar_index"]):
         states = replay(dag, failed)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     states = replay(dag, ["identity"])
     assert states["sec_fundamentals_facts"] == states["fundamentals_sharadar"] == states["zips_ingest_datasets"] == "upstream_failed"
-    assert states["extraction_status"] == "success"
+    assert states["identity_check"] == "success"
     assert states["price_history"] == "success", "prices read the stored master when the build fails"
     assert states["earnings_surprises"] == "success", "earnings read the stored trading symbols when the build fails"
     for download in sorted(IDENTITY_DOWNLOADS):
@@ -427,12 +422,10 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
         assert states["universe_sync"] == states["identity"] == states["sec_fundamentals_facts"] == "success", evidence
     held = replay(dag, ["identity_check"])
     assert held["trigger_data_aggregation"] == "upstream_failed", held
-    assert held["extraction_status"] == "success" and all(held[task_id] == "success" for task_id in fetchers), (
-        "extraction is never blocked by the check"
-    )
+    assert all(held[task_id] == "success" for task_id in fetchers), "extraction is never blocked by the check"
 
     print("\n=== SANITY CHECK: extraction never blocked, aggregation gated on identity (AC-015, P37) ===")
-    print(f"  {len(fetchers)} fetchers -> extraction_status (ALL_DONE) -> identity_check (ALL_DONE) -> trigger_data_aggregation (ALL_SUCCESS)")
+    print(f"  {len(fetchers)} fetchers -> identity_check (ALL_DONE) -> trigger_data_aggregation (ALL_SUCCESS)")
     print(
         f"  replay: price_history / identity (its {len(IDENTITY_CONSUMERS)} consumers upstream_failed) / 13F + insider zips + the report / the index failed"
     )
@@ -465,7 +458,7 @@ def test_the_13f_manager_details_follow_the_zip_ingest_and_the_index_even_when_e
     assert dag.tasks["zips_ingest_13f"].trigger_rule == ALL_DONE and dag.tasks["edgar_index"].trigger_rule == ALL_SUCCESS
     assert task.trigger_rule == ALL_DONE, "a failed index refresh or ZIP ingest still leaves the stored evidence to read"
     assert task.upstream == {"universe_sync", "zips_ingest_13f", "edgar_index"}, sorted(task.upstream)
-    assert "thirteen_f_managers" in dag.tasks["extraction_status"].upstream
+    assert "thirteen_f_managers" in dag.tasks["identity_check"].upstream
     for failed in (["zips_ingest_13f"], ["edgar_index"], ["thirteen_f"]):
         states = replay(dag, failed)
         assert states["thirteen_f_managers"] == "success" and states["trigger_data_aggregation"] == "success", (failed, states)
@@ -655,8 +648,21 @@ def test_identity_reads_no_input_written_later_in_the_night():
     reads = {"universe_tickers"}  # `context.universe`
     for path in IDENTITY_BUILD_FILES:
         tree = ast.parse(_source(root / path))
+        policy_references = {
+            id(reference)
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in {"source_read_window", "window_policy", "archive_scopes"}
+            for reference in ast.walk(call)
+        }
         reads |= {
-            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "Tables"
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "Tables"
+            and id(node) not in policy_references
         }
     ancestors: set[str] = set()
     pending = list(dag.tasks["identity"].upstream)
@@ -677,3 +683,40 @@ def test_identity_reads_no_input_written_later_in_the_night():
     print("\n=== SANITY CHECK: identity inputs land before identity (AC-020) ===")
     print(f"  build reads {sorted(reads)}")
     print(f"  {len(ancestors)} upstream tasks; one-night lag only for {sorted(reads & ONE_NIGHT_LAG)}; nothing else written later. Validated.")
+
+
+def test_pipeline_tasks_share_the_extraction_run_cutoff() -> None:
+    extraction = load_dag(DAG_FILE)
+    aggregate = load_dag(AGG_DAG_FILE)
+    source_commands = [task.kwargs["bash_command"] for task in extraction.tasks.values() if "data_extract " in task.kwargs.get("bash_command", "")]
+    assert source_commands and all('--as-of "' in command for command in source_commands)
+    cutoff = extraction.tasks["trigger_data_aggregation"].kwargs["conf"]["as_of"]
+    assert "dag_run.start_date" in cutoff and "as_of" in cutoff
+    assert all(cutoff in command for command in source_commands)
+    cube_commands = [task.kwargs["bash_command"] for task in aggregate.tasks.values() if "data_aggregate " in task.kwargs.get("bash_command", "")]
+    assert cube_commands and all(cutoff in command for command in cube_commands)
+    print("SANITY: every extraction and cube task receives one frozen run cutoff, relayed across the DAG trigger and reused on retries.")
+
+
+def test_run_cutoff_template_and_actual_cli_parser_preserve_the_market_day() -> None:
+    from datetime import datetime
+
+    import pandas as pd
+    from jinja2 import Environment
+
+    from src.utils.window import WindowRun
+
+    dag = load_dag(DAG_FILE)
+    template = dag.tasks["trigger_data_aggregation"].kwargs["conf"]["as_of"]
+    origin = datetime.fromisoformat("2026-11-17T00:30:00.123456+00:00")
+    rendered = (
+        Environment().from_string(template).render(dag_run=SimpleNamespace(conf={}, start_date=origin), macros=SimpleNamespace(datetime=datetime))
+    )
+    option = next(param for param in extraction_cli.cli.commands["sec-fundamentals-history"].params if param.name == "as_of")
+    parsed = option.type.convert(rendered, option, None)
+    run = WindowRun("incremental", "DAG cutoff parser check", pd.Timestamp(parsed))
+    assert run.instant == pd.Timestamp(origin)
+    assert run.as_of == pd.Timestamp("2026-11-16")
+    for command in REQUIRED_COMMANDS:
+        assert any(param.name == "as_of" for param in extraction_cli.cli.commands[command].params), command
+    print("SANITY: the actual source CLI preserves the precise UTC run cutoff and resolves its prior New York market date for every DAG route.")

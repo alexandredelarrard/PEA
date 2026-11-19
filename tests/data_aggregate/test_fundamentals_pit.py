@@ -17,10 +17,13 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.per_share import eps_price, ordinary_per_share_to_security, vendor_ordinary_per_share
+from src.utils.publication import point_in_time
 from tests.conftest import make_frames
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events
+from tests.support.config import fixture_config
 
 
 def _history() -> pd.DataFrame:
@@ -51,7 +54,11 @@ def test_earnings_gate_has_no_price_resolution_or_raw_source_reads(monkeypatch: 
     monkeypatch.setattr(module, "load_price_identity", lambda *args, **kwargs: pytest.fail("EPS gate reloaded identity"))
     monkeypatch.setattr(module, "load_quantity_basis", lambda *args, **kwargs: pytest.fail("EPS gate reloaded source units"))
     df_earnings = pd.DataFrame({"ticker": ["AAA"], "earnings_date": [days[0]], "eps_actual": [1.0], "eps_estimate": [0.5], "surprise_pct": [100.0]})
-    df_result = build_earnings_feature_panel(df_earnings, frames, share_basis=known_no_share_events())
+    df_result = build_earnings_feature_panel(
+        point_in_time(df_earnings, fixture_config(), Tables.earnings_surprises, frames.trading_index),
+        frames,
+        share_basis=known_no_share_events(),
+    )
     assert not df_result.empty
     assert pd.isna(df_result["f_days_since_earnings"].iloc[0])
     assert df_result["f_days_since_earnings"].iloc[1:].tolist() == [1.0, 2.0]
@@ -95,7 +102,7 @@ def test_dividend_cash_fallback_uses_saved_cap_and_keeps_missing_payer_unknown()
     days = pd.bdate_range("2024-01-02", periods=2)
     prices = make_frames(days, close_split=pd.DataFrame({"AAA": 100.0}, index=days), mcap_pit=pd.DataFrame({"AAA": [20_000.0, np.nan]}, index=days))
     df_dividends = pd.DataFrame({"ticker": ["AAA"], "date": [days[0]], "dividends": [0.0]})
-    fields = _dividend_fields(df_dividends, prices, FundamentalHistory(raw_history=_history()))
+    fields = _dividend_fields(df_dividends.assign(available_on=df_dividends["date"]), prices, FundamentalHistory(raw_history=_history()))
     assert fields["dividend_yield"].iloc[0, 0] == pytest.approx(0.01)
     assert pd.isna(fields["dividend_yield"].iloc[1, 0])
     print("SANITY: known cash payer200 uses saved cap20,000 for yield1%; unsupported cap stays unknown, not a nonpayer zero.")
@@ -177,7 +184,11 @@ def test_dividend_buyback_leg_uses_genuine_comparison_units() -> None:
     )
     prices = make_frames(days, close_split=pd.DataFrame({"AAA": 100.0 / 1.1}, index=days), mcap_pit=pd.DataFrame({"AAA": 10_000.0}, index=days))
     df_dividends = pd.DataFrame({"ticker": ["AAA"], "date": [days[0]], "dividends": [0.0]})
-    fields = _dividend_fields(df_dividends, prices, FundamentalHistory(raw_history=df_history, share_basis=_stock_dividend_basis(days[252])))
+    fields = _dividend_fields(
+        df_dividends.assign(available_on=df_dividends["date"]),
+        prices,
+        FundamentalHistory(raw_history=df_history, share_basis=_stock_dividend_basis(days[252])),
+    )
     assert fields["shareholder_yield"].loc[days[252], "AAA"] == pytest.approx(0.0)
     print("SANITY: a10% stock dividend with unrestated vendor counts creates neither a buyback nor a dilution penalty.")
 

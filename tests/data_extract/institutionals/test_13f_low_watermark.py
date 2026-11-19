@@ -2,28 +2,26 @@
 test_13f_low_watermark.py (tests/data_extract/institutionals/test_13f_low_watermark.py)
 ---------------------------------------------------------------------------------------
 The nightly 13F walk (M4) on a real SQLite `DataStore` with fake filings (no network): the resume
-window is `max(sec13f_hr.filing_date)` minus the overlap to the run date. Successful books save
+work list is missing/failed accessions inside fixed configured filing dates. Successful books save
 in batches while failed reads alone get retry rounds after the first pass. The 13F data-set ingest is in `test_13f_zips.py`.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
-import pyarrow as pa
 import pytest
 
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window, WindowRun
 from src.validate.checks.institutionals import check_institutionals
 from tests.data_extract.edgar_fixtures import fake_context
-from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _FakeFiling, _line, _seed_roster
+from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _FakeFiling, _line, _patch_walk, _seed_roster
 from tests.support.store_identity import store_identity
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -31,39 +29,9 @@ _UNIVERSE = ["AAPL", "MSFT"]
 _AAPL = [_line("037833100", "APPLE INC", 1_000.0, 10)]
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple[list[tuple[pd.Timestamp, pd.Timestamp]], list[float]]:
-    """`_listing` over the fakes, behind the edgartools `Filings` surface `fetch_13f` uses: each walk
-    records its filing-date window and lists only the fakes filed inside it. Returns (windows, waits)."""
-    by_accession = {f.accession_number: f for f in filings}
-    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple[list[Window], list[float]]:
+    windows = _patch_walk(monkeypatch, filings)
     waits: list[float] = []
-
-    class _Filings:
-        def __init__(self, data: pa.Table) -> None:
-            self.data = data
-
-        def __len__(self) -> int:
-            return self.data.num_rows
-
-        def __iter__(self) -> Any:
-            return (by_accession[a] for a in self.data.column("accession_number").to_pylist())
-
-    def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> _Filings:
-        windows.append((since, until))
-        inside = [f for f in filings if since <= pd.Timestamp(f.filing_date) <= until]
-        return _Filings(
-            pa.table(
-                {
-                    "form": [f.form for f in inside],
-                    "accession_number": [f.accession_number for f in inside],
-                    "filing_date": [date.fromisoformat(f.filing_date) for f in inside],
-                }
-            )
-        )
-
-    monkeypatch.setattr(f13, "Filings", _Filings)
-    monkeypatch.setattr(f13, "_listing", _listing)
-    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     monkeypatch.setattr(f13, "_sleep", waits.append)
     return windows, waits
 
@@ -84,15 +52,10 @@ def _saved_ciks(store: Any) -> list[str]:
     return [] if df is None else sorted(df["cik"].unique())
 
 
-def _run(ctx: Any, as_of: pd.Timestamp = _AS_OF, **kwargs: Any) -> int:
-    return f13.fetch_13f(
-        ctx,
-        tickers=kwargs.pop("tickers", _UNIVERSE),
-        years_history=kwargs.pop("years_history", 15),
-        save_every=kwargs.pop("save_every", 1),
-        as_of=as_of,
-        **kwargs,
-    )
+def _run(ctx: Any, as_of: pd.Timestamp = _AS_OF, *, filing_window: Window | None = None, full: bool = False) -> int:
+    ctx.run = WindowRun("full" if full else "incremental", "13F source run", as_of)
+    ctx.config.data_extract.sec13f.batch_size = 1
+    return f13.fetch_13f(ctx, filing_window=filing_window)
 
 
 def _stored_watermark(store: Any) -> pd.Timestamp:
@@ -204,14 +167,14 @@ def test_filings_after_a_recent_failure_save_and_the_failure_retries_next_run(
     assert night1 == ["0000000001", "0000000003", "0000000009"]
     assert watermark1 == pd.Timestamp(after.filing_date)
     assert len(failing.reads) == 5 and waits == [60.0, 120.0, 240.0]  # pass + 3 rounds, then the next night
-    assert windows[1][0] <= pd.Timestamp(failing.filing_date)  # the next window includes the failed filing
+    assert windows[1].start <= pd.Timestamp(failing.filing_date)  # the next window includes the failed filing
     assert _saved_ciks(filing_store) == ["0000000001", "0000000002", "0000000003", "0000000009"]
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and failing.accession_number in r.getMessage()]
     assert len(errors) == 1 and "skipped" in errors[0], errors
     assert not any("held back" in r.getMessage() for r in caplog.records)
     print("\n=== SANITY: 13F recent failure ===")
     print(f"  night 1: the 2026-09-28 filing failed after 3 rounds {waits}; saved {night1}, watermark {watermark1:%Y-%m-%d};")
-    print(f"  night 2 window starts {windows[1][0]:%Y-%m-%d} <= 2026-09-28 and retries the failed accession only. Validated.")
+    print(f"  night 2 window starts {windows[1].start:%Y-%m-%d} <= 2026-09-28 and retries the failed accession only. Validated.")
 
 
 def test_a_failure_recovered_in_a_round_saves_every_filing(tmp_path, filing_store, monkeypatch):
@@ -227,7 +190,7 @@ def test_a_failure_recovered_in_a_round_saves_every_filing(tmp_path, filing_stor
     print(f"  one transient failure recovered in round 1 (waits {waits}); all 3 filings saved in order. Validated.")
 
 
-def test_a_failure_older_than_the_overlap_is_skipped_with_an_error(
+def test_an_older_failed_accession_is_logged_and_remains_retryable(
     tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     old, later = _filing(1, "2026-09-15", fail_reads=99), _filing(2, "2026-09-29")
@@ -264,48 +227,43 @@ def test_a_deterministic_failure_retries_without_blocking_other_filings(
 # --------------------------------------------------------------------------- #
 # AC-002, M4 cases                                                             #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(("years_history", "since"), [(5, "2021-09-30"), (31, None)])
-def test_m4_1_absent_table_reads_from_the_history_floor(tmp_path, filing_store, monkeypatch, years_history, since):
+@pytest.mark.parametrize("start", ["2021-09-30", "1999-07-01"])
+def test_absent_table_uses_the_fixed_configured_start(tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch, start: str) -> None:
     ctx = _ctx(tmp_path, filing_store)
+    ctx.config.data.tables.sec13f_hr.start_date = start
     windows, _ = _patch(monkeypatch, [_filing(1, "2026-09-29")])
-
-    _run(ctx, years_history=years_history)
-
-    source_start = cast(Resume, Tables.sec13f_hr.resume).source_start
-    since = source_start if since is None else since
-    assert windows == [(pd.Timestamp(since), _AS_OF)]
-    print(f"\n=== SANITY: M4-1 absent table (years_history={years_history}) ===")
-    print(f"  window {since}:{_AS_OF:%Y-%m-%d}: as_of - years_history, never before the table's {source_start} source start. Validated.")
+    _run(ctx)
+    assert windows == [Window(pd.Timestamp(start), _AS_OF)]
+    print("SANITY: a cold 13F table uses configured fixed dates, without moving history years.")
 
 
-def test_m4_3_forward_window_is_the_frontier_minus_the_overlap(tmp_path, filing_store, monkeypatch):
+def test_missing_older_filing_is_discovered_behind_the_stored_frontier(
+    tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ctx = _ctx(tmp_path, filing_store)
     _seed_hr(filing_store, "0000000009", "2026-09-20")
-    windows, _ = _patch(monkeypatch, [_filing(1, "2026-09-12"), _filing(2, "2026-09-25")])
-
+    old, recent = _filing(1, "2026-09-12"), _filing(2, "2026-09-25")
+    windows, _ = _patch(monkeypatch, [old, recent])
     _run(ctx)
-
-    assert windows == [(pd.Timestamp("2026-09-13"), _AS_OF)]
-    assert _saved_ciks(filing_store) == ["0000000002", "0000000009"]
-    print("\n=== SANITY: M4-3 forward window ===")
-    print("  stored max filing_date 2026-09-20 -> window 2026-09-13:2026-09-30 (7-day overlap); the 09-12 filing is outside. Validated.")
+    assert windows == [Window(pd.Timestamp("1999-07-01"), _AS_OF)]
+    assert _saved_ciks(filing_store) == ["0000000001", "0000000002", "0000000009"]
+    print("SANITY: an older missing accession is discovered in the cached filing index despite a later stored filing.")
 
 
-def test_m4_4_a_hole_older_than_the_overlap_is_reached_only_by_a_filing_window(tmp_path, filing_store, monkeypatch):
+def test_explicit_recovery_narrows_dates_without_replaying_completed_packets(
+    tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ctx = _ctx(tmp_path, filing_store)
     _seed_hr(filing_store, "0000000009", "2026-09-20")
     lost = _filing(1, "2026-08-01")
-    _patch(monkeypatch, [lost])
-
+    windows, _ = _patch(monkeypatch, [lost])
     _run(ctx)
-    nightly = _saved_ciks(filing_store)
-    _run(ctx, filing_window=("2026-07-30", "2026-08-02"))
-
-    assert nightly == ["0000000009"] and lost.reads == [lost.accession_number]
+    recovery = Window(pd.Timestamp("2026-07-30"), pd.Timestamp("2026-08-02"))
+    _run(ctx, filing_window=recovery)
+    assert windows[-1] == recovery and lost.reads == [lost.accession_number]
     assert _saved_ciks(filing_store) == ["0000000001", "0000000009"]
-    assert _stored_watermark(filing_store) == pd.Timestamp("2026-09-20")  # the backfill left the window alone
-    print("\n=== SANITY: M4-4 hole behind the overlap ===")
-    print("  the nightly window never lists the 2026-08-01 filing; --filing-window reads it and the frontier stays 2026-09-20. Validated.")
+    assert _stored_watermark(filing_store) == pd.Timestamp("2026-09-20")
+    print("SANITY: named recovery stays within config bounds and valid completed packets remain reused.")
 
 
 def test_m4_5_an_empty_info_table_is_no_failure_and_holds_nothing(tmp_path, filing_store, monkeypatch):
@@ -339,47 +297,28 @@ def test_m4_7_deleted_rows_inside_the_window_are_read_again(tmp_path, filing_sto
     print("  deleting the newest filing's rows moved the frontier back to 2026-09-20; the next run re-read and re-saved it. Validated.")
 
 
-def test_m4_8_a_scoped_run_leaves_the_next_window_unchanged(tmp_path, filing_store, monkeypatch):
+def test_explicit_full_replays_only_the_requested_window(tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    _seed_hr(filing_store, "0000000009", "2026-09-20")
-    inside, beyond = _filing(1, "2026-09-18"), _filing(2, "2026-09-25")
-    windows, _ = _patch(monkeypatch, [inside, beyond])
-
-    _run(ctx, tickers=["AAPL"])
-    scoped_watermark = _stored_watermark(filing_store)
+    before, inside, after = (_filing(n, day) for n, day in enumerate(["2026-08-01", "2026-09-18", "2026-09-25"], 1))
+    windows, _ = _patch(monkeypatch, [before, inside, after])
     _run(ctx)
+    for filing in (before, inside, after):
+        filing.reads.clear()
+    recovery = Window(pd.Timestamp("2026-09-15"), pd.Timestamp("2026-09-20"))
+    _run(ctx, filing_window=recovery, full=True)
+    assert windows[-1] == recovery
+    assert not before.reads and inside.reads == [inside.accession_number] and not after.reads
+    assert _saved_ciks(filing_store) == ["0000000001", "0000000002", "0000000003"]
+    print("SANITY: Context full mode replays only complete source packets inside the explicit finite Window; outside packets survive.")
 
-    assert windows[0] == (pd.Timestamp("2026-09-13"), pd.Timestamp("2026-09-20"))  # -t never reads past the frontier
-    assert scoped_watermark == pd.Timestamp("2026-09-20") and beyond.reads == [beyond.accession_number]
-    assert windows[1] == (pd.Timestamp("2026-09-13"), _AS_OF)  # the full run's window is unchanged
-    assert _saved_ciks(filing_store) == ["0000000001", "0000000002", "0000000009"]
-    print("\n=== SANITY: M4-8 -t then full run ===")
-    print("  -t AAPL read 2026-09-13:2026-09-20 only and left the frontier at 2026-09-20; the full run then read 2026-09-13:2026-09-30. Validated.")
 
-
-def test_listing_reads_one_quarterly_index_at_a_time(monkeypatch):
-    """A multi-year window is listed quarter by quarter, each request clipped to the window, in order and
-    on a fresh HTTP client (edgartools leaks a pooled connection per 304); empty quarters are skipped."""
-    calls: list[str] = []
-    resets: list[int] = []
-
-    def _get_filings(form: Any, filing_date: str) -> Any:
-        calls.append(filing_date)
-        if filing_date.startswith("2000-04-01"):
-            return None
-        return SimpleNamespace(data=pa.table({"accession_number": [filing_date]}))
-
-    monkeypatch.setattr(f13, "get_filings", _get_filings)
-    monkeypatch.setattr(f13, "close_clients", lambda: resets.append(len(calls)))
-    monkeypatch.setattr(f13, "Filings", lambda data: SimpleNamespace(data=data))
-    listing = f13._listing(["13F-HR"], pd.Timestamp("1999-07-01"), pd.Timestamp("2000-08-15"))
-
-    expected = ["1999-07-01:1999-09-30", "1999-10-01:1999-12-31", "2000-01-01:2000-03-31", "2000-04-01:2000-06-30", "2000-07-01:2000-08-15"]
-    assert calls == expected
-    assert resets == list(range(len(expected)))  # a fresh client before every quarterly request
-    assert listing.data.column("accession_number").to_pylist() == [w for w in expected if not w.startswith("2000-04-01")]
-    assert f13._listing(["13F-HR"], pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-05")) is not None
-    print("\n=== SANITY: quarterly listing ===")
-    print(
-        f"  1999-07-01:2000-08-15 -> {len(calls)} sequential single-quarter requests, clipped at both ends; an empty quarter is skipped. Validated."
-    )
+def test_listing_uses_the_shared_index_with_actual_sorting(tmp_path: Path, filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, filing_store)
+    original = _filing(2, "2026-09-18")
+    amended = _FakeFiling("0000000002", "2026-09-18", "2026-06-30", list(_AAPL), form="13F-HR/A", accession="0000000001-26-000001")
+    outside = _filing(3, "2026-08-18")
+    windows, _ = _patch(monkeypatch, [amended, outside, original])
+    window = Window(pd.Timestamp("2026-09-01"), _AS_OF)
+    listed = f13._listing(ctx, window)
+    assert windows == [window] and listed == [original, amended]
+    print("SANITY: shared index bounds discard older metadata; same-day originals precede amendments regardless of accession order.")

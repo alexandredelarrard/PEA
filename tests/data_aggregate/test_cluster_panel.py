@@ -27,8 +27,10 @@ from src.data_aggregate.utils.sec_thirteen.cluster_config import cluster_specs, 
 from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, filing_deadlines, publication_dates
 from src.data_store.schema import Tables
 from src.utils.config import read_config
-from src.utils.institutional_vintages import availability_date
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.support.config import fixture_config
+from tests.support.universe import universe_of
 
 ROOT = Path(__file__).resolve().parents[2]
 PERIODS = [pd.Timestamp(p) for p in ("2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31", "2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31")]
@@ -41,26 +43,29 @@ STICKY = "f_ic_cluster_0_stickiness"
 DAYS = pd.bdate_range("2022-01-03", "2025-03-31")
 
 
+LAG = int(fixture_config().data.tables.sec13f_hr.pit.lag_days)
+
+
 def _pub(period: str) -> pd.Timestamp:
-    return cast(pd.Timestamp, publication_dates(pd.DatetimeIndex([period]), DAYS, 7).iloc[0])
+    return cast(pd.Timestamp, publication_dates(pd.DatetimeIndex([period]), DAYS, fixture_config()).iloc[0])
 
 
-def test_publication_date_is_the_deadline_day_plus_the_buffer_on_a_trading_day() -> None:
+def test_publication_date_is_the_deadline_day_plus_the_configured_pit_lag_on_a_trading_day() -> None:
     periods = pd.DatetimeIndex(pd.date_range("2022-03-31", "2025-03-31", freq="QE"))
-    published = publication_dates(periods, DAYS, 7)
+    published = publication_dates(periods, DAYS, fixture_config())
+    # the deadline (day 45, a weekend rolls to Monday) plus the seven calendar days of data.tables.sec13f_hr.pit, then the first session
     expected = {"2022-03-31": "2022-05-23", "2022-06-30": "2022-08-22", "2024-09-30": "2024-11-21", "2024-12-31": "2025-02-21"}
+    assert LAG == 7
     for period, day in expected.items():
         assert published[pd.Timestamp(period)] == pd.Timestamp(day), period
-    # every published quarter is at least 7 days after its 45-day deadline and on a trading day; a deadline past the calendar is not published
+    # every published quarter is at least the lag after its 45-day deadline and on a trading day; a deadline past the calendar is not published
     lag = (published.dropna() - pd.DatetimeIndex(published.dropna().index) - pd.Timedelta(days=45)).dt.days
-    assert lag.min() >= 7 and published.dropna().isin(DAYS).all()
+    assert lag.min() >= LAG and published.dropna().isin(DAYS).all()
     assert pd.isna(published[pd.Timestamp("2025-03-31")]) and published.notna().sum() == len(periods) - 1
-    # no buffer is exactly the shared 13F availability day
-    plain = availability_date(periods, DAYS, settle_trading_days=0)
-    pd.testing.assert_series_equal(publication_dates(periods, DAYS, 0), plain, check_freq=False)
-    print(
-        f"SANITY: 2024-12-31 is published on 2025-02-21 (deadline Friday 02-14 + 7), the smallest lag is {lag.min()} days, buffer 0 = availability_date."
-    )
+    # a zero lag is exactly the rolled filing deadline
+    no_lag = fixture_config(data={"tables": {"sec13f_hr": {"pit": {"lag_days": 0}}}})
+    pd.testing.assert_series_equal(publication_dates(periods, DAYS, no_lag), filing_deadlines(periods, DAYS), check_freq=False)
+    print(f"SANITY: 2024-12-31 is published on Friday 2025-02-21 (deadline Friday 02-14 + {LAG}), the smallest lag is {lag.min()} days.")
 
 
 def _frame(values: dict[str, float]) -> pd.DataFrame:
@@ -97,21 +102,21 @@ def test_expand_daily_never_uses_a_value_before_its_publication_day() -> None:
     print("SANITY: unordered quarters are placed by publication date: 5.0 up to 2024-05-21, 9.0 from 2024-05-22, none before the first publication.")
 
 
-def test_filing_deadline_is_the_trading_day_on_or_after_day_45_and_always_before_the_publication_less_the_buffer() -> None:
+def test_filing_deadline_is_the_trading_day_on_or_after_day_45_and_the_publication_is_the_pit_lag_after_it() -> None:
     periods = pd.DatetimeIndex(pd.date_range("2022-03-31", "2025-03-31", freq="QE"))
     deadlines = filing_deadlines(periods, DAYS)
-    published = publication_dates(periods, DAYS, 7)
+    published = publication_dates(periods, DAYS, fixture_config())
     # a weekend day 45 rolls to the next trading day (2022-06-30 + 45 = Sunday 08-14), a weekday stays
     assert deadlines[pd.Timestamp("2022-06-30")] == pd.Timestamp("2022-08-15") and deadlines[pd.Timestamp("2022-09-30")] == pd.Timestamp("2022-11-14")
     assert deadlines[pd.Timestamp("2024-12-31")] == pd.Timestamp("2025-02-14")
     day_45 = pd.Series(periods + pd.Timedelta(days=45), index=periods)
     rolled = deadlines.dropna() > day_45.reindex(deadlines.dropna().index)
-    # the only clock: the deadline is a trading day, never before day 45, and the publication day is at least the buffer after it
+    # the only clock: the deadline is a trading day, never before day 45, and the publication day is at least the lag after it
     assert deadlines.dropna().isin(DAYS).all() and (deadlines.dropna() >= day_45.reindex(deadlines.dropna().index)).all() and rolled.any()
     inside = published.dropna().index
-    assert ((published[inside] - pd.Timedelta(days=7)) >= deadlines[inside]).all()
+    assert ((published[inside] - pd.Timedelta(days=LAG)) >= deadlines[inside]).all()
     print(
-        f"SANITY: {int(rolled.sum())} of {len(periods)} quarters roll a weekend day 45; the publication day is always at least 7 days after the deadline."
+        f"SANITY: {int(rolled.sum())} of {len(periods)} quarters roll a weekend day 45; the publication day is always at least {LAG} days after the deadline."
     )
 
 
@@ -147,7 +152,7 @@ def _lines(period: pd.Timestamp, number: int) -> list[dict[str, Any]]:
 
 def _labels() -> pd.DataFrame:
     rows = [(cik, period, 1 if cik == MOVER and period >= PERIODS[3] else 0) for period in PERIODS for cik in MANAGERS]
-    return pd.DataFrame(rows, columns=["cik", "period", "cluster"])
+    return pd.DataFrame(rows, columns=["cik", "period", "cluster"]).assign(first_filed_date=lambda labels: labels["period"] + pd.Timedelta(days=40))
 
 
 def _prices(last: str) -> pd.DataFrame:
@@ -173,11 +178,11 @@ class World:
         self.set_prices(last_price_day)
         self.reads: list[list[str]] = []
         self.read_ciks: list[str] = []
-        self.writes: list[tuple[str, pd.DataFrame]] = []
+        self.writes: list[tuple[str, pd.DataFrame, bool]] = []
         self._spy()
 
     def _spy(self) -> None:
-        load, replace, append_tail = self.store.load, self.store.replace, self.store.append_tail
+        load, replace_window = self.store.load, self.store.replace_window
 
         def _load(table: Any, *args: Any, **kwargs: Any) -> Any:
             if getattr(table, "name", table) == Tables.sec13f_hr.name:
@@ -185,24 +190,32 @@ class World:
                 self.read_ciks.extend(kwargs["where"]["cik"])
             return load(table, *args, **kwargs)
 
-        def _replace(table: Any, df: pd.DataFrame, *args: Any, **kwargs: Any) -> int:
-            self.writes.append(("replace", df))
-            return replace(table, df, *args, **kwargs)
+        def _replace_window(table: Any, df: pd.DataFrame, *args: Any, **kwargs: Any) -> Any:
+            self.writes.append(("replace_window", df, bool(kwargs["schema_rebuild"])))
+            return replace_window(table, df, *args, **kwargs)
 
-        def _append(table: Any, df: pd.DataFrame, *args: Any, **kwargs: Any) -> int:
-            self.writes.append(("append_tail", df))
-            return append_tail(table, df, *args, **kwargs)
-
-        self.store.load, self.store.replace, self.store.append_tail = _load, _replace, _append
+        self.store.load, self.store.replace_window = _load, _replace_window
 
     def set_prices(self, last_price_day: str) -> None:
+        self.as_of = pd.Timestamp(last_price_day)
         self.store.replace(Tables.cube_part_prices, _prices(last_price_day))
 
-    def step(self) -> StepCubeSecThirteen:
+    def step(self, full: bool = False) -> StepCubeSecThirteen:
+        run = WindowRun("full" if full else "incremental", "known-truth cluster fixture", self.as_of)
         context = SimpleNamespace(
-            store=self.store, log=logging.getLogger(__name__), config=self.cfg, config_dir=ROOT / "configs", paths={}, universe=SimpleNamespace()
+            store=self.store,
+            log=logging.getLogger(__name__),
+            config=self.cfg,
+            config_dir=ROOT / "configs",
+            paths={},
+            universe=universe_of(list(PRICES)),
+            run=run,
         )
         return StepCubeSecThirteen(cast(Context, context), self.cfg)
+
+    def run(self, full: bool = False) -> Any:
+        """One run of the step under the root-run contract of an incremental or full run."""
+        return self.step(full).run()
 
     def part(self) -> pd.DataFrame:
         part = self.store.load(Tables.cube_part_sec_thirteen)
@@ -223,39 +236,41 @@ def _value(part: pd.DataFrame, column: str, day: str, ticker: str = "X") -> floa
 
 def test_full_build_carries_the_80_columns_by_publication_with_membership_from_the_previous_label(world: Any, cfg: DictConfig) -> None:
     w = world("2025-03-31")
-    w.step().run(full=True)
+    receipt = w.run(full=True)
     part = w.part()
-    # the 80 configured float32 columns, written by one replace
+    # the 80 configured float32 columns, written by one full-schema window replacement, and the receipt of the resolved window
     columns = column_names(cluster_specs(cfg.cluster))
     assert len(columns) == 80 and set(part.columns) == {"date", "ticker", *columns}
-    kind, frame = w.writes[0]
-    assert kind == "replace" and len(w.writes) == 1 and all(frame[column].dtype == np.float32 for column in columns)
-    # first publication 2023-08-21 (quarter 2023-06-30): nothing earlier; X flows 10 x 100 / 100,000 until the mover leaves the members
-    assert part["date"].min() == _pub("2023-06-30") and part["date"].max() == pd.Timestamp("2025-03-31")
-    assert _value(part, FLOW, "2023-08-18") != _value(part, FLOW, "2023-08-18") and _value(part, FLOW, "2023-08-21") == pytest.approx(0.01)
-    assert _value(part, FLOW, "2024-05-21") == pytest.approx(0.01), "the quarter 2024-03-31 is not published before 2024-05-22"
-    assert _value(part, FLOW, "2024-05-22") == pytest.approx(0.009), "labelled cluster 1 on 2023-12-31, so out of the members of 2024-03-31"
+    kind, frame, rebuilt = w.writes[0]
+    assert kind == "replace_window" and rebuilt and len(w.writes) == 1 and all(frame[column].dtype == np.float32 for column in columns)
+    assert list(receipt) == [Tables.cube_part_sec_thirteen] and receipt[Tables.cube_part_sec_thirteen].is_full
+    # first publication (quarter 2023-06-30): nothing earlier; X flows 10 x 100 / 100,000 until the mover leaves the members
+    first, newer = _pub("2023-06-30"), _pub("2024-03-31")
+    assert first == pd.Timestamp("2023-08-21") and part["date"].min() == first and part["date"].max() == pd.Timestamp("2025-03-31")
+    assert np.isnan(_value(part, FLOW, str((DAYS[DAYS < first][-1]).date()))) and _value(part, FLOW, str(first.date())) == pytest.approx(0.01)
+    assert _value(part, FLOW, str((DAYS[DAYS < newer][-1]).date())) == pytest.approx(0.01), "the quarter 2024-03-31 is not published before its day"
+    assert _value(part, FLOW, str(newer.date())) == pytest.approx(0.009), "labelled cluster 1 on 2023-12-31, so out of the members of 2024-03-31"
     assert _value(part, FLOW, "2025-03-31") == pytest.approx(0.009)
     # stickiness needs the book four quarters back: null until 2024-03-31 (2023-03-31 lines), then every holder is there
-    assert np.isnan(_value(part, STICKY, "2023-08-21")) and _value(part, STICKY, "2024-05-22") == pytest.approx(1.0)
+    assert np.isnan(_value(part, STICKY, str(first.date()))) and _value(part, STICKY, str(newer.date())) == pytest.approx(1.0)
     # Z is held by 5 managers (< 8 min_holders): no row; clusters without members are null
     assert part[part["ticker"].eq("Z")][FLOW].isna().all() and part["f_ic_cluster_3_net_breadth"].isna().all()
     print(
-        f"SANITY: {len(part)} rows, 80 float32 columns; X flow 0.01 until 2024-05-21 then 0.009 once the 2023-12-31 label moves the mover out; Z has no row."
+        f"SANITY: {len(part)} rows, 80 float32 columns; X flow 0.01 until {newer.date()} then 0.009 once the 2023-12-31 label moves the mover out; Z has no row."
     )
 
 
 def test_managers_of_tracked_only_clusters_and_the_sentinels_are_neither_read_nor_members(world: Any) -> None:
     w = world("2025-03-31")
-    w.step().run(full=True)
+    w.run(full=True)
     first = w.part()
     extra = [("9000000011", 11), ("9000000012", 12), ("9000000013", 13), ("9000000015", 15), ("9000000090", -1), ("9000000091", -2)]
-    rows = [(cik, period, cluster) for period in PERIODS for cik, cluster in extra]
-    w.store.save(Tables.sec_13f_manager_details, pd.DataFrame(rows, columns=["cik", "period", "cluster"]))
+    rows = [(cik, period, cluster, period + pd.Timedelta(days=40)) for period in PERIODS for cik, cluster in extra]
+    w.store.save(Tables.sec_13f_manager_details, pd.DataFrame(rows, columns=["cik", "period", "cluster", "first_filed_date"]))
     w.reads.clear()
     w.read_ciks.clear()
 
-    w.step().run(full=True)
+    w.run(full=True)
 
     assert w.read_ciks and not set(w.read_ciks) & {cik for cik, _ in extra}, "no line of a tracked-only or sentinel manager is read"
     pd.testing.assert_frame_equal(w.part(), first)
@@ -265,81 +280,87 @@ def test_managers_of_tracked_only_clusters_and_the_sentinels_are_neither_read_no
 
 
 def test_night_without_a_due_quarter_carries_the_saved_values_and_reads_no_lines(world: Any) -> None:
-    w = world("2025-02-18")  # 2024-12-31 is published on 2025-02-21
-    w.step().run(full=True)
+    w = world("2025-02-12")  # 2024-12-31 is published on Friday 2025-02-21
+    w.run(full=True)
     before = w.part()
-    assert before["date"].max() == pd.Timestamp("2025-02-18")
+    assert before["date"].max() == pd.Timestamp("2025-02-12")
 
-    # two new sessions, no quarter published: values carried, nothing read from sec13f_hr, only the tail rewritten
-    w.set_prices("2025-02-20")
+    # two new sessions, no quarter published: values carried, nothing read from sec13f_hr, only the configured overlap rewritten
+    w.set_prices("2025-02-14")
     w.reads.clear()
     w.writes.clear()
-    w.step().run()
+    plan = w.run()[Tables.cube_part_sec_thirteen]
+    overlap = int(w.cfg.data.tables.cube_part_sec_thirteen.overlap.days)
+    assert plan.frontier == pd.Timestamp("2025-02-12") and plan.write.start == plan.frontier - pd.Timedelta(days=overlap) and not plan.is_full
+    assert w.reads == [] and [(kind, rebuilt) for kind, _, rebuilt in w.writes] == [("replace_window", False)]
     after = w.part()
-    assert w.reads == [] and [kind for kind, _ in w.writes] == ["append_tail"]
-    assert after["date"].max() == pd.Timestamp("2025-02-20") and len(after) > len(before)
-    assert _value(after, FLOW, "2025-02-20") == _value(after, FLOW, "2025-02-18") == pytest.approx(0.009)
+    assert after["date"].max() == pd.Timestamp("2025-02-14") and len(after) > len(before)
+    assert _value(after, FLOW, "2025-02-14") == _value(after, FLOW, "2025-02-12") == pytest.approx(0.009)
 
-    # the rows before the rewritten tail are the saved ones, the same night again changes nothing, and the full rebuild gives the same part
-    cutoff = pd.Timestamp("2025-02-06")
-    pd.testing.assert_frame_equal(before[before["date"] < cutoff].reset_index(drop=True), after[after["date"] < cutoff].reset_index(drop=True))
-    w.step().run()
+    # the rewritten window re-emits the saved rows exactly, the same night again changes nothing, and the full rebuild gives the same part
+    pd.testing.assert_frame_equal(before.reset_index(drop=True), after[after["date"] <= plan.frontier].reset_index(drop=True))
+    w.run()
     pd.testing.assert_frame_equal(after, w.part())
-    w.step().run(full=True)
+    w.run(full=True)
     pd.testing.assert_frame_equal(after, w.part())
-    print("SANITY: a night between publications reads 0 line chunks, carries 0.009 onto 2025-02-20, is idempotent and equals the full rebuild.")
+    print(
+        f"SANITY: a night between publications reads 0 line chunks, rewrites {overlap} days from {plan.write.start.date()} as saved, is idempotent and equals the full rebuild."
+    )
 
 
 def test_night_with_a_due_quarter_computes_it_with_the_consistency_quarter_and_equals_a_full_rebuild(world: Any) -> None:
-    w = world("2025-02-18")
-    w.step().run(full=True)
+    w = world("2025-02-14")
+    w.run(full=True)
     before = w.part()
     w.set_prices("2025-03-31")
     w.reads.clear()
     w.writes.clear()
-    w.step().run()
+    plan = w.run()[Tables.cube_part_sec_thirteen]
     after = w.part()
     # only the newest saved quarter (2024-09-30, recomputed to check) and the due one (2024-12-31) are read, with their previous and year-ago books
     periods = {period for read in w.reads for period in read}
     expected = {"2023-09-30", "2023-12-31", "2024-06-30", "2024-09-30", "2024-12-31"}
-    assert periods == expected and w.writes[0][0] == "append_tail"
-    assert _value(after, FLOW, "2025-02-20") == pytest.approx(0.009) and _value(after, STICKY, "2025-02-21") == pytest.approx(1.0)
+    assert periods == expected and [(kind, rebuilt) for kind, _, rebuilt in w.writes] == [("replace_window", False)]
+    assert plan.frontier == pd.Timestamp("2025-02-14") and plan.write.end == pd.Timestamp("2025-03-31")
+    assert _value(after, FLOW, "2025-02-14") == pytest.approx(0.009) and _value(after, STICKY, "2025-02-21") == pytest.approx(1.0)
     assert after["date"].max() == pd.Timestamp("2025-03-31")
-    # the rows before the tail start are the saved ones
-    start = pd.Timestamp("2025-02-06")
-    pd.testing.assert_frame_equal(before[before["date"] < start].reset_index(drop=True), after[after["date"] < start].reset_index(drop=True))
-    w.step().run(full=True)
+    # the rows up to the frontier, rewritten inside the overlap or not, are the saved ones
+    pd.testing.assert_frame_equal(before.reset_index(drop=True), after[after["date"] <= plan.frontier].reset_index(drop=True))
+    w.run(full=True)
     pd.testing.assert_frame_equal(after, w.part())
-    print(f"SANITY: the due quarter 2024-12-31 read {sorted(periods)} only, appended 2025-02-19..2025-03-31 and equals the full rebuild exactly.")
+    print(
+        f"SANITY: the due quarter 2024-12-31 read {sorted(periods)} only, rewrote {plan.write.start.date()}..2025-03-31 and equals the full rebuild exactly."
+    )
 
 
 def test_column_set_mismatch_stops_before_any_work_and_full_rebuilds(world: Any, cfg: DictConfig) -> None:
-    w = world("2025-02-18")
-    w.step().run(full=True)
+    w = world("2025-02-14")
+    w.run(full=True)
     saved = w.store.load(Tables.cube_part_sec_thirteen)
     stale = saved.assign(f_stale_column=1.0)
     w.store.replace(Tables.cube_part_sec_thirteen, stale)
     w.reads.clear()
     w.writes.clear()
     with pytest.raises(RuntimeError, match="build-sec-thirteen -F"):
-        w.step().run()
+        w.run()
     assert w.reads == [] and w.writes == []
     assert "f_stale_column" in w.store.columns(Tables.cube_part_sec_thirteen)
-    w.step().run(full=True)
+    w.run(full=True)
     assert set(w.store.columns(Tables.cube_part_sec_thirteen)) == {"date", "ticker", *column_names(cluster_specs(cfg.cluster))}
     print("SANITY: a stored column set that differs from the 80 configured stops the incremental run before any read or write; -F restores the 80.")
 
 
 def test_a_relabelled_newest_saved_quarter_stops_the_due_quarter_with_the_rebuild_message(world: Any) -> None:
-    w = world("2025-02-18")
-    w.step().run(full=True)
+    w = world("2025-02-14")
+    w.run(full=True)
     before = w.part()
     # a refit-like relabel: the label of 2024-06-30 (the members of the newest saved quarter 2024-09-30) changes
-    w.store.save(Tables.sec_13f_manager_details, pd.DataFrame({"cik": MANAGERS[:3], "period": PERIODS[5], "cluster": 2}))
+    relabelled = pd.DataFrame({"cik": MANAGERS[:3], "period": PERIODS[5], "cluster": 2}).assign(first_filed_date=PERIODS[5] + pd.Timedelta(days=40))
+    w.store.save(Tables.sec_13f_manager_details, relabelled)
     w.set_prices("2025-03-31")
     w.writes.clear()
     with pytest.raises(RuntimeError, match="build-sec-thirteen -F"):
-        w.step().run()
+        w.run()
     assert w.writes == []
     pd.testing.assert_frame_equal(before, w.part())
     print(
@@ -352,7 +373,7 @@ def test_a_quarter_without_labels_for_the_quarter_before_stops_the_build(world: 
     w.store.delete(Tables.sec_13f_manager_details, where={"period": PERIODS[5]})
     w.reads.clear()
     with pytest.raises(RuntimeError, match="build-cluster"):
-        w.step().run(full=True)
+        w.run(full=True)
     assert w.reads == [] and not w.store.exists(Tables.cube_part_sec_thirteen) and w.writes == []
     print("SANITY: unlabelled 2024-06-30 stops the quarter 2024-09-30 before any line is read or any row written.")
 
@@ -369,7 +390,10 @@ def _add_a_late_manager(store: Any) -> None:
         if row["cik"] == MANAGERS[0]
     ]
     store.save(Tables.sec13f_hr, pd.DataFrame(rows))
-    store.save(Tables.sec_13f_manager_details, pd.DataFrame([(LATE_MANAGER, period, 0) for period in PERIODS], columns=["cik", "period", "cluster"]))
+    late = pd.DataFrame(
+        [(LATE_MANAGER, period, 0, period + pd.Timedelta(days=60)) for period in PERIODS], columns=["cik", "period", "cluster", "first_filed_date"]
+    )
+    store.save(Tables.sec_13f_manager_details, late)
 
 
 def test_the_step_cuts_every_book_at_the_deadline_the_publication_clock_uses(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -377,8 +401,8 @@ def test_the_step_cuts_every_book_at_the_deadline_the_publication_clock_uses(wor
     cleaned_newest: dict[pd.Timestamp, pd.Timestamp] = {}
     real_read, real_clean = step_module.read_lines, step_module.clean_book
 
-    def read(store: Any, ciks: Any, periods: Any) -> pd.DataFrame:
-        raw = real_read(store, ciks, periods)
+    def read(store: Any, ciks: Any, periods: Any, filed: Any) -> pd.DataFrame:
+        raw = real_read(store, ciks, periods, filed)
         read_newest[periods[0]] = pd.to_datetime(raw["filing_date"]).max()
         return raw
 
@@ -391,18 +415,18 @@ def test_the_step_cuts_every_book_at_the_deadline_the_publication_clock_uses(wor
     monkeypatch.setattr(step_module, "clean_book", clean)
     w = world("2025-03-31")
     _add_a_late_manager(w.store)
-    w.step().run(full=True)
+    w.run(full=True)
 
     periods = pd.DatetimeIndex(sorted(cleaned_newest))
-    calendar = load_trading_calendar(w.store)
+    calendar = load_trading_calendar(w.step()._context)
     clock = filing_deadlines(periods, calendar)
-    published = publication_dates(periods, calendar, 7)
+    published = publication_dates(periods, calendar, w.cfg)
     assert len(periods) >= 6 and all(read_newest[t] == t + pd.Timedelta(days=60) for t in periods), "the late manager's lines are read"
     assert all(cleaned_newest[t] == t + pd.Timedelta(days=40) and cleaned_newest[t] <= clock[t] for t in periods), "no late line reaches the cleaning"
-    assert ((published.dropna() - pd.Timedelta(days=7)) >= clock[published.dropna().index]).all()
+    assert ((published.dropna() - pd.Timedelta(days=LAG)) >= clock[published.dropna().index]).all()
     print(
         f"SANITY: the {len(periods)} quarters read lines filed 60 days after their period end and hand the cleaning only those filed by the "
-        "deadline the publication clock uses (newest 40 days), each deadline at least 7 days before its publication."
+        f"deadline the publication clock uses (newest 40 days), each deadline at least {LAG} days before its publication."
     )
 
 
@@ -412,6 +436,7 @@ def test_the_step_validates_the_cluster_block_before_any_read(world: Any, cfg: D
     bad.cluster.clusters.bank.id = bad.cluster.clusters.insurance.id
     w.cfg = bad
     with pytest.raises(ValueError, match="distinct"):
-        w.step().run(full=True)
+        w.run(full=True)
+
     assert w.reads == [] and w.writes == []
     print("SANITY: two categories sharing an id stop the step in the plan, before any line is read or any row written.")

@@ -26,13 +26,14 @@ from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
-from src.utils.institutional_vintages import F13_SETTLE_TRADING_DAYS, filing_public_dates, public_books, reconcile_13f_source
+from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.utils.price.levels import split_cum_product
 from tests.support.store_identity import store_identity
 
-BOND_LINES = read_config(str(Path(__file__).resolve().parents[3] / "configs")).build_cube.bond_lines
+BOND_LINES = read_config(str(Path(__file__).resolve().parents[3] / "configs")).data_aggregate.bond_lines
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
+F13_SETTLE_TRADING_DAYS = 3  # the retired settle clock the test-only preview helpers below still model
 
 
 def _save_book(store: DataStore, manifest: pd.DataFrame, rows: pd.DataFrame) -> int:

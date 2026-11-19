@@ -10,11 +10,14 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
     COUNT_CLIP,
     COUNT_WINDOW,
     EMISSION,
+    ScheduleSource,
     SubjectIdentity,
     _filings,
     build_ownership_feature_panel,
 )
+from src.data_store.schema import Tables
 from tests.conftest import make_frames
+from tests.data_extract.fake_context import extract_config
 
 IDX = pd.bdate_range("2023-01-03", "2025-06-30")
 TICKERS = [f"T{i:02d}" for i in range(6)]
@@ -35,7 +38,12 @@ def _filings_on(ticker, days):
 
 
 def _panel(df_13d=None, df_13g=None, tickers=TICKERS, idx=IDX, **kwargs):
-    return build_ownership_feature_panel(make_frames(idx, _peers(tickers)), df_13d, df_13g, **kwargs)
+    return build_ownership_feature_panel(
+        make_frames(idx, _peers(tickers)),
+        (ScheduleSource(Tables.sec_13d, df_13d, None), ScheduleSource(Tables.sec_13g, df_13g, None)),
+        extract_config(),
+        **kwargs,
+    )
 
 
 def _series(panel, ticker, column):
@@ -112,7 +120,9 @@ def test_every_ownership_output_stops_at_its_complete_frontier():
     df_13d = pd.DataFrame([_filing("T00", idx[20], "d1"), _filing("T00", idx[70], "late")])
     frontier = idx[55]
     panel = build_ownership_feature_panel(
-        make_frames(idx, _peers(TICKERS), close_split=close), df_13d, df_13g, complete_through_13d=frontier, complete_through_13g=frontier
+        make_frames(idx, _peers(TICKERS), close_split=close),
+        (ScheduleSource(Tables.sec_13d, df_13d, frontier), ScheduleSource(Tables.sec_13g, df_13g, frontier)),
+        extract_config(),
     )
     dense = panel.set_index(["date", "ticker"]).reindex(pd.MultiIndex.from_product([idx, TICKERS], names=["date", "ticker"]))
     cols = [c for c in dense if c.startswith("f_")]
@@ -123,8 +133,14 @@ def test_every_ownership_output_stops_at_its_complete_frontier():
 
 
 def test_build_ownership_feature_panel_empty_when_no_source():
-    assert build_ownership_feature_panel(make_frames(IDX, {}), None, None).empty
-    assert build_ownership_feature_panel(make_frames(IDX, {}), pd.DataFrame(), pd.DataFrame()).empty
+    assert build_ownership_feature_panel(
+        make_frames(IDX, {}), (ScheduleSource(Tables.sec_13d, None, None), ScheduleSource(Tables.sec_13g, None, None)), extract_config()
+    ).empty
+    assert build_ownership_feature_panel(
+        make_frames(IDX, {}),
+        (ScheduleSource(Tables.sec_13d, pd.DataFrame(), None), ScheduleSource(Tables.sec_13g, pd.DataFrame(), None)),
+        extract_config(),
+    ).empty
 
 
 def test_marker_filings_are_counted_once_next_to_parsed_ones(sqlite_store) -> None:

@@ -8,6 +8,8 @@ GOOGL Class C (ratio 1) read as filed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -18,6 +20,7 @@ from src.data_store.schema import Tables
 from tests.conftest import _store
 from tests.data_aggregate.insider_pit_reference import row
 from tests.data_aggregate.test_ftd_series import LINE_READ
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 BRK_A, BRK_B, GOOG = "084670108", "084670702", "02079K107"
 _KEY = ["accession_number", "security_type", "row_sequence"]
@@ -64,7 +67,7 @@ def test_a_berkshire_class_a_purchase_reaches_the_builders_in_class_b_shares(sql
     )
     sqlite_store.save(Tables.insider_transactions, rows)
 
-    source = inputs.load_insider_transactions(sqlite_store, ["BRK-B", "GOOGL"], _lines())
+    source = inputs.load_insider_transactions(source_context(sqlite_store, Path(".")), ["BRK-B", "GOOGL"], _lines())
     assert source is not None
     loaded = source.transactions.set_index("accession_number")
     df_trades, _ = clean_transactions(source.transactions)
@@ -98,7 +101,7 @@ def test_real_stored_class_rows_reach_the_builders_in_canonical_shares() -> None
     if not companies or stored is None or stored.empty:
         pytest.skip("no insider rows of a company with a class at a contractual ratio")
 
-    source = inputs.load_insider_transactions(store, companies, lines)
+    source = inputs.load_insider_transactions(source_context(store, Path(".")), companies, lines)
     assert source is not None
     df_trades, _ = clean_transactions(source.transactions)
 

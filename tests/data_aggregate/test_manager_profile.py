@@ -47,12 +47,12 @@ SECTORS = [
 KNOWN_CIKS = ["0001067983", "0000102909", "0000315066", "0000093751"]
 NO_PREFIX = pd.Series(dtype=object)
 REAL_QUARTERS = ["2000-12-31", "2008-12-31", "2024-12-31"]
-CFG = read_config(str(ROOT / "configs")).build_cube.manager_profile
+CFG = read_config(str(ROOT / "configs")).data_aggregate.manager_profile
 
 
 @pytest.fixture(scope="module")
 def cfg() -> DictConfig:
-    return read_config(str(ROOT / "configs")).build_cube.manager_profile
+    return read_config(str(ROOT / "configs")).data_aggregate.manager_profile
 
 
 @pytest.fixture(scope="module")

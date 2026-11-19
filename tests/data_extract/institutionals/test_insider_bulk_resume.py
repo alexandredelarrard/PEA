@@ -1,7 +1,4 @@
-"""Insider bulk resume (M3): the quarters `fetch_insider_transactions` parses come from the stored rows
-alone. A new ticker re-reads every cached quarter for its window CIK only on a run that stores a new quarter, screened
-against the whole universe;
-a scoped (`-t`) run parses no unstored quarter and skips the stored-row sweep. Rejects are logged, never stored."""
+"""Insider unit completion: normal missing-only ingest and explicit bounded subset recovery."""
 
 from __future__ import annotations
 
@@ -15,7 +12,9 @@ import pytest
 from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import seed_universe
 
 _AS_OF = pd.Timestamp("2024-07-01")
@@ -26,9 +25,8 @@ def _context(store: Any, tmp_path: Path) -> Any:
     return SimpleNamespace(
         store=store,
         paths={"DATA_STORE": tmp_path},
-        config=SimpleNamespace(
-            local=SimpleNamespace(paths=SimpleNamespace(insider_transactions="sec_insider_transactions")),
-        ),
+        config=extract_config(),
+        run=WindowRun("incremental", "insider unit fixture", _AS_OF),
     )
 
 
@@ -58,7 +56,7 @@ def _parsed(tickers: list[str], quarter: str) -> tuple[pd.DataFrame, pd.DataFram
 @pytest.fixture
 def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
-    calls: dict[str, Any] = {"screens": [], "sweeps": 0}
+    calls: dict[str, Any] = {"screens": []}
     monkeypatch.setattr(ins, "load_identity", lambda context: SimpleNamespace(source_cohort=load_source_identity(context.store)))
     monkeypatch.setattr(ins, "quarter_periods", lambda *args: ["2024q1", "2024q2"])
     monkeypatch.setattr(ins, "ensure_zip", lambda context, path, url, **kwargs: path)
@@ -70,15 +68,10 @@ def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         calls["screens"].append((quarter, list(universe)))
         return _parsed(list(universe), quarter)
 
-    def sweep(context: object, universe: list[str], identity: object) -> int:
-        calls["sweeps"] += 1
-        return 0
-
     def log_exclusions(label: str, frames: list[pd.DataFrame]) -> None:
         calls["excluded"] = sorted(a for frame in frames for a in frame["accession_number"])
 
     monkeypatch.setattr(ins, "_parse_quarter", parse)
-    monkeypatch.setattr(ins, "_screen_stored_rows", sweep)
     monkeypatch.setattr(ins, "log_exclusions", log_exclusions)
     monkeypatch.setattr(ins, "report_zip_quarter", lambda context, quarter, df_kept: calls.setdefault("reported", []).append(quarter))
     ctx = _context(sqlite_store, tmp_path)
@@ -87,41 +80,37 @@ def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     return {"ctx": ctx, "store": sqlite_store, "calls": calls}
 
 
-def test_a_new_ticker_re_reads_cached_quarters_for_itself_only(harness: dict[str, Any]) -> None:
-    store, calls = harness["store"], harness["calls"]
-    harness["ctx"].universe = seed_universe(store, ["AAA", "NEW"], rows={"NEW": {"universe_added_on": pd.Timestamp("2024-06-28")}})
-    lineage = [
-        {"company_id": f"E{c}", "canonical_ticker": t, "cik": c, "role": "cik_window", "symbol": "", "valid_from": pd.Timestamp("1900-01-01")}
-        for t, c in _CIKS.items()
-    ]
-    store.save(Tables.universe_cik_symbol, pd.DataFrame(lineage).assign(scope_changed_at=pd.Timestamp("2020-01-01")))
+def test_a_new_ticker_does_not_reopen_completed_quarters(harness: dict[str, Any]) -> None:
+    store, calls, context = harness["store"], harness["calls"], harness["ctx"]
+    context.universe = seed_universe(store, ["AAA", "NEW"], rows={"NEW": {"universe_added_on": pd.Timestamp("2024-06-28")}})
     store.save(Tables.insider_transactions, pd.DataFrame([_row("AAA", "2024q1")]))
-    (harness["ctx"].paths["DATA_STORE"] / "sec_insider_transactions" / "2024q2.zip").write_bytes(b"cached")  # the new quarter is cached
-
-    saved = ins.fetch_insider_transactions(harness["ctx"], ["AAA", "NEW"], years_history=15, as_of=_AS_OF)
-
+    cache = context.paths["DATA_STORE"] / "sec_insider_transactions"
+    (cache / "2024q2.zip").write_bytes(b"cached")
+    saved = ins.fetch_insider_transactions(context, ["AAA", "NEW"])
     rows = store.load(Tables.insider_transactions)
-    notes = store.load(Tables.insider_footnotes)
-    assert calls["screens"] == [("2024q1", ["AAA", "NEW"]), ("2024q2", ["AAA", "NEW"])]  # always the whole universe
-    assert saved == 3 and sorted(rows["accession_number"]) == ["AAA-2024q1", "AAA-2024q2", "NEW-2024q1", "NEW-2024q2"]
-    assert calls["excluded"] == ["X-AAA-2024q2", "X-NEW-2024q1", "X-NEW-2024q2"]  # 2024q1 rejects: NEW's only, logged not stored
-    assert sorted(notes["accession_number"]) == ["AAA-2024q2", "NEW-2024q1", "NEW-2024q2"]
-    assert calls["sweeps"] == 1 and calls["reported"] == ["2024q2"], "only the pending quarter reports its EDGAR gap"
-    print("\n=== SANITY CHECK: insider new-ticker re-read ===")
-    print("  2024q2 (unstored, cached) parsed for AAA and NEW; cached 2024q1 re-read for NEW's CIK only (its rows, rejects, footnotes);")
-    print("  both screened against the whole universe; the full-universe run sweeps stored rows once. Validated.")
+    assert calls["screens"] == [("2024q2", ["AAA", "NEW"])]
+    assert saved == 2 and sorted(rows.accession_number) == ["AAA-2024q1", "AAA-2024q2", "NEW-2024q2"]
+    assert calls["excluded"] == ["X-AAA-2024q2", "X-NEW-2024q2"]
+    assert sorted(store.load(Tables.insider_footnotes).accession_number) == ["AAA-2024q2", "NEW-2024q2"]
+    assert calls["reported"] == ["2024q2"]
+    (cache / "2024q1.zip").unlink()
+    assert ins.fetch_insider_transactions(context, ["AAA", "NEW"]) == 0
+    assert calls["screens"] == [("2024q2", ["AAA", "NEW"])]
+    pd.testing.assert_frame_equal(store.load(Tables.insider_transactions), rows)
+    print(
+        "SANITY: new roster keys and a missing completed archive on disk do not re-ingest stored quarters; only the missing source unit parses once."
+    )
 
 
-def test_a_scoped_run_parses_no_unstored_quarter_and_skips_the_sweep(harness: dict[str, Any]) -> None:
-    store, calls = harness["store"], harness["calls"]
-    harness["ctx"].universe = seed_universe(store, ["AAA", "BBB"])
+def test_scoped_recovery_preserves_other_keys_and_holds_missing_global_units(harness: dict[str, Any]) -> None:
+    store, calls, context = harness["store"], harness["calls"], harness["ctx"]
+    context.universe = seed_universe(store, ["AAA", "BBB"])
     store.save(Tables.insider_transactions, pd.DataFrame([_row("AAA", "2024q1"), _row("BBB", "2024q1")]))
-
-    assert ins.fetch_insider_transactions(harness["ctx"], ["AAA"], years_history=15, as_of=_AS_OF) == 0
-    assert calls["screens"] == [] and calls["sweeps"] == 0
-    assert ins.fetch_insider_transactions(harness["ctx"], ["AAA"], years_history=15, reparse=True, as_of=_AS_OF) == 1
-    assert calls["screens"] == [("2024q1", ["AAA", "BBB"])] and calls["sweeps"] == 0
-    assert sorted(store.load(Tables.insider_transactions)["ticker"]) == ["AAA", "BBB"]
-    print("\n=== SANITY CHECK: insider -t AAA ===")
-    print("  2024q2 is left to the full run (a parse for AAA alone would mark it stored for BBB); no sweep, which would")
-    print("  screen BBB out against a one-ticker universe; -t AAA --reparse re-reads stored 2024q1 for AAA only. Validated.")
+    before = store.load(Tables.insider_transactions, where={"ticker": "BBB"})
+    assert ins.fetch_insider_transactions(context, ["AAA"]) == 0 and calls["screens"] == []
+    context.run = WindowRun("full", "explicit scoped unit recovery", context.run.instant)
+    assert ins.fetch_insider_transactions(context, ["AAA"]) == 1
+    assert calls["screens"] == [("2024q1", ["AAA", "BBB"])]
+    pd.testing.assert_frame_equal(store.load(Tables.insider_transactions, where={"ticker": "BBB"}), before)
+    assert sorted(store.load(Tables.insider_transactions).ticker) == ["AAA", "BBB"]
+    print("SANITY: scoped normal work holds globally missing units; explicit recovery screens the whole universe and writes only its requested key.")

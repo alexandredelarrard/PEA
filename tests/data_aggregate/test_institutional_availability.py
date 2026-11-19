@@ -2,40 +2,41 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
+from src.data_aggregate.utils.institutionals.ownership_features import ScheduleSource, build_ownership_feature_panel
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Table, Tables
-from src.utils.config import read_config
-from src.utils.institutional_vintages import availability_date
+from src.utils.window import WindowRun
 from tests.conftest import make_frames
+from tests.support.config import fixture_config
 
 
 def _rules() -> InstitutionalAvailability:
-    return InstitutionalAvailability.from_config(read_config("./configs").data_availability)
+    return InstitutionalAvailability.from_config(fixture_config())
 
 
 def test_config_inherits_table_dates_and_applies_field_and_derived_overrides() -> None:
     rules = _rules()
 
-    assert rules.source_date(Tables.insider_transactions) == pd.Timestamp("2006-01-03")
-    assert rules.source_date(Tables.insider_transactions, "filing_date") == pd.Timestamp("2006-01-03")
-    assert rules.derived_date("ic_shortvol_high_x_weak_price", []) == pd.Timestamp("2019-02-14")
-    assert set(rules.derived_features) == {"ic_shortvol_high_x_weak_price"}
+    assert rules.source_date(Tables.insider_transactions) == pd.Timestamp("2006-01-01")
+    assert rules.source_date(Tables.insider_transactions, "filing_date") == pd.Timestamp("2006-01-01")
+    assert rules.derived_date("ic_shortvol_high_x_weak_price", [(Tables.sec_short_volume_security, None)]) == pd.Timestamp("2018-08-01")
+    with pytest.raises(KeyError):
+        rules.derived_date("ic_shortvol_high_x_weak_price", [])
 
     print("\n=== SANITY CHECK: compact availability inheritance ===")
     print("  Active derived features resolve their boundaries and retired features have no stale availability entry. Validated.")
 
 
 def test_source_mask_is_inclusive_and_combines_per_cell_requirements() -> None:
-    rules = InstitutionalAvailability.from_config({"institutionals": {"insider_transactions": {"__all__": "2006-01-03", "is_10b5_1": "2023-04-01"}}})
+    rules = InstitutionalAvailability(tables={Tables.insider_transactions.name: pd.Timestamp("2023-04-01")})
     idx = pd.date_range("2023-03-31", periods=3, freq="D")
     columns = pd.Index(["AAA", "BBB"], name="ticker")
     denominator = pd.DataFrame([[True, True], [True, False], [True, True]], index=idx, columns=columns)
@@ -98,23 +99,18 @@ def test_schedule_frontier_reaches_the_last_session_within_the_overlap(sqlite_st
     A table whose latest filing lies within its 7-day overlap of the last price session is
     complete through that session; a staler table is complete only through its latest filing."""
     last = pd.Timestamp("2026-09-11")
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g, last) is None
-
-    sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, [("AAA", "g1", pd.Timestamp("2026-09-01"), "1")]))
-    stale = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
-    assert stale == pd.Timestamp("2026-09-01"), "10 days behind the last session: only through the filing"
-
-    sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", pd.Timestamp("2026-09-04")))
-    fresh = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
-    assert fresh == last, "a marker 7 days back keeps the table fresh through the last session"
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g, None) == pd.Timestamp("2026-09-04")
-    assert len(cast(pd.DataFrame, sqlite_store.load(Tables.sec_13g))) == 1, "consumers still never see the marker"
-    assert stale is not None and fresh is not None
-
-    print("\n=== SANITY CHECK: Schedule absence frontier from the DB ===")
-    print(f"  last session {last.date()}: empty table -> None; latest filing 2026-09-01 (stale) -> {stale.date()}")
-    print(f"  a marker on 2026-09-04 (within the 7-day overlap) -> {fresh.date()}")
-    print("  CONCLUSION: a fresh table is complete through the last session, a stale one through its latest filing. Validated.")
+    config = fixture_config()
+    context = SimpleNamespace(store=sqlite_store, config=config, run=WindowRun("incremental", "fixed source frontier", last))
+    stale_day = last - pd.Timedelta(days=10)
+    fresh_day = last - pd.Timedelta(days=7)
+    assert schedule_complete_through(context, Tables.sec_13g, last) is None
+    sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, [("AAA", "g1", stale_day, "1")]))
+    assert schedule_complete_through(context, Tables.sec_13g, last) == stale_day
+    sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", fresh_day))
+    assert schedule_complete_through(context, Tables.sec_13g, last) == fresh_day
+    assert schedule_complete_through(context, Tables.sec_13g, None) == fresh_day
+    assert len(cast(pd.DataFrame, sqlite_store.load(Tables.sec_13g))) == 1
+    print("SANITY: actual stored filing/marker dates prove completion; recent source age cannot extend known zeros to a later session.")
 
 
 def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
@@ -126,21 +122,39 @@ def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
     rows_13g = [("AAA", "g1", idx[10], "1"), ("CCC", "g2", idx[70], "4"), ("AAA", "g3", idx[-2], "5")]
     sqlite_store.save(Tables.sec_13d, _schedule_rows(Tables.sec_13d, rows_13d))
     sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, rows_13g))
-    frontier_13d = schedule_complete_through(sqlite_store, Tables.sec_13d, idx[-1])
-    frontier_13g = schedule_complete_through(sqlite_store, Tables.sec_13g, idx[-1])
+    frontier_13d = schedule_complete_through(
+        SimpleNamespace(
+            store=sqlite_store, config=fixture_config(), run=WindowRun("incremental", "fixed source frontier", pd.Timestamp("2026-11-16"))
+        ),
+        Tables.sec_13d,
+        idx[-1],
+    )
+    frontier_13g = schedule_complete_through(
+        SimpleNamespace(
+            store=sqlite_store, config=fixture_config(), run=WindowRun("incremental", "fixed source frontier", pd.Timestamp("2026-11-16"))
+        ),
+        Tables.sec_13g,
+        idx[-1],
+    )
     assert frontier_13d is not None and frontier_13g is not None
     frames = make_frames(idx, {t: {p: 1.0 for p in tickers if p != t} for t in tickers}, close_split=pd.DataFrame(100.0, index=idx, columns=tickers))
     sec_13d, sec_13g = sqlite_store.load(Tables.sec_13d, project=True), sqlite_store.load(Tables.sec_13g, project=True)
 
     def build(complete_13d: pd.Timestamp | None, complete_13g: pd.Timestamp | None) -> pd.DataFrame:
-        panel = build_ownership_feature_panel(frames, sec_13d, sec_13g, complete_through_13d=complete_13d, complete_through_13g=complete_13g)
-        grid = pd.MultiIndex.from_product([idx[-PART_REFRESH_TRADING_DAYS:], tickers], names=["date", "ticker"])
+        panel = build_ownership_feature_panel(
+            frames,
+            (ScheduleSource(Tables.sec_13d, sec_13d, complete_13d), ScheduleSource(Tables.sec_13g, sec_13g, complete_13g)),
+            fixture_config(),
+        )
+        grid = pd.MultiIndex.from_product([idx[idx >= idx[-1] - pd.Timedelta(days=30)], tickers], names=["date", "ticker"])
         return panel.set_index(["date", "ticker"]).reindex(grid)
 
     old, new = build(None, None), build(frontier_13d, frontier_13g)
     columns = sorted(set(old.columns) | set(new.columns))
     old, new = old.reindex(columns=columns), new.reindex(columns=columns)
-    frontier = pd.Series([frontier_13d if c.startswith("f_ic_act_") else frontier_13g for c in columns], index=columns)
+    assert frontier_13d == idx[-4] and frontier_13g == idx[-2]
+    # The declared one-calendar-day lag rolls these actual filing dates to the next fixture session.
+    frontier = pd.Series([idx[-3] if c.startswith("f_ic_act_") else idx[-1] for c in columns], index=columns)
     inside = pd.DataFrame({c: new.index.get_level_values("date") <= frontier[c] for c in columns}, index=new.index)
     same = old.eq(new) | (old.isna() & new.isna())
     nan_to_zero = old.isna() & new.eq(0.0)
@@ -149,42 +163,52 @@ def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
     assert new[~inside].isna().all().all(), "past its frontier a cell is unknown, not zero"
 
     print("\n=== SANITY CHECK: DB frontier vs today's (None) on the bounded tail (AC-007) ===")
-    print(f"  frontiers: 13D {frontier_13d.date()}, 13G {frontier_13g.date()}; tail {idx[-PART_REFRESH_TRADING_DAYS].date()}..{idx[-1].date()}")
+    print(
+        f"  frontiers: 13D {frontier_13d.date()}, 13G {frontier_13g.date()}; tail {idx[idx >= idx[-1] - pd.Timedelta(days=30)][0].date()}..{idx[-1].date()}"
+    )
     print(f"  inside the frontier: {int((inside & same).to_numpy().sum())} identical, {int((inside & nan_to_zero).to_numpy().sum())} NaN->0, 0 other")
     print(f"  past the frontier: {int((~inside).to_numpy().sum())} cell(s), all NaN")
     print("  CONCLUSION: inside the DB frontier a 13D/13G cell keeps its value or becomes a proven 0. Validated.")
 
 
-@pytest.mark.parametrize(
-    "config, error",
-    [
-        ({"institutionals": {"not_a_table": {"__all__": "2020-01-01"}}}, KeyError),
-        (
-            {"institutionals": {"insider_transactions": {"__all__": "2006-01-03", "not_a_field": "2020-01-01"}}},
-            KeyError,
-        ),
-        ({"institutionals": {"insider_transactions": {"__all__": "not-a-date"}}}, ValueError),
-        (
-            {"institutionals": {"insider_transactions": {"__all__": "2020-01-01", "is_10b5_1": "2019-01-01"}}},
-            ValueError,
-        ),
-        ({"institutionals": {"derived_features": {"not_a_feature": "2020-01-01"}}}, KeyError),
-    ],
-)
-def test_invalid_availability_declarations_fail_fast(config: dict, error: type[Exception]) -> None:
-    with pytest.raises(error):
+@pytest.mark.parametrize("case", ["invalid-coverage", "unknown-derived"])
+def test_invalid_availability_declarations_fail_fast(case: str) -> None:
+    config = fixture_config()
+    if case == "invalid-coverage":
+        config.data.tables.insider_transactions.start_date = "not-a-date"
+    else:
+        with pytest.raises(KeyError):
+            InstitutionalAvailability.from_config(config).derived_date("not_a_feature", [(Tables.sec_13g, None)])
+        return
+    with pytest.raises(ValueError if case == "invalid-coverage" else KeyError):
         InstitutionalAvailability.from_config(config)
-    print(f"\n=== SANITY CHECK: invalid availability declaration ===\n  {error.__name__} raised before feature construction. Validated.")
+    print("SANITY: malformed coverage and unknown derived features fail before feature construction.")
 
 
-def test_13f_period_floor_still_uses_publication_lag_and_trading_sessions() -> None:
-    grid = pd.bdate_range("2013-08-12", "2013-08-23")
-    period = pd.DatetimeIndex(["2013-06-30"])
+def test_unknown_source_fields_fail_fast() -> None:
+    with pytest.raises(KeyError):
+        _rules().source_date(Tables.insider_transactions, "not_a_field")
+    print("SANITY: coverage dates come from data.yml while requested field identities are checked against the registry.")
 
-    bare = availability_date(period, grid, settle_trading_days=0)
-    settled = availability_date(period, grid, settle_trading_days=2)
 
-    assert bare.iloc[0] == pd.Timestamp("2013-08-14")
-    assert settled.iloc[0] == pd.Timestamp("2013-08-16")
-    print("\n=== SANITY CHECK: 13F period versus tradable date ===")
-    print("  2013-06-30 remains a period floor; its feature mask starts only after filing lag and session settlement. Validated.")
+def test_missing_coverage_clocks_never_become_today() -> None:
+    dates = pd.DatetimeIndex(["2026-11-06", "2026-11-09"])
+    names = pd.Index(["AAA"])
+    assert not InstitutionalAvailability.date_mask(dates, names, pd.NaT).to_numpy().any()
+    assert not InstitutionalAvailability.through_mask(dates, names, pd.NaT).to_numpy().any()
+    print("SANITY: missing coverage dates remain unknown; pandas cannot turn a missing clock into today.")
+
+
+def test_future_source_coverage_does_not_become_the_last_price_session() -> None:
+    config = fixture_config()
+    config.data.tables.sec_13g.start_date = "2027-01-01"
+    dates = pd.bdate_range("2026-09-01", periods=10)
+    rows = _schedule_rows(Tables.sec_13g, [("AAA", "g1", dates[0], "1")])
+    frames = make_frames(dates, {}, close_split=pd.DataFrame({"AAA": 100.0, "BBB": 100.0}, index=dates))
+    panel = build_ownership_feature_panel(
+        frames, [ScheduleSource(Tables.sec_13g, rows, dates[-1])], config, availability=InstitutionalAvailability.from_config(config)
+    )
+    assert panel.drop(columns=["date", "ticker"]).isna().all().all()
+    print(
+        "SANITY: source-value eligibility stays unknown before future configured coverage, while completeness frontiers use their own bounded output extent."
+    )

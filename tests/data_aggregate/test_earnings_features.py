@@ -7,7 +7,10 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.earnings_features import _derived_earnings_fields, reported_events
+from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
+from src.utils.publication import point_in_time
+from tests.support.config import fixture_config
 
 
 def _basis(events: list[tuple[str, str, float]] | None = None) -> ShareBasis:
@@ -30,7 +33,7 @@ def _history() -> pd.DataFrame:
 
 def _fields(df_history: pd.DataFrame, idx: pd.DatetimeIndex, basis: ShareBasis | None = None) -> dict[str, pd.DataFrame]:
     return _derived_earnings_fields(
-        df_history,
+        point_in_time(df_history, fixture_config(), Tables.earnings_surprises, idx),
         idx,
         pd.DataFrame({"A": 100.0}, index=idx),
         pd.DataFrame({"A": 1.0}, index=idx),
@@ -82,7 +85,7 @@ def test_zero_actual_is_a_report_and_scheduled_rows_do_not_replace_it() -> None:
     fields = _fields(_history(), idx)
     assert fields["reported_expected_eps_yield"].loc["2025-02-03", "A"] == pytest.approx(0.02)
     assert fields["reported_expected_eps_yield"].loc["2025-05-02", "A"] == pytest.approx(0.02)
-    events = reported_events(_history(), idx)
+    events = reported_events(point_in_time(_history(), fixture_config(), Tables.earnings_surprises, idx), idx)
     assert len(events) == 5
     assert events.iloc[-1]["eps_actual"] == 0
     assert events.iloc[-1]["as_of"] == pd.Timestamp("2025-02-03")
@@ -129,9 +132,11 @@ def test_spinoff_restores_price_level_without_rebasing_eps_and_requires_basis() 
     idx = pd.bdate_range("2024-10-30", "2024-11-08")
     df_close = pd.DataFrame({"A": 50.0}, index=idx)
     df_level = pd.DataFrame({"A": 2.0}, index=idx)
-    fields = _derived_earnings_fields(_history(), idx, df_close, df_level, share_basis=_basis())
+    fields = _derived_earnings_fields(
+        point_in_time(_history(), fixture_config(), Tables.earnings_surprises, idx), idx, df_close, df_level, share_basis=_basis()
+    )
     assert fields["reported_expected_eps_yield"].loc["2024-11-04", "A"] == pytest.approx(1.5 / 100.0)
-    without_basis = _derived_earnings_fields(_history(), idx, df_close, df_level)
+    without_basis = _derived_earnings_fields(point_in_time(_history(), fixture_config(), Tables.earnings_surprises, idx), idx, df_close, df_level)
     assert without_basis["reported_expected_eps_yield"].isna().all().all()
     print("Sanity: a spinoff corrects the price level only; a level factor cannot establish the archive EPS share units.")
 

@@ -2,10 +2,13 @@
 title: SEC and LLM extraction
 description: SEC filing discovery, five focused proxy requests, bounded retries and main-thread persistence.
 type: flow
-source_commit: 1b5f33a2a210336c14758ce4897008c72da1d42c
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
 tags:
   - wiki
   - flow
+integration_parents:
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 
 # SEC and LLM extraction
@@ -28,7 +31,7 @@ The `sec-def14a-llm` CLI calls `StepExtractLlm.run_def14a_llm`, which invokes `f
 | `def14a_ownership` | `Tables.def14a_ownership`, plus parent insider/CEO summaries |
 | `def14a_governance` | `Tables.def14a_directors`, plus parent board, CEO age/identity and governance disclosures |
 
-Each action has its own schema in [def14a_schema.py](../../src/data_extract/utils/structure/def14a/def14a_schema.py), prompt pair under [prompt_templates](../../src/gpt_extract/prompt_templates), and the shared budget `data_extract.llm_text_budget.def14a` in [configs.yml](../../configs/configs.yml). [carve.py](../../src/data_extract/utils/structure/def14a/carve.py), run by the text walk, classifies the filing once and selects domain-specific tables/prose, nearby source units and relevant footnotes. Named historical director payments can be retained without a modern Item 402(k) table; there is no pre-2008 exclusion.
+Each action has its own schema in [def14a_schema.py](../../src/data_extract/utils/structure/def14a/def14a_schema.py), prompt pair under [prompt_templates](../../src/gpt_extract/prompt_templates), and the shared budget `data_extract.llm_text_budget.def14a` in [data_extract.yml](../../configs/data_extract.yml). [carve.py](../../src/data_extract/utils/structure/def14a/carve.py), run by the text walk, classifies the filing once and selects domain-specific tables/prose, nearby source units and relevant footnotes. Named historical director payments can be retained without a modern Item 402(k) table; there is no pre-2008 exclusion.
 
 ~~~mermaid
 sequenceDiagram

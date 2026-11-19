@@ -19,7 +19,6 @@ from xml.etree import ElementTree
 import edgar.exceptions as edgar_exceptions
 import httpx
 import pandas as pd
-import pyarrow as pa
 import pytest
 
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
@@ -27,6 +26,8 @@ from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_store.schema import Tables
 from src.utils.institutional_vintages import public_books
 from src.utils.string import pad_cik
+from src.utils.window import Window, WindowRun
+from tests.data_extract.fake_context import extract_config
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
@@ -125,10 +126,12 @@ class _FakeFiling:
         )
 
 
-def _ctx(store: Any) -> Any:
+def _ctx(store: Any, *, batch_size: int = 100, as_of: str | pd.Timestamp = "2026-06-30") -> Any:
     return SimpleNamespace(
         store=store,
         log=_LOG,
+        config=extract_config(data_extract={"sec13f": {"batch_size": batch_size}}),
+        run=WindowRun("incremental", "13F fixture", pd.Timestamp(as_of)),
         ensure_edgar_identity=lambda: None,
         universe=seed_universe(store, UNIVERSE),
         _identity_resolver=store_identity(store),
@@ -150,32 +153,26 @@ def _seed_roster(store: Any, ciks: list[str]) -> None:
     store.replace(Tables.superinvestor_roster.name, pd.DataFrame(rows))
 
 
-def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> None:
-    """`_listing` returns the fakes in the given order behind the edgartools `Filings` surface
-    `fetch_13f` touches: a pyarrow `data` index, `len`, iteration, construction from an index."""
-    by_accession = {f.accession_number: f for f in filings}
+def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> list[Window]:
+    """Serve bounded index metadata and fake payloads through the real listing/packet path."""
+    by_accession = {filing.accession_number: filing for filing in filings}
+    windows: list[Window] = []
+    index = pd.DataFrame(
+        [(f.cik, "", f.form, pd.Timestamp(f.filing_date), f.accession_number) for f in filings],
+        columns=["cik", "company", "form", "filed", "accession"],
+    ).astype({"form": "str"})
 
-    class _FakeFilings:
-        def __init__(self, filing_index: pa.Table) -> None:
-            self.data = filing_index
+    def entries(context: Any, ciks: Any, forms: Any, window: Window) -> pd.DataFrame:
+        assert ciks is None
+        windows.append(window)
+        return index.loc[window.mask(index["filed"]) & index["form"].isin(forms)].copy()
 
-        def __len__(self) -> int:
-            return self.data.num_rows
-
-        def __iter__(self) -> Any:
-            return (by_accession[a] for a in self.data.column("accession_number").to_pylist())
-
-    index = pa.table(
-        {
-            "form": [f.form for f in filings],
-            "accession_number": [f.accession_number for f in filings],
-            "filing_date": [date.fromisoformat(f.filing_date) for f in filings],
-        }
-    )
-    monkeypatch.setattr(f13, "Filings", _FakeFilings)
-    monkeypatch.setattr(f13, "_listing", lambda forms, since, until: _FakeFilings(index))
+    monkeypatch.setattr(f13.edgar_index, "entries", entries)
+    monkeypatch.setattr(f13.edgar_index, "refreshed_today", lambda context, window: True)
+    monkeypatch.setattr(f13.edgar_index, "index_filing", lambda cik, company, form, filed, accession: by_accession[str(accession)])
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     monkeypatch.setattr(f13, "_sleep", lambda wait: None)
+    return windows
 
 
 def _stored(store: Any, table: Any) -> pd.DataFrame:
@@ -187,7 +184,7 @@ def _stored(store: Any, table: Any) -> pd.DataFrame:
 
 def _resolved(store: Any, table: Any, as_of: str = "2026-06-15") -> pd.DataFrame:
     manifests = store.load(table, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
-    book, _ = public_books(manifests, _stored(store, table), as_of, pd.bdate_range("2024-01-01", "2027-01-01"))
+    book, _ = public_books(manifests, _stored(store, table), as_of, pd.bdate_range("2024-01-01", "2027-01-01"), extract_config())
     return book
 
 
@@ -230,7 +227,7 @@ def test_fetch_13f_writes_hr_as_before_and_keeps_the_whole_book(filing_store, mo
     _seed_roster(filing_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
 
-    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=600)
+    f13.fetch_13f(_ctx(filing_store, batch_size=600))
 
     hr = _stored(filing_store, Tables.sec13f_hr)
     expected = pd.concat([_old_hr_rows(f) for f in filings], ignore_index=True)
@@ -255,7 +252,7 @@ def test_amendment_wins_whatever_the_listing_order(filing_store, monkeypatch, or
     _seed_roster(filing_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
 
-    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
+    f13.fetch_13f(_ctx(filing_store, batch_size=save_every))
 
     raw = _stored(filing_store, Tables.sec13f_hr)
     roster = raw.loc[raw.cik.eq(ROSTER)]
@@ -292,7 +289,7 @@ def test_cusips_are_mapped_once_per_batch_of_books_saved_in_read_order(filing_st
         f13._Saver, "save_packet", lambda self, manifest, book: saved.append(manifest.iloc[0].accession_number) or real_save(self, manifest, book)
     )
 
-    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
+    f13.fetch_13f(_ctx(filing_store, batch_size=save_every))
 
     assert len(lookups) == n_lookups
     assert sorted(c for batch in lookups for c in batch) == sorted({line["CUSIP"] for f in filings for line in f.lines})
@@ -316,7 +313,7 @@ def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(filing_st
     monkeypatch.setattr(f13._Saver, "save_packet", _save_then_crash)
 
     with pytest.raises(ConnectionError):
-        f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=1)
+        f13.fetch_13f(_ctx(filing_store, batch_size=1))
 
     watermark = pd.Timestamp(filing_store.max_date(Tables.sec13f_hr, "filing_date"))
     assert watermark == pd.Timestamp("2026-05-10"), watermark
@@ -339,7 +336,7 @@ def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(fili
     filings = _same_day_pair()
     _seed_roster(filing_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
-    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15, save_every=600)
+    f13.fetch_13f(_ctx(filing_store, batch_size=600))
 
     raw = _stored(filing_store, Tables.sec13f_hr)
     assert len(raw.loc[raw.cusip.eq("037833100")]) == 2
@@ -381,7 +378,7 @@ def test_ordinary_walk_preserves_original_and_amendment_accessions(filing_store,
     filings = [_roster_amendment(), _roster_original(), _other_filer()]
     _seed_roster(filing_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
-    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15)
+    f13.fetch_13f(_ctx(filing_store))
     manifests = filing_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
     versions = filing_store.load(Tables.sec13f_hr)
     assert len(manifests) == 3
@@ -389,7 +386,7 @@ def test_ordinary_walk_preserves_original_and_amendment_accessions(filing_store,
     original = versions.loc[versions.accession_number.eq(_roster_original().accession_number)]
     assert original.loc[original.cusip.eq("037833100"), "shares"].iloc[0] == 5000
     before = versions.copy()
-    f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=15)
+    f13.fetch_13f(_ctx(filing_store))
     pd.testing.assert_frame_equal(before, filing_store.load(Tables.sec13f_hr))
     assert sum(len(f.reads) for f in filings) == 3
     print(
@@ -589,7 +586,7 @@ def test_nonzero_cover_zero_lines_fails_loudly(filing_store, monkeypatch, caplog
 
     failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
     with caplog.at_level(logging.WARNING):
-        f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=30, as_of=pd.Timestamp("2026-06-30"))
+        f13.fetch_13f(_ctx(filing_store, as_of=pd.Timestamp("2026-06-30")))
 
     assert isinstance(failure, f13.ReadFailure) and not failure.transient, failure
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and accession in r.getMessage()]
@@ -608,7 +605,7 @@ def test_empty_cover_over_real_holding_rows_fails_loudly(filing_store, monkeypat
 
     failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
     with caplog.at_level(logging.WARNING):
-        f13.fetch_13f(_ctx(filing_store), tickers=UNIVERSE, years_history=30, as_of=pd.Timestamp("2026-06-30"))
+        f13.fetch_13f(_ctx(filing_store, as_of=pd.Timestamp("2026-06-30")))
 
     assert isinstance(failure, f13.ReadFailure) and not failure.transient, failure
     assert "cover declares an empty book" in failure.reason and "67" in failure.reason, failure.reason

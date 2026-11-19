@@ -13,7 +13,7 @@ import pytest
 import src.data_aggregate.utils.text.earnings_call_features as ec
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import write_part
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     attach_issuer_identity,
@@ -24,7 +24,11 @@ from src.data_aggregate.utils.text.earnings_call_features import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.publication import point_in_time
+from src.utils.window import Window
+from tests.support.config import fixture_config
 from tests.support.universe import seed_universe
+from tests.support.windows import window_plan
 
 EARNINGS_CALL_SENTIMENT_CACHE_MODEL = "fixture/tone:speaker-clean-v2"
 
@@ -153,8 +157,10 @@ def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(vari
 def test_calendar_day_buffer_applies_once_to_all_ten_features(call_date: str, expected: str) -> None:
     calendar = pd.bdate_range("2024-05-01", "2024-10-31").difference(pd.DatetimeIndex(["2024-05-27"]))
     call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(EARNINGS_CALL_FEATURES)}})
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
+    call = point_in_time(call, config, Tables.earnings_call_sections, calendar)
     for name in EARNINGS_CALL_FEATURES:
-        daily = _daily_frame(call[["ticker", "as_of", name]], name, calendar, availability_lag_days=2)
+        daily = _daily_frame(call[["ticker", "as_of", name]], name, calendar, signal_sessions=66)
         live = daily.index[daily["A"].notna()]
         assert live.min() == pd.Timestamp(expected) and len(live) == 66
     print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all10 features for66 sessions.")
@@ -285,8 +291,12 @@ def test_question_words_do_not_establish_completion() -> None:
 
 def test_panel_columns_lifetime_and_missingness():
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
+    calls = sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
     panel = build_earnings_call_feature_panel(
-        sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), idx, availability_lag_days=2
+        point_in_time(calls, config, Tables.earnings_call_sections, idx),
+        idx,
+        signal_sessions=66,
     )
     assert not panel.empty
     expected = {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
@@ -302,14 +312,16 @@ def test_panel_columns_lifetime_and_missingness():
     assert a_tone["date"].min() == pd.Timestamp("2023-02-03")
     # 66 trading sessions are inclusive; session 67 expires rather than becoming a fake zero.
     one = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-01"], "ec_prep_tone": [0.0]})
-    daily = _daily_frame(one, "ec_prep_tone", idx, availability_lag_days=2)
+    one = point_in_time(one, config, Tables.earnings_call_sections, idx)
+    daily = _daily_frame(one, "ec_prep_tone", idx, signal_sessions=66)
     live = daily["A"].dropna()
     assert len(live) == 66
     assert (live == 0.0).all(), "a genuine zero must survive"
     assert pd.isna(_number(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"])), "session 67 must be NaN"
 
     weekend = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-04"], "ec_prep_tone": [0.2]})
-    weekend_daily = _daily_frame(weekend, "ec_prep_tone", idx, availability_lag_days=2)
+    weekend = point_in_time(weekend, config, Tables.earnings_call_sections, idx)
+    weekend_daily = _daily_frame(weekend, "ec_prep_tone", idx, signal_sessions=66)
     assert weekend_daily.loc[pd.Timestamp("2023-02-06"), "A"] == 0.2
 
     print("\n=== SANITY CHECK: earnings-call features ===")
@@ -321,52 +333,58 @@ def test_panel_columns_lifetime_and_missingness():
     )
 
 
-def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
+def test_full_calendar_late_refresh_and_rerun_are_bit_exact(sqlite_store: DataStore) -> None:
     """Exercise the real tail writer against a late correction and unchanged rerun."""
     calendar = pd.bdate_range("2021-01-04", "2023-09-29")
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
     assert len(calendar) >= 500
     old = build_earnings_call_feature_panel(
-        sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), calendar, availability_lag_days=2
+        point_in_time(
+            sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)),
+            config,
+            Tables.earnings_call_sections,
+            calendar,
+        ),
+        calendar,
+        signal_sessions=66,
     )
     revised_sentiment = _sentiment_frame()
     mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q1")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
     revised_sentiment.loc[mask, "sent_neu"] -= 0.05
     revised = build_earnings_call_feature_panel(
-        sentiment_kpis(ec.valid_sentiment_rows(revised_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), calendar, availability_lag_days=2
+        point_in_time(
+            sentiment_kpis(ec.valid_sentiment_rows(revised_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)),
+            config,
+            Tables.earnings_call_sections,
+            calendar,
+        ),
+        calendar,
+        signal_sessions=66,
     )
 
-    class _Store:
-        def __init__(self, rows: pd.DataFrame):
-            self.rows = rows.copy()
-
-        def columns(self, _table):
-            return list(self.rows.columns)
-
-        def replace(self, _table, rows):
-            self.rows = rows.copy()
-            return len(rows)
-
-        def append_tail(self, _table, tail, cutoff, *, inclusive):
-            keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
-            self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
-            return len(tail)
-
     feature_columns = [column for column in old if str(column).startswith("f_")]
-    store = _Store(old.dropna(subset=feature_columns, how="all"))
+    sqlite_store.replace(Tables.cube_part_text, old.dropna(subset=feature_columns, how="all"))
     last = pd.Timestamp(old["date"].max())
     default_refresh = calendar[-130]
     late_refresh = pd.Timestamp("2023-02-02")
-    window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
-    assert window.refresh_from is not None
-    effective_refresh = min(late_refresh, window.refresh_from)
-    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
+    window = window_plan(
+        Window(calendar[0], calendar[-1]),
+        scope=tuple(sorted(revised.ticker.unique())),
+        write_start=min(late_refresh, default_refresh),
+        frontier=last,
+        mode="recovery",
+    )
+    write_part(sqlite_store, Tables.cube_part_text, revised, window, drop_empty=True)
     expected = revised.dropna(subset=feature_columns, how="all").sort_values(["date", "ticker"]).reset_index(drop=True)
-    actual = store.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
+    actual = sqlite_store.load(Tables.cube_part_text).sort_values(["date", "ticker"]).reset_index(drop=True)
+    expected = expected.astype(actual.dtypes.to_dict())
     pd.testing.assert_frame_equal(expected, actual, check_dtype=True, check_exact=True)
     first = actual.copy()
-    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
-    pd.testing.assert_frame_equal(first, store.rows.sort_values(["date", "ticker"]).reset_index(drop=True), check_exact=True)
+    write_part(sqlite_store, Tables.cube_part_text, revised, window, drop_empty=True)
+    pd.testing.assert_frame_equal(
+        first, sqlite_store.load(Tables.cube_part_text).sort_values(["date", "ticker"]).reset_index(drop=True), check_exact=True
+    )
     print("\n=== SANITY CHECK: earnings-call full/tail equivalence ===")
     print(
         f"  a correction behind the default tail refreshed from {late_refresh.date()} and matched "
@@ -467,7 +485,9 @@ def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
             "total_words": [1000.0, 1100.0],
         }
     )
-    panel = build_earnings_call_feature_panel(calls, calendar, availability_lag_days=2)
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
+    prepared = point_in_time(calls, config, Tables.earnings_call_sections, calendar)
+    panel = build_earnings_call_feature_panel(prepared, calendar, signal_sessions=66)
     observed = panel[panel["ticker"].eq("AAA")].set_index("date")
     assert observed.loc[pd.Timestamp("2024-02-02"), "f_ec_answers_tone"] == 0.3
     assert pd.isna(observed.loc[pd.Timestamp("2024-02-05"), "f_ec_answers_tone"])
@@ -496,14 +516,18 @@ def test_each_role_delta_requires_its_own_adjacent_quarter() -> None:
     print("SANITY: unrelated missing roles preserve prepared deltas; a missing role or fiscal quarter cannot bridge to an older observation.")
 
 
-def test_tail_daily_calculation_preserves_original_expiry() -> None:
+@pytest.mark.parametrize("signal_sessions", [20, 66])
+def test_tail_daily_calculation_preserves_original_expiry(signal_sessions: int) -> None:
     calendar = pd.bdate_range("2020-01-01", periods=200)
     calls = pd.DataFrame({"ticker": ["A"], "as_of": [calendar[10]], "ec_prep_tone": [0.2]})
-    full = _daily_frame(calls, "ec_prep_tone", calendar, 2)
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
+    calls = point_in_time(calls, config, Tables.earnings_call_sections, calendar)
+    full = _daily_frame(calls, "ec_prep_tone", calendar, signal_sessions=signal_sessions)
+    assert full["A"].notna().sum() == signal_sessions
     for cutoff in (calendar[30], calendar[77], calendar[100]):
-        tail = _daily_frame(calls, "ec_prep_tone", calendar, 2, since=cutoff)
+        tail = _daily_frame(calls, "ec_prep_tone", calendar, since=cutoff, signal_sessions=signal_sessions)
         pd.testing.assert_frame_equal(tail, full.loc[cutoff:], check_exact=True)
-    assert _daily_frame(calls, "ec_prep_tone", calendar, 2, since=calendar[100]).isna().all().all()
+    assert _daily_frame(calls, "ec_prep_tone", calendar, since=calendar[100], signal_sessions=signal_sessions).isna().all().all()
     print("SANITY: daily arrays start at the requested tail; the 66-session signal never restarts at its cutoff.")
 
 
@@ -516,7 +540,8 @@ def test_history_scope_is_bounded_and_keeps_fiscal_predecessors() -> None:
     calls = pd.concat([calls, expired], ignore_index=True)
     calendar = pd.bdate_range("2010-01-01", "2026-09-15")
     cutoff = pd.Timestamp("2026-08-15")
-    scope = feature_history_scope(calls, calendar, cutoff, 2)
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
+    scope = feature_history_scope(calls, calendar, cutoff, config, signal_sessions=66)
     assert len(scope) < len(calls)
     assert len(scope) == 2
     assert scope["as_of"].max() <= calendar[-1]

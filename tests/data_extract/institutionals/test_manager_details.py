@@ -34,6 +34,7 @@ from src.data_extract.utils.institutionals.manager_rows import (
 )
 from src.data_store import ddl
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, seed_index
 
@@ -203,7 +204,8 @@ def test_zip_cover_rows_are_stripped_typed_and_exclude_notices(context: Any, sto
     """Real 2023q4 covers: a combination cover, a notice (13F-NT) and a holdings filing, read from a ZIP."""
     _write_data_set(_cache(context), _Q4, [_PIONEER, _CAPITAL, _NOTICE])
 
-    changed = fetch_manager_details(context, full=False, as_of=pd.Timestamp("2023-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-12-31"))
+    changed = fetch_manager_details(context)
 
     df = _rows(store)
     assert changed == 2 and len(df) == 2
@@ -224,7 +226,8 @@ def test_nested_zip_names_are_stripped(context: Any, store: Any) -> None:
     """The rolling window whose members sit in a folder reads, and names lose the whitespace the filers typed."""
     _write_data_set(_cache(context), _NESTED, [_FOGEL, _AVALON], folder="01JUN2025-31AUG2025_form13f")
 
-    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2025-09-30"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2025-09-30"))
+    fetch_manager_details(context)
 
     df = _rows(store).set_index("cik")
     assert df.loc["0002011427", "manager_name"] == "FOGEL CAPITAL MANAGEMENT, INC."
@@ -240,7 +243,8 @@ def test_original_accession_and_first_filing_date_over_an_amendment(context: Any
     """The row carries the original 13F-HR; `first_filed_date` is the earliest of the original and its amendment."""
     _write_data_set(_cache(context), _Q4, [_PIONEER_AMENDED, _PIONEER])
 
-    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2023-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-12-31"))
+    fetch_manager_details(context)
 
     row = _rows(store).iloc[0]
     assert row["accession_number"] == _PIONEER[0] and row["first_filed_date"] == pd.Timestamp("2023-10-30")
@@ -256,7 +260,8 @@ def test_pre_2013_rows_join_index_names_to_markers(context: Any, store: Any) -> 
     markers = [_marker(f"{cik:010d}", accession, filed, form, "2008-09-30") for cik, _, form, filed, accession in _WACHOVIA + _HUNTINGTON + _RBC]
     store.save(Tables.sec13f_hr, pd.DataFrame(markers))
 
-    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2008-12-31"))
+    fetch_manager_details(context)
 
     df = _rows(store).set_index("cik")
     assert len(df) == 3
@@ -283,10 +288,12 @@ def test_a_period_that_is_not_a_quarter_end_is_snapped_and_the_source_period_kep
     seed_index(context, [row[:5] for row in _SNAPPED])
     store.save(Tables.sec13f_hr, pd.DataFrame([_marker(f"{cik:010d}", acc, filed, form, typo) for cik, _, form, filed, acc, typo, _ in _SNAPPED]))
 
-    first = fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2008-12-31"))
+    first = fetch_manager_details(context)
     df = _rows(store).set_index("cik")
     df["source_period"] = pd.to_datetime(df["source_period"])
-    second = fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2008-12-31"))
+    second = fetch_manager_details(context)
 
     assert first == 3 and second == 0 and df["period"].dt.is_quarter_end.all(), "no row keeps a period that is not a quarter end"
     for cik, _, _, filed, acc, typo, quarter_end in _SNAPPED:
@@ -306,7 +313,8 @@ def test_a_snapped_filing_gives_way_to_the_quarter_end_filing_of_its_quarter(con
     seed_index(context, [row[:5] for row in filings])
     store.save(Tables.sec13f_hr, pd.DataFrame([_marker(f"{cik:010d}", acc, filed, form, period) for cik, _, form, filed, acc, period in filings]))
 
-    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2008-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2008-12-31"))
+    fetch_manager_details(context)
 
     df = _rows(store)
     assert len(df) == 1 and df.iloc[0]["period"] == pd.Timestamp("2001-03-31") and df.iloc[0]["accession_number"] == _MOORE_END[4]
@@ -322,7 +330,8 @@ def test_zip_cover_takes_precedence_over_the_index_for_the_same_accession(contex
     store.save(Tables.sec13f_hr, pd.DataFrame([_marker("0001006435", _PIONEER[0], "2023-10-30", "13F-HR", "2023-09-30")]))
     _write_data_set(_cache(context), _Q4, [_PIONEER])
 
-    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2023-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-12-31"))
+    fetch_manager_details(context)
 
     row = _rows(store).iloc[0]
     assert row["source"] == _Q4 and row["manager_name"] == "PIONEER TRUST BANK N A/OR" and row["state_or_country"] == "OR"
@@ -339,12 +348,14 @@ def test_steady_state_opens_one_zip_plus_overlap_and_changes_nothing(
     _write_data_set(_cache(context), _Q3, [_PIONEER_Q3, _NICHOLAS])
     _write_data_set(_cache(context), _Q4, [_PIONEER, _PIONEER_AMENDED, _NICHOLAS_AMENDED, _CAPITAL, _NOTICE])
     as_of = pd.Timestamp("2023-12-31")
-    first = fetch_manager_details(context, full=False, as_of=as_of)
+    context.run = WindowRun("incremental", "manager filing fixture", as_of)
+    first = fetch_manager_details(context)
     before = _rows(store)
 
     opened = _spy_zip_reads(monkeypatch)
     with caplog.at_level(logging.INFO):
-        second = fetch_manager_details(context, full=False, as_of=as_of)
+        context.run = WindowRun("incremental", "manager filing fixture", as_of)
+        second = fetch_manager_details(context)
 
     assert first == len(before) == 5 and second == 0
     assert opened == [_Q3, _Q4], "the newest window plus the previous one; older ZIPs stay closed"
@@ -375,7 +386,8 @@ def test_amendment_only_window_keeps_the_original_and_never_moves_first_filed_da
     store.save(Tables.sec_13f_manager_details, original)
     _write_data_set(_cache(context), _Q4, [_NICHOLAS_AMENDED, _PIONEER])
 
-    changed = fetch_manager_details(context, full=False, as_of=pd.Timestamp("2023-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-12-31"))
+    changed = fetch_manager_details(context)
 
     df = _rows(store).set_index("cik")
     assert changed == 1, "only the new Pioneer row is written; the amendment-only Nicholas row is unchanged"
@@ -407,7 +419,8 @@ def test_extract_leaves_profile_columns_untouched(context: Any, store: Any) -> N
     store.save(Tables.sec_13f_manager_details, seeded)
     _write_data_set(_cache(context), _Q4, [_PIONEER])
 
-    fetch_manager_details(context, full=False, as_of=pd.Timestamp("2023-12-31"))
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-12-31"))
+    fetch_manager_details(context)
 
     row = _rows(store).iloc[0]
     assert row["manager_name"] == "PIONEER TRUST BANK N A/OR" and row["source"] == _Q4 and row["first_filed_date"] == pd.Timestamp("2023-10-30")
@@ -440,10 +453,10 @@ def test_filings_dated_before_their_period_or_without_a_name_are_dropped() -> No
         cover[column] = None
     filings = zip_manager_filings(zip_submissions(sub, cover), cover, _Q4)
 
-    rows = candidate_rows(filings, pd.Timestamp("1999-06-30"), pd.Timestamp("2023-12-31"))
+    rows = candidate_rows(filings, pd.Timestamp("2023-12-31"))
 
     assert rows.empty
-    kept = candidate_rows(filings.assign(manager_name="NAMED"), pd.Timestamp("1999-06-30"), pd.Timestamp("2023-12-31"))
+    kept = candidate_rows(filings.assign(manager_name="NAMED"), pd.Timestamp("2023-12-31"))
     assert kept["cik"].tolist() == ["0001006435"], "only the filing dated before its period end is dropped once named"
     print("\n=== SANITY CHECK: row cleaning ===")
     print("A nameless filing and a filing dated before its period end give no row; the named, well-dated one stays. Validated.")
@@ -498,7 +511,7 @@ def test_real_cached_zip_rows_equal_the_covers(filename: str) -> None:
     df_sub, df_cover = tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]
     filings = zip_manager_filings(zip_submissions(df_sub, df_cover), df_cover, filename)
 
-    rows = candidate_rows(filings, pd.Timestamp("1999-06-30"), pd.Timestamp("2026-12-31"))
+    rows = candidate_rows(filings, pd.Timestamp("2026-12-31"))
 
     submitted = zip_submissions(df_sub, df_cover)
     assert len(rows) == len(submitted.drop_duplicates(["cik", "report_period"]))
@@ -521,7 +534,7 @@ def test_real_cached_zip_rows_equal_the_covers(filename: str) -> None:
 def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
     context: Any, store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """100k old rows still lacking cover evidence neither pin the window at the first data set nor trigger a key IN-list."""
+    """A stale source frontier catches up its configured Window without loading every old manager row or issuing a large source CIK list."""
     n_old = 100_000
     old = pd.DataFrame(
         {
@@ -544,8 +557,8 @@ def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
     unbounded: list[Any] = []
 
     def _recording_load(table: Any, *args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs.get("where"))
-        if getattr(table, "name", table) == Tables.sec_13f_manager_details.name and not (kwargs.get("where") or kwargs.get("since")):
+        calls.append((table, kwargs.get("where")))
+        if getattr(table, "name", table) == Tables.sec_13f_manager_details.name and kwargs.get("where") is None and kwargs.get("since") is None:
             unbounded.append(kwargs)
         return real_load(table, *args, **kwargs)
 
@@ -553,18 +566,26 @@ def test_window_stays_bounded_with_many_old_index_rows_and_issues_no_key_list(
     opened = _spy_zip_reads(monkeypatch)
 
     with caplog.at_level(logging.INFO):
-        first = fetch_manager_details(context, full=False, as_of=as_of)
+        context.run = WindowRun("incremental", "manager filing fixture", as_of)
+        first = fetch_manager_details(context)
         opened_first = list(opened)
-        second = fetch_manager_details(context, full=False, as_of=as_of)
+        context.run = WindowRun("incremental", "manager filing fixture", as_of)
+        second = fetch_manager_details(context)
 
-    assert opened_first == [_Q3, _Q4], "the newest two data sets only, never back to the first one"
-    assert any("filings from 2023-07-01" in message for message in caplog.messages)
-    assert all(not isinstance(where, pd.DataFrame) and not (isinstance(where, dict) and "cik" in where) for where in calls), "no key list is issued"
+    assert opened_first == [_Q2, _Q3, _Q4], (
+        "the stale frontier catches up all configured cached work; latest-unit recovery cannot cap the normal Window"
+    )
+    assert any("filings from 2013-01-13" in message for message in caplog.messages)
+    assert all(not isinstance(where, dict) or "cik" not in where for table, where in calls if table == Tables.sec13f_hr), (
+        "raw source reads use the filing Window rather than an enormous manager key list"
+    )
     assert not unbounded, f"manager-table loads without a where or since bound: {unbounded}"
-    assert first == 4 and second == 0, "the second run is idempotent"
+    assert first == 5 and second == 0, "the second run is idempotent"
     print("\n=== SANITY CHECK: bounded window ===")
     print(f"{n_old} old index rows; opened {opened_first}; first run {first} row(s), second {second}")
-    print("The window starts at the second-newest data set, no key IN-list is used, a re-run writes nothing. Validated.")
+    print(
+        "Normal catch-up follows the configured Window; pending-cover recovery cannot truncate it. No large source key list; re-run writes nothing."
+    )
 
 
 def test_first_extract_write_creates_the_table_whole_without_any_alter(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -578,7 +599,8 @@ def test_first_extract_write_creates_the_table_whole_without_any_alter(tmp_path:
     monkeypatch.setattr(sqlite_store, "ensure_columns", lambda *a, **k: alters.append("ensure_columns"))
     event.listen(sqlite_store.engine, "before_cursor_execute", lambda conn, cur, stmt, *a: alters.append(stmt) if "ALTER" in stmt.upper() else None)
 
-    changed = fetch_manager_details(ctx, full=False, as_of=pd.Timestamp("2023-12-31"))
+    ctx.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-12-31"))
+    changed = fetch_manager_details(ctx)
 
     declared = [line.split('"')[1] for line in ddl.declared_statements("sec_13f_manager_details")[0].splitlines() if line.startswith('    "')]
     assert changed == 1 and alters == []
@@ -589,3 +611,37 @@ def test_first_extract_write_creates_the_table_whole_without_any_alter(tmp_path:
     print(
         f"  first extract write: {len(declared)} columns created, 32 profile and cluster columns empty, no ensure_columns / ALTER issued. Validated."
     )
+
+
+def test_manager_extraction_obeys_configured_filing_start_and_end(context: Any, store: Any) -> None:
+    _write_data_set(_cache(context), _Q4, [_PIONEER, _CAPITAL])
+    context.run = WindowRun("incremental", "finite manager filing sample", pd.Timestamp("2023-12-31"))
+    policy = context.config.data.tables[Tables.sec_13f_manager_details.name]
+    policy.start_date = "2023-10-30"
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-10-30"))
+    changed = fetch_manager_details(context)
+    rows = _rows(store)
+    assert changed == 1 and set(rows["cik"]) == {"0001006435"}
+    assert rows["first_filed_date"].eq(pd.Timestamp("2023-10-30")).all()
+    print("SANITY: a whole cached cover archive supplies context, while manager writes honor both configured filing-date bounds.")
+
+
+def test_manager_overlap_config_changes_actual_cover_repair_writes(context: Any, store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_data_set(_cache(context), _Q3, [_PIONEER_Q3, _NICHOLAS])
+    _write_data_set(_cache(context), _Q4, [_PIONEER, _CAPITAL])
+    context.run = WindowRun("incremental", "manager overlap counterfactual", pd.Timestamp("2023-12-31"))
+    assert fetch_manager_details(context) == 4
+    changed = (*_PIONEER_Q3[:5], "PIONEER TRUST BANK N A/OR UPDATED", *_PIONEER_Q3[6:])
+    _write_data_set(_cache(context), _Q3, [changed, _NICHOLAS])
+    opened = _spy_zip_reads(monkeypatch)
+    policy = context.config.data.tables[Tables.sec_13f_manager_details.name]
+    policy.overlap.days = 1
+    assert fetch_manager_details(context) == 0 and opened == [_Q4]
+    original = _rows(store)
+    assert original.loc[original["period"].eq(pd.Timestamp("2023-06-30")) & original["cik"].eq("0001006435"), "manager_name"].eq(_PIONEER_Q3[5]).all()
+    opened.clear()
+    policy.overlap.days = 120
+    assert fetch_manager_details(context) == 1 and opened == [_Q3, _Q4]
+    updated = _rows(store)
+    assert updated.loc[updated["period"].eq(pd.Timestamp("2023-06-30")) & updated["cik"].eq("0001006435"), "manager_name"].eq(changed[5]).all()
+    print("SANITY: changing the sole configured manager overlap changes parsed covers and the actual corrected row; no archive anchor overrides it.")

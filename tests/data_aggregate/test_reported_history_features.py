@@ -94,10 +94,16 @@ def test_reported_history_missing_quarter_zero_scale_and_incremental_tail() -> N
 
 
 @pytest.mark.parametrize(
-    "settings", [{"earnings_lags": 9}, {"earnings_scale_quarters": 9}, {"earnings_scale_quarters": 1}, {"persistence_quarters": 9}]
+    ("settings", "error", "match"),
+    [
+        ({"earnings_lags": 9}, TypeError, "earnings_lags"),
+        ({"earnings_scale_quarters": 9}, ValueError, "feature schema"),
+        ({"earnings_scale_quarters": 1}, ValueError, "feature schema"),
+        ({"persistence_quarters": 9}, TypeError, "persistence_quarters"),
+    ],
 )
-def test_history_windows_require_explicit_schema_and_source_migration(settings: dict[str, int]) -> None:
-    with pytest.raises(ValueError, match="feature schema"):
+def test_history_windows_require_explicit_schema_and_source_migration(settings: dict[str, int], error: type[Exception], match: str) -> None:
+    with pytest.raises(error, match=match):
         reported_history_fields(_history(), pd.bdate_range("2026-01-05", periods=3), **settings)
     print(f"\nSANITY: unsupported window {settings} is rejected before an incomplete or misleading feature is emitted.")
 

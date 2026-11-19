@@ -1254,18 +1254,93 @@ Added `ic_insider_conviction_60d/120d` (account-level max increase, clip +-10) a
 - Coverage: `sec_13f_manager_details` gains `book_return` (31 profile columns): the price return of the previous quarter's US equity positions held fixed in shares, averaged over the profile window; split names and price outliers are left out (`build_cube.manager_profile.return_price_band`, `split_share_move`, `split_value_tolerance`). The live table needs one `ALTER TABLE ... ADD COLUMN book_return DOUBLE PRECISION` before the next profile run. `n_positions` and `book_value_usd` become BIGINT (the window mean of the position count and the median book value, rounded to whole numbers; the live columns need `ALTER TABLE sec_13f_manager_details ALTER COLUMN n_positions TYPE BIGINT USING round(n_positions), ALTER COLUMN book_value_usd TYPE BIGINT USING round(book_value_usd)`). The manager profile also casts raw 13F numeric columns to float (a Decimal-typed quarter broke the next quarter's turnover).
 - Pages: [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data aggregate](./modules/data-aggregate.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md).
 
-
-## 2026-11-18: refresh — cluster-based 13F features
-
-- Profile: internal/standard
-- source_commit: a95554f7 (branch `harness/cluster-13f-features`)
-- Coverage: the broad institutional and elite superinvestor 13F features of `StepCubeSecThirteen` (36 columns) are replaced by 80 per-cluster columns `f_ic_cluster_<id>_<feature>` in `cube_part_sec_thirteen`; `sec_13f_manager_details` gains `cluster` (42 columns), written by `build-cluster` (`StepManagerProfile.run_clustering`; `build-manager-profile` now runs `run_profile`); `configs/cluster.yml` and `configs/cluster_centroids.json` (`fit` true refits, false only labels); the standalone `ClusterTransformer`, with the `data_aggregate` to `modelling` import recorded as a coding-standards exception and `src/modelling/transformers/__init__.py` emptied in favour of the `families.py` registry; the DAG gains `build_cluster` after `build_manager_profile` beside `build_momentum`; the three model pools carry the 80 names; the aggregate fingerprint baseline lost its three 13F outputs. The Dataroma extraction pages are unchanged.
-- Dead config left for a later cleanup: `configs/superinvestors/ranked_managers.json`, the `build_cube.institutionals.superinvestor` block and `decay_halflife` (see [TODO](./TODO.md#cluster-13f-follow-ups-2026-11-18)).
-- Pages: [Overview](./OVERVIEW.md), [System overview](./architecture/system-overview.md), [Cube aggregation](./modules/data-aggregate.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Constants and configuration](./modules/constants-and-configuration.md), [Runtime and shared utilities](./modules/runtime-and-shared-utils.md), [Cube build](./flows/cube-build.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Cube parts](./concepts/cube-parts.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md), [Data access](./guides/data-access.md), [Testing and validation](./guides/testing.md), [Coding standards](./guides/coding-standards.md), [Add a model or sleeve](./guides/add-a-model-or-sleeve.md), [TODO](./TODO.md).
-
-## 2026-11-18: refresh — cluster label ids, rolled deadline, split rule
+## 2026-11-16: refresh (configuration ownership, implementation P2)
 
 - Profile: internal/standard
-- source_commit: f7437e65 (branch `harness/cluster-13f-features`)
-- Coverage: `sec_13f_manager_details.cluster` is BIGINT and every labelled row has an id from the `cluster.labels` registry of `configs/cluster.yml`: -2 not_computable, -1 below_size_floor (4 positions and 20,000,000, every category), 0 to 6 the kept fund clusters (by fit size, named from the saved centroids), 7 to 10 bank, insurance, broker_dealer, pension, 11 and 12 the ETF-dropped fund clusters (by centroid `pct_etf`), 13 the foreign-dropped fund cluster, 14 sovereign, 15 other; only 0 to 10 build the 80 unchanged feature columns and the cube step reads only their members. `turnover` is an optional clustering feature (nearest centroid on the other nine when null; -2 only for a missing required feature). The old meaning of `-1` (dropped ETF/foreign cluster, sovereign, other, null feature) is gone from every page. The books cut their lines at the rolled 45-day deadline (`filing_deadlines`) and the split factor needs the median holder ratio beyond 1.3x with at least 5 holders and 20% within 5%. `SEC_13F_FILING_LAG_DAYS` moved to `src/utils/institutional_vintages.py`. Live refit of 2026-11-18: 403,371 rows labelled, recomputation 0 mismatches; the nightly `build_sec_thirteen` stops until the user's `build-sec-thirteen -F`.
-- Pages: [Cube aggregation](./modules/data-aggregate.md), [Constants and configuration](./modules/constants-and-configuration.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Live database](./reference/live-database.md), [Run the pipeline](./guides/run-the-pipeline.md), [Testing and validation](./guides/testing.md), [TODO](./TODO.md).
+- source_commit: c82132b6 (was39b261e8; P2 working-tree changes documented alongside implementation)
+- Coverage: deterministic config loading, stage filenames, preserved path/model/JSON ownership, fixed repair thresholds and financial schemas, operative earnings-call lifetime with independent validation expectation. Operational date/PIT policy migration remains in subsequent phases.
+- Pages: [Configuration](./reference/configuration.md), [Constants and configuration](./modules/constants-and-configuration.md), and affected stage/guide links.
+
+## 2026-11-17 — Central table timing policies and extraction windows
+
+The configuration refactor moves source dates, reprocessing amounts, publication buffers and freshness rules into [data.yml](../configs/data.yml). The [structural table registry](../src/data_store/schema.py) retains table identity, columns and Resume contracts. Extraction uses one Context run anchor and shared [Window policies](../src/utils/data_policy.py), including finite ends for source/index/archive work and causal prefixes for histories and identity evidence. Unknown or contradictory timing fields fail configuration validation before source effects.
+
+Focused policy checks pass44 cases; the specified planner suite passes50 with9 live-data skips. Added direct notes sub-run checks prove excluded source units never reach download or clock I/O; bounded employee validation also passes. These checks cover extraction timing plumbing. Archive completion/paid-cache behavior, all cube PIT/write integration and independent final acceptance/refactor remain in the active harness plan; this entry is not a completed pipeline certificate. The approved latest merged pipeline includes64 registered table policies and18 manual JSON files. Models and artifacts are outside this refactor's validation scope.
+
+## 2026-11-17 — Cube timing integration and calculation-preservation decisions
+
+Cube builders now share the configured [Window planner](../src/data_aggregate/utils/common/incremental.py), root execution mode and finite write bounds; assembly consumes actual selected component write boundaries. The [configuration guide](./reference/configuration.md#cube-timing-and-recovery) describes overlap, warm-up, publication and explicit historical recovery. Text retains its market-clock/call-history calculation with a bounded dense price-availability grid. [Coding standards](./guides/coding-standards.md) assigns configurable table timing to data.yml rather than schema.py.
+
+The user explicitly retains governance fills from later filings and the existing pooled13F unit/value repair. Their algorithms remain unchanged. These retrospective attributes/repair evidence are declared exceptions to strict contributing-evidence PIT; destination filing buffers and scoped writes still apply. Implementation P5 and independent final validation remain in progress. Models and artifacts are excluded from validation; no production data rebuild has run.
+
+## 2026-11-17: refresh — extraction runbook correction (F-002)
+
+- Profile: internal/standard
+- source_commit: pending integrated F-003/F-002 candidate (base bd4014f4; subset compatibility follows approved 10135865 behavior).
+- Coverage: fixed configured source bounds, missing/failed indexed 13F accessions with nightly ZIP fallback, 30-calendar-day short-volume correction overlap, and current extraction CLI flags. Documentation checks only; no production fetch or backfill ran.
+- Pages: [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — FTD and employee reuse guidance (F-002 follow-up)
+
+- Profile: internal/standard
+- source_commit: 133b75c6 (FTD and employee source unchanged from bd4014f4).
+- Coverage: FTD catch-up within selected missing/incomplete archive units, explicit bounded replay of completed units, and employee filing-date decision reuse in every mode with failed-call retry. Documentation checks only; no recovery or LLM call ran.
+- Pages: [Run the pipeline](./guides/run-the-pipeline.md).
+
+## 2026-11-17: refresh — explicit bounded timing replay
+
+- Profile: internal/standard
+- source_commit: af9cda4c7daa2c94e7c5c09675d8452174252b02.
+- Coverage: [permanent direct runner](../tests/support/run_window_samples.py), shared scalar/session setup, explicit selected-source replay, independent publication/plan checks and disposable writes. The lightweight pytest fixture no longer imports every producer. FTD evidence retains actual publication periods and the true prior ZIP seed, including null barriers; economic histories remain intact.
+- Evidence:19 focused protocol/known-truth controls passed with zero external tripwire attempts. The complete final per-table run and independent final review remain pending. No production data rebuild, inference or predictive-model validation ran.
+- Pages: [Testing and validation](./guides/testing.md).
+
+## 2026-11-17: refresh — exact execution cutoff in assembly receipts
+
+- Profile: internal/standard
+- source_commit: 35161d2e8590b0fca321cb61697144b68bfdd2d6.
+- Coverage: [configuration guidance](./reference/configuration.md#cube-timing-and-recovery) now requires the same original execution instant across separate part and assembly tasks. Older day-only receipts must be regenerated; legitimate cold-component initial mode within an incremental root run remains supported.
+- Evidence: five baseline failures reproduced the cutoff/legacy issues; all15 focused checks passed after correction, with zero external tripwire attempts. No production receipt migration, data rebuild or model validation ran. Integrated independent validation remains pending.
+
+## 2026-11-18: refresh — configuration timing and bounded-write guidance
+
+- Profile: internal/standard
+- source_commit: 84fa2c322adfaa4124eb5123bea38750f7ea3d7a (previous overview anchor c82132b6add9ac3fe3b44fb7320e02579e4b82dd).
+- Coverage: complete the refactor's timing/configuration guidance: shared Context/Window API, data.yml ownership, configured warm-up versus registry validation, explicit historical/schema recovery, atomic bounded writes,100-day13F and30-day institutional rewrites,7-day text features,180-day call acquisition and separate cached NLP work. Manager-details eligibility uses its configured filing+2-day market-session rule; the raw filing date is preserved. The archive downloader's file inventory is distinguished from database ingestion progress. Retrospective governance fills and pooled13F repair remain the user's preserved exceptions.
+- Pages: [Overview](./OVERVIEW.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [Data aggregate](./modules/data-aggregate.md), [Cube build](./flows/cube-build.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md).
+- Evidence: the reviewed source integration includes14 focused snapshot/projection controls and16 strict13F-config/cohort controls, with zero live-guard attempts and clean source/new-test type checks. Seven native sample parts have accepted evidence with actual execution attribution. Fresh13F/fundamentals, native assembly and the final combined read-only sample are still pending at this checkpoint. No production backfill, provider call, inference or predictive-model validation ran.
+
+## 2026-11-18: refresh — accepted configuration refactor integrated into dev
+
+- Profile: internal/standard.
+- source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733 (previous overview anchor84fa2c322adfaa4124eb5123bea38750f7ea3d7a).
+- Integration parents: `f06e3781ccb5756a0a1406895182de37329e282b` and `5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1`. The merge preserves the newer manager-profile `book_return`, Decimal normalization and BIGINT statistics; the return/split settings now live in `data_aggregate.manager_profile`.
+- Coverage: table timing and shared Window ownership, stage YAML names, PIT/market-session rolls, source versus feature work, call-date +3 days, archive/FTD clocks,41-column manager details and preserved retrospective governance/13F calculations. Historical entries remain dated evidence; this is not a new database census.
+- Evidence at refactor candidate `5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1`:54 source samples PASS/5 ABSTAIN,16 PIT routes PASS,10 planners PASS, seven native producer pairs PASS and qualified native assembly PASS (1080 rows/425 physical columns). Complete fundamentals/13F pair comparisons remain UNPROVEN. The independent code review is CLEAR. The user accepted these limits, stopped remaining rechecks and requested the merge. No additional data/model recheck or production rebuild was run for integration.
+- Pages: [OVERVIEW](./OVERVIEW.md), [peer-relative-features](./concepts/peer-relative-features.md), [source-availability](./concepts/source-availability.md), [cube-build](./flows/cube-build.md), [sec-llm-extraction](./flows/sec-llm-extraction.md), [add-a-cube-feature](./guides/add-a-cube-feature.md), [coding-standards](./guides/coding-standards.md), [data-access](./guides/data-access.md), [run-the-pipeline](./guides/run-the-pipeline.md), [testing](./guides/testing.md), [constants-and-configuration](./modules/constants-and-configuration.md), [data-aggregate](./modules/data-aggregate.md), [data-peers](./modules/data-peers.md), [modelling](./modules/modelling.md), [portfolio](./modules/portfolio.md), [configuration](./reference/configuration.md), [data-sources](./reference/data-sources.md), [modelling-and-portfolio](./reference/modelling-and-portfolio.md), [table-catalog](./reference/table-catalog.md).
+
+## 2026-11-18: refresh — simplified data policy
+
+- Profile: internal/standard
+- source_commit: 0db82180f423ccb08943d58a9541971ec193a459
+- Coverage: [configuration](./reference/configuration.md), [table catalog](./reference/table-catalog.md), [data sources](./reference/data-sources.md), [data access](./guides/data-access.md), [run guide](./guides/run-the-pipeline.md), extraction/aggregation/DAG modules, publication/availability concepts and nightly/prediction flows.
+- Timing: one source start/overlap/PIT format, explicit calendar-day input maps, price-derived cube dates and retained mathematical/completeness rules. Removed obsolete operational freshness guidance; documented the approved13F streaming exception and retrospective calculation limits.
+- Authoring: OpenKnowledge edits were used first. After repeated acknowledgements failed to persist, the user explicitly approved normal-file writes for these wiki corrections. No skill/instruction file was changed. Link checks previously selected links only; final saved-file checks are recorded in the harness run.
+
+## 2026-11-18: refresh — final simplified data-policy contract
+
+- Profile: refresh. Source commit: `39c94c0dd62dcb4730a2bbc77f437f5a6fdabfcf`.
+
+- Scope: completed the 47-policy format, explicit calendar-day input history, one publication entry point, price-derived output dates and bounded atomic writes. Removed obsolete freshness readers and retained existing financial/completeness rules.
+- Corrections: full Schedule 13D/13G identity history is explicit and finite alternatives fail before payload reads; FTD basis dependencies are declared; native SQL dates are normalized before short-volume joins; macro target factors consume the configured lag. Insider operational completeness survives weekends and holidays without publishing future transactions.
+- Evidence: the combined focused acceptance passed 44 checks, including four read-only comparisons with the original five-key source baseline. The final completeness fix passed 15 focused cases, including actual SQLite quiet-window writes. Batches overlap and are not summed. The final integrated rerun, independent reviews and precise provenance are recorded in the configuration-simplification harness report.
+- Limits: this closes the user-approved focused refactor scope. It does not certify full final all-cube financial parity; the missing price-owner baseline and accepted retrospective governance/13F calculations remain documented. Existing uncommitted local edits are retained during integration.
+
+## 2026-11-18: refresh — cluster-based 13F features, merged with the simplified data policy
+
+- Profile: internal/standard
+- source_commit: branch `harness/cluster-13f-features`, merge of `dev` 0bc34906 (the cluster work is f06e3781..96477615).
+- Coverage: the broad institutional and elite superinvestor 13F features of `StepCubeSecThirteen` (36 columns) are replaced by 80 per-cluster columns `f_ic_cluster_<id>_<feature>` in `cube_part_sec_thirteen`; `sec_13f_manager_details` gains `cluster` (BIGINT, 42 columns), written by `build-cluster` (`StepManagerProfile.run_clustering`; `build-manager-profile` runs `run_profile`); every labelled row has an id from the `cluster.labels` registry of `configs/cluster.yml` (-2 not_computable, -1 below_size_floor of 4 positions and 20,000,000 for every category, 0 to 6 kept fund clusters, 7 to 10 bank, insurance, broker_dealer, pension, 11 to 13 the dropped ETF and foreign fund clusters, 14 sovereign, 15 other; only 0 to 10 build the features); `turnover` is an optional clustering feature. `configs/cluster.yml` and `configs/cluster_centroids.json` (`fit` true refits, false only labels); the standalone `ClusterTransformer` with the `data_aggregate` to `modelling` import recorded as a coding-standards exception; the DAG gains `build_cluster` after `build_manager_profile` beside `build_momentum`; the three model pools carry the 80 names; the aggregate fingerprint baseline lost its three 13F outputs.
+- Timing under the simplified data policy: the cluster part follows [data.yml](../configs/data.yml). A quarter is published on its rolled 45-day filing deadline plus `data.tables.sec13f_hr.pit.lag_days` (kept at 7 days, so `t + 52`; dev had 2), the nightly rewrite is `data.tables.cube_part_sec_thirteen.overlap` (100 calendar days, saved rows re-emitted as saved) and every `warmup` input (prices, `sec13f_hr`, manager details, CUSIP identity, Sharadar tickers) is read in full. `cluster.yml` lost `history_start` and `availability_buffer_days`; `SEC_13F_FILING_LAG_DAYS` and `F13_SETTLE_TRADING_DAYS` no longer exist (the 45-day deadline is `FILING_DEADLINE_DAYS` in `cluster_panel.py`). Dev's window-lineage route for the retired book families on `sec13f_hr` was removed.
+- Dead config left for a later cleanup: `configs/superinvestors/ranked_managers.json`, the `data_aggregate.sec_thirteen.superinvestor` block (see [TODO](./TODO.md#cluster-13f-follow-ups-2026-11-18)).
+- Pages: [Cube aggregation](./modules/data-aggregate.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Constants and configuration](./modules/constants-and-configuration.md), [Cube build](./flows/cube-build.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md).

@@ -99,7 +99,7 @@ def compute_epsilon(
 
     ⚠ That exactness does NOT survive the second transform `_neutral_label` applies after the
     projection. Measured: 0.00006 for `zscore` and 0.00182 for `rank` -- the label
-    `configs/modellling.yml` actually trains on -- because the rank re-percentiling (and the
+    `configs/modelling.yml` actually trains on -- because the rank re-percentiling (and the
     +-3 zscore clip) are non-linear and do not preserve a zero mean. The residue is ~1/50th of
     what the projection removes and the ordering is deliberate despite it; see `_neutral_label`
     for why projecting the TRANSFORMED label rather than epsilon is worth that cost.
@@ -248,9 +248,7 @@ def _neutralizing_design(
     # `reindex_like` AFTER this fill -- so an unaligned exposure would reach `np.linalg.lstsq`
     # carrying NaN and raise. This reindex is what makes the later one harmless.
     active = close_total.notna()
-    exposures = [
-        xs_z(f.where(active), clip=Z_CLIP, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None
-    ]
+    exposures = [xs_z(f.where(active), clip=Z_CLIP, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None]
 
     # industry_group is NESTED in sector, so industry indicators span both levels; fall back to
     # sector when only that level is supplied.

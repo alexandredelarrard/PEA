@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, plan_fetch
 from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     FILING_SECTION_BUSINESS,
@@ -27,6 +28,7 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import (
     save_filing_text,
 )
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_context, identity_for, seed_index
 
 
@@ -331,7 +333,7 @@ def test_a_filing_is_done_once_every_expected_section_has_a_row(sqlite_store):
     sqlite_store.save(table, _stored("q-legacy", "10-Q", {"_empty": None}))
     context = SimpleNamespace(store=sqlite_store)
 
-    done = filing_text_done(context, ["AAPL", "MSFT"], None)  # type: ignore[arg-type]
+    done = filing_text_done(context, ["AAPL", "MSFT"])  # type: ignore[arg-type]
 
     assert done == {"AAPL": {"k-full", "k-amend", "q-full"}, "MSFT": set()}, done
     print("\n=== SANITY CHECK: filing-text done rule ===")
@@ -352,7 +354,7 @@ def test_a_re_read_adds_the_missing_section_and_never_blanks_stored_text(sqlite_
     assert not failed and counts == {table: 1}, counts
     assert rows.loc["mda", "text"].startswith("stored mda") and rows.loc["risk_factors", "text"].startswith("stored risk")
     assert rows.loc["business", "text"].startswith("new business")
-    assert filing_text_done(context, ["AAPL"], None) == {"AAPL": {"k-old"}}  # type: ignore[arg-type]
+    assert filing_text_done(context, ["AAPL"]) == {"AAPL": {"k-old"}}  # type: ignore[arg-type]
     print("\n=== SANITY CHECK: re-read save ===")
     print("  1 row saved (business); the empty re-read mda/risk rows dropped, stored text kept; k-old now done. Validated.")
 
@@ -367,7 +369,7 @@ def test_a_null_or_mixed_form_still_counts_the_accession_done(sqlite_store):
     sqlite_store.save(table, _stored("k-short", "10-K", {"business": None, "mda": _pad("m")}).assign(form=["10-K", None]))
     sqlite_store.save(table, _stored("q-null", "10-Q", {"mda": _pad("m")}).assign(form=None))
 
-    done = filing_text_done(SimpleNamespace(store=sqlite_store), ["AAPL"], None)  # type: ignore[arg-type]
+    done = filing_text_done(SimpleNamespace(store=sqlite_store), ["AAPL"])  # type: ignore[arg-type]
 
     assert done == {"AAPL": {"k-mixed", "q-null"}}, done
     print("\n=== SANITY CHECK: NULL / mixed form ===")
@@ -405,7 +407,8 @@ def test_the_planner_lists_only_filings_missing_an_expected_section_and_full_lis
     cik_map = pd.DataFrame({"ticker": ["AAPL"], "cik": ["0000320193"]})
 
     def plan(full: bool) -> list[str]:
-        run = EdgarRun(["AAPL"], cik_map, identity_for(_AAPL), pd.Timestamp("2025-03-01"), 5, full=full)
+        ctx.run = WindowRun(("full" if full else "incremental"), "offline explicit filing scope", pd.Timestamp("2025-03-01"))
+        run = EdgarRun(["AAPL"], cik_map, identity_for(_AAPL), ctx.run, None, edgar_driver.RetryRounds.from_config(ctx.config))
         work = plan_fetch(ctx, FILING_TEXT_FETCH, run)
         return sorted(work.units["AAPL"]["accession"]) if "AAPL" in work.units else []
 

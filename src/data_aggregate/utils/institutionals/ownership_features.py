@@ -4,7 +4,7 @@ Each feature counts the filings (one per `(ticker, accession_number)`, initial f
 the ticker over the trailing `COUNT_WINDOW` trading days. Only fields present in every era are used, so the count
 means the same thing across the whole history: no `date_of_event` (structured filings only). The tables key a filing
 by the ticker's CIK whether the ticker is its subject or its filer, so `_subject_side` drops the filings the ticker's
-own entity filed about others (an approximation for markers: their only evidence is the accession prefix). A filing counts from its publication session: its filing date plus `SOURCE_AVAILABILITY_BUFFER_DAYS`, rolled to the first session on or after it.
+own entity filed about others (an approximation for markers: their only evidence is the accession prefix). A filing counts from its publication session: its configured source-publication date, rolled to the first session on or after it.
 
 The filing volume itself is not stationary (13G holders multiply through 2016, the 2024 SEC rule change cuts routine
 amendments), so each count is standardised across the universe on every date and clipped at `COUNT_CLIP`: the feature
@@ -14,19 +14,20 @@ window is a count of 0 before standardising; an uncovered cell is NaN and sits o
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 
-from src.constants.constants import SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import xs_z
-from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Table, Tables
+from src.utils.publication import point_in_time
 
 #: Trailing window in trading days (about six calendar months).
 COUNT_WINDOW = 126
@@ -51,6 +52,15 @@ EMISSION: dict[str, str] = {
     "ic_act_13d_count_126d_z": "raw",
     "ic_bo_13g_count_126d_z": "raw",
 }
+
+
+@dataclass(frozen=True)
+class ScheduleSource:
+    """One schedule's raw filings and independently observed completeness frontier."""
+
+    table: Table
+    filings: pd.DataFrame | None
+    complete_through: pd.Timestamp | None = None
 
 
 @dataclass(frozen=True)
@@ -128,9 +138,10 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
     return pd.Series(kept.reindex(keys([ticker, accession])).to_numpy(), index=df_filings.index)
 
 
-def _visible_day(day: pd.Timestamp, table: Table, idx: pd.DatetimeIndex) -> pd.Timestamp:
-    """The session from which a filing-day-stamped `day` of `table` is usable."""
-    return publication_day(pd.Series([pd.Timestamp(day).normalize()]), SOURCE_AVAILABILITY_BUFFER_DAYS[table.name], idx).iloc[0]
+def _visible_day(day: pd.Timestamp, table: Table, idx: pd.DatetimeIndex, config: DictConfig) -> pd.Timestamp:
+    """The actual retained publication session of a source date."""
+    ready = point_in_time(pd.DataFrame({"filing_date": [day]}), config, table, idx)
+    return pd.NaT if ready.empty else ready["as_of"].iloc[0]
 
 
 def _filing_counts(df_filings: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
@@ -163,39 +174,46 @@ def _coverage_mask(
 
 def build_ownership_feature_panel(
     frames: PriceFrames,
-    sec_13d: pd.DataFrame | None,
-    sec_13g: pd.DataFrame | None,
+    schedules: Sequence[ScheduleSource],
+    config: DictConfig,
     *,
     availability: InstitutionalAvailability | None = None,
     identity: SubjectIdentity | None = None,
-    complete_through_13d: pd.Timestamp | None = None,
-    complete_through_13g: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Point-in-time 13D and 13G filing counts per ticker, masked by each schedule's source coverage."""
+    """Point-in-time schedule filing counts, masked by each source's coverage."""
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     columns = pd.Index(frames.universe, name="ticker")
-    schedules: tuple[tuple[str, pd.DataFrame | None, Table, pd.Timestamp | None], ...] = (
-        ("ic_act_13d_count_126d_z", sec_13d, Tables.sec_13d, complete_through_13d),
-        ("ic_bo_13g_count_126d_z", sec_13g, Tables.sec_13g, complete_through_13g),
-    )
+    if idx.empty:
+        return _empty_panel()
+    names = {Tables.sec_13d: "ic_act_13d_count_126d_z", Tables.sec_13g: "ic_bo_13g_count_126d_z"}
 
     # Count each usable schedule's filings, one leg per schedule.
     fields: dict[str, pd.DataFrame] = {}
-    for name, df_schedule, table, complete_through in schedules:
+    for source in schedules:
+        table, df_schedule, complete_through = source.table, source.filings, source.complete_through
+        name = names[table]
         if _absent(df_schedule, {"ticker", "accession_number", "filing_date"}) or df_schedule is None:
             continue
-        df_filings = _filings(df_schedule, identity)
+        df_ready = point_in_time(df_schedule, config, table, idx)
+        df_filings = _filings(df_ready, identity)
         if df_filings.empty:
             continue
 
-        # Everything downstream reads the publication session of a filing, not its filing date.
-        df_filings["filing_date"] = publication_day(df_filings["filing_date"], SOURCE_AVAILABILITY_BUFFER_DAYS[table.name], idx)
+        # Preserve dated identity filtering, then count only from the prepared source session.
+        public = df_ready.groupby(["ticker", "accession_number"], as_index=False)["as_of"].min()
+        df_filings = df_filings.drop(columns="filing_date").merge(public, on=["ticker", "accession_number"], validate="one_to_one")
+        df_filings["filing_date"] = df_filings.pop("as_of")
         df_counts = _filing_counts(df_filings, idx, columns)
 
         # Outside the proven source coverage an absent filing is unknown, not zero.
         if complete_through is not None and pd.notna(complete_through):
-            source_start = _visible_day(availability.source_date(table), table, idx) if availability is not None else df_filings["filing_date"].min()
-            df_counts = df_counts.where(_coverage_mask(frames, idx, columns, pd.Timestamp(source_start), _visible_day(complete_through, table, idx)))
+            source_start = (
+                _visible_day(availability.source_date(table), table, idx, config) if availability is not None else df_filings["filing_date"].min()
+            )
+            frontier = _visible_day(complete_through, table, idx, config)
+            # A known complete prefix beyond the output calendar covers its last session.
+            frontier = idx[-1] if pd.isna(frontier) else frontier
+            df_counts = df_counts.where(_coverage_mask(frames, idx, columns, pd.Timestamp(source_start), frontier))
 
         # Standardise across the universe each date so regime changes in filing volume cancel.
         fields[name] = xs_z(df_counts, clip=COUNT_CLIP, zero_sd_to_nan=True)

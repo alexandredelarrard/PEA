@@ -13,17 +13,18 @@ import types
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from omegaconf import OmegaConf
 
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
+from src.utils.window import Window, WindowRun
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import as_roster, seed_universe, universe_in
 
 #: The universe the stored rows of these tests belong to (GOOG is an alias class, never a universe ticker).
@@ -40,7 +41,6 @@ _SCHEMA = pa.schema(
         ("transcripts", pa.list_(_PARAGRAPH)),
     ]
 )
-_CFG = OmegaConf.create({"read_workers": 2})
 
 
 def _call(symbol: str, year: int, quarter: int, date: str, tid: int | None, n: int, tag: str = "v1") -> dict[str, Any]:
@@ -86,7 +86,12 @@ def _ctx(tmp_path: Path, store: Any) -> Any:
     if not store.exists(Tables.universe_tickers):
         seed_universe(store, UNIVERSE)
     return _Context(
-        store=store, log=logging.getLogger("test_earnings_call_transcripts"), paths={"DATA_STORE": tmp_path}, _identity_resolver=_identity()
+        store=store,
+        log=logging.getLogger("test_earnings_call_transcripts"),
+        paths={"DATA_STORE": tmp_path},
+        _identity_resolver=_identity(),
+        config=extract_config(data_extract={"earnings_calls": {"read_workers": 2}}),
+        run=WindowRun("incremental", "recorded call source check", pd.Timestamp("2026-11-16")),
     )
 
 
@@ -185,12 +190,13 @@ def _broadcom_intro(tid: int | None = 72543, quarter: int = 4) -> dict[str, Any]
 def test_intro_recovers_raw_gap_and_repeats_without_writes(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _recovery_context(tmp_path, sqlite_store)
     source = _source(_write(tmp_path / "intro.parquet", [[_broadcom_intro()]]), "intro")[0]
-    first = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
+    first = ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=source)
     assert first.calls_new == 1 and first.rows_written == 2
     rows = _sections(sqlite_store)
     assert set(rows["quarter"]) == {"2005Q4"} and set(rows["as_of"].astype(str)) == {"2006-01-31"}
     for full in (False, True, True):
-        assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=full, source=source).rows_written == 0
+        ctx.run = WindowRun("full" if full else "incremental", "explicit call reconciliation", ctx.run.instant)
+        assert ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=source).rows_written == 0
     print("SANITY: an early-name-proven raw gap recovers at its source date; ordinary/full repeats preserve it with zero writes.")
 
 
@@ -205,7 +211,7 @@ def test_normal_provider_call_wins_before_it_is_stored(tmp_path: Path, sqlite_st
     normal = _call("AVGO", 2005, 4, "2016-02-01", 9, 3, "canonical")
     fallback = {**_broadcom_intro(), "report_date": fallback_date}
     source = _source(_write(tmp_path / "priority.parquet", [[fallback, normal]]), "priority")[0]
-    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
+    result = ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=source)
     assert result.calls_new == 1 and set(_sections(sqlite_store)["transcript_id"]) == {9}
     print("SANITY: complete provider canonical occupancy blocks raw recovery even before the normal winner has been downloaded.")
 
@@ -213,7 +219,7 @@ def test_normal_provider_call_wins_before_it_is_stored(tmp_path: Path, sqlite_st
 def test_null_id_replacement_compares_content_after_old_source_disappears(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _recovery_context(tmp_path, sqlite_store)
     first = _source(_write(tmp_path / "recovered.parquet", [[_broadcom_intro(None)]]), "recovered")[0]
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=first)
+    ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=first)
     _seed_derivatives(sqlite_store, [("AVGO", "2005Q4", "2006-01-31")])
     # Normal ownership becomes available; the former rejected row is gone, with no ID/date signal.
     entity = ctx._identity_resolver.universe_entity("AVGO")
@@ -230,12 +236,14 @@ def test_null_id_replacement_compares_content_after_old_source_disappears(tmp_pa
         return read(reader, group, columns)
 
     monkeypatch.setattr(ect._Readers, "read", spy)
-    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
+    ctx.run = WindowRun("full", "explicit historical null-ID correction", ctx.run.instant)
+    result = ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=source)
     assert result.calls_reissued == 1 and result.rows_written == 3 and reads == {0: 2}
     assert _sections(sqlite_store)["content"].str.contains("normal replacement").all()
     assert sqlite_store.load(Tables.earnings_call_sentiment, optional=True) is None
     reads.clear()
-    assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=True, source=source).rows_written == 0
+    ctx.run = WindowRun("full", "explicit call reconciliation", ctx.run.instant)
+    assert ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=source).rows_written == 0
     assert reads == {0: 1}
     print(
         "SANITY: null/null same-date replacement is detected after former fallback disappears; 2 reads replace, 1 read verifies unchanged, caches invalidate."
@@ -248,7 +256,7 @@ def test_verification_failure_aborts_full_before_deletion(
 ) -> None:
     ctx = _recovery_context(tmp_path, sqlite_store)
     first = [_broadcom_intro(None), _call("AVGO", 2020, 1, "2020-04-21", 7, 2), _call("AVGO", 2020, 2, "2020-07-21", 8, 2)]
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=_source(_write(tmp_path / "first.parquet", [first]), "first")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=_source(_write(tmp_path / "first.parquet", [first]), "first")[0])
     before = _sections(sqlite_store)
     # A valid normal call remains, so existing vanished-ticker protection alone would not help.
     second = [first[0], first[2]] if comparison else [_broadcom_intro(9, quarter=3), first[2]]
@@ -262,7 +270,8 @@ def test_verification_failure_aborts_full_before_deletion(
 
     monkeypatch.setattr(ect._Readers, "read", fail)
     with pytest.raises(OSError, match="verification unavailable"):
-        ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=True, source=source)
+        ctx.run = WindowRun("full", "explicit call reconciliation", ctx.run.instant)
+        ect.extract_earnings_calls(ctx, tickers=["AVGO"], source=source)
     pd.testing.assert_frame_equal(before, _sections(sqlite_store))
     print(f"SANITY: failed {'null-ID comparison' if comparison else 'intro verification'} leaves all old raw rows untouched before full deletion.")
 
@@ -279,16 +288,16 @@ def test_ambiguous_master_target_is_not_resolved_by_name_or_subset(tmp_path: Pat
         windows_by_entity={**identity.windows_by_entity, "OTHER": (CikWindow(other.cik, None, None, None, None),)},
     )
     result = ect.extract_earnings_calls(
-        ctx, _CFG, tickers=["AVGO"], source=_source(_write(tmp_path / "ambiguous.parquet", [[_broadcom_intro()]]), "ambiguous")[0]
+        ctx, tickers=["AVGO"], source=_source(_write(tmp_path / "ambiguous.parquet", [[_broadcom_intro()]]), "ambiguous")[0]
     )
     assert result.rows_written == 0
     print("SANITY: a matching name and single-ticker scope cannot resolve multiple full-master targets.")
 
 
-def test_symbol_lineage_recovers_old_calls_on_ordinary_resume(tmp_path: Path, sqlite_store: Any) -> None:
+def test_symbol_lineage_recovers_old_calls_on_explicit_historical_recovery(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     current = [_call("ECHO", 2026, 1, "2026-08-03", 101, 2), _call("BNY", 2026, 1, "2026-07-15", 201, 2)]
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["ECHO", "BNY"], source=_source(_write(tmp_path / "current.parquet", [current]), "short")[0])
+    ect.extract_earnings_calls(ctx, tickers=["ECHO", "BNY"], source=_source(_write(tmp_path / "current.parquet", [current]), "short")[0])
     groups = [
         [_call("BK", 2008, 1, "2008-04-20", 11, 2)],
         [_call("SATS", 2009, 1, "2009-05-13", 21, 2)],
@@ -296,12 +305,13 @@ def test_symbol_lineage_recovers_old_calls_on_ordinary_resume(tmp_path: Path, sq
         [_call("ECHO", 2007, 1, "2007-05-13", 1, 2)],
     ]
     source = _source(_write(tmp_path / "history.parquet", groups), "history")[0]
-    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["ECHO", "BNY"], source=source)
+    ctx.run = WindowRun("full", "explicit old symbol recovery", ctx.run.instant)
+    result = ect.extract_earnings_calls(ctx, tickers=["ECHO", "BNY"], source=source)
     rows = _sections(sqlite_store)
     assert result.calls_new == 2 and set(rows["ticker"]) == {"ECHO", "BNY"}
     assert rows.groupby("ticker")["quarter"].nunique().to_dict() == {"BNY": 2, "ECHO": 2}
-    assert ect.extract_earnings_calls(ctx, _CFG, tickers=["ECHO", "BNY"], source=source).rows_written == 0
-    print("SANITY: ordinary resume recovers old BK/SATS, rejects foreign ECHO and repeats with zero writes.")
+    assert ect.extract_earnings_calls(ctx, tickers=["ECHO", "BNY"], source=source).rows_written == 0
+    print("SANITY: explicit bounded historical recovery restores old BK/SATS, rejects foreign ECHO and repeats with zero writes.")
 
 
 def test_alias_overlap_deduplicates_after_mapping_and_rejects_secondary_class() -> None:
@@ -314,9 +324,13 @@ def test_alias_overlap_deduplicates_after_mapping_and_rejects_secondary_class() 
         _call("BFA", 2026, 1, "2026-04-16", 9, 1),
     ]
     index = pd.DataFrame(rows).assign(row_group=0, row=range(len(rows)))
-    calls = ect.calls_from_index(index, {"ECHO", "BNY", "BF-B"}, _identity())[0]
+    calls = ect.calls_from_index(
+        index, dict.fromkeys({"ECHO", "BNY", "BF-B"}, Window(pd.Timestamp("2005-01-01"), pd.Timestamp("2026-11-16"))), _identity()
+    )[0]
     assert calls.set_index("ticker")["transcript_id"].to_dict() == {"BNY": 3258718, "ECHO": 3278590}
-    assert ect.calls_from_index(index, {"ECHO"}, _identity())[0].to_dict("records") == calls.query("ticker == 'ECHO'").to_dict("records")
+    assert ect.calls_from_index(index, dict.fromkeys({"ECHO"}, Window(pd.Timestamp("2005-01-01"), pd.Timestamp("2026-11-16"))), _identity())[
+        0
+    ].to_dict("records") == calls.query("ticker == 'ECHO'").to_dict("records")
     print("SANITY: rebased overlaps keep the non-null ID once; scope and sibling classes cannot change ownership.")
 
 
@@ -460,7 +474,7 @@ def test_first_run_writes_raw_paragraphs_with_repo_ticker_and_call_date(tmp_path
     source, _ = _source(_write(tmp_path / "t.parquet", _BASE), "f1")
     ctx = _ctx(tmp_path, sqlite_store)
 
-    summary = ect.extract_earnings_calls(ctx, _CFG, source=source)
+    summary = ect.extract_earnings_calls(ctx, source=source)
     rows = _sections(sqlite_store)
     calls = rows.groupby(["ticker", "quarter"]).agg(n=("paragraph", "size"), as_of=("as_of", "first"), tid=("transcript_id", "first"))
 
@@ -484,7 +498,7 @@ def test_first_run_writes_raw_paragraphs_with_repo_ticker_and_call_date(tmp_path
 
 def test_provider_absence_uses_the_normal_lookup_for_berkshire(tmp_path: Path, sqlite_store: Any) -> None:
     source, opener = _source(_write(tmp_path / "without-berkshire.parquet", [_AAA]), "without-berkshire")
-    summary = ect.extract_earnings_calls(_ctx(tmp_path, sqlite_store), _CFG, tickers=["BRK-B"], source=source)
+    summary = ect.extract_earnings_calls(_ctx(tmp_path, sqlite_store), tickers=["BRK-B"], source=source)
     assert opener.opens == 1 and summary.row_groups == 0 and summary.calls_new == 0 and summary.rows_written == 0
     assert sqlite_store.load(Tables.earnings_call_sections, optional=True) is None
     print("SANITY: BRK-B is checked against the provider footer; absent data yields no paragraphs through the ordinary path.")
@@ -506,7 +520,7 @@ def test_shared_reader_retries_open_failures_and_closes_handles(tmp_path: Path, 
 
     monkeypatch.setattr(ect, "_RETRY_WAIT_SECONDS", 0)
     source = ect.TranscriptSource(revision="retry", opener=opener)
-    summary = ect.extract_earnings_calls(_ctx(tmp_path, sqlite_store), _CFG, tickers=["AAA"], source=source)
+    summary = ect.extract_earnings_calls(_ctx(tmp_path, sqlite_store), tickers=["AAA"], source=source)
     assert opens >= 4 and summary.calls_new == 2 and summary.rows_written == 8
     assert all(handle.closed for handle in handles)
     print("SANITY: shared metadata/payload reads retry a transient worker-open failure and close every successful handle.")
@@ -515,12 +529,12 @@ def test_shared_reader_retries_open_failures_and_closes_handles(tmp_path: Path, 
 def test_incremental_run_writes_only_the_new_call(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     first, _ = _source(_write(tmp_path / "a.parquet", _BASE), "f1")
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=first)
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=first)
     before = _sections(sqlite_store)
 
     grown = [[*_AAA, _call("AAA", 2026, 2, "2026-07-22", 13, 6)], _BFB, _CCC, _ZZZ]
     second, _ = _source(_write(tmp_path / "b.parquet", grown), "f2")
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=second)
+    summary = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=second)
     after = _sections(sqlite_store)
 
     assert not summary.full and summary.calls_new == 1 and summary.calls_reissued == 0
@@ -541,7 +555,7 @@ def test_short_content_is_filtered_without_breaking_call_resume(tmp_path: Path, 
     second["transcripts"][0]["content"] = "xy"
     source = _source(_write(tmp_path / "short-content.parquet", [[first, second]]), "short-content")[0]
     ctx = _ctx(tmp_path, sqlite_store)
-    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BBB"], source=source)
+    result = ect.extract_earnings_calls(ctx, tickers=["AAA", "BBB"], source=source)
     rows = _sections(sqlite_store)
     assert result.calls_new == 2 and result.rows_written == 3
     assert (rows["content"].str.len() > 2).all()
@@ -551,14 +565,15 @@ def test_short_content_is_filtered_without_breaking_call_resume(tmp_path: Path, 
     assert aaa["paragraph"].tolist() == [1, 2] and set(aaa["transcript_id"]) == {1}
     assert set(pd.to_datetime(aaa["as_of"]).dt.date) == {dt.date(2026, 4, 21)}
     assert rows.loc[rows["ticker"].eq("BBB"), "paragraph"].tolist() == [1]
-    assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BBB"], source=source).rows_written == 0
+    assert ect.extract_earnings_calls(ctx, tickers=["AAA", "BBB"], source=source).rows_written == 0
     print("SANITY: null/empty/one/two-character content is dropped; retained text/order/dates/IDs survive and the repeat writes nothing.")
 
 
 def test_reissued_call_replaces_paragraphs_and_invalidates_derivatives(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
+    ctx.run = WindowRun("incremental", "recent reissue fixture", pd.Timestamp("2026-10-01"))
     first, _ = _source(_write(tmp_path / "a.parquet", _BASE), "f1")
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=first)
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=first)
     calls = [("AAA", "2026Q1", "2026-04-21"), ("BF-B", "2026Q2", "2026-06-05"), ("AAA", "2010Q1", "2010-04-20")]
     sqlite_store.save(
         Tables.earnings_call_sentiment,
@@ -583,7 +598,7 @@ def test_reissued_call_replaces_paragraphs_and_invalidates_derivatives(tmp_path:
         _ZZZ,
     ]
     second, _ = _source(_write(tmp_path / "b.parquet", reissued), "f2")
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=second)
+    summary = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=second)
 
     rows = _sections(sqlite_store)
     aaa = rows[(rows["ticker"] == "AAA") & (rows["quarter"] == "2026Q1")]
@@ -624,46 +639,90 @@ def _seed_derivatives(store: Any, calls: list[tuple[str, str, str]]) -> None:
 @pytest.mark.parametrize("failure", ["invalidation", "paragraph_write"])
 def test_reissued_call_failure_preserves_retry_(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
+    ctx.run = WindowRun("incremental", "2010 reissue retry fixture", pd.Timestamp("2010-05-01"))
     old = _call("AAA", 2010, 1, "2010-04-20", 1, 3)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
     _seed_derivatives(sqlite_store, [("AAA", "2010Q1", "2010-04-20")])
+    before = _sections(sqlite_store)
+    before_sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    before_embeddings = sqlite_store.load(Tables.earning_calls_embedding)
     corrected = _call("AAA", 2010, 1, "2010-04-22", 99, 2, tag="v2")
     source = _source(_write(tmp_path / "corrected.parquet", [[corrected]]), "corrected")[0]
-    save, delete = sqlite_store.save, sqlite_store.delete
+    store_type = type(sqlite_store)
+    save, delete = store_type.save, store_type.delete
 
-    def fail_save(table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
+    def fail_save(store: Any, table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
         if failure == "paragraph_write" and table == Tables.earnings_call_sections:
             raise RuntimeError(f"injected {failure}")
-        return save(table, frame, **kwargs)
+        return save(store, table, frame, **kwargs)
 
-    def fail_delete(table: Any, where: dict[str, Any]) -> int:
+    def fail_delete(store: Any, table: Any, where: dict[str, Any]) -> int:
         if failure == "invalidation" and table == Tables.earning_calls_embedding:
             raise RuntimeError(f"injected {failure}")
-        return delete(table, where)
+        return delete(store, table, where)
 
     with monkeypatch.context() as injected:
-        injected.setattr(sqlite_store, "save", fail_save)
-        injected.setattr(sqlite_store, "delete", fail_delete)
+        injected.setattr(store_type, "save", fail_save)
+        injected.setattr(store_type, "delete", fail_delete)
         with pytest.raises(RuntimeError, match=f"injected {failure}"):
-            ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=source)
+            ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source)
 
-    if failure != "paragraph_write":
-        retained = _sections(sqlite_store)
-        assert len(retained) == 3 and set(retained["transcript_id"]) == {1}
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=source)
+    pd.testing.assert_frame_equal(_sections(sqlite_store), before)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_call_sentiment), before_sentiment)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earning_calls_embedding), before_embeddings)
+    ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source)
     rows = _sections(sqlite_store)
     pending = sqlite_store.load(Tables.earnings_call_sentiment, optional=True)
     embeddings = sqlite_store.load(Tables.earning_calls_embedding, optional=True)
     assert len(rows) == 2 and set(rows["transcript_id"]) == {99} and rows["content"].str.contains(" v2 ").all()
     assert pending is None
     assert embeddings is None or embeddings.empty
-    assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=source).rows_written == 0
+    assert ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source).rows_written == 0
     print(f"SANITY: {failure} failure retries without stale cache, orphan paragraphs or fabricated completion state.")
+
+
+def test_an_empty_reissue_keeps_the_valid_stored_call_and_cache(tmp_path: Path, sqlite_store: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    old = _call("AAA", 2026, 2, "2026-07-20", 1, 3)
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
+    _seed_derivatives(sqlite_store, [("AAA", "2026Q2", "2026-07-20")])
+    before = _sections(sqlite_store)
+    before_sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    before_embeddings = sqlite_store.load(Tables.earning_calls_embedding)
+    empty = _call("AAA", 2026, 2, "2026-07-22", 99, 0)
+
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "empty.parquet", [[empty]]), "empty")[0])
+
+    pd.testing.assert_frame_equal(_sections(sqlite_store), before)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_call_sentiment), before_sentiment)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earning_calls_embedding), before_embeddings)
+    print("SANITY: an empty replacement transcript preserves the complete saved call and cached source outputs for retry.")
+
+
+@pytest.mark.parametrize("table", [Tables.earnings_call_sentiment, Tables.earning_calls_embedding], ids=lambda table: table.name)
+def test_reissue_cannot_invalidate_a_cache_outside_its_own_dates(tmp_path: Path, sqlite_store: Any, table: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    old = _call("AAA", 2026, 2, "2026-07-20", 1, 3)
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
+    _seed_derivatives(sqlite_store, [("AAA", "2026Q2", "2026-07-20")])
+    before = _sections(sqlite_store)
+    before_sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    before_embeddings = sqlite_store.load(Tables.earning_calls_embedding)
+    context.config.data.tables[table.name].start_date = "2026-08-01"
+    corrected = _call("AAA", 2026, 2, "2026-07-22", 99, 2)
+
+    with pytest.raises(ValueError, match=f"{table.name}.*Window"):
+        ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "corrected.parquet", [[corrected]]), "new")[0])
+
+    pd.testing.assert_frame_equal(_sections(sqlite_store), before)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earnings_call_sentiment), before_sentiment)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.earning_calls_embedding), before_embeddings)
+    print(f"SANITY: {table.name}'s configured dates gate invalidation before source paragraphs or either cache change.")
 
 
 def test_metadata_failure_cannot_remove_stored_calls(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B"], source=_source(_write(tmp_path / "old.parquet", _BASE), "old")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B"], source=_source(_write(tmp_path / "old.parquet", _BASE), "old")[0])
     before = _sections(sqlite_store)
     read_index = ect._read_index
 
@@ -675,29 +734,26 @@ def test_metadata_failure_cannot_remove_stored_calls(tmp_path: Path, sqlite_stor
     monkeypatch.setattr(ect, "_read_index", fail_index)
     shrunk = _source(_write(tmp_path / "shrunk.parquet", [[_AAA[1]], _BFB]), "shrunk")[0]
     with pytest.raises(RuntimeError, match="incomplete source metadata"):
-        ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B"], full=True, source=shrunk)
+        ctx.run = WindowRun("full", "explicit call reconciliation", ctx.run.instant)
+        ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B"], source=shrunk)
     pd.testing.assert_frame_equal(_sections(sqlite_store), before)
     print("SANITY: a failed metadata group aborts full reconciliation before any stored paragraph is removed.")
 
 
-def test_ordinary_run_never_reconciles_from_a_missing_date_frontier(tmp_path: Path, sqlite_store: Any) -> None:
+@pytest.mark.parametrize("missing", ["all", "one"])
+def test_missing_call_clock_requires_explicit_recovery_before_any_effect(tmp_path: Path, sqlite_store: Any, missing: str) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [_AAA]), "old")[0])
-    sqlite_store.save(Tables.earnings_call_sections, _sections(sqlite_store).assign(as_of=pd.NaT))
-    assert sqlite_store.max_date(Tables.earnings_call_sections) is None
-    _seed_derivatives(sqlite_store, [("AAA", "2026Q1", "2026-04-21")])
-    corrected = _call("AAA", 2026, 1, "2026-04-21", 99, 2, tag="v2")
+    ect.extract_earnings_calls(ctx, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [_AAA]), "old")[0])
+    unknown = _sections(sqlite_store)
+    unknown.loc[pd.Series(True, index=unknown.index) if missing == "all" else unknown["quarter"].eq("2026Q1"), "as_of"] = pd.NaT
+    sqlite_store.save(Tables.earnings_call_sections, unknown)
+    before = _sections(sqlite_store)
+    corrected = _call("AAA", 2026, 1, "2026-09-01", 99, 2, tag="v2")
     source = _source(_write(tmp_path / "shrunk.parquet", [[corrected]]), "shrunk")[0]
-    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=source)
-    assert not result.full and result.calls_removed == 0
-    rows = _sections(sqlite_store)
-    assert set(rows["quarter"]) == {"2010Q1", "2026Q1"}
-    current = rows[rows["quarter"].eq("2026Q1")]
-    assert len(current) == 2 and set(current["transcript_id"]) == {99}
-    assert sqlite_store.load(Tables.earnings_call_sentiment, optional=True) is None
-    embeddings = sqlite_store.load(Tables.earning_calls_embedding, optional=True)
-    assert embeddings is None or embeddings.empty
-    print("SANITY: a missing frontier cannot enable deletion; a reissue with a missing old date still invalidates caches and replaces paragraphs.")
+    with pytest.raises(ValueError, match="explicit bounded historical recovery"):
+        ect.extract_earnings_calls(ctx, tickers=["AAA"], source=source)
+    pd.testing.assert_frame_equal(before, _sections(sqlite_store))
+    print("SANITY: unknown stored publication clocks cannot promote an ordinary call check to historical reconstruction or deletion.")
 
 
 def _spy_invalidations(monkeypatch: pytest.MonkeyPatch) -> list[set[tuple[str, str]]]:
@@ -714,13 +770,14 @@ def _spy_invalidations(monkeypatch: pytest.MonkeyPatch) -> list[set[tuple[str, s
 
 def test_reconcile_deletes_a_call_removed_from_the_source(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
     _seed_derivatives(sqlite_store, [("AAA", "2010Q1", "2010-04-20"), ("AAA", "2026Q1", "2026-04-21")])
     seen = _spy_invalidations(monkeypatch)
 
     # AAA 2010Q1 is withdrawn upstream; CCC leaves the source entirely (a symbol change reads the same).
     second, _ = _source(_write(tmp_path / "b.parquet", [[_AAA[1]], _BFB, _ZZZ]), "f2")
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], full=True, source=second)
+    ctx.run = WindowRun("full", "explicit call reconciliation", ctx.run.instant)
+    summary = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=second)
 
     calls = set(map(tuple, _sections(sqlite_store)[["ticker", "quarter"]].drop_duplicates().to_numpy()))
     sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
@@ -743,13 +800,14 @@ def test_reconcile_deletes_the_label_a_relabel_flip_superseded(tmp_path: Path, s
     # 2020Q1 arrives on 2020-06-01, the chain keeps 2019Q4 for 2020-03-01 instead.
     first = [_call("EEE", 2019, 4, "2020-03-01", 21, 2), _call("EEE", 2020, 4, "2020-03-01", 22, 2)]
     ctx = _ctx(tmp_path, sqlite_store)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["EEE"], source=_source(_write(tmp_path / "a.parquet", [first]), "f1")[0])
+    ect.extract_earnings_calls(ctx, tickers=["EEE"], source=_source(_write(tmp_path / "a.parquet", [first]), "f1")[0])
     before = set(_sections(sqlite_store)["quarter"])
     _seed_derivatives(sqlite_store, [("EEE", "2020Q4", "2020-03-01")])
     seen = _spy_invalidations(monkeypatch)
 
     grown = [[*first, _call("EEE", 2020, 1, "2020-06-01", 23, 2)]]
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["EEE"], full=True, source=_source(_write(tmp_path / "b.parquet", grown), "f2")[0])
+    ctx.run = WindowRun("full", "explicit call reconciliation", ctx.run.instant)
+    summary = ect.extract_earnings_calls(ctx, tickers=["EEE"], source=_source(_write(tmp_path / "b.parquet", grown), "f2")[0])
     rows = _sections(sqlite_store).drop_duplicates(["ticker", "quarter"])
     sentiment = sqlite_store.load(Tables.earnings_call_sentiment, optional=True)
 
@@ -768,13 +826,13 @@ def test_reconcile_deletes_the_label_a_relabel_flip_superseded(tmp_path: Path, s
 
 def test_incremental_run_never_deletes_a_stored_call(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
     before = _sections(sqlite_store)
     seen = _spy_invalidations(monkeypatch)
 
     # AAA 2026Q1 (inside the window) and CCC (outside it) leave the source; AAA 2026Q2 is new.
     shrunk = [[_AAA[0], _call("AAA", 2026, 2, "2026-07-22", 13, 2)], _BFB, _ZZZ]
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "b.parquet", shrunk), "f2")[0])
+    summary = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "b.parquet", shrunk), "f2")[0])
     after = _sections(sqlite_store)
 
     assert not summary.full and summary.calls_removed == 0 and summary.calls_new == 1
@@ -789,12 +847,14 @@ def test_incremental_run_never_deletes_a_stored_call(tmp_path: Path, sqlite_stor
 def test_a_repeated_run_writes_nothing_and_full_forces_a_compare(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     path = _write(tmp_path / "a.parquet", _BASE)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], source=_source(path, "f1")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "CCC"], source=_source(path, "f1")[0])
 
     again, opener = _source(path, "f1")
-    repeated = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], source=again)
-    forced = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], full=True, source=_source(path, "f1")[0])
-    rescoped = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0])
+    repeated = ect.extract_earnings_calls(ctx, tickers=["AAA", "CCC"], source=again)
+    ctx.run = WindowRun("full", "explicit call reconciliation", ctx.run.instant)
+    forced = ect.extract_earnings_calls(ctx, tickers=["AAA", "CCC"], source=_source(path, "f1")[0])
+    ctx.run = WindowRun("incremental", "ordinary expanded key scope", ctx.run.instant)
+    rescoped = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0])
 
     assert not repeated.full and repeated.calls_new == 0 and repeated.rows_written == 0 and opener.opens >= 1
     assert forced.full and forced.calls_new == 0 and forced.calls_reissued == 0 and forced.rows_written == 0
@@ -810,12 +870,13 @@ def test_a_repeated_run_writes_nothing_and_full_forces_a_compare(tmp_path: Path,
 
 def test_a_new_and_a_reissued_call_land_without_any_manifest(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
+    ctx.run = WindowRun("incremental", "recent reissue fixture", pd.Timestamp("2026-10-01"))
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
     changed = [[_AAA[0], _call("AAA", 2026, 1, "2026-04-21", 99, 3, tag="v2"), _call("AAA", 2026, 2, "2026-07-22", 13, 6)], _BFB, _CCC, _ZZZ]
     path = _write(tmp_path / "b.parquet", changed)
 
-    first = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f2")[0])
-    second = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f2")[0])
+    first = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f2")[0])
+    second = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f2")[0])
 
     assert first.calls_new == 1 and first.calls_reissued == 1 and first.rows_written == 6 + 3
     assert second.calls_new == 0 and second.calls_reissued == 0 and second.rows_written == 0
@@ -831,10 +892,10 @@ def test_a_new_and_a_reissued_call_land_without_any_manifest(tmp_path: Path, sql
 def test_metadata_scan_recovers_rowless_tickers_regardless_of_added_on(tmp_path: Path, sqlite_store: Any, added_on: str) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     path = _write(tmp_path / "a.parquet", _BASE)
-    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B"], source=_source(path, "f1")[0])
+    ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B"], source=_source(path, "f1")[0])
     seed_universe(sqlite_store, UNIVERSE, rows={"CCC": {"universe_added_on": pd.Timestamp(added_on)}})
 
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0])
+    summary = ect.extract_earnings_calls(ctx, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0])
     ccc = _sections(sqlite_store).query("ticker == 'CCC'")
 
     assert not summary.full
@@ -855,7 +916,7 @@ def test_duplicate_key_keeps_latest_date_then_highest_id() -> None:
             "row": [0, 1, 0, 1],
         }
     )
-    calls = ect.calls_from_index(index, {"AAA", "BBB"}, _identity())[0]
+    calls = ect.calls_from_index(index, dict.fromkeys({"AAA", "BBB"}, Window(pd.Timestamp("2005-01-01"), pd.Timestamp("2026-11-16"))), _identity())[0]
     kept = calls.set_index("ticker")
 
     assert len(calls) == 2
@@ -903,7 +964,7 @@ def test_fiscal_relabel_keeps_one_call_per_date_chaining_back_from_the_later_cal
     ctx = _ctx(tmp_path, sqlite_store)
     source, _ = _source(_write(tmp_path / "r.parquet", [dg, eee, rjf]), "r1")
 
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["DG", "EEE", "RJF"], source=source)
+    summary = ect.extract_earnings_calls(ctx, tickers=["DG", "EEE", "RJF"], source=source)
     calls = _sections(sqlite_store).drop_duplicates(["ticker", "quarter"])
     kept = {(t, pd.Timestamp(d).date().isoformat()): q for t, q, d in calls[["ticker", "quarter", "as_of"]].itertuples(index=False)}
 
@@ -932,7 +993,7 @@ def test_schema_drift_fails_loudly(tmp_path: Path, sqlite_store: Any) -> None:
     source, _ = _source(_write(tmp_path / "d.parquet", rows, schema=drifted), "d1")
 
     with pytest.raises(ValueError, match="schema drift") as err:
-        ect.extract_earnings_calls(_ctx(tmp_path, sqlite_store), _CFG, tickers=["AAA"], source=source)
+        ect.extract_earnings_calls(_ctx(tmp_path, sqlite_store), tickers=["AAA"], source=source)
     assert not sqlite_store.exists(Tables.earnings_call_sections)
 
     print("\n=== SANITY CHECK: source schema assertion ===")
@@ -948,15 +1009,15 @@ def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) ->
         pytest.skip(f"HuggingFace unreachable: {type(exc).__name__}: {exc}")
     ctx = _ctx(tmp_path, sqlite_store)
 
-    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAPL", "MSFT"], source=source)
+    summary = ect.extract_earnings_calls(ctx, tickers=["AAPL", "MSFT"], source=source)
     rows = sqlite_store.load(Tables.earnings_call_sections, ["ticker", "quarter", "paragraph", "as_of", "transcript_id"])
     per_ticker = rows.groupby("ticker")["quarter"].nunique()
     first = rows.groupby(["ticker", "quarter"])["paragraph"].min()
-    again = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAPL", "MSFT"], source=source)
+    again = ect.extract_earnings_calls(ctx, tickers=["AAPL", "MSFT"], source=source)
 
     assert set(per_ticker.index) == {"AAPL", "MSFT"} and per_ticker.min() >= 40
     assert rows["quarter"].str.fullmatch(r"\d{4}Q[1-4]").all() and (first == 1).all()
-    assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(cast(str, cast(Resume, Tables.earnings_call_sections.resume).source_start))
+    assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(ctx.config.data.tables.earnings_call_sections.start_date)
     assert again.rows_written == 0
 
     print("\n=== SANITY CHECK: live defeatbeta smoke (test store) ===")
@@ -965,3 +1026,53 @@ def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) ->
         f"  as_of {pd.to_datetime(rows['as_of']).min().date()} -> {pd.to_datetime(rows['as_of']).max().date()}; re-run wrote {again.rows_written} rows"
     )
     print("  OK: pinned HF read lands every call with paragraph 1 and a fiscal label; a re-run writes nothing")
+
+
+def test_routine_call_check_limits_source_work_to_configured_180_calendar_days(tmp_path: Path, sqlite_store: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    old = _call("AAA", 2026, 1, "2026-03-01", 1, 2)
+    recent = _call("AAA", 2026, 3, "2026-09-01", 2, 2)
+    source = _source(_write(tmp_path / "initial.parquet", [[old, recent]]), "first")[0]
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=source)
+    revised_old = _call("AAA", 2026, 1, "2026-03-01", 11, 2, "revised")
+    revised_recent = _call("AAA", 2026, 3, "2026-09-01", 12, 2, "revised")
+    revised_source = _source(_write(tmp_path / "revised.parquet", [[revised_old, revised_recent]]), "revised")[0]
+    summary = ect.extract_earnings_calls(context, tickers=["AAA"], source=revised_source)
+    rows = _sections(sqlite_store)
+    assert summary.calls_reissued == 1
+    assert rows.loc[rows["quarter"].eq("2026Q1"), "transcript_id"].eq(1).all()
+    assert rows.loc[rows["quarter"].eq("2026Q3"), "transcript_id"].eq(12).all()
+    print("SANITY: a routine180CD candidate check refreshes the recent call and preserves older source payloads for explicit recovery.")
+
+
+@pytest.mark.parametrize("mode", ["incremental", "full"])
+def test_reissued_call_cannot_delete_its_old_date_outside_the_write_window(tmp_path: Path, sqlite_store: Any, mode: str) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    original = _call("AAA", 2026, 1, "2026-03-01", 1, 2)
+    source = _source(_write(tmp_path / "old-date.parquet", [[original]]), "old-date")[0]
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=source)
+    before = _sections(sqlite_store)
+    if mode == "full":
+        context.config.data.tables[Tables.earnings_call_sections.name].start_date = "2026-05-20"
+        context.run = WindowRun("full", "finite explicit call scope", context.run.instant)
+    moved = _call("AAA", 2026, 1, "2026-09-01", 2, 2)
+    revised = _source(_write(tmp_path / "moved-date.parquet", [[moved]]), "moved-date")[0]
+    with pytest.raises(ValueError, match="explicit bounded historical recovery"):
+        ect.extract_earnings_calls(context, tickers=["AAA"], source=revised)
+    pd.testing.assert_frame_equal(before, _sections(sqlite_store))
+    print("SANITY: a moved call cannot erase paragraphs before the configured180CD write boundary.")
+
+
+def test_full_call_reconcile_preserves_rows_outside_configured_start_and_end(tmp_path: Path, sqlite_store: Any) -> None:
+    context = _ctx(tmp_path, sqlite_store)
+    original = [_call("AAA", 2025, 4, "2025-12-01", 1, 2), _call("AAA", 2026, 1, "2026-03-01", 2, 2), _call("AAA", 2026, 3, "2026-09-01", 3, 2)]
+    ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "before.parquet", [original]), "before")[0])
+    policy = context.config.data.tables[Tables.earnings_call_sections.name]
+    policy.start_date = "2026-01-01"
+    context.run = WindowRun("full", "bounded call reconciliation", pd.Timestamp("2026-06-30"))
+    current = [_call("AAA", 2026, 2, "2026-04-01", 4, 2), _call("AAA", 2027, 1, "2027-03-01", 5, 2)]
+    result = ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "after.parquet", [current]), "after")[0])
+    stored = _sections(sqlite_store)
+    assert set(stored["transcript_id"]) == {1, 3, 4}
+    assert result.calls_removed == 1 and result.calls_new == 1
+    print("SANITY: full call reconciliation writes only the configured2026 interval; older/later rows survive and future source rows are excluded.")

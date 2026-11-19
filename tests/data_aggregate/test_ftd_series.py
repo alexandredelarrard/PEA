@@ -4,6 +4,8 @@ uncertain dates left out; then through `prepare_fails_quantities`, the frame the
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,6 +15,8 @@ from src.data_aggregate.utils.institutionals.short_flow_features import prepare_
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.conftest import _store
+from tests.data_aggregate.institutional_read_windows import full_reference_windows, reference_sessions
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 
 BRK_A, BRK_B, AAPL = "084670108", "084670702", "037833100"
 #: The `universe_cusip` columns the institutionals step reads once.
@@ -79,7 +83,14 @@ def test_class_lines_sum_times_ratio_with_supported_zeros_and_an_uncertain_date(
         ),
     )
 
-    fails, coverage = inputs.load_fails(sqlite_store, ["AAPL", "BRK-B"], _lines(), {})
+    fails, coverage = inputs.load_fails(
+        source_context(sqlite_store, Path(".")),
+        ["AAPL", "BRK-B"],
+        _lines(),
+        {},
+        full_reference_windows(source_context(sqlite_store, Path("."))),
+        reference_sessions(source_context(sqlite_store, Path("."))),
+    )
 
     got = {(t, f"{d:%m-%d}"): q for t, d, q in fails[["ticker", "date", "fails_quantity"]].itertuples(index=False)}
     aapl = {("AAPL", "03-04"): 10.0, ("AAPL", "03-05"): 5.0, ("AAPL", "03-06"): 7.0, ("AAPL", "03-07"): 8.0}
@@ -123,7 +134,14 @@ def test_an_unresolved_symbol_line_blocks_a_company_only_inside_its_symbol_row(s
         ),
     )
 
-    fails, _ = inputs.load_fails(sqlite_store, ["META"], _meta_lines(), {})
+    fails, _ = inputs.load_fails(
+        source_context(sqlite_store, Path(".")),
+        ["META"],
+        _meta_lines(),
+        {},
+        full_reference_windows(source_context(sqlite_store, Path("."))),
+        reference_sessions(source_context(sqlite_store, Path("."))),
+    )
 
     got = {f"{d:%Y-%m-%d}": q for d, q in fails[["date", "fails_quantity"]].itertuples(index=False)}
     assert got == {"2025-06-17": 50.0}, got
@@ -146,7 +164,14 @@ def test_real_stored_lines_reach_the_builder_as_company_series() -> None:
     multi = sorted(summed.groupby("canonical_company")["cusip"].nunique().loc[lambda n: n.gt(1)].index)
     bugfix = {}
 
-    fails, coverage = inputs.load_fails(store, multi, lines, bugfix)
+    fails, coverage = inputs.load_fails(
+        source_context(store, Path(".")),
+        multi,
+        lines,
+        bugfix,
+        full_reference_windows(source_context(store, Path("."))),
+        reference_sessions(source_context(store, Path("."))),
+    )
 
     assert not fails.duplicated(["ticker", "date"]).any() and set(fails["ticker"]) <= set(multi)
     assert set(pd.to_datetime(fails["date"])) <= set(pd.to_datetime(coverage["date"])), "a series row lies on a served date"

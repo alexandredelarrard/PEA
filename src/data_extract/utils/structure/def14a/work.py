@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import pandas as pd
+from pydantic import BaseModel, ValidationError
 
 from src.context import Context
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
@@ -17,6 +19,8 @@ from src.data_store.schema import Table, Tables
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.utils.data_policy import source_read_window, window_policy
+from src.utils.window import Window
 
 
 @dataclass
@@ -31,43 +35,17 @@ class FilingWork:
     raw: str | None = None
     pending: set[str] = field(default_factory=set)
     payloads: dict[str, str] = field(default_factory=dict)
+    cached: dict[str, BaseModel] = field(default_factory=dict)
 
 
-def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> bool:
-    """Key-field check: a section is a gap when it has no row, or none of its key fields is populated."""
-    if section.table is Tables.def14a_llm:
-        return any(
-            pd.isna(parent.get(column))
-            for column in (
-                "auditor_name",
-                "auditor_fees",
-                "auditor_fees_prior",
-                "audit_fees_audit",
-                "audit_fees_audit_related",
-                "audit_fees_tax",
-                "audit_fees_other",
-            )
-        )
-    marker_column, marker = cast(tuple[str, str], section.table.empty_marker)
-    rows = saved.loc[saved[marker_column].ne(marker)] if marker_column in saved else saved
-    if rows.empty:
-        return True
-    if section.key == "governance":
-        return pd.isna(parent.get("ceo_name_proxy"))
-    keys = {
-        "executive_pay": ("total", "salary"),
-        "director_pay": ("total", "fees_earned"),
-        "ownership": ("shares", "percent_of_class"),
-    }[section.key]
-    return all(column not in rows or rows[column].isna().all() for column in keys)
-
-
-def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
+def load_work(context: Context, ticker: str, filings: pd.DataFrame) -> list[FilingWork]:
     """Read each scoped fact table once, without the large paid JSON archive."""
     # load: each section table's rows of the ticker in the window, markers included
     if filings.empty:
         return []
+    dates = Window(filings.filing_date.min(), filings.filing_date.max())
     frames: dict[Table, pd.DataFrame] = {}
+    policies = {section.table: window_policy(context.config, section.table, context.run.as_of) for section in SECTIONS}
     for section in SECTIONS:
         table = section.table
         available = context.store.columns(table)
@@ -77,7 +55,13 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
             else available
         )
         columns = [column for column in wanted if column in available and column != "def14a_json"]
-        loaded = context.store.load(table, columns=columns, where={"ticker": ticker}, since=floor, markers=True, optional=True)
+        source = source_read_window(context.config, table, context.run.as_of)
+        window = dates.intersection(source) if source is not None else None
+        loaded = (
+            context.store.load(table, columns=columns, where={"ticker": ticker}, since=window.start, until=window.end, markers=True, optional=True)
+            if window is not None
+            else None
+        )
         frames[table] = loaded if loaded is not None else pd.DataFrame(columns=columns)
 
     # Keep the walked proxy's entity and filing date separate from its fiscal-year rows.
@@ -101,13 +85,52 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
             "company_name": filing.get("company_name"),
         }
         work = FilingWork(stamp, saved, parent, attempts)
-        work.pending = {section.key for section in SECTIONS if has_gaps(section, saved[section.table], parent)}
+        work.pending = {
+            section.key
+            for section in SECTIONS
+            if (policy := policies[section.table]) is not None
+            and policy.requested.start <= stamp["as_of"] <= policy.requested.end
+            and (saved[section.table].empty or 0 < attempts[section.key] < 2 or section.table is Tables.def14a_llm and not attempts[section.key])
+        }
         works.append(work)
     return works
 
 
+def _archived_answers(raw: str) -> dict[str, BaseModel]:
+    """Existing schema-valid answers, including empty answers, prove inference completion."""
+    if raw == "_empty":
+        return {section.key: Def14AExtract.model_validate({}) for section in SECTIONS}
+    try:
+        document = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    metadata = document.get("_def14a_split")
+    legacy = metadata.get("legacy_json") if isinstance(metadata, dict) else raw
+    if isinstance(legacy, str):
+        try:
+            answer = Def14AExtract.model_validate_json("{}" if legacy == "_empty" else legacy)
+        except ValidationError:
+            pass
+        else:
+            return {section.key: answer for section in SECTIONS}
+    responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
+    completed = {}
+    for section in SECTIONS:
+        recorded = responses.get(section.key, []) if isinstance(responses, dict) else []
+        if not recorded:
+            continue
+        try:
+            answer = section.schema.model_validate(recorded[-1].get("response"))
+        except (ValidationError, AttributeError):
+            continue
+        completed[section.key] = answer
+    return completed
+
+
 def load_archives(context: Context, works: list[FilingWork]) -> None:
-    """Load only candidate archives, and inherit legacy all-domain attempts."""
+    """Resolve known incomplete reservations using archived response evidence, never economic NULL fields."""
     # load: the archives of the proxies with a gap
     accessions = [work.stamp["accession_number"] for work in works if work.pending]
     saved = (
@@ -123,34 +146,33 @@ def load_archives(context: Context, works: list[FilingWork]) -> None:
     )
     archives = dict(zip(saved.accession_number, saved.def14a_json, strict=True)) if saved is not None else {}
 
-    # A legacy whole-proxy response, including its empty marker, proves a first attempt for all five sections.
+    # Failed reservations have no successful response; valid NULL/empty answers remain complete.
     for work in works:
         raw = archives.get(work.stamp["accession_number"])
         work.raw = raw if isinstance(raw, str) and raw else None
         if not work.raw:
             continue
-        try:
-            document = json.loads(work.raw) if work.raw != "_empty" else {}
-        except (ValueError, TypeError):
-            document = {}
-        metadata = document.get("_def14a_split") if isinstance(document, dict) else None
-        legacy = metadata.get("legacy_json") if isinstance(metadata, dict) else work.raw
-        if legacy:
-            work.attempts = {key: max(attempt, 1) for key, attempt in work.attempts.items()}
+        completed = _archived_answers(work.raw)
+        work.cached = {
+            section.key: completed[section.key]
+            for section in SECTIONS
+            if section.key in work.pending and section.key in completed and work.saved[section.table].empty
+        }
+        work.pending.difference_update(completed)
 
 
 def open_sections(work: FilingWork) -> list[Section]:
-    """Sections with a key gap and fewer than two attempts: the only ones worth a source read."""
+    """Missing or incomplete sections below the two-attempt limit."""
     return [section for section in SECTIONS if section.key in work.pending and work.attempts[section.key] < 2]
 
 
-def ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
+def ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame) -> list[FilingWork]:
     """The ticker's walked proxies with their saved facts and archives, and the uncut payloads of those with an open
     section."""
     # load: the saved facts and archives, then the payloads of the proxies that need them
-    works = load_work(context, ticker, df_filings, floor)
+    works = load_work(context, ticker, df_filings)
     load_archives(context, works)
-    wanted = [work.stamp["accession_number"] for work in works if open_sections(work)]
+    wanted = [work.stamp["accession_number"] for work in works if open_sections(work) or work.cached]
     if not wanted:
         return works
     df_payloads = context.store.load(
@@ -162,6 +184,16 @@ def ticker_works(context: Context, ticker: str, df_filings: pd.DataFrame, floor:
     for work in works:
         work.payloads = payloads.get(str(work.stamp["accession_number"]), {})
     return works
+
+
+def materialize_cached(context: Context, works: list[FilingWork]) -> int:
+    """Reuse paid answers only for structurally missing child rows or completion markers."""
+    repaired = 0
+    for work in works:
+        for section in (item for item in SECTIONS if item.key in work.cached):
+            save_answer(context, work, section, work.cached[section.key])
+            repaired += 1
+    return repaired
 
 
 def requests_for(work: FilingWork, budget: int) -> list[tuple[Section, LlmTask]]:
@@ -176,11 +208,12 @@ def requests_for(work: FilingWork, budget: int) -> list[tuple[Section, LlmTask]]
 def section_requests(context: Context, works: list[FilingWork], budget: int) -> list[tuple[Section, LlmTask]]:
     """The prompt task of every open section with a payload, cut to `budget`; an open section the proxy lacks consumes
     its attempt."""
-    requests = []
-    for work in works:
-        requests.extend(requests_for(work, budget))
-        for section in (item for item in open_sections(work) if not work.payloads.get(item.key, "").strip()):
-            reserve(context, work, section, work.attempts[section.key] + 1)
+    requests = [request for work in works for request in requests_for(work, budget)]
+    absent = [(work, section) for work in works for section in open_sections(work) if not work.payloads.get(section.key, "").strip()]
+    for work, section in absent:
+        if not work.attempts[section.key]:
+            reserve(context, work, section, 1)
+        work.pending.discard(section.key)
     return requests
 
 
@@ -212,16 +245,23 @@ def call_sections(
             assert result.parsed is not None
             work.raw = append_answer(work.raw, section, result.parsed)
             save_archive(context, work)
-            processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent, work.payloads.get(section.key, ""))
-            save_section(context, work, processed)
-            work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
-            save_archive(context, work)
+            save_answer(context, work, section, result.parsed)
             answered += 1
     return answered
 
 
+def save_answer(context: Context, work: FilingWork, section: Section, answer: BaseModel) -> None:
+    """Materialize one validated response using the existing domain and archive writes."""
+    processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, work.payloads.get(section.key, ""))
+    save_section(context, work, processed)
+    work.pending.discard(section.key)
+    work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
+    save_archive(context, work)
+
+
 def reserve(context: Context, work: FilingWork, section: Section, attempt: int) -> None:
     """Write the owned counter before submission, retaining partial facts and monotonic attempts."""
+    _require_writes(context, work, (section.table, Tables.def14a_llm))
     frame = reservation_frame(section.table, work.stamp, work.saved[section.table], attempt)
     context.store.save(section.table, frame)
     work.attempts[section.key] = int(frame.retry.max())
@@ -233,12 +273,14 @@ def reserve(context: Context, work: FilingWork, section: Section, attempt: int) 
 
 def save_archive(context: Context, work: FilingWork) -> None:
     """Save raw paid output independently of any later postprocessing failure."""
+    _require_writes(context, work, (Tables.def14a_llm,))
     row = {column: work.stamp[column] for column in (*Tables.def14a_llm.pk, "as_of")}
     context.store.save(Tables.def14a_llm, pd.DataFrame([{**row, "def14a_json": work.raw}]))
 
 
 def save_section(context: Context, work: FilingWork, processed: ProcessedSection) -> None:
     """Save survivors before deleting exact obsolete holder keys or hidden placeholders."""
+    _require_writes(context, work, processed.frames)
     for table, frame in processed.frames.items():
         context.store.save(table, frame)
         if table is Tables.def14a_llm:
@@ -253,7 +295,14 @@ def save_section(context: Context, work: FilingWork, processed: ProcessedSection
             context.store.delete(
                 table, where={"ticker": work.stamp["ticker"], "accession_number": work.stamp["accession_number"], marker_column: marker}
             )
-    work.pending = {section.key for section in SECTIONS if has_gaps(section, work.saved[section.table], work.parent)}
+
+
+def _require_writes(context: Context, work: FilingWork, tables: Iterable[Table]) -> None:
+    """Check every destination before reserving or saving a filing's facts."""
+    for table in set(tables):
+        policy = window_policy(context.config, table, context.run.as_of)
+        if policy is None or not policy.requested.start <= work.stamp["as_of"] <= policy.requested.end:
+            raise ValueError(f"{table.name}: proxy write outside its configured Window")
 
 
 def _delete_obsolete_holders(context: Context, df_saved: pd.DataFrame, frame: pd.DataFrame) -> None:

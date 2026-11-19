@@ -16,12 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cached_property
 
-import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FetchSummary, index_years, refresh_index, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FetchSummary, refresh_index, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
@@ -31,19 +30,16 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDAMENTALS_FETCH
 from src.data_store.schema import Tables
+from src.utils.data_policy import window_policy
 from src.utils.step import Step
-from src.utils.string import run_date
+from src.utils.window import Window
 
 
 @dataclass(frozen=True)
 class EdgarOptions:
-    """The EDGAR commands' options: the ticker subset (None: the universe), the window in years (None: the configured
-    `years_history`), `full` re-read of stored filings, the run date and `no_cap` (lifts `max_documents_per_run`)."""
+    """The source-key subset and explicit removal of the configured document cap."""
 
     tickers: list[str] | None = None
-    years: int | None = None
-    full: bool = False
-    as_of: pd.Timestamp | None = None
     no_cap: bool = False
 
 
@@ -60,9 +56,12 @@ EDGAR_WALKS: tuple[EdgarFetch, ...] = (
 )
 
 
-def widest_index_years(years_history: int, run_date: pd.Timestamp) -> int:
-    """The index window covering every walk on `run_date`: the source-history insider walk reaches its source start."""
-    return max(index_years(fetch, years_history, run_date) for fetch in EDGAR_WALKS)
+def widest_index_window(context: Context) -> Window | None:
+    """Union configured filing bounds for every active walk; source floors are compiled once."""
+    windows = [policy.requested for fetch in EDGAR_WALKS if (policy := window_policy(context.config, fetch.done, context.run.as_of)) is not None]
+    if not windows:
+        return None
+    return Window(min(window.start for window in windows), max(window.end for window in windows))
 
 
 class StepExtractEdgar(Step):
@@ -70,35 +69,33 @@ class StepExtractEdgar(Step):
         """The step over `options` (default: the universe, the configured window); reads nothing until a walk runs."""
         super().__init__(context=context, config=config)
         self._options = options or EdgarOptions()
-        self._indexed_years: int | None = None
+        self._indexed_window: Window | None = None
 
     @cached_property
     def _run(self) -> EdgarRun:
         """The run state (CIKs, identity, cap), read once on first use so constructing the step reads nothing."""
         o = self._options
-        return EdgarRun.load(self._context, o.tickers or self._universe.tickers, o.years, as_of=o.as_of, full=o.full, no_cap=o.no_cap)
+        return EdgarRun.load(self._context, o.tickers or self._universe.tickers, no_cap=o.no_cap)
 
     def _run_fetch(self, fetch: EdgarFetch) -> FetchSummary:
         """Run one walk through the shared driver, on an index covering its window: refreshed unless this step,
         or today's refresh, already covered it."""
-        # index: the walk's window, refreshed unless this step or today's nightly refresh already covers it
-        years = index_years(fetch, self._run.years_history, self._run.run_date)
-        covered = self._indexed_years is not None and self._indexed_years >= years
-        refreshed = not covered and self._run.run_date == run_date(None) and edgar_index.refreshed_today(self._context, years)
-        if refreshed:
-            self._log.info("edgar index: already refreshed today over %d year(s); not refreshed again", years)
-        if not covered and not refreshed:
-            refresh_index(self._context, self._run, years)
-            self._indexed_years = years
-
-        # walk: the shared driver
+        policy = window_policy(self._config, fetch.done, self._context.run.as_of)
+        window = policy.requested if policy is not None else None
+        covered = self._indexed_window is not None and window is not None and self._indexed_window.intersection(window) == window
+        if window is not None and not covered and not edgar_index.refreshed_today(self._context, window):
+            if self._indexed_window is not None:
+                window = Window(min(window.start, self._indexed_window.start), max(window.end, self._indexed_window.end))
+            refresh_index(self._context, window)
+            self._indexed_window = window
         return run_edgar_fetch(self._context, fetch, self._run)
 
     def run_index(self) -> None:
-        """Refresh the local EDGAR index once over the widest window of the walks."""
-        years = widest_index_years(self._run.years_history, self._run.run_date)
-        refresh_index(self._context, self._run, years)
-        self._indexed_years = years
+        """Refresh the local EDGAR index once over all active configured filing windows."""
+        window = widest_index_window(self._context)
+        if window is not None:
+            refresh_index(self._context, window)
+            self._indexed_window = window
 
     def run_insider(self) -> FetchSummary:
         """Walk Forms 3/4/5 into the insider tables (EDGAR rows after the last zip quarter, then the zip reconcile)."""

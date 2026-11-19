@@ -10,7 +10,7 @@ components and their basis) joined onto `sharadar_fundamentals_history` (revenue
     revenue_per_employee_growth  year-over-year change in revenue per employee
     headcount_elasticity         %Δheadcount / %Δrevenue (|%Δrevenue| ≥ 2 %)
 
-The headcount proxy is `FT + α·PT` (α = `build_cube.workforce.part_time_weight`), else
+The headcount proxy is `FT + α·PT` (α = `data_aggregate.workforce.part_time_weight`), else
 `FT + α·(total − FT)`, else the stated total, FTE or full-time count. Every growth-type value
 is NaN when the proxy's basis differs from the prior year's.
 
@@ -43,7 +43,7 @@ _BASIS = "basis"
 
 
 def part_time_weight(cube_cfg: DictConfig) -> float:
-    """α of the headcount proxy, read from `build_cube.workforce.part_time_weight` and range-checked."""
+    """α of the headcount proxy, read from `data_aggregate.workforce.part_time_weight` and range-checked."""
     return _checked_weight(float(cube_cfg.workforce.part_time_weight))
 
 

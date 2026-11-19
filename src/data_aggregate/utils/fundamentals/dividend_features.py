@@ -45,11 +45,19 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex, universe
     that never paid, aligned to the trading calendar. Point-in-time: the rolling
     sum at t only includes ex-dates <= t. `window` is 252 sessions (levels) or "365D"
     (growth: a payment exactly 365 days old has dropped out)."""
-    piv = dividends_hist.pivot_table(index="date", columns="ticker", values="dividends", aggfunc="sum")
-    piv.index = pd.to_datetime(piv.index).normalize()
-    # full universe so non-payers are a real 0, aligned to trading days
-    piv = piv.reindex(index=idx, columns=universe).fillna(0.0)
-    return piv.rolling(window, min_periods=1).sum()
+    # Begin cash at eligibility, but expire it from the original ex date.
+    dates = pd.to_datetime(dividends_hist["date"]).dt.normalize()
+    available = pd.to_datetime(dividends_hist["available_on"]).dt.normalize()
+    starts = idx.searchsorted(available, side="left")
+    ends = idx.searchsorted(dates + pd.Timedelta(window), side="left") if isinstance(window, str) else idx.searchsorted(dates) + window
+    valid = dates.notna() & dates.isin(idx) & available.notna() & (starts < len(idx)) & (starts < ends)
+    df_active = dividends_hist.loc[valid, ["ticker", "dividends"]].copy()
+    begins = df_active.assign(_position=starts[valid], _cash=df_active["dividends"])
+    ends = ends[valid]
+    stops = df_active.loc[ends < len(idx)].assign(_position=ends[ends < len(idx)], _cash=-df_active.loc[ends < len(idx), "dividends"])
+    events = pd.concat([begins, stops])
+    daily = events.pivot_table(index="_position", columns="ticker", values="_cash", aggfunc="sum")
+    return daily.reindex(index=range(len(idx)), columns=universe, fill_value=0.0).fillna(0.0).cumsum().set_axis(idx)
 
 
 def _dividend_fields(dividends_hist: pd.DataFrame, prices: PriceFrames, history: FundamentalHistory | None = None) -> dict[str, pd.DataFrame]:

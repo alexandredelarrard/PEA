@@ -7,10 +7,10 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: aa9ac35ff94b6992ac43106230f63e3d50082cab
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
 integration_parents:
-  - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
-  - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 # Data access and storage
 
@@ -106,7 +106,7 @@ Plan from the database, never from a file or a full table read. Each extracted t
 
 - `series_windows` (dated per-key series): each key's own last date minus the overlap, full history for an absent table or for a new key until its stored history reaches the floor (within the table's overlap; after that it resumes like any key; short interest raises the floor to the key's first `prices` date), the table-wide frontier minus the overlap for a rowless key, plus one window per run of sessions missing inside the key's stored span;
 - `document_worklist` (EDGAR documents): the local filing-index rows of the table's forms for each key's registrant lineage, from the floor on, minus the accessions already stored, markers included; newest first and capped per run;
-- `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables, plus every cached period for a new key with no archive row yet.
+- `archive_worklist` (bulk archives): missing or incomplete configured source units. Completed units are reused on normal runs; deliberate historical replay is explicit. The downloader separately reuses validated cached files and downloads missing published files.
 
 Fetch rules:
 
@@ -129,32 +129,31 @@ The source grain, not the destination primary key alone, determines the correct 
 
 The fundamentals path demonstrates the pattern: accession-grain facts keep original filings, the SEC replay emits complete filing-date snapshots, the Sharadar history reads only Sharadar, and the cube joins three SEC columns on the exact `(ticker, as_of)` key. See [point-in-time data](../concepts/point-in-time-data.md).
 
+Governance later-filing attribute fills and the pooled13F unit/value repair keep their original retrospective evidence rules. Destination publication buffers and bounded writes still apply. These approved exceptions do not establish strict donor-level causality; see [configuration and recovery](../reference/configuration.md#cube-timing-and-recovery).
+
 ## Incremental cube parts
 
-[incremental.py](../../src/data_aggregate/utils/common/incremental.py) is the one lifecycle implementation:
+[incremental.py](../../src/data_aggregate/utils/common/incremental.py) provides the shared lifecycle. Each part resolves one `WindowPlan` from the Context run, its table policy and the retained market calendar:
 
 ```python
-window = plan_window(
-    store,
-    Tables.cube_part_momentum,
-    full=full,
-    warmup=self._warmup(),
-    trading_index=load_trading_calendar(store),
-)
-result = write_part(store, Tables.cube_part_momentum, panel, window, drop_empty=True)
-if result == COLUMNS_CHANGED:
-    return self.run(full=True)
+calendar = load_trading_calendar(context)
+window = plan_window(context, Tables.cube_part_momentum, calendar)
+if window is not None:
+    # Compute panel with window.read and the required retained source context.
+    write_part(context.store, Tables.cube_part_momentum, panel, window, drop_empty=True)
 ```
 
-The part registry declares warm-up days and binding look-backs. A trailing recompute is valid only when every bounded daily look-back fits inside that warm-up and cross-sectional transforms are date-local. Tests prove full-versus-incremental equivalence for representative builders.
+[data.yml](../../configs/data.yml) owns source extraction starts, overlap references, source publication columns/lags and explicit cube input-history maps. Raw prices define root output dates; saved price dates/keys define downstream output. Cubes have no independent start/end/PIT block. Each input integer is additional calendar days before actual rewrite start; `null` is full stored history and zero includes the first rewritten date. Missing dependencies fail. The part registry retains binding mathematical look-back checks; it supplies no fallback budget. Substeps reuse explicit resolved Windows and preserve entity/column projections. Insufficient finite budgets refuse instead of widening.
 
-SEC 13F retains full sparse source history and original calendar ordinals for exact quarterly/yearly matched comparisons, observed holding duration and public-book age. `StepCubeSecThirteen` plans once, prepares books/features once and projects daily values only over the effective output window. With current defaults, an up-to-date run computes 398 dates and rewrites eight inclusively. Earlier bounded projection blocks establish historical column support when needed; real schema drift reprojects the same prepared facts over the full calendar without another source read or book build. Other builders retain their own contracts, including the generic example above.
+Writes replace only the plan's authorized dates and keys in one transaction. A failed or unavailable input is distinct from a valid empty correction. Invalid candidate keys or unexpected schema changes refuse persistence; widening retained history requires an explicit rebuild. Reading older history or probing historical column support does not authorize a wider write.
 
-A failed previously saved SEC 13F source family aborts before persistence. The price calendar must cover the saved dates inside the actual replacement interval: the inclusive tail for an ordinary refresh, and the whole saved part for a full or schema-promoted replacement. A missing date confined to the untouched prefix does not block a tail refresh. A successful nonempty, known-schema incremental grid clears the inclusive tail even when every resulting feature is unknown. A genuinely empty result or an all-null full rebuild still preserves the previous table. The existing store `append_tail` deletes and appends in separate transactions, so interruption after deletion remains a recovery limitation; this refactor does not change that store contract.
+SEC13F retains complete sparse books and original calendar ordinals for its matched comparisons, holding duration and public-book age. The approved bounded-memory path retains one broad source stream and two complete-roster passes for consensus and final repair, using identical declared source bounds. Daily projection uses the actual write interval; older projection blocks establish retained column support when necessary. Its normal write overlap is 100 calendar days, as configured in data.yml. A failed previously saved source family or missing required price coverage inside the replacement interval aborts persistence; an untouched older prefix does not force a wider rewrite.
 
-`StepCubeInstitutionals` retains complete dependency history and computes each family once, with read/clean/rebase/compute visible in the step. It rewrites only its seven-session tail in one transaction (a full replace on a schema change), dropping canonical all-null rows. It never widens that rewrite for a price-history change: it reads only the saved PIT price columns, which a later split leaves unchanged before its date. Candidate keys are validated before writing; an empty candidate writes nothing. `run(full)` controls persistence; `build_panel()` takes no unused full flag. Other builders retain their own writer contracts.
+`StepCubeInstitutionals` retains the history needed for cumulative state and computes each family once. Its normal write overlap is 30 calendar days. The root Context run controls full versus incremental mode; there is no separate `run(full)` or lower-level overlap default. A split or a larger read history does not silently widen the authorized write interval.
 
-A declaration can still be wrong. Governance required a longer warm-up because a daily five-year self-history feature lived on top of annual filing inputs. Expanding institutional state cannot be reconstructed from a finite source tail. The SEC 13F step therefore retains complete sparse dependencies while bounding its daily projection; `StepCubeInstitutionals` keeps its separate full-history calculation contract.
+Governance keeps its original later-filing fills and five-year daily self-history context. Its configured 380-calendar-day write tail leaves older corrections for an explicit `build-governance -F` and subsequent assembly. Text separately uses its configured seven-calendar-day feature tail and required emitter/predecessor calls. Assembly inherits the earliest actual write start among its selected components, resolving mixed units through dates rather than taking a maximum of unlike integers.
+
+The scoped full-versus-rerun checks compare actual values, keys and nulls, deliberately repair a wrong saved cell inside the write interval, and check genuine older witnesses where available. They validate the observed sample and retained calculation context rather than certifying a full production backfill.
 
 ## SEC and XBRL handling
 
@@ -168,7 +167,7 @@ A declaration can still be wrong. Governance required a longer warm-up because a
 
 ## Artifact boundary
 
-[Context](../../src/context.py) resolves the root, data store, output, models, peer dictionary, and diagnostic paths. Source caches (bulk archives, the EDGAR filing index, the 13F data sets) hold source files only; no file under `data/` decides what a run fetches.
+[Context](../../src/context.py) resolves the root, store and artifact paths from configuration. Archive files are source caches: download planning can reuse validated files and queue missing published units from the configured inventory. Database Resume/completion worklists determine ingestion; a file modification time never supplies a business publication date or an ingestion frontier.
 
 Both `data/` and the PostgreSQL volume are risk zones. Ask before modifying or deleting either.
 
@@ -206,4 +205,4 @@ A book needs only `book_known` to count its holdings, tenure and pairs; `zero_el
 
 ## Text output windows
 
-[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) has independent scopes: compact source/model keys for all missing or failed NLP work, one selected paragraph payload shared by the models, and required saved outputs for feature creation. Normal feature writes start at the stored text-part max date minus 30 calendar days. Only required emitter/predecessor calls are selected, while price availability and daily arrays cover the output tail. Sentiment and price frames are materialized once; vectors stream in ordered 5,000-row chunks and are reduced to call coherence and pooled vectors before issuer comparisons. A full/cold/schema-change rebuild therefore does not materialize the complete turn-vector table. Older source revisions require explicit full feature rebuilding, without repeating valid inference.
+[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) separates source acquisition, cached NLP work and feature writes. Routine earnings-call acquisition checks the configured 180-calendar-day source range. NLP stages compare compact source keys within their configured source-prefix bounds and compute only missing or invalid outputs; they reuse valid cached sentiment and embeddings. Normal feature writes start at the stored text frontier minus the configured seven calendar days. Only active emitters and their actual adjacent fiscal predecessors are selected for those feature dates. Paragraph payloads and sentiment/price frames are reused, and vectors stream in ordered bounded chunks. Older source revisions require an explicit full feature rebuild and subsequent assembly, with valid NLP outputs reused.

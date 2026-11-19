@@ -45,7 +45,6 @@ from src.modelling.utils.cv import label_end_dates, purged_wf_splits
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
 from src.modelling.utils.panel import load_frame
-from src.utils.freshness import check_prediction_inputs
 from src.utils.modelling_runs import contained_path, new_run_id, read_fitting_configuration, run_directory, select_run
 from src.utils.step import Step
 
@@ -330,7 +329,7 @@ class StepLongShort(Step):
         if not horizons:
             raise FileNotFoundError(
                 f"The cube carries no 'target_{self.target_type}_h*' column at all. Run StepBuildCube first "
-                f"(and confirm build_cube.targets.labels includes '{self.target_type}')."
+                f"(and confirm data_aggregate.targets.labels includes '{self.target_type}')."
             )
         restriction = self._config.model.get("horizons")
         if restriction is not None:
@@ -630,9 +629,6 @@ class StepLongShort(Step):
         train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
         predicted_at = pd.Timestamp.now().floor("s")
         store = self._context.store
-        min_share = float(self._config.data_extract.prediction_fresh_share)
-        shares = check_prediction_inputs(store, self._universe.tickers, pd.Timestamp(self._today), min_share)
-        self._log.info("run_predict: per-key fresh share %s (minimum %.2f)", {name: round(share, 3) for name, share in shares.items()}, min_share)
 
         dates = sorted(pd.Timestamp(d).normalize() for d in store.distinct(Tables.cube, "date", order="desc", limit=int(n_dates)))
         if not dates:

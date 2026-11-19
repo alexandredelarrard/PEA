@@ -17,10 +17,10 @@ capped by Airflow POOLS (created in airflow-init):
                           vote parser (stored text only, no SEC read)  (+ the one heavy yfinance pull: price_history)
 
 Flow: [sec_company_tickers, sharadar_tickers, sharadar_actions, sec_submissions] -> universe_sync -> zips_download -> identity
--> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger the data_aggregation DAG. The four
+-> (fetchers, with source dependencies) -> identity_check -> trigger the data_aggregation DAG. The four
 evidence tasks land before identity reads them; `universe_sync` runs on ALL_DONE, so a failed evidence refresh leaves the
 identity build on the stored inputs. Every task has `retries: 3`, so four attempts in all. No source blocks
-the night: `extraction_status` and `identity_check` run on ALL_DONE, so they start once every fetcher
+the night: `identity_check` runs on ALL_DONE, so it starts once every fetcher
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
 hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `universe_tickers`
 differs from `configs/universe.yml`. Identity stage: zips_download -> identity
@@ -38,9 +38,7 @@ storing its text: sec_employees_text -> sec_employees_llm; [sec_def14a_text, sec
 sec_8k_votes. Fundamentals are two independent producers, no path between them: identity -> edgar_index ->
 sec_fundamentals_facts -> sec_fundamentals_history, and identity -> fundamentals_sharadar (an identity consumer: its
 history is keyed through the lineage); fundamentals_check logs the SEC vs Sharadar comparison after both on ALL_DONE,
-so either side failing still runs it. After every fetcher, `extraction_status` prints the
-per-table freshness report, logs a WARNING per RED table and exits 0; only `modelling predict` refuses stale
-inputs. Then `identity_check` (`python -m src validate identity`) fails on rows filed by a CIK outside the
+so either side failing still runs it. After every fetcher, `identity_check` (`python -m src validate identity`) fails on rows filed by a CIK outside the
 ticker's entity or a broken lineage invariant, which holds the aggregation trigger.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
@@ -59,6 +57,7 @@ PROJECT = "/opt/airflow/project"  # the repo, bind-mounted
 CONFIGS = f"{PROJECT}/configs"
 PIPE_PY = "/opt/pipeline/bin/python"  # pipeline's isolated venv interpreter
 PIPE = f"{PIPE_PY} -m src data_extract"
+RUN_AS_OF = "{{ macros.datetime.fromisoformat(dag_run.conf.get('as_of') or dag_run.start_date.isoformat()).isoformat() }}"
 
 default_args = {
     "owner": "pea",
@@ -89,7 +88,7 @@ def fetch(
     """Run one retryable extraction command from the pipeline venv."""
     return BashOperator(
         task_id=task_id or cmd.replace("-", "_"),
-        bash_command=f"{PIPE} {cmd} -c {CONFIGS}",
+        bash_command=f'{PIPE} {cmd} -c {CONFIGS} --as-of "{RUN_AS_OF}"',
         cwd=PROJECT,
         pool=pool,
         pool_slots=2 if pool == "sec_api" else 1,
@@ -162,9 +161,9 @@ sec_8k_votes = fetch("sec-8k-votes")  # parses stored Item 5.07 narratives and t
 # 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")
 
-# 6) the schema-driven freshness report (exit 0), then the identity check: rows filed by a CIK outside the
+# 6) the identity check: rows filed by a CIK outside the
 #    ticker's entity, or a broken lineage invariant, fail it (the items needing a manual decision are logged,
-#    not failed). Both run whatever the fetchers' outcome; aggregation is triggered only on the check's success.
+#    not failed). It runs whatever the fetchers' outcome; aggregation is triggered only on the check's success.
 identity_check = BashOperator(
     task_id="identity_check",
     bash_command=f"{PIPE_PY} -m src validate identity -o {PROJECT}/reports/validate/identity-nightly -c {CONFIGS}",
@@ -172,11 +171,11 @@ identity_check = BashOperator(
     trigger_rule=TriggerRule.ALL_DONE,
     dag=dag,
 )
-extraction_status = fetch("extraction-status", task_id="extraction_status", trigger_rule=TriggerRule.ALL_DONE)
 
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",
+    conf={"as_of": RUN_AS_OF},
     wait_for_completion=False,
     reset_dag_run=True,
     trigger_rule=TriggerRule.ALL_SUCCESS,
@@ -247,5 +246,5 @@ sec_fundamentals_facts >> sec_fundamentals_history
 sec_employees_text >> sec_employees_llm  # the LLM decides what the walk stored tonight
 [sec_def14a_text, sec_8k_items] >> sec_def14a_llm >> sec_8k_votes  # votes read the 8-K narratives and the DEF 14A tables
 
-# every source done (failed or not) -> freshness report -> identity check -> aggregation only when the check passed
-all_fetchers >> extraction_status >> identity_check >> trigger_aggregation
+# Every source finishes (failed or not), then identity gates aggregation.
+all_fetchers >> identity_check >> trigger_aggregation

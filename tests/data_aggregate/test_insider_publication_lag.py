@@ -5,19 +5,20 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.constants.constants import SOURCE_AVAILABILITY_BUFFER_DAYS
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
-from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_store.schema import Tables
+from src.utils.data_policy import publication_policy
+from src.utils.publication import point_in_time
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.test_insider_features import _frame, _peers, _txn
+from tests.data_extract.fake_context import extract_config
 
 SESSIONS = pd.bdate_range("2015-06-01", "2015-07-31").drop(pd.Timestamp("2015-06-15"))  # Monday 06-15 is a holiday here
 
 
 def test_the_lag_is_one_calendar_day() -> None:
-    assert SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.insider_transactions.name] == 1
+    assert int(publication_policy(extract_config(), Tables.insider_transactions).lag_days) == 1
     print("SANITY: the registered insider availability buffer is 1 calendar day.")
 
 
@@ -31,9 +32,11 @@ def test_the_lag_is_one_calendar_day() -> None:
     ],
 )
 def test_publication_day_rolls_to_the_next_session(filed: str, visible: str) -> None:
-    got = publication_day(pd.Series(pd.to_datetime([filed, None])), 1, SESSIONS)
-    assert got.iloc[0] == pd.Timestamp(visible) and pd.isna(got.iloc[1])
-    print(f"SANITY: filed {filed} -> visible {visible}; a missing date stays missing.")
+    source = pd.DataFrame({"filing_date": pd.to_datetime([filed, None])})
+    got = point_in_time(source, extract_config(), Tables.insider_transactions, SESSIONS)
+    assert got.as_of.tolist() == [pd.Timestamp(visible)]
+    assert got._source_filing_date.tolist() == [pd.Timestamp(filed)]
+    print(f"SANITY: filed {filed} -> visible {visible}; the invalid-date row is excluded and valid source evidence survives.")
 
 
 @pytest.mark.parametrize(("filed", "first_visible"), [("2015-06-05", "2015-06-08"), ("2015-06-08", "2015-06-09")])

@@ -55,9 +55,15 @@ import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.source_join import join_sec_columns
+from src.data_aggregate.utils.institutionals.ownership_features import ScheduleSource
+from src.data_aggregate.utils.institutionals.short_flow_features import FtdSource
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_store.schema import Tables
+from src.utils.config import read_config
+from src.utils.publication import point_in_time
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
+from tests.support.config import fixture_config
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("aggregate_fingerprint_baseline.json")
@@ -756,7 +762,6 @@ def compute() -> dict:
     from src.data_aggregate.utils.institutionals.short_flow_features import (
         FtdPublication,
         ShortFlowCapital,
-        _ftd_available_dates,
         build_short_flow_feature_panel,
         prepare_fails_quantities,
         secondary_class_volume,
@@ -876,12 +881,15 @@ def compute() -> dict:
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
     out["panel.earnings"] = frame_digest(
-        build_earnings_feature_panel(earn, PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close))
+        build_earnings_feature_panel(
+            point_in_time(earn, fixture_config(), Tables.earnings_surprises, idx),
+            PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close),
+        )
     )
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(
         build_dividend_feature_panel(
-            div,
+            point_in_time(div, fixture_config(), Tables.prices_dividends, idx).assign(available_on=lambda rows: rows["as_of"]),
             replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
             FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
         )
@@ -891,18 +899,20 @@ def compute() -> dict:
     share_events = resolve_share_events(None, splits, {})
     df_basis = security_basis_frame(share_events, idx, close.columns)
     observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0)
-    saved_shares, _ = project_security_shares(observations, share_events, df_basis)
+    saved_shares, _ = project_security_shares(observations.assign(_available_on=observations["as_of"]), share_events, df_basis)
     df_terminal = terminal_basis_factor(df_basis)
     short_capital = ShortFlowCapital(saved_shares * df_terminal, with_class_volume(px["volume"], class_volume))
-    ftd_coverage = ftd[["date", "period"]]
+    ftd_coverage = point_in_time(ftd[["date", "period"]], fixture_config(), Tables.sec_fails_to_deliver_security, idx)
     ftd_settlement = prepare_fails_quantities(terminal_rows(ftd, ("fails_quantity",), df_terminal), ftd_coverage, idx, None, None)
-    ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
+    available = ftd_coverage.drop_duplicates("period").set_index("period")["as_of"].to_dict()
+    ftd_publication = FtdPublication(ftd_coverage, available)
     df_short_flow = build_short_flow_feature_panel(
         make_frames(idx, peers, volume=px["volume"], close_total=close),
-        terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal),
-        ftd_settlement,
+        point_in_time(
+            terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal), fixture_config(), Tables.sec_short_volume_security, idx
+        ),
+        FtdSource(ftd_settlement, ftd_publication),
         short_capital,
-        ftd_publication,
     )
     assert df_short_flow["f_ic_ftd_persistence_30d"].nunique() > 1, "Do not freeze unavailable FTD persistence"
     out["panel.short_flow"] = frame_digest(df_short_flow)
@@ -910,7 +920,13 @@ def compute() -> dict:
     for column in ("f_ic_insider_purchase_pct_prior_60d", "f_ic_insider_purchase_pct_prior_120d", "f_ic_insider_conviction_60d"):
         assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
     out["panel.insider"] = frame_digest(df_insider)
-    out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
+    out["panel.ownership"] = frame_digest(
+        build_ownership_feature_panel(
+            make_frames(idx, peers),
+            (ScheduleSource(Tables.sec_13d, sec_13d, None), ScheduleSource(Tables.sec_13g, sec_13g, None)),
+            read_config("./configs"),
+        )
+    )
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(
         {

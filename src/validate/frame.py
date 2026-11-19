@@ -14,10 +14,13 @@ Both sides go through here.
 
 from __future__ import annotations
 
+import calendar
+import re
 from collections.abc import Sequence
 from typing import Any
 
 import pandas as pd
+from pandas._libs.tslibs.nattype import NaTType
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 
 from src.context import Context
@@ -96,6 +99,20 @@ def as_ts(values: Any) -> Any:
     except (TypeError, ValueError):
         return pd.NaT
     return stamp.as_unit("ns") if stamp is not pd.NaT else pd.NaT
+
+
+def archive_period_end(value: object) -> pd.Timestamp | NaTType:
+    """Normalize source archive tags independently of the production publication helper."""
+    tag = str(value)
+    if not re.fullmatch(r"\d{4}(?:q[1-4]|_\d{2}|\d{2}[ab])", tag):
+        return pd.NaT
+    year = int(tag[:4])
+    month = int(tag[4:6]) if tag[-1] in "ab" else int(tag[-2:]) if "_" in tag else int(tag[-1]) * 3
+    try:
+        day = 15 if tag[-1] == "a" else calendar.monthrange(year, month)[1]
+        return pd.Timestamp(year=year, month=month, day=day)
+    except (ValueError, OverflowError):
+        return pd.NaT
 
 
 def column_groups(columns: Sequence[str], size: int) -> list[list[str]]:

@@ -13,9 +13,8 @@ Three legs, in order:
 WIDE is the compute contract (gap-filling and spreads need aligned columns), LONG is the
 storage contract.
 
-No incremental machinery: the whole history is re-pulled and `replace`d each run (~40k
-yfinance rows + 7 FRED calls), so a changed series definition can never leave stale rows
-behind. Skipped entirely when the core level series already reach the previous business day.
+Each series rewrites its configured overlap. Computation retains the fixed source origin
+so the cumulative bond index keeps the same normalization across the replacement boundary.
 
 Needs a free FRED key (https://fred.stlouisfed.org/docs/api/api_key.html -> FRED_API_KEY in
 .env) and network for yfinance.
@@ -34,16 +33,17 @@ from src.constants.constants_price import (
     MACRO_ALL_SERIES,
     MACRO_BOND_MATURITY_YEARS,
     MACRO_BOND_TR_SERIES,
-    MACRO_CORE_LEVEL_SERIES,
     MACRO_FRED_SERIES,
     MACRO_PRICE_SERIES,
     MACRO_SPREAD_SERIES,
 )
 from src.context import Context
+from src.data_extract.utils.common.resume import SeriesRequest, series_windows
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.schema import Tables
+from src.utils.data_policy import window_policy
 from src.utils.ssl_setup import configure_corporate_ca
-from src.utils.string import run_date
+from src.utils.window import Window
 
 # ORDERING, not a side-effect to tidy away: importing `download_ohlcv` pulls in yfinance,
 # which imports curl_cffi at module load and FREEZES its CA bundle then -- so the combined
@@ -156,7 +156,7 @@ def _fetch_price_leg(context: Context, since: pd.Timestamp, until: pd.Timestamp)
 
     This is why `download_ohlcv` takes `auto_adjust` as a required argument instead of
     hard-coding it: the equity leg needs `False`, and this leg must not follow it."""
-    raw = download_ohlcv(list(MACRO_PRICE_SERIES), since, until, desc="Downloading macro/market prices", auto_adjust=True, actions=False)
+    raw = download_ohlcv(list(MACRO_PRICE_SERIES), Window(since, until), auto_adjust=True, actions=False)
     if raw is None or raw.empty:
         context.log.warning("yfinance returned nothing for the macro price legs %s", list(MACRO_PRICE_SERIES))
         return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
@@ -178,14 +178,14 @@ def _fetch_price_leg(context: Context, since: pd.Timestamp, until: pd.Timestamp)
     return wide
 
 
-def _fetch_fred_leg(since: pd.Timestamp) -> pd.DataFrame:
+def _fetch_fred_leg(window: Window) -> pd.DataFrame:
     """The FRED LEVEL legs -> date-indexed wide frame under their series names."""
     fred = Fred(api_key=os.getenv("FRED_API_KEY"))
-    frame = {name: fred.get_series(sid, observation_start=since) for sid, name in MACRO_FRED_SERIES.items()}
+    frame = {name: fred.get_series(sid, observation_start=window.start, observation_end=window.end) for sid, name in MACRO_FRED_SERIES.items()}
     df = pd.DataFrame(frame)
     df.index = pd.to_datetime(df.index)
     df.index.name = "date"
-    return df.sort_index()
+    return df.loc[(df.index >= window.start) & (df.index <= window.end)].sort_index()
 
 
 def derive_series(wide: pd.DataFrame, context: Context | None = None) -> pd.DataFrame:
@@ -220,68 +220,50 @@ def to_long(wide: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # freshness + entry point                                                     #
 # --------------------------------------------------------------------------- #
-def _is_up_to_date(context: Context) -> bool:
-    """True only when EVERY core level series already reaches the previous business day.
+def build_macro_frame(context: Context, window: Window) -> pd.DataFrame:
+    """Fetch bounded source context, align levels and preserve the cumulative bond origin."""
+    prices = _fetch_price_leg(context, window.start, window.end)
+    fred = _fetch_fred_leg(window)
 
-    Per-series, not the table's overall max date: that was the bug both predecessors had --
-    one same-day-publishing series marked the table current while the lagging level block
-    stayed stale. Previous business day, not today, because these sources publish with a
-    ~1 BDay lag. One grouped aggregate; never reads the rows."""
-    last_by_series = context.store.max_date_by(Tables.prices_macro, "ticker", "date")
-    if not last_by_series:
-        return False
-    core = [last_by_series[s] for s in MACRO_CORE_LEVEL_SERIES if s in last_by_series]
-    if len(core) < len(MACRO_CORE_LEVEL_SERIES):
-        return False  # a core series has no rows at all
-    last_expected = run_date(None) - pd.tseries.offsets.BDay(1)
-    return bool(min(core) >= last_expected)
-
-
-def build_macro_frame(context: Context, years_history: int) -> pd.DataFrame:
-    """Fetch, align, gap-fill and derive -> the long frame ready to store. Separated from
-    `fetch_macro` so the shape can be tested without touching the DB."""
-    # Clamp the price leg to the last SETTLED close. This table matters more than `prices` for
-    # the clamp: `equity_tr`'s dates ARE the cube's trading calendar
-    # (`StepCubePrices._trading_calendar`), so a mid-session bar here does not just carry a
-    # partial close -- it admits a half-session DATE into the grid every part is built on.
-    until = last_completed_session()
-    since = until - pd.DateOffset(years=years_history)
-
-    prices = _fetch_price_leg(context, since, until)
-    fred = _fetch_fred_leg(since)
-
-    # union of both calendars (yfinance trades US market days, FRED publishes on its own),
-    # then carry the last observation across only the sporadic short gaps that
-    # misalignment creates -- forward-only, so no stored cell is derived from a later day
+    # Retain the fixed configured origin before calculating cumulative index levels.
     wide = prices.join(fred, how="outer").sort_index()
+    wide = wide.loc[(wide.index >= window.start) & (wide.index <= window.end)]
     wide = fill_short_gaps(wide, list(wide.columns))
-    wide = derive_series(wide, context)
-    return to_long(wide)
+    return to_long(derive_series(wide, context))
 
 
-def fetch_macro(context: Context, years_history: int) -> None:
-    """Refresh `prices_macro`: every macro / market series, long, one source each.
-
-    `years_history` is passed IN (resolved by StepExtractPrices.run / the CLI) rather than
-    read off the config here -- the same contract as fetch_prices,
-    which keeps both windows visible at the one place that owns them."""
-    if not os.getenv("FRED_API_KEY"):
-        raise RuntimeError("FRED_API_KEY not set. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html and add it to your .env file.")
-
-    if _is_up_to_date(context):
-        context.log.info("Macro series already up to date - skipping (DB table '%s')", Tables.prices_macro)
+def fetch_macro(context: Context) -> None:
+    """Recompute macro context and replace each series only within its configured tail."""
+    policy = window_policy(context.config, Tables.prices_macro, context.run.as_of)
+    if policy is None:
+        return
+    until = min(policy.requested.end, last_completed_session(context.run.instant))
+    if until < policy.requested.start:
         return
 
-    long = build_macro_frame(context, years_history)
+    # Each series uses its own frontier; a missing series retains initial-history work.
+    work = series_windows(context, Tables.prices_macro, SeriesRequest(list(MACRO_ALL_SERIES), None, until=until))
+    if not work.groups():
+        return
+    if not os.getenv("FRED_API_KEY"):
+        raise RuntimeError("FRED_API_KEY not set. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html and add it to your .env file.")
+    read = Window(policy.requested.start, until)
+    long = build_macro_frame(context, read)
     if long.empty:
-        raise RuntimeError(f"No macro rows built -> refusing to wipe '{Tables.prices_macro}'")
+        raise RuntimeError(f"No macro rows built -> refusing to clear '{Tables.prices_macro}'")
 
-    # replace, not upsert: the full history is re-fetched every run, so a clean rewrite never
-    # leaves stale rows behind when a series definition changes.
-    context.store.replace(Tables.prices_macro, long)
-    stored = sorted(long["ticker"].unique())
-    context.log.info("Saved %d rows / %d series to DB table '%s' (%d-year window)", len(long), len(stored), Tables.prices_macro, years_history)
+    # A missing provider family cannot clear previously saved observations.
+    served = set(long["ticker"])
+    written = 0
+    for window, keys in work.groups():
+        retained = sorted(set(keys) & served)
+        frame = long.loc[window.mask(long["date"]) & long["ticker"].isin(retained)]
+        if not frame.empty:
+            written += context.store.replace_window(Tables.prices_macro, frame, window, {"ticker": retained}).inserted
 
-    missing = [s for s in MACRO_ALL_SERIES if s not in stored]
+    context.log.info(
+        "Saved %d macro rows; causal context %s..%s; per-series writes use configured windows", written, read.start.date(), read.end.date()
+    )
+    missing = sorted(set(MACRO_ALL_SERIES) - served)
     if missing:
-        context.log.warning("series expected by the registry but not stored: %s", missing)
+        context.log.warning("Macro series unavailable this run and left unchanged: %s", missing)

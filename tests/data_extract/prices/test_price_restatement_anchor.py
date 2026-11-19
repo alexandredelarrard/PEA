@@ -28,6 +28,7 @@ from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_extract.utils.prices.anchor_check import anchor_restated
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
@@ -142,7 +143,7 @@ def _seed(
     """Store `stored` (through `_LAST_STORED`, dividends all zero) then make Yahoo answer with `fresh`."""
     yahoo.response = stored
     first = min(frame.index.min() for frame in stored.values())
-    bars = fp.download_ohlcv(list(stored), first, _LAST_STORED, pause=0.0, auto_adjust=False, actions=False)
+    bars = fp.download_ohlcv(list(stored), Window(first, _LAST_STORED), pause=0.0, auto_adjust=False, actions=False)
     if mutate is not None:
         bars = mutate(bars)
     store.save(Tables.prices, bars)

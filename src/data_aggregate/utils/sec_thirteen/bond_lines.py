@@ -14,7 +14,7 @@ def bond_line_mask(lines: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.Series:
     """Lines whose position is bond principal filed as shares: a letter issue number on a numeric-issuer CUSIP, or a bond title with no ticker.
 
     `lines` carries `cusip`, `issuer_name`, `title_of_class` and `ticker` (a column the table lacks reads empty). `cfg` is
-    `build_cube.bond_lines`. A CUSIP line is a bond unless its issuer or title names a fund, ADR or placeholder; a line with no ticker is
+    `data_aggregate.bond_lines`. A CUSIP line is a bond unless its issuer or title names a fund, ADR or placeholder; a line with no ticker is
     also a bond when its title has a note, convertible, debenture, coupon or maturity marker and no preferred, warrant, unit or right word.
     """
     # Text of the line, upper case (empty where missing or the table lacks the column).

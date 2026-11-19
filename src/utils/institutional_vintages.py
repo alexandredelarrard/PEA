@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections.abc import Iterable
@@ -10,14 +11,13 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 
 from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_RATIO_BOUNDS
+from src.data_store.schema import Tables
+from src.utils.publication import market_days, point_in_time
 
-#: A 13F-HR is due 45 days after quarter-end, so a quarter's positions are knowable from then on.
-SEC_13F_FILING_LAG_DAYS = 45
-
-#: The 13F availability date, in trading days past the snapped filing deadline.
-F13_SETTLE_TRADING_DAYS = 3
+logger = logging.getLogger(__name__)
 
 
 def literal_13f_cusip(value: Any) -> str | None:
@@ -94,70 +94,29 @@ def reconcile_13f_source(
     return None
 
 
-def availability_date(
-    periods: pd.Series | pd.DatetimeIndex,
-    trading_index: pd.DatetimeIndex,
-    *,
-    settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
-) -> pd.Series:
-    """The date each 13F `period` becomes public: the filing deadline snapped forward onto the trading calendar, plus
-    the settle, on `periods`' own index (a `DatetimeIndex` is its own index: a period -> date lookup).
-
-    A deadline past the end of the calendar is NaT, never the last session (that would publish early); a deadline
-    before its start is the first session, without the settle (those books were public before the panel begins).
-    """
-    if settle_trading_days < 0:
-        raise ValueError(f"settle_trading_days must be >= 0, got {settle_trading_days!r}")
-    values = pd.to_datetime(
-        periods if isinstance(periods, pd.Series) else pd.Series(pd.DatetimeIndex(periods), index=pd.DatetimeIndex(periods)), errors="coerce"
-    ).dt.normalize()
-
-    grid = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
-    if grid.empty:
-        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
-
-    deadline = values + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    snap = grid.searchsorted(deadline.to_numpy(), side="left")
-    # The settle applies only where the deadline is inside the calendar.
-    pos = np.where(deadline.to_numpy() < grid[0].to_datetime64(), snap, snap + settle_trading_days)
-    return pd.Series(
-        np.where(
-            (pos < len(grid)) & deadline.notna().to_numpy(),
-            grid.to_numpy()[np.clip(pos, 0, len(grid) - 1)],
-            np.datetime64("NaT"),
-        ),
-        index=values.index,
-        dtype="datetime64[ns]",
-    )
+def filing_public_dates(manifests: pd.DataFrame, trading_index: pd.DatetimeIndex, config: DictConfig) -> pd.Series:
+    """Each filing's public/accepted date plus its configured calendar buffer, for every book family."""
+    prepared = point_in_time(manifests.reset_index(drop=True), config, Tables.sec13f_hr, trading_index)
+    public = prepared["as_of"].reindex(pd.RangeIndex(len(manifests)))
+    public.index = manifests.index
+    valid = valid_reporting_periods(manifests, config)
+    if not valid.all():
+        logger.warning("13F: excluded %d invalid reporting periods; stored source rows are unchanged", int((~valid).sum()))
+    return public.where(valid)
 
 
-def filing_public_dates(
-    manifests: pd.DataFrame,
-    trading_index: pd.DatetimeIndex,
-    settle_days: int = F13_SETTLE_TRADING_DAYS,
-) -> pd.Series:
-    """Daily features conservatively use the session after filing, never extraction time."""
-    grid = pd.DatetimeIndex(trading_index).normalize().drop_duplicates().sort_values()
-    filed = pd.to_datetime(manifests["filing_date"]).dt.normalize()
-    if "accepted_at" in manifests:
-        accepted = pd.to_datetime(manifests["accepted_at"], utc=True)
-        local_day = accepted.dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
-        filed = pd.concat([filed, local_day], axis=1).max(axis=1)
-    locations = grid.searchsorted(pd.DatetimeIndex(filed), side="right")
-    next_session = pd.Series(pd.NaT, index=manifests.index, dtype="datetime64[ns]")
-    eligible = locations < len(grid)
-    next_session.loc[eligible] = grid[locations[eligible]]
-    deadline = availability_date(pd.DatetimeIndex(pd.to_datetime(manifests["period"])), grid, settle_trading_days=settle_days)
-    first = pd.Series(deadline.to_numpy(), index=manifests.index)
-    # No later amendment is capped by the old 105-day filing band.
-    return pd.concat([first, next_session], axis=1).max(axis=1).where(first.notna() & next_session.notna())
+def valid_reporting_periods(manifests: pd.DataFrame, config: DictConfig) -> pd.Series:
+    """Valid reporting quarters, never after the filing that reports them."""
+    periods, filed = market_days(manifests["period"]), market_days(manifests["filing_date"])
+    valid = periods.notna() & periods.dt.is_quarter_end & periods.le(filed)
+    return valid
 
 
 def prepare_book_vintages(
     manifests: pd.DataFrame,
     holdings: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
-    settle_days: int = F13_SETTLE_TRADING_DAYS,
+    config: DictConfig,
 ) -> pd.DataFrame:
     """Validate vintage identities and prepare immutable publication facts once."""
     if manifests["accession_number"].duplicated().any():
@@ -165,8 +124,8 @@ def prepare_book_vintages(
     if holdings.duplicated(["cik", "accession_number", "cusip"]).any():
         raise ValueError("13F holding vintages must be unique")
     df_manifest = manifests.copy()
-    df_manifest["period"] = pd.to_datetime(df_manifest["period"])
-    df_manifest["public_at"] = filing_public_dates(df_manifest, trading_index, settle_days)
+    df_manifest["period"] = market_days(df_manifest["period"])
+    df_manifest["public_at"] = filing_public_dates(df_manifest, trading_index, config)
     df_manifest["_accepted_at"] = pd.to_datetime(df_manifest["accepted_at"], utc=True) if "accepted_at" in df_manifest else pd.NaT
     df_manifest["_amended"] = df_manifest.amendment_type.ne("original")
     return df_manifest
@@ -177,10 +136,10 @@ def public_books(
     holdings: pd.DataFrame,
     as_of: object,
     trading_index: pd.DatetimeIndex,
-    settle_days: int = F13_SETTLE_TRADING_DAYS,
+    config: DictConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Resolve raw complete public books without mutating any vintage."""
-    df_manifest = prepare_book_vintages(manifests, holdings, trading_index, settle_days)
+    df_manifest = prepare_book_vintages(manifests, holdings, trading_index, config)
     return resolve_prepared_books(df_manifest, holdings, as_of)
 
 

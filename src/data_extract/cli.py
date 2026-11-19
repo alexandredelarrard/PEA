@@ -7,7 +7,7 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -54,16 +54,14 @@ from src.constants.command_line_interface import (
     TIMINGS_KWARGS,
     VERIFY_HISTORY_ARGS,
     VERIFY_HISTORY_KWARGS,
-    YEARS_ARGS,
-    YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
-from src.data_extract.transformers.step_extract_edgar import EDGAR_WALKS, EdgarOptions, StepExtractEdgar, widest_index_years
+from src.data_extract.transformers.step_extract_edgar import EDGAR_WALKS, EdgarOptions, StepExtractEdgar, widest_index_window
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
-from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_identity import StepExtractIdentity
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
@@ -83,10 +81,9 @@ from src.data_extract.utils.institutionals.fetch_short_interest import fetch_sho
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
-from src.data_store.schema import Table, freshness_tables, marker_tables, resolve
+from src.data_store.schema import Table, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
-from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
-from src.utils.string import run_date
+from src.utils.window import Window
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -97,66 +94,6 @@ def cli() -> None:
 def _tickers(context: Context, tickers: str | None) -> list[str]:
     """The --tickers subset, checked against the universe, else the whole universe."""
     return context.universe.subset(tickers.split(",")) if tickers else context.universe.tickers
-
-
-def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
-    """The `--as-of` date for market-data fetchers, or None so they end at the last session completed now."""
-    return None if as_of is None else run_date(as_of)
-
-
-def _table_status(context: Context, table: Table, universe: list[str], as_of: pd.Timestamp, min_share: float) -> dict[str, object]:
-    """One table's freshness: the table-wide age, and for a ticker table the per-key share of the universe.
-
-    RED when the age exceeds the cadence, or when a prediction input's share is below `min_share`."""
-    age_days = table_freshness(context.store, table, as_of)
-    max_age = max_age_days(table)
-    ok = age_days is not None and age_days <= max_age
-    share = None
-    if table.ticker_col is not None:
-        last_by_key = last_dates_by_key(context.store, table)
-        if table in PREDICTION_INPUTS or not set(universe).isdisjoint(last_by_key):
-            share = fresh_share(last_by_key, universe, as_of, max_age)
-    if table in PREDICTION_INPUTS:
-        ok = ok and share is not None and share >= min_share
-    return {
-        "date_column": table.freshness_col,
-        "cadence": table.freshness,
-        "max_date": None if age_days is None else (as_of.date() - timedelta(days=age_days)).isoformat(),
-        "age_days": age_days,
-        "max_age_days": max_age,
-        "fresh_share": None if share is None else round(share, 4),
-        "ok": ok,
-    }
-
-
-def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
-    """Freshness report over exactly the tables and cadences declared by the schema registry."""
-    as_of = run_date(as_of)
-    universe = context.universe.tickers
-    min_share = float(context.config.data_extract.prediction_fresh_share)
-    statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables()}
-    behind = [name for name, status in statuses.items() if not status["ok"]]
-    for name in behind:
-        status = statuses[name]
-        context.log.warning(
-            "Extraction freshness RED: %s max_date=%s age_days=%s (max %s) fresh_share=%s",
-            name,
-            status["max_date"],
-            status["age_days"],
-            status["max_age_days"],
-            status["fresh_share"],
-        )
-    context.log.info("Extraction freshness report ok=%s behind=%s", not behind, behind)
-    return {"as_of": as_of.date().isoformat(), "ok": not behind, "behind": behind, "tables": statuses}
-
-
-@cli.command(name="extraction-status", help="Report every schema-declared extraction table's freshness (JSON); RED tables warn, the exit code is 0.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def extraction_status(config_path: str, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    report = _extraction_status_report(context, as_of=run_date(as_of))
-    click.echo(json.dumps(report, sort_keys=True))
 
 
 # --- Universe (runs before every other command) ---
@@ -173,8 +110,8 @@ _UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sharadar-actions", "sec-s
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option("--only", "only", type=click.Choice(_UNIVERSE_PARTS), multiple=True, help="Run only this part; repeatable.")
 def universe(config_path: str, as_of: datetime | None, only: tuple[str, ...]) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    step = StepExtractUniverse(context, config, run_date(as_of))
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of)
+    step = StepExtractUniverse(context=context, config=config)
     parts = {
         "sec-tickers": step.run_sec_tickers,
         "sharadar-tickers": step.run_sharadar_tickers,
@@ -195,62 +132,60 @@ def universe(config_path: str, as_of: datetime | None, only: tuple[str, ...]) ->
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def price_history(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    years_history = int(context.config.data_extract.years_history)
-    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession(symbols=context.universe.trading_symbols)
+    """Rebuild only the configured dates/keys when --full is explicit."""
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    names, session = _tickers(context, tickers), YahooSession(symbols=context.universe.trading_symbols)
 
-    # Splits first: their windows are planned from the stored `prices`, which `fetch_prices` then advances.
-    fetch_price_actions(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
-    fetch_dividends(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
-    fetch_prices(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    # Read split windows before the coordinated price frontier advances.
+    fetch_price_actions(context, session, tickers=names)
+    fetch_dividends(context, session, tickers=names)
+    fetch_prices(context, session, tickers=names)
 
 
 @cli.command(
     help="FINRA RegSHO daily short volume: the lines of the universe companies' symbols and of the stored FTD symbols, "
-    "as filed per symbol (sec_short_volume_security); the cube sums them per ticker. Day files: business days from the earlier of the latest stored "
-    "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
-    "a fetch error."
+    "as filed per symbol (sec_short_volume_security); the cube sums them per ticker. Dates and overlap come from data.yml; "
+    "--full rechecks the configured range and aborts before writing on a fetch error."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_short_interest(context, tickers=_tickers(context, tickers), full=full, as_of=_market_as_of(as_of))
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    fetch_short_interest(context, tickers=_tickers(context, tickers))
 
 
-@cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
+@cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def macro(config_path: str) -> None:
-    """Every non-equity series: market/commodity/FX closes, FRED levels, and the derived spreads + 10Y total-return index."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_macro(context, years_history=context.config.data_extract.macro_years_history)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def macro(config_path: str, full: bool, as_of: datetime | None) -> None:
+    """Refresh the configured per-series windows with stable cumulative-index context."""
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    fetch_macro(context)
 
 
-@cli.command(help="13F institutional holdings (EDGAR by filing date + OpenFIGI cusip map). HEAVY.")
+@cli.command(help="13F complete manager books from the bounded EDGAR index, plus CUSIP mapping.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FILING_WINDOW_ARGS, **FILING_WINDOW_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None, as_of: datetime | None) -> None:
-    """`tickers` is the universe the CUSIP map is resolved against, so it is always passed (never None).
-    A `-t` run reads no filing past the stored frontier, so it leaves the next window unchanged."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None, as_of: datetime | None, full: bool) -> None:
+    """Subsets stop at the stored frontier, including -F; explicit filing bounds bypass that ceiling. Books stay complete."""
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    names = _tickers(context, tickers)
     window = None
     if filing_window:
         parts = filing_window.split(":")
         if len(parts) != 2 or not all(parts):
-            raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
-        window = (parts[0], parts[1])
-    fetch_13f(
-        context,
-        tickers=_tickers(context, tickers),
-        years_history=int(config.data_extract.years_history),
-        filing_window=window,
-        as_of=run_date(as_of),
-    )
+            raise click.BadParameter("--filing-window must be FROM:TO")
+        try:
+            window = Window(pd.Timestamp(parts[0]), pd.Timestamp(parts[1]))
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--filing-window") from exc
+    fetch_13f(context, tickers=names, filing_window=window)
 
 
 @cli.command(
@@ -263,8 +198,8 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def thirteen_f_managers(config_path: str, full: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    StepExtractInstitutionals(context=context, config=config).run_managers(full=full, as_of=run_date(as_of))
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    StepExtractInstitutionals(context=context, config=config).run_managers()
 
 
 @cli.command(
@@ -315,8 +250,9 @@ def thirteen_f_vintages(
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def superinvestors(config_path: str, full: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def superinvestors(config_path: str, full: bool, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
     if full:
         rebuild_roster(context)
     upsert_roster_snapshot(context)
@@ -334,12 +270,11 @@ def superinvestors(config_path: str, full: bool) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def sec_fundamentals_facts(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_fundamentals_facts()
+def sec_fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_fundamentals_facts()
 
 
 @cli.command(
@@ -354,27 +289,29 @@ def sec_fundamentals_facts(config_path: str, tickers: str | None, years: int | N
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
-def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), full=full, verify=verify_history)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_fundamentals_history(config_path: str, tickers: str | None, full: bool, verify_history: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    StepExtractFundamentals(context, config).run_history(_tickers(context, tickers), verify=verify_history)
 
 
 @cli.command(
     name="fundamentals-check",
     help="Read-only SEC vs Sharadar check: logs the tickers held by one history only, the Sharadar CIKs outside their company, "
-    "the exact (ticker, as_of) match share and the shared fields where enough rows differ (`data_extract.fundamentals_check`). "
+    "the exact (ticker, as_of) match share and the shared fields where enough rows differ (`validate.fundamentals_comparison`). "
     "Writes nothing; a finding never fails the task.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def fundamentals_check(config_path: str, tickers: str | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def fundamentals_check(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of)
     StepExtractFundamentals(context, config).run_check(_tickers(context, tickers))
 
 
 # --- Fundamentals: Sharadar (SF1) ---
 # Single-table commands are for a manual targeted refresh; `-F/--full` re-pulls the whole window and makes the merge DELETE first.
-# History depth is `data_extract.sharadar_years_history`, not `years_history`.
+# Source history uses the fixed per-table dates in data.yml.
 @cli.command(
     name="fundamentals-sharadar",
     help="The Sharadar producer in dependency order: SF1 fundamentals -> sp500 -> sharadar_fundamentals_history (tickers and actions: `universe`).",
@@ -385,9 +322,9 @@ def fundamentals_check(config_path: str, tickers: str | None) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the history build, lives in one place."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
     step = StepExtractFundamentalsSharadar(context=context, config=config)
-    step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
+    step.run(tickers=_tickers(context, tickers))
 
 
 @cli.command(
@@ -396,18 +333,20 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sharadar_sp500(config_path: str, full: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_sp500(context, full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sharadar_sp500(config_path: str, full: bool, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    fetch_sharadar_sp500(context)
 
 
-@cli.command(help="Earnings surprises -> historical forward P/E (the prices step's `run_earnings_surprises`); -F re-pulls every history.")
+@cli.command(help="Earnings surprises over configured dates; -F explicitly rechecks retained history.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def earnings_surprises(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    StepExtractPrices(context=context, config=config).run_earnings_surprises(_tickers(context, tickers), full=full)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def earnings_surprises(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    StepExtractPrices(context=context, config=config).run_earnings_surprises(_tickers(context, tickers))
 
 
 @cli.command(
@@ -422,7 +361,7 @@ def earnings_surprises(config_path: str, tickers: str | None, full: bool) -> Non
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, None, full, as_of, no_cap).run_insider()
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_insider()
 
 
 _ZIP_DOWNLOADS = ("insider", "notes", "ftd", "13f")
@@ -440,8 +379,8 @@ _ZIP_INGEST_SOURCES = (*_ZIP_INGESTS, "13f")
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option("--only", "only", type=click.Choice(_ZIP_DOWNLOADS), multiple=True, help="Run only this source; repeatable.")
 def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tuple[str, ...]) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    step = StepExtractZips(context, config, ZipsOptions(full=full, as_of=run_date(as_of)))
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    step = StepExtractZips(context, config)
     sources = {
         "insider": step.run_download_insider,
         "notes": step.run_download_financial_notes,
@@ -468,10 +407,8 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, repair_availability: bool, only: tuple[str, ...]) -> None:
     if repair_availability and set(only) != {"notes"}:
         raise click.UsageError("--repair-availability needs `--only notes` and no other source.")
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    options = ZipsOptions(
-        tickers=_tickers(context, tickers) if tickers else None, full=full, as_of=run_date(as_of), repair_availability=repair_availability
-    )
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    options = ZipsOptions(tickers=_tickers(context, tickers) if tickers else None, repair_availability=repair_availability)
     step = StepExtractZips(context, config, options)
     sources = {
         "insider": step.run_ingest_insider,
@@ -509,8 +446,8 @@ _IDENTITY_STAGES = (
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all eight.")
 def identity(config_path: str, full: bool, as_of: datetime | None, only: str | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    step = StepExtractIdentity(context, config, IdentityOptions(full=full, as_of=run_date(as_of)))
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    step = StepExtractIdentity(context, config)
     stages = {
         "capture-evidence": step.run_capture_evidence,
         "company-anchor": step.run_company_anchor,
@@ -536,74 +473,73 @@ def identity(config_path: str, full: bool, as_of: datetime | None, only: str | N
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def sec_def14a_llm(config_path: str, tickers: str | None) -> None:
-    _llm_step(config_path, tickers).run_def14a_llm()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_def14a_llm(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
+    _llm_step(config_path, tickers, full=False, as_of=as_of).run_def14a_llm()
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_8k()
+def sec_8k_items(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_8k()
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def sec_8k_votes(config_path: str, tickers: str | None) -> None:
-    _llm_step(config_path, tickers).run_8k_votes()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_8k_votes(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
+    _llm_step(config_path, tickers, full=False, as_of=as_of).run_8k_votes()
 
 
 @cli.command(
     name="sec-employees-llm",
     help="Stored sec_employees_text -> fundamentals_employees (LLM): total, full-time and part-time counts with basis, status, "
     "filer CIK, accession and source quotes, one row per filing date. No download. Dates that already have a row (NULL-status "
-    "rows included) are skipped unless --full; dates after a filing the text walk has not stored yet wait for it. A failed LLM "
+    "rows included) are reused in every mode; dates after a filing the text walk has not stored yet wait for it. A failed LLM "
     "call or ticker is logged and retried next run; the task exits 0.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sec_employees_llm(config_path: str, tickers: str | None, full: bool) -> None:
-    _llm_step(config_path, tickers, full).run_employees_llm()
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def sec_employees_llm(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    _llm_step(config_path, tickers, full=full, as_of=as_of).run_employees_llm()
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13d()
+def sec_13d(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_13d()
 
 
 @cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+def sec_13g(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     """Passive counterpart of `sec-13d`. A schedule a universe company only FILED is stored as an empty-filing marker under it."""
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13g()
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_13g()
 
 
 @cli.command(help="Filing text: 10-K Item 1 (Business) + Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def filing_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_filing_text()
+def filing_text(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_filing_text()
 
 
 @cli.command(
@@ -613,12 +549,11 @@ def filing_text(config_path: str, tickers: str | None, years: int | None, full: 
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def sec_employees_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_employees_text()
+def sec_employees_text(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_employees_text()
 
 
 @cli.command(
@@ -628,26 +563,23 @@ def sec_employees_text(config_path: str, tickers: str | None, years: int | None,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
-def sec_def14a_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_text()
+def sec_def14a_text(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _edgar_step(config_path, tickers, full, as_of, no_cap).run_def14a_text()
 
 
-def _edgar_step(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> StepExtractEdgar:
-    """The EDGAR step over the --tickers subset (or the universe), the -y window (or the configured one) and the run options."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    return StepExtractEdgar(
-        context, config, EdgarOptions(tickers=_tickers(context, tickers), years=years, full=full, as_of=run_date(as_of), no_cap=no_cap)
-    )
+def _edgar_step(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> StepExtractEdgar:
+    """The EDGAR step over the --tickers subset (or the universe), fixed configured dates and the shared Context run."""
+    config, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
+    return StepExtractEdgar(context, config, EdgarOptions(tickers=_tickers(context, tickers), no_cap=no_cap))
 
 
-def _llm_step(config_path: str, tickers: str | None, full: bool = False) -> StepExtractLlm:
-    """The LLM step over the --tickers subset (or the universe); `full` re-decides every employee filing date."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    return StepExtractLlm(context, config, LlmOptions(tickers=_tickers(context, tickers), full=full))
+def _llm_step(config_path: str, tickers: str | None, *, full: bool, as_of: datetime | None) -> StepExtractLlm:
+    """One LLM source scope and execution cutoff over the requested ticker subset."""
+    config, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    return StepExtractLlm(context, config, LlmOptions(tickers=_tickers(context, tickers)))
 
 
 # --- EDGAR index, work-list dry run and empty-filing markers ---
@@ -661,10 +593,11 @@ def _llm_step(config_path: str, tickers: str | None, full: bool = False) -> Step
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) -> None:
     """One EDGAR walk: run it alone. The first build fetches about 128 quarters."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of, full=full)
     context.ensure_edgar_identity()
-    day = run_date(as_of)
-    edgar_index.refresh(context, day, widest_index_years(int(config.data_extract.years_history), day), rebuild=full)
+    window = widest_index_window(context)
+    if window is not None:
+        edgar_index.refresh(context, window, rebuild=full)
     for quarter, n_rows in edgar_index.quarter_counts(context).items():
         click.echo(f"{quarter}\t{n_rows}")
 
@@ -681,8 +614,8 @@ def _document_fetches() -> dict[str, EdgarFetch]:
 @click.option(*TIMINGS_ARGS, **TIMINGS_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
+    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of)
+    run = EdgarRun.load(context, _tickers(context, tickers))
     fetches = _document_fetches()
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
@@ -725,12 +658,13 @@ def markers(config_path: str, table_name: str | None, count_only: bool, delete: 
 # --- Behavioral (retail attention) ---
 @cli.command(
     help="Earnings-call transcripts (HuggingFace defeatbeta) -> earnings_call_sections, one row per "
-    "paragraph. Every run compares complete scoped metadata for current and historical symbols; payloads are read only for missing or reissued calls. "
+    "paragraph. Routine source checks use the configured candidate window; payloads are read only for missing or reissued calls. "
     "-F also removes source-absent calls for tickers still present in the source."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def extract_earnings_calls(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    _extract_earnings_calls(context, config.earnings_calls, full=full, tickers=_tickers(context, tickers))
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def extract_earnings_calls(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False, full=full, as_of=as_of)
+    _extract_earnings_calls(context, tickers=_tickers(context, tickers))

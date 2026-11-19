@@ -22,8 +22,10 @@ import pyarrow.dataset as ds
 
 from src.context import Context
 from src.data_store.schema import Resume, Tables
+from src.utils.data_policy import window_policy
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME, ListedWindow
 from src.utils.string import normalise_ticker, pad_cik_series
+from src.utils.window import Window
 from src.validate.checks.identity import _entity_ciks, _foreign_in_table, _from_old_shape, _lineage, _listed_windows
 from src.validate.result import CheckResult, Finding
 
@@ -42,7 +44,6 @@ JUMP_THRESHOLD = 0.5
 #: Days between two counted rows for the pair to read as year over year.
 JUMP_GAP_DAYS = (180, 550)
 _INDEX_SCHEMA = pa.schema([("cik", pa.int64()), ("company", pa.string()), ("form", pa.string()), ("filed", pa.date32()), ("accession", pa.string())])
-_YEARS_HISTORY_DEFAULT = 31
 
 
 @dataclass(frozen=True)
@@ -62,15 +63,16 @@ def index_dir(context: Context) -> Path:
     return Path(context.paths["DATA_STORE"]) / str(context.config.local.paths.sec_edgar_index)
 
 
-def index_entries(directory: Path, ciks: Collection[str], since: pd.Timestamp | None) -> pd.DataFrame:
-    """Cached index rows of the employee table's registered forms for `ciks` since the given date."""
+def index_entries(directory: Path, ciks: Collection[str], window: Window) -> pd.DataFrame:
+    """Cached employee filings inside the same configured source interval as the stored rows."""
     columns = ["cik", "company", "form", "filed", "accession"]
     files = sorted(directory.glob("*.parquet")) if directory.exists() else []
     if not files or not ciks:
         return pd.DataFrame(columns=columns)
     expression = pc.field("cik").isin([int(c) for c in ciks]) & pc.field("form").isin(list(cast(Resume, Tables.fundamentals_employees.resume).forms))
-    if since is not None:
-        expression &= pc.field("filed") >= pa.scalar(since.date(), pa.date32())
+    expression &= (pc.field("filed") >= pa.scalar(window.start.date(), pa.date32())) & (
+        pc.field("filed") <= pa.scalar(window.end.date(), pa.date32())
+    )
     frame = ds.dataset([str(path) for path in files], format="parquet", schema=_INDEX_SCHEMA).to_table(filter=expression).to_pandas()
     frame["cik"] = pad_cik_series(frame["cik"])
     frame["filed"] = pd.to_datetime(frame["filed"])
@@ -228,38 +230,33 @@ def _per_ticker(
     return table.reset_index()
 
 
-def _window_start(context: Context) -> pd.Timestamp:
-    years = int(getattr(context.config.data_extract, "years_history", _YEARS_HISTORY_DEFAULT))
-    return pd.Timestamp.today().normalize() - pd.DateOffset(years=years)
-
-
 def check_employees(
     context: Context, *, tickers: Sequence[str] | None = None, since: pd.Timestamp | None = None, directory: Path | None = None
 ) -> EmployeesReport:
-    """Coverage, status, provenance, identity, basis switches and scope jumps of `fundamentals_employees` over the roster
-    (or `tickers`); `since` defaults to today minus `years_history`, `directory` to the cached index."""
+    """Validate employee filings inside configured dates; an explicit `since` can narrow that interval."""
     table = Tables.fundamentals_employees.name
-    start: pd.Timestamp = since if since is not None else _window_start(context)
+    policy = window_policy(context.config, Tables.fundamentals_employees, context.run.as_of)
+    empty = pd.DataFrame()
+    if policy is None or (since is not None and since > policy.requested.end):
+        return EmployeesReport(CheckResult.abstained(CHECK, table, "no configured employee source interval"), empty, empty, empty, empty, empty)
+    window = Window(max(policy.requested.start, pd.Timestamp(since)) if since is not None else policy.requested.start, policy.requested.end)
     directory = directory if directory is not None else index_dir(context)
     roster = context.universe.roster
     lineage = _lineage(context)
-    empty = pd.DataFrame()
     if lineage is None:
         return EmployeesReport(CheckResult.abstained(CHECK, table, "universe_cik_symbol is empty"), empty, empty, empty, empty, empty)
     roster = roster[roster["ticker"].isin(tickers)] if tickers else roster
     scope = sorted(roster["ticker"])
     if "role" not in lineage.columns:
         lineage = _from_old_shape(lineage, roster)
-    stored = context.store.load(Tables.fundamentals_employees, where={"ticker": scope}, optional=True)
+    stored = context.store.load(Tables.fundamentals_employees, where={"ticker": scope}, since=window.start, until=window.end, optional=True)
     if stored is None:
         return EmployeesReport(CheckResult.abstained(CHECK, table, "fundamentals_employees does not exist"), empty, empty, empty, empty, empty)
     rows, new_shape = _normalised(stored)
-    before_window = int(rows["as_of"].lt(start).sum())
-    rows = rows[rows["as_of"].ge(start)].reset_index(drop=True)
 
     windows = listing_windows(lineage, roster)
     ciks = {cik for t in scope for cik, _, _ in windows.get(normalise_ticker(t), ())}
-    entries = index_entries(directory, ciks, start)
+    entries = index_entries(directory, ciks, window)
     owned = owned_filings(entries, scope, windows)
     dates = _owned_dates(owned)
     have = set(zip(rows["ticker"], rows["as_of"], strict=True))
@@ -270,7 +267,7 @@ def check_employees(
     stale = rows.loc[unowned, ["ticker", "as_of"]].reset_index(drop=True)
 
     findings: list[Finding] = []
-    metrics: dict[str, Any] = {"shape": "component" if new_shape else "old", "rows_before_window": before_window}
+    metrics: dict[str, Any] = {"shape": "component" if new_shape else "old"}
     extra: list[pd.Series] = []
     if entries.empty:
         findings.append(Finding.at(5, f"no cached EDGAR index rows under {directory}", "the cached quarterly index", field="coverage"))
@@ -346,7 +343,8 @@ def check_employees(
     scope_info = {
         "rows": len(rows),
         "tickers": len(scope),
-        "since": start.strftime("%Y-%m-%d"),
+        "since": window.start.strftime("%Y-%m-%d"),
+        "until": window.end.strftime("%Y-%m-%d"),
         "index_dir": str(directory),
         "index_last_filed": entries["filed"].max().date().isoformat() if not entries.empty else None,
         "forms": list(cast(Resume, Tables.fundamentals_employees.resume).forms),

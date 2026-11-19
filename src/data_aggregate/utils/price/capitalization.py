@@ -115,7 +115,7 @@ def project_security_shares(df_observations: pd.DataFrame, basis: ShareBasis, df
         return df_shares, df_scale
 
     # Each observation in its own date's quoted units, with that date's forward basis.
-    df_source = df_observations.sort_values(["ticker", "as_of"]).copy()
+    df_source = df_observations.sort_values(["ticker", "_available_on", "as_of"]).copy()
     original = pd.to_numeric(df_source["sharesOutstandingPit"], errors="coerce")
     df_source["quoted_count"] = original.where(original.gt(0)) / basis.factor(df_source["ticker"], df_source["as_of"], "units")
     df_source["source_basis"] = security_basis(basis, df_source["ticker"], df_source["as_of"])
@@ -125,7 +125,7 @@ def project_security_shares(df_observations: pd.DataFrame, basis: ShareBasis, df
     for ticker, df_group in df_source.groupby("ticker", sort=False):
         if ticker not in df_basis.columns:
             continue
-        source_positions = np.searchsorted(df_group["as_of"].to_numpy(dtype="datetime64[ns]"), stamps, side="right") - 1
+        source_positions = np.searchsorted(df_group["_available_on"].to_numpy(dtype="datetime64[ns]"), stamps, side="right") - 1
         have_source = source_positions >= 0
         selected = np.maximum(source_positions, 0)
         quantities = np.where(have_source, df_group["quoted_count"].to_numpy(dtype="float64")[selected], np.nan)

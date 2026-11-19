@@ -17,17 +17,18 @@ absence (short volume 0, total unknown), unless an unresolved line could be the 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS, SHARADAR_ACTION_SPLIT
-from src.data_store.schema import Tables
-from src.data_store.store import DataStore
+from src.context import Context
+from src.data_store.schema import Table, Tables
 from src.utils.price.adjustments import ShareBasis, resolve_share_events
 from src.utils.price.basis import prepare_quote_anchors
 from src.utils.string import normalise_ticker, pad_cik_series, squash, yahoo_symbol
+from src.utils.window import Window
 
 #: The `source` of a line read off the SEC fails-to-deliver files.
 SOURCE_FTD = "ftd"
@@ -255,8 +256,11 @@ def fails_series(lines: pd.DataFrame, master: pd.DataFrame, basis: ShareBasis) -
     return series.sort_values(["ticker", "date"], ignore_index=True)[list(SERIES_COLUMNS)], coverage
 
 
-def load_fails_basis(store: DataStore, bugfix: dict, master: pd.DataFrame) -> ShareBasis:
+def load_fails_basis(context: Context, bugfix: dict, master: pd.DataFrame, windows: Mapping[Table, Window | None]) -> ShareBasis:
     """The genuine-event share basis of the master's class symbols and canonical companies (the FTD trade -> settlement rebase)."""
+    store = context.store
+    action_window, split_window = windows[Tables.sharadar_actions], windows[Tables.prices_splits]
+    vendor_window, price_window = windows[Tables.sharadar_fundamentals_facts], windows[Tables.prices]
     names = sorted(set(master["market_symbol"].dropna().astype(str)) | set(master["canonical_company"].dropna().astype(str)))
     policies = {ticker: policy for ticker, policy in bugfix.get("share_events", {}).items() if ticker in names}
     anchors = [(ticker, anchor) for ticker, policy in policies.items() for anchor in policy["anchors"] if "quoted_price" in anchor]
@@ -264,14 +268,25 @@ def load_fails_basis(store: DataStore, bugfix: dict, master: pd.DataFrame) -> Sh
         Tables.sharadar_actions,
         columns=["ticker", "date", "action", "value"],
         where={"ticker": names, "action": [SHARADAR_ACTION_SPLIT]},
+        since=None if action_window is None else action_window.start,
+        until=context.run.as_of if action_window is None else action_window.end,
         optional=True,
     )
-    splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+    splits = store.load(
+        Tables.prices_splits,
+        columns=["ticker", "date", "ratio"],
+        where={"ticker": names},
+        since=None if split_window is None else split_window.start,
+        until=context.run.as_of if split_window is None else split_window.end,
+        optional=True,
+    )
     vendor = (
         store.load(
             Tables.sharadar_fundamentals_facts,
             columns=["ticker", "date", "sharesbas", "price"],
             where={"ticker": sorted(policies), "dimension": "ARQ"},
+            since=None if vendor_window is None else vendor_window.start,
+            until=context.run.as_of if vendor_window is None else vendor_window.end,
             optional=True,
         )
         if policies
@@ -279,7 +294,12 @@ def load_fails_basis(store: DataStore, bugfix: dict, master: pd.DataFrame) -> Sh
     )
     quotes = (
         store.load(
-            Tables.prices, columns=["ticker", "date", "close_split", "volume"], where={"ticker": sorted({t for t, _ in anchors})}, optional=True
+            Tables.prices,
+            columns=["ticker", "date", "close_split", "volume"],
+            where={"ticker": sorted({t for t, _ in anchors})},
+            since=None if price_window is None else price_window.start,
+            until=context.run.as_of if price_window is None else price_window.end,
+            optional=True,
         )
         if anchors
         else None

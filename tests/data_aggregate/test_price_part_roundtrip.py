@@ -19,6 +19,8 @@ Checks here:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -31,6 +33,8 @@ from src.data_aggregate.utils.price.frames import (
     universe_columns,
 )
 from src.data_store.schema import Tables
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
+from tests.support.universe import universe_of
 
 TICKERS = ["AAA", "BBB", "CCC", "DDD"]
 # the VALUE fields only -- `date`/`ticker` are the join keys `load_price_frames` adds itself,
@@ -114,10 +118,12 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
 def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
     uni, idx = _normalize(frames)
     parts = sqlite_store
+    ctx = source_context(parts, Path("."))
+    ctx.universe = universe_of(TICKERS)
 
     parts.replace(Tables.cube_part_prices, frames_to_long(uni))
 
-    back = load_price_frames(parts, peers={}, fields=ALL_PRICE_FIELDS)
+    back = load_price_frames(ctx, peers={}, fields=ALL_PRICE_FIELDS, calendar=load_trading_calendar(ctx))
 
     for field in ALL_PRICE_FIELDS:
         expected = uni[field].where(uni["close_split"].notna())
@@ -129,7 +135,7 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
     assert back.trading_index.equals(idx)
     assert {"security_basis", "volume_pit"}.issubset(ALL_PRICE_FIELDS)
     # the calendar now comes from cube_part_prices' OWN dates, not a second market part
-    assert load_trading_calendar(parts).equals(idx)
+    assert load_trading_calendar(ctx).equals(idx)
     # nothing non-equity can reach a cross-sectional rank through PriceFrames any more
     for gone in ("market_close", "mkt_ret", "other_close"):
         assert not hasattr(back, gone), f"PriceFrames still carries {gone}"
@@ -150,9 +156,11 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
 def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
     uni, _ = _normalize(frames)
     parts = sqlite_store
+    ctx = source_context(parts, Path("."))
+    ctx.universe = universe_of(TICKERS)
     parts.replace(Tables.cube_part_prices, frames_to_long(uni))
 
-    back = load_price_frames(parts, peers={}, fields=("close_split",))
+    back = load_price_frames(ctx, peers={}, fields=("close_split",), calendar=load_trading_calendar(ctx))
     assert back.close_split is not None
     for field in ALL_PRICE_FIELDS:
         if field != "close_split":

@@ -1,11 +1,14 @@
 ---
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
 title: Portfolio
 description: Independent model long/short, S&P 500 and cash backtest and offline HTML.
 type: module
 tags:
   - wiki
   - module
+integration_parents:
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 # Portfolio
 
@@ -15,7 +18,7 @@ The portfolio is a standalone model backtest with three capital budgets: long/sh
 
 ## Entry point and saved models
 
-Run `python -m src portfolio backtest -c ./configs --run-id <assessed-run>`. Omitting the ID selects the latest successfully assessed run. The [CLI](../../src/portfolio/cli.py) refuses incompatible identities, full-history models, absent inventories and training/selection outcomes after the cutoff before consuming model members. The cutoff is train.end_date from modellling.yml and the CLI sets the backtest start to three days after it; the backtest then runs to the last session where both stock prices and the S&P total-return series exist. The [signal transformation](../../src/portfolio/transformers/signals.py) verifies the saved ensemble and uses only training IC/IR for nonnegative horizon weights.
+Run `python -m src portfolio backtest -c ./configs --run-id <assessed-run>`. Omitting the ID selects the latest successfully assessed run. The [CLI](../../src/portfolio/cli.py) refuses incompatible identities, full-history models, absent inventories and training/selection outcomes after the cutoff before consuming model members. The cutoff is train.end_date from modelling.yml and the CLI sets the backtest start to three days after it; the backtest then runs to the last session where both stock prices and the S&P total-return series exist. The [signal transformation](../../src/portfolio/transformers/signals.py) verifies the saved ensemble and uses only training IC/IR for nonnegative horizon weights.
 
 [StepPortfolio.run](../../src/portfolio/steps/step_portfolio.py) reads existing data, scores projected feature-only monthly batches preserving full daily cross-sections, simulates all nine books, and publishes `<model-run>/backtest_portfolio/report.html`. It never retrains or writes source/strategy tables.
 

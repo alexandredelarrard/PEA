@@ -24,7 +24,6 @@ from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.freshness import StaleInputsError, check_prediction_inputs
 from src.utils.tickers_universe.universe import Universe
 from src.validate.checks import check_coverage, check_leakage
 from src.validate.utils import prices as vprices
@@ -56,7 +55,7 @@ def _prices(tickers: list[str], sessions: pd.DatetimeIndex, level: float) -> pd.
 def _config() -> DictConfig:
     loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
     config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"]}))
-    config.validate.defaults["universe_expected"] = len(UNIVERSE)
+    config.universe = universe_config(UNIVERSE).universe
     return config
 
 
@@ -110,7 +109,7 @@ def test_cube_prices_reads_the_universe_only(tmp_path: Path) -> None:
         peer_path = tmp_path / "peers.json"
         peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in UNIVERSE}), encoding="utf-8")
         context.paths, context.config_dir = {"SECTOR_PEERS_PATH": peer_path}, tmp_path
-        context.config.build_cube = {}
+        context.config.data_aggregate = {}
         StepCubePrices(context, context.config).run(full=True)
         return context.store.load(Tables.cube_part_prices).sort_values(["ticker", "date"])
 
@@ -180,17 +179,3 @@ def test_leakage_last_price_session_is_the_universe_only():
         return check_leakage(context, Tables.cube_part_targets, config=context.config).metrics.get("last_reference_session")
 
     assert _same(read, "validate leakage (reference = prices)") == SESSIONS[-1]
-
-
-def test_prediction_freshness_guard_reads_the_universe_frontier_only():
-    """The cube-vs-prices check: a secondary class with a later bar must not make the universe's cube look stale."""
-
-    def read(context: Any) -> str:
-        context.store.save(Tables.cube, pd.DataFrame({"date": [SESSIONS[-1]] * 2, "ticker": UNIVERSE}))
-        try:
-            check_prediction_inputs(context.store, UNIVERSE, SESSIONS[-1], 0.0)
-        except StaleInputsError as exc:
-            return f"stale: {exc}"
-        return "fresh"
-
-    assert _same(read, "utils.freshness.check_prediction_inputs (cube vs prices)") == "fresh"

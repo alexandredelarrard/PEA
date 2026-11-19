@@ -31,12 +31,12 @@ LORD_ABBETT, PERIOD = "0000728100", "2024-06-30"
 
 @pytest.fixture(scope="module")
 def cfg() -> DictConfig:
-    return read_config(str(ROOT / "configs")).build_cube.manager_profile
+    return read_config(str(ROOT / "configs")).data_aggregate.manager_profile
 
 
 @pytest.fixture(scope="module")
 def bond_cfg() -> DictConfig:
-    return read_config(str(ROOT / "configs")).build_cube.bond_lines
+    return read_config(str(ROOT / "configs")).data_aggregate.bond_lines
 
 
 def _without_bond_lines(cfg: DictConfig) -> DictConfig:

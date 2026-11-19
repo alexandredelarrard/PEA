@@ -24,7 +24,7 @@ def is_meta_column(col: str) -> bool:
     must NOT be fed as a feature.
 
     Targets are matched by PATTERN, not by a listed name: `target_<label>_h<horizon>` is
-    generated from `build_cube.targets`, so an enumerated set silently leaks a new horizon's
+    generated from `data_aggregate.targets`, so an enumerated set silently leaks a new horizon's
     or label's column into the feature list the day it is configured.
     """
     return col in CUBE_NON_FEATURE_COLS or TARGET_COL_RE.match(col) is not None

@@ -1,6 +1,4 @@
-"""FTD ingest as filed: the scope comes from the lineage, Sharadar and curated CUSIP-6, never from `universe_cusip`; a
-run that stores a new period re-reads every other cached period with the current scope, a run that stores none reads no
-file, and a killed run commits nothing."""
+"""FTD missing-unit ingest and explicit bounded scope recovery; source scope excludes universe_cusip and a killed run commits nothing."""
 
 from __future__ import annotations
 
@@ -15,7 +13,9 @@ from src.data_extract.utils.common.bulk_cache import read_zip_text
 from src.data_extract.utils.common.security_lines import SecurityManual, ftd_scope, parse_security_manual
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.data_extract.fake_context import extract_config
 from tests.support.cusip_build import write_ftd_zips
 from tests.support.universe import seed_universe
 
@@ -39,7 +39,8 @@ def _context(store, tmp_path, tickers: tuple[str, ...]) -> Any:
         log=logging.getLogger("test.ftd_as_filed"),
         paths={"DATA_STORE": tmp_path},
         config_dir=str(tmp_path / "configs"),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="ftd"))),
+        config=extract_config(local={"paths": {"fails_deliver": "ftd"}}),
+        run=WindowRun("incremental", "FTD unit fixture", RUN_DATE),
         universe=seed_universe(store, tickers),
     )
 
@@ -123,10 +124,8 @@ def test_the_ftd_scope_keeps_equity_symbols_not_notes_debt_or_noise_symbols() ->
     assert symbols == frozenset({"ABBV"}), "a Notes debt symbol and a noise symbol are not FTD scope keys"
 
 
-def test_a_new_period_run_rereads_every_cached_period_with_the_current_scope(sqlite_store, tmp_path, caplog, monkeypatch):
-    """202601a/b are stored with ABC's lines only; 202602a is new. XYZ and LATE are lineage symbols with no stored line
-    (whatever their stamp): the run that stores 202602a re-reads 202601a/b with the current scope and stores both; the
-    same-day re-run reads no file."""
+def test_new_ftd_units_leave_completed_history_for_explicit_bounded_recovery(sqlite_store, tmp_path, caplog, monkeypatch):
+    """Normal ingestion reads only the missing half-month; scope growth reaches older units through explicit recovery."""
     context = _context(sqlite_store, tmp_path, ("ABC",))
     _lineage(
         sqlite_store,
@@ -168,19 +167,29 @@ def test_a_new_period_run_rereads_every_cached_period_with_the_current_scope(sql
     ftd.fetch_fails_to_deliver(context)
 
     stored = _stored(sqlite_store)
-    print(f"\nSANITY (full re-read on a new-period run): run 1 read {first}, run 2 read {reads} (expected none);")
-    print(f"  stored {stored[['period', 'cusip', 'fails_quantity']].values.tolist()}")
-    assert first == ["202602a", "202601a", "202601b"], "the new period, then each other cached period once"
-    assert reads == [], "a run storing no new period reads no file"
+    assert first == ["202602a"], "normal ingestion must not reopen completed half-months"
+    assert reads == []
     assert stored[["period", "cusip", "fails_quantity"]].values.tolist() == [
         ["202601a", "000111AAA", 100.0],
-        ["202601a", "555555XXX", 7.0],
-        ["202601a", "777777LLL", 5.0],
         ["202601b", "000111AAA", 50.0],
-        ["202601b", "555555XXX", 8.0],
         ["202602a", "000111AAA", 60.0],
-    ], "XYZ's and LATE's history is upserted"
-    assert any("full re-read of 2" in record.getMessage() for record in caplog.records), "one log line names the full re-read"
+    ]
+    suffix = stored.loc[stored.period.eq("202602a")].reset_index(drop=True)
+    item = context.config.data.tables.sec_fails_to_deliver_security
+    item.start_date = "2026-01-01"
+    context.run = WindowRun("full", "explicit bounded FTD scope repair", pd.Timestamp("2026-01-31"))
+    ftd.fetch_fails_to_deliver(context)
+    assert reads == ["202601a", "202601b"]
+    rebuilt = _stored(sqlite_store)
+    assert rebuilt.loc[rebuilt.source_symbol.isin(["XYZ", "LATE"]), ["period", "source_symbol", "fails_quantity"]].values.tolist() == [
+        ["202601a", "XYZ", 7.0],
+        ["202601a", "LATE", 5.0],
+        ["202601b", "XYZ", 8.0],
+    ]
+    pd.testing.assert_frame_equal(rebuilt.loc[rebuilt.period.eq("202602a")].reset_index(drop=True), suffix)
+    print(
+        "SANITY: normal FTD ingestion opens only the missing half-month; explicit configured January recovery fills older scope gaps and protects February."
+    )
 
 
 def test_a_new_key_no_file_lists_is_reread_once_not_on_every_run(sqlite_store, tmp_path, monkeypatch):
@@ -220,10 +229,8 @@ def _recording_reader(monkeypatch, crash_on: str | None = None) -> list[str]:
     return reads
 
 
-def test_an_interrupted_new_period_run_keeps_the_owed_reread_for_the_next_run(sqlite_store, tmp_path, monkeypatch):
-    """S1: 202601a/b are stored, then XYZ (in both files) joins ABC's lineage. The run that stores 202602a is killed in its
-    re-read of 202601a; the next same-day run must still store XYZ's two lines, and a later new-period run must not lose
-    them either."""
+def test_interrupted_explicit_recovery_rolls_back_and_retries_its_selected_units(sqlite_store, tmp_path, monkeypatch):
+    """An interrupted explicit scope recovery keeps its source units pending and never commits partial history."""
     context = _context(sqlite_store, tmp_path, ("ABC",))
     _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01"))])
     write_ftd_zips(
@@ -236,7 +243,8 @@ def test_an_interrupted_new_period_run_keeps_the_owed_reread_for_the_next_run(sq
     ftd.fetch_fails_to_deliver(context)  # cold: XYZ is not yet in scope
     _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01")), ("ABC", "0000000778", "XYZ", pd.Timestamp("2026-02-03"))])
     write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n"})
-    _recording_reader(monkeypatch, crash_on="202601a")
+    context.run = WindowRun("full", "explicit FTD scope repair", context.run.instant)
+    _recording_reader(monkeypatch, crash_on="202601b")
     with pytest.raises(RuntimeError, match="simulated kill"):
         ftd.fetch_fails_to_deliver(context)
     after_kill = sorted(set(_stored(sqlite_store)["period"]))
@@ -244,15 +252,16 @@ def test_an_interrupted_new_period_run_keeps_the_owed_reread_for_the_next_run(sq
     ftd.fetch_fails_to_deliver(context)  # the next run, same day
     retry, reads[:] = list(reads), []
     write_ftd_zips(tmp_path / "ftd", {"202602b": _HEADER + "20260220|000111AAA|ABC|61|ABC CORP|10.0\n"})
+    context.run = WindowRun("incremental", "normal FTD ingestion after recovery", context.run.instant)
     ftd.fetch_fails_to_deliver(context)  # a later new-period run
 
     xyz = _stored(sqlite_store).query("source_symbol == 'XYZ'")[["period", "cusip", "fails_quantity"]].values.tolist()
     print(f"\nSANITY (F-002 crash): periods stored after the kill {after_kill}; retry read {retry}; later run read {reads};")
     print(f"  XYZ lines {xyz} (expected 202601a 7 and 202601b 8)")
     assert after_kill == ["202601a", "202601b"], "a killed run commits nothing: its new period stays pending"
-    assert retry == ["202602a", "202601a", "202601b"], "the retry repeats the new period and the full re-read"
+    assert retry == ["202601a", "202601b", "202602a"], "explicit recovery retries all authorized units"
     assert xyz == [["202601a", "555555XXX", 7.0], ["202601b", "555555XXX", 8.0]], "XYZ's history survives the killed run"
-    assert reads == ["202602b", "202601a", "202601b", "202602a"], "the next new period re-reads every other cached period"
+    assert reads == ["202602b"], "normal ingestion resumes with missing units only"
 
 
 def test_a_key_with_stored_lines_under_one_cusip6_is_reread_for_its_other_families(sqlite_store, tmp_path, monkeypatch):
@@ -272,6 +281,7 @@ def test_a_key_with_stored_lines_under_one_cusip6_is_reread_for_its_other_famili
     _lineage(sqlite_store, [("WBD", "0001437107", "WBD", pd.Timestamp("2020-01-01")), ("WBD", "0001437107", "DISCA", pd.Timestamp("2026-02-03"))])
     write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|934423104|WBD|60|WBD|10.0\n"})
 
+    context.run = WindowRun("full", "explicit historical FTD scope recovery", context.run.instant)
     ftd.fetch_fails_to_deliver(context)
 
     other = _stored(sqlite_store).query("cusip == '99999A101'")[["period", "source_symbol", "fails_quantity"]].values.tolist()
@@ -296,6 +306,7 @@ def test_a_cusip6_first_stored_by_a_new_period_rereads_the_stored_periods_for_it
     monkeypatch.setattr(ftd, "sharadar_cusips", lambda universe, sharadar: {"ABC": frozenset({"000111AAA", "000222BBB"})})
     write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n20260205|000222BBB|ABCB|9|ABC CL B|2.0\n"})
 
+    context.run = WindowRun("full", "explicit historical FTD scope recovery", context.run.instant)
     ftd.fetch_fails_to_deliver(context)
 
     class_b = _stored(sqlite_store).query("cusip == '000222BBB'")[["period", "fails_quantity"]].values.tolist()
@@ -303,9 +314,8 @@ def test_a_cusip6_first_stored_by_a_new_period_rereads_the_stored_periods_for_it
     assert class_b == [["202601a", 7.0], ["202601b", 8.0], ["202602a", 9.0]], "a CUSIP-6 new to the table is re-read once"
 
 
-def test_a_same_day_rerun_reads_no_file_and_each_new_period_rereads_the_cache_once(sqlite_store, tmp_path, monkeypatch):
-    """Guard: GHOST joins ABC's lineage and no file lists it. The run storing 202602a re-reads 202601a/b once; the same-day
-    re-run reads nothing; the run storing 202602b re-reads the other cached periods once."""
+def test_each_new_ftd_period_reads_only_itself_and_repeat_reads_nothing(sqlite_store, tmp_path, monkeypatch):
+    """A newly observed lineage key cannot widen normal work beyond missing source units."""
     context = _context(sqlite_store, tmp_path, ("ABC",))
     _lineage(sqlite_store, [("ABC", "0000000777", "ABC", pd.Timestamp("2020-01-01"))])
     write_ftd_zips(
@@ -325,7 +335,7 @@ def test_a_same_day_rerun_reads_no_file_and_each_new_period_rereads_the_cache_on
         reads[:] = []
 
     print(f"\nSANITY (bounded re-read): new-period run read {runs[0]}, same-day re-run {runs[1]}, next new period {runs[2]}")
-    assert runs == [["202602a", "202601a", "202601b"], [], ["202602b", "202601a", "202601b", "202602a"]], "a same-day re-run reads 0 periods"
+    assert runs == [["202602a"], [], ["202602b"]], "normal runs never replay completed source units"
 
 
 def test_a_curated_cusip6_no_later_file_lists_is_stored_after_the_next_new_period_run(sqlite_store, tmp_path, monkeypatch):
@@ -346,6 +356,7 @@ def test_a_curated_cusip6_no_later_file_lists_is_stored_after_the_next_new_perio
     monkeypatch.setattr(ftd, "load_security_manual", lambda config_dir: parse_security_manual({"conversion_ratios": [ratio]}))
     write_ftd_zips(tmp_path / "ftd", {"202602a": _HEADER + "20260205|000111AAA|ABC|60|ABC CORP|10.0\n"})
 
+    context.run = WindowRun("full", "explicit historical FTD scope recovery", context.run.instant)
     ftd.fetch_fails_to_deliver(context)
 
     curated = _stored(sqlite_store).query("cusip == '000333CCC'")[["period", "fails_quantity"]].values.tolist()

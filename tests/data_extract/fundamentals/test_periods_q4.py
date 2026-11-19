@@ -29,7 +29,7 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import FieldSpec, load_ca
 
 CATALOGUE = load_catalogue("./configs")
 
-#: Stated here rather than read from `configs.yml`, so a test failure means the ENGINE
+#: Stated here rather than read from `config.yml`, so a test failure means the ENGINE
 #: changed and not that somebody retuned a knob. The config values are asserted to match.
 GUARDS = periods.PeriodGuards(max_opposite_sign_ratio=3.0, concept_switch_scale_max=2.0, share_basis_max_ratio=1.5)
 
@@ -425,11 +425,11 @@ def test_the_same_quarter_tagged_twice_a_day_apart_collapses():
 
 
 def test_the_configured_guards_are_the_ones_this_file_asserts_against():
-    """A knob move in `configs.yml` must fail loudly here rather than quietly changing what
+    """A knob move in `config.yml` must fail loudly here rather than quietly changing what
     the engine accepts."""
     live = periods.load_guards("./configs")
     assert live == GUARDS
-    print(f"\nSANITY: configs/configs.yml carries {live}, matching the values every guard test above is written against.")
+    print(f"\nSANITY: configs/config.yml carries {live}, matching the values every guard test above is written against.")
 
 
 # --------------------------------------------------------------------- real data ---

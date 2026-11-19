@@ -11,7 +11,10 @@ import pytest
 from src.data_aggregate.utils.institutionals import short_flow_features
 from src.data_aggregate.utils.institutionals.short_flow_features import FtdPublication
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_store.schema import Tables
+from src.utils.publication import point_in_time
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
+from tests.support.config import fixture_config
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +37,8 @@ def test_ftd_scoped_payload_matches_global_rows(frozen_ftd_sources: tuple[pd.Dat
     frames = PriceFrames(trading_index=df_close.index, universe=(ticker,), peers={}, close_split=df_close, volume=df_volume)
     df_scoped = df_fails.loc[df_fails["ticker"].eq(ticker)]
     df_coverage = df_fails[["date", "period"]].drop_duplicates()
-    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, 21))
+    ready = point_in_time(df_coverage, fixture_config(), Tables.sec_fails_to_deliver_security, pd.DatetimeIndex(frames.trading_index))
+    publication = FtdPublication(ready, ready.groupby("period")["as_of"].first().to_dict())
     df_result = build_short_flow_feature_panel(frames, None, fails_history=df_scoped, publication=publication)
     df_reference = build_short_flow_feature_panel(frames, None, fails_history=df_fails)
     df_reference = df_reference.loc[df_reference["ticker"].eq(ticker)]
@@ -83,7 +87,8 @@ def test_ftd_global_coverage_keeps_unknown_days_and_uses_latest_zip_state(monkey
         return publish(settlement_state, fails_hist, idx, available_by_period)
 
     monkeypatch.setattr(short_flow_features, "_publish_ftd_zip_states", capture_state)
-    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, 21))
+    ready = point_in_time(df_coverage, fixture_config(), Tables.sec_fails_to_deliver_security, idx)
+    publication = FtdPublication(ready, ready.groupby("period")["as_of"].first().to_dict())
     df_panel = build_short_flow_feature_panel(frames, None, fails_history=df_fails, publication=publication)
     df_ratio = df_panel.pivot(index="date", columns="ticker", values="f_ic_ftd_to_adv20")
     assert states[0].loc[pd.Timestamp("2024-01-03")].isna().all()
@@ -108,7 +113,8 @@ def test_ftd_global_coverage_publishes_only_explicit_supported_zero(empty_payloa
         {"date": ["2024-01-12"], "ticker": ["NO_FAILS"], "fails_quantity": [0.0], "period": ["202401a"], "source_checked_at": ["2024-02-01"]}
     )
     df_payload = pd.concat([empty_payload, df_zero], ignore_index=True) if empty_payload is not None else df_zero
-    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, 21))
+    ready = point_in_time(df_coverage, fixture_config(), Tables.sec_fails_to_deliver_security, idx)
+    publication = FtdPublication(ready, ready.groupby("period")["as_of"].first().to_dict())
     df_panel = build_short_flow_feature_panel(frames, None, fails_history=df_payload, publication=publication)
     df_ratio = df_panel.pivot(index="date", columns="ticker", values="f_ic_ftd_to_adv20")
     assert set(df_ratio.columns) == {"NO_FAILS", "UNKNOWN"}

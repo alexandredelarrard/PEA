@@ -22,6 +22,7 @@ from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price.basis import load_share_basis
 from src.utils.price.levels import apply_level_bugfix, level_factor
+from src.utils.window import WindowRun
 from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
 from tests.support.universe import universe_of
 
@@ -168,11 +169,12 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
         log=context.log,
         paths={"SECTOR_PEERS_PATH": peer_path},
         universe=universe_of(["IVZ"]),
+        run=WindowRun("full", "explicit source-anchor refusal", pd.Timestamp("2026-11-16")),
     )
     writes: list[object] = []
     monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))
     with pytest.raises(ValueError, match="changed sharadar|share anchor"):
-        price_step.StepCubePrices(isolated, context.config).run(full=True)
+        price_step.StepCubePrices(isolated, context.config).run()
     assert not writes
     print(f"SANITY: actual StepCubePrices.run refuses changed {changed} evidence before any part write.")
 

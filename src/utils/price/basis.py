@@ -2,24 +2,29 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 import pandas as pd
 
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows
 from src.utils.identity_tables import identity_columns, read_identity
 from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.price.adjustments import ShareBasis, quantity_basis, resolve_share_events
 from src.utils.price.repairs import apply_return_seams, apply_split_vintage
+from src.utils.window import Window
 
 
-def load_price_identity(context: Context, tickers: list[str]) -> tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None]:
+def load_price_identity(
+    context: Context, tickers: list[str], windows: Mapping[Table, Window | None]
+) -> tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None]:
     """Load predecessor ownership and ADR category evidence in one metadata projection."""
     store = context.store
+    if windows[Tables.universe_cik_symbol] is not None or windows[Tables.sharadar_tickers] is not None:
+        raise ValueError("Price identity requires complete validity intervals and security metadata")
     columns = ["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"]
     df_lineage = (
         read_identity(store, Tables.universe_cik_symbol, columns=columns, where={"role": "cik_window"}, optional=True)
@@ -39,13 +44,23 @@ def load_quantity_basis(
     context: Context,
     tickers: Sequence[str],
     bugfix: dict,
-    identity: tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None] | None = None,
+    identity: tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None] | None,
+    windows: Mapping[Table, Window | None],
 ) -> ShareBasis:
     """Load sparse quantity events and identity once, without price anchors or repairs."""
     names = sorted(set(tickers))
     store = context.store
-    series, df_security = load_price_identity(context, names) if identity is None else identity
-    df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+    series, df_security = load_price_identity(context, names, windows) if identity is None else identity
+    retained = windows[Tables.prices_splits]
+    action_window = windows[Tables.sharadar_actions]
+    df_splits = store.load(
+        Tables.prices_splits,
+        columns=["ticker", "date", "ratio"],
+        where={"ticker": names},
+        since=None if retained is None else retained.start,
+        until=context.run.as_of if retained is None else retained.end,
+        optional=True,
+    )
     df_actions = store.load(
         Tables.sharadar_actions,
         columns=["ticker", "date", "action", "value"],
@@ -53,6 +68,8 @@ def load_quantity_basis(
             "ticker": sorted(set(names) | {s.vendor_ticker for s in series}),
             "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF, "adrratiosplit"],
         },
+        since=None if action_window is None else action_window.start,
+        until=context.run.as_of if action_window is None else action_window.end,
         optional=True,
     )
     if df_splits is None and store.exists(Tables.prices_splits):

@@ -5,6 +5,10 @@ type: guide
 tags:
   - wiki
   - guide
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+integration_parents:
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 # Add a cube feature
 
@@ -14,14 +18,14 @@ Add a modelling feature without leaking future data, breaking the part schema, c
 
 ## Steps
 
-1. Identify the owning domain part in [parts.py](../../src/data_aggregate/utils/common/parts.py) and read its transformer under [data_aggregate/transformers](../../src/data_aggregate/transformers/).
+1. Identify the owning domain part in [parts.py](../../src/data_aggregate/utils/common/parts.py) and read its transformer under `src/data_aggregate/transformers/`.
 2. Confirm the source table, publication date, projection, and [source availability](../concepts/source-availability.md).
-3. Implement the narrow calculation in the appropriate domain helper under [data_aggregate/utils](../../src/data_aggregate/utils/).
+3. Implement the narrow calculation in the appropriate domain helper under `src/data_aggregate/utils/`.
 4. Return a date-by-ticker panel and add it through `PanelMerger` so duplicate feature names fail loudly.
 5. Apply raw, cross-sectional, peer-relative, or self-history variants through the shared helpers rather than reimplementing them.
-6. Add tunable windows or thresholds to [configs/build_cube.yml](../../configs/build_cube.yml); stable facts belong in constants.
+6. Add tunable windows or thresholds to [configs/data_aggregate.yml](../../configs/data_aggregate.yml); stable facts belong in constants.
 7. Declare any binding daily look-back on the part and raise its warm-up if necessary.
-8. Update the relevant feature catalogue generator under [scripts](../../scripts/).
+8. Update the relevant feature catalogue generator under `scripts/`.
 9. Add known-truth mathematical coverage where needed and a bounded real-data economic test with a printed conclusion.
 10. Run the part-registry, projection, incremental-equivalence, catalogue, and targeted feature tests.
 11. Build the affected part and finish with read-only [validation](../modules/validation.md).

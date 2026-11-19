@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -39,68 +37,27 @@ LINE_CEILING_USD = 5.0e12
 _MCAP_TOLERANCE = 1.1
 
 
-@dataclass(frozen=True)
-class Policy:
-    min_securities: int
-    min_agreement: float
-    band_low: float
-    band_high: float
-    max_age_days: int
-    min_row_coverage: float
-    min_consensus_filers: int
+_MIN_SECURITIES = 5
+_MIN_AGREEMENT = 0.8
+_ROW_BAND_LOW = 0.35
+_ROW_BAND_HIGH = 3.5
+MIN_ROW_COVERAGE = 0.8
+MIN_CONSENSUS_FILERS = 3
 
 
-def prepare_public_value_quotes(close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.Series | None:
+def prepare_public_value_quotes(close: pd.DataFrame | None) -> pd.Series | None:
     """Prepare the existing age-bounded quote lookup once for streamed DATE periods."""
     if close is None or close.empty:
         return None
-    max_age_days = _policy(value_basis).max_age_days
     first = pd.Timestamp(close.index.min()).normalize()
-    last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=max_age_days)
+    last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=_MAX_PRICE_AGE_DAYS)
     periods = pd.Series(pd.date_range(first, last))
-    return period_close(close, periods, max_age_days)
-
-
-def _policy(policy: Mapping[str, Any] | None) -> Policy:
-    """Validated settings of the value-basis config."""
-    settings: dict[str, Any] = {
-        "min_securities": 5,
-        "min_agreement": 0.8,
-        "row_band_low": 0.35,
-        "row_band_high": 3.5,
-        "max_price_age_days": _MAX_PRICE_AGE_DAYS,
-        "min_row_coverage": 0.8,
-        "min_consensus_filers": 3,
-    }
-    unknown = set(dict(policy or {})) - set(settings)
-    if unknown:
-        raise TypeError(f"Unknown 13F value-basis settings: {sorted(unknown)}")
-    settings.update(dict(policy or {}))
-    out = Policy(
-        int(settings["min_securities"]),
-        float(settings["min_agreement"]),
-        float(settings["row_band_low"]),
-        float(settings["row_band_high"]),
-        int(settings["max_price_age_days"]),
-        float(settings["min_row_coverage"]),
-        int(settings["min_consensus_filers"]),
-    )
-    if (
-        out.min_securities < 1
-        or not 0.5 < out.min_agreement <= 1
-        or not 0 < out.band_low < 1 < out.band_high
-        or out.max_age_days < 0
-        or not 0 < out.min_row_coverage <= 1
-        or out.min_consensus_filers < 1
-    ):
-        raise ValueError("Invalid 13F value-basis policy")
-    return out
+    return period_close(close, periods, _MAX_PRICE_AGE_DAYS)
 
 
 def repair_value_basis(
     holdings: pd.DataFrame,
     close: pd.DataFrame | None,
-    policy: Mapping[str, Any] | None = None,
     *,
     period_quotes: pd.Series | None = None,
     consensus: pd.Series | None = None,
@@ -112,7 +69,6 @@ def repair_value_basis(
     securities `close` does not cover; `limits` may carry `mcap` and `shares_out` (period, ticker) series for the plausibility tests.
     Source frames remain unchanged and repeat repair is idempotent.
     """
-    pol = _policy(policy)
     df_out = holdings.copy()
     if "value_basis_repaired" in df_out or df_out.empty:
         return df_out, _empty_register()
@@ -124,7 +80,7 @@ def repair_value_basis(
     value = pd.to_numeric(df_out["value_usd"], errors="coerce").astype("float64")
     shares = pd.to_numeric(df_out["shares"], errors="coerce").astype("float64")
     if period_quotes is None and "ticker" in df_out and close is not None and not close.empty:
-        period_quotes = period_close(close, df_out["period"], pol.max_age_days)
+        period_quotes = period_close(close, df_out["period"], _MAX_PRICE_AGE_DAYS)
     quote = _row_quotes(df_out, period_quotes)
     cons = _row_consensus(df_out, consensus)
     reference = quote.fillna(cons)
@@ -134,18 +90,18 @@ def repair_value_basis(
     ratio = ratio.where(np.isfinite(ratio) & ratio.gt(0))
 
     # One unit factor per filing scales every monetary leg.
-    df_register = _book_factors(df_out, keys, ratio, quote.notna(), pol)
+    df_register = _book_factors(df_out, keys, ratio, quote.notna())
     _apply_book_factors(df_out, df_register, keys)
 
     # Every priced common line against its reference, once the book unit is frozen.
     scaled = pd.to_numeric(df_out["value_usd"], errors="coerce").astype("float64")
     cover = _cover_dollars(df_out, scaled)
-    _repair_common_lines(df_out, value, scaled, shares, reference, quote, common, cover, limits, pol)
+    _repair_common_lines(df_out, value, scaled, shares, reference, quote, common, cover, limits)
 
     # Option legs use their own underlying quantities; then book acceptance.
     estimates = _estimate_option_legs(df_out, holdings, reference, common)
     _keep_sibling_exposures(df_out)
-    return df_out, _repair_register(df_register, keys, df_out, value, estimates, common, cover, reference, pol)
+    return df_out, _repair_register(df_register, keys, df_out, value, estimates, common, cover, reference)
 
 
 def _swapped(common: pd.Series, value: pd.Series, shares: pd.Series) -> pd.Series:
@@ -172,7 +128,7 @@ def _row_consensus(df_out: pd.DataFrame, consensus: pd.Series | None) -> pd.Seri
     return out
 
 
-def _book_factors(df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, priced: pd.Series, pol: Policy) -> pd.DataFrame:
+def _book_factors(df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, priced: pd.Series) -> pd.DataFrame:
     """Per filing: the power-of-ten unit its securities agree on, the support behind it and the status.
 
     A security's evidence is the median of its lines' value / (shares x reference). The candidate unit is the power of ten that at least
@@ -183,7 +139,7 @@ def _book_factors(df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, price
     frame = df_out[keys + [security]].assign(_log=np.log10(ratio), _priced=priced)
     evidence = frame.dropna(subset=["_log"]).groupby(keys + [security], dropna=False).agg(_log=("_log", "median"), _priced=("_priced", "mean"))
     levels = list(range(len(keys)))
-    log_low, log_high = np.log10(pol.band_low), np.log10(pol.band_high)
+    log_low, log_high = np.log10(_ROW_BAND_LOW), np.log10(_ROW_BAND_HIGH)
     count = evidence["_log"].groupby(level=levels, dropna=False).size()
     priced_share = evidence["_priced"].groupby(level=levels, dropna=False).mean()
     measured = (10.0 ** evidence["_log"]).groupby(level=levels, dropna=False).median()
@@ -206,17 +162,15 @@ def _book_factors(df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, price
 
     filed_agreement = agreement(pd.Series(0.0, index=count.index))
     candidate_agreement = agreement(power)
-    use_candidate = (
-        best["n"].ge(pol.min_securities).fillna(False) & candidate_agreement.ge(pol.min_agreement) & candidate_agreement.gt(filed_agreement)
-    )
+    use_candidate = best["n"].ge(_MIN_SECURITIES).fillna(False) & candidate_agreement.ge(_MIN_AGREEMENT) & candidate_agreement.gt(filed_agreement)
     chosen = candidate_agreement.where(use_candidate, filed_agreement)
-    accepted = chosen.ge(pol.min_agreement)
+    accepted = chosen.ge(_MIN_AGREEMENT)
 
     factor = pd.Series(1.0, index=count.index)
     factor[use_candidate] = 10.0 ** power[use_candidate]
     status = pd.Series("abstained", index=count.index)
     status[accepted] = np.where(priced_share[accepted] >= 0.5, "market_checked", "consensus_checked")
-    status[accepted & ~use_candidate & count.lt(pol.min_securities)] = "source_only_thin"
+    status[accepted & ~use_candidate & count.lt(_MIN_SECURITIES)] = "source_only_thin"
     columns = {"median_ratio": measured, "factor": factor, "priced_securities": count, "agreement": chosen, "status": status}
     df_register = pd.concat([series.rename(name) for name, series in columns.items()], axis=1)
 
@@ -227,7 +181,7 @@ def _book_factors(df_out: pd.DataFrame, keys: list[str], ratio: pd.Series, price
     df_register["priced_securities"] = df_register["priced_securities"].fillna(0).astype(int)
     df_register["agreement"] = df_register["agreement"].fillna(0.0)
     df_register["status"] = df_register["status"].fillna("source_only_no_price")
-    return df_register.reset_index().assign(band_low=pol.band_low, band_high=pol.band_high)
+    return df_register.reset_index().assign(band_low=_ROW_BAND_LOW, band_high=_ROW_BAND_HIGH)
 
 
 def _apply_book_factors(df_out: pd.DataFrame, df_register: pd.DataFrame, keys: list[str]) -> pd.Series:
@@ -289,7 +243,6 @@ def _repair_common_lines(
     common: pd.Series,
     cover: pd.Series,
     limits: Mapping[str, pd.Series] | None,
-    pol: Policy,
 ) -> None:
     """Check each common line against its reference once the book unit is frozen, and rebuild the failing leg.
 
@@ -305,7 +258,7 @@ def _repair_common_lines(
     valid_value = scaled.gt(0) & np.isfinite(scaled)
     swapped = _swapped(common, filed, shares)
     line_ratio = scaled / (shares.where(valid_qty) * reference)
-    outside = common & has_ref & valid_qty & valid_value & ~line_ratio.between(pol.band_low, pol.band_high)
+    outside = common & has_ref & valid_qty & valid_value & ~line_ratio.between(_ROW_BAND_LOW, _ROW_BAND_HIGH)
     outside |= common & has_ref & swapped & valid_qty
 
     # Candidate repairs.
@@ -403,7 +356,6 @@ def _repair_register(
     common: pd.Series,
     cover: pd.Series,
     reference: pd.Series,
-    pol: Policy,
 ) -> pd.DataFrame:
     """Count line actions per filing and decide book acceptance: enough lines kept and enough of the cover total retained."""
     kept = common & df_out["value_usd"].notna() & ~df_out["value_basis_excluded"]
@@ -466,8 +418,8 @@ def _repair_register(
     )
     df_totals["row_coverage"] = df_totals["kept_rows"] / df_totals["common_rows"].where(df_totals["common_rows"].gt(0))
     df_totals["cover_ratio"] = df_totals["kept_raw"] / df_totals["cover_raw"].where(df_totals["cover_raw"].gt(0))
-    rows_ok = df_totals["row_coverage"].fillna(1.0).ge(pol.min_row_coverage)
-    cover_ok = df_totals["cover_ratio"].isna() | df_totals["cover_ratio"].ge(pol.min_row_coverage)
+    rows_ok = df_totals["row_coverage"].fillna(1.0).ge(MIN_ROW_COVERAGE)
+    cover_ok = df_totals["cover_ratio"].isna() | df_totals["cover_ratio"].ge(MIN_ROW_COVERAGE)
     df_totals["book_ok"] = rows_ok & cover_ok
     df_register = df_register.merge(df_totals.reset_index(), on=keys, validate="one_to_one")
     df_rows = df_out[keys].merge(df_register[[*keys, "book_ok"]], on=keys, how="left", validate="many_to_one")

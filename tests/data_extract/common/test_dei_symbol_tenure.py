@@ -26,7 +26,9 @@ from src.data_extract.utils.common.identity_contract import DEI_SOURCE
 from src.data_extract.utils.identity.symbol_tenure import TABLE_COLUMNS, aggregate_dei_symbols, collapse_dei_periods, parse_symbol_field
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
+from tests.data_extract.fake_context import extract_config
 
 _SUB_COLS = ["adsh", "cik", "name", "sic", "form", "period", "fy", "fp", "filed"]
 _TXT_COLS = ["adsh", "tag", "version", "ddate", "qtrs", "iprx", "lang", "dimh", "dimn", "coreg", "escaped", "txtlen", "value"]
@@ -96,7 +98,8 @@ def _context(store: Any) -> Any:
     return SimpleNamespace(
         store=store,
         log=logging.getLogger("test.dei_symbol_tenure"),
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
+        config=extract_config(local={"paths": {"financial_notes": "unused"}}),
+        run=WindowRun("incremental", "offline evidence capture", pd.Timestamp("2026-11-16")),
     )
 
 
@@ -246,7 +249,7 @@ def test_download_caches_every_period_and_capture_reads_only_new_ones(tmp_path: 
 
     context = _context(sqlite_store)
     assert fn.download_notes_periods(context, tmp_path, periods) == 4, "every listed period is cached, captured or not"
-    written = sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path, False))
+    written = sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path))
     after = _stored(sqlite_store)
 
     assert read == ["2025_04_notes.zip"], read
@@ -276,7 +279,8 @@ def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqli
 
     context = _context(sqlite_store)
     fn.download_notes_periods(context, tmp_path, ["2025q3"])
-    sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path, True))
+    context.run = WindowRun("full", "explicit evidence recovery", context.run.instant)
+    sum(dei.capture_dei_period(context, tmp_path, period) for period in dei.pending_dei_periods(context, tmp_path))
     rows = {(r.symbol, r.source, r.evidence_period) for r in _stored(sqlite_store).itertuples(index=False)}
 
     assert rows == {("XYZ", DEI_SOURCE, "2025q3"), ("KEEP", DEI_SOURCE, "2025q2"), ("XYZ", "form345", ""), ("XYZ", "manual", "")}, rows

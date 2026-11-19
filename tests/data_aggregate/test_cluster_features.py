@@ -17,7 +17,6 @@ from dotenv import find_dotenv, load_dotenv
 
 from src.data_aggregate.utils.manager_profile.lines import LINE_COLUMNS, clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
-from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.cluster_config import ClusterSpec, cluster_specs
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, _split_factors, cluster_feature_frame
 from src.data_aggregate.utils.sec_thirteen.cluster_lines import BOOK_COLUMNS, company_books, filed_by_deadline
@@ -25,6 +24,7 @@ from src.data_aggregate.utils.sec_thirteen.cluster_panel import filing_deadlines
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.config import read_config
+from src.utils.data_policy import source_read_window
 from src.utils.db import get_engine
 from src.utils.identity_tables import LINE_COLUMNS as TAG_COLUMNS
 from src.utils.identity_tables import CusipTags
@@ -416,14 +416,20 @@ def test_real_quarter_mapped_lines_cover_at_least_the_symbol_match_and_features_
     market = _market_at(store, PERIOD)
     universe = set(market.dropna(subset=["market_cap"]).index)
 
-    deadlines = filing_deadlines(pd.DatetimeIndex([PERIOD, before, prev4]), load_trading_calendar(store))
+    calendar = pd.DatetimeIndex(sorted(pd.to_datetime(store.distinct(Tables.cube_part_prices, "date")))).normalize()
+    filed = source_read_window(cfg, Tables.sec13f_hr, calendar[-1])
+    assert filed is not None
+    deadlines = filing_deadlines(pd.DatetimeIndex([PERIOD, before, prev4]), calendar)
     books: dict[pd.Timestamp, pd.DataFrame] = {}
     symbol_cover = mapped_cover = 0.0
     for period in (PERIOD, before, prev4):
-        raw = read_lines(store, ciks, [period])
+        raw = read_lines(store, ciks, [period], filed)
+
         assert list(raw.columns) == list(LINE_COLUMNS)
         classified = classify_securities(
-            clean_book(filed_by_deadline(raw, deadlines[period]), cfg.build_cube.manager_profile, prefixes), reference, cfg.build_cube.manager_profile
+            clean_book(filed_by_deadline(raw, deadlines[period]), cfg.data_aggregate.manager_profile, prefixes),
+            reference,
+            cfg.data_aggregate.manager_profile,
         )
         books[period] = company_books(classified, tags, universe)
         if period == PERIOD:

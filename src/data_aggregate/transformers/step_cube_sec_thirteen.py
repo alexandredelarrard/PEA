@@ -1,4 +1,8 @@
-"""Per-cluster 13F cube features: plan the due report quarters, compute each from the stored cluster labels, carry them daily and save one window."""
+"""Per-cluster 13F cube features: plan the due report quarters, compute each from the stored cluster labels, carry them daily and save one window.
+
+Timing follows `data.yml`: the write window and its overlap come from the cube part's table policy, the publication lag from `sec13f_hr.pit`
+and every input declared in the part's `warmup` map is read in full (null).
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,8 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
+from src.data_aggregate.utils.common.inputs import input_windows
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.manager_profile.lines import clean_book, read_lines
 from src.data_aggregate.utils.manager_profile.reference import classify_securities, prefix_tickers, sharadar_reference
@@ -27,9 +32,11 @@ from src.data_aggregate.utils.sec_thirteen.cluster_config import (
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
 from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books, filed_by_deadline
 from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, filing_deadlines, publication_dates
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
+from src.utils.data_policy import source_read_window
 from src.utils.identity_tables import CusipTags
 from src.utils.step import Step
+from src.utils.window import Window, WindowPlan
 
 
 @dataclass(frozen=True)
@@ -44,10 +51,10 @@ class Quarters:
 
 @dataclass(frozen=True)
 class Saved:
-    """The stored part: its column set and window, the refresh tail and the saved values of the newest day, carried onto the days after it."""
+    """The stored part: its column set and resolved window, the rewritten tail and the saved values of the newest day, carried onto the days after it."""
 
     columns: list[str]
-    window: PartWindow
+    window: WindowPlan
     tail: pd.DataFrame | None
     carried: pd.DataFrame | None
 
@@ -91,6 +98,7 @@ class Resources:
     universe: tuple[str, ...]
     references: References
     market: Market
+    filed: Window
 
 
 def _market_at(market: Market, period: pd.Timestamp) -> pd.DataFrame:
@@ -110,12 +118,14 @@ class StepCubeSecThirteen(Step):
         self._store = context.store
         self._part = part_for(Tables.cube_part_sec_thirteen)
 
-    def run(self, full: bool = False) -> None:
+    def run(self) -> dict[Table, WindowPlan]:
         """Plan, read the due quarters' books, compute the per-cluster features, carry them over the trading days and save the window."""
         started = time.monotonic()
 
         # load and plan: the window, the labels and the saved tail, then the references and market of the quarters to compute
-        plan = self._plan(full)
+        plan = self._plan()
+        if plan is None:
+            return {}
         resources = self._load(plan) if plan.quarters.compute else None
 
         # compute, check, merge and save
@@ -130,8 +140,9 @@ class StepCubeSecThirteen(Step):
             len(rows),
             time.monotonic() - started,
         )
+        return {self._part.table: plan.saved.window}
 
-    def _plan(self, full: bool) -> Plan:
+    def _plan(self) -> Plan | None:
         """The window, the quarters to compute and the saved rows to carry; raises before any quarter is read when the part cannot be extended."""
         # config: the validated clusters and their cube columns; the column budget warns above its limits
         cfg = self._config.cluster
@@ -140,12 +151,20 @@ class StepCubeSecThirteen(Step):
         columns = column_names(specs)
         self._log.info("sec thirteen clusters: %d cube columns", column_budget(specs, cfg))
 
-        # load: the calendar, the saved column set and window, the manager labels and the saved tail
-        calendar = load_trading_calendar(self._store)
+        # load: the calendar, the resolved window, the saved column set, the manager labels and the saved tail
+        calendar = load_trading_calendar(self._context)
+        window = plan_window(self._context, self._part.table, calendar)
+        if window is None:
+            return None
         saved_columns = self._store.columns(self._part.table)
-        window = plan_window(self._store, self._part.table, full=full, warmup=0, trading_index=calendar, refresh=PART_REFRESH_TRADING_DAYS)
-        df_labels = self._store.load(Tables.sec_13f_manager_details, columns=["cik", "period", "cluster"], optional=True)
-        tail = None if window.is_full else self._store.load(self._part.table, since=window.refresh_from, optional=True)
+        retained = source_read_window(self._config, Tables.sec_13f_manager_details, self._context.run.as_of)
+        if retained is None:
+            return None
+        df_labels = self._store.load(
+            Tables.sec_13f_manager_details, columns=["cik", "period", "cluster"], where={"first_filed_date": retained}, optional=True
+        )
+        scope = {"ticker": list(dict(window.scope)["ticker"])}
+        tail = None if window.is_full else self._store.load(self._part.table, since=window.write.start, where=scope, optional=True)
 
         # check: a stored column set other than the configured one needs the full rebuild, never a hidden one; the labels exist
         if not window.is_full and saved_columns and set(saved_columns) != {"date", "ticker", *columns}:
@@ -154,14 +173,15 @@ class StepCubeSecThirteen(Step):
             raise RuntimeError("no cluster labels in sec_13f_manager_details: run `data_aggregate build-cluster` first")
         labels = df_labels.assign(period=pd.to_datetime(df_labels["period"]).dt.normalize())
 
-        # plan: the publication day of every quarter with a previous label, the saved quarter and the quarters to compute
-        one, age = pd.offsets.QuarterEnd(1), pd.Timedelta(days=int(cfg.max_age_calendar_days))
+        # plan: the publication day of every quarter with a previous label (`sec13f_hr.pit` after the filing deadline), the saved quarter and
+        # the quarters to compute
+        one = pd.offsets.QuarterEnd(1)
         periods = pd.DatetimeIndex(pd.date_range(labels["period"].min() + one, calendar[-1], freq="QE"))
-        published = publication_dates(periods, calendar, int(cfg.availability_buffer_days)).dropna()
-        published = published[published + age >= pd.Timestamp(cfg.history_start)]
-        saved = None if window.last is None else published[published <= window.last]
+        published = publication_dates(periods, calendar, self._config).dropna()
+        frontier = None if window.is_full else window.frontier
+        saved = None if frontier is None else published[published <= frontier]
         saved_quarter = None if saved is None or saved.empty else cast(pd.Timestamp, saved.index[-1])
-        due = list(published.index if window.last is None else published[published > window.last].index)
+        due = list(published.index if frontier is None else published[published > frontier].index)
         compute = [saved_quarter, *due] if due and saved_quarter is not None else due
         if window.is_full and not due:
             raise RuntimeError("no report quarter is published yet in the price calendar; nothing to build")
@@ -175,20 +195,27 @@ class StepCubeSecThirteen(Step):
         # merge: the saved values of the newest date, carried onto the days after it
         carried = None
         if tail is not None:
-            latest = tail[pd.to_datetime(tail["date"]) == window.last]
+            latest = tail[pd.to_datetime(tail["date"]) == window.frontier]
             carried = latest.set_index("ticker")[columns].astype("float32")
         return Plan(specs, columns, calendar, labels, Quarters(published, due, compute, saved_quarter), Saved(saved_columns, window, tail, carried))
 
     def _load(self, plan: Plan) -> Resources:
         """The references, the labels as member lists and the quarter-end market frames of the quarters to compute, each read once."""
-        # load: the reference tables and the price fields over the span the quarters need
-        # (volatility: std of the last 250 daily returns, at least 120 observed; prices start 400 calendar days before the oldest quarter)
-        vol_window, min_periods, lookback_days = 250, 120, 400
+        # load: the declared inputs (each read in full: null warmups), the reference tables and the price fields
+        # (volatility: std of the last 250 daily returns, at least 120 observed)
+        vol_window, min_periods = 250, 120
+        windows = input_windows(self._context, self._part.table, plan.saved.window.write)
+        full_history = (Tables.sec13f_hr, Tables.sec_13f_manager_details, Tables.universe_cusip, Tables.cusip_ticker_map, Tables.sharadar_tickers)
+        bounded = [table.name for table in full_history if windows[table] is not None]
+        if bounded:
+            raise ValueError(f"{self._part.table}: the cluster features need the full stored history of {bounded}; declare null warmups in data.yml")
+        filed = source_read_window(self._config, Tables.sec13f_hr, self._context.run.as_of)
+        if filed is None:
+            raise RuntimeError("the configured sec13f_hr start date is after the run date; no 13F book can be read")
         columns = ["permaticker", "ticker", "category", "sector", "lastpricedate"]
         df_tickers = cast(pd.DataFrame, self._store.load(Tables.sharadar_tickers, columns=columns))
         tags = CusipTags.load(self._store)
-        oldest = min(plan.quarters.compute) - pd.offsets.QuarterEnd(1) - pd.Timedelta(days=lookback_days)
-        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS, since=None if plan.saved.window.is_full else oldest)
+        frames = load_price_frames(self._context, peers={}, calendar=plan.calendar, fields=self._FIELDS, window=windows[Tables.cube_part_prices])
         frames.require(*self._FIELDS)
 
         # clean: the managers of the clusters that have features (not the tracked-only ids or the sentinels), by label period and by cluster
@@ -204,7 +231,7 @@ class StepCubeSecThirteen(Step):
         volatility = returns.rolling(vol_window, min_periods=min_periods).std()
         reference, prefixes = sharadar_reference(df_tickers), prefix_tickers(tags.cmap)
         mcap, shares = cast(pd.DataFrame, frames.mcap_pit), cast(pd.DataFrame, frames.shares_outstanding_pit)
-        return Resources(members, by_period, frames.universe, References(tags, reference, prefixes), Market(mcap, shares, volatility))
+        return Resources(members, by_period, frames.universe, References(tags, reference, prefixes), Market(mcap, shares, volatility), filed)
 
     def _compute_quarters(self, plan: Plan, res: Resources) -> dict[pd.Timestamp, pd.DataFrame]:
         """The feature frame (index ticker, the configured float32 columns) of each quarter to compute, oldest first; each book is built once."""
@@ -216,14 +243,14 @@ class StepCubeSecThirteen(Step):
                 needs[period] = needs.get(period, frozenset()) | res.labelled.get(t - one, frozenset())
 
         # compute: the books of the quarter, the quarter before and the year before, then every cluster's features
-        profile_cfg, universe = self._config.build_cube.manager_profile, set(res.universe)
+        profile_cfg, universe = self._config.data_aggregate.manager_profile, set(res.universe)
         deadlines = filing_deadlines(pd.DatetimeIndex(sorted(needs)), plan.calendar)
         books: dict[pd.Timestamp, pd.DataFrame] = {}
         computed: dict[pd.Timestamp, pd.DataFrame] = {}
         for t in plan.quarters.compute:
             started = time.monotonic()
             for period in sorted({t - four, t - one, t} - books.keys()):
-                raw = filed_by_deadline(read_lines(self._store, sorted(needs[period]), [period]), deadlines[period])
+                raw = filed_by_deadline(read_lines(self._store, sorted(needs[period]), [period], res.filed), deadlines[period])
                 classified = classify_securities(clean_book(raw, profile_cfg, res.references.prefixes), res.references.reference, profile_cfg)
                 books[period] = company_books(classified, res.references.tags, universe)
             quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res.market, t)
@@ -262,17 +289,14 @@ class StepCubeSecThirteen(Step):
     def _expand(self, plan: Plan, computed: dict[pd.Timestamp, pd.DataFrame]) -> pd.DataFrame:
         """The rows to write: the saved tail as saved, then the trading days after it from the due quarters and the carried saved quarter."""
         # merge: the frames by publication day; the newest saved quarter is the saved rows of the newest day
-        cfg = self._config.cluster
         quarters = {plan.quarters.publication[t]: computed[t] for t in plan.quarters.due}
         if plan.saved.carried is not None and plan.quarters.saved_quarter is not None:
             quarters[plan.quarters.publication[plan.quarters.saved_quarter]] = plan.saved.carried
 
-        # compute: the days to fill, from the history start or after the newest saved day
-        calendar = plan.calendar
-        days = (
-            calendar[calendar >= pd.Timestamp(cfg.history_start)] if plan.saved.window.last is None else calendar[calendar > plan.saved.window.last]
-        )
-        daily = expand_daily(quarters, days, int(cfg.max_age_calendar_days))
+        # compute: the days to fill, the whole calendar or the days after the newest saved day
+        calendar, frontier = plan.calendar, plan.saved.window.frontier
+        days = calendar if frontier is None or plan.saved.window.is_full else calendar[calendar > frontier]
+        daily = expand_daily(quarters, days, int(self._config.cluster.max_age_calendar_days))
         if plan.saved.tail is None:
             return daily
 
@@ -281,7 +305,5 @@ class StepCubeSecThirteen(Step):
         return tail if daily.empty else pd.concat([tail.astype({column: "float32" for column in plan.columns}), daily], ignore_index=True)
 
     def _save(self, plan: Plan, rows: pd.DataFrame) -> None:
-        """One replace (full) or one inclusive tail append of `rows`; rows with no feature value are dropped."""
-        written = write_part(self._store, self._part.table, rows, plan.saved.window, drop_empty=True, existing_columns=plan.saved.columns)
-        if written == COLUMNS_CHANGED:
-            raise RuntimeError(f"{self._part.table} column set changed during the run: {self._REBUILD}")
+        """One replace (full) or one rewrite of the resolved window with `rows`; rows with no feature value are dropped."""
+        write_part(self._store, self._part.table, rows, plan.saved.window, drop_empty=True, existing_columns=plan.saved.columns)

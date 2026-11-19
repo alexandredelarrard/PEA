@@ -9,7 +9,6 @@ from typing import Any, cast
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 from sqlalchemy import create_engine
 
 from src.context import Context
@@ -21,7 +20,7 @@ from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.config import read_config
+from src.utils.window import WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.support.universe import universe_of
@@ -46,9 +45,8 @@ def daily(tmp_path, monkeypatch):
         store=DataStore(create_engine(f"sqlite:///{tmp_path / 'retry.db'}")),
         log=logging.getLogger("test.def14a.retry"),
         config_dir="configs",
-        config=extract_config(
-            data_extract={"years_history": 31, "llm_text_budget": OmegaConf.to_container(read_config("configs").data_extract.llm_text_budget)}
-        ),
+        config=extract_config(),
+        run=WindowRun("incremental", "proxy source fixture", pd.Timestamp("2026-11-16")),
         universe=universe_of(["ZZ"]),
     )
     create_canonical(
@@ -62,7 +60,7 @@ def daily(tmp_path, monkeypatch):
             Tables.sec_def14a_text,
         ],
     )
-    filed = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    filed = pd.Timestamp("2026-11-13")
     filing = pd.DataFrame(
         [
             dict(
@@ -180,7 +178,7 @@ def test_retry_two_sections_read_no_source_and_keep_their_rows(daily, candidate)
     print("SANITY: sections at retry=2 call no provider and keep their rows, whether or not a null remains.")
 
 
-def test_five_matched_calls_then_only_the_gapped_section_is_retried(daily):
+def test_five_matched_calls_reuse_successful_answers_with_null_fields(daily):
     context, calls, answers, filing = daily
     _walk(context, filing, PAYLOADS)
     answers.update(_complete_answers())
@@ -193,14 +191,13 @@ def test_five_matched_calls_then_only_the_gapped_section_is_retried(daily):
     assert all(value == [1] for value in _attempts(context).values())
 
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
-    assert [name for name, _, _ in calls[5:]] == ["AuditExtract"]
-    assert _attempts(context)[Tables.def14a_llm.name] == [2]
-    assert all(value == [1] for key, value in _attempts(context).items() if key != Tables.def14a_llm.name)
+    assert calls[5:] == []
+    assert all(value == [1] for value in _attempts(context).values())
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
-    assert len(calls) == 6
+    assert len(calls) == 5
     parent = context.store.load(Tables.def14a_llm)
     assert pd.isna(parent.iloc[0].audit_fees_tax) and parent.iloc[0].audit_fees_other == 0
-    print("SANITY: five matched initial calls; only the audit gap is retried, once; the exhausted 2 and the real zero are preserved.")
+    print("SANITY: five matched successful answers are reused; a NULL tax fee never triggers another call and the observed zero is retained.")
 
 
 def test_two_failed_attempts_are_excluded_from_later_runs(daily):
@@ -259,7 +256,7 @@ def test_paid_answer_survives_postprocessing_failure(daily, monkeypatch):
     print("SANITY: the raw paid answer is archived before postprocessing runs, so a postprocessing failure keeps it (1 call, 1 response).")
 
 
-def test_legacy_paid_json_counts_as_a_first_attempt_for_every_section(daily):
+def test_valid_legacy_paid_json_completes_every_section_without_new_calls(daily):
     from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
     from src.data_extract.utils.structure.def14a.flatten import _flatten
 
@@ -281,28 +278,58 @@ def test_legacy_paid_json_counts_as_a_first_attempt_for_every_section(daily):
     _walk(context, filing, PAYLOADS)
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
-    assert len(calls) == len(SECTIONS), "one call per section over two runs: the legacy answer was the first attempt"
-    assert all(value == [2] for value in _attempts(context).values())
+    assert calls == [], "valid cached all-domain answers, including absent fields, are complete"
     raw = context.store.load(Tables.def14a_llm).iloc[0].def14a_json
-    assert json.loads(raw)["_def14a_split"]["legacy_json"] == original
-    print(
-        f"SANITY: a legacy all-domain answer counts as attempt 1, so each of the {len(SECTIONS)} sections gets one more call (retry 2) and then stops; original bytes kept."
-    )
+    assert raw == original or json.loads(raw)["_def14a_split"]["legacy_json"] == original
+    print("SANITY: the valid legacy all-domain answer is reused without paid calls; original bytes are retained.")
 
 
-def test_empty_answers_are_retried_once_then_stop(daily):
+def test_successful_empty_answers_are_complete_on_the_first_attempt(daily):
     context, calls, _, filing = daily
     _walk(context, filing, PAYLOADS)
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
     assert len(calls) == 5 and all(value == [1] for value in _attempts(context).values())
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
-    assert len(calls) == 10 and all(value == [2] for value in _attempts(context).values())
+    assert len(calls) == 5 and all(value == [1] for value in _attempts(context).values())
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
-    assert len(calls) == 10
+    assert len(calls) == 5
     from src.utils.filer_tables import def14a_evidence_mask
 
     assert not def14a_evidence_mask(context.store.load(Tables.def14a_llm, markers=True)).any()
-    print("SANITY: an empty answer is a gap, gets exactly one more call (retry 1 -> 2) and then stops; it creates no governance observation.")
+    print(
+        "SANITY: successful empty answers complete their source references on attempt1, make no repeat calls, and create no governance observation."
+    )
+
+
+@pytest.mark.parametrize("empty", [True, False])
+def test_cached_answer_repairs_only_missing_child_completion(daily, monkeypatch, empty):
+    from src.data_extract.utils.structure.def14a import work
+
+    context, calls, answers, filing = daily
+    if not empty:
+        answers.update(_complete_answers())
+    _walk(context, filing, PAYLOADS)
+    extractors = fetch.section_extractors(context, context.config)
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], extractors)
+    assert len(calls) == 5
+    context.store.delete(Tables.def14a_executive_comp, where={"ticker": "ZZ", "accession_number": "retry-proxy"})
+    replayed = []
+    original = work.postprocess_section
+
+    def tracked(section, *args, **kwargs):
+        replayed.append(section.key)
+        return original(section, *args, **kwargs)
+
+    monkeypatch.setattr(work, "postprocess_section", tracked)
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], extractors)
+    assert len(calls) == 5 and replayed == ["executive_pay"]
+    assert not context.store.load(Tables.def14a_executive_comp, markers=True).empty
+    replayed.clear()
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], extractors)
+    assert len(calls) == 5 and replayed == []
+    print(
+        "SANITY: a missing child or valid-empty marker is materialized from its paid answer once, with no new inference or completed-reference replay."
+    )
 
 
 def test_interior_missing_filing_is_found_without_recalling_completed_filings(daily):
@@ -342,9 +369,14 @@ def test_split_parent_does_not_complete_unattempted_sibling_domains(daily):
     )
     _walk(context, filing, PAYLOADS)
     fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
-    assert len(calls) == 5
+    assert len(calls) == 4
     assert all(value == [1] for value in _attempts(context).values())
-    print("SANITY: an archived split board answer is no legacy attempt: all five sections, siblings included, receive attempt 1.")
+    assert not context.store.load(Tables.def14a_directors).empty
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
+    assert len(calls) == 4
+    print(
+        "SANITY: cached board evidence repairs its missing child without a paid call; four unattempted siblings get attempt1 and the rerun is complete."
+    )
 
 
 def test_retry_only_parent_is_hidden_from_cube_and_prior_ceo_roles(daily):
@@ -363,21 +395,21 @@ def test_retry_only_parent_is_hidden_from_cube_and_prior_ceo_roles(daily):
         ),
     )
     step = object.__new__(StepCubeGovernance)
-    step._store, step._log = context.store, context.log
-    usable = step._load_def14a()
+    step._context, step._store, step._log = context, context.store, context.log
+    usable = step._load_def14a(None)
     assert usable is not None and usable.accession_number.tolist() == ["usable"]
     roles, _ = _role_map(_role_source(context, "ZZ"), now + pd.Timedelta(days=1))
     assert list(roles.values()) == ["ceo"]
     context.store.save(
         Tables.def14a_llm, pd.DataFrame([dict(ticker="ZZ", accession_number="real-audit", as_of=now + pd.Timedelta(days=1), audit_fees_other=0)])
     )
-    assert set(step._load_def14a().accession_number) == {"usable", "real-audit"}
+    assert set(step._load_def14a(None).accession_number) == {"usable", "real-audit"}
     roles, _ = _role_map(_role_source(context, "ZZ"), now + pd.Timedelta(days=2))
     assert roles == {}, "a genuine later audit observation keeps the existing latest-proxy semantics"
     print("SANITY: counter-only parents cannot hide a prior CEO or enter the cube; a genuine audit zero remains a real later observation.")
 
 
-@pytest.mark.parametrize(("missing", "retried"), [("ceo_name", True), ("ceo_since_year", False)])
+@pytest.mark.parametrize(("missing", "retried"), [("ceo_name", False), ("ceo_since_year", False)])
 def test_only_a_missing_ceo_identity_is_a_governance_key_gap(daily, missing, retried):
     context, calls, answers, filing = daily
     answers.update(_complete_answers())
@@ -468,3 +500,19 @@ def test_delayed_ceo_identity_refreshes_saved_pay_and_ownership_without_new_call
     raw = json.loads(after.def14a_json)["_def14a_split"]["responses"]
     assert raw["executive_pay"][0]["response"]["compensation"][0]["name"] == "Alice Adams"
     print("SANITY: delayed core identity refreshes saved CEO pay/ownership immediately; no extra reads/calls/counters.")
+
+
+@pytest.mark.parametrize("section", [section for section in SECTIONS if section.table != Tables.def14a_llm], ids=lambda section: section.key)
+def test_each_child_table_policy_gates_its_calls_and_writes(daily: Any, section: Any) -> None:
+    context, calls, answers, filing = daily
+    answers.update(_complete_answers())
+    _walk(context, filing, PAYLOADS)
+    context.config.data.tables[section.table.name].start_date = "2027-01-01"
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], fetch.section_extractors(context, context.config))
+    called = [name for name, _, _ in calls]
+    assert section.schema.__name__ not in called, f"{section.key} outside its own Window still called its provider"
+    assert len(called) == len(SECTIONS) - 1
+    assert context.store.row_count(section.table) == 0
+    print(
+        f"SANITY: {section.table.name}'s own configured end excludes its source call, retry counters and writes while the other proxy domains still run."
+    )

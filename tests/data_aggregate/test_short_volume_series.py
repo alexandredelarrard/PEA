@@ -5,6 +5,8 @@ supported absence (short volume 0, total unknown)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -14,6 +16,8 @@ from src.data_store.schema import Tables
 from src.utils.security_series import finra_key, finra_marker_kind, short_volume_series
 from tests.canonical_schema import create_canonical
 from tests.conftest import _store
+from tests.data_aggregate.institutional_read_windows import full_reference_windows, reference_sessions
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.data_extract.institutionals.test_short_volume_security import MASTER_ROWS, _lineage, _master
 from tests.data_extract.institutionals.test_short_volume_security import UNIVERSE as RULE_UNIVERSE
 
@@ -90,11 +94,22 @@ def test_classes_sum_times_ratio_with_a_supported_absence_and_a_lineage_fallback
         ),
     )
 
-    short, finra = inputs.load_short_volume(sqlite_store, UNIVERSE, _lines(), _red_lineage())
+    short, finra = inputs.load_short_volume(
+        source_context(sqlite_store, Path(".")),
+        UNIVERSE,
+        _lines(),
+        _red_lineage(),
+        full_reference_windows(source_context(sqlite_store, Path(".")))[Tables.sec_short_volume_security],
+        reference_sessions(source_context(sqlite_store, Path("."))),
+    )
 
-    assert short is not None and list(short.columns) == ["date", "ticker", "short_volume", "total_volume"]
+    assert short is not None and list(short.columns) == ["date", "ticker", "short_volume", "total_volume", "as_of"]
     assert pd.api.types.is_datetime64_any_dtype(short["date"]) and not short.duplicated(["ticker", "date"]).any()
-    got = {(t, f"{d:%m-%d}"): (s, v) for d, t, s, v in short.itertuples(index=False)}
+    expected_public = short["date"].map(
+        {pd.Timestamp("2020-01-02"): pd.Timestamp("2020-01-03"), pd.Timestamp("2020-01-03"): pd.Timestamp("2020-01-06")}
+    )
+    pd.testing.assert_series_equal(short["as_of"], expected_public.dt.as_unit("ns"), check_names=False)
+    got = {(t, f"{d:%m-%d}"): (s, v) for d, t, s, v in short[["date", "ticker", "short_volume", "total_volume"]].itertuples(index=False)}
     assert got[("BRK-B", "01-02")] == (100.0 + 1_500 * 2.0, 400.0 + 1_500 * 10.0), got
     assert got[("BRK-B", "01-03")][0] == 0.0 and np.isnan(got[("BRK-B", "01-03")][1]), "a supported absence"
     assert got[("AAA", "01-02")] == (30.0, 300.0) and got[("AAA", "01-03")][0] == 0.0
@@ -104,7 +119,7 @@ def test_classes_sum_times_ratio_with_a_supported_absence_and_a_lineage_fallback
     ]
     assert pd.to_datetime(finra["date"]).dt.strftime("%m-%d").tolist() == ["01-02"]
     print("\nSANITY: BRK-B 01-02 = 100 + 1,500 x 2 = 3,100 short (15,400 total); 01-03 a supported absence (0, total NaN);")
-    print("  AAA, never in FTD, maps through its window CIK as S0000000100:AAA (30 / 300); the builders' four columns kept.")
+    print("  AAA, never in FTD, maps through its window CIK as S0000000100:AAA (30 / 300); source eligibility accompanies the four economic columns.")
 
 
 def test_an_unresolved_finra_key_blocks_a_company_only_inside_its_master_line(sqlite_store):
@@ -139,10 +154,17 @@ def test_an_unresolved_finra_key_blocks_a_company_only_inside_its_master_line(sq
         ),
     )
 
-    short, _ = inputs.load_short_volume(sqlite_store, ["META"], master, lineage)
+    short, _ = inputs.load_short_volume(
+        source_context(sqlite_store, Path(".")),
+        ["META"],
+        master,
+        lineage,
+        full_reference_windows(source_context(sqlite_store, Path(".")))[Tables.sec_short_volume_security],
+        reference_sessions(source_context(sqlite_store, Path("."))),
+    )
 
     assert short is not None
-    got = {f"{d:%Y-%m-%d}": (s, v) for d, _, s, v in short.itertuples(index=False)}
+    got = {f"{d:%Y-%m-%d}": (s, v) for d, _, s, v in short[["date", "ticker", "short_volume", "total_volume"]].itertuples(index=False)}
     assert got == {"2025-06-17": (50.0, 100.0)}, got
     print("\nSANITY: the FB / F/B clash blocks META on 2021-06-15 (META's FB line covers the day); the 2025 ProShares FB")
     print(f"  line does not (the FB line ended 2022-06-09): META 2025-06-17 = {got.get('2025-06-17')}")
@@ -260,7 +282,14 @@ def test_real_stored_lines_reach_the_builder_as_company_series() -> None:
     summed = lines.loc[lines["lineage_role"].isin(["canonical_current", "canonical_predecessor", "secondary_class"])]
     multi = sorted(summed.groupby("canonical_company")["cusip"].nunique().loc[lambda n: n.gt(1)].index)
 
-    short, _ = inputs.load_short_volume(store, multi, lines, lineage)
+    short, _ = inputs.load_short_volume(
+        source_context(store, Path(".")),
+        multi,
+        lines,
+        lineage,
+        full_reference_windows(source_context(store, Path(".")))[Tables.sec_short_volume_security],
+        reference_sessions(source_context(store, Path("."))),
+    )
 
     assert short is not None and not short.duplicated(["ticker", "date"]).any() and set(short["ticker"]) <= set(multi)
     raw = store.load(Tables.sec_short_volume_security, columns=["date", "source_symbol", "short_volume"])

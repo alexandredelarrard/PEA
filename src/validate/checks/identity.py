@@ -26,8 +26,7 @@ from src.utils.filer_tables import (
     REMOVAL_COLUMNS,
     FilerTable,
     ListedWindow,
-    foreign_mask,
-    judged_cik_mask,
+    foreign_filer_rows,
     removal_records,
 )
 from src.utils.identity_flags import (
@@ -139,26 +138,10 @@ def _foreign_in_table(
     windows: dict[str, tuple[ListedWindow, ...]],
     bounds: Bounds,
 ) -> list[dict]:
-    """One removal record per (ticker, filer CIK) of the `spec` rows the purge removes (`foreign_mask`, up to the
-    ticker's `ended_on` as `before_end` keeps them). Only the filers that can own a foreign row are read: one foreign on
-    every day, or any filer of a dated, windowed ticker."""
-    records: list[dict] = []
-    columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
-    for ticker in tickers:
-        # the judged filers that can own a foreign row: every one for a dated ticker with windows, else those foreign on any day
-        filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
-        probe = pd.DataFrame({"ticker": ticker, spec.cik_col: filers[judged_cik_mask(filers)], spec.date_col: pd.NaT})
-        if not (spec.dated and normalise_ticker(ticker) in windows):
-            probe = probe[foreign_mask(spec, probe, ciks, windows)]
-        if probe.empty:
-            continue
-
-        # their rows, kept where foreign and dated up to the ticker's end (the purge leaves later rows, REQ-014)
-        rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: probe[spec.cik_col].tolist()}, optional=True)
-        if rows is not None and not rows.empty:
-            foreign = rows[foreign_mask(spec, rows, ciks, windows)]
-            records += removal_records(spec.table.name, foreign[before_end(foreign["ticker"], foreign[spec.date_col], bounds)], spec)
-    return records
+    """Pending foreign-row records inside configured source dates and the ticker's lifetime."""
+    rows = foreign_filer_rows(context, spec, tickers, ciks, windows)
+    foreign = rows.loc[before_end(rows["ticker"], rows[spec.date_col], bounds)]
+    return removal_records(spec.table.name, foreign, spec)
 
 
 def pending_removals(context: Context, lineage: pd.DataFrame, tickers: Sequence[str], *, dated: bool = True) -> pd.DataFrame:

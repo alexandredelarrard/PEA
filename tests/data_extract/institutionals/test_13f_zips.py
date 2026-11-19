@@ -23,6 +23,7 @@ from src.data_extract.utils.institutionals import fetch_13f_zips as z13
 from src.data_extract.utils.institutionals.fetch_13f import save_hr_filing
 from src.data_extract.utils.institutionals.fetch_13f_zips import cached_filing_vintages
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import fake_context
 
 # (cik, accession, form, filed, period, [(cusip, issuer, value as filed, shares, putcall)])
@@ -165,6 +166,11 @@ def _ctx(tmp_path: Any, store: Any, data_sets: dict[str, list[tuple]] | None = N
     return ctx
 
 
+def _ingest(context: Any, *, full: bool = False) -> int:
+    context.run = WindowRun("full" if full else "incremental", "explicit ZIP fixture mode", context.run.instant)
+    return z13.ingest_13f_datasets(context)
+
+
 def _set_cell(path: Path, member: str, accession: str, column: str, value: object) -> None:
     """Rewrite one cell of a fixture ZIP member."""
     with zipfile.ZipFile(path) as archive:
@@ -237,7 +243,7 @@ def _snapshot(store: Any) -> pd.DataFrame:
 
 def test_ingest_stores_complete_books_through_the_walk_writer(tmp_path: Any, filing_store: Any) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    saved = z13.ingest_13f_datasets(ctx, full=False)
+    saved = _ingest(ctx)
 
     markers = _markers(filing_store).set_index("accession_number")
     got = _positions(filing_store)
@@ -255,7 +261,7 @@ def test_ingest_stores_complete_books_through_the_walk_writer(tmp_path: Any, fil
 def test_ingest_keeps_original_and_amended_books(tmp_path: Any, filing_store: Any) -> None:
     amendment = ("1", "0000000001-23-000009", "13F-HR/A", "2023-06-01", "2023-03-31", [(_NEW_CUSIP, "NEWCO", 1600, 11000, "")])
     ctx = _ctx(tmp_path, filing_store, {"2023q2": [_A1, amendment], "01jun2024-31aug2024": [_B1]})
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     manifests = _markers(filing_store, cik="0000000001")
     assert set(manifests.accession_number) == {_A1[1], amendment[1], _B1[1]}
@@ -266,7 +272,7 @@ def test_ingest_keeps_original_and_amended_books(tmp_path: Any, filing_store: An
     assert original.set_index("cusip").loc[_NEW_CUSIP, "shares"] == 10000
     assert set(vintages.loc[vintages.accession_number.eq(amendment[1])].cusip) == {_NEW_CUSIP}, "the amendment omits AAPL"
     first = _snapshot(filing_store)
-    assert z13.ingest_13f_datasets(ctx, full=True) == 0
+    assert _ingest(ctx, full=True) == 0
     pd.testing.assert_frame_equal(first, _snapshot(filing_store))
     print("\n=== SANITY CHECK: original + amended 13F books ===")
     print("  the original whole book and the amendment's omission are separate accessions; a -F replay changes nothing. Validated.")
@@ -274,7 +280,7 @@ def test_ingest_keeps_original_and_amended_books(tmp_path: Any, filing_store: An
 
 def test_ingest_raw_units_follow_per_filing_evidence(tmp_path: Any, filing_store: Any) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     got = _positions(filing_store, ticker=_NEW)
     a1 = got.loc[got.cik.eq("0000000001") & got.period.eq(pd.Timestamp("2023-03-31"))].iloc[0]
@@ -302,7 +308,7 @@ def test_batch_cusips_mapped_in_one_pass(tmp_path: Any, filing_store: Any, monke
         return pd.concat([known, pd.DataFrame({"cusip": cusips, "ticker": [None] * len(cusips)})], ignore_index=True).drop_duplicates("cusip")
 
     monkeypatch.setattr(f13, "build_cusip_ticker_map", fake_map)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     assert [lookup for lookup in lookups if lookup] == [["999999990", "999999991"], ["999999992"]], lookups
     assert len(_markers(filing_store)) == 3 and _positions(filing_store).ticker.eq("_empty").all()
@@ -316,7 +322,7 @@ def test_stored_accession_is_not_reread(tmp_path: Any, filing_store: Any, monkey
     save_hr_filing(filing_store, *walk_packet, None)  # the walk stored A1
     decoded = _spy_decode(monkeypatch)
 
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     assert decoded == [[_A2[1]], [_B1[1]]], decoded
     assert set(_markers(filing_store).accession_number) == {_A1[1], _A2[1], _B1[1]}
@@ -326,7 +332,7 @@ def test_stored_accession_is_not_reread(tmp_path: Any, filing_store: Any, monkey
 
 def test_window_without_pending_reads_no_infotable(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
     members: list[list[str]] = []
     real = z13.read_zip_tables
 
@@ -335,7 +341,7 @@ def test_window_without_pending_reads_no_infotable(tmp_path: Any, filing_store: 
         return real(path, specs, **kwargs)
 
     monkeypatch.setattr(z13, "read_zip_tables", read)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     assert members == [["COVERPAGE.tsv", "SUBMISSION.tsv"]] * 2, members
     print("\n=== SANITY CHECK: a fully stored window ===")
@@ -344,9 +350,9 @@ def test_window_without_pending_reads_no_infotable(tmp_path: Any, filing_store: 
 
 def test_second_run_saves_nothing(tmp_path: Any, filing_store: Any) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    first = z13.ingest_13f_datasets(ctx, full=False)
+    first = _ingest(ctx)
     before = _snapshot(filing_store)
-    second = z13.ingest_13f_datasets(ctx, full=False)
+    second = _ingest(ctx)
 
     assert first == 5 and second == 0
     pd.testing.assert_frame_equal(before, _snapshot(filing_store))
@@ -356,17 +362,17 @@ def test_second_run_saves_nothing(tmp_path: Any, filing_store: Any) -> None:
 
 def test_full_rechecks_by_checksum(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
     before = _snapshot(filing_store)
     decoded = _spy_decode(monkeypatch)
 
-    assert z13.ingest_13f_datasets(ctx, full=True) == 0
+    assert _ingest(ctx, full=True) == 0
     assert sorted(a for call in decoded for a in call) == sorted([_A1[1], _A2[1], _B1[1]])
     pd.testing.assert_frame_equal(before, _snapshot(filing_store))
 
     filing_store.update(Tables.sec13f_hr, {"content_checksum": "tampered"}, {"accession_number": _A2[1], "cusip": "_empty"})
     with caplog.at_level(logging.ERROR):
-        assert z13.ingest_13f_datasets(ctx, full=True) == 0
+        assert _ingest(ctx, full=True) == 0
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1 and _A2[1] in errors[0] and "checksum" in errors[0], errors
     print("\n=== SANITY CHECK: -F re-verifies stored accessions ===")
@@ -380,7 +386,7 @@ def test_full_never_duplicates_a_walk_packet_under_another_period(tmp_path: Any,
     save_hr_filing(filing_store, *z13.cached_filing_vintages(shifted, [_A2[1]])[0], None)  # the walk's copy under 2022-12-31
 
     with caplog.at_level(logging.WARNING):
-        z13.ingest_13f_datasets(ctx, full=True)
+        _ingest(ctx, full=True)
 
     homes = _markers(filing_store, accession_number=_A2[1])
     assert pd.to_datetime(homes.period).tolist() == [pd.Timestamp("2022-12-31")], "A2 is never written under a second period"
@@ -399,7 +405,7 @@ def test_invalid_or_conflicting_packet_is_logged_and_others_saved(tmp_path: Any,
     save_hr_filing(filing_store, *z13.cached_filing_vintages(conflicting, [_A2[1]])[0], None)  # another A2 content
 
     with caplog.at_level(logging.ERROR):
-        saved = z13.ingest_13f_datasets(ctx, full=True)
+        saved = _ingest(ctx, full=True)
 
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
     assert any(_A1[1] in e for e in errors) and any(_A2[1] in e and "checksum" in e for e in errors), errors
@@ -412,7 +418,7 @@ def test_invalid_or_conflicting_packet_is_logged_and_others_saved(tmp_path: Any,
 def test_invalid_marker_is_written_and_skipped_next_run(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx(tmp_path, filing_store)
     _set_summary(_cache(ctx) / "2023q2_form13f.zip", _A1[1], "TABLEENTRYTOTAL", 99)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     marker = _markers(filing_store, accession_number=_A1[1])
     assert len(marker) == 1 and marker.iloc[0].parse_status == "invalid" and marker.iloc[0].ticker == "_empty"
@@ -421,7 +427,7 @@ def test_invalid_marker_is_written_and_skipped_next_run(tmp_path: Any, filing_st
     assert _A1[1] not in set(_positions(filing_store).accession_number), "a consumer read never sees the invalid marker"
     assert _A1[1] not in f13.completed_accessions(ctx, ["complete"]), "the walk still treats A1 as not stored"
     decoded = _spy_decode(monkeypatch)
-    assert z13.ingest_13f_datasets(ctx, full=False) == 0 and decoded == []
+    assert _ingest(ctx) == 0 and decoded == []
     print("\n=== SANITY CHECK: D7 invalid marker ===")
     print(f"  A1 invalid -> one 'invalid' marker (reason {str(marker.iloc[0].value_unit_evidence)[:50]!r}); the next run decodes nothing. Validated.")
 
@@ -430,10 +436,10 @@ def test_valid_packet_replaces_an_invalid_marker(tmp_path: Any, filing_store: An
     ctx = _ctx(tmp_path, filing_store)
     path = _cache(ctx) / "2023q2_form13f.zip"
     _set_summary(path, _A1[1], "TABLEENTRYTOTAL", 99)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
     write_filings_zip(path, _DATA_SETS["2023q2"])  # the source corrected: A1 reconciles again
 
-    saved = z13.ingest_13f_datasets(ctx, full=True)
+    saved = _ingest(ctx, full=True)
     replay = save_hr_filing(filing_store, *z13.cached_filing_vintages(path, [_A1[1]])[0], None)
 
     marker = _markers(filing_store, accession_number=_A1[1])
@@ -454,7 +460,7 @@ def test_unreadable_window_is_logged_and_skipped(tmp_path: Any, filing_store: An
         _break_crc(path, "INFOTABLE.tsv")
 
     with caplog.at_level(logging.ERROR):
-        saved = z13.ingest_13f_datasets(ctx, full=False)
+        saved = _ingest(ctx)
 
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR and path.name in r.getMessage()]
     assert errors, "the unreadable window is logged by name"
@@ -472,7 +478,7 @@ def test_invalid_packet_without_a_period_is_logged_not_marked(tmp_path: Any, fil
     _set_cell(path, "COVERPAGE.tsv", _A1[1], "REPORTCALENDARORQUARTER", "not a date")
 
     with caplog.at_level(logging.ERROR):
-        saved = z13.ingest_13f_datasets(ctx, full=False)
+        saved = _ingest(ctx)
 
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR and _A1[1] in r.getMessage()]
     assert any("period" in e for e in errors), errors
@@ -484,12 +490,12 @@ def test_invalid_packet_without_a_period_is_logged_not_marked(tmp_path: Any, fil
 
 def test_full_never_downgrades_a_complete_marker(tmp_path: Any, filing_store: Any, caplog: pytest.LogCaptureFixture) -> None:
     ctx = _ctx(tmp_path, filing_store)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
     before = _snapshot(filing_store)
     _set_summary(_cache(ctx) / "2023q2_form13f.zip", _A1[1], "TABLEENTRYTOTAL", 99)  # A1 now decodes invalid
 
     with caplog.at_level(logging.ERROR):
-        assert z13.ingest_13f_datasets(ctx, full=True) == 0
+        assert _ingest(ctx, full=True) == 0
 
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
     assert any(_A1[1] in e for e in errors), errors
@@ -504,7 +510,7 @@ def test_pending_beyond_one_batch_are_all_saved(tmp_path: Any, filing_store: Any
     monkeypatch.setattr(z13, "_BATCH_ACCESSIONS", 1)
     decoded = _spy_decode(monkeypatch)
 
-    saved = z13.ingest_13f_datasets(ctx, full=False)
+    saved = _ingest(ctx)
 
     assert decoded == [[_A1[1]], [_A2[1]], [_B1[1]]], decoded
     assert saved == 5 and set(_markers(filing_store).accession_number) == {_A1[1], _A2[1], _B1[1]}
@@ -523,7 +529,7 @@ def test_ingest_keeps_a_later_legacy_row(tmp_path: Any, filing_store: Any) -> No
     }
     filing_store.save(Tables.sec13f_hr, pd.DataFrame([later | {"value_usd": 9.0}]).assign(accession_number="_legacy"))
 
-    z13.ingest_13f_datasets(ctx, full=True)
+    _ingest(ctx, full=True)
 
     got = _positions(filing_store, ticker=_NEW)
     legacy = got.loc[got.accession_number.eq("_legacy")]
@@ -541,7 +547,7 @@ def test_legacy_unit_error_cannot_block_verified_source_packets(tmp_path: Any, f
     filing_store.save(Tables.sec13f_hr, scaled.assign(accession_number="_legacy", ticker=book["cusip"].map(_MAP).fillna("_empty")))
 
     with caplog.at_level(logging.ERROR):
-        z13.ingest_13f_datasets(ctx, full=False)
+        _ingest(ctx)
 
     got = _positions(filing_store, ticker=_NEW)
     assert len(got.loc[got.accession_number.ne("_legacy")]) == 3
@@ -568,7 +574,7 @@ def test_ingest_preserves_earlier_baseline_and_later_omission(tmp_path: Any, fil
     amended = ("42", "omission", "13F-HR/A", "2024-08-20", "2024-06-30", [("037833100", "APPLE", 500, 5, "")])
     ctx = _ctx(tmp_path, filing_store, {"2023q2": [earlier], "01jun2024-31aug2024": [first, amended]})
 
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
 
     assert set(_positions(filing_store, cik="0000000042").accession_number) == {"baseline", "holding", "omission"}
     print("SANITY: the ingest preserves an earlier baseline and the later amendment that omits a holding.")
@@ -625,7 +631,22 @@ def test_ingest_reuses_one_map_load_across_windows(tmp_path: Any, filing_store: 
         return original(table, *args, **kwargs)
 
     monkeypatch.setattr(filing_store, "load", counted)
-    z13.ingest_13f_datasets(ctx, full=False)
+    _ingest(ctx)
     assert len(map_loads) == 1
     assert {_A2[1], _B1[1]} <= set(filing_store.load(Tables.sec13f_hr).accession_number)
     print("SANITY: the two-window ingest loads the CUSIP map once and writes every book to sec13f_hr.")
+
+
+def test_configured_filing_bounds_reach_zip_packet_writes(tmp_path: Path, filing_store: Any) -> None:
+    filings = [
+        (str(i), f"000000000{i}-26-000001", "13F-HR", f"2026-08-{day}", "2026-06-30", _FILING[-1]) for i, day in enumerate((13, 14, 15, 16), start=1)
+    ]
+    ctx = _ctx(tmp_path, filing_store, {"2026q3": filings})
+    policy = ctx.config.data.tables.sec13f_hr
+    policy.start_date = "2026-08-14"
+    ctx.run = WindowRun(ctx.run.mode, "bounded13F ZIP filing sample", pd.Timestamp("2026-08-15"))
+    _ingest(ctx, full=True)
+    markers = _markers(filing_store)
+    assert set(markers.accession_number) == {filings[1][1], filings[2][1]}
+    assert set(_positions(filing_store).accession_number) == set(markers.accession_number)
+    print("SANITY: finite configured filing dates select whole ZIP books at both endpoints and exclude both outside packets.")

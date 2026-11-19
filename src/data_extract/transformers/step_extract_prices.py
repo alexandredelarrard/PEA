@@ -7,17 +7,12 @@ Price / stock-market data extraction:
   * macro / market series (SPY, VIX, oil, gold, energy, FX + FRED) -> `prices_macro`
   * earnings surprises -> `earnings_surprises` (`run_earnings_surprises`, after the prices)
 
-The two windows live here, side by side: equities get `years_history`, the macro table gets
-the deeper `macro_years_history` its sleeve backtests need. Both are passed INTO the
-fetchers rather than read from config inside them.
+Source dates and rewrite windows belong to data.yml and Context.run.
 
 Ownership and flow -- 13F, superinvestors, short interest -- are `StepExtractInstitutionals`;
 the insider, 13D/13G and 8-K walks are `StepExtractEdgar`; fails-to-deliver is `StepExtractZips`.
 """
 
-from omegaconf import DictConfig
-
-from src.context import Context
 from src.data_extract.utils.prices.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
@@ -25,30 +20,23 @@ from src.utils.step import Step
 
 
 class StepExtractPrices(Step):
-    def __init__(self, context: Context, config: DictConfig):
-        super().__init__(context=context, config=config)
-        self.config = self._context.config
-
-    def run_earnings_surprises(self, tickers: list[str], full: bool = False) -> None:
-        """Earnings surprises over the equity window -> `earnings_surprises`; `full` re-pulls every ticker's history."""
-        fetch_earnings_surprises(self._context, tickers=tickers, years_history=int(self.config.data_extract.years_history), full=full)
+    def run_earnings_surprises(self, tickers: list[str]) -> None:
+        """Check each ticker using the configured source window and shared run mode."""
+        fetch_earnings_surprises(self._context, tickers=tickers)
 
     def run(self, tickers: list[str]) -> None:
-
-        years_history = self.config.data_extract.years_history
-        years_macro = self.config.data_extract.macro_years_history
 
         # One yfinance session serves the three fetchers. Splits come first: their windows are planned from the
         # stored `prices`, which `fetch_prices` then advances. A split or dividend found re-pulls that ticker in full.
         session = YahooSession(symbols=self._context.universe.trading_symbols)
-        fetch_price_actions(self._context, session, tickers=tickers, years_history=years_history)
-        fetch_dividends(self._context, session, tickers=tickers, years_history=years_history)
-        fetch_prices(self._context, session, tickers=tickers, years_history=years_history)
+        fetch_price_actions(self._context, session, tickers=tickers)
+        fetch_dividends(self._context, session, tickers=tickers)
+        fetch_prices(self._context, session, tickers=tickers)
 
         # MARKET + MACRO series -> `prices_macro`: the yfinance legs (SPY / VIX / oil / gold
         # / energy / FX, close only) plus the FRED levels and the derived spreads and 10Y
         # TODO: 5 days off because FRED only downloads weekly -> use yfinance
         # 2003 for breakeaven 10Y, oil/gold/fx 2001, rest is 1995
-        fetch_macro(self._context, years_history=years_macro)
+        fetch_macro(self._context)
 
         self.run_earnings_surprises(tickers)

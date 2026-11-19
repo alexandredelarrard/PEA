@@ -35,7 +35,7 @@ def main() -> None:
 
     bh.diff_against_stored = spy
     try:
-        bh.build_fundamentals_history(context, tickers=[ticker], rebuild_history=False)
+        bh.build_fundamentals_history(context, tickers=[ticker])
         print(f"{ticker}: no drift")
         return
     except ValueError:

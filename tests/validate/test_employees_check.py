@@ -15,7 +15,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.data_store.schema import Tables
+from src.utils.window import WindowRun
 from src.validate.checks.employees import check_employees
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import seed_universe, universe_in
 
 AAA, PRED, SUCC, FOREIGN = "0000000001", "0000000020", "0000000002", "0000000099"
@@ -124,7 +126,27 @@ def _seed(store: Any, employees: pd.DataFrame) -> None:
 
 
 def _context(store: Any) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger("test.employees_check"), universe=universe_in(store))
+    return SimpleNamespace(
+        store=store,
+        log=logging.getLogger("test.employees_check"),
+        universe=universe_in(store),
+        config=extract_config(),
+        run=WindowRun("incremental", "employee validation fixture", pd.Timestamp("2026-11-16")),
+    )
+
+
+def test_validation_uses_the_same_configured_filing_bounds(sqlite_store: Any, tmp_path: Path) -> None:
+    _write_index(tmp_path / "index")
+    _seed(sqlite_store, _component_rows())
+    context = _context(sqlite_store)
+    item = context.config.data.tables.fundamentals_employees
+    item.start_date = "2018-01-01"
+    context.run = WindowRun("incremental", "finite employee validation cutoff", pd.Timestamp("2019-12-31"))
+    report = check_employees(context, since=SINCE, directory=tmp_path / "index")
+    assert report.result.metrics["owned_dates"] == 2
+    assert report.result.scope["rows"] == 2
+    assert report.missing.empty and report.stale.empty
+    print("SANITY: employee validation reads the same finite configured filing interval; an earlier CLI since value cannot widen it.")
 
 
 def test_component_table_findings_match_the_known_truth(sqlite_store, tmp_path):

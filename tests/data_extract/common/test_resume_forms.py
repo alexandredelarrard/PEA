@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import cast
 
 import pandas as pd
-import pytest
 
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine
 from src.data_extract.utils.institutionals import fetch_superinvestors as roster
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables, resume_tables
+from src.utils.data_policy import publication_policy, window_policy
+from tests.data_extract.fake_context import extract_config
 
 
 def _start(table: Table) -> pd.Timestamp:
-    assert table.resume is not None and table.resume.source_start is not None, table.name
-    return pd.Timestamp(table.resume.source_start)
+    start = extract_config().data.tables[table.name].start_date
+    assert start is not None, table.name
+    return pd.Timestamp(start)
 
 
 def test_document_forms_are_in_the_form_policy() -> None:
@@ -47,28 +48,28 @@ def test_document_forms_are_in_the_form_policy() -> None:
 
     for table in (Tables.sec_employees_text, Tables.sec_def14a_text):
         resume = cast(Resume, table.resume)
-        assert (resume.key, resume.frontier_col, resume.overlap_days, resume.source_start) == ("ticker", "filing_date", 95, "1993-01-01")
+        assert (resume.key, resume.frontier_col) == ("ticker", "filing_date")
+        assert _start(table) == pd.Timestamp("1995-11-16")
+        assert extract_config().data.tables[table.name].overlap.method == "missing_docs"
         assert all(FORM_POLICY[form] is Combine.SPLIT for form in resume.forms), table.name
 
     print("\n=== SANITY CHECK: document forms ===")
     print(
         f"  {len(index_diffed)} index-diffed tables retain their exact forms, including all four proxy children: {sorted(index_diffed)}. Validated."
     )
-    print("  both EDGAR text tables: key ticker, frontier filing_date, 95-day overlap, 1993 start, SPLIT; employees include 10-K405/A.")
+    print(
+        "  both EDGAR text tables: key ticker, frontier filing_date, missing accession work, unchanged extraction floor, SPLIT; employees include 10-K405/A."
+    )
 
 
-def test_changed_source_dates_reach_archive_and_activity_planning(monkeypatch: pytest.MonkeyPatch) -> None:
-    table = Tables.sec_fails_to_deliver_security
-    resume = replace(cast(Resume, table.resume), source_start="2011-06-16")
-    monkeypatch.setattr(Tables, "sec_fails_to_deliver_security", replace(table, resume=resume))
-    periods = ftd.ftd_periods(50, pd.Timestamp("2011-07-01"))
-    assert periods == ["201106b", "201107a", "201107b"]
-    table = Tables.sec13f_hr
-    resume = replace(cast(Resume, table.resume), coverage_start="2014-09-30")
-    monkeypatch.setattr(Tables, "sec13f_hr", replace(table, resume=resume))
-    end = roster.activity_window("2012-03-07").end
-    assert end is not None and end.isoformat() == "2014-09-30"
-    print("SANITY: registry changes move the first FTD half-month and the pre-XML activity window without fetcher constants.")
+def test_configured_source_floor_reaches_archive_planning_without_future_activity_proof() -> None:
+    config = extract_config()
+    config.data.tables.sec_fails_to_deliver_security.start_date = "2011-06-16"
+    policy = window_policy(config, Tables.sec_fails_to_deliver_security, pd.Timestamp("2011-07-01"))
+    assert policy is not None
+    assert ftd.ftd_periods(policy.requested) == ["201106b"]
+    assert roster.activity_window("2012-03-07").end.isoformat() == "2012-06-30"
+    print("SANITY: configured source floors bound completed archive units; roster activity cannot extend into future coverage.")
 
 
 def test_registered_source_starts_preserve_the_source_boundaries() -> None:
@@ -85,14 +86,15 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
     )
     for table, start in expected:
         assert _start(table) == pd.Timestamp(start), table.name
-    assert Tables.sec13f_hr.resume is not None and Tables.sec13f_hr.resume.coverage_start == "1999-06-30"
+    config = extract_config()
+    assert "coverage_start" not in config.data.tables.sec13f_hr
     for table in (Tables.notes_num, Tables.notes_text):
-        assert table.resume is not None and table.resume.observed_from == "2026-09-01", table.name
+        assert publication_policy(config, table) == {"column": "period", "lag_days": 12}, table.name
     indexed = [t for t in resume_tables() if t.resume is not None and t.resume.mode == RESUME_DOCUMENTS and t.resume.forms]
-    assert all(t.resume is not None and t.resume.source_start is not None for t in indexed)
-    assert min(_start(t) for t in indexed) == pd.Timestamp("1993-01-01")
+    assert all(config.data.tables[t.name].start_date is not None for t in indexed)
+    assert min(_start(t) for t in indexed) == pd.Timestamp("1995-11-16")
 
     print("\n=== SANITY CHECK: source starts ===")
     print(
-        "  11 source boundaries preserved; EDGAR starts in 1993Q1; 13F cube coverage starts at its first 1999 period; archive clocks turn observed in September 2026. Validated."
+        "  source extraction starts remain unchanged; notes use period+12 and no separate coverage or observed-date PIT setting survives. Validated."
     )

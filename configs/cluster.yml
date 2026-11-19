@@ -22,9 +22,8 @@ cluster:
   exclude: {pct_etf: 0.40, pct_equity_foreign: 0.40}  # fitted clusters whose centroid has pct_etf or pct_equity_foreign at or above these shares are dropped from the kept fund ids and take a tracked id (e.g. 0.30-0.50)
   cluster_label_delay_days: 90   # a quarter is labelled once period + this many days has passed (e.g. 90)
   top_x: null                # keep only the top-X managers of a cluster; null keeps every member (no code reads it yet; the key is kept on purpose)
-  history_start: 2000-01-01  # first date of the cluster features (YYYY-MM-DD)
-  availability_buffer_days: 7    # days added to the 45-day filing deadline before a quarter's features are published (e.g. 0-14)
-  max_age_calendar_days: 100     # a quarter's values are carried at most this many days after its publication (e.g. 92-130)
+  max_age_calendar_days: 100     # a quarter's values are carried at most this many days after its publication, which is the 45-day filing deadline plus data.tables.sec13f_hr.pit (e.g. 92-130)
+
   consistency_tolerance: 1.0e-6  # largest difference allowed when the newest saved quarter is recomputed before an incremental run
   max_clusters: 11           # more clusters than this logs a WARNING about the column count
   max_features_per_cluster: 10   # more features in one cluster than this logs a WARNING about the column count

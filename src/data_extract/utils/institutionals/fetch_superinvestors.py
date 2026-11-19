@@ -27,6 +27,7 @@ from urllib3.exceptions import InsecureRequestWarning
 
 from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
+from src.data_extract.utils.common.resume import source_plan
 from src.data_extract.utils.common.sec_io import company, company_filings, configure, sec_get
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik, pad_cik_series
@@ -40,6 +41,7 @@ from src.utils.superinvestor_roster import (
     load_superinvestor_overrides,
     roster_history_path,
 )
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -229,13 +231,11 @@ def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> 
 
 
 def activity_window(snapshot_date: date | pd.Timestamp | str) -> PeriodRange:
-    """The gate window [Q - GATE_QUARTERS_BEFORE, Q + GATE_QUARTERS_AFTER] around Q = `snapshot_quarter`. The local
-    tables are sparse before the 13F contract's coverage start, so a window ending earlier extends to that quarter."""
+    """The identity evidence window around the snapshot quarter; source coverage never extends it into the future."""
     q = pd.Timestamp(snapshot_quarter(snapshot_date))
     start = (q - pd.offsets.QuarterEnd(GATE_QUARTERS_BEFORE)).date()
     end = (q + pd.offsets.QuarterEnd(GATE_QUARTERS_AFTER)).date()
-    coverage_start = date.fromisoformat(cast(str, cast(Resume, Tables.sec13f_hr.resume).coverage_start))
-    return PeriodRange(start, max(end, coverage_start))
+    return PeriodRange(start, end)
 
 
 def _nearest(periods: Iterable[date], target: date) -> str:
@@ -438,8 +438,14 @@ def _gate(context: Context, rows: list[dict], overrides: SuperinvestorOverrides,
         )
 
 
-def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+def _write(
+    context: Context, rows: list[dict], overrides: SuperinvestorOverrides, window: Window, listing_fn: ListingFn | None = None
+) -> pd.DataFrame:
     """Gate the rows (`_gate`), upsert them sorted by primary key and log the resolution split. Returns the written frame."""
+    if not rows:
+        return pd.DataFrame(columns=list(Tables.superinvestor_roster.pk))
+    if not window.mask(pd.Series([row["snapshot_date"] for row in rows])).all():
+        raise ValueError("Roster candidates exceed the resolved source Window")
     _gate(context, rows, overrides, listing_fn)
     df = pd.DataFrame(rows).sort_values(["snapshot_date", "dataroma_code"], ignore_index=True)
     context.store.save(Tables.superinvestor_roster, df)
@@ -452,13 +458,15 @@ def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides
     return df
 
 
-def _live_snapshots(context: Context) -> list[tuple[date, list[dict]]]:
+def _live_snapshots(context: Context, window: Window) -> list[tuple[date, list[dict]]]:
     """Every stored live snapshot (`source_url == DATAROMA_HOME_URL`) as `(snapshot_date, [{code, name}])`, oldest
     first, codes sorted; empty on a cold table."""
     df = context.store.load(
         Tables.superinvestor_roster,
         columns=["snapshot_date", "dataroma_code", "manager_name"],
         where={"source_url": DATAROMA_HOME_URL},
+        since=window.start,
+        until=window.end,
         optional=True,
     )
     if df is None or df.empty:
@@ -470,7 +478,7 @@ def _live_snapshots(context: Context) -> list[tuple[date, list[dict]]]:
     ]
 
 
-def rebuild_rows(context: Context, get_fn, overrides: SuperinvestorOverrides) -> list[dict]:
+def rebuild_rows(context: Context, get_fn: Callable[[str], requests.Response], overrides: SuperinvestorOverrides, window: Window) -> list[dict]:
     """The rows a full rebuild writes: every committed history snapshot (dated at its capture day, its capture URL
     as `source_url`) plus every stored live snapshot, none collapsed, all resolved fresh (overrides, then EDGAR on
     the code's names newest first; stored resolutions are ignored). Reads only, writes nothing."""
@@ -478,8 +486,9 @@ def rebuild_rows(context: Context, get_fn, overrides: SuperinvestorOverrides) ->
     snapshots: list[tuple[date, str, list[dict]]] = [
         (datetime.fromisoformat(s["captured_at"]).date(), s["source_url"], [{"code": c, "name": n} for c, n in s["managers"].items()])
         for s in sorted(history["snapshots"], key=lambda s: s["captured_at"])
+        if window.start.date() <= datetime.fromisoformat(s["captured_at"]).date() <= window.end.date()
     ]
-    live = _live_snapshots(context)
+    live = _live_snapshots(context, window)
     snapshots += [(day, DATAROMA_HOME_URL, roster) for day, roster in live]
 
     # Newest name first, so a renamed code resolves on its most recent name.
@@ -511,11 +520,13 @@ def _assert_unique_pk(rows: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
-def _delete_stale_keys(context: Context, df: pd.DataFrame) -> int:
+def _delete_stale_keys(context: Context, df: pd.DataFrame, window: Window) -> int:
     """Delete the stored (snapshot_date, dataroma_code) keys absent from `df`, one targeted delete per snapshot date.
     Returns the rows deleted."""
     table = Tables.superinvestor_roster
-    stored = cast(pd.DataFrame, context.store.load(table, columns=["snapshot_date", "dataroma_code"]))
+    stored = context.store.load(table, columns=["snapshot_date", "dataroma_code"], since=window.start, until=window.end, optional=True)
+    if stored is None:
+        return 0
     keep = set(zip(pd.to_datetime(df["snapshot_date"]).dt.date, df["dataroma_code"], strict=True))
     stored_days = pd.to_datetime(stored["snapshot_date"]).dt.date
     stale = stored.assign(snapshot_date=stored_days)[[k not in keep for k in zip(stored_days, stored["dataroma_code"], strict=True)]]
@@ -525,17 +536,22 @@ def _delete_stale_keys(context: Context, df: pd.DataFrame) -> int:
     )
 
 
-def rebuild_roster(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+def rebuild_roster(context: Context, get_fn: Callable[[str], requests.Response] | None = None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
     """Rebuild `superinvestor_roster` from scratch: `rebuild_rows`, primary-key uniqueness, then `_write` (both gates,
     upsert of the rebuilt frame) and only then the delete of the stored keys it lacks. The live snapshots are read
     from this same table, so it is never emptied: a crash leaves the old table or a superset, and a rerun converges.
     A resolution, primary-key or gate failure raises before the table is touched. Returns the written frame."""
+    if context.run.mode not in {"full", "recovery", "initial"}:
+        raise ValueError("Roster rebuild requires an explicit full/recovery Context")
+    plan = source_plan(context, Tables.superinvestor_roster, None, (("source", (DATAROMA_HOME_URL,)),))
+    if plan is None:
+        return pd.DataFrame(columns=list(Tables.superinvestor_roster.pk))
     get_fn = get_fn or (lambda url: sec_get(context, url))
     overrides = load_superinvestor_overrides(config_dir_of(context))
-    rows = rebuild_rows(context, get_fn, overrides)
+    rows = rebuild_rows(context, get_fn, overrides, plan.write)
     _assert_unique_pk(rows)
-    df = _write(context, rows, overrides, listing_fn)
-    deleted = _delete_stale_keys(context, df)
+    df = _write(context, rows, overrides, plan.write, listing_fn)
+    deleted = _delete_stale_keys(context, df, plan.write)
     logger.info("superinvestor_roster: deleted %d stale row(s) absent from the rebuild", deleted)
     return df
 
@@ -545,9 +561,9 @@ def _code_to_cik(codes: Iterable[object], ciks: Iterable[object]) -> dict[str, s
     return {str(code): pad_cik(cik) or None for code, cik in zip(codes, ciks, strict=True)}
 
 
-def _latest_mapping(context: Context) -> dict[str, str | None] | None:
+def _latest_mapping(context: Context, window: Window) -> dict[str, str | None] | None:
     """The code -> CIK mapping of the latest stored snapshot; None on a cold table."""
-    latest = context.store.max_date(Tables.superinvestor_roster, "snapshot_date")
+    latest = context.store.max_date(Tables.superinvestor_roster, "snapshot_date", where={"snapshot_date": window})
     if latest is None:
         return None
     df = context.store.load(Tables.superinvestor_roster, columns=["dataroma_code", "cik"], where={"snapshot_date": latest.date()}, optional=True)
@@ -566,22 +582,29 @@ def _assert_complete_scrape(n_parsed: int, latest: Mapping[str, str | None] | No
         )
 
 
-def upsert_roster_snapshot(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+def upsert_roster_snapshot(
+    context: Context, get_fn: Callable[[str], requests.Response] | None = None, listing_fn: ListingFn | None = None
+) -> pd.DataFrame:
     """Scrape Dataroma's roster and write it as today's snapshot, gated as `_write`, only when its code -> CIK
     mapping differs from the latest stored snapshot; otherwise write nothing and return an empty frame. An empty or
     partial scrape (`_assert_complete_scrape`) raises before any resolution. CIKs resolve via `_make_resolver`;
     `get_fn` defaults to the context-bound, rate-limited `sec_get`."""
+    plan = source_plan(context, Tables.superinvestor_roster, None, (("source", (DATAROMA_HOME_URL,)),))
+    observed = datetime.now(UTC).date()
+    if plan is None or not plan.write.start.date() <= observed <= plan.write.end.date():
+        logger.info("superinvestor_roster: live observation is outside the configured Window; no source capture")
+        return pd.DataFrame(columns=list(Tables.superinvestor_roster.pk))
     get_fn = get_fn or (lambda url: sec_get(context, url))
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
 
-    latest = _latest_mapping(context)
+    latest = _latest_mapping(context, plan.write)
     _assert_complete_scrape(len(roster), latest)
     known, past_names = _stored_resolutions(context)
     overrides = load_superinvestor_overrides(config_dir_of(context))
     resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
-    rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver, overrides=overrides)
+    rows = snapshot_rows(roster, observed, DATAROMA_HOME_URL, resolver, overrides=overrides)
     if _code_to_cik((r["dataroma_code"] for r in rows), (r["cik"] for r in rows)) == latest:
         logger.info("superinvestor_roster: %d managers unchanged since the latest snapshot, no snapshot written", len(rows))
         return pd.DataFrame(columns=list(rows[0]))
-    return _write(context, rows, overrides, listing_fn)
+    return _write(context, rows, overrides, plan.write, listing_fn)

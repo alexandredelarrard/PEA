@@ -1,33 +1,454 @@
-# Source-to-part freshness gates. Tunable here because they are operational tolerances, not
-# facts about the SEC formats.
-source_freshness:
-  insider_max_lag_days: 4
+# Source work, publication clocks, and per-cube input history.
+# Extraction start_date values remain unchanged. Cube dates come from prices.
+# Numeric overlap: latest saved reference date minus days, through the run date.
+# PIT: source column plus calendar lag_days, then first open US market session.
+# warmup: input table -> additional calendar days before the cube rewrite start.
+# warmup null means full stored history; 0 means the output interval only.
+# Numeric warmups are conservative proposals, subject to sampled boundary checks.
 
-# Point-in-time source availability. Keep this compact: table defaults apply to every field;
-# only fields or derived features with a later usable start belong below them.
-data_availability:
-  institutionals:
-    sec13f_hr:
-      __all__: "1999-06-30"  # First 13F period in the source; cube features start here.
+data:
+  tables:
+    superinvestor_roster:
+      start_date: '2012-01-01'
 
-    insider_transactions:
-      __all__: "2006-01-03"  # First SEC insider bulk-data quarter, on filing date.
+    prices:
+      start_date: '1995-10-09'
+      overlap:
+        method: days
+        column: date
+        days: 7
+      pit:
+        column: date
+        lag_days: 0
 
-    sec_13d:
-      __all__: "1995-09-06"  # First usable historical Schedule 13D event.
+    prices_dividends:
+      start_date: '1995-10-09'
+      overlap:
+        method: days
+        column: date
+        days: 7
+      pit:
+        column: date
+        lag_days: 1
 
-    sec_13g:
-      __all__: "1996-01-26"  # First usable historical Schedule 13G event.
-
-    sec_short_volume_security:
-      __all__: "2018-08-01"  # First continuously retrievable FINRA RegSHO history.
+    prices_splits:
+      start_date: '1995-10-09'
+      overlap:
+        method: days
+        column: date
+        days: 7
+      pit:
+        column: date
+        lag_days: 0
 
     sec_fails_to_deliver_security:
-      __all__: "2009-07-01"  # Start of the SEC-published FTD series.
+      start_date: '2009-07-01'
+      overlap:
+        method: missing_zips
+        column: period
+      pit:
+        column: period
+        lag_days: 21
 
-    derived_features:
-      ic_shortvol_high_x_weak_price: "2019-02-14"  # RegSHO plus z252 minimum history.
+    sec_short_volume_security:
+      start_date: '2018-08-01'
+      overlap:
+        method: days
+        column: date
+        days: 30
+      pit:
+        column: date
+        lag_days: 1
 
-# defeatbeta earnings-call transcript extraction (`extract-earnings-calls`).
-earnings_calls:
-  read_workers: 4  # parallel HuggingFace row-group reads; writes stay on one thread
+    prices_macro:
+      start_date: '1995-11-13'
+      overlap:
+        method: days
+        column: date
+        days: 7
+      pit:
+        column: date
+        lag_days: 0
+
+    sec_fundamentals_history:
+      start_date: '2009-04-15'
+      overlap:
+        method: missing_docs
+        column: as_of
+      pit:
+        column: as_of
+        lag_days: 1
+
+    sharadar_fundamentals_history:
+      start_date: '1995-11-09'
+      overlap:
+        method: missing_docs
+        column: as_of
+      pit:
+        column: as_of
+        lag_days: 1
+
+    fundamentals_employees:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: as_of
+      pit:
+        column: as_of
+        lag_days: 1
+
+    sec_fundamentals_facts:
+      start_date: '2009-04-15'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    earnings_surprises:
+      start_date: '2002-10-01'
+      overlap:
+        method: days
+        column: earnings_date
+        days: 35
+      pit:
+        column: earnings_date
+        lag_days: 1
+
+    notes_num:
+      start_date: '2009-01-01'
+      overlap:
+        method: missing_zips
+        column: period
+      pit:
+        column: period
+        lag_days: 12
+
+    notes_text:
+      start_date: '2009-01-01'
+      overlap:
+        method: missing_zips
+        column: period
+      pit:
+        column: period
+        lag_days: 12
+
+    sharadar_fundamentals_facts:
+      start_date: '1995-11-09'
+      overlap:
+        method: days
+        column: date
+        days: 100
+      pit:
+        column: date
+        lag_days: 1
+
+    sharadar_actions:
+      start_date: '1995-11-16'
+
+    sharadar_sp500:
+      start_date: '1990-01-01'
+      overlap:
+        method: days
+        column: date
+        days: 7
+      pit:
+        column: date
+        lag_days: 0
+
+    sec13f_hr:
+      start_date: '1999-07-01'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 7
+
+    sec_13f_manager_details:
+      start_date: '1999-07-01'
+      overlap:
+        method: days
+        column: first_filed_date
+        days: 92
+      pit:
+        column: first_filed_date
+        lag_days: 2
+
+    insider_transactions:
+      start_date: '2006-01-01'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    insider_footnotes:
+      start_date: '2006-01-01'
+
+    sec_13d:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    sec_13d_transactions:
+      start_date: '1995-11-16'
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    sec_13g:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    def14a_llm:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: as_of
+        lag_days: 1
+
+    def14a_directors:
+      start_date: '1995-11-16'
+      pit:
+        column: as_of
+        lag_days: 1
+
+    def14a_executive_comp:
+      start_date: '1995-11-16'
+      pit:
+        column: as_of
+        lag_days: 1
+
+    def14a_director_comp:
+      start_date: '1995-11-16'
+      pit:
+        column: as_of
+        lag_days: 1
+
+    def14a_ownership:
+      start_date: '1995-11-16'
+      pit:
+        column: as_of
+        lag_days: 1
+
+    sec_8k:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    sec_8k_votes:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    sec_filing_text:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filed
+        lag_days: 1
+
+    sec_employees_text:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    sec_def14a_text:
+      start_date: '1995-11-16'
+      overlap:
+        method: missing_docs
+        column: accession_number
+      pit:
+        column: filing_date
+        lag_days: 1
+
+    earnings_call_sections:
+      start_date: '2005-01-01'
+      overlap:
+        method: days
+        column: as_of
+        days: 180
+      pit:
+        column: as_of
+        lag_days: 3
+
+    earnings_call_sentiment:
+      start_date: '2005-01-01'
+      overlap:
+        method: missing_docs
+        column: as_of
+      pit:
+        column: as_of
+        lag_days: 3
+
+    earning_calls_embedding:
+      start_date: '2005-01-01'
+      overlap:
+        method: missing_docs
+        column: as_of
+      pit:
+        column: as_of
+        lag_days: 3
+
+    cube:
+      warmup:
+        cube_part_prices: 0
+        cube_part_targets: 0
+        cube_part_fundamentals: 0
+        cube_part_momentum: 0
+        cube_part_governance: 0
+        cube_part_text: 0
+        cube_part_institutionals: 0
+        cube_part_sec_thirteen: 0
+
+    cube_part_prices:
+      overlap:
+        method: days
+        column: date
+        days: 30
+      warmup:
+        prices: null
+        prices_macro: null
+        prices_splits: null
+        sharadar_actions: null
+        sharadar_fundamentals_facts: null
+        sharadar_fundamentals_history: null
+        price_owner_windows: null
+        sharadar_tickers: null
+
+    cube_part_targets:
+      overlap:
+        method: days
+        column: date
+        days: 150
+      warmup:
+        cube_part_prices: 650
+        prices_macro: 650
+        sharadar_fundamentals_history: 650
+
+    cube_part_betas:
+      overlap:
+        method: days
+        column: date
+        days: 30
+      warmup:
+        cube_part_prices: 650
+        prices_macro: 650
+        sharadar_fundamentals_history: 650
+
+    cube_part_fundamentals:
+      overlap:
+        method: days
+        column: date
+        days: 100
+      warmup:
+        cube_part_prices: 2500
+        sharadar_fundamentals_history: 2800
+        sec_fundamentals_history: 2800
+        earnings_surprises: 2800
+        fundamentals_employees: 3600
+        notes_num: 2800
+        prices_dividends: 2500
+        cube_part_fundamentals: 2500
+        prices_splits: null
+        sharadar_actions: null
+        sharadar_fundamentals_facts: null
+        sharadar_tickers: null
+        universe_cik_symbol: null
+
+    cube_part_momentum:
+      overlap:
+        method: days
+        column: date
+        days: 30
+      warmup:
+        cube_part_prices: 2200
+
+    cube_part_text:
+      overlap:
+        method: days
+        column: date
+        days: 7
+      warmup:
+        cube_part_prices: 450
+        earnings_call_sections: 450
+        earnings_call_sentiment: 450
+        earning_calls_embedding: 450
+        universe_cik_symbol: null
+        symbol_tenure: null
+
+    cube_part_institutionals:
+      overlap:
+        method: days
+        column: date
+        days: 30
+      warmup:
+        cube_part_prices: null
+        insider_transactions: null
+        def14a_executive_comp: null
+        sec_short_volume_security: 750
+        sec_fails_to_deliver_security: 750
+        sec_13d: null
+        sec_13g: null
+        universe_cusip: null
+        universe_cik_symbol: null
+        prices: 750
+        prices_splits: null
+        sharadar_actions: null
+        sharadar_fundamentals_facts: null
+
+    cube_part_sec_thirteen:
+      overlap:
+        method: days
+        column: date
+        days: 100
+      warmup:
+        cube_part_prices: null
+        sec13f_hr: null
+        sec_13f_manager_details: null
+        universe_cusip: null
+        cusip_ticker_map: null
+        sharadar_tickers: null
+
+    cube_part_governance:
+      overlap:
+        method: days
+        column: date
+        days: 380
+      warmup:
+        cube_part_prices: null
+        def14a_llm: null
+        def14a_executive_comp: null
+        def14a_directors: null
+        def14a_director_comp: null
+        def14a_ownership: null
+        sec_8k_votes: 2500
+        sharadar_fundamentals_history: null

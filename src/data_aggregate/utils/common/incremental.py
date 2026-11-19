@@ -1,113 +1,106 @@
-"""
-incremental.py  (src/data_aggregate/utils/common/incremental.py)
---------------------------------------------------------------
-The full-vs-incremental decision, in ONE place.
+"""Resolve cube read/write scopes once and publish bounded, atomic replacements.
 
-Every cube sub-step follows the same rule: read the part's latest stored date, recompute
-only a warm-up-padded trailing window, and append the rows after that date -- instead of
-truncating and reloading fifteen years. This is only correct because the feature builders
-are backward-looking (window <= warm-up) and the cross-sectional standardization is
-per-day, so a trailing recompute reproduces the full build's tail exactly. That
-equivalence is proved on the price builder by
-`tests/data_aggregate/test_cube_incremental.py`.
-
-Two shapes of write:
-  * BACKWARD-looking parts (features, betas) rewrite their trailing `refresh` window
-    INCLUSIVELY and append everything after it. Strictly-after used to be enough on the
-    theory that a stored date is final once written -- it is not. A part's last stored date
-    is the one most likely to be WRONG, because it is the date whose price inputs were newest
-    and least settled: a truncated extract run left `cube_part_momentum` stopping ON a date
-    ranked over 45 of 491 tickers, and because the append started strictly after it, no
-    incremental run could ever have replaced that row. Only a `--full` rebuild would.
-  * FORWARD-looking targets must ALSO refresh the trailing `max_horizon` window, because
-    a label that was NaN last run (no future price yet) MATURES into a value between runs.
-    That is the same mechanism with a much wider window, and it takes precedence.
-
-The old code loaded the whole history and then called `_trim_window` to throw ~90% of it
-away. Here the window is decided FIRST, from the market part's dates alone (~15k rows),
-and the trim is pushed into SQL.
+Source algorithms retain their own sparse histories. Warm-up expands computation reads,
+while only the resolved inclusive write Window and selected keys authorize deletion.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS
-from src.data_store.schema import Table
+from src.context import Context
+from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW
+from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-
-# `write_part` returns this instead of a row count when the part's feature set changed, to
-# tell the caller "your column set no longer matches the stored table -- re-run full".
-COLUMNS_CHANGED = -1
-
-#: How many trading days of its own tail every incremental part run recomputes and REWRITES.
-#:
-#: Seven sessions cover the price fetcher's 7-day re-pull overlap, and let a filing recovered
-#: within a week replace the features first built without it. Fundamentals (45) and targets
-#: (their maturing-label horizon) rewrite wider tails. `store.append_tail(inclusive=True)`
-#: deletes `>=` the cutoff before appending, so a same-day re-run is idempotent.
-PART_REFRESH_TRADING_DAYS = 7
+from src.utils.data_policy import input_read_window, window_policy
+from src.utils.window import Offset, Window, WindowPlan, WindowRun, resolve_window, shift_date
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class PartWindow:
-    """`last` is the part's stored max date (None -> full rebuild); `since` is the first
-    date to READ and compute from (warm-up padded); `refresh_from` is the first date to
-    REWRITE (None -> append strictly after `last`, the pre-refresh behaviour)."""
-
-    last: pd.Timestamp | None
-    since: pd.Timestamp | None
-    refresh_from: pd.Timestamp | None = None
-
-    @property
-    def is_full(self) -> bool:
-        return self.last is None
-
-
-def window_start(trading_index: pd.DatetimeIndex, last: pd.Timestamp, n_back: int) -> pd.Timestamp:
-    """The date `n_back` trading days BEFORE `last` on the (untrimmed) price calendar."""
-    pos = int(trading_index.searchsorted(pd.Timestamp(last).normalize()))
-    return trading_index[max(0, pos - n_back)]
-
-
 def plan_window(
-    store: DataStore, part: Table, *, warmup: int, full: bool, trading_index: pd.DatetimeIndex | None = None, extra_back: int = 0, refresh: int = 0
-) -> PartWindow:
-    """Decide what to rebuild.
+    context: Context,
+    part: Table,
+    calendar: pd.DatetimeIndex,
+    scope: Sequence[str] | None = None,
+    *,
+    inherited_start: pd.Timestamp | None = None,
+) -> WindowPlan | None:
+    """Resolve the configured cube policy against one scoped frontier and the root run."""
+    policy = window_policy(context.config, part, context.run.as_of, calendar)
+    selected = tuple(sorted(set(context.universe.tickers if scope is None else scope)))
+    if not selected:
+        raise ValueError(f"{part.name}: cube planning requires an explicit ticker scope")
+    if policy is None:
+        return None
+    if calendar.empty:
+        raise ValueError(f"{part.name}: a retained market calendar is required")
+    end = min(policy.requested.end, calendar[-1])
+    if end < policy.requested.start:
+        return None
+    last = context.store.max_date(part, where={"ticker": selected, "date": Window(policy.requested.start, context.run.as_of)})
+    if last is not None and pd.Timestamp(last) > calendar[-1]:
+        raise RuntimeError(f"{part.name}: source calendar ends before the saved frontier; no rows may be replaced")
 
-    `full=True`, a missing part, or no usable calendar -> a full rebuild. Otherwise the
-    window reaches `warmup + extra_back + refresh` trading days before the stored max date:
-    `extra_back` is the target step's forward horizon (so maturing labels are recomputed) and
-    `refresh` is how far back the part rewrites its own tail. The warm-up counts from the
-    earliest rewritten date, so every rewritten row gets the look-back a full rebuild gives it.
-    """
-    if full:
-        return PartWindow(None, None)
-    last = store.max_date(part)
-    if last is None or trading_index is None or len(trading_index) == 0:
-        return PartWindow(None, None)
-    return PartWindow(
-        last, window_start(trading_index, last, warmup + extra_back + refresh), window_start(trading_index, last, refresh) if refresh else None
+    # Available source dates may narrow the hard ceiling; they never replace its policy.
+    policy = replace(policy, requested=Window(policy.requested.start, end))
+    run = context.run
+    if last is None and run.mode == "incremental":
+        run = WindowRun("initial", "no selected output", run.instant)
+    plan = resolve_window(policy, run, last, calendar, (("ticker", selected),), inherited_start=inherited_start)
+    if part == Tables.cube_part_targets:
+        horizon = max(int(value) for value in context.config.data_aggregate.targets.horizons)
+        days = int(context.config.data.tables[part.name].overlap.days)
+        anchor = policy.requested.end if last is None else min(pd.Timestamp(last), policy.requested.end)
+        history = calendar[calendar <= anchor]
+        earliest = shift_date(anchor, Offset(horizon, "trading_sessions"), calendar)
+        if days < horizon or (len(history) > horizon and anchor - pd.Timedelta(days=days) > earliest):
+            raise ValueError(
+                f"{part.name}.overlap.days={days} cannot cover the configured {horizon}-session target horizon on the retained market calendar"
+            )
+    price_input = Tables.prices if part == Tables.cube_part_prices else Tables.cube_part_prices
+    payload = input_read_window(context.config, part, price_input, plan.write, context.run.as_of)
+    read = Window(calendar[0] if payload is None else min(plan.write.start, payload.start), end)
+    plan = replace(plan, read=read)
+    part_info = PART_BY_NAME.get(part.name)
+    required = max((value for _, value in part_info.binding_lookbacks), default=0) if part_info is not None else 0
+    if part in {Tables.cube_part_targets, Tables.cube_part_betas}:
+        required = max(required, MOMENTUM_SEAM_WINDOW[0] + int(context.config.data_aggregate.betas.window))
+    if part == Tables.cube_part_fundamentals:
+        required = max(required, int(context.config.data_aggregate.hist.window))
+    amount = context.config.data.tables[part.name].warmup[price_input.name]
+    available = calendar[calendar < plan.write.start]
+    insufficient = amount is not None and (
+        int(amount) < required
+        or (len(available) >= required and read.start > shift_date(plan.write.start, Offset(required, "trading_sessions"), calendar))
     )
+    if insufficient:
+        raise ValueError(
+            f"{part.name}/{price_input.name}: configured calendar-day warmup does not cover its {required}-session calculation dependency"
+        )
+    return plan
 
 
-def changed_tickers(store: DataStore, part: Table, df_rows: pd.DataFrame, before: pd.Timestamp) -> list[str]:
-    """Stream the saved rows dated before `before` once; return the tickers whose keys, nulls or exact values differ from `df_rows`."""
+def changed_tickers(store: DataStore, part: Table, df_rows: pd.DataFrame, window: WindowPlan) -> list[str]:
+    """Compare the requested saved prefix once; return tickers with changed keys, nulls or exact values."""
+    before = window.write.start
     keys = list(part.pk)
-    df_old = df_rows.loc[pd.to_datetime(df_rows["date"]) < before]
+    in_scope = pd.to_datetime(df_rows["date"]).between(window.requested.start, before, inclusive="left")
+    df_old = df_rows.loc[in_scope & df_rows["ticker"].isin(dict(window.scope)["ticker"])]
     index = pd.MultiIndex.from_arrays([pd.to_datetime(df_old["date"]), df_old["ticker"]])
     fields = [field for field in df_rows if field not in keys]
     values = df_old[fields].to_numpy(dtype="float64")
     seen = np.zeros(len(df_old), dtype=bool)
     changed: set[str] = set()
-    stream = store.iter_load(part, columns=list(df_rows.columns), until=pd.Timestamp(before) - pd.Timedelta(days=1))
+    stream = store.iter_load(
+        part, columns=list(df_rows.columns), where=dict(window.scope), since=window.requested.start, until=pd.Timestamp(before) - pd.Timedelta(days=1)
+    )
     try:
         for df_chunk in stream:
             positions = index.get_indexer(pd.MultiIndex.from_arrays([pd.to_datetime(df_chunk["date"]), df_chunk["ticker"]]))
@@ -144,55 +137,34 @@ def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str], part: Table
 def write_part(
     store: DataStore,
     part: Table,
-    rows: pd.DataFrame,
-    window: PartWindow,
+    rows: pd.DataFrame | None,
+    window: WindowPlan,
     *,
-    keys: Sequence[str] = tuple(PANEL_KEYS),
-    refresh_from: pd.Timestamp | None = None,
     drop_empty: bool = False,
     existing_columns: Sequence[str] | None = None,
 ) -> int:
-    """Persist a part according to `window`.
-
-    FULL -> replace. INCREMENTAL -> `COLUMNS_CHANGED` when the stored column set differs
-    from `rows` (the caller re-runs with full=True); otherwise append the tail from the first
-    cutoff given: an explicit `refresh_from` (the target step's maturing-label window), then
-    `window.refresh_from` (the part's own trailing rewrite), both inclusive because
-    `append_tail` deletes `>=` the cutoff first, so a same-day re-run is idempotent; else
-    strictly after `window.last`. `drop_empty` removes rows with no feature value at all;
-    a nonempty refresh grid still clears stale tail rows when every feature is unknown.
-    `existing_columns` reuses metadata already read by the owning step.
-    """
-    if rows is None or rows.empty:
-        logger.warning("%s produced no rows -> nothing persisted.", part)
+    """Publish only the resolved dates and keys, including valid empty corrections."""
+    if rows is None:
+        logger.warning("%s unavailable -> nothing persisted.", part)
         return 0
-
-    existing = existing_columns
-    if existing is None and not window.is_full:
-        existing = store.columns(part)
+    keys = list(part.pk)
+    if existing_columns and set(existing_columns) != set(rows.columns) and not window.is_full:
+        raise ValueError(f"{part.name}: column set changed; explicit retained-schema rebuild required")
+    scope = dict(window.scope)
+    selected = window.write.mask(rows["date"])
+    for column, values in scope.items():
+        selected &= rows[column].isin(values)
+    tail = rows.loc[selected]
     if drop_empty:
-        rows = drop_empty_feature_rows(rows, keys, part)
-
-    if window.is_full:
-        if rows.empty:
-            return 0
-        n = store.replace(part, rows)
-        logger.info("Persisted %s (FULL): %s rows x %s cols.", part, n, len([c for c in rows.columns if c not in keys]))
-        return n
-
-    # `columns` returns [] for a table that does not exist -- "no stored column set to
-    # compare against", not "a stored set that differs". Treating [] as a difference would
-    # report COLUMNS_CHANGED for an absent part.
-    if existing and set(existing) != set(rows.columns):
-        logger.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.", part, len(existing), len(rows.columns))
-        return COLUMNS_CHANGED
-
-    cutoff = refresh_from if refresh_from is not None else window.refresh_from
-    inclusive = cutoff is not None
-    if cutoff is None:
-        cutoff = window.last
-    assert cutoff is not None
-    tail = rows[rows["date"] >= cutoff] if inclusive else rows[rows["date"] > cutoff]
-    n = store.append_tail(part, tail, cutoff, inclusive=inclusive)
-    logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n, ">=" if inclusive else ">", pd.Timestamp(cutoff).date())
-    return n
+        tail = drop_empty_feature_rows(tail, keys, part)
+    effects = store.replace_window(part, tail, window.write, scope, schema_rebuild=window.is_full)
+    logger.info(
+        "Persisted %s (%s): %s..%s, %s deleted, %s inserted.",
+        part,
+        window.run.mode,
+        window.write.start.date(),
+        window.write.end.date(),
+        effects.deleted,
+        effects.inserted,
+    )
+    return effects.inserted

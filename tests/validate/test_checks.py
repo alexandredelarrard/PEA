@@ -21,7 +21,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
 from src.utils.tickers_universe.universe import Universe
@@ -38,7 +38,9 @@ from src.validate.checks import (
     leakage,
 )
 from src.validate.spec import UndeclaredTableError
+from tests.support.config import fixture_config
 from tests.support.universe import seed_universe
+from tests.support.universe import universe_config as sample_universe_config
 
 #: The part the synthetic frames borrow their grain from: `pk == (date, ticker)`, `date_col ==
 #: date`, which is the shape every `cube_part_*` table has. Using a REGISTERED table means the
@@ -60,8 +62,7 @@ def _config(**defaults: Any) -> DictConfig:
 
     Loading the shipped file is deliberate: it makes every one of these tests a check that
     the config still carries every key `TableSpec` requires."""
-    loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
-    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"]}))
+    config = fixture_config()
     for key, value in defaults.items():
         config.validate.defaults[key] = value
     return config
@@ -127,7 +128,9 @@ def test_coverage_files_the_hole_and_not_the_declared_aliases(sqlite_store, caps
     panel = _panel(["AAA", "BBB"], f_x=lambda i, t: float(i))
     holed = panel.drop(panel[(panel["ticker"] == "BBB") & panel["date"].isin(list(SESSIONS[20:23]))].index)
     sqlite_store.save(PART, holed)
-    context: Any = _Ctx(sqlite_store, _config(universe_expected=2), universe)
+    config = _config()
+    config.universe = sample_universe_config(["AAA", "BBB"], aliases={"AAA": [excluded]}).universe
+    context: Any = _Ctx(sqlite_store, config, universe)
 
     result = check_coverage(context, PART, config=context.config)
 
@@ -559,7 +562,7 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     # FTD absence is an observed zero once the source is globally live. BBB deliberately has
     # no event at all: requiring its own first event would manufacture a leak on the correct 0.
     # The FTD line is stored as filed (CUSIP grain); `universe_cusip` maps its CUSIP to AAA.
-    ftd = pd.DataFrame({"cusip": ["000000001"], "date": [SESSIONS[10]], "fails_quantity": [1.0]})
+    ftd = pd.DataFrame({"cusip": ["000000001"], "date": [SESSIONS[10]], "period": ["202401a"], "fails_quantity": [1.0]})
     ftd.to_sql("sec_fails_to_deliver_security", sqlite_store.engine, index=False)
     # The FINRA lines too (symbol grain): `BRK/A`-style spellings meet the FTD key (`BBBA` here) through `finra_key`.
     lines = pd.DataFrame(
@@ -651,3 +654,19 @@ def test_leakage_maps_a_reused_symbol_to_each_company_only_on_its_own_dates(sqli
 
     print(f"\n  leakage dated mapping: first {clock} per company {first.to_dict()} (DD 2015-06-01, DOW 2020-06-01 expected)")
     assert first.to_dict() == {"DD": pd.Timestamp("2015-06-01"), "DOW": pd.Timestamp("2020-06-01")}, "a symbol counts only on its line's dates"
+
+
+def test_coverage_compares_current_database_membership_independently(sqlite_store, capsys) -> None:
+    universe = seed_universe(sqlite_store, ["AAA", "BBB"])
+    config = _config()
+    config.universe = sample_universe_config(["AAA", "BBB"]).universe
+    context: Any = _Ctx(sqlite_store, config, universe)
+    sqlite_store.save(Tables.prices, _panel(["AAA", "BBB"], close=lambda i, ticker: 10.0 + i))
+    sqlite_store.save(PART, _panel(["AAA", "BBB"], f_x=lambda i, ticker: float(i)))
+    # The context still caches two members; current persisted membership has changed.
+    seed_universe(sqlite_store, ["AAA", "BBB", "CCC"])
+    result = check_coverage(context, PART, config=config)
+    assert result.status == "fail"
+    assert any(finding.evidence.get("unexpected_members") == ["CCC"] for finding in result.findings)
+    with capsys.disabled():
+        print("SANITY: current persisted membership is compared to universe.yml independently of the context's cached universe.")

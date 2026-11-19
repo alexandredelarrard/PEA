@@ -23,6 +23,7 @@ error surfaces only as a bare "Command not found".
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -35,16 +36,19 @@ import click
 from src import context as context_module
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, TICKERS_ARGS, TICKERS_KWARGS
 from src.context import get_config_context
-from src.data_store.schema import resolve
+from src.data_store.schema import Table, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.validate import checks
 from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
 from src.validate.checks.institutionals import check_institutionals
 from src.validate.checks.modelling import check_modelling
-from src.validate.io import OUT_DIR, run_dir, write_result
+from src.validate.checks.window_lineage import check_window_lineage
+from src.validate.checks.window_plan import check_window_plans
+from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
+from src.validate.io import CACHE_DIR, OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
-from src.validate.result import EXIT, CheckResult
+from src.validate.result import EXIT, CheckResult, jsonable
 from src.validate.spec import UndeclaredTableError
 
 TABLE_ARGS = ("-T", "--table")
@@ -75,6 +79,100 @@ def _shared(fn: Callable) -> Callable:
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
     """VALIDATE — table-agnostic data checks. 0 pass · 1 finding · 3 ABSTAINED."""
+
+
+def _sample_table(name: str) -> Table:
+    """Resolve an allowed data table before constructing a context or opening a manifest."""
+    table = resolve(name)
+    if table not in timing_sample_tables():
+        raise click.BadParameter("Model and portfolio outputs are excluded from timing validation", param_hint="--table")
+    return table
+
+
+@cli.command(name="window-capture", help="Pin configured fixed-year sample keys and cells for one extraction/cube table.")
+@click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS))
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+def window_capture(table: str, out: str, config_path: str) -> None:
+    """Create immutable selection evidence with no source-table writes."""
+    spec = _sample_table(table)
+    target = run_dir(out) / CACHE_DIR / f"window-{spec.name}.json"
+    if target.exists():
+        raise click.ClickException(f"Pinned sample already exists: {target}")
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    entry = capture_window_selection(context, spec)
+    if "selection" in entry:
+        result = check_window_sample(context, spec, selection=SampleSelection(**entry["selection"]))
+    else:
+        result = CheckResult.abstained("window_sample", spec.name, entry["reason"])
+    entry["baseline"] = result.to_json()
+
+    # Persist the pin before returning the ordinary validator status.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(jsonable({"schema_version": 3, "tables": {spec.name: entry}}), indent=2), encoding="utf-8")
+    path = write_result(out, result)
+    click.echo(result.summary())
+    click.echo(f"  -> {path}; pinned selection {target}")
+    sys.exit(EXIT[result.status])
+
+
+@cli.command(name="window-sample", help="Inspect current cells using a pinned selection; equality replay is owned by the sample suite.")
+@click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS))
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--manifest", "manifest_path", required=True, type=click.Path(exists=True, path_type=Path))
+def window_sample(table: str, out: str, config_path: str, manifest_path: Path) -> None:
+    # Load the explicit source selection before opening the ordinary check.
+    spec = _sample_table(table)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entry = manifest["tables"].get(table, {})
+    if "selection" not in entry:
+        result = CheckResult.abstained("window_sample", spec.name, entry.get("reason", "Table absent from the pinned manifest"))
+    else:
+        selection = SampleSelection(**entry["selection"])
+        _, context = get_config_context(config_path, use_cache=False, save=False)
+        result = check_window_sample(context, spec, selection=selection)
+
+    # Publish the normal validator exit/result contract.
+    path = write_result(out, result)
+    click.echo(result.summary())
+    click.echo(f"  -> {path}")
+    sys.exit(EXIT[result.status])
+
+
+@cli.command(name="window-lineage", help="Independently verify a fresh production source-state/assembly replay from the pinned-sample suite.")
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--replay", "replay_path", required=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--manifest", "manifest_path", required=True, type=click.Path(exists=True, path_type=Path))
+def window_lineage(out: str, config_path: str, replay_path: Path, manifest_path: Path) -> None:
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    results = check_window_lineage(context, replay, json.loads(manifest_path.read_text(encoding="utf-8")))
+    planning = check_window_plans(context, replay)
+    target = run_dir(out) / OUT_DIR / "window_lineage.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "lineage": {name: result.to_json() for name, result in results.items()},
+                "planning": {name: result.to_json() for name, result in planning.items()},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    results = {**results, **{f"plan:{name}": result for name, result in planning.items()}}
+    for result in results.values():
+        click.echo(result.summary())
+    click.echo(f"  -> {target}")
+    sys.exit(
+        1
+        if any(result.status == "fail" for result in results.values())
+        else 3
+        if any(result.status == "abstain" for result in results.values())
+        else 0
+    )
 
 
 @cli.command(help="Independently reconcile saved-fold modelling IC/IR, native contributions/PDP, source chronology and report identities.")

@@ -6,7 +6,7 @@ publish -> sync. Each `run_*` runs alone from stored inputs (`identity --only <s
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import cast
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -114,6 +114,8 @@ from src.data_extract.utils.identity.symbol_tenure import (
 )
 from src.data_extract.utils.zips.fetch_insider_transactions import restamp_insider_lineage
 from src.data_store.schema import Tables
+from src.data_store.store import Where
+from src.utils.data_policy import source_read_window
 from src.utils.filer_tables import PURGE_TABLES
 from src.utils.identity_flags import (
     FLAG_COLUMNS,
@@ -133,7 +135,6 @@ from src.utils.identity_flags import (
     tape_mix_pairs,
 )
 from src.utils.step import Step
-from src.utils.string import run_date
 
 #: The `sec_cik_profile` columns the CIK history reads, and the rows that carry one of its event forms.
 _PROFILE_COLUMNS = ("cik", "form_25", "form_15", "form_8k12b")
@@ -141,22 +142,15 @@ _SHARADAR_COLUMNS = ("secfilings", *LIFE_COLUMNS)
 _ANCHOR_LINEAGE_COLUMNS = ("canonical_ticker", "company_id", "cik", "role", "valid_from")
 
 
-@dataclass(frozen=True)
-class IdentityOptions:
-    """The `identity` command's options: `full` re-capture and re-check, and the run date."""
-
-    full: bool = False
-    as_of: pd.Timestamp | None = None
-
-
 class StepExtractIdentity(Step):
-    def __init__(self, context: Context, config: DictConfig, options: IdentityOptions | None = None) -> None:
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
-        self._options = options or IdentityOptions()
+        self._full = context.run.mode in {"full", "recovery"}
         paths = config.local.paths
         self._insider_cache = cache_dir(context, paths.insider_transactions)
         self._notes_cache = cache_dir(context, paths.financial_notes)
-        self._run_date = run_date(self._options.as_of)
+        self._run_date = context.run.as_of
+        self._insider_window = source_read_window(config, Tables.insider_transactions, context.run.as_of)
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
         self._anchor: CompanyAnchor | None = None
@@ -170,11 +164,14 @@ class StepExtractIdentity(Step):
         """Notes cover-page symbols of the pending cached periods, then the Form 3/4/5 tenure; returns rows captured (the FTD
         lines the CUSIP history reads are stored by the FTD ingest)."""
         # the Notes cover-page symbols of every filer, one cached period at a time (`full`: every period)
-        periods = pending_dei_periods(self._context, self._notes_cache, self._options.full)
+        periods = pending_dei_periods(self._context, self._notes_cache)
         written = sum(capture_dei_period(self._context, self._notes_cache, period) for period in tqdm(periods, desc="SEC notes cover-page symbols"))
 
         # one Form 3/4/5 scan: the `form345` / `manual` tenure (minus the cited rejections) here, the owner sets in the CIK history
-        self._scan = scan_form345_cache(self._insider_cache)
+        if self._scan is None:
+            if self._insider_window is None:
+                raise ValueError("Identity snapshot has no configured insider source context")
+            self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
         manual, rejected = load_manual_symbol_tenure(str(self._config_dir)), load_rejected_symbol_tenure(str(self._config_dir))
         self._tenure = build_symbol_tenure(self._context, self._scan, manual, rejected)
         return written
@@ -209,9 +206,13 @@ class StepExtractIdentity(Step):
         # load the anchor, the tenure and Form 3/4/5 scan of this run (else the stored ones), the dei evidence, the SEC profile, the curation
         anchor = self._anchor if self._anchor is not None else self.run_company_anchor()
         tenure = self._tenure if self._tenure is not None else load_built_tenure(self._context)
-        scan = self._scan if self._scan is not None else scan_form345_cache(self._insider_cache)
+        if self._scan is None:
+            if self._insider_window is None:
+                raise ValueError("Identity snapshot has no configured insider source context")
+            self._scan = scan_form345_cache(self._insider_cache, self._insider_window)
+        scan = self._scan
         dei_rows = self._context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
-        events = [{column: self._context.store.NOT_NULL} for column in _PROFILE_COLUMNS[1:]]
+        events: Where = [{column: self._context.store.NOT_NULL} for column in _PROFILE_COLUMNS[1:]]
         profile = self._context.store.load(Tables.sec_cik_profile, columns=list(_PROFILE_COLUMNS), where=events, optional=True)
         registrants = load_registrants(str(self._config_dir))
         blob = manual_lineage_blob(str(self._config_dir))
@@ -375,7 +376,16 @@ class StepExtractIdentity(Step):
         rows = flag_rows(symbols.rows)
         mixes = tape_mix_items(tape_mix_pairs(rows, self._universe.alias_symbols), rows, master_lines(stored_lines if lines.empty else lines))
         found = [*cik_items(rows, history.activity, symbols.backlog), *refused_merge_items(symbols.blocked), *mixes, *symbol_status_items(rows)]
-        review = review_flags(sorted_flags([*found, *cusip_items.to_dict("records"), *lifecycle.items.to_dict("records")]), resolutions)
+        review = review_flags(
+            sorted_flags(
+                [
+                    *found,
+                    *cast(list[dict[str, object]], cusip_items.to_dict("records")),
+                    *cast(list[dict[str, object]], lifecycle.items.to_dict("records")),
+                ]
+            ),
+            resolutions,
+        )
 
         # check: a WARNING block of the unreviewed action items only; everything else in one INFO summary, the items at DEBUG
         block, details = identity_flag_block(review.unreviewed), review_details(review)
@@ -412,7 +422,7 @@ class StepExtractIdentity(Step):
 
         # compute: the tickers whose scope changed, and what each company owns
         scopes = {ticker: identity.filing_scope(ticker) for ticker in universe.tickers}
-        changed = recheck_tickers(scopes, as_of=self._run_date, every=self._options.full or self._first_build)
+        changed = recheck_tickers(self._context, scopes, every=self._full or self._first_build)
         owned = owned_scopes(identity)
 
         # save: per filer table the moves then the purge, then the insider stamps of the changed and the receiving tickers

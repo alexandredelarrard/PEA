@@ -5,6 +5,10 @@ type: concept
 tags:
   - wiki
   - concept
+source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+integration_parents:
+  - f06e3781ccb5756a0a1406895182de37329e282b
+  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
 ---
 # Peer-relative features
 
@@ -24,7 +28,7 @@ Peer-relative values remain point-in-time only if both the underlying feature an
 - Basket construction: [sector_peers.py](../../src/data_peers/utils/sector_peers.py)
 - Embedding cache: [data_peers/utils/embeddings.py](../../src/data_peers/utils/embeddings.py)
 - Panel construction: [data_aggregate/utils/common/panel.py](../../src/data_aggregate/utils/common/panel.py)
-- Configuration: [configs/peers.yml](../../configs/peers.yml)
+- Configuration: [configs/data_peers.yml](../../configs/data_peers.yml)
 
 ## Related
 

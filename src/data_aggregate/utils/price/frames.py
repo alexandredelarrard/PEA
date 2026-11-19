@@ -43,12 +43,13 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.context import Context
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.frames import extract_field, prices_long_to_multiindex
 from src.utils.price.levels import rebase_security_quantities
 from src.utils.price.per_share import vendor_ordinary_per_share
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -171,11 +172,15 @@ def comparison_share_history(
     target = pd.Series(target_date, index=df_result.index)
     for field in count_fields:
         if field in df_result:
-            values = rebase_vendor_quantities(basis, df_result[field], df_result["ticker"], df_result["as_of"], target)
+            values = rebase_vendor_quantities(
+                basis, df_result[field], df_result["ticker"], df_result.get("_source_as_of", df_result["as_of"]), target
+            )
             df_result[field] = values.where(values.gt(0))
     for field in per_share_fields:
         if field in df_result:
-            df_result[field] = vendor_ordinary_per_share(basis, df_result[field], df_result["ticker"], df_result["as_of"], target)
+            df_result[field] = vendor_ordinary_per_share(
+                basis, df_result[field], df_result["ticker"], df_result.get("_source_as_of", df_result["as_of"]), target
+            )
     return df_result
 
 
@@ -203,7 +208,7 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return prices.dropna(how="all").reset_index()
 
 
-def load_trading_calendar(store: DataStore) -> pd.DatetimeIndex:
+def load_trading_calendar(context: Context) -> pd.DatetimeIndex:
     """The trading calendar, read as `cube_part_prices`' own distinct dates.
 
     Still the definition rather than an inference: `du.get_trading_days` defines the calendar
@@ -211,18 +216,20 @@ def load_trading_calendar(store: DataStore) -> pd.DatetimeIndex:
     those dates before writing, and a row survives the write only if some field is non-null.
     It used to read `cube_part_market` -- the same dates, one table earlier. Cheap
     (`SELECT DISTINCT date`), so the incremental window can be decided BEFORE the wide read."""
-    dates = store.distinct(Tables.cube_part_prices, "date")
+    dates = context.store.distinct(Tables.cube_part_prices, "date")
+    dates = [day for day in dates if pd.Timestamp(day) <= context.run.as_of]
     if not dates:
         raise RuntimeError(f"{Tables.cube_part_prices} is missing or empty -> run `data_aggregate build-prices` first")
     return pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(dates)).dt.normalize().unique()), name="date")
 
 
 def load_price_frames(
-    store: DataStore,
+    context: Context,
     *,
     peers: dict[str, dict[str, float]],
+    calendar: pd.DatetimeIndex,
     fields: Sequence[str] = ALL_FIELDS,
-    since: pd.Timestamp | None = None,
+    window: Window | None = None,
 ) -> PriceFrames:
     """Read `cube_part_prices` and pivot to wide.
 
@@ -231,24 +238,29 @@ def load_price_frames(
     that N times. The long frame is dropped as soon as the pivots exist.
     """
 
+    retained = Window(calendar[0] if window is None else window.start, min(context.run.as_of, calendar[-1] if window is None else window.end))
     cols = ["date", "ticker"] + list(fields)
-    chunks = list(store.iter_load(Tables.cube_part_prices, columns=cols, since=since))
+    chunks = list(
+        context.store.iter_load(
+            Tables.cube_part_prices, columns=cols, where={"ticker": context.universe.tickers}, since=retained.start, until=retained.end
+        )
+    )
     long = pd.concat(chunks, ignore_index=True) if chunks else None
     if long is None:
         raise RuntimeError(
             f"{Tables.cube_part_prices} is missing or returned no rows"
-            f"{f' since {pd.Timestamp(since).date()}' if since else ''}"
+            f" in {retained.start.date()}..{retained.end.date()}"
             " -> run `data_aggregate build-prices` first"
         )
     long["date"] = pd.to_datetime(long["date"], format="%Y-%m-%d")
 
+    idx = pd.DatetimeIndex(calendar[(calendar >= retained.start) & (calendar <= retained.end)], name="date")
     wide: dict[str, pd.DataFrame] = {}
     for f in fields:
-        piv = long.pivot(index="date", columns="ticker", values=f).sort_index().astype("float64")
+        piv = long.pivot(index="date", columns="ticker", values=f).reindex(idx).astype("float64")
         piv.index.name, piv.columns.name = "date", "ticker"
         wide[f] = piv
 
-    idx = pd.DatetimeIndex(sorted(long["date"].unique()), name="date")
     universe = tuple(sorted(long["ticker"].astype(str).unique()))
     del long
 

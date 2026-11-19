@@ -1,0 +1,60 @@
+data_extract:
+  listing_end_grace_sessions: 10 # Keep an ended listing eligible for this many market sessions.
+  identity_change_recheck_days: 7 # Recheck changed identity keys for this many calendar days.
+  earnings_calls:
+    read_workers: 4 # Parallel reads from pinned source.
+
+  # Recheck prior-quarter index metadata for late entries.
+  edgar_index:
+    previous_quarter_recheck: {value: 10, unit: calendar_days}
+
+  sec13f:
+    batch_size: 100 # Commit complete books in bounded batches.
+
+  sharadar_request_pace: 0.35
+
+  # Shared SEC retry policy: HTTP 429/502/503/504 and GET connection errors.
+  # Attempts include the first call; waits repeat the last value.
+  # Retry-After may extend waits up to the cap.
+  sec_retry:
+    attempts: 3
+    waits: [5, 20]
+    retry_after_cap: 120
+
+  # Retry failed EDGAR documents if read rate falls below threshold and
+  # failures reach min_failed. Remaining failures retry on the next run.
+  # Wait before each round; the task always exits 0.
+  retry_rounds:
+    rounds: 3
+    waits: [60, 120, 240]
+    threshold: 0.985
+    min_failed: 2
+
+  # Per-run document cap, newest first. Overflow logs ERROR and carries over.
+  # Use --no-cap for a one-time backlog run.
+  max_documents_per_run: 5000
+
+  # Max characters of stored text sent per LLM call.
+  # Changes require no replay of extracted text.
+  llm_text_budget:
+    employees: 60000
+    def14a: 130000
+    votes: 40000
+
+  # Workers for history replay (processes) and employees (threads).
+  # SEC facts extraction uses separate rate-limited workers.
+  fundamentals_workers: 8
+
+  # Guards against invalid derived quarters, calibrated on filed data.
+  fundamentals_periods:
+    # Max opposite-sign Q4 magnitude vs largest sibling quarter.
+    # Allows legitimate charge-driven spikes in signed fields.
+    max_opposite_sign_q4_ratio: 3.0
+
+    # Upper bound for mismatched annual vs quarterly concepts.
+    # Small annual totals remain valid when quarters offset.
+    q4_tag_mismatch_fy_max: 2.0
+
+    # Two-sided share-count ratio to detect split-adjusted basis mismatches.
+    # 1.5 rejects splits while allowing normal annual changes.
+    share_basis_max_ratio: 1.5

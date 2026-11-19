@@ -8,10 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.zips import thirteen_f_datasets as f13ds
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 
 _MEMBERS = ("SUBMISSION.tsv", "COVERPAGE.tsv", "SUMMARYPAGE.tsv", "INFOTABLE.tsv")
 
@@ -24,8 +27,9 @@ def write_13f_zip(path: Path) -> None:
 
 
 def _context(tmp_path: Path) -> Any:
-    config = SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(sec_13f_datasets="sec_13f_datasets")))
-    return SimpleNamespace(config=config, paths={"DATA_STORE": tmp_path})
+    return SimpleNamespace(
+        config=extract_config(), paths={"DATA_STORE": tmp_path}, run=WindowRun("incremental", "offline ZIP download", pd.Timestamp("2026-09-30"))
+    )
 
 
 def _landing(names: list[str]) -> Any:
@@ -86,3 +90,21 @@ def test_an_unreadable_landing_page_downloads_nothing(tmp_path: Path, monkeypatc
     monkeypatch.setattr(bulk_cache, "download", no_download)
     assert f13ds.download_13f_datasets(_context(tmp_path)) == 0
     print("SANITY: an unreadable landing page downloads nothing and returns 0; the next night retries.")
+
+
+def test_download_uses_configured_filing_window_before_cache_effects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _context(tmp_path)
+    context.config.data.tables.sec13f_hr.start_date = "2026-07-01"
+    context.run = WindowRun(context.run.mode, "bounded13F archive candidates", pd.Timestamp("2026-08-31"))
+    monkeypatch.setattr(f13ds, "sec_get", _landing(["2026q1", "01jun2026-31aug2026", "01sep2026-30nov2026"]))
+    downloaded: list[str] = []
+
+    def download(context: Any, path: Path, urls: Any, **kwargs: Any) -> Path:
+        downloaded.append(path.name)
+        write_13f_zip(path)
+        return path
+
+    monkeypatch.setattr(f13ds, "ensure_zip", download)
+    assert f13ds.download_13f_datasets(context) == 1
+    assert downloaded == ["01jun2026-31aug2026_form13f.zip"]
+    print("SANITY: the configured filing Window admits its overlapping source archive and causes no outside cache writes.")

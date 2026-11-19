@@ -5,11 +5,10 @@ One oldest-first walk over every 13F-HR by filing date (edgartools), saving each
 Originals and amendments have separate accession keys. Tickers come from the
 CUSIP map (OpenFIGI), never from issuer names.
 
-The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date; rows and `invalid`
-markers stored by the 13F ZIP ingest count toward that frontier, but its windows lag the walk by months. Successful
-filings are saved in batches while failed reads alone are queued for retry rounds after the listing.
-Exhausted failures are logged by accession and remain incomplete; holes older than the overlap require
-an explicit filing window. A scoped (`-t`) run never reads past the stored frontier.
+The configured filing window ends no later than the run date. A ticker subset also stops at the stored
+filing frontier, including ZIP rows and invalid markers, unless an explicit filing window is supplied.
+Successful filings are saved in batches while failed reads alone are queued for retry rounds after the listing.
+Exhausted failures are logged by accession and remain incomplete.
 """
 
 from __future__ import annotations
@@ -27,17 +26,15 @@ from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.compute as pc
-from edgar import Filings, get_filings
-from edgar.httpclient import close_clients
+from edgar import Filing, Filings
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
-from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, document_floor, stored_accessions
+from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
+from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, RetryRounds
 from src.data_extract.utils.edgar_extract.empty_markers import marker_mask
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
@@ -56,9 +53,11 @@ from src.data_extract.utils.institutionals.value_units import (
 )
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore
+from src.utils.data_policy import window_policy
 from src.utils.identity_tables import LINE_COLUMNS, tag_cusips
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
-from src.utils.string import pad_cik, pad_cik_series, run_date
+from src.utils.string import pad_cik, pad_cik_series
+from src.utils.window import Window
 
 logger = logging.getLogger(__name__)
 _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
@@ -344,52 +343,29 @@ def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.Da
     return walk.cmap
 
 
-def _resolve_window(
-    context: Context, years_history: int, filing_window: tuple[str, str] | None, as_of: pd.Timestamp, scoped: bool
-) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Filing-date window: explicit bounds, else the stored frontier minus overlap to `as_of`.
-    An empty table starts at the history floor; a scoped run ends at the stored frontier."""
-    if filing_window is not None:
-        since, until = (cast(pd.Timestamp, pd.Timestamp(d).normalize()) for d in filing_window)
-        if since > until:
-            raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
-        logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
-        return since, until
-
-    overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
-    legacy_frontier = context.store.max_date(Tables.sec13f_hr, "filing_date")
-    if legacy_frontier is not None:
-        context.log.warning("13F: filing versions start at the legacy frontier; older source versions need historical recovery.")
-    else:
-        since = document_floor(Tables.sec13f_hr, as_of, years_history)
-        logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
-        return since, as_of
-    if scoped:
-        logger.info(f"13F: scoped run reads up to the stored frontier {legacy_frontier:%Y-%m-%d} only, so the next window is unchanged")
-    return legacy_frontier - overlap, min(as_of, legacy_frontier) if scoped else as_of
+def _resolve_window(context: Context, requested: Window | None, scoped: bool) -> Window | None:
+    """Configured bounds, with the stored subset ceiling unless recovery names an explicit Window."""
+    policy = window_policy(context.config, Tables.sec13f_hr, context.run.as_of)
+    if policy is None:
+        return None
+    frontier = context.store.max_date(Tables.sec13f_hr, cast(Resume, Tables.sec13f_hr.resume).frontier_col) if scoped and requested is None else None
+    if requested is not None:
+        if requested.intersection(policy.requested) != requested:
+            raise ValueError("13F recovery Window must stay within configured hard bounds and the run date")
+        return requested
+    if frontier is None:
+        return policy.requested
+    end = min(policy.requested.end, pd.Timestamp(frontier).normalize())
+    return Window(policy.requested.start, end) if policy.requested.start <= end else None
 
 
-def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> Filings | None:
-    """The 13F listing filed in `since:until`, one quarterly index at a time on a fresh HTTP client:
-    edgartools' file cache never closes a 304 revalidation, so each cached index leaks a pooled
-    connection and a long history exhausts the pool (httpx.PoolTimeout)."""
-    parts = []
-    for quarter in pd.period_range(since, until, freq="Q"):
-        close_clients()
-        start, end = max(since, quarter.start_time), min(until, quarter.end_time.normalize())
-        part = get_filings(form=forms, filing_date=f"{start:%Y-%m-%d}:{end:%Y-%m-%d}")
-        if part:
-            parts.append(part.data)
-    return Filings(pa.concat_tables(parts)) if parts else None
-
-
-def _oldest_first(listing: Filings) -> Filings:
-    """The listing ordered by (filing_date, amendment last, accession): a same-day 13F-HR/A
-    follows its original whatever the filer agents' accession prefixes."""
-    data = listing.data
-    is_amendment = pc.ends_with(pc.utf8_upper(data.column("form")), "/A")
-    keys = [("filing_date", "ascending"), ("_is_amendment", "ascending"), ("accession_number", "ascending")]
-    return Filings(data.take(pc.sort_indices(data.append_column("_is_amendment", is_amendment), sort_keys=keys)))
+def _listing(context: Context, window: Window) -> list[Filing]:
+    """All manager filing units from the shared bounded cache, oldest first, amendments last."""
+    if not edgar_index.refreshed_today(context, window):
+        edgar_index.refresh(context, window)
+    rows = edgar_index.entries(context, None, cast(Resume, Tables.sec13f_hr.resume).forms, window)
+    rows = rows.assign(amended=rows["form"].str.upper().str.endswith("/A")).sort_values(["filed", "amended", "accession"], kind="stable")
+    return [edgar_index.index_filing(row.cik, row.company, row.form, row.filed, row.accession) for row in rows.itertuples(index=False)]
 
 
 @dataclass
@@ -574,7 +550,7 @@ def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
         stamp = FilingStamp.of(filing, "")
         filers.setdefault(stamp.accession_number, set()).add(stamp.cik)
     joint = {cik for ciks in filers.values() if len(ciks) > 1 for cik in ciks}
-    done = _done_in(saver.context, joint)
+    done = (lambda stamp: False) if saver.context.run.mode in {"full", "recovery"} else _done_in(saver.context, joint)
     for filing in tqdm(filings, total=len(filings), desc="13F-HR"):
         stamp = FilingStamp.of(filing, "")
         if done(stamp):
@@ -590,7 +566,7 @@ def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
 
 def _retry_rounds(context: Context, failed: list[_Read], saver: _Saver) -> None:
     """Retry only failed reads, saving recoveries each round and leaving exhausted failures in place."""
-    policy = RetryRounds.from_config(getattr(context, "config", None))
+    policy = RetryRounds.from_config(context.config)
     for round_no in range(1, policy.rounds + 1):
         if not failed:
             return
@@ -620,33 +596,22 @@ def _log_walk(walk: _WalkState, total: int) -> None:
     logger.info(f"13F: saved {walk.hr_saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
 
 
-def fetch_13f(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    save_every: int = 100,
-    filing_window: tuple[str, str] | None = None,
-    as_of: pd.Timestamp | None = None,
-) -> int:
-    """Save verified original/amendment accessions separately, oldest first in the resume window.
-
-    Successful reads save in batches; only failures are retried after the first pass.
-    Returns the number of exhausted failures; completed accession packets are not re-read.
-    """
+def fetch_13f(context: Context, tickers: list[str] | None = None, filing_window: Window | None = None) -> int:
+    """Save complete books; ticker subsets cap filing dates even in full mode, without filtering CUSIPs."""
+    names = context.universe.tickers if tickers is None else tickers
+    window = _resolve_window(context, filing_window, scoped=not context.universe.is_full(names))
+    if window is None:
+        return 0
+    save_every = int(context.config.data_extract.sec13f.batch_size)
+    if save_every < 1:
+        raise ValueError("13F batch_size must be positive")
     context.ensure_edgar_identity()
     configure(context)
-    start_date = run_date(as_of)
-    universe = set(tickers)
-    scoped = not context.universe.is_full(universe)
-    since, until = _resolve_window(context, years_history, filing_window, start_date, scoped)
-
-    listing = _listing(list(cast(Resume, Tables.sec13f_hr.resume).forms), since, until)
-    filings = _oldest_first(listing) if listing else []
+    filings = _listing(context, window)
     total = len(filings)
-    logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
+    logger.info("13F: %d listed filing units in %s", total, window)
     if not total:
         return 0
-
     saver = _Saver(context, save_every)
     failed = _first_pass(filings, saver)
     _retry_rounds(context, failed, saver)

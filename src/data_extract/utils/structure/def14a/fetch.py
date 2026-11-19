@@ -15,16 +15,16 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.resume import document_floor, planner_bounds
+from src.data_extract.utils.common.resume import planner_bounds
 from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.structure.def14a.gender import finalise_gender
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
-from src.data_extract.utils.structure.def14a.work import call_sections, section_requests, ticker_works
+from src.data_extract.utils.structure.def14a.work import call_sections, materialize_cached, section_requests, ticker_works
 from src.data_store.schema import Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.string import run_date
+from src.utils.data_policy import overlap_column, source_read_window, window_policy
 from src.utils.tickers_universe.universe import before_end
 
 #: The `sec_def14a_text` columns the worklist reads; `payload` is read per ticker, for its proxies worth a payload.
@@ -52,16 +52,29 @@ def fetch_def14a_llm(
     tickers: list[str],
     extractors: Mapping[str, LLMExtractor],
 ) -> None:
-    """Extract every section of a walked proxy filed by its ticker's end (plus the grace) that has a key gap and fewer
-    than two attempts (`retry=1`, then one more call and `retry=2`), from the stored tables alone. `extractors`
+    """Extract missing or explicitly incomplete sections inside the filing Window, with at most two attempts.
+    Successful archived answers, including empty answers, remain complete. `extractors`
     (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight."""
     # load: the five output tables (created from their committed DDL on a first run), the walked proxies in the window
     # (no payloads), the ticker names and end bounds
+    if overlap_column(context.config, Tables.def14a_llm) != "accession_number":
+        raise ValueError("Proxy section completion requires accession_number to preserve filing and amendment identity")
+    policy = window_policy(context.config, Tables.def14a_llm, context.run.as_of)
+    source = source_read_window(context.config, Tables.sec_def14a_text, context.run.as_of)
+    window = policy.requested.intersection(source) if policy is not None and source is not None else None
+    if window is None:
+        return
+    df_text = context.store.load(
+        Tables.sec_def14a_text,
+        columns=_TEXT_COLUMNS,
+        where={"ticker": tickers},
+        since=window.start,
+        until=window.end,
+        date_col="filing_date",
+        optional=True,
+    )
     for section in SECTIONS:
         context.store.create_declared(section.table)
-    years = int(config.data_extract.years_history)
-    floor = document_floor(Tables.def14a_llm, run_date(None), years)
-    df_text = context.store.load(Tables.sec_def14a_text, columns=_TEXT_COLUMNS, where={"ticker": tickers}, since=floor, optional=True)
     df_names = universe_rows(context, tickers)
     bounds = planner_bounds(context)
     budget = int(config.data_extract.llm_text_budget.def14a)
@@ -74,10 +87,11 @@ def fetch_def14a_llm(
     # compute: each ticker's open sections, saved per section
     updated = 0
     for ticker, df_filings in tqdm(df_proxies.groupby("ticker", sort=False), desc="DEF 14A LLM"):
-        works = ticker_works(context, str(ticker), df_filings, floor)
+        works = ticker_works(context, str(ticker), df_filings)
+        updated += materialize_cached(context, works)
         updated += call_sections(context, str(ticker), section_requests(context, works, budget), extractors, batch_size)
 
     # save: the cross-ticker gender reconciliation after saved updates
     if updated:
-        finalise_gender(context)
+        finalise_gender(context, tickers)
     context.log.info("DEF 14A: %d section answer(s) extracted; sections at retry=2 skipped", updated)

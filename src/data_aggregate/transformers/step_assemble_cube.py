@@ -11,51 +11,69 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import plan_window, write_part
+from src.data_aggregate.utils.common.inputs import input_windows, load_source
 from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, PanelMerger
 from src.data_aggregate.utils.common.part_status import cube_part_edge_report
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_store.schema import Table, Tables, resolve
+from src.utils.data_policy import window_policy
 from src.utils.step import Step
+from src.utils.window import Window, WindowPlan
 
 _CHUNK_ROWS = 400_000
 _MIN_TARGET_COVERAGE_PCT = 50.0
-
-# An existing cube is re-read and rewritten from this many calendar days before today (or its last date, if older).
-_OVERLAP_DAYS = 385
 
 
 class StepAssembleCube(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._store = context.store
-        self._cfg = config.build_cube
+        self._cfg = config.data_aggregate
 
-    def run(self, full: bool = False) -> None:
+    def run(self, written: dict[Table, Window] | None = None) -> dict[Table, WindowPlan]:
         self._warn_on_part_edges()
-        window = PartWindow(None, None) if full else self._plan_window()
-        cube, labels = self._assemble(window.since)
-        if self._persist(cube, window) == COLUMNS_CHANGED:
-            self._log.warning("%s column set changed -> full reassembly.", Tables.cube)
-            window = PartWindow(None, None)
-            cube, labels = self._assemble(None)
-            self._persist(cube, window)
+        window = self._plan_window(written)
+        if window is None:
+            return {}
+        cube, labels = self._assemble(window.write)
+        self._persist(cube, window)
         self._report(cube, labels)
+        return {Tables.cube: window}
 
-    def _plan_window(self) -> PartWindow:
-        """Full when no cube is stored; else re-read from the earlier of its last date and today - overlap."""
-        last = self._store.max_date(Tables.cube)
-        if last is None:
-            return PartWindow(None, None)
-        start = min(last, pd.Timestamp.today().normalize() - pd.Timedelta(days=_OVERLAP_DAYS))
-        return PartWindow(last, start, start)
+    def _plan_window(self, written: dict[Table, Window] | None) -> WindowPlan | None:
+        calendar = load_trading_calendar(self._context)
+        assembly = self._cfg.assembly
+        selected = {resolve(name) for name in [*assembly.compulsory_parts, *assembly.optional_parts]}
+        if set(self._config.data.tables.cube.warmup) != {table.name for table in selected}:
+            raise ValueError("Assembly selected parts and cube input warmup declarations must agree")
+        starts = []
+        for table in sorted(selected, key=lambda value: value.name):
+            policy = window_policy(self._config, table, self._context.run.as_of, calendar)
+            if policy is None:
+                continue
+            if table.name in assembly.optional_parts and not part_has_rows(self._store, table, {"ticker": self._universe.tickers}):
+                continue
+            if written is not None and table not in written:
+                raise ValueError(f"{table.name}: successful upstream write receipt required before assembly")
+            if written is not None:
+                starts.append(written[table].start)
+                continue
+            component = plan_window(self._context, table, calendar)
+            if component is not None:
+                starts.append(component.write.start)
+        if not starts:
+            return None
+        return plan_window(self._context, Tables.cube, calendar, inherited_start=min(starts))
 
-    def _assemble(self, since: pd.Timestamp | None) -> tuple[pd.DataFrame, list[str]]:
+    def _assemble(self, window: Window) -> tuple[pd.DataFrame, list[str]]:
         assembly = self._cfg.assembly
         optional = set(assembly.optional_parts)
         selected = assembly.get("columns") or {}
-        root = self._load_root(since)
+        reads = input_windows(self._context, Tables.cube, window)
+        root = self._load_root(reads[Tables.cube_part_prices])
         merger = PanelMerger(anchor=root[PANEL_KEYS])
         merger.add(root, Tables.cube_part_prices.name)
         labels: list[str] = []
@@ -63,9 +81,11 @@ class StepAssembleCube(Step):
             table = resolve(name)
             if table == Tables.cube_part_prices:
                 continue
-            panel = self._read_part(table, selected.get(name), since, optional=name in optional)
+            panel = self._read_part(table, selected.get(name), reads[table], optional=name in optional)
             if panel is None:
                 continue
+            if panel.empty:
+                panel = root[PANEL_KEYS].reindex(columns=panel.columns)
             panel = self._post_processing(panel)
             if table == Tables.cube_part_targets:
                 labels = [col for col in panel.columns if col not in PANEL_KEYS]
@@ -85,11 +105,11 @@ class StepAssembleCube(Step):
                 detail["refresh_command"],
             )
 
-    def _load_root(self, since: pd.Timestamp | None) -> pd.DataFrame:
+    def _load_root(self, window: Window | None) -> pd.DataFrame:
         """The price grid (float64: raw prices stay exact) with the peer basket and GICS codes attached."""
         # The quantity-conversion inputs stay in the price part; the cube keeps the price fields it always carried.
         columns = [column for column in self._store.columns(Tables.cube_part_prices) if column not in {"security_basis", "volume_pit"}]
-        root = self._store.load(Tables.cube_part_prices, columns=columns, since=since)
+        root = load_source(self._context, Tables.cube_part_prices, columns=columns, window=window)
         assert root is not None
         root = normalize_date_col(root)
         assert root is not None
@@ -99,11 +119,11 @@ class StepAssembleCube(Step):
         root["peers"] = root["ticker"].map(peer_json)
         return self._universe.gics_codes(root)
 
-    def _read_part(self, table: Table, columns: Sequence[str] | None, since: pd.Timestamp | None, *, optional: bool) -> pd.DataFrame | None:
+    def _read_part(self, table: Table, columns: Sequence[str] | None, window: Window | None, *, optional: bool) -> pd.DataFrame | None:
         """One part projected on its configured columns (all when None/empty), float32 payload."""
         store = self._store
         command = part_for(table).command
-        if not part_has_rows(store, table):
+        if not part_has_rows(store, table, {"ticker": self._universe.tickers}):
             if optional:
                 self._log.info("Skipping optional %s: absent or empty; refresh with %s", table.name, command)
                 return None
@@ -114,23 +134,29 @@ class StepAssembleCube(Step):
         missing = sorted(set(wanted) - set(actual))
         if missing:
             raise ValueError(f"{table.name} missing columns {missing}; run {command}")
-        chunks = [downcast_float32(chunk) for chunk in store.iter_load(table, columns=wanted, chunksize=_CHUNK_ROWS, since=since)]
+        chunks = [
+            downcast_float32(chunk)
+            for chunk in store.iter_load(
+                table,
+                columns=wanted,
+                chunksize=_CHUNK_ROWS,
+                where={"ticker": self._universe.tickers},
+                since=None if window is None else window.start,
+                until=self._context.run.as_of if window is None else window.end,
+            )
+        ]
         return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=wanted)
 
     def _post_processing(self, panel: pd.DataFrame) -> pd.DataFrame:
         """One part's panel after reading: dates normalized to midnight so merges across parts align."""
-        normalized = normalize_date_col(panel)
+        normalized = downcast_float32(normalize_date_col(panel))
         assert normalized is not None
         return normalized
 
-    def _persist(self, cube: pd.DataFrame, window: PartWindow) -> int:
+    def _persist(self, cube: pd.DataFrame, window: WindowPlan) -> int:
         store = self._store
-        if window.is_full and set(store.columns(Tables.cube)) - set(cube.columns):
-            store.drop(Tables.cube)
         written = write_part(store, Tables.cube, cube, window)
-        if written == COLUMNS_CHANGED:
-            return written
-        if set(store.columns(Tables.cube)) != set(cube.columns) or (window.is_full and store.row_count(Tables.cube) != len(cube)):
+        if set(store.columns(Tables.cube)) != set(cube.columns):
             raise RuntimeError("Stored cube schema/row count differs from the assembled frame; rerun assemble-cube")
         return written
 

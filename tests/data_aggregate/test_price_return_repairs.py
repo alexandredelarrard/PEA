@@ -21,6 +21,7 @@ from src.data_aggregate.utils.price.inputs import PRICE_COLS
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.repairs import apply_return_seams
+from src.utils.window import WindowRun
 from tests.support.universe import universe_of
 
 
@@ -115,24 +116,25 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
         log=context.log,
         paths={"SECTOR_PEERS_PATH": peer_path},
         universe=universe_of([ticker]),
+        run=WindowRun("full", "explicit return-basis check", pd.Timestamp("2026-11-16")),
     )
     writes: list[pd.DataFrame] = []
-    original = sqlite_store.replace
+    original = sqlite_store.replace_window
 
-    def capture(table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
+    def capture(table: Any, frame: pd.DataFrame, *args: Any, **kwargs: Any) -> int:
         assert table == Tables.cube_part_prices
         writes.append(frame.copy())
-        return original(table, frame, **kwargs)
+        return original(table, frame, *args, **kwargs)
 
-    with patch.object(sqlite_store, "replace", side_effect=capture):
+    with patch.object(sqlite_store, "replace_window", side_effect=capture):
         if state == "healed":
-            price_step.StepCubePrices(isolated, context.config).run(full=True)
+            price_step.StepCubePrices(isolated, context.config).run()
             assert len(writes) == 1
             emitted = writes[0].set_index("date")
             assert cast(float, emitted.at[when, "ret"]) + 1 == pytest.approx(blob["return_seams"][ticker][0]["target_step"], rel=1e-12)
         else:
             with pytest.raises(ValueError, match="REFUSED"):
-                price_step.StepCubePrices(isolated, context.config).run(full=True)
+                price_step.StepCubePrices(isolated, context.config).run()
             assert not writes
     pd.testing.assert_frame_equal(sqlite_store.load(Tables.prices, columns=list(rows.columns)), rows.reset_index(drop=True), check_exact=True)
     print(

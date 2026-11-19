@@ -10,12 +10,15 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 from click.testing import CliRunner
+from omegaconf import DictConfig
 
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_fundamentals as step_fundamentals
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
+from src.utils.window import WindowRun
 from tests.data_extract.edgar_fixtures import stub_edgar_step
+from tests.data_extract.fake_context import extract_config
 from tests.support.identity_sync import stub_sync
 from tests.support.universe import seed_universe
 
@@ -61,7 +64,7 @@ def test_cli_universe_runs_the_named_parts_in_order(only: tuple[str, ...], expec
         run_sync=lambda: ran.append("sync"),
     )
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, None))
-    monkeypatch.setattr(cli_mod, "StepExtractUniverse", lambda context, config, as_of: step)
+    monkeypatch.setattr(cli_mod, "StepExtractUniverse", lambda context, config: step)
 
     result = CliRunner().invoke(cli_mod.cli, ["universe", *only])
     assert result.exit_code == 0, result.exception
@@ -80,25 +83,26 @@ def test_cli_short_interest_passes_the_normalized_subset(sqlite_store: Any, monk
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     context = SimpleNamespace(config=config, log=Mock(), universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
     fetch = Mock()
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    constructor = Mock(return_value=(config, context))
+    monkeypatch.setattr(cli_mod, "get_config_context", constructor)
     monkeypatch.setattr(cli_mod, "fetch_short_interest", fetch)
 
     result = CliRunner().invoke(cli_mod.cli, ["short-interest", "-t", " aaa ,AAA", "-F"])
     assert result.exit_code == 0, result.exception
-    assert fetch.call_args.kwargs["tickers"] == ["AAA"] and fetch.call_args.kwargs["full"] is True
-    print("SANITY: short-interest passes the normalized CSV subset and the full flag to the source.")
+    assert fetch.call_args.kwargs == {"tickers": ["AAA"]}
+    assert constructor.call_args.kwargs["full"] is True
+    print("SANITY: short-interest passes the normalized subset and establishes full mode once at Context construction.")
 
 
-def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace) -> None:
+def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: DictConfig) -> None:
     """Make `StepExtractZips` constructible on a stub config: caches and the Notes landing scrape stubbed."""
-    config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
     monkeypatch.setattr(step_zips, "cache_dir", lambda ctx, name: Path(name))
-    monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: ["2026q1"])
+    monkeypatch.setattr(step_zips, "notes_periods", lambda ctx: ["2026q1"])
 
 
 @pytest.mark.parametrize("command,target", [(["zips-ingest", "--only", "insider"], "fetch_insider_transactions")])
 def test_cli_subset_reaches_the_source(command: list[str], target: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
+    config = extract_config()
     context = SimpleNamespace(config=config, log=Mock(), config_dir="configs", universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
     fetch = Mock()
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
@@ -111,9 +115,8 @@ def test_cli_subset_reaches_the_source(command: list[str], target: str, sqlite_s
     print(f"SANITY: {command} passes the normalized CSV subset; the source judges the scope against context.universe.")
 
 
-def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, context: SimpleNamespace) -> None:
+def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: DictConfig, context: SimpleNamespace) -> None:
     """Make `StepExtractIdentity` constructible on a stub config and context: caches, universe and resolver stubbed."""
-    config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
     context.config_dir = "configs"
     monkeypatch.setattr(step_identity, "cache_dir", lambda ctx, name: Path(name))
     stub_sync(monkeypatch, step_identity)
@@ -121,35 +124,36 @@ def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace,
 
 @pytest.fixture
 def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
+    config = extract_config()
     context = SimpleNamespace(config=config, log=Mock(), store=Mock(), ensure_edgar_identity=Mock(), universe=seed_universe(sqlite_store, ["AAA"]))
     context.store.row_count.return_value = 1
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+
+    def construct(path: str, **kwargs: Any) -> tuple[DictConfig, SimpleNamespace]:
+        context.run = WindowRun("full" if kwargs.get("full") else "incremental", "CLI contract", pd.Timestamp(kwargs.get("as_of") or "2026-09-29"))
+        return config, context
+
+    monkeypatch.setattr(cli_mod, "get_config_context", construct)
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     return context
 
 
 @pytest.mark.parametrize(
-    ("command", "target", "keyword"),
+    ("command", "target"),
     [
-        ("zips-ingest --only notes", "ingest_financial_notes", "full"),
-        ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
-        ("zips-ingest --only 13f", "ingest_13f_datasets", "full"),
-        ("sec-fundamentals-history", "build_fundamentals_history", "rebuild_history"),
-        ("identity --only sync", "recheck_tickers", "every"),
-        ("edgar-index", "refresh", "rebuild"),
+        ("zips-ingest --only notes", "ingest_financial_notes"),
+        ("zips-ingest --only insider", "fetch_insider_transactions"),
+        ("zips-ingest --only 13f", "ingest_13f_datasets"),
+        ("sec-fundamentals-history", "build_fundamentals_history"),
+        ("identity --only sync", "recheck_tickers"),
+        ("edgar-index", "refresh"),
     ],
 )
-def test_full_reaches_the_existing_source_operation(
-    command: str, target: str, keyword: str, context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_full_reaches_the_existing_source_operation(command: str, target: str, context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
     edgar_calls: list[dict[str, Any]] = []
 
     def record(*args: Any, **kwargs: Any) -> SimpleNamespace:
-        # the notes core takes its `ZipScope` positionally: its `full` and run date are the options it carries
-        scope = next((arg for arg in args if hasattr(arg, "full") and hasattr(arg, "run_date")), None)
-        calls.append(kwargs if scope is None else {"full": scope.full, "as_of": scope.run_date})
+        calls.append({"mode": context.run.mode, "as_of": context.run.as_of, **kwargs})
         return SimpleNamespace(removals=pd.DataFrame())
 
     if command.startswith("identity "):
@@ -171,10 +175,11 @@ def test_full_reaches_the_existing_source_operation(
     for flags in ([], ["-F"], ["--full"]):
         calls.clear()
         edgar_calls.clear()
-        date_flags = [] if command == "sec-fundamentals-history" else ["--as-of", "2026-09-29"]
+        date_flags = ["--as-of", "2026-09-29"]
         result = runner.invoke(cli_mod.cli, [*command.split(), *date_flags, *flags])
         assert result.exit_code == 0, result.output
-        assert len(calls) == 1 and calls[0][keyword] is bool(flags)
+        assert len(calls) == 1 and calls[0]["mode"] == ("full" if flags else "incremental")
+        assert not ({"reparse", "rebuild_history", "full"} & calls[0].keys())
         assert not edgar_calls, "no command of this list walks EDGAR"
         if calls and "as_of" in calls[0]:
             assert calls[0]["as_of"] == pd.Timestamp("2026-09-29")
@@ -184,7 +189,7 @@ def test_full_reaches_the_existing_source_operation(
 
 def test_fundamentals_check_runs_the_check_on_the_ticker_subset(context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], dict[str, Any]]] = []
-    context.config.data_extract.fundamentals_check = SimpleNamespace(gap_pct=0.03, field_share=0.05, top_tickers=3)
+    context.config.validate = {"fundamentals_comparison": {"gap_pct": 0.03, "field_share": 0.05, "top_tickers": 3}}
     context.config_dir = "configs"
     monkeypatch.setattr(step_fundamentals, "check_fundamentals_sources", lambda ctx, tickers, **kwargs: calls.append((tickers, kwargs)))
     monkeypatch.setattr(step_fundamentals, "build_fundamentals_history", Mock(side_effect=AssertionError("the check builds no history")))

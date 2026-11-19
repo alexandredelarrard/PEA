@@ -45,7 +45,6 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FACT_COLS,
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
-    _NOTES_NUM_TABLE,
     _derived_fields,
 )
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
@@ -121,7 +120,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     frames = _derived_fields(
         FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
         replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
-        supplement=FundamentalSupplement(notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS))),
+        supplement=FundamentalSupplement(notes_num=_facts(Tables.notes_num, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS))),
         yoy_periods=infer_yoy_periods(fh),
     )
     kdf = compute_sector_kpis(fh)

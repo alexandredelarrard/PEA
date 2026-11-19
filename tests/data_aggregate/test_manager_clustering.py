@@ -34,11 +34,13 @@ from src.data_aggregate.utils.manager_profile.clustering import (
 from src.data_store.schema import Tables
 from src.modelling.transformers.cluster import ClusterTransformer
 from src.utils.config import read_config
+from src.utils.window import WindowRun
 
 ROOT = Path(__file__).resolve().parents[2]
 FILTERS = {"category": "fund", "min_positions": 4, "min_book_usd": 20_000_000}
 PERIODS = [pd.Timestamp(p) for p in ("2022-03-31", "2022-06-30", "2022-09-30", "2022-12-31", "2023-03-31", "2023-06-30")]
-RECENT = pd.Timestamp.today().normalize() - pd.Timedelta(days=30)  # filed, but its label is not due for another 60 days
+TODAY = pd.Timestamp.today().normalize()
+RECENT = TODAY - pd.Timedelta(days=30)  # filed, but its label is not due for another 60 days
 CATEGORIES = {"bank": 7, "insurance": 8, "broker_dealer": 9, "pension": 10, "sovereign": 14, "other": 15}
 TRACKED = {11: "pct_etf", 12: "pct_etf", 13: "pct_equity_foreign"}  # tracked fund id -> the exclude key that drops its fitted cluster
 EXCLUDE = {"pct_etf": 0.40, "pct_equity_foreign": 0.40}
@@ -238,7 +240,8 @@ def _planted_details() -> tuple[pd.DataFrame, dict[str, str]]:
             noisy = np.clip(np.array(stats) + rng.normal(0, 0.01, len(stats)), 0, 1)
             row = dict(zip(STATS, noisy, strict=True))
             rows.append(
-                {"cik": cik, "period": period, "category": category, "n_positions": n_positions, **row}
+                {"cik": cik, "period": period, "first_filed_date": min(period + pd.Timedelta(days=40), TODAY - pd.Timedelta(days=1))}
+                | {"category": category, "n_positions": n_positions, **row}
                 | {"book_value_usd": book * rng.uniform(0.9, 1.1), "hhi": hhi * rng.uniform(0.9, 1.1), "turnover": turnover * rng.uniform(0.9, 1.1)}
             )
 
@@ -287,9 +290,10 @@ class Workspace:
     def path(self) -> Path:
         return self.config_dir / str(self.cfg.cluster.centroids_path)
 
-    def step(self, **cluster: Any) -> StepManagerProfile:
+    def step(self, full: bool = False, **cluster: Any) -> StepManagerProfile:
         cfg = OmegaConf.merge(self.cfg, {"cluster": cluster})
-        context = types.SimpleNamespace(store=self.store, config_dir=self.config_dir)
+        run = WindowRun("full" if full else "incremental", "known-truth clustering fixture", TODAY)
+        context = types.SimpleNamespace(store=self.store, config_dir=self.config_dir, run=run)
         return StepManagerProfile(context=context, config=cfg)  # type: ignore[arg-type]
 
     def table(self) -> pd.DataFrame:
@@ -359,7 +363,7 @@ def test_a_missing_turnover_falls_back_to_the_nearest_cluster_and_a_label_depend
     target = PERIODS[2]
     others = [period.strftime("%Y-%m-%d") for period in PERIODS if period != target]
     workspace.store.update(Tables.sec_13f_manager_details, {"turnover": None, "pct_cap_small": 0.55, "book_value_usd": 5e8}, {"period": others})
-    workspace.step(fit=False).run_clustering(full=True)
+    workspace.step(full=True, fit=False).run_clustering()
 
     after = _due(workspace.table())
     same_quarter = before["period"] == target
@@ -427,7 +431,7 @@ def test_a_new_cik_in_a_due_quarter_gets_the_label_a_full_relabel_gives(workspac
     table = workspace.table()
     label = table[table["cik"] == "9999999999"]["cluster"].iloc[0]
     monkeypatch.setattr(ClusterTransformer, "fit", lambda *a, **k: pytest.fail("a full relabel never refits"))
-    workspace.step(fit=False).run_clustering(full=True)
+    workspace.step(full=True, fit=False).run_clustering()
     assert written == 1 and label == 0, "only the new manager is labelled, as the small-cap US group (cluster 0)"
     assert workspace.table().set_index(["cik", "period"])["cluster"].loc[("9999999999", PERIODS[2])] == label
     print("\n=== SANITY CHECK: new CIK ===")
@@ -458,7 +462,7 @@ def test_full_relabels_every_due_row_with_the_saved_centroids_and_never_refits(w
     monkeypatch.setattr(ClusterTransformer, "fit", lambda *a, **k: pytest.fail("a full relabel never refits"))
     before = workspace.path.read_bytes()
 
-    written = workspace.step(fit=False).run_clustering(full=True)
+    written = workspace.step(full=True, fit=False).run_clustering()
 
     after = workspace.table().set_index(["cik", "period"])["cluster"]
     due_index = _due(workspace.table()).set_index(["cik", "period"]).index
@@ -472,17 +476,22 @@ def test_full_relabels_every_due_row_with_the_saved_centroids_and_never_refits(w
 
 def test_run_is_the_profile_then_the_labels_and_the_cli_calls_one_sub_run_each(workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
     order: list[str] = []
-    monkeypatch.setattr(StepManagerProfile, "run_profile", lambda self, full=False: order.append(f"profile:{full}") or 2)
-    monkeypatch.setattr(StepManagerProfile, "run_clustering", lambda self, full=False: order.append(f"cluster:{full}") or 3)
+    monkeypatch.setattr(StepManagerProfile, "run_profile", lambda self: order.append("profile") or 2)
+    monkeypatch.setattr(StepManagerProfile, "run_clustering", lambda self: order.append("cluster") or 3)
 
     total = workspace.step().run()
 
-    assert order == ["profile:False", "cluster:False"] and total == 5
+    assert order == ["profile", "cluster"] and total == 5
     order.clear()
-    fake = types.SimpleNamespace(
-        run_profile=lambda full=False: order.append(f"cli-profile:{full}"), run_clustering=lambda full=False: order.append(f"cli-cluster:{full}")
-    )
-    monkeypatch.setattr(aggregate_cli, "_step", lambda cls, config_path: fake)
+
+    def fake_step(cls: Any, config_path: str, full: bool, as_of: Any) -> tuple[Any, None]:
+        sub_runs = types.SimpleNamespace(
+            run_profile=lambda: order.append(f"cli-profile:{full}"), run_clustering=lambda: order.append(f"cli-cluster:{full}")
+        )
+        return sub_runs, None
+
+    monkeypatch.setattr(aggregate_cli, "_step", fake_step)
+
     runner = CliRunner()
     for args in (["build-manager-profile"], ["build-manager-profile", "-F"], ["build-cluster"], ["build-cluster", "-F"]):
         assert runner.invoke(aggregate_cli.cli, args).exit_code == 0, args

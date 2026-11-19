@@ -29,6 +29,8 @@ from click.testing import CliRunner
 import src.data_extract.cli as cli_mod
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
+from src.utils.window import Window, WindowRun
+from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
 CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "configs")
@@ -258,7 +260,15 @@ def _refresh_fixture(monkeypatch, sqlite_store, tmp_path) -> Any:
     q = str(si.snapshot_quarter(datetime.now(UTC).date()))
     _seed_13f(sqlite_store, [("1079114", q), ("0001067983", q)])
     config_dir = write_roster_config(tmp_path, {"cik_overrides": {c: {"cik": k} for c, k in FIXTURE_CIK_OVERRIDES.items()}})
-    return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
+    return cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            config_dir=config_dir,
+            config=extract_config(),
+            run=WindowRun("incremental", "offline roster snapshot", pd.Timestamp(datetime.now(UTC).date())),
+        ),
+    )
 
 
 def _fake_edgar(url: str) -> Any:
@@ -391,19 +401,16 @@ def test_gate_passes_recorded_inactive_exception():
     print("  aq inactive 2022-09-30..2023-12-31: snapshots inside pass (reported), 2022-08 passes on evidence, 2024-05 raises. Validated.")
 
 
-def test_gate_clamps_pre_xml_window():
-    """Before the first 13F period the local tables are empty, so an earlier window extends to that period;
-    after it the window is the plain [Q-4q, Q+2q]."""
+def test_activity_gate_never_extends_into_future_source_coverage() -> None:
+    """The source floor cannot make a later book proof of earlier manager activity."""
     a, b, c = "0000000001", "0000000002", "0000000003"
-    evidence = {(a, date(1999, 6, 30)), (b, date(1999, 9, 30)), (c, date(2015, 12, 31))}
-    assert si.assert_active([_gate_row("A", a, "1998-03-07")], evidence, {}, _no_listing) == []  # Q 1997-12-31
-    with pytest.raises(si.SuperinvestorResolutionError) as err:
-        si.assert_active([_gate_row("B", b, "1998-03-07"), _gate_row("C", c, "2015-03-01")], evidence, {}, lambda cik: set())
-    assert '"B"' in str(err.value) and '"C"' in str(err.value)
-    print("\n=== SANITY: pre-XML window clamp ===")
-    print(
-        "  1998-03-07 passes on a 1999-06-30 book (window end clamped to the first 13F period) but not on 1999-09-30; a 2015 snapshot is not clamped. Validated."
-    )
+    evidence = {(a, date(1999, 6, 30)), (b, date(2012, 3, 31)), (c, date(2015, 12, 31))}
+    with pytest.raises(si.SuperinvestorResolutionError):
+        si.assert_active([_gate_row("A", a, "1998-03-07")], evidence, {}, lambda cik: set())
+    assert si.assert_active([_gate_row("B", b, "2012-03-07")], evidence, {}, _no_listing) == []
+    with pytest.raises(si.SuperinvestorResolutionError):
+        si.assert_active([_gate_row("C", c, "2015-03-01")], evidence, {}, lambda cik: set())
+    print("SANITY: activity uses its declared quarter window; neither a future coverage floor nor a later book widens it.")
 
 
 @pytest.mark.usefixtures("filing_store")
@@ -583,7 +590,16 @@ def _rebuild_fixture(sqlite_store, tmp_path, extra_history: list[dict[str, Any]]
         queried.append(url)
         return SimpleNamespace(text=_PSC_ATOM if "Pershing" in url else "no company-info")
 
-    return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir, edgar=edgar)), queried
+    return cast(
+        Any,
+        SimpleNamespace(
+            store=sqlite_store,
+            config_dir=config_dir,
+            edgar=edgar,
+            config=extract_config(),
+            run=WindowRun("full", "offline explicit roster rebuild", pd.Timestamp("2026-11-16")),
+        ),
+    ), queried
 
 
 def _table_hash(store: Any) -> str:
@@ -697,3 +713,29 @@ def test_superinvestors_full_flag_rebuilds_then_refreshes(monkeypatch):
     assert seed.exit_code != 0 and "No such option" in seed.output
     print("\n=== SANITY CHECK: superinvestors -F ===")
     print(f"  -F -> {full_calls}; no flag -> {plain_calls}; --seed refused (exit {seed.exit_code}).")
+
+
+def test_bounded_roster_rebuild_preserves_other_snapshot_dates(sqlite_store: Any, tmp_path: Path) -> None:
+    context, queried = _rebuild_fixture(sqlite_store, tmp_path)
+    table = si.Tables.superinvestor_roster
+    before = sqlite_store.load(table)
+    policy = context.config.data.tables[table.name]
+    policy.start_date = "2016-01-01"
+    context.run = WindowRun(context.run.mode, "bounded roster recovery", pd.Timestamp("2016-12-31"))
+    window = Window(pd.Timestamp(policy.start_date), context.run.as_of)
+    si.rebuild_roster(context, get_fn=context.edgar, listing_fn=_no_listing)
+    after = sqlite_store.load(table)
+    keys = list(table.pk)
+    outside_before = before.loc[~window.mask(before.snapshot_date)].sort_values(keys).reset_index(drop=True)
+    outside_after = after.loc[~window.mask(after.snapshot_date)].sort_values(keys).reset_index(drop=True)
+    pd.testing.assert_frame_equal(outside_after, outside_before)
+    assert len(after.loc[window.mask(after.snapshot_date)]) == 2 and queried == []
+    print("SANITY: finite roster recovery resolves only its candidate snapshots and preserves both older and newer stored snapshots.")
+
+
+def test_historical_roster_window_performs_no_live_capture(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    context.run = WindowRun(context.run.mode, "historical roster observation", pd.Timestamp("2026-01-01"))
+    monkeypatch.setattr(si, "_http_get", lambda url: pytest.fail("an out-of-window live observation must not be fetched or backdated"))
+    assert si.upsert_roster_snapshot(context, get_fn=_fake_edgar, listing_fn=_no_listing).empty
+    print("SANITY: a historical roster Window causes no live fetch and cannot backdate a current source observation.")

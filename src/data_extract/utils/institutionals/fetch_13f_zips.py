@@ -21,16 +21,17 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.resume import source_plan
 from src.data_extract.utils.institutionals.fetch_13f import (
     INVALID_STATUS,
     _Saver,
-    completed_accessions,
     filing_vintage,
     pick_column,
     save_hr,
 )
 from src.data_extract.utils.zips.thirteen_f_datasets import cached_data_sets, thirteen_f_cache
 from src.data_store.schema import Resume, Tables
+from src.utils.data_policy import window_policy
 from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
@@ -217,35 +218,33 @@ def _save_batch(context: Context, path: Path, heads: Mapping[str, pd.DataFrame],
     return True
 
 
-def ingest_13f_datasets(context: Context, full: bool) -> int:
-    """Save every 13F-HR(/A) accession of each cached 13F data set that `sec13f_hr` does not hold (complete or invalid
-    marker), oldest window first, through the walk's writer; returns position rows saved. `full` re-decodes every
-    accession: one stored under the same (cik, period) is re-verified by checksum, one stored under another is logged."""
-    # load: the stored accessions to skip, or under `full` every stored marker's (cik, period)
+def ingest_13f_datasets(context: Context) -> int:
+    """Read missing cached accession packets inside the configured filing Window; recovery re-verifies complete packets."""
+    policy = window_policy(context.config, Tables.sec13f_hr, context.run.as_of)
+    if policy is None:
+        return 0
+    cache = thirteen_f_cache(context)
+    data_sets = [unit for unit in cached_data_sets(cache) if unit.start <= policy.requested.end and unit.end >= policy.requested.start]
+    if not data_sets:
+        logger.warning("13F ingest: no scoped 13F data set is cached; run `zips-download --only 13f` first")
+        return 0
+    plan = source_plan(context, Tables.sec13f_hr, None, (("source", tuple(unit.filename for unit in data_sets)),))
+    if plan is None:
+        return 0
+    full = context.run.mode in {"full", "recovery"}
     empty = cast(tuple[str, str], Tables.sec13f_hr.empty_marker)[1]
-    seen = set() if full else set(completed_accessions(context, _STORED_STATUSES))
-    df_stored = (
-        context.store.load(
-            Tables.sec13f_hr,
-            columns=["accession_number", "cik", "period"],
-            where={"cusip": empty, "parse_status": _STORED_STATUSES},
-            markers=True,
-            optional=True,
-        )
-        if full
-        else None
+    # Accession homes also protect outside-window packets from a contradictory incoming identity.
+    df_stored = context.store.load(
+        Tables.sec13f_hr,
+        columns=["accession_number", "cik", "period"],
+        where={"cusip": empty, "parse_status": _STORED_STATUSES},
+        markers=True,
+        optional=True,
     )
-
-    # clean: one (accession, cik, period) key per stored marker
     columns = ["accession_number", "cik", "period"]
     df_homes = pd.DataFrame(columns=columns) if df_stored is None else df_stored.assign(period=pd.to_datetime(df_stored["period"]).dt.normalize())
+    seen = set() if full else set(df_homes["accession_number"])
 
-    # compute + save: each cached window in turn, one saver (and CUSIP map) for the run
-    cache = thirteen_f_cache(context)
-    data_sets = cached_data_sets(cache)
-    if not data_sets:
-        logger.warning("13F ingest: no 13F data set is cached; run `zips-download --only 13f` first")
-        return 0
     saver = _Saver(context, _BATCH_ACCESSIONS)
     for data_set in tqdm(data_sets, desc="13F data sets (ingest)"):
         path = cache / data_set.filename
@@ -253,7 +252,9 @@ def ingest_13f_datasets(context: Context, full: bool) -> int:
         if not heads:
             logger.error("13F ingest %s: unreadable archive; skipped", path.name)
             continue
-        df_pending = _pending(path.name, zip_submissions(heads["SUBMISSION.tsv"], heads["COVERPAGE.tsv"]), seen, df_homes)
+        submissions = zip_submissions(heads["SUBMISSION.tsv"], heads["COVERPAGE.tsv"])
+        scoped = submissions.loc[plan.write.mask(submissions["filing_date"])]
+        df_pending = _pending(path.name, scoped, seen, df_homes)
         seen.update(df_pending["accession"])
         batches = (df_pending.iloc[start : start + _BATCH_ACCESSIONS] for start in range(0, len(df_pending), _BATCH_ACCESSIONS))
         all(_save_batch(context, path, heads, df_batch, saver, df_homes["accession_number"]) for df_batch in batches)  # stops at an unreadable batch

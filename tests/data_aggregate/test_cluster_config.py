@@ -63,7 +63,7 @@ def test_shipped_defaults() -> None:
     assert cluster.fit is False and cluster.k == 10 and cluster.keep == 7
     assert cluster.seed == 0 and cluster.n_init == 30 and cluster.max_rows_per_quarter == 2000
     assert cluster.centroids_path == "cluster_centroids.json" and cluster.top_x is None
-    assert cluster.cluster_label_delay_days == 90 and cluster.availability_buffer_days == 7 and str(cluster.history_start) == "2000-01-01"
+    assert cluster.cluster_label_delay_days == 90
     assert cluster.max_clusters == 11 and cluster.max_features_per_cluster == 10 and cluster.max_age_calendar_days == 100
     assert dict(cluster.fit_filters) == {"category": "fund", "min_positions": 4, "min_book_usd": 20_000_000}
     assert dict(cluster.exclude) == {"pct_etf": 0.40, "pct_equity_foreign": 0.40}

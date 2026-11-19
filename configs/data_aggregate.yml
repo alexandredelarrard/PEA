@@ -1,7 +1,7 @@
-build_cube:
+data_aggregate:
   earnings_calls:
     sentiment_model: yiyanghkust/finbert-tone
-    refresh_calendar_days: 30
+    signal_sessions: 66  # forward-fill lifetime on the market calendar; source lag belongs to data.yml
   assembly:
     optional_parts:
       - cube_part_text
@@ -36,7 +36,6 @@ build_cube:
 
   targets:
     horizons: [30, 60, 90]
-    primary_horizon: 60
     labels: [rank, zscore, epsilon]
     min_names: 20
     neutralize_momentum: true  # ALSO project out the 12-1 momentum CHARACTERISTIC. This zeroes
@@ -57,88 +56,19 @@ build_cube:
     part_time_weight: 0.65   # α in FT + α·PT; must lie in [0.5, 1]
 
   fundamentals_features:
-    earnings_lags: 8           # changing this requires a feature-schema migration
     earnings_scale_quarters: 8 # supported 2..8 within the six-year source window
-    persistence_quarters: 8    # pinned by the _8q feature schema
-    reaction_sessions: 3      # pinned by the _3d feature schema
 
-  institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
+  sec_thirteen:            # informed-capital panels (13F, insider, 13D/G, short flow)
     unknown_unit_factor: 1.0  # terminal-unit factor for a ticker whose price part has no basis at all (ADR/ADS without a verified quote-unit entry): a value that may be off by the ADR ratio beats NaN, since features are changes over time
-    value_basis:
-      min_securities: 5       # distinct securities (priced by close_pit or by consensus) for a unit-changing factor
-      min_agreement: 0.8      # share of a filing's securities that must vote for the same power of ten
-      row_band_low: 0.35      # a priced line is kept when value / (shares x price) lies in [low, high]; outside it the failing leg is rebuilt
-      row_band_high: 3.5
-      max_price_age_days: 7  # last available close at report-quarter end
-      min_row_coverage: 0.8   # a book is valued when this share of its common lines (and of its cover total) survives the cleaning
-      min_consensus_filers: 3 # distinct filers a (quarter, CUSIP) needs before its median value / shares becomes a price
-    decay_halflife:          # trading days for the exponential event-decay transform.
-                             # An EVENT is 0 on ~99.9% of ticker-days, and a peer basket of
-                             # all-zeros has zero dispersion -> `peer_relative` returns NaN by
-                             # policy, so the undecayed flag is an ABSENT feature. Decay is
-                             # what makes these signals survive peer-relativization.
-      inst: 63               # one quarter: matches the 13F reporting cadence
-      insider: 63            # one quarter: Form 4 information is stale well inside a year
-      act: 126               # two quarters: an activist campaign plays out over months, not
-      bo: 126                # weeks -- same for a buyout/13D approach, so both decay slower
-
     superinvestor:
       # One user-owned ordered raw-CIK list: superinvestors/ranked_managers.json.
       # The checked-in ascending default is provisional, with retrospective roster bias.
       # List/K/policy changes require an explicit full rebuild.
-      max_age_calendar_days: 100  # first public usability; amendments never reset age. Consecutive public dates are 91-92 days apart (p90),
-                                  # 99.8% within 100, so a book is carried until its successor is public or 100 days pass
+      max_age_calendar_days: 90   # forward-fill from first public usability; amendments never reset this book lifetime
       selection:
         k: 20                   # fixed prefix; no runtime ranking or replacement
 
-    # THE 13F AVAILABILITY GRID (D1). A 13F period is public only once it is filed, so each
-    # `(ticker, period)` is first published at its availability date over the filings public
-    # by then, and re-emitted on each later date a material filing arrives. Both dials trade
-    # STALENESS against COMPLETENESS, which is why they are here and not only in
-    # `constants.py` -- the constants are the declared defaults and carry the full sweep
-    # tables that sized them.
-    f13_settle_trading_days: 3   # trading days past the 45-day deadline SNAPPED FORWARD onto
-                                 # the trading calendar (the 45th day is not a session on 13
-                                 # of 53 quarters). Measured on SHARES -- a raw `value_usd`
-                                 # sweep is contaminated by the 1000x unit defect and reads
-                                 # 2020-12-31 as 33% complete against the true 91%.
-                                 # ⚠ 3 IS NOT THE COMPLETENESS KNEE (that is 1, which
-                                 # collects the weekend population: 9 quarters below 90%
-                                 # complete -> 4). 3 is where the NAIVE quarter-on-quarter
-                                 # difference overtakes a matched sample as an estimator of
-                                 # the fully-revised truth -- median absolute error, two
-                                 # disjoint ticker samples agreeing:
-                                 #   N=0  naive 4.05pp  matched 2.03pp
-                                 #   N=2  naive 2.19pp  matched 2.01pp
-                                 #   N=3  naive 1.83pp  matched 2.01pp  <- here
-                                 #   N=4  naive 1.58pp  matched 2.00pp
-                                 # Matched is FLAT (it cancels the maturity mismatch and is
-                                 # then stuck with early-filer selection); naive improves
-                                 # monotonically. So 3 is what makes "no matched-sample
-                                 # self-join" measured rather than inherited. Realised lag
-                                 # p50 50 calendar days.
-                                 # ⚠ RAISING IT PAST ~10 breaks the emission-window ordering
-                                 # `_assert_emission_windows_ordered` guards, because the
-                                 # revision window still runs to period+105d.
-
-    coverage_break_pct: 0.50 # D17. A quarter-on-quarter move larger than this in the
-                             # universe-wide 13F FILER COUNT is a coverage discontinuity, not
-                             # a market event, and every QoQ delta that quarter is nulled.
-                             # ⚠ MEASURED ON THE 2026-09-11 FULL BUILD (22,498,267 rows), it
-                             # fires on 11 quarters, with these filer counts:
-                             #   2002-03-31    2   2013-03-31   192   2024-03-31  6,655
-                             #   2006-12-31    5   2013-06-30 3,046   2025-06-30    254 HOLE
-                             #   2008-12-31    9   2023-12-31   463   2025-09-30  7,297
-                             #   2009-12-31   17                HOLE
-                             #   2012-12-31  107
-                             # SEVEN of the eleven sit at or before the D16 delta floor
-                             # (2013-09-30) and are already nulled by it, so the guard only
-                             # removes a value the floor had not removed on FOUR: 2023-12-31,
-                             # 2024-03-31, 2025-06-30, 2025-09-30 -- the two broken quarters
-                             # and the recovery quarter after each. The two HOLES have their
-                             # LEVELS suppressed as well, because a delta against a hole reads
-                             # as the whole universe initiating at once.
-
+    # Publication lag belongs to data.tables.sec13f_hr.pit; both book families inherit it.
 
   bond_lines:                # share lines that are really bond principal; shared by the 13F cube cleaning (they leave the book like debt rows)
                              # and the manager profile (they weigh by filed value in the bond path). Regexes on upper-case text, searched anywhere
@@ -169,7 +99,7 @@ build_cube:
     window_quarters: 4       # a profile is the mean of the single-quarter statistics of the last N report quarters (e.g. 2-8)
     min_quarters: 2          # quarters with a statistic needed before a profile is emitted (<= window_quarters)
     amendment_only_min_lines: 4  # a (cik, period) whose only stored accession is a 13F-HR/A (no original 13F-HR) with fewer lines than this has no book
-    bond_lines: ${build_cube.bond_lines}  # the shared share-line to bond mapping above
+    bond_lines: ${data_aggregate.bond_lines}  # the shared share-line to bond mapping above
     turnover_threshold: 0.10 # a position counts as changed when its share count moves by more than this fraction (e.g. 0.05-0.25)
     return_price_band: [0.10, 10.0]  # book_return: a name whose implied price (value / shares) ratio between two quarters is outside this band is left out (e.g. [0.2, 5.0] to [0.05, 20.0])
     split_share_move: 0.20   # book_return: a name is a split when its share count moved by more than this fraction (e.g. 0.10-0.40) ...
@@ -267,8 +197,3 @@ build_cube:
                              # the f_<yield>_vs_hist features ("cheap vs own past")
     window: 1260             # ~5 trading years of trailing daily observations
     min_periods: 252         # need >= 1y of history before emitting a z-score
-
-  output:
-    save_cube: true
-    save_panel: false
-    save_shap: true

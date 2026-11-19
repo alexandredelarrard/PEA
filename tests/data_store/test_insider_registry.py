@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.data_store import ddl
 from src.data_store.schema import Table, Tables
+from tests.data_extract.fake_context import extract_config
 
 INSIDER_COLUMNS = (
     "accession_number",
@@ -107,8 +108,9 @@ def test_insider_transactions_registry_is_the_single_table_contract() -> None:
     assert table.pk == PK
     assert table.date_col == "transaction_date"
     assert set(table.date_type_cols) == set(DATE_COLUMNS)
-    assert table.freshness == "daily"
-    assert table.freshness_date_col == "filing_date"
+    config = extract_config()
+    assert config.data.tables[table.name].freshness.cadence == "daily"
+    assert config.data.tables[table.name].freshness.clock == "filing_date"
     assert table.read_columns == OLD_READ_COLUMNS + NEW_READ_COLUMNS
     assert table.optional_columns == frozenset()  # `fetched_at` is stored data, not read
     assert "fetched_at" not in table.read_columns and "fetched_at" in INSIDER_COLUMNS

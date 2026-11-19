@@ -2,13 +2,12 @@
 
 Source is `yfinance.get_earnings_dates()`. The next, not-yet-reported date arrives as a forward row with a NaN
 actual; the upsert on `(ticker, earnings_date)` overwrites it once the actual is reported. Yahoo files a company's
-history under its current symbol, so a ticker whose trading symbol changed recently is pulled in full again.
+history under its current symbol. Routine candidate checks and explicit history rebuilds use the same configured bounds.
 """
 
 from __future__ import annotations
 
 import time
-from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -16,13 +15,11 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.identity_store import load_stored_lineage
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.resume import ended_keys, planner_bounds
-from src.data_extract.utils.identity.symbol_history import trading_symbols
-from src.data_store.schema import Resume, Tables
-from src.utils.string import run_date
-from src.utils.tickers_universe.universe import before_end
+from src.data_extract.utils.common.resume import bounded_span, planner_bounds, source_plan
+from src.data_store.schema import Tables
+from src.utils.data_policy import overlap_column, window_policy
+from src.utils.window import Window
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",
@@ -30,9 +27,6 @@ _RENAME = {
     "Surprise(%)": "surprise_pct",
 }
 _COLUMNS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_pct"]
-
-# a stale ticker (no new row within this many days) is re-pulled with this limit
-_RECENT_LIMIT = 8
 
 # yfinance's `get_earnings_dates` refuses a larger limit ("Yahoo caps limit at 100"), so a longer pull is paged
 _YAHOO_MAX_LIMIT = 100
@@ -61,133 +55,68 @@ def _download_page(ticker: str, limit: int, offset: int) -> pd.DataFrame | None:
     return df[_COLUMNS]
 
 
-def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
-    """The newest `limit` earnings dates of one ticker, read in Yahoo pages of at most `_YAHOO_MAX_LIMIT` rows.
-
-    Paging stops once `limit` rows are asked for, Yahoo has no more rows, or a page reaches the table's source start;
-    retried with backoff on 429; None if empty.
-    """
+def _download_one(ticker: str, window: Window) -> pd.DataFrame | None:
+    """Read bounded quarterly history in provider-sized pages, without a moving year/count cap."""
     pages: list[pd.DataFrame] = []
-    source_start = pd.Timestamp(cast(str, cast(Resume, Tables.earnings_surprises.resume).source_start))
-    for offset in range(0, limit, _YAHOO_MAX_LIMIT):
-        page = _download_page(ticker, min(limit - offset, _YAHOO_MAX_LIMIT), offset)
+    offset = 0
+    oldest: pd.Timestamp | None = None
+    while True:
+        page = _download_page(ticker, _YAHOO_MAX_LIMIT, offset)
         if page is None:
             break
+        edge = pd.Timestamp(page["earnings_date"].min())
+        if oldest is not None and edge >= oldest:
+            raise ValueError(f"{ticker}: earnings pagination did not advance beyond {oldest.date()}")
         pages.append(page)
-        if page["earnings_date"].min() < source_start:
+        if edge <= window.start or len(page) < _YAHOO_MAX_LIMIT:
             break
+        oldest, offset = edge, offset + _YAHOO_MAX_LIMIT
     if not pages:
         return None
-    return pd.concat(pages, ignore_index=True).drop_duplicates(subset=["ticker", "earnings_date"]).reset_index(drop=True)
+    frame = pd.concat(pages, ignore_index=True).drop_duplicates(subset=["ticker", "earnings_date"])
+    return frame.loc[window.mask(frame["earnings_date"])].reset_index(drop=True)
 
 
-def _resume_dates(context: Context) -> tuple[dict[str, pd.Timestamp], dict[str, pd.Timestamp]]:
-    """`(last_reported, next_expected)` per ticker: the latest `earnings_date` with an actual EPS, and
-    the latest stored `earnings_date` (a forward row included), from two `GROUP BY` reads."""
-    store, table = context.store, Tables.earnings_surprises
-    reported = store.key_stats(table, "ticker", "earnings_date", where={"eps_actual": store.NOT_NULL})
-    stored = store.key_stats(table, "ticker", "earnings_date")
-    return dict(zip(reported["key"], reported["last"], strict=True)), dict(zip(stored["key"], stored["last"], strict=True))
-
-
-def _renamed_keys(lineage: pd.DataFrame | None, today: pd.Timestamp, window_days: int) -> set[str]:
-    """Tickers whose current trading symbol started within `window_days` before `today` (from the dated lineage)."""
-    if lineage is None or lineage.empty:
-        return set()
-    current = trading_symbols(lineage).dropna(subset=["trading_symbol_from"])
-    started = pd.to_datetime(current["trading_symbol_from"])
-    return set(current.loc[started.between(today - pd.Timedelta(days=window_days), today), "ticker"])
-
-
-def _plan_fetch(
-    tickers: list[str],
-    last_reported: dict[str, pd.Timestamp],
-    next_expected: dict[str, pd.Timestamp],
-    full_limit: int,
-    refetch_window_days: int,
-    full_keys: set[str],
-) -> list[tuple[str, int]]:
-    """`(ticker, limit)` fetch plan: full pull for unseen tickers and `full_keys`, `_RECENT_LIMIT` once the stored
-    forward date has passed.
-
-    Tickers with no stored forward row fall back to `refetch_window_days` since the last reported date; the rest
-    are skipped.
-    """
-    today = run_date(None)
-    plan = []
-    for t in tickers:
-        last = last_reported.get(t)
-        if last is None or t in full_keys:
-            plan.append((t, full_limit))  # never seen, or re-pulled in full -> full pull
-            continue
-        nxt = next_expected.get(t, last)
-        # a known forward earnings date is due once it has passed; without one, the staleness window decides
-        due = (nxt <= today) if nxt > last else ((today - last).days > refetch_window_days)
-        if due:
-            plan.append((t, _RECENT_LIMIT))
-        # else: next earnings still in the future / already current -> skip
-    return plan
-
-
-def fetch_earnings_surprises(context: Context, tickers: list[str], years_history: int, full: bool = False, pause: float = 0.3) -> None:
-    """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped.
-
-    A ticker whose trading symbol started within the table's overlap, and every ticker under `full`, is pulled in full.
-
-    The plan comes from per-ticker stored dates (`key_stats`), never a table read; the staleness
-    window is the table's contract overlap. An ended ticker with stored rows is skipped once the run date is past its
-    grace end plus that overlap (`resume.ended_keys`), rows after its grace end (`planner_bounds`) are dropped, and Yahoo is queried under the ticker's trading
-    symbol (`Universe.trading_symbols`) with the rows stored under the ticker.
-    """
-    resume = cast(Resume, Tables.earnings_surprises.resume)
-    refetch_window_days = resume.overlap_days
-    bounds, symbols = planner_bounds(context), context.universe.trading_symbols
-    last_reported, next_expected = _resume_dates(context)
-    lineage = load_stored_lineage(context)
-    ended = ended_keys(bounds, [t for t in tickers if t in next_expected], run_date(None), refetch_window_days)
-    if ended:
-        context.log.info(
-            "Earnings surprises: %d ended ticker(s) with stored rows past grace end plus overlap skipped: %s", len(ended), ", ".join(ended)
-        )
-    full_limit = (years_history + 1) * 4
-    renamed = _renamed_keys(lineage, run_date(None), refetch_window_days) & set(tickers)
-    if renamed:
-        context.log.info("Earnings surprises: %d ticker(s) with a new trading symbol pulled in full: %s", len(renamed), ", ".join(sorted(renamed)))
-    full_keys = set(tickers) if full else renamed
-    plan = _plan_fetch([t for t in tickers if t not in set(ended)], last_reported, next_expected, full_limit, refetch_window_days, full_keys)
-    context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)", len(plan), len(tickers), len(tickers) - len(plan))
-
-    new_frames = []
-    empty, failed = [], []
-    for tkr, limit in tqdm(plan, desc="Fetching earnings-surprise history"):
-        try:
-            df = _download_one(symbols.get(tkr, tkr), limit)
-            df = df.assign(ticker=tkr) if df is not None else None
-        except Exception as e:  # noqa: BLE001 - network/parse issues are per-ticker
-            context.log.warning("%s: earnings history failed (%s)", tkr, e)
-            failed.append(tkr)
-            continue
-        if df is not None:
-            new_frames.append(df)
-        else:
-            empty.append(tkr)  # Yahoo returned no calendar (genuine gap)
-        time.sleep(pause)
-
-    if empty or failed:
-        context.log.warning(
-            "Earnings: %d empty (no Yahoo calendar) + %d failed after retries out of %d fetched. Empty e.g.: %s",
-            len(empty),
-            len(failed),
-            len(plan),
-            empty[:15],
-        )
-    if not new_frames:
-        context.log.info("Earnings surprises: nothing new fetched.")
+def fetch_earnings_surprises(context: Context, tickers: list[str]) -> None:
+    """Recheck configured publication candidates; cold/full keys read their fixed history."""
+    # Load scoped resume observations before preparing candidate work.
+    column = overlap_column(context.config, Tables.earnings_surprises)
+    policy = window_policy(context.config, Tables.earnings_surprises, context.run.as_of)
+    if policy is None:
         return
+    df_stats = context.store.key_stats(Tables.earnings_surprises, "ticker", column, where={"ticker": tickers, column: policy.requested})
+    frontier = dict(zip(df_stats["key"], df_stats["last"], strict=True))
+    bounds, symbols = planner_bounds(context), context.universe.trading_symbols
+    work: list[tuple[str, Window]] = []
+    for ticker in tickers:
+        plan = source_plan(context, Tables.earnings_surprises, frontier.get(ticker), (("ticker", (ticker,)),))
+        if plan is None:
+            continue
+        end = bounds.get(ticker, (None, None))[1]
+        window = bounded_span({ticker: (None, end)}, ticker, *plan.write)
+        if window is not None:
+            work.append((ticker, window))
+    context.log.info("Earnings surprises: %d/%d tickers with configured candidate windows", len(work), len(tickers))
 
-    # upsert on (ticker, earnings_date): a now-filled actual overwrites its forward-estimate row
-    new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
-    new = new.loc[new["earnings_date"] >= pd.Timestamp(cast(str, resume.source_start))]
-    new = new.loc[before_end(new["ticker"], new["earnings_date"], bounds)].reset_index(drop=True)
-    context.store.save(Tables.earnings_surprises, new)
-    context.log.info(f"Saved {len(new)} new earnings rows: {new['ticker'].unique()} tickers to DB")
+    # Provider-sized pages and both Window bounds are independent of stored forward estimates.
+    written, empty, failed = 0, [], []
+    for ticker, window in tqdm(work, desc="Fetching earnings-surprise history"):
+        try:
+            frame = _download_one(symbols.get(ticker, ticker), window)
+        except (AttributeError, TypeError, NameError, KeyError, ImportError):
+            raise
+        except Exception as error:
+            context.log.warning("%s: earnings history failed (%s)", ticker, error)
+            failed.append(ticker)
+            continue
+        if frame is None or frame.empty:
+            empty.append(ticker)
+            continue
+        frame = frame.loc[window.mask(frame["earnings_date"]), _COLUMNS].assign(ticker=ticker)
+        written += context.store.save(Tables.earnings_surprises, frame)
+        time.sleep(0.3)
+
+    # Upserts preserve source observations outside the selected publication window.
+    context.log.info("Earnings surprises: %d rows saved; %d empty and %d failed keys", written, len(empty), len(failed))
+    if empty or failed:
+        context.log.warning("Earnings source unavailable: empty=%s; failed=%s", empty, failed)

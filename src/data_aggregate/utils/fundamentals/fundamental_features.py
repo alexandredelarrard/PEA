@@ -15,6 +15,7 @@ from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import clip_tax_rate, ratio, sanitize
+from src.data_aggregate.utils.common.inputs import source_read_scope
 from src.data_aggregate.utils.common.pit import (
     filing_count_prior,
     fiscal_change_to_daily,
@@ -34,11 +35,13 @@ from src.data_aggregate.utils.fundamentals.history_features import reported_hist
 from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.price.frames import PriceFrames, comparison_share_history
+from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.per_share import ordinary_per_share_to_security, same_capital_scope, vendor_ordinary_per_share
+from src.utils.publication import point_in_time
+from src.utils.window import Window
 
-_NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (the panel reads 4 tags)
-_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh"]
+_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh", "period"]
 
 
 FUNDAMENTAL_TRANSFORM_SEMANTICS = {
@@ -295,22 +298,16 @@ def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) ->
 
 
 def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """One tag from the NOTES sets (`notes_num`) -> daily wide frame, point-in-time on
-    the later of filing and archive availability, latest period-end (`ddate`) per
+    """One tag from the prepared NOTES rows -> daily frame on configured source eligibility, latest period-end (`ddate`) per
     filing; the later filing date, then the accession, breaks a tie between filings.
     Keeps the balance-type facts only (qtrs==0, e.g. PBO / plan assets). Empty frame if unavailable."""
-    if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at", "adsh"} <= set(notes_num.columns):
+    if notes_num is None or notes_num.empty or not {"tag", "ticker", "as_of", "adsh"} <= set(notes_num.columns):
         return pd.DataFrame(index=idx)
     d = notes_num[notes_num["tag"] == tag].copy()
     if d.empty:
         return pd.DataFrame(index=idx)
-    filed = pd.to_datetime(d["filed"], errors="coerce")
-    available = pd.to_datetime(d["available_at"], errors="coerce")
-    valid_clock = filed.notna() & available.notna()
-    d = d[valid_clock].copy()
-    filed = filed[valid_clock]
-    available = available[valid_clock]
-    d["as_of"] = filed.where(filed >= available, available)
+    filed = pd.to_datetime(d.get("filed", pd.Series(pd.NaT, index=d.index)), errors="coerce")
+    d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["value"] = pd.to_numeric(d.get("value"), errors="coerce")
     q = pd.to_numeric(d.get("qtrs"), errors="coerce").fillna(0)
     d = d[q == 0]
@@ -318,7 +315,7 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     if d.empty:
         return pd.DataFrame(index=idx)
     d["filed"] = filed
-    d = d.sort_values(["ticker", "as_of", "ddate", "filed", "adsh"]).rename(columns={"value": tag})
+    d = d.sort_values(["ticker", "as_of", "ddate", "filed", "adsh"], na_position="first").rename(columns={"value": tag})
     return fundamentals_to_daily(
         d,
         tag,
@@ -329,20 +326,28 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
 
 def load_notes_num_scoped(
     context: Context,
+    sessions: pd.DatetimeIndex,
     *,
     tickers: tuple[str, ...] | None = None,
-    since: pd.Timestamp | None = None,
+    window: Window | None = None,
 ) -> pd.DataFrame | None:
     """`notes_num` restricted to the 4 tags the pension features read (PBO, plan assets and
     the two recognized net-liability tags), the tag filter pushed down server-side in one
     read. None if the table is absent/empty, lacks `available_at`, or no row matches."""
-    if "available_at" not in context.store.columns(_NOTES_NUM_TABLE):
+    if "available_at" not in context.store.columns(Tables.notes_num):
         return None
     where: dict[str, object] = {"tag": [_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS]}
     if tickers:
         where["ticker"] = list(tickers)
-    df = context.store.load(_NOTES_NUM_TABLE, columns=_FACT_COLS, where=where, since=since, optional=True)
-    return df.reset_index(drop=True) if df is not None else None
+    scope = source_read_scope(context, Tables.notes_num, window)
+    where.update(scope.pop("where", {}))
+    df = context.store.load(Tables.notes_num, columns=_FACT_COLS, where=where, optional=True, **scope)
+    if df is None:
+        return None
+    ready = point_in_time(df, context.config, Tables.notes_num, sessions)
+    ready["_source_available_at"] = ready["available_at"]
+    ready["available_at"] = ready["as_of"]
+    return ready.reset_index(drop=True)
 
 
 def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:
@@ -758,10 +763,11 @@ def _pegy_fields(
             # A missing quarter must not turn four older observations into a false YoY comparison.
             valid_growth = current.gt(0) & prior.gt(0) & quarters.sub(quarters.shift(4)).eq(4)
             growth = ((current / prior - 1.0) * 100.0).where(valid_growth).to_numpy()
-            reports = df_ticker["earnings_date"].to_numpy(dtype="datetime64[ns]")
-            positions = reports.searchsorted(idx.to_numpy(), side="left") - 1
+            reports = df_ticker["as_of"].to_numpy(dtype="datetime64[ns]")
+            positions = reports.searchsorted(idx.to_numpy(), side="right") - 1
             selected = positions.clip(min=0)
-            fresh = (idx.to_numpy() - reports[selected]) <= pd.Timedelta(days=_QUARTERLY_MAX_AGE_DAYS)
+            published = df_ticker["earnings_date"].to_numpy(dtype="datetime64[ns]")
+            fresh = (idx.to_numpy() - published[selected]) <= pd.Timedelta(days=_QUARTERLY_MAX_AGE_DAYS)
             growth_pct[ticker] = np.where((positions >= 0) & fresh, growth[selected], np.nan)
     else:
         growth_pct = (
@@ -1475,9 +1481,7 @@ def build_fundamental_feature_panel(
         reported_history_fields(
             df_history,
             prices.trading_index,
-            earnings_lags=settings.earnings_lags,
             earnings_scale_quarters=settings.earnings_scale_quarters,
-            persistence_quarters=settings.persistence_quarters,
         )
     )
     fields = {key: (value.astype("float32") if isinstance(value, pd.DataFrame) and not value.empty else value) for key, value in fields.items()}

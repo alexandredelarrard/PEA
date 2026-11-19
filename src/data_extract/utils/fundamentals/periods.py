@@ -27,7 +27,7 @@ from src.utils.config import read_config
 
 @dataclass(frozen=True)
 class PeriodGuards:
-    """The derivation guard thresholds, read from `configs.yml` (`data_extract.fundamentals_periods`)
+    """The derivation guard thresholds, read from `config.yml` (`data_extract.fundamentals_periods`)
     and injected so a known-truth test can state its own."""
 
     max_opposite_sign_ratio: float
@@ -36,7 +36,7 @@ class PeriodGuards:
 
 
 def load_guards(config_dir: str | None = DEFAULT_CONFIG_DIR) -> PeriodGuards:
-    """Read the guards from `configs.yml`, cached per resolved config directory (`resolve_config_dir`)."""
+    """Read the guards from `config.yml`, cached per resolved config directory (`resolve_config_dir`)."""
     return _guards_at(resolve_config_dir(config_dir))
 
 

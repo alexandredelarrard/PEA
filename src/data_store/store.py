@@ -8,12 +8,13 @@ import io
 import logging
 import threading
 from collections.abc import Generator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, false, func, inspect, or_, select, text, true, tuple_
+from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, false, func, inspect, null, or_, select, text, true, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -22,6 +23,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from src.data_store import ddl
 from src.data_store.errors import TableEmptyError, TableMissingError
 from src.data_store.schema import (
+    KIND_AGGREGATE,
     MANAGED,
     name_of,
     projection_report,
@@ -30,6 +32,7 @@ from src.data_store.schema import (
 from src.data_store.schema import (
     Table as SchemaTable,
 )
+from src.utils.window import Window
 
 _CHUNK = 10_000
 _CREATE_LOCK = threading.Lock()
@@ -37,6 +40,25 @@ logger = logging.getLogger(__name__)
 
 
 type Where = dict[str, Any] | pd.DataFrame | list[dict[str, Any] | pd.DataFrame]
+
+
+@dataclass(frozen=True, slots=True)
+class WriteCounts:
+    """Actual row effects of one committed replacement."""
+
+    deleted: int
+    inserted: int
+
+
+@dataclass(frozen=True, slots=True)
+class KeySample:
+    """One deterministic key per group, optionally dated through a linked source table."""
+
+    group: str
+    count: int
+    where: dict[str, Any]
+    clock: str | None = None
+    source: SchemaTable | None = None
 
 
 @contextmanager
@@ -121,11 +143,13 @@ def ensure_columns(engine: Engine | Connection, name: str, df: pd.DataFrame) -> 
     return missing
 
 
-def copy_load(engine: Engine | Connection, df: pd.DataFrame, name: str) -> int:
-    """Append using COPY or the existing array/SQLite upsert fallback on one connection."""
+def copy_load(engine: Engine | Connection, df: pd.DataFrame, name: str, *, strict: bool = False) -> int:
+    """Append using COPY; strict fallback inserts cannot update an out-of-scope conflicting key."""
     if df is None or df.empty:
         return 0
     if engine.dialect.name != "postgresql" or any(df[c].apply(lambda value: isinstance(value, list | tuple)).any() for c in df):
+        if strict:
+            return DataStore(engine).insert(resolve(name), df)
         return upsert_dataframe(engine, df, name, list(resolve(name).pk))
     tbl = _reflect(engine, name)
     df = cast(pd.DataFrame, df[[c for c in df.columns if c in tbl.c]])
@@ -175,8 +199,11 @@ def _bind_date(column, value):
     return ts.strftime("%Y-%m-%d")
 
 
-def _predicate(column, value):
-    """Equality, deterministic IN, NULL and NOT_NULL predicates; an empty collection matches nothing."""
+def _predicate(column: ColumnElement[Any], value: object) -> ColumnElement[bool]:
+    """Equality, inclusive date Windows, deterministic IN and explicit null predicates."""
+    if isinstance(value, Window):
+        after_end = value.end + pd.Timedelta(days=1)
+        return and_(column >= _bind_date(column, value.start), column < _bind_date(column, after_end))
     if isinstance(value, _NotNull):
         return column.isnot(None)
     if value is None:
@@ -407,6 +434,7 @@ class DataStore:
         *,
         count_where: dict[str, Where] | None = None,
         where: Where | None = None,
+        window: Window | None = None,
     ) -> pd.DataFrame:
         """Return grouped count/min/max values, with optional filters on named counts."""
         groups = [by] if isinstance(by, str) else list(by)
@@ -425,7 +453,15 @@ class DataStore:
                     raise ValueError("Only counts accept count_where")
                 aggregate = aggregate.filter(_where(tbl, cast(dict[str, Where], count_where)[alias]))
             values.append(aggregate.label(alias))
-        stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(_where(tbl, where))
+        bounds = build_select(
+            tbl,
+            where=where,
+            since=None if window is None else window.start,
+            until=None if window is None else window.end,
+            date_col=self._date_col(table),
+        ).whereclause
+        assert bounds is not None  # build_select always installs _where, including true() for an unfiltered scope.
+        stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(bounds)
         if groups:
             stmt = stmt.group_by(*(tbl.c[column] for column in groups))
         with _connection(self._database) as conn:
@@ -479,15 +515,14 @@ class DataStore:
         if not self.exists(name):
             _create_locked(self._database, name, ddl.declared_statements(name))
 
-    def columns(self, table) -> list[str]:
+    def columns(self, table: SchemaTable | str) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""
         name = name_of(table)
         # `_table` registers a table before its columns are reflected; read under the same lock.
         with _CREATE_LOCK:
             if name in self._metadata.tables:
                 return list(self._metadata.tables[name].c.keys())
-        inspector = inspect(self._database)
-        return [column["name"] for column in inspector.get_columns(name)] if inspector.has_table(name) else []
+        return list(self._table(name).c.keys()) if self.exists(name) else []
 
     def row_count(self, table) -> int:
         name = name_of(table)
@@ -506,7 +541,7 @@ class DataStore:
             row = conn.execute(select(func.min(tbl.c[col]), func.max(tbl.c[col]))).one()
         return (row[0], row[1])
 
-    def max_date(self, table, column: str | None = None) -> pd.Timestamp | None:
+    def max_date(self, table: SchemaTable | str, column: str | None = None, *, where: Where | None = None) -> pd.Timestamp | None:
         """Latest stored day at midnight, or None when missing/empty/unparseable so callers can rebuild."""
         name = name_of(table)
         col = column or self._date_col(table)
@@ -516,7 +551,7 @@ class DataStore:
         if col not in tbl.c:
             return None
         with _connection(self._database) as conn:
-            value = conn.execute(select(func.max(tbl.c[col]))).scalar()
+            value = conn.execute(select(func.max(tbl.c[col])).where(_where(tbl, where))).scalar()
         if value is None:
             return None
         try:
@@ -564,6 +599,43 @@ class DataStore:
         for edge in ("first", "last"):
             df[edge] = pd.to_datetime(df[edge], errors="coerce").dt.normalize()
         return df.astype({"key": str, "n": "int64"})
+
+    def sample_keys(self, table: SchemaTable, sample: KeySample) -> pd.DataFrame:
+        """Select bounded group keys in one query; linked source dates never become an unscoped join."""
+        if isinstance(sample.count, bool) or not isinstance(sample.count, int) or sample.count < 1:
+            raise ValueError("Key samples require a positive group count")
+        columns = [*table.pk, "__sample_group", "__sample_clock"]
+        source = sample.source or table
+        if not self.exists(table) or not self.exists(source):
+            return pd.DataFrame(columns=columns)
+        payload, dated = self._table(table), self._table(source)
+        if sample.group not in dated.c or sample.clock is not None and sample.clock not in dated.c:
+            raise ValueError("Sample group and publication clock must belong to the selected source")
+        shared = set(table.pk) & set(source.pk)
+        if source != table and not shared:
+            raise ValueError("A linked key sample requires a shared registered source key")
+
+        # Stream scoped keys and stop as soon as the requested groups are present. A global
+        # rank/sort would read the whole holdings history merely to pin five sample rows.
+        relation = payload if source == table else payload.join(dated, and_(*(payload.c[key] == dated.c[key] for key in sorted(shared))))
+        group = dated.c[sample.group]
+        clock = dated.c[sample.clock] if sample.clock is not None else None
+        where = _where(dated, sample.where) & group.is_not(None)
+        stmt = (
+            select(
+                *(payload.c[key] for key in table.pk),
+                group.label("__sample_group"),
+                (clock if clock is not None else null()).label("__sample_clock"),
+            )
+            .select_from(relation)
+            .where(where)
+        )
+        with (
+            _connection(self._database) as conn,
+            conn.execution_options(stream_results=True, max_row_buffer=_CHUNK).execute(stmt) as rows,
+        ):
+            selected = rows.unique(lambda row: row._mapping["__sample_group"]).mappings().fetchmany(sample.count)
+        return pd.DataFrame(selected, columns=columns).sort_values("__sample_group").reset_index(drop=True)
 
     def distinct(
         self, table, column: str, *, where: dict | None = None, order: str | None = None, limit: int | None = None, dropna: bool = True
@@ -753,6 +825,76 @@ class DataStore:
                     f"ensure_columns() after checking the declared schema."
                 )
         return copy_load(self._database, df, name)
+
+    def replace_window(
+        self,
+        table: SchemaTable | str,
+        df: pd.DataFrame,
+        window: Window,
+        where: dict[str, Any],
+        *,
+        schema_rebuild: bool = False,
+    ) -> WriteCounts:
+        """Atomically replace inclusive dates and explicit keys; reject input outside that scope."""
+        # Load the current layout before checking the complete replacement frame.
+        spec = resolve(table)
+        columns = list(self._table(spec).c.keys()) if self.exists(spec) else []
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("Window replacement requires a DataFrame; unavailable input cannot clear rows")
+        if spec.date_col is None:
+            raise ValueError(f"{spec.name}: Window replacement requires a declared date column")
+        if not isinstance(where, dict) or set(where) - set(spec.pk) or spec.date_col in where:
+            raise ValueError("Window key scope must use non-clock primary-key columns")
+        if not where and set(spec.pk) - {spec.date_col}:
+            raise ValueError("Window replacement requires an explicit key scope")
+        if (set(spec.pk) | {spec.date_col}) - set(df.columns) or df[list(spec.pk)].isna().any(axis=None):
+            raise ValueError("Window replacement requires complete non-null primary keys and its clock")
+        if df.duplicated(list(spec.pk)).any() or not window.mask(df[spec.date_col]).all():
+            raise ValueError("Window replacement contains duplicate keys or rows outside its Window")
+        for column, values in where.items():
+            selected = values if isinstance(values, _IN_TYPES) else [values]
+            if not df[column].isin(selected).all():
+                raise ValueError(f"Window replacement contains rows outside its {column} key scope")
+        changed = bool(columns and set(columns) != set(df.columns))
+        if changed and (not schema_rebuild or spec.managed and spec.kind != KIND_AGGREGATE):
+            raise ValueError(f"{spec.name}: stored columns differ; an explicit retained-schema rebuild is required")
+        if not columns and df.empty:
+            return WriteCounts(0, 0)
+
+        # Reuse the caller's transaction, or own one transaction across delete and every insert.
+        transaction = nullcontext(self) if isinstance(self._database, Connection) else self.transaction()
+        with transaction as store:
+            if not columns:
+                ensure_table(store._database, spec.name, df)
+            tbl = store._table(spec)
+            predicate = cast(
+                ColumnElement[bool],
+                build_select(tbl, where=where, since=window.start, until=window.end, date_col=spec.date_col).whereclause,
+            )
+            if changed:
+                return store._replace_retained_schema(spec, df, predicate)
+            conn = cast(Connection, store._database)
+            deleted = int(conn.execute(tbl.delete().where(predicate)).rowcount)
+            inserted = 0
+            for offset in range(0, len(df), _CHUNK):
+                inserted += copy_load(conn, df.iloc[offset : offset + _CHUNK], spec.name, strict=True)
+        return WriteCounts(deleted, inserted)
+
+    def _replace_retained_schema(self, table: SchemaTable, df: pd.DataFrame, predicate: ColumnElement[bool]) -> WriteCounts:
+        """Rebuild derived columns only when the explicit locked scope covers every retained row."""
+        # Serialize schema changes before measuring coverage of the retained rows.
+        conn = cast(Connection, self._database)
+        tbl = self._table(table)
+        if conn.dialect.name == "postgresql":
+            conn.execute(text(f'LOCK TABLE "{table.name}" IN ACCESS EXCLUSIVE MODE'))
+        total, selected = conn.execute(select(func.count(), func.count().filter(predicate)).select_from(tbl)).one()
+        if total != selected:
+            raise ValueError(f"{table.name}: a partial Window/key scope cannot change retained schema columns")
+
+        # Managed aggregate layouts also follow selected features; sources retain their declared schema.
+        if table.managed:
+            self.drop(table)
+        return WriteCounts(int(total), self.replace(table, df))
 
     def append_tail(self, table, df: pd.DataFrame, cutoff, *, inclusive: bool = False, date_col: str | None = None) -> int:
         """Delete the tail after cutoff (inclusive when requested), then append; empty input still deletes the tail."""

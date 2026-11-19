@@ -8,13 +8,13 @@ honours the tickers, the date range and the `actions` flag. No network call is m
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
@@ -25,6 +25,8 @@ from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_extract.utils.prices import fetch_splits as fs
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window, WindowRun
+from tests.support.config import fixture_config as _config
 from tests.support.store_identity import store_identity
 from tests.support.universe import seed_universe
 
@@ -64,10 +66,13 @@ class FakeYahoo:
         return self.response.loc[rows, columns]
 
 
-def _context(store: DataStore) -> Any:
-    config = OmegaConf.create({"data_extract": {"years_history": 3, "macro_years_history": 1}})
+def _context(store: DataStore, as_of: pd.Timestamp = _AS_OF) -> Any:
+    config = deepcopy(_config())
+    for table in (Tables.prices, Tables.dividends, Tables.prices_splits):
+        config.data.tables[table.name].start_date = "2023-06-13"
     return SimpleNamespace(
         store=store,
+        run=WindowRun("incremental", "recorded prices", as_of),
         log=logging.getLogger("test.one_download"),
         config=config,
         config_dir=".",
@@ -111,13 +116,13 @@ def test_one_call_per_window(sqlite_store: DataStore, yahoo: FakeYahoo, monkeypa
 def test_the_three_tables_equal_the_three_call_path(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
     ctx, session = _context(sqlite_store), fp.YahooSession(pause=0.0)
     for fetch in (fp.fetch_price_actions, fp.fetch_dividends, fp.fetch_prices):
-        fetch(ctx, session, _TICKERS, years_history=1, as_of=_AS_OF)
+        fetch(ctx, session, _TICKERS)
     (call,) = yahoo.calls
     since, until = pd.Timestamp(call["start"]), pd.Timestamp(call["end"]) - pd.Timedelta(days=1)
 
     reference = _second_store()
-    df_bars = fp.download_ohlcv(_TICKERS, since, until, pause=0.0, auto_adjust=False, actions=False)
-    df_actions = fp.download_ohlcv(_TICKERS, since, until, pause=0.0, auto_adjust=False, actions=True)
+    df_bars = fp.download_ohlcv(_TICKERS, Window(since, until), pause=0.0, auto_adjust=False, actions=False)
+    df_actions = fp.download_ohlcv(_TICKERS, Window(since, until), pause=0.0, auto_adjust=False, actions=True)
     reference.save(Tables.prices, fp.trim_prelisting_bars(df_bars))
     reference.save(Tables.dividends, fd._extract_dividends(df_actions))
     reference.save(Tables.prices_splits, fs._extract_splits(df_actions))
@@ -134,13 +139,15 @@ def test_the_three_tables_equal_the_three_call_path(sqlite_store: DataStore, yah
 
 
 def test_a_split_after_the_last_bar_re_pulls_that_ticker_only(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
-    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+    recorded = fp.download_ohlcv(
+        _TICKERS, Window(pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07")), pause=0.0, auto_adjust=False, actions=False
+    )
     stale = recorded.assign(close_split=lambda d: d["close_split"].where(d["ticker"] != "NVDA", d["close_split"] * 10))
     sqlite_store.save(Tables.prices, stale)
     sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
     yahoo.calls.clear()
 
-    fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-13"))
+    fp.fetch_prices(_context(sqlite_store, pd.Timestamp("2024-06-13")), fp.YahooSession(pause=0.0), _TICKERS)
 
     assert [c["tickers"] for c in yahoo.pulls] == [_TICKERS, ["NVDA"]]
     assert pd.Timestamp(yahoo.pulls[1]["start"]) == pd.Timestamp("2023-06-13")
@@ -153,14 +160,16 @@ def test_a_split_after_the_last_bar_re_pulls_that_ticker_only(sqlite_store: Data
 
 
 def test_a_dividend_after_the_last_bar_re_pulls_that_ticker_and_restates_close_total(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
-    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+    recorded = fp.download_ohlcv(
+        _TICKERS, Window(pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07")), pause=0.0, auto_adjust=False, actions=False
+    )
     # Stored before MO's 2024-06-14 ex-date: its close_total was not yet reduced for that dividend.
     stale = recorded.assign(close_total=lambda d: d["close_total"].where(d["ticker"] != "MO", d["close_total"] * 1.02))
     sqlite_store.save(Tables.prices, stale)
     sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
     yahoo.calls.clear()
 
-    fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"))
+    fp.fetch_prices(_context(sqlite_store, pd.Timestamp("2024-06-18")), fp.YahooSession(pause=0.0), _TICKERS)
 
     assert [c["tickers"] for c in yahoo.pulls] == [_TICKERS, ["MO", "NVDA"]]
     stored = cast(pd.DataFrame, sqlite_store.load(Tables.prices, where={"date": [pd.Timestamp("2024-05-01")]})).set_index("ticker")["close_total"]
@@ -176,14 +185,16 @@ def test_a_re_pull_of_an_ended_ticker_stops_at_its_grace_end(sqlite_store: DataS
     """R-06 (U-65): NVDA ended 2024-06-11, its 10:1 split of 2024-06-10 falls after its last stored bar (2024-06-07), so it
     is re-pulled; the re-pull stops at `ended_on` + 10 sessions (2024-06-25: the calendar ends 2024-06-07, so weekdays)
     like its resume window, and no NVDA bar after that end is stored."""
-    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+    recorded = fp.download_ohlcv(
+        _TICKERS, Window(pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07")), pause=0.0, auto_adjust=False, actions=False
+    )
     sqlite_store.save(Tables.prices, recorded)
     sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
     ctx = _context(sqlite_store)
     ctx.universe = seed_universe(sqlite_store, _TICKERS, rows={"NVDA": {"ended_on": pd.Timestamp("2024-06-11")}})
     yahoo.calls.clear()
 
-    fp.fetch_prices(ctx, fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=_AS_OF)
+    fp.fetch_prices(ctx, fp.YahooSession(pause=0.0), _TICKERS)
 
     grace_end = pd.Timestamp("2024-06-25")
     nvda = [c for c in yahoo.pulls if "NVDA" in c["tickers"]]
@@ -195,29 +206,29 @@ def test_a_re_pull_of_an_ended_ticker_stops_at_its_grace_end(sqlite_store: DataS
     print(f"  last stored NVDA bar {last_bar.date()} <= grace end, while the run reaches 2024-06-28 for AAPL and MO")
 
 
-def test_a_re_pull_starts_at_the_earliest_stored_bar_when_history_predates_the_floor(
-    sqlite_store: DataStore, yahoo: FakeYahoo, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+def test_a_re_pull_refuses_when_config_excludes_retained_history(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
+    recorded = fp.download_ohlcv(
+        _TICKERS, Window(pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07")), pause=0.0, auto_adjust=False, actions=False
+    )
     sqlite_store.save(Tables.prices, recorded)
     sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
-    # Rows stored by an older, longer window: the floor now falls after the first stored bar.
-    monkeypatch.setattr(fp, "document_floor", lambda *a, **k: pd.Timestamp("2024-05-15"))
+    context = _context(sqlite_store, pd.Timestamp("2024-06-18"))
+    context.config.data.tables.prices.start_date = "2024-05-15"
+    before = _sorted(sqlite_store, Tables.prices)
     yahoo.calls.clear()
 
-    fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"))
+    with pytest.raises(ValueError, match="explicit configured scope"):
+        fp.fetch_prices(context, fp.YahooSession(pause=0.0), _TICKERS)
 
-    assert [c["tickers"] for c in yahoo.pulls][1] == ["MO", "NVDA"]
-    assert pd.Timestamp(yahoo.pulls[1]["start"]) == pd.Timestamp("2024-05-01")
-    print("\n=== SANITY CHECK: re-pull below the floor ===")
-    print("  floor 2024-05-15, first stored bar 2024-05-01 -> the post-action re-pull starts 2024-05-01, so no stored bar")
-    print("  keeps the stale adjustment basis.")
+    pd.testing.assert_frame_equal(_sorted(sqlite_store, Tables.prices), before)
+    assert len(yahoo.pulls) == 1 and yahoo.pulls[0]["start"] >= "2024-05-15"
+    print("SANITY: a restatement needing older bars refuses before any write or out-of-config pull; all stored bars survive.")
 
 
 def test_a_failed_download_saves_nothing_and_logs_the_tickers(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: pd.DataFrame())
     with caplog.at_level("WARNING"):
-        fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS, years_history=1, as_of=_AS_OF)
+        fp.fetch_prices(_context(sqlite_store), fp.YahooSession(pause=0.0), _TICKERS)
     assert not sqlite_store.exists(Tables.prices)
     assert "No bars returned for 3 ticker(s)" in caplog.text
     print("\n=== SANITY CHECK: failed download ===")

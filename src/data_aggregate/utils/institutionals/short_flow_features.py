@@ -7,7 +7,7 @@ days); acceleration is the spot 5-day ratio minus the 60- or 120-day ratio. The 
 denominator of `ic_ftd_to_adv20` sums the issuer's secondary share classes, as the class-summed
 numerator does (`secondary_class_volume`). Point-in-time:
 every `ic_shortvol_*` leg is published at its source session plus the short-volume table's
-`SOURCE_AVAILABILITY_BUFFER_DAYS`, rolled to the first session on or after it; an FTD ZIP becomes
+the source policy in data.yml, rolled to the first session on or after it; an FTD ZIP becomes
 knowable as a whole at half-month end plus the FTD table's buffer (estimated_policy_21d),
 moved to the next actual session and held until the next ZIP. This is an estimated policy,
 not an observed historical SEC release timestamp. Verified issuer absence on a covered,
@@ -17,21 +17,18 @@ dated-supported source is 0; unsupported absence remains NaN.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import CANONICAL_ROLES, SOURCE_AVAILABILITY_BUFFER_DAYS
+from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import self_history_z
-from src.data_aggregate.utils.institutionals.insider_quality import publication_day
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_store.schema import Tables
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -95,6 +92,14 @@ class FtdPublication:
     available_by_period: dict[str, pd.Timestamp]
 
 
+@dataclass(frozen=True)
+class FtdSource:
+    """FTD settlement quantities with the publication evidence of the same ZIPs."""
+
+    settlement: FtdSettlement
+    publication: FtdPublication
+
+
 def _min_periods(window: int) -> int:
     """Half the window, floored at 3: enough of the window present to be a window."""
     return max(3, window // 2)
@@ -104,43 +109,6 @@ def _pivot(hist: pd.DataFrame, value: str, idx: pd.DatetimeIndex) -> pd.DataFram
     wide = hist.groupby(["date", "ticker"])[value].sum(min_count=1).unstack("ticker")
     wide.index = pd.to_datetime(wide.index).normalize()
     return wide.reindex(idx)
-
-
-def _ftd_period_end(period: str) -> pd.Timestamp:
-    """Parse a source ZIP tag, never inferring its half from a settlement date."""
-    if not isinstance(period, str) or re.fullmatch(r"\d{6}[ab]", period) is None:
-        raise ValueError(f"Invalid FTD ZIP period: {period!r}")
-    try:
-        month = pd.Timestamp(year=int(period[:4]), month=int(period[4:6]), day=1)
-    except ValueError as exc:
-        raise ValueError(f"Invalid FTD ZIP period: {period!r}") from exc
-    return month + pd.Timedelta(days=14) if period[-1] == "a" else month + pd.offsets.MonthEnd(0)
-
-
-def _ftd_estimated_available_date(period: str, calendar_days: int) -> pd.Timestamp:
-    """Estimated ZIP policy day; the publisher snaps it to an actual market session."""
-    return _ftd_period_end(period) + pd.Timedelta(days=calendar_days)
-
-
-def _ftd_available_dates(
-    fails_hist: pd.DataFrame,
-    calendar_days: int,
-) -> dict[str, pd.Timestamp]:
-    """Derive deterministic estimated policy days from persisted ZIP periods and the owner setting."""
-    if isinstance(calendar_days, bool) or not isinstance(calendar_days, int) or calendar_days < 1:
-        raise ValueError("FTD availability calendar days must be a positive integer")
-    if "period" not in fails_hist:
-        raise ValueError("FTD source is missing its persisted ZIP period")
-    if "date" not in fails_hist:
-        raise ValueError("FTD source is missing settlement date")
-    source_periods = fails_hist[["date", "period"]].drop_duplicates().copy()
-    source_periods["date"] = to_day(source_periods["date"])
-    if source_periods.isna().any().any():
-        raise ValueError("FTD source has a null settlement date or ZIP period")
-    if source_periods.groupby("date")["period"].nunique().gt(1).any():
-        raise ValueError("FTD settlement date belongs to multiple ZIP periods")
-    available = {period: _ftd_estimated_available_date(period, calendar_days) for period in source_periods["period"].unique()}
-    return dict(sorted(available.items()))
 
 
 def _publish_ftd_zip_states(
@@ -155,6 +123,10 @@ def _publish_ftd_zip_states(
     periods: dict[str, list[pd.Timestamp]] = {}
     source_periods = fails_hist[["date", "period"]].drop_duplicates().copy()
     source_periods["date"] = to_day(source_periods["date"])
+    if source_periods.isna().any().any():
+        raise ValueError("FTD source has a null settlement date or ZIP period")
+    if source_periods.groupby("date")["period"].nunique().gt(1).any():
+        raise ValueError("FTD settlement date belongs to multiple ZIP periods")
     for day, period in source_periods.itertuples(index=False, name=None):
         periods.setdefault(str(period), []).append(day)
 
@@ -372,7 +344,8 @@ def _shortvol_fields(
     df_observed = df_short.notna() & df_total.notna()
 
     # Compute weighted window ratios and reuse the base-window sum for turnover.
-    ratios, df_turnover = _shortvol_window_fields(df_short, df_total, df_observed, idx, shares_out)
+    published = hist.groupby("date")["as_of"].max().reindex(idx)
+    ratios, df_turnover = _shortvol_window_fields(df_short, df_total, df_observed, idx, shares_out, published)
     fields = {f"ic_shortvol_ratio_{window}d": ratios[window] for window in RATIO_WINDOWS}
     for window in ACCELERATION_WINDOWS:
         fields[f"ic_shortvol_acceleration_{window}d"] = ratios[SPOT_WINDOW] - ratios[window]
@@ -400,12 +373,17 @@ def _publish_shortvol(df_source: pd.DataFrame, published: pd.Series) -> pd.DataF
 
 
 def _shortvol_window_fields(
-    df_short: pd.DataFrame, df_total: pd.DataFrame, df_observed: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None
+    df_short: pd.DataFrame,
+    df_total: pd.DataFrame,
+    df_observed: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    shares_out: pd.DataFrame | None,
+    published: pd.Series,
 ) -> tuple[dict[int, pd.DataFrame], pd.DataFrame | None]:
     """Normalize window short-sale totals by total volume and optional PIT shares."""
     ratios: dict[int, pd.DataFrame] = {}
     df_turnover = None
-    published = publication_day(pd.Series(idx, index=idx), SOURCE_AVAILABILITY_BUFFER_DAYS[Tables.sec_short_volume_security.name], idx)
+    published = published.reindex(idx)
     df_shares = shares_out.reindex(index=idx).reindex(columns=df_short.columns) if shares_out is not None and not shares_out.empty else None
 
     # Calculate each numerator once; the base sum also supplies share turnover.
@@ -513,13 +491,12 @@ def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd
 def build_short_flow_feature_panel(
     frames: PriceFrames,
     short_history: pd.DataFrame | None,
-    settlement: FtdSettlement | None,
+    fails: FtdSource | None,
     capital: ShortFlowCapital,
-    publication: FtdPublication | None,
     tenure_mask: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Compute the short/FTD families from prepared common-basis quantities and public ZIP metadata."""
-    if _absent(short_history) and settlement is None:
+    if _absent(short_history) and fails is None:
         return _empty_panel()
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if capital.tape is not None:
@@ -531,8 +508,8 @@ def build_short_flow_feature_panel(
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
         fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, tenure_mask))
-    if settlement is not None and publication is not None:
-        fields.update(_fails_fields(settlement, capital, publication, tenure_mask))
+    if fails is not None:
+        fields.update(_fails_fields(fails.settlement, capital, fails.publication, tenure_mask))
 
     # Preserve data-dependent field omission and the existing raw float32 emitter.
     for name in list(fields):

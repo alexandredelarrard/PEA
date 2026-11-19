@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -14,10 +15,14 @@ from src.data_aggregate.utils.institutionals import insider_features as insider
 from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.publication import point_in_time
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel
+from tests.data_aggregate.institutional_read_windows import full_reference_windows, reference_sessions
 from tests.data_aggregate.test_insider_features import _txn
+from tests.data_aggregate.test_institutional_step_contract import context as source_context
 from tests.data_aggregate.test_institutional_step_contract import ftd_lines, lineage_rows, market_lines, short_lines
+from tests.data_extract.fake_context import extract_config
 
 
 def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
@@ -67,7 +72,7 @@ def test_insider_frontier_is_the_whole_table_newest_filing_markers_included(sqli
         }
     )
     sqlite_store.save(Tables.insider_transactions, rows)
-    source = inputs.load_insider_transactions(sqlite_store, ["AAA"], None)
+    source = inputs.load_insider_transactions(source_context(sqlite_store, Path(".")), ["AAA"], None)
     assert source is not None and source.complete_through == pd.Timestamp("2026-06-30")
     assert source.first_filed.to_dict() == {"AAA": pd.Timestamp("2026-01-01")}
     print("SANITY: D = 2026-06-30, the newest filing of the whole table (another ticker), read for AAA alone; fetched_at plays no part.")
@@ -89,16 +94,17 @@ def test_finra_metrics_use_their_own_defined_paired_operands() -> None:
     numerator.iloc[0] = 1000.0
     denominator.iloc[0] = np.nan
     shares = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    ratio, _ = short._shortvol_window_fields(numerator, denominator, numerator.notna() & denominator.notna(), idx, shares)
+    published = point_in_time(pd.DataFrame({"date": idx}, index=idx), extract_config(), Tables.sec_short_volume_security, idx)["as_of"].reindex(idx)
+    ratio, _ = short._shortvol_window_fields(numerator, denominator, numerator.notna() & denominator.notna(), idx, shares, published)
     assert ratio[20].iloc[20, 0] == 0.5
     quiet = numerator * 0.0
     missing_total = denominator * np.nan
-    ratio, turnover = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares)
+    ratio, turnover = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares, published)
     assert ratio[20].isna().all().all() and turnover is not None and turnover.isna().all().all()
     observed_total = denominator * 0.0 + 5.0
-    _, turnover = short._shortvol_window_fields(quiet, observed_total, quiet.notna() & observed_total.notna(), idx, shares)
+    _, turnover = short._shortvol_window_fields(quiet, observed_total, quiet.notna() & observed_total.notna(), idx, shares, published)
     assert turnover is not None and turnover.iloc[-1, 0] == 0.0
-    _, undefined = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares * 0.0)
+    _, undefined = short._shortvol_window_fields(quiet, missing_total, quiet.notna() & missing_total.notna(), idx, shares * 0.0, published)
     assert undefined is not None and undefined.isna().all().all()
     print(
         "SANITY: legacy paired short/total observations remain usable; an unpaired numerator cannot enter the ratio, a day without a total is unknown for turnover, and an observed short0 over positive shares gives turnover0 while denominator0 stays NULL."
@@ -144,11 +150,14 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
             ),
         ]
     )
+    for clock in ("transaction_date", "filing_date", "economic_date"):
+        if clock in transactions:
+            transactions[clock] = pd.to_datetime(transactions[clock]) + pd.DateOffset(years=4)
     sqlite_store.save(Tables.insider_transactions, transactions)
-    dates = pd.bdate_range("2015-01-01", "2015-12-31")
+    dates = pd.bdate_range("2019-01-01", "2019-12-31")
     sqlite_store.save(Tables.sec_short_volume_security, short_lines("AAA", dates[:21], 0.0, 2.0))
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([(f"{dates[0]:%Y-%m-%d}", "000000001", "AAA", 12.0, "201501a")]))
-    source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"], None)
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([(f"{dates[0]:%Y-%m-%d}", "000000001", "AAA", 12.0, "201901a")]))
+    source = inputs.load_insider_transactions(source_context(sqlite_store, Path(".")), ["AAA", "BBB"], None)
     assert source is not None and source.complete_through == pd.Timestamp(transactions["filing_date"].max())
     close = pd.DataFrame(100.0, index=dates, columns=["AAA", "BBB"])
     frames = make_frames(dates, {"AAA": {"AAA": 1.0}, "BBB": {"BBB": 1.0}}, close_split=close)
@@ -159,20 +168,35 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
         frames, source.transactions, shares_out_history=shares, coverage=insider.InsiderCoverage.from_availability(None, source.complete_through)
     ).set_index(["date", "ticker"])
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
-    assert ratio.loc[(pd.Timestamp("2015-06-01"), "AAA")] == pytest.approx(1.0 / 3.0)
-    assert pd.isna(ratio.loc[(pd.Timestamp("2015-12-01"), "AAA")]) and ratio.xs("BBB", level="ticker").isna().all()
+    assert ratio.loc[(pd.Timestamp("2019-06-03"), "AAA")] == pytest.approx(1.0 / 3.0)
+    assert pd.isna(ratio.loc[(pd.Timestamp("2019-12-02"), "AAA")]) and ratio.xs("BBB", level="ticker").isna().all()
     lines = market_lines(["AAA"], pd.Timestamp("2014-01-01"))
-    short_rows, _ = inputs.load_short_volume(sqlite_store, ["AAA", "BBB"], lines, lineage_rows(["AAA", "BBB"]))
+    short_rows, _ = inputs.load_short_volume(
+        source_context(sqlite_store, Path(".")),
+        ["AAA", "BBB"],
+        lines,
+        lineage_rows(["AAA", "BBB"]),
+        full_reference_windows(source_context(sqlite_store, Path(".")))[Tables.sec_short_volume_security],
+        reference_sessions(source_context(sqlite_store, Path("."))),
+    )
     assert (
         short_rows is not None
         and set(short_rows["ticker"]) == {"AAA"}
-        and list(short_rows.columns) == ["date", "ticker", "short_volume", "total_volume"]
+        and list(short_rows.columns) == ["date", "ticker", "short_volume", "total_volume", "as_of"]
     )
     short_volume = short_rows.pivot(index="date", columns="ticker", values="short_volume")
     total = short_rows.pivot(index="date", columns="ticker", values="total_volume")
-    ratios, _ = short._shortvol_window_fields(short_volume, total, total.notna(), pd.DatetimeIndex(short_volume.index), None)
+    published = short_rows.groupby("date")["as_of"].max()
+    ratios, _ = short._shortvol_window_fields(short_volume, total, total.notna(), pd.DatetimeIndex(short_volume.index), None, published)
     assert ratios[20].iloc[-1, 0] == 0.0
-    fails_rows, coverage = inputs.load_fails(sqlite_store, ["AAA", "BBB"], lines, {})
+    fails_rows, coverage = inputs.load_fails(
+        source_context(sqlite_store, Path(".")),
+        ["AAA", "BBB"],
+        lines,
+        {},
+        full_reference_windows(source_context(sqlite_store, Path("."))),
+        reference_sessions(source_context(sqlite_store, Path("."))),
+    )
     assert fails_rows is not None and coverage is not None
     fails = short.prepare_fails_quantities(fails_rows, coverage, dates, pd.Index(["AAA", "BBB"]), None).quantities
     assert fails.loc[dates[0], "AAA"] == 12.0 and fails["BBB"].isna().all()

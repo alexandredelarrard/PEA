@@ -27,10 +27,9 @@ from src.utils.step import Step
 
 @dataclass(frozen=True)
 class LlmOptions:
-    """The LLM commands' options: the ticker subset (None: the universe) and `full` (employees re-decide every date)."""
+    """The LLM source-key subset; dates and execution mode belong to Context."""
 
     tickers: list[str] | None = None
-    full: bool = False
 
 
 class StepExtractLlm(Step):
@@ -40,8 +39,6 @@ class StepExtractLlm(Step):
         super().__init__(context=context, config=config)
         options = options or LlmOptions()
         self._requested = options.tickers
-        self._full = options.full
-        self._years_history = int(config.data_extract.years_history)
         self._def14a = section_extractors(context, config)
         self._votes = LLMExtractor(context, config, action=VOTES_ACTION)
         for provider in (self._votes.default_api, EMPLOYEES_PROVIDER):
@@ -68,8 +65,8 @@ class StepExtractLlm(Step):
         fetch_8k_votes_llm(self._context, self._tickers, self._votes)
 
     def run_employees_llm(self) -> None:
-        """Decide the employee counts of the stored `sec_employees_text` filings with no row yet (`full`: all of them)."""
-        fetch_employees_llm(self._context, self._tickers, self._years_history, self._employees, full=self._full)
+        """Fill missing employee decisions; valid saved decisions are reused in every run mode."""
+        fetch_employees_llm(self._context, self._tickers, self._employees)
 
     def run(self) -> None:
         """The DEF 14A pass, then the 8-K votes, then the employees."""

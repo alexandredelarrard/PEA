@@ -1,5 +1,4 @@
-"""Per-table source availability starts declared in `data_availability`; the 13F publication clock itself is
-`src.utils.institutional_vintages.availability_date`."""
+"""Configured source coverage starts, distinct from actual source publication eligibility."""
 
 from __future__ import annotations
 
@@ -9,19 +8,15 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Table
 
 _DERIVED_FEATURES = frozenset(
     {
         "ic_shortvol_high_x_weak_price",
     }
 )
-
-
-def _registered_tables() -> dict[str, Table]:
-    """The schema registry by physical table name."""
-    return {value.name: value for value in vars(Tables).values() if isinstance(value, Table)}
 
 
 def _known_fields(table: Table) -> set[str]:
@@ -46,12 +41,6 @@ def _date(value: object, label: str) -> pd.Timestamp:
 
 
 @dataclass(frozen=True)
-class _TableAvailability:
-    start: pd.Timestamp
-    fields: Mapping[str, pd.Timestamp]
-
-
-@dataclass(frozen=True)
 class InstitutionalAvailability:
     """Validated institutionals source/field availability loaded from configuration.
 
@@ -61,69 +50,26 @@ class InstitutionalAvailability:
     being mistaken for a source that did not yet exist.
     """
 
-    tables: Mapping[str, _TableAvailability]
-    derived_features: Mapping[str, pd.Timestamp]
+    tables: Mapping[str, pd.Timestamp]
 
     @classmethod
-    def from_config(cls, config: Mapping[str, object]) -> InstitutionalAvailability:
-        """Parse either the `data_availability` block or its `institutionals` child."""
-        root: object = config
-        if isinstance(root, Mapping) and "data_availability" in root:
-            root = root["data_availability"]
-        if isinstance(root, Mapping) and "institutionals" in root:
-            root = root["institutionals"]
-        if not isinstance(root, Mapping):
-            raise TypeError("data_availability.institutionals must be a mapping")
-
-        registered = _registered_tables()
-        tables: dict[str, _TableAvailability] = {}
-        derived: dict[str, pd.Timestamp] = {}
-        for table_name, raw_rule in root.items():
-            name = str(table_name)
-            if name == "derived_features":
-                if not isinstance(raw_rule, Mapping):
-                    raise TypeError("derived_features must be a feature -> date mapping")
-                for feature, raw_date in raw_rule.items():
-                    feature_name = str(feature)
-                    if feature_name not in _DERIVED_FEATURES:
-                        raise KeyError(f"Unknown institutionals derived feature {feature_name!r}")
-                    derived[feature_name] = _date(raw_date, f"derived_features.{feature_name}")
-                continue
-
-            table = registered.get(name)
-            if table is None:
-                raise KeyError(f"Unknown institutionals availability table {name!r}")
-            if not isinstance(raw_rule, Mapping):
-                raise TypeError(f"{name} availability must be a field -> date mapping")
-            if "__all__" not in raw_rule:
-                raise KeyError(f"{name} availability requires an __all__ date")
-            start = _date(raw_rule["__all__"], f"{name}.__all__")
-            valid_fields = _known_fields(table)
-            fields: dict[str, pd.Timestamp] = {}
-            for field, raw_date in raw_rule.items():
-                field_name = str(field)
-                if field_name == "__all__":
-                    continue
-                if field_name not in valid_fields:
-                    raise KeyError(f"Unknown field {field_name!r} for {name}")
-                field_start = _date(raw_date, f"{name}.{field_name}")
-                if field_start < start:
-                    raise ValueError(f"{name}.{field_name} starts {field_start.date()} before the table default {start.date()}")
-                fields[field_name] = field_start
-            tables[name] = _TableAvailability(start=start, fields=fields)
-
+    def from_config(cls, config: DictConfig) -> InstitutionalAvailability:
+        """Keep extraction starts separate from observed support and publication eligibility."""
+        tables = {
+            str(name): _date(item.start_date, f"{name}.start_date") for name, item in config.data.tables.items() if item.get("start_date") is not None
+        }
         if not tables:
-            raise ValueError("data_availability.institutionals declares no source tables")
-        return cls(tables=tables, derived_features=derived)
+            raise ValueError("data.yml declares no extraction starts")
+        return cls(tables=tables)
 
     def source_date(self, table: Table, field: str | None = None) -> pd.Timestamp:
-        """Resolve a field override or inherit its table start."""
+        """The configured coverage start; field identities remain validated against the schema."""
         rule = self.tables.get(table.name)
         if rule is None:
             raise KeyError(f"No institutionals availability declaration for {table.name}")
         if field is not None and field not in _known_fields(table):
             raise KeyError(f"Unknown field {field!r} for {table.name}")
-        return rule.fields.get(field, rule.start) if field else rule.start
+        return rule
 
     def derived_date(
         self,
@@ -133,10 +79,7 @@ class InstitutionalAvailability:
         """Resolve an explicit derived override or the latest dependency boundary."""
         if feature not in _DERIVED_FEATURES:
             raise KeyError(f"Unknown institutionals derived feature {feature!r}")
-        override = self.derived_features.get(feature)
         starts = [self.source_date(table, field) for table, field in dependencies]
-        if override is not None:
-            starts.append(override)
         if not starts:
             raise KeyError(f"No availability override or dependencies declared for derived feature {feature!r}")
         return max(starts)
@@ -149,7 +92,7 @@ class InstitutionalAvailability:
     ) -> pd.DataFrame:
         """Boolean `(date x ticker)` mask, inclusive of `start`."""
         idx = pd.DatetimeIndex(index).normalize()
-        row = idx >= pd.Timestamp(start).normalize()
+        row = np.zeros(len(idx), dtype=bool) if pd.isna(start) else idx >= pd.Timestamp(start).normalize()
         values = np.broadcast_to(row[:, None], (len(idx), len(columns))).copy()
         return pd.DataFrame(values, index=idx, columns=columns, dtype=bool)
 
@@ -161,7 +104,7 @@ class InstitutionalAvailability:
     ) -> pd.DataFrame:
         """Boolean mask through an inclusive observed source frontier."""
         idx = pd.DatetimeIndex(index).normalize()
-        row = idx <= pd.Timestamp(end).normalize()
+        row = np.zeros(len(idx), dtype=bool) if pd.isna(end) else idx <= pd.Timestamp(end).normalize()
         values = np.broadcast_to(row[:, None], (len(idx), len(columns))).copy()
         return pd.DataFrame(values, index=idx, columns=columns, dtype=bool)
 

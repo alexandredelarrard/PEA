@@ -21,7 +21,9 @@ from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.window import Window, WindowRun
 from tests.data_extract.edgar_fixtures import fake_context
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import seed_universe
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -57,9 +59,9 @@ def test_yahoo_prices_query_the_trading_symbol_and_store_the_key(sqlite_store: D
     universe = _universe(sqlite_store)
     requested: list[list[str]] = []
 
-    def download(tickers: list[str], since: pd.Timestamp, until: pd.Timestamp, *args: Any, **kwargs: Any) -> pd.DataFrame:
+    def download(tickers: list[str], window: Window, *args: Any, **kwargs: Any) -> pd.DataFrame:
         requested.append(list(tickers))
-        days = pd.bdate_range(since, until)
+        days = pd.bdate_range(window.start, window.end)
         return pd.concat(
             [
                 pd.DataFrame(
@@ -72,7 +74,7 @@ def test_yahoo_prices_query_the_trading_symbol_and_store_the_key(sqlite_store: D
 
     monkeypatch.setattr(fp, "download_ohlcv", download)
     session = fp.YahooSession(pause=0.0, symbols=universe.trading_symbols)
-    rows = session.pull([(pd.Timestamp("2026-10-26"), pd.Timestamp("2026-10-30"), TICKERS)], "test")
+    rows = session.pull([(Window(pd.Timestamp("2026-10-26"), pd.Timestamp("2026-10-30")), TICKERS)], "test")
     bars = session.bars(["PSKY"], pd.Timestamp("2026-10-26"), pd.Timestamp("2026-10-30"))
 
     assert requested[0] == ["AAPL", "SKYD"] and requested[1] == ["SKYD"]
@@ -86,15 +88,21 @@ def test_earnings_surprises_query_the_trading_symbol(sqlite_store: DataStore, mo
     universe = _universe(sqlite_store)
     requested: list[str] = []
 
-    def download(symbol: str, limit: int) -> pd.DataFrame:
+    def download(symbol: str, window: Window) -> pd.DataFrame:
         requested.append(symbol)
         return pd.DataFrame(
             {"ticker": [symbol], "earnings_date": [pd.Timestamp("2026-08-04")], "eps_estimate": [0.1], "eps_actual": [0.1], "surprise_pct": [0.0]}
         )
 
     monkeypatch.setattr(surprises, "_download_one", download)
-    context = types.SimpleNamespace(store=sqlite_store, universe=universe, log=logging.getLogger(__name__))
-    surprises.fetch_earnings_surprises(context, TICKERS, years_history=31, pause=0.0)
+    context = types.SimpleNamespace(
+        store=sqlite_store,
+        universe=universe,
+        log=logging.getLogger(__name__),
+        config=extract_config(),
+        run=WindowRun("incremental", "trading symbol fixture", pd.Timestamp("2026-11-03")),
+    )
+    surprises.fetch_earnings_surprises(context, TICKERS)
     saved = sqlite_store.load(Tables.earnings_surprises)
 
     assert sorted(requested) == ["AAPL", "SKYD"] and sorted(saved["ticker"]) == ["AAPL", "PSKY"]
@@ -118,8 +126,30 @@ def test_sharadar_sf1_queries_the_trading_symbol(tmp_path: Path, sqlite_store: D
 
     monkeypatch.setattr(fetch_mod, "sharadar_get", get)
     monkeypatch.setattr(fetch_mod, "sleep_pace", lambda *a, **k: None)
-    fetch_mod.fetch_sharadar_fundamentals(context, TICKERS, years_history=10, as_of=pd.Timestamp("2026-11-03"))
+    fetch_mod.fetch_sharadar_fundamentals(context, TICKERS)
 
     assert set(requested) == {"AAPL", "SKYD"}
     print("\n=== SANITY CHECK: Sharadar SF1 under the trading symbol ===")
     print(f"  requested {sorted(set(requested))} (PSKY's vendor row is SKYD). Validated.")
+
+
+def test_grouped_windows_reach_yahoo_unchanged_and_reuse_cached_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Known request/cache truth; this asserts no price or identity economics."""
+    calls: list[tuple[list[str], pd.Timestamp, pd.Timestamp]] = []
+
+    def download(keys: list[str], window: Window, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        since, until = window
+        calls.append((list(keys), since, until))
+        return pd.DataFrame(
+            {"date": [since, until], "ticker": keys * 2, "open": 1.0, "high": 1.0, "low": 1.0, "close_split": 1.0, "close_total": 1.0, "volume": 10.0}
+        )
+
+    monkeypatch.setattr(fp, "download_ohlcv", download)
+    window = Window(pd.Timestamp("2026-11-09"), pd.Timestamp("2026-11-13"))
+    session = fp.YahooSession(pause=0.0, symbols={"AAPL": "AAPL"})
+    first = session.pull([(window, ["AAPL"])], "normal")
+    second = session.pull([(window, ["AAPL"])], "same run")
+    assert calls == [(["AAPL"], window.start, window.end)]
+    assert pd.to_datetime(first.date).tolist() == [window.start, window.end]
+    pd.testing.assert_frame_equal(first, second, check_exact=True)
+    print("SANITY: the same inclusive Window reaches the provider boundary unchanged; repeating it makes no second download.")

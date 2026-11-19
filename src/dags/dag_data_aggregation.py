@@ -91,15 +91,19 @@ dag = DAG(
     tags=["pea", "aggregation"],
 )
 
-
 def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None = None) -> BashOperator:
     cutoff = f' --as-of "{RUN_AS_OF}" {RUN_MODE}' if base == AGG else ""
-    receipts = "{{ ti.xcom_pull(task_ids=" + repr([name.replace("-", "_") for name in CHAIN]) + ") | tojson }}"
+    task_ids = [name.replace("-", "_") for name in CHAIN]
+    env = (
+        {"CUBE_COMPONENT_WINDOWS": f"{{{{ ti.xcom_pull(task_ids={task_ids!r}) | list | tojson }}}}"}
+        if cmd == "assemble-cube"
+        else None
+    )
     return BashOperator(
         task_id=task_id or cmd.split()[0].replace("-", "_"),
         bash_command=f"{base} {cmd} -c {CONFIGS}{cutoff}",
         cwd=PROJECT,
-        env={"CUBE_COMPONENT_WINDOWS": receipts} if cmd == "assemble-cube" else None,
+        env=env,
         append_env=True,
         do_xcom_push=cmd in CHAIN,
         pool=pool,

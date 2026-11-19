@@ -6,10 +6,10 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+source_commit: 39c94c0dd62dcb4730a2bbc77f437f5a6fdabfcf
 integration_parents:
-  - f06e3781ccb5756a0a1406895182de37329e282b
-  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
+  - 1195d18d6dcd3e380cacc0e8cb4a6cd5f5392090
+  - ad346fa6d7c31c57046942e966727edb8414916f
 ---
 # Configuration
 
@@ -105,6 +105,8 @@ Key distinctions:
 Both notes tables use period end +12 calendar days; FTD uses half-month end +21; both 13F book families use filing date +2; calls use call date +3. Raw acceptance and capture timestamps remain evidence and do not override the declared clock. Cube and assembly dates add no lag.
 
 Each cube's `warmup` maps physical input tables to additional calendar days before its actual earliest rewrite date. Integers read from rewrite start minus that amount through the run ceiling. Zero retains the inclusive first write date; `null` reads full stored history without an artificial lower bound. Missing dependencies fail. Entity/column projections remain. Finite budgets cannot silently widen; insufficient budgets refuse the calculation, while naturally short stored history retains ordinary unavailable/minimum-observation behavior. Statistical windows stay in [data_aggregate.yml](../../configs/data_aggregate.yml).
+
+Institutional Schedule 13D/13G inputs explicitly use `null`: historical empty-filing markers classify submitters, so a finite cutoff can change current counts. Finite budgets are refused before either ownership payload read. FTD share-basis inputs also explicitly retain full split, action and fundamental-count evidence; their output rewrite remains 30 calendar days. Macro target inputs apply their configured publication lag before factor construction.
 
 Operational freshness settings, `extraction-status`, source-age status checks and the prediction freshness guard are removed. Economic age rules, completeness, listing/security eligibility and denominator requirements remain. Listing grace of 10 market sessions and identity recheck of 7 calendar days are `data_extract.listing_end_grace_sessions` and `identity_change_recheck_days`; neither widens source bounds.
 

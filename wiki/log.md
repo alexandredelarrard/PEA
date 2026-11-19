@@ -1326,3 +1326,12 @@ The user explicitly retains governance fills from later filings and the existing
 - Coverage: [configuration](./reference/configuration.md), [table catalog](./reference/table-catalog.md), [data sources](./reference/data-sources.md), [data access](./guides/data-access.md), [run guide](./guides/run-the-pipeline.md), extraction/aggregation/DAG modules, publication/availability concepts and nightly/prediction flows.
 - Timing: one source start/overlap/PIT format, explicit calendar-day input maps, price-derived cube dates and retained mathematical/completeness rules. Removed obsolete operational freshness guidance; documented the approved13F streaming exception and retrospective calculation limits.
 - Authoring: OpenKnowledge edits were used first. After repeated acknowledgements failed to persist, the user explicitly approved normal-file writes for these wiki corrections. No skill/instruction file was changed. Link checks previously selected links only; final saved-file checks are recorded in the harness run.
+
+## 2026-11-18: refresh — final simplified data-policy contract
+
+- Profile: refresh. Source commit: `39c94c0dd62dcb4730a2bbc77f437f5a6fdabfcf`.
+
+- Scope: completed the 47-policy format, explicit calendar-day input history, one publication entry point, price-derived output dates and bounded atomic writes. Removed obsolete freshness readers and retained existing financial/completeness rules.
+- Corrections: full Schedule 13D/13G identity history is explicit and finite alternatives fail before payload reads; FTD basis dependencies are declared; native SQL dates are normalized before short-volume joins; macro target factors consume the configured lag. Insider operational completeness survives weekends and holidays without publishing future transactions.
+- Evidence: the combined focused acceptance passed 44 checks, including four read-only comparisons with the original five-key source baseline. The final completeness fix passed 15 focused cases, including actual SQLite quiet-window writes. Batches overlap and are not summed. The final integrated rerun, independent reviews and precise provenance are recorded in the configuration-simplification harness report.
+- Limits: this closes the user-approved focused refactor scope. It does not certify full final all-cube financial parity; the missing price-owner baseline and accepted retrospective governance/13F calculations remain documented. Existing uncommitted local edits are retained during integration.

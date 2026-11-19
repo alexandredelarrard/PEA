@@ -101,6 +101,7 @@ def test_current_policy_identity_is_separate_from_immutable_source_manifest(tmp_
     after = support._sample_identity(config, manifest)
     assert before["source_manifest_sha256"] == after["source_manifest_sha256"]
     assert before["pipeline_configuration_sha256"] != after["pipeline_configuration_sha256"]
+    assert before["pipeline_code_sha256"] == after["pipeline_code_sha256"]
     assert manifest.read_bytes() == original
     print("SANITY: changed current policy receives a new identity beside the exact unchanged historical source manifest.")
 

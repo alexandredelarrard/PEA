@@ -55,7 +55,6 @@ class WindowSamples:
     lineage: dict[str, Any] = field(default_factory=dict)
     planning: dict[str, Any] = field(default_factory=dict)
     identity: dict[str, Any] = field(default_factory=dict)
-    producers: dict[str, Any] = field(default_factory=dict)
 
     def publish(self) -> None:
         # Save partial evidence atomically after each completed table; the watchdog never writes.
@@ -67,7 +66,6 @@ class WindowSamples:
             "lineage": self.lineage,
             "planning": self.planning,
             "identity": self.identity,
-            "producers": self.producers,
         }
         reports = [(self.out / "samples.json", payload)]
         if self.capturing:
@@ -217,11 +215,6 @@ def window_sample_session(path: Path, out: Path, capturing: bool, started: float
         if not capturing:
             run.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         run.identity = _sample_identity(config, None if capturing else manifest_path)
-        previous_report = out / "samples.json"
-        if not capturing and previous_report.is_file():
-            previous_samples = json.loads(previous_report.read_text(encoding="utf-8"))
-            if previous_samples.get("identity") == run.identity:
-                run.producers = previous_samples.get("producers", {})
         run.publish()
         _, run.context = get_config_context("configs", use_cache=True, save=False)
         yield run
@@ -235,7 +228,10 @@ def _sample_identity(config: DictConfig, manifest: Path | None) -> dict[str, Any
     code = hashlib.sha256()
     paths = [
         *(root / "src").rglob("*.py"),
-        *[root / "tests" / "support" / name for name in ("window_samples.py", "window_producers.py", "run_window_samples.py")],
+        *[
+            root / "tests" / "support" / name
+            for name in ("window_samples.py", "window_lineage.py", "window_lineage_sources.py", "run_window_samples.py")
+        ],
     ]
     for path in sorted(paths):
         code.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0" + path.read_bytes() + b"\0")

@@ -142,6 +142,11 @@ def lag_insider_source(source: InsiderSource, config: DictConfig, sessions: pd.D
     first = point_in_time(pd.DataFrame({"filing_date": source.first_filed}), config, Tables.insider_transactions, sessions)
     frontier_rows = point_in_time(pd.DataFrame({"filing_date": [source.complete_through]}), config, Tables.insider_transactions, sessions)
     frontier = None if frontier_rows.empty else frontier_rows["as_of"].iloc[0]
+    # Operational completeness can cover the retained calendar while its own filing remains unpublished.
+    frontier_day = market_days(pd.Series([source.complete_through])).iloc[0]
+    lag_days = int(publication_policy(config, Tables.insider_transactions).lag_days)
+    if not sessions.empty and pd.notna(frontier_day) and frontier_day + pd.Timedelta(days=lag_days) > sessions[-1]:
+        frontier = sessions[-1]
     return replace(
         source,
         transactions=df_rows.loc[df_rows.filing_date.notna()],

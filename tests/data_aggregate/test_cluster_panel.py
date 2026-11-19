@@ -357,27 +357,52 @@ def test_a_quarter_without_labels_for_the_quarter_before_stops_the_build(world: 
     print("SANITY: unlabelled 2024-06-30 stops the quarter 2024-09-30 before any line is read or any row written.")
 
 
+LATE_MANAGER = "0000000011"  # labelled cluster 0 and files every book 60 days after its period end, after the deadline of any quarter
+
+
+def _add_a_late_manager(store: Any) -> None:
+    rows = [
+        row
+        | {"cik": LATE_MANAGER, "accession_number": f"{LATE_MANAGER}-{row['period']:%y%m%d}", "filing_date": row["period"] + pd.Timedelta(days=60)}
+        for number, period in enumerate(PERIODS)
+        for row in _lines(period, number)
+        if row["cik"] == MANAGERS[0]
+    ]
+    store.save(Tables.sec13f_hr, pd.DataFrame(rows))
+    store.save(Tables.sec_13f_manager_details, pd.DataFrame([(LATE_MANAGER, period, 0) for period in PERIODS], columns=["cik", "period", "cluster"]))
+
+
 def test_the_step_cuts_every_book_at_the_deadline_the_publication_clock_uses(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    cut: dict[pd.Timestamp, pd.Timestamp] = {}
-    real = step_module.company_books
+    read_newest: dict[pd.Timestamp, pd.Timestamp] = {}
+    cleaned_newest: dict[pd.Timestamp, pd.Timestamp] = {}
+    real_read, real_clean = step_module.read_lines, step_module.clean_book
 
-    def spy(classified: pd.DataFrame, tags: Any, universe: Any, deadline: pd.Timestamp) -> pd.DataFrame:
-        if len(classified):
-            cut[pd.Timestamp(classified["period"].iloc[0])] = deadline
-        return real(classified, tags, universe, deadline)
+    def read(store: Any, ciks: Any, periods: Any) -> pd.DataFrame:
+        raw = real_read(store, ciks, periods)
+        read_newest[periods[0]] = pd.to_datetime(raw["filing_date"]).max()
+        return raw
 
-    monkeypatch.setattr(step_module, "company_books", spy)
+    def clean(raw: pd.DataFrame, config: Any, prefixes: Any) -> pd.DataFrame:
+        if len(raw):
+            cleaned_newest[pd.Timestamp(raw["period"].iloc[0])] = pd.to_datetime(raw["filing_date"]).max()
+        return real_clean(raw, config, prefixes)
+
+    monkeypatch.setattr(step_module, "read_lines", read)
+    monkeypatch.setattr(step_module, "clean_book", clean)
     w = world("2025-03-31")
+    _add_a_late_manager(w.store)
     w.step().run(full=True)
 
-    periods = pd.DatetimeIndex(sorted(cut))
+    periods = pd.DatetimeIndex(sorted(cleaned_newest))
     calendar = load_trading_calendar(w.store)
     clock = filing_deadlines(periods, calendar)
     published = publication_dates(periods, calendar, 7)
-    assert len(periods) >= 6 and [cut[t] for t in periods] == list(clock)
+    assert len(periods) >= 6 and all(read_newest[t] == t + pd.Timedelta(days=60) for t in periods), "the late manager's lines are read"
+    assert all(cleaned_newest[t] == t + pd.Timedelta(days=40) and cleaned_newest[t] <= clock[t] for t in periods), "no late line reaches the cleaning"
     assert ((published.dropna() - pd.Timedelta(days=7)) >= clock[published.dropna().index]).all()
     print(
-        f"SANITY: the step cut the {len(periods)} books it read at the publication clock's own deadlines; each is at least 7 days before its publication."
+        f"SANITY: the {len(periods)} quarters read lines filed 60 days after their period end and hand the cleaning only those filed by the "
+        "deadline the publication clock uses (newest 40 days), each deadline at least 7 days before its publication."
     )
 
 

@@ -25,7 +25,7 @@ from src.data_aggregate.utils.sec_thirteen.cluster_config import (
     validate_cluster_config,
 )
 from src.data_aggregate.utils.sec_thirteen.cluster_features import MARKET_COLUMNS, QuarterBooks, cluster_feature_frame
-from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books
+from src.data_aggregate.utils.sec_thirteen.cluster_lines import company_books, filed_by_deadline
 from src.data_aggregate.utils.sec_thirteen.cluster_panel import expand_daily, filing_deadlines, publication_dates
 from src.data_store.schema import Tables
 from src.utils.identity_tables import CusipTags
@@ -223,9 +223,9 @@ class StepCubeSecThirteen(Step):
         for t in plan.quarters.compute:
             started = time.monotonic()
             for period in sorted({t - four, t - one, t} - books.keys()):
-                raw = read_lines(self._store, sorted(needs[period]), [period])
+                raw = filed_by_deadline(read_lines(self._store, sorted(needs[period]), [period]), deadlines[period])
                 classified = classify_securities(clean_book(raw, profile_cfg, res.references.prefixes), res.references.reference, profile_cfg)
-                books[period] = company_books(classified, res.references.tags, universe, deadlines[period])
+                books[period] = company_books(classified, res.references.tags, universe)
             quarter, market = QuarterBooks(books[t], books[t - one], books[t - four]), _market_at(res.market, t)
             frames = [
                 cluster_feature_frame(quarter, res.members.get((t - one, spec.cluster_id), []), market, spec).add_prefix(

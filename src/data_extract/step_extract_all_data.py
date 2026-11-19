@@ -59,6 +59,7 @@ class StepExtractAllData(Step):
         self._fundamentals_sharadar.run(tickers=tickers)
         StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()
         self._fundamentals.run(tickers=tickers)  # reads the facts the EDGAR step just stored
+
         # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a
         # missing API key fails only from this point on.
         llm = StepExtractLlm(self._context, self._config, LlmOptions(tickers=tickers))

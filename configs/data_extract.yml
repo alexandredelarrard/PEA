@@ -1,73 +1,61 @@
 data_extract:
   earnings_calls:
-    read_workers: 4 # Parallel projected reads from the pinned source file.
-  # Late lines in the prior quarter's public index; metadata refresh, not document replay.
+    read_workers: 4 # Parallel reads from pinned source.
+
+  # Recheck prior-quarter index metadata for late entries.
   edgar_index:
     previous_quarter_recheck: {value: 10, unit: calendar_days}
+
   sec13f:
-    batch_size: 100 # Commit complete books in bounded batches; no effect on source dates.
+    batch_size: 100 # Commit complete books in bounded batches.
+
   sharadar_request_pace: 0.35
-  # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504
-  # (and, for requests-based GETs and downloads, connection errors) get `attempts` calls in total,
-  # waiting `waits` seconds between them (the last repeats); a Retry-After lengthens a wait up to the cap.
+
+  # Shared SEC retry policy: HTTP 429/502/503/504 and GET connection errors.
+  # Attempts include the first call; waits repeat the last value.
+  # Retry-After may extend waits up to the cap.
   sec_retry:
     attempts: 3
     waits: [5, 20]
     retry_after_cap: 120
-  # EDGAR document fetchers (`utils/edgar_extract/edgar_driver.py`): a key whose read rate in a run is
-  # below `threshold`, with at least `min_failed` failed documents, re-reads only those documents
-  # in up to `rounds` in-task rounds, waiting `waits` seconds before each; the rest is listed again
-  # on the next run, which always exits 0.
+
+  # Retry failed EDGAR documents if read rate falls below threshold and
+  # failures reach min_failed. Remaining failures retry on the next run.
+  # Wait before each round; the task always exits 0.
   retry_rounds:
     rounds: 3
     waits: [60, 120, 240]
     threshold: 0.985
     min_failed: 2
-  # Per-fetch cap on documents read in one run, newest first; a larger work list logs an ERROR and
-  # drains over later runs. The one-time backlog run lifts it with `--no-cap`.
+
+  # Per-run document cap, newest first. Overflow logs ERROR and carries over.
+  # Use --no-cap for a one-time backlog run.
   max_documents_per_run: 5000
-  # Characters of stored EDGAR text sent to the LLM per call (`StepExtractLlm`): `employees` is the
-  # 10-K excerpt budget, prefix included (e.g. 40000-80000); `def14a` the cut of each stored proxy
-  # section payload (e.g. 100000-130000); `votes` the cut of each stored Item 5.07 narrative (longest
-  # measured: 17,032 chars). Changing any needs no re-walk of the text tables.
+
+  # Max characters of stored text sent per LLM call.
+  # Changes require no replay of extracted text.
   llm_text_budget:
     employees: 60000
     def14a: 130000
     votes: 40000
-  # `modelling predict` refuses to score when the share of universe tickers whose own latest
-  # prices / sharadar_fundamentals_facts / sharadar_fundamentals_history date is within the table's cadence
-  # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.
-  # Process-pool width of the offline `sec-fundamentals-history` full replay (CPU-bound; 1 runs
-  # in-process), and the thread width of the `fundamentals-employees` ticker loop. It does NOT
-  # size or throttle the `sec-fundamentals-facts` EDGAR walk, which uses parallel_fetch's
-  # DEFAULT_WORKERS under the shared SEC rate limiter like the other walks.
+
+  # Prediction requires fresh prices and Sharadar fundamentals;
+  # extraction-status flags stale tables RED.
+
+  # Workers for history replay (processes) and employees (threads).
+  # SEC facts extraction uses separate rate-limited workers.
   fundamentals_workers: 8
-  # Guards on a DERIVED discrete quarter (`fundamentals/periods.py`). Both are calibrated
-  # against confirmed as-filed quarters, not preference -- loosening either lets a wrong
-  # number through, tightening either nulls a real one.
+
+  # Guards against invalid derived quarters, calibrated on filed data.
   fundamentals_periods:
-    # How far a derived quarter whose sign matches NONE of its siblings may exceed the
-    # largest quarter already observed that year, for a SIGNED field. Raised from 1.0 after
-    # the 1.0 bar was measured rejecting real, as-filed quarters at 1.03-2.6x: Allstate
-    # FY2023 (1.10x), Gilead FY2017 (1.26x, the TCJA writedown), S&P Global FY2014 (2.41x,
-    # the $1.6B legal settlement), Genuine Parts 2025 (2.39x), Zimmer Biomet 2018 (2.59x),
-    # Johnson Controls 2012 (2.59x), J.M. Smucker 2023 (1.99x). A charge-driven quarter
-    # legitimately dwarfs the run-rate, so magnitude alone cannot tell it from a data
-    # error; the `non_negative` SIGN test does the real work and this only backstops the
-    # genuinely signed fields.
+    # Max opposite-sign Q4 magnitude vs largest sibling quarter.
+    # Allows legitimate charge-driven spikes in signed fields.
     max_opposite_sign_q4_ratio: 3.0
-    # Ceiling on |annual| / (the periods' own annualised scale) before an annual fact that
-    # resolved a DIFFERENT concept than the periods it is differenced against is treated as
-    # an unrelated line. Only an UPPER bound: a year of offsetting quarters legitimately
-    # foots to a small annual figure, and an annual that is too SMALL because it is the
-    # wrong concept yields a negative quarter the sign test already rejects.
+
+    # Upper bound for mismatched annual vs quarterly concepts.
+    # Small annual totals remain valid when quarters offset.
     q4_tag_mismatch_fy_max: 2.0
-    # The same test applied to a weighted-average SHARE COUNT, where it is two-sided and
-    # must be much tighter. A share count moves a few percent a year organically, so
-    # anything near a whole multiple is a corporate action that rebased every prior figure.
-    # 2.0 was measured to be exactly the wrong bound: a 2-for-1 split -- the commonest
-    # ratio there is -- lands at 1.996-2.003 and half of them slipped through, putting
-    # KR's fiscal-2013 Q4 at 2.74bn shares against a true 511M and EOG's fiscal-2012 at
-    # 1.35bn against 269M. 1.5 clears every real annual move on both rosters (the largest
-    # organic one is under 1.15) and rejects every split.
+
+    # Two-sided share-count ratio to detect split-adjusted basis mismatches.
+    # 1.5 rejects splits while allowing normal annual changes.
     share_basis_max_ratio: 1.5

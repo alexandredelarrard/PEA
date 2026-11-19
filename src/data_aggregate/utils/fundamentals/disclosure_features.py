@@ -24,6 +24,7 @@ def disclosure_return_fields(
     since = pd.DataFrame(np.nan, index=idx, columns=columns)
     reaction = since.copy()
     events = reported_events(earnings_history, idx)
+
     # An earlier report's return anchor is outside this grid and cannot be reconstructed.
     if len(idx):
         events = events.loc[events["earnings_date"] >= idx[0]]

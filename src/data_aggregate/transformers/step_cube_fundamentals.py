@@ -59,6 +59,7 @@ class StepCubeFundamentals(Step):
         self._bugfix = load_bugfix(context.config_dir)
 
     def run(self) -> dict[SchemaTable, WindowPlan]:
+
         # Plan the public calculation and refresh clocks.
         trading_calendar = load_trading_calendar(self._context)
         window = plan_window(self._context, Tables.cube_part_fundamentals, trading_calendar)

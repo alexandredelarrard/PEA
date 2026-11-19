@@ -117,10 +117,41 @@ def as_traded_close(
     return df_close.where(np.isfinite(df_close) & df_close.gt(0))
 
 
-def _tape_events(basis: ShareBasis) -> pd.DataFrame:
-    """The genuine events the Yahoo volume tape is restated by: those its own split ledger also dates.
+def terminal_tape(df_volume: pd.DataFrame, basis: ShareBasis) -> pd.DataFrame:
+    """Yahoo volume restated onto the terminal share basis: each bar times `PROD(actual / ledger)` over the later ledger events.
 
-    Yahoo scales volume for the splits it records, never for the spin-off price factors it files as splits.
+    Yahoo multiplies every earlier volume bar by each ratio of its one adjustment ledger, genuine splits and
+    spin-off price factors alike, but a spin-off creates no shares. On a ledger date the genuine share change
+    is `ShareBasis.actual` (1 where it has none), so a genuine split of equal ratio leaves the bars unchanged,
+    a pure spin-off undoes its ratio, and a spin-off co-dated with a reverse split keeps only the split.
+    """
+    if basis.price.empty:
+        return df_volume
+    ledger = basis.price[["ticker", "date", "value"]].assign(date=lambda df: pd.to_datetime(df["date"]).dt.normalize())
+    ledger = ledger[np.isfinite(ledger["value"]) & ledger["value"].gt(0) & ledger["ticker"].isin(df_volume.columns)]
+    ledger = ledger.groupby(["ticker", "date"], as_index=False)["value"].prod()
+    actual = basis.actual[["ticker", "date", "value"]].assign(date=lambda df: pd.to_datetime(df["date"]).dt.normalize())
+    actual = actual.groupby(["ticker", "date"], as_index=False)["value"].prod().rename(columns={"value": "actual"})
+    events = ledger.merge(actual, on=["ticker", "date"], how="left")
+    events["value"] = events["actual"].fillna(1.0) / events["value"]
+    events = events[~np.isclose(events["value"], 1.0, rtol=1e-12, atol=0)]
+    if events.empty:
+        return df_volume
+
+    factors = suffix_factor(events, list(df_volume.columns), pd.DatetimeIndex(df_volume.index).to_numpy(dtype="datetime64[ns]"))
+    df_out = df_volume.copy()
+    for ticker, factor in factors.items():
+        df_out[ticker] = df_out[ticker] * factor
+    restated = ", ".join(f"{row.ticker} {row.date.date()} x{row.value:.4g}" for row in events.itertuples())
+    logger.info("terminal volume tape: %d ledger event(s) that are not equal-ratio share changes restate earlier bars: %s", len(events), restated)
+    return df_out
+
+
+def _tape_events(basis: ShareBasis) -> pd.DataFrame:
+    """The genuine events the terminal volume tape is restated by: those the Yahoo ledger also dates.
+
+    Yahoo restates volume for every ledger ratio; `terminal_tape` undoes the part that is no share change, so
+    the tape differs from raw traded shares by exactly these events.
     """
     ledger = basis.price[["ticker", "date"]].assign(date=lambda df: pd.to_datetime(df["date"]).dt.normalize()).drop_duplicates()
     events = basis.actual.assign(date=pd.to_datetime(basis.actual["date"]).dt.normalize())

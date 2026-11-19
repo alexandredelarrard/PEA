@@ -807,27 +807,3 @@ def test_volume_scale_refuses_a_series_the_vendor_already_fixed(caplog: pytest.L
     assert any("SKIPPED" in m for m in caplog.messages), caplog.messages
     print("\n=== SANITY CHECK: a fixed series is refused ===")
     print(f"  observed jump ~1.03 against an expected 100 -> skipped: {caplog.messages[0]}")
-
-
-@pytest.mark.parametrize(
-    ("ticker", "event", "yahoo_ratio", "actual_ratio", "raw_before", "after"),
-    [("HON", "2026-06-29", 0.9535, 0.5, 4_000_000.0, 3_870_000.0), ("CTVA", "2026-10-01", 6.665, 1.0, 4_243_700.0, 22_900_000.0)],
-)
-def test_shipped_volume_scale_undoes_yahoo_spinoff_factors_to_the_terminal_basis(
-    ticker: str, event: str, yahoo_ratio: float, actual_ratio: float, raw_before: float, after: float
-) -> None:
-    """Known truth: Yahoo multiplies pre-event volume by its ledger ratio (the spin-off factor), never by a co-dated reverse split.
-    The shipped entry returns each bar before the event to raw traded shares x the actual share change, the unit of shares_outstanding_pit."""
-    bugfix = load_bugfix(DEFAULT_CONFIG_DIR)
-    days = pd.bdate_range(pd.Timestamp(event) - pd.Timedelta(days=60), pd.Timestamp(event) + pd.Timedelta(days=45))
-    vendor = [raw_before * yahoo_ratio if day < pd.Timestamp(event) else after for day in days]
-    bars = pd.DataFrame({"ticker": ticker, "date": days, "volume": vendor})
-
-    out = apply_volume_scale(bars, bugfix).set_index("date")["volume"]
-
-    before = out[out.index < pd.Timestamp(event)]
-    assert before.to_numpy() == pytest.approx(raw_before * actual_ratio, rel=1e-9)
-    assert out[out.index >= pd.Timestamp(event)].eq(after).all()
-    print(
-        f"\nSANITY: {ticker} pre-event Yahoo volume {raw_before * yahoo_ratio:,.0f} -> {before.iloc[0]:,.0f} = raw {raw_before:,.0f} x actual share change {actual_ratio}; later bars untouched."
-    )

@@ -405,7 +405,7 @@ def test_real_quarter_mapped_lines_cover_at_least_the_symbol_match_and_features_
 
     # The labels of the quarter before name each cluster's managers; a small deterministic list per cluster.
     labels = _frame(store.load(Tables.sec_13f_manager_details, columns=["cik", "cluster"], where={"period": before.strftime("%Y-%m-%d")}))
-    labels = labels[labels["cluster"].ge(0)].sort_values("cik")
+    labels = labels[labels["cluster"].between(0, 10)].sort_values("cik")
     members = {int(cast(float, c)): sorted(group["cik"].head(10)) for c, group in labels.groupby("cluster")}
     ciks = sorted({cik for group in members.values() for cik in group})
 

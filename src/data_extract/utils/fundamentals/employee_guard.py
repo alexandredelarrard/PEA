@@ -7,7 +7,6 @@ import json
 import re
 from bisect import bisect_right
 from dataclasses import dataclass
-from itertools import combinations
 from typing import Any, Literal, cast
 
 import pandas as pd
@@ -58,11 +57,11 @@ _ROW_LABEL_RE = re.compile(
 # Prose may label the number before it, in its own phrase: "the number of full-time employees ... was 38,100". Only a
 # "number of" label counts: in "N1 part-time employees in the US and N2 employees outside", N2 has no shift.
 _SHIFT_BEFORE_RE = re.compile(r"\bnumber\s+of\s+(full|part)[\s-]*time\s+(?:employees|associates|staff|workers|team\s+members|people|persons)\b")
-_FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
+_FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:,\s*(?:(?:and|or)\s*)?|(?:and|or|&|/)\s*)part", re.I)
 _FTE_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,2}?full[\s-]*time[\s-]*equivalent", re.I)
 # Non-employees folded into a number: prose after it is lower case (a capitalised word there is the next table
 # row's label); a label or subject before it may be capitalised. "an additional" / "excluding" state them apart.
-_CONTRACTOR_RE = re.compile(r"\b(?:contractors?|contingent|temporar(?:y|ies)|complementary)\b")
+_CONTRACTOR_RE = re.compile(r"\b(?:contractors?|contingent|temporar(?:y|ies)|complementary\s+(?:workers?|employees|staff|workforce))\b")
 _CONTRACTOR_LABEL_RE = re.compile(_CONTRACTOR_RE.pattern, re.I)
 _SEPARATELY_RE = re.compile(r"\b(?:exclud\w*|not\s+includ\w*|additional|in\s+addition|besides|apart\s+from|other\s+than)\b", re.I)
 _PHRASE_STOP_RE = re.compile(r"\d|[.;]\s")  # a number's own phrase ends at the next number or sentence end
@@ -83,8 +82,10 @@ _SUBSET = (
     "one subsidiary, operating company, segment, country, site, union or workforce group (such as shipboard or shoreside staff), even the largest"
 )
 _QUOTE = (
-    "Shortest span of the supplied text that contains this number and its noun, copied character for character. If a page "
-    "number or header interrupts the span, stop before it and continue after ` ... `; never delete, reorder or reword words. Null when the value is null."
+    "Copy the supporting prose sentence, or only this component's own table row with its label, character for character. "
+    "For a scaled table also copy its units header; join a non-adjacent header and row with ` ... `. "
+    "For a sum quote every disjoint part. Every skipped word or intervening table row requires ` ... `; "
+    "never silently join, reorder or reword source text. Null when the value is null."
 )
 
 
@@ -94,9 +95,10 @@ class EmployeeAnswer(BaseModel):
 
     reason: str = Field(
         description=(
-            "Write this first. Name the sentence or table row that states the workforce of " + _WHOLE + ", with its date. "
-            "Name each count you reject because it covers only " + _SUBSET + ", a prior year, a range, or contractors. "
-            "If you sum disjoint parts that together cover the whole registrant, list every part and the arithmetic."
+            "Write this first. Copy the exact supporting sentence or table rows for the workforce of " + _WHOLE + ", with its date and units. "
+            "Explain each count you reject because it covers only " + _SUBSET + ", a prior year, a range, or separately stated contractors. "
+            "If disjoint parts together cover the whole registrant, list every part and the arithmetic. "
+            "A stated total including temporary or contingent workers remains usable with includes_contractors true."
         )
     )
     status: Literal["found", "not_disclosed", "image_only", "incorporated_by_reference", "ambiguous"] = Field(
@@ -108,8 +110,10 @@ class EmployeeAnswer(BaseModel):
     )
     total: int | None = Field(
         description=(
-            "Current-period number of employees of " + _WHOLE + ", part-time and seasonal staff included; full-time equivalents "
-            "when is_fte. Never a count for " + _SUBSET + ". For 'more than N' or 'over N' return N. Null when no company-wide count is stated."
+            "Current-period number of employees of " + _WHOLE + ", including a table total or the sum of an exhaustive disjoint breakdown. "
+            "A combined full-time, part-time and temporary workforce is a total, not a full_time count. Use full-time equivalents "
+            "when is_fte. Never a count for " + _SUBSET + " alone. For 'more than N' or 'over N' return N. "
+            "Null when neither a company-wide count nor a complete breakdown is stated."
         )
     )
     total_quote: str | None = Field(description=_QUOTE)
@@ -128,7 +132,12 @@ class EmployeeAnswer(BaseModel):
     )
     part_time_quote: str | None = Field(description=_QUOTE)
     is_fte: bool = Field(description="True when the total is stated as full-time equivalents")
-    includes_contractors: bool = Field(description="True when the only stated total folds in contractors, contingent or temporary workers")
+    includes_contractors: bool = Field(
+        description=(
+            "True when the chosen total explicitly includes contractors, contingent or temporary workers, even when called employees. "
+            "Part-time, seasonal or PRN/on-call employees alone do not imply these workers. False when such workers are excluded or counted separately."
+        )
+    )
     measurement_period: str | None = Field(description="Headcount date or period as stated, at original precision")
     qualifier: str | None = Field(description="For example approximate, over, more than, average or FTE, if stated")
 
@@ -220,9 +229,13 @@ def _shift(before: str, after: str) -> str | None:
     row = _ROW_LABEL_RE.search(before)
     if row and row.group(1).casefold() == "total":
         return None
-    if _FTE_AFTER_RE.match(after):
+    if (
+        _FTE_AFTER_RE.match(after)
+        or (row and _FTE_AFTER_RE.match(row.group()))
+        or re.search(r"\bequivalent\s+(?:of|to)(?:\s+(?:approximately|about|around))?\s*$", before, re.I)
+    ):
         return "fte"
-    if _FULL_AND_PART_RE.search(after[:40]):
+    if _FULL_AND_PART_RE.search(after[:40]) or re.match(r"^\W*(?:including|inclusive\s+of)\b", after, re.I):
         return None
     if label := _SHIFT_AFTER_RE.match(after):
         if label.group(1) == "full" and re.match(r"[\s-]*equivalent\b", after[label.end() :]):
@@ -248,8 +261,24 @@ def _folds_in_contractors(source: str, start: int, end: int) -> bool:
 def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
     """Every number inside the spans, read with the source words just before and after it."""
     quantities = []
+    quoted_thousands = False
     for start, end in spans:
-        in_thousands = bool(_IN_THOUSANDS_RE.search(source[max(0, start - 80) : end]))
+        quoted_thousands |= bool(_IN_THOUSANDS_RE.search(source[start:end]))
+        table_start = max(source.rfind("\n", 0, start) + 1, start - _FRAGMENT_GAP)
+        table_line = source[table_start:end]
+        employment_table = bool(
+            re.match(r"Total\b", source[start:end], re.I)
+            and re.search(
+                r"\bnumber\s+of\s+(?:[a-z]+\s+){0,2}(?:employees|individuals|associates)\b|^\s*(?:employees|headcount|workforce)\b",
+                table_line,
+                re.I,
+            )
+        )
+        in_thousands = (
+            quoted_thousands
+            or bool(_IN_THOUSANDS_RE.search(source[max(0, start - 80) : end]))
+            or (employment_table and bool(_IN_THOUSANDS_RE.search(table_line)))
+        )
         for match in _QUANTITY_RE.finditer(source, start, end):
             before = " ".join(source[max(0, match.start() - 120) : match.start()].split())
             after = " ".join(source[match.end() : match.end() + 60].split())
@@ -271,9 +300,21 @@ def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
 
 def _claimed(quantities: list[_Quantity], count: int) -> list[_Quantity] | None:
     """The stated number equal to the model's count, else the fewest stated components summing to it."""
-    pool = [quantity for quantity in quantities if not quantity.is_date]
-    sizes = range(1, min(len(pool), 4) + 1)
-    return next((list(combination) for size in sizes for combination in combinations(pool, size) if sum(q.value for q in combination) == count), None)
+    # Prefer one stated number over any arithmetic reconstruction.
+    pool = [quantity for quantity in quantities if not quantity.is_date and 0 < quantity.value <= count]
+    if stated := next((quantity for quantity in pool if quantity.value == count), None):
+        return [stated]
+
+    # Keep one shortest path per reachable sum instead of enumerating every subset size.
+    sums: dict[int, tuple[_Quantity, ...]] = {0: ()}
+    for quantity in pool:
+        updates = {
+            total: (*parts, quantity)
+            for subtotal, parts in sums.items()
+            if (total := subtotal + quantity.value) <= count and (total not in sums or len(parts) + 1 < len(sums[total]))
+        }
+        sums.update(updates)
+    return list(sums[count]) if count in sums else None
 
 
 def _resolve_bound(quantity: _Quantity) -> int:
